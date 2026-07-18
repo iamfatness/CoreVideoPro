@@ -432,4 +432,22 @@ public sealed class CoreProtocolParserTests
         Assert.Equal("stream", send.BusId);
         Assert.Equal(-3.0, send.GainDb, 1);
     }
+
+    [Fact]
+    public void PluginHostJsonCarriesValidatedClassesAndLiveServeTelemetry()
+    {
+        const string json =
+            """{"status":"live","plugins":[{"id":"waves","name":"WaveShell","vendor":"Waves","probe":"pass","classNames":["Curves AQ Mono","Curves AQ Stereo"]}],"serve":{"running":true,"exchanges":42,"deadlineMisses":1,"activePlugin":"Curves AQ Stereo","statusCode":1,"lastError":""}}""";
+        var host = JsonSerializer.Deserialize<NativeMediaCorePluginHost>(
+            json,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(host);
+        var plugin = Assert.Single(host!.Plugins);
+        Assert.Equal(["Curves AQ Mono", "Curves AQ Stereo"], plugin.ClassNames);
+        Assert.True(host.Serve.Running);
+        Assert.Equal(42, host.Serve.Exchanges);
+        Assert.Equal("Curves AQ Stereo", host.Serve.ActivePlugin);
+        Assert.Equal(1, host.Serve.StatusCode);
+    }
 }

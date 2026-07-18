@@ -241,6 +241,18 @@ public sealed class SceneCanvasIaTests
         Assert.Equal(1, route.CanvasRect.Height);
     }
 
+    [Fact]
+    public void GetRouteWarnings_DoesNotMislabelMediaAsUnavailableParticipant()
+    {
+        var scene = new Scene { Id = "scene-1", Name = "Media", Layout = "single" };
+        var route = SceneRoutingService.BuildAddedSourceRoute("scene-1", 0, "media", "asset-7");
+
+        var warnings = SceneRoutingService.GetRouteWarnings(scene, [route], []);
+
+        Assert.DoesNotContain(warnings, warning =>
+            warning.Contains("participant is unavailable", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("input-01")]
     [InlineData("active-speaker")]

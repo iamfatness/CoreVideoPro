@@ -158,21 +158,51 @@ public sealed partial class SettingsViewModel : ObservableObject
                 return "Sign in with Zoom before joining this meeting in CoreVideo.";
             }
 
-            return "CoreVideo joins with the embedded Zoom Meeting SDK. Use Open in Zoom app for the installed Zoom client.";
+            return "Join with CoreVideo, or open this meeting in the Zoom app.";
         }
     }
 
     public bool ShowRecentMeetings => RecentMeetings.Count > 0;
 
     public string JoinBlockedReason =>
-        _sdkReadiness.Blockers.FirstOrDefault() is { } blocker
-            ? FormatActionableBlocker(blocker)
-            : _sdkReadiness.Summary;
+        _sdkReadiness.Status == ZoomSdkReadinessStatus.Blocked
+            ? "Zoom is unavailable. Open Health for details."
+            : "Zoom needs attention. Open Health for details.";
 
     public bool ShowLicenseActionStatus => !string.IsNullOrWhiteSpace(LicenseActionStatus);
 
-    public string SdkChipLabel =>
-        _sdkReadiness.Status == ZoomSdkReadinessStatus.Ready ? "SDK ready" : _sdkReadiness.Summary;
+    public bool ZoomOperatorIsBlocked =>
+        !IsInMeeting && _sdkReadiness.Status == ZoomSdkReadinessStatus.Blocked;
+
+    public bool ZoomOperatorIsReady => !ZoomOperatorIsBlocked;
+
+    public string SdkChipLabel => FormatZoomOperatorStatus(_sdkReadiness.Status, IsInMeeting);
+
+    public string ZoomStatusGuidance => FormatZoomOperatorGuidance(_sdkReadiness.Status, IsInMeeting);
+
+    public static string FormatZoomOperatorStatus(ZoomSdkReadinessStatus readinessStatus, bool isInMeeting)
+    {
+        if (isInMeeting)
+        {
+            return "Connected to Zoom";
+        }
+
+        return readinessStatus == ZoomSdkReadinessStatus.Blocked
+            ? "Zoom is unavailable"
+            : "Ready to join Zoom";
+    }
+
+    public static string FormatZoomOperatorGuidance(ZoomSdkReadinessStatus readinessStatus, bool isInMeeting)
+    {
+        if (isInMeeting)
+        {
+            return "Zoom is connected and working.";
+        }
+
+        return readinessStatus == ZoomSdkReadinessStatus.Blocked
+            ? "CoreVideo cannot join Zoom yet. Open Health for details."
+            : "Enter a meeting link or ID above when you are ready to connect.";
+    }
 
     public bool SdkIsReady => _sdkReadiness.Status == ZoomSdkReadinessStatus.Ready;
 
@@ -247,11 +277,15 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         get
         {
-            var stateLabel = MeetingState.ToString().Replace('_', ' ');
             var participantLabel = LiveParticipantCount == 1 ? "participant" : "participants";
-            return IsInMeeting
-                ? $"{stateLabel} · {LiveParticipantCount} {participantLabel}"
-                : $"{stateLabel} · not in a meeting";
+            return MeetingState switch
+            {
+                ZoomMeetingState.InMeeting => $"Connected · {LiveParticipantCount} {participantLabel}",
+                ZoomMeetingState.Joining => "Joining Zoom…",
+                ZoomMeetingState.Reconnecting => "Reconnecting to Zoom…",
+                ZoomMeetingState.Error => "Connection needs attention",
+                _ => "Not connected"
+            };
         }
     }
 
@@ -546,7 +580,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
             if (!_bridge.Running)
             {
-                SetJoinProgress(ZoomMeetingState.Joining, "Starting media core…");
+                SetJoinProgress(ZoomMeetingState.Joining, "Preparing Zoom…");
                 LaunchLog.Write("zoom-join: starting media core");
                 var profile = await _bridge.StartAsync().ConfigureAwait(false);
                 LaunchLog.Write(
@@ -567,7 +601,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
                     if (!creds.UsePublicAppKey && string.IsNullOrWhiteSpace(sdkJwt))
                     {
-                        const string missingJwt = "Meeting SDK JWT was not returned by the OAuth broker. Sign out and sign in again.";
+                        const string missingJwt = "Zoom sign-in needs to be refreshed. Sign out and sign in again.";
                         LaunchLog.Write($"zoom-join: {missingJwt}");
                         SetJoinFailure(missingJwt);
                         return;
@@ -576,7 +610,7 @@ public sealed partial class SettingsViewModel : ObservableObject
                 catch (Exception authEx)
                 {
                     LaunchLog.Write($"zoom-join: credential error {authEx.Message}");
-                    SetJoinFailure(authEx.Message);
+                    SetJoinFailure("Zoom sign-in could not be completed. Sign out, sign in, and try again.");
                     return;
                 }
             }
@@ -600,7 +634,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             {
                 var failure = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Join");
                 LaunchLog.Write($"zoom-join: {failure}");
-                SetJoinFailure(failure);
+                SetJoinFailure("Could not join Zoom. Open Health for details.");
                 return;
             }
 
@@ -608,7 +642,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             {
                 BeginFirstFrameTiming();
                 ApplyCaptureSnapshot(snapshot);
-                JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Joined");
+                JoinStatus = "Connected to Zoom.";
                 LaunchLog.Write($"zoom-join: {JoinStatus}");
                 _zoomStatusChanged?.Invoke("Zoom Live");
                 _onMeetingJoined?.Invoke();
@@ -650,7 +684,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            JoinStatus = $"Could not open Zoom meeting URL: {ex.Message}";
+            JoinStatus = "Could not open this meeting in Zoom.";
             LaunchLog.Write($"zoom-open-external: failed {ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -684,7 +718,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             {
                 var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
                 ApplyCaptureSnapshot(snapshot);
-                JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Left");
+                JoinStatus = "Disconnected from Zoom.";
                 _bridge.Stop();
             }
             else
@@ -701,7 +735,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         catch (Exception ex)
         {
             MeetingState = ZoomMeetingState.Error;
-            JoinStatus = ex.Message;
+            LaunchLog.Write($"zoom-leave: failed {ex.GetType().Name}: {ex.Message}");
+            JoinStatus = "Could not leave the Zoom meeting cleanly. Open Health for details.";
             NotifyMeetingUi();
         }
     }
@@ -797,7 +832,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         catch (Exception ex)
         {
             LaunchLog.Write($"oauth: sign-in failed: {ex.Message}");
-            OauthStatusMessage = ex.Message;
+            OauthStatusMessage = "Zoom sign-in could not be completed. Try again or open Health for details.";
         }
 
         NotifyOAuthUi();
@@ -863,6 +898,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(CanOpenMeetingExternally));
         OnPropertyChanged(nameof(JoinActionHint));
         OnPropertyChanged(nameof(MeetingStatusLine));
+        OnPropertyChanged(nameof(SdkChipLabel));
+        OnPropertyChanged(nameof(ZoomStatusGuidance));
+        OnPropertyChanged(nameof(ZoomOperatorIsReady));
+        OnPropertyChanged(nameof(ZoomOperatorIsBlocked));
         _onMeetingPresenceChanged?.Invoke();
     }
 
@@ -872,6 +911,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(SdkChecks));
         OnPropertyChanged(nameof(SdkBlockers));
         OnPropertyChanged(nameof(SdkChipLabel));
+        OnPropertyChanged(nameof(ZoomStatusGuidance));
+        OnPropertyChanged(nameof(ZoomOperatorIsReady));
+        OnPropertyChanged(nameof(ZoomOperatorIsBlocked));
         OnPropertyChanged(nameof(SdkIsReady));
         OnPropertyChanged(nameof(SdkIsWarning));
         OnPropertyChanged(nameof(SdkIsBlocked));
@@ -1152,17 +1194,12 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private static string DescribeJoinException(Exception ex)
     {
-        if (!string.IsNullOrWhiteSpace(ex.Message))
+        if (ex is TimeoutException or TaskCanceledException)
         {
-            return ex.Message;
+            return "Zoom took too long to respond. Check the connection and try again.";
         }
 
-        if (ex is System.Runtime.InteropServices.COMException com)
-        {
-            return $"Media core join failed (HRESULT 0x{com.HResult:X8}).";
-        }
-
-        return $"{ex.GetType().Name}: media core join failed.";
+        return "Could not join Zoom. Open Health for details.";
     }
 
     private void RunOnUiThread(Action action)

@@ -205,7 +205,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _audioMonitorVolume = 0.75;
 
     [ObservableProperty]
-    private bool _localAudioSourceEnabled = true;
+    private bool _localAudioSourceEnabled;
 
     [ObservableProperty]
     private string _selectedLocalAudioCaptureDeviceId = string.Empty;
@@ -408,6 +408,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private double _lowerThirdBuildOutMs = 160;
+
+    [ObservableProperty]
+    private string _selectedLowerThirdTimingPreset = "Quick";
+
+    public IReadOnlyList<string> LowerThirdTimingPresetOptions { get; } =
+        ["Quick", "Smooth", "Gentle", "Custom"];
 
     [ObservableProperty]
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
@@ -824,7 +830,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "Native lower-third state waiting for media core.";
 
     public string LowerThirdTimingSummary =>
-        $"Build {LowerThirdBuildInMs:0} ms / out {LowerThirdBuildOutMs:0} ms";
+        $"{SelectedLowerThirdTimingPreset} · in {LowerThirdBuildInMs:0} ms / out {LowerThirdBuildOutMs:0} ms";
 
     public string LoudnessTargetLabel => "target -16 LUFS";
 
@@ -1064,6 +1070,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    public string FfmpegOperatorStatus =>
+        StudioStreamOutputValidation.ResolveFfmpegExecutable(FfmpegBinDirectory) is not null
+            ? "Streaming encoder ready."
+            : "Streaming encoder not found. Choose the folder containing ffmpeg.exe.";
+
     public StudioViewModel()
     {
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
@@ -1210,8 +1221,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool CanToggleRecording => Settings.IsInMeeting && !_recordingToggleInFlight;
 
     public string CaptureEngineHint => CanToggleCapture
-        ? "Requests the raw Zoom capture subscription for the active meeting."
-        : "Join a Zoom meeting first, then request capture.";
+        ? "Start or stop Zoom video capture for this meeting."
+        : "Join a Zoom meeting before starting capture.";
 
     public string RecordingLabel => Recording ? "Recording" : "Record";
 
@@ -1255,7 +1266,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool CanAddSrtIngestSource => SrtIngestSources.Count < MaxSrtIngestSources;
 
     public string SrtIngestRuntimeSummary =>
-        "Each SRT source is exposed as a routable input. Real SRT receive/decode requires the libsrt ingest adapter.";
+        "Configured SRT sources are available in Show inputs and Routing.";
 
     public IReadOnlyList<RouteSelectOption> OutputResolutionOptions { get; } =
     [
@@ -1386,6 +1397,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         $"{NormalizeRecordingFormat(RecordingFormat).ToUpperInvariant()} - {FormatRecordingQuality(RecordingQuality)} - {RecordingRenderProfileSummary} - {RecordingFilenamePrefix}";
 
     public string OutputStatusBrief => FormatOutputStatusBrief(OutputStatus);
+
+    public string OutputOperatorStatus =>
+        ShouldShowOutputStatusDetails(OutputStatus)
+            ? $"{OutputStatusBrief}. Open Health for technical details."
+            : OutputStatusBrief;
 
     public string OutputStatusDetailsLabel =>
         ShouldShowOutputStatusDetails(OutputStatus) ? "Show error" : "Details";
@@ -1531,8 +1547,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // ---- C5a: the visible insert rack (LV1-style slot chain). Each applied
     // insert is a SLOT in chain order; built-ins process today (#178),
-    // third-party VST3 slots are explicitly "awaiting host" until P2 — shown,
-    // never faked. Signature-gated rebuild (bound-collection churn is the
+    // third-party VST3 slots report isolated-host processing or bypass — never
+    // faked. Signature-gated rebuild (bound-collection churn is the
     // 0xc000027b crash class).
     private IReadOnlyList<InsertSlotItem> _selectedChannelInsertSlots = [];
     private string _insertSlotsSignature = "";
@@ -1542,16 +1558,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private static readonly string[] BuiltInInsertNames = ["Noise Gate", "Built-in EQ", "Compressor", "Limiter"];
 
     private static bool IsBuiltInInsert(string name) =>
-        BuiltInInsertNames.Any(builtIn => string.Equals(builtIn, name, StringComparison.OrdinalIgnoreCase)) ||
-        name.Contains("gate", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("eq", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("compressor", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("limiter", StringComparison.OrdinalIgnoreCase);
+        !name.StartsWith("VST:", StringComparison.OrdinalIgnoreCase) &&
+        (BuiltInInsertNames.Any(builtIn => string.Equals(builtIn, name, StringComparison.OrdinalIgnoreCase)) ||
+         name.Contains("gate", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("eq", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("compressor", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("limiter", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsVstInsert(string name) =>
+        name.StartsWith("VST:", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("VST3", StringComparison.OrdinalIgnoreCase);
+
+    private NativeMediaCorePluginHostServe VstServeState =>
+        _bridge.LastSnapshot?.AudioMixSession.PluginHost.Serve ?? new();
+
+    private bool IsVstInsertProcessing(string name)
+    {
+        var serve = VstServeState;
+        var query = name.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? name[4..].Trim()
+            : name;
+        return serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0 &&
+               (string.Equals(serve.ActivePlugin, query, StringComparison.OrdinalIgnoreCase) ||
+                query.Contains(serve.ActivePlugin, StringComparison.OrdinalIgnoreCase) ||
+                serve.ActivePlugin.Contains(query, StringComparison.OrdinalIgnoreCase));
+    }
 
     private void RefreshSelectedChannelInsertSlots()
     {
         var inserts = SelectedAudioMix?.PluginInserts ?? [];
-        var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts);
+        var serve = VstServeState;
+        var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts) +
+                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}";
         if (string.Equals(signature, _insertSlotsSignature, StringComparison.Ordinal))
         {
             return;
@@ -1559,16 +1597,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _insertSlotsSignature = signature;
         _selectedChannelInsertSlots = inserts
-            .Select((name, index) => new InsertSlotItem
+            .Select((name, index) =>
             {
-                Name = name,
-                SlotLabel = $"{index + 1}",
-                IsBuiltIn = IsBuiltInInsert(name),
-                // U1c: truthful status in operator words, never phase jargon.
-                StatusLabel = IsBuiltInInsert(name) ? "LIVE" : "BYPASS",
-                StatusTooltip = IsBuiltInInsert(name)
-                    ? "Processing audio live."
-                    : "Installed, but audio passes through UNCHANGED — live VST processing has not shipped yet. The built-in processors are fully live.",
+                var builtIn = IsBuiltInInsert(name);
+                var processing = !builtIn && IsVstInsertProcessing(name);
+                var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
+                             !string.IsNullOrWhiteSpace(serve.LastError);
+                return new InsertSlotItem
+                {
+                    // Keep the canonical value: removal/reordering use it as
+                    // the insert-chain identity.
+                    Name = name,
+                    SlotLabel = $"{index + 1}",
+                    IsBuiltIn = builtIn,
+                    IsProcessing = processing,
+                    StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
+                    StatusTooltip = builtIn
+                        ? "Processing active."
+                        : processing
+                            ? "Plug-in active. Click to open its controls."
+                            : failed
+                                ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                                : "Plug-in starting; audio continues unchanged.",
+                };
             })
             .ToList();
         OnPropertyChanged(nameof(SelectedChannelInsertSlots));
@@ -1766,21 +1817,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
-    public void AddVstInsertToSelectedChannel(string pluginName)
+    public void AddVstInsertToSelectedChannel(string pluginClassName)
     {
-        if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(pluginName))
+        if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(pluginClassName))
         {
             return;
         }
 
-        if (mix.PluginInserts.Any(insert => string.Equals(insert, pluginName, StringComparison.OrdinalIgnoreCase)))
+        var insertName = pluginClassName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? pluginClassName.Trim()
+            : $"VST:{pluginClassName.Trim()}";
+
+        if (mix.PluginInserts.Any(insert => string.Equals(insert, insertName, StringComparison.OrdinalIgnoreCase)))
         {
-            CommandStatus = $"{pluginName} is already on {SelectedParticipant?.Name ?? "selected channel"}";
+            CommandStatus = $"{pluginClassName} is already on {SelectedParticipant?.Name ?? "selected channel"}";
             return;
         }
 
-        mix.PluginInserts.Add(pluginName);
-        CommandStatus = $"{pluginName} added to {SelectedParticipant?.Name ?? "selected channel"} — audio passes through unchanged until live VST processing ships";
+        mix.PluginInserts.Add(insertName);
+        CommandStatus = $"{pluginClassName} added to {SelectedParticipant?.Name ?? "selected channel"}.";
         RefreshMixerValueBindings(mix.ParticipantId);
         RefreshAudioProcessingTargets();
         NotifySelectedRackChanged();
@@ -1788,9 +1843,61 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public string VstBridgeStatusLabel =>
-        SelectedAudioMix?.PluginInserts.Any(insert => insert.StartsWith("VST", StringComparison.OrdinalIgnoreCase)) == true
-            ? "VST3 bridge slot configured - scan/load bridge required for live PCM processing"
-            : "No VST bridge slot on selected channel";
+        SelectedAudioMix?.PluginInserts.Any(IsVstInsert) == true
+            ? FormatVstServeStatus(VstServeState)
+            : "No VST3 insert on selected channel";
+
+    public async Task OpenVstControlsAsync(string insertName)
+    {
+        if (!IsVstInsert(insertName))
+        {
+            CommandStatus = "Select a VST3 insert to open its controls.";
+            return;
+        }
+
+        var label = insertName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? insertName[4..].Trim()
+            : insertName;
+        CommandStatus = $"Opening {label} controls…";
+        try
+        {
+            await _bridge.OpenVstEditorAsync(insertName);
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = $"Could not open plug-in controls: {ex.Message}";
+        }
+    }
+
+    public Task OpenSelectedAudioProcessingVstControlsAsync()
+    {
+        var insert = ResolveAudioProcessingInserts(
+                NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId))
+            .FirstOrDefault(IsVstInsert);
+        if (string.IsNullOrWhiteSpace(insert))
+        {
+            CommandStatus = "Add a VST3 plug-in to this processing target first.";
+            return Task.CompletedTask;
+        }
+
+        return OpenVstControlsAsync(insert);
+    }
+
+    public void RemoveAudioProcessingInsert(string insertName)
+    {
+        var targetId = NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId);
+        var inserts = ResolveAudioProcessingInsertList(targetId);
+        var removed = inserts.RemoveAll(candidate =>
+            string.Equals(candidate, insertName, StringComparison.OrdinalIgnoreCase));
+        if (removed == 0) return;
+
+        CommandStatus = $"Removed {insertName} from {ResolveAudioProcessingTargetName(targetId)}";
+        RefreshAudioProcessingTargets();
+        RefreshSelectedAudioProcessingSlots();
+        RefreshAudioParticipantRows();
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
 
     public AudioProcessingTargetOption? SelectedAudioProcessingTarget =>
         AudioProcessingTargetOptions.FirstOrDefault(target =>
@@ -1808,10 +1915,59 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string SelectedAudioProcessingInsertLabel =>
         SelectedAudioProcessingTarget?.InsertLabel ?? "No inserts";
 
+    private IReadOnlyList<InsertSlotItem> _selectedAudioProcessingSlots = [];
+    private string _audioProcessingSlotsSignature = string.Empty;
+
+    public IReadOnlyList<InsertSlotItem> SelectedAudioProcessingSlots => _selectedAudioProcessingSlots;
+
+    private void RefreshSelectedAudioProcessingSlots()
+    {
+        var inserts = ResolveAudioProcessingInserts(NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId));
+        var serve = VstServeState;
+        var signature = (SelectedAudioProcessingTargetId ?? string.Empty) + "|" + string.Join("\u0001", inserts) +
+                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}";
+        if (string.Equals(signature, _audioProcessingSlotsSignature, StringComparison.Ordinal)) return;
+
+        _audioProcessingSlotsSignature = signature;
+        _selectedAudioProcessingSlots = inserts.Select((name, index) =>
+        {
+            var builtIn = IsBuiltInInsert(name);
+            var processing = !builtIn && IsVstInsertProcessing(name);
+            var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
+                         !string.IsNullOrWhiteSpace(serve.LastError);
+            return new InsertSlotItem
+            {
+                Name = name,
+                SlotLabel = $"{index + 1:00}",
+                IsBuiltIn = builtIn,
+                IsProcessing = processing,
+                StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
+                StatusTooltip = builtIn
+                    ? "Processing active."
+                    : processing
+                        ? "Plug-in active. Click to open its controls."
+                        : failed
+                            ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                            : "Plug-in starting; audio continues unchanged. Click to open its controls."
+            };
+        }).ToList();
+        OnPropertyChanged(nameof(SelectedAudioProcessingSlots));
+    }
+
     public string ProcessingBridgeStatusLabel =>
-        SelectedAudioProcessingInsertLabel.Contains("VST", StringComparison.OrdinalIgnoreCase)
-            ? "VST3 slot is staged for this processing target; live plugin execution still requires the native plugin bridge."
+        ResolveAudioProcessingInserts(NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId)).Any(IsVstInsert)
+            ? FormatVstServeStatus(VstServeState)
             : "Built-in processing settings are synced with the native media core metadata.";
+
+    private static string FormatVstServeStatus(NativeMediaCorePluginHostServe serve) =>
+        serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0
+            ? $"Processing {serve.ActivePlugin} in the isolated VST3 host."
+            : serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)
+                ? $"Bypassed safely: {serve.LastError}"
+                : serve.DeadlineMisses > 0
+                    ? $"Host starting or missed its deadline ({serve.DeadlineMisses}); audio remains bypassed."
+                    : "Isolated VST3 host starting; audio remains bypassed until the first processed block returns.";
 
     // Status-pill design language: a pill is GREEN (dot + tint + text) when its
     // thing is on/live, RED when off/offline. Capture and Zoom share this so the
@@ -1886,23 +2042,50 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         get
         {
-            var active = ShowInputRosterService.CountActiveShowInputs(ShowInputs);
             var displayed = MultiviewGridTiles.Count(tile => !tile.IsEmpty);
-            return $"Show inputs · {displayed} of {active} live · {ShowInputRosterService.MaxShowInputs}-input capacity";
+            var inputLabel = displayed == 1 ? "input" : "inputs";
+            return $"{displayed} live {inputLabel}";
         }
     }
 
-    public string ShowInputSummary =>
-        $"{ShowInputs.Count(slot => slot.InShow)}/{ShowInputRosterService.MaxMultiviewBoxes} in show · " +
-        $"{ShowInputRosterService.MaxShowInputs} slots — pick input type + source, then toggle In show";
-
-    public string SetupProgressSummary
+    public string ShowInputSummary
     {
         get
         {
             var assigned = ShowInputs.Count(slot => slot.IsAssigned);
             var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
-            return $"{assigned}/{ShowInputRosterService.MaxShowInputs} inputs assigned - {inShow} in show - {RoomVideoParticipants.Count} Zoom feeds";
+            return $"{inShow} in show · {assigned} assigned";
+        }
+    }
+
+    public string SetupProgressSummary
+    {
+        get
+        {
+            var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
+            var inputLabel = inShow == 1 ? "input" : "inputs";
+            var guestLabel = RoomVideoParticipants.Count == 1 ? "guest" : "guests";
+            return $"{inShow} {inputLabel} · {RoomVideoParticipants.Count} Zoom {guestLabel}";
+        }
+    }
+
+    public string ShowStatusSummary
+    {
+        get
+        {
+            var assigned = ShowInputs.Count(slot => slot.IsAssigned);
+            var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
+            if (assigned == 0)
+            {
+                return "Add sources";
+            }
+
+            if (inShow == 0)
+            {
+                return "Choose inputs for the show";
+            }
+
+            return Recording || Streaming ? "On air" : "Ready";
         }
     }
 
@@ -2178,6 +2361,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(RecordButtonForeground));
         OnPropertyChanged(nameof(RecordingLiveDotVisibility));
         OnPropertyChanged(nameof(RecordIconVisibility));
+        OnPropertyChanged(nameof(ShowStatusSummary));
         RefreshTransportState();
     }
 
@@ -2187,6 +2371,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamButtonBackground));
         OnPropertyChanged(nameof(StreamButtonBorder));
         OnPropertyChanged(nameof(StreamButtonForeground));
+        OnPropertyChanged(nameof(ShowStatusSummary));
         RefreshTransportState();
     }
 
@@ -2361,6 +2546,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnAudioMonitorVolumeChanged(double value) => OnAudioMonitorSettingsChanged();
 
+    private bool _applyingLowerThirdTimingPreset;
+
+    partial void OnSelectedLowerThirdTimingPresetChanged(string value)
+    {
+        if (string.Equals(value, "Custom", StringComparison.Ordinal)) return;
+        var timing = value switch
+        {
+            "Smooth" => (BuildIn: 420d, BuildOut: 320d),
+            "Gentle" => (BuildIn: 700d, BuildOut: 550d),
+            _ => (BuildIn: 220d, BuildOut: 160d)
+        };
+        _applyingLowerThirdTimingPreset = true;
+        LowerThirdBuildInMs = timing.BuildIn;
+        LowerThirdBuildOutMs = timing.BuildOut;
+        _applyingLowerThirdTimingPreset = false;
+        ApplyProgramLowerThirdTimingChange();
+    }
+
     partial void OnLowerThirdBuildInMsChanged(double value)
     {
         var normalized = NormalizeLowerThirdTimingMs(value);
@@ -2370,7 +2573,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        ApplyProgramLowerThirdTimingChange();
+        if (!_applyingLowerThirdTimingPreset)
+        {
+            SelectedLowerThirdTimingPreset = "Custom";
+            ApplyProgramLowerThirdTimingChange();
+        }
     }
 
     partial void OnLowerThirdBuildOutMsChanged(double value)
@@ -2382,7 +2589,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        ApplyProgramLowerThirdTimingChange();
+        if (!_applyingLowerThirdTimingPreset)
+        {
+            SelectedLowerThirdTimingPreset = "Custom";
+            ApplyProgramLowerThirdTimingChange();
+        }
     }
 
     private void ApplyProgramLowerThirdTimingChange()
@@ -2476,12 +2687,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
         OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
         OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
+        RefreshSelectedAudioProcessingSlots();
     }
 
     partial void OnFfmpegBinDirectoryChanged(string value)
     {
         ApplyFfmpegRuntimeEnvironment(value);
         OnPropertyChanged(nameof(FfmpegRuntimeStatus));
+        OnPropertyChanged(nameof(FfmpegOperatorStatus));
         SaveProductionOutputPreferences();
     }
 
@@ -2523,6 +2736,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnOutputStatusChanged(string value)
     {
         OnPropertyChanged(nameof(OutputStatusBrief));
+        OnPropertyChanged(nameof(OutputOperatorStatus));
         OnPropertyChanged(nameof(OutputStatusDetailsLabel));
         OnPropertyChanged(nameof(OutputStatusDetailsVisibility));
     }
@@ -2945,7 +3159,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             if (ZoomCaptureSubscribed)
             {
-                UnsubscribeZoomCapture("Capture off — raw Zoom ingest paused");
+                UnsubscribeZoomCapture("Zoom capture paused");
             }
             else
             {
@@ -3100,7 +3314,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"Inputs {request.FromSlot} and {request.ToSlot} swapped on the multiviewer.";
     }
 
-    public bool CanTake => PreviewSceneId != ActiveSceneId;
+    public bool CanTake =>
+        PreviewSceneId != ActiveSceneId ||
+        (_livePreviewDraft is not null &&
+         string.Equals(_livePreviewDraftSceneId, ActiveSceneId, StringComparison.Ordinal) &&
+         HasPendingProgramMediaCue(GetMutableRoutes(ActiveSceneId), _livePreviewDraft));
 
     public string TakeTransitionLabel => TakeTransitionMode switch
     {
@@ -3339,8 +3557,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var previousProgramSceneId = ActiveSceneId;
         var takenSceneId = PreviewSceneId;
 
-        ActiveSceneId = takenSceneId;
-        PreviewSceneId = previousProgramSceneId;
+        // Cueing media while Preview and Program reference the same scene creates an
+        // off-air draft. A conventional Take must still put that cue on air; the old
+        // scene-id-only CanTake rule disabled the button and stranded the operator.
+        // Commit only the pending draft in this case, then run the normal media
+        // promotion so the held Preview frame restarts from frame zero on Program.
+        if (string.Equals(previousProgramSceneId, takenSceneId, StringComparison.Ordinal) &&
+            _livePreviewDraft is not null &&
+            HasPendingProgramMediaCue(GetMutableRoutes(takenSceneId), _livePreviewDraft))
+        {
+            CopyPreviewRoutesToScene(takenSceneId);
+        }
+        else
+        {
+            ActiveSceneId = takenSceneId;
+            PreviewSceneId = previousProgramSceneId;
+        }
+
         _programMediaPlaybackTakeVersion++;
         PromoteProgramMediaRouteToPlayback();
         RefreshPreviewRoutingState();
@@ -4640,6 +4873,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _vstScanRequested = true;
         CommandStatus = "Scanning VST3 plugins…";
+        if (_applyingProductionPatch)
+        {
+            QueueProductionSyncRetry("vst-scan-during-snapshot");
+            return;
+        }
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -4672,6 +4910,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _vstPluginHostSignature = "";
     private IReadOnlyList<NativeMediaCorePluginInfo> _filteredVstPlugins = [];
     private string _vstFilteredSignature = "";
+    private string _vstServeSignature = "";
     private string _vstPluginFilter = "";
     private DateTime? _vstScanObservedAt;
 
@@ -4696,37 +4935,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<NativeMediaCorePluginInfo> FilteredVstPlugins => _filteredVstPlugins;
 
+    public string VstHostStatus =>
+        _bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent";
+
     public string VstPluginHostSummary =>
         (_bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent") switch
         {
-            "ready" =>
-                $"{_vstPlugins.Count} VST3 plugin(s) installed" +
-                (_vstScanObservedAt is { } at ? $" · scanned {at:HH:mm}" : "") +
-                " — installed plugins pass audio through unchanged until live hosting ships",
-            "scanning" => "Scanning for installed VST3 plugins…",
-            "error" => "Plugin scan failed — see media-core.log",
-            _ => "Looking for installed VST3 plugins…"
+            "ready" => $"{_vstPlugins.Sum(plugin => plugin.ClassNames.Count)} VST3 plug-in(s) available",
+            "probing" => "Checking installed VST3 plug-ins…",
+            "scanning" => "Finding installed VST3 plug-ins…",
+            "error" => "VST3 scan needs attention — open Health for details",
+            _ => "Checking for installed VST3 plug-ins…"
         };
 
     private void RefreshVstPluginHostFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
         var host = snapshot.AudioMixSession.PluginHost;
-        var signature = host.Status + "|" + host.Plugins.Count + "|" +
-                        (host.Plugins.Count > 0 ? host.Plugins[0].Id + host.Plugins[^1].Id : "");
-        if (string.Equals(signature, _vstPluginHostSignature, StringComparison.Ordinal))
+        var signature = host.Status + "|" + string.Join(
+            "\u001f",
+            host.Plugins.Select(plugin =>
+                $"{plugin.Id}\u001e{plugin.Probe}\u001e{string.Join("\u001d", plugin.ClassNames)}"));
+        if (!string.Equals(signature, _vstPluginHostSignature, StringComparison.Ordinal))
         {
-            return;  // nothing changed — no notify, no ItemsSource swap
+            _vstPluginHostSignature = signature;
+            _vstPlugins = host.Plugins;
+            if (string.Equals(host.Status, "ready", StringComparison.Ordinal))
+            {
+                _vstScanObservedAt = DateTime.Now;
+            }
+            OnPropertyChanged(nameof(VstPlugins));
+            OnPropertyChanged(nameof(VstHostStatus));
+            OnPropertyChanged(nameof(VstPluginHostSummary));
+            RefreshFilteredVstPlugins();
         }
 
-        _vstPluginHostSignature = signature;
-        _vstPlugins = host.Plugins;
-        if (string.Equals(host.Status, "ready", StringComparison.Ordinal))
+        var serve = host.Serve;
+        var serveSignature = $"{serve.Running}|{serve.StatusCode}|{serve.ActivePlugin}|{serve.LastError}|" +
+                             $"{serve.DeadlineMisses}|{(serve.Exchanges > 0)}|" +
+                             $"{serve.EditorStatusCode}|{serve.EditorActivePlugin}|{serve.EditorLastError}";
+        if (!string.Equals(serveSignature, _vstServeSignature, StringComparison.Ordinal))
         {
-            _vstScanObservedAt = DateTime.Now;
+            _vstServeSignature = serveSignature;
+            OnPropertyChanged(nameof(VstBridgeStatusLabel));
+            OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
+            RefreshSelectedChannelInsertSlots();
+            RefreshSelectedAudioProcessingSlots();
         }
-        OnPropertyChanged(nameof(VstPlugins));
-        OnPropertyChanged(nameof(VstPluginHostSummary));
-        RefreshFilteredVstPlugins();
     }
 
     private void RefreshFilteredVstPlugins()
@@ -4743,7 +4997,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : _vstPlugins
                 .Where(plugin =>
                     plugin.Name.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase) ||
-                    plugin.Vendor.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase))
+                    plugin.Vendor.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase) ||
+                    plugin.ClassNames.Any(className =>
+                        className.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
         OnPropertyChanged(nameof(FilteredVstPlugins));
     }
@@ -4822,7 +5078,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         mix.PluginInserts.Add(normalized);
         CommandStatus = normalized.StartsWith("VST", StringComparison.OrdinalIgnoreCase)
-            ? $"Added {normalized} scan slot. Live VST processing requires the native bridge."
+            ? $"Added {normalized}. The isolated VST3 host will start when audio reaches this insert."
             : $"Added {normalized} to {SelectedParticipant?.Name ?? "selected channel"}";
         RefreshMixerValueBindings(mix.ParticipantId);
         RefreshAudioProcessingTargets();
@@ -4881,9 +5137,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         inserts.Add(normalized);
         CommandStatus = $"{normalized} added to {ResolveAudioProcessingTargetName(targetId)}";
         RefreshAudioProcessingTargets();
+        RefreshSelectedAudioProcessingSlots();
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
+    }
+
+    public void AddVstInsertToSelectedProcessingTarget(string pluginClassName)
+    {
+        if (string.IsNullOrWhiteSpace(pluginClassName))
+        {
+            return;
+        }
+
+        var insertName = pluginClassName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? pluginClassName.Trim()
+            : $"VST:{pluginClassName.Trim()}";
+        AddAudioProcessingInsert(insertName);
     }
 
     [RelayCommand]
@@ -4898,6 +5168,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ResolveAudioProcessingInsertList(targetId).Clear();
         CommandStatus = $"Insert chain cleared for {ResolveAudioProcessingTargetName(targetId)}";
         RefreshAudioProcessingTargets();
+        RefreshSelectedAudioProcessingSlots();
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
@@ -5250,7 +5521,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RebuildProgramLowerThird()
     {
-        if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is null)
+        if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not { } source)
         {
             CommandStatus = "Lower third needs a program source";
             OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
@@ -5261,7 +5532,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _programLowerThirdAutomationSuppressed = false;
         ProgramLowerThirdEnabled = true;
-        RefreshProgramLowerThirdKeyPosition();
+        UpdateProgramLowerThirdKey(source, force: true);
         CommandStatus = "Lower third rebuilt";
         _ = TrySyncMediaCoreAsync();
     }
@@ -5523,18 +5794,81 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool HasSelectedMediaAsset => !string.IsNullOrWhiteSpace(SelectedMediaAssetId);
 
     public string SelectedMediaAssetSummary =>
-        HasSelectedMediaAsset
-            ? $"{SelectedMediaAssetName} selected"
-            : "No media asset selected";
+        FormatSelectedMediaAssetSummary(
+            SelectedMediaAssetName,
+            IsSelectedMediaAssetOnProgram,
+            IsSelectedMediaAssetCuedInPreview,
+            SelectedMediaAssetPlaying);
 
-    public string MediaPlaybackButtonLabel => SelectedMediaAssetPlaying ? "Pause" : "Play";
+    public string MediaPlaybackButtonLabel =>
+        CanToggleSelectedMediaPlayback
+            ? FormatMediaPlaybackActionLabel(IsSelectedMediaAssetOnProgram, SelectedMediaAssetPlaying)
+            : "Still image";
+
+    public string MediaCueButtonLabel => IsSelectedMediaAssetCuedInPreview ? "Cued in Preview" : "Cue in Preview";
 
     public string NativeMediaPlaybackStatus =>
         _bridge.LastSnapshot?.MediaPlayback is { } playback
             ? FormatNativeMediaPlaybackStatus(playback)
             : "Native media playback waiting for media core.";
 
-    public bool CanAddSelectedMediaAssetToPreview => HasSelectedMediaAsset;
+    public bool CanAddSelectedMediaAssetToPreview =>
+        HasSelectedMediaAsset && !IsSelectedMediaAssetCuedInPreview;
+
+    public bool CanToggleSelectedMediaPlayback =>
+        SelectedMediaAssetId is { Length: > 0 } assetId &&
+        FindMediaAsset(assetId)?.SupportsPlayback == true;
+
+    private bool IsSelectedMediaAssetOnProgram =>
+        SelectedMediaAssetId is { Length: > 0 } assetId &&
+        MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(assetId, GetMutableRoutes(ActiveSceneId));
+
+    private bool IsSelectedMediaAssetCuedInPreview
+    {
+        get
+        {
+            if (SelectedMediaAssetId is not { Length: > 0 } assetId)
+            {
+                return false;
+            }
+
+            IReadOnlyList<SourceRoute> routes =
+                string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal) &&
+                string.Equals(_livePreviewDraftSceneId, PreviewSceneId, StringComparison.Ordinal) &&
+                _livePreviewDraft is not null
+                    ? _livePreviewDraft
+                    : GetMutableRoutes(PreviewSceneId);
+            return MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(assetId, routes);
+        }
+    }
+
+    public static string FormatSelectedMediaAssetSummary(
+        string? assetName,
+        bool isOnProgram,
+        bool isCuedInPreview,
+        bool playing)
+    {
+        if (string.IsNullOrWhiteSpace(assetName))
+        {
+            return "No media asset selected";
+        }
+
+        if (isOnProgram)
+        {
+            return playing
+                ? $"Playing {assetName} on Program"
+                : $"{assetName} paused on Program";
+        }
+
+        return isCuedInPreview
+            ? $"{assetName} cued in Preview"
+            : $"{assetName} ready to cue";
+    }
+
+    public static string FormatMediaPlaybackActionLabel(bool isOnProgram, bool playing) =>
+        isOnProgram
+            ? playing ? "Pause Program" : "Restart Program"
+            : playing ? "Pause audition" : "Audition";
 
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
 
@@ -5561,7 +5895,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         OnPropertyChanged(nameof(SuperSourceBackgroundOptions));
         PruneMissingSceneBackgrounds();
         RefreshSceneBackgroundSelection();
@@ -5685,15 +6021,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetPath = asset.FilePath;
         SelectedMediaAssetKind = asset.Kind;
         SelectedMediaAssetPlaying = false;
-        MediaPlaybackStatus = $"{asset.Name} selected";
+        MediaPlaybackStatus = $"{asset.Name} is ready to cue";
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
         OnPropertyChanged(nameof(MediaBinGroups));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         RefreshMultiviewGridTiles();
-        CommandStatus = $"{asset.Name} ready for playback";
+        CommandStatus = $"{asset.Name} ready to cue or audition";
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -5835,7 +6173,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
         OnPropertyChanged(nameof(MediaPlaybackStatus));
         RefreshMultiviewGridTiles();
@@ -5872,16 +6212,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
 
-        MediaPlaybackStatus = SelectedMediaAssetPlaying
-            ? $"Playing {asset.Name}"
-            : $"{asset.Name} paused";
+        var isOnProgram = MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(
+            asset.Id,
+            GetResolvedProgramRoutes());
+        MediaPlaybackStatus = isOnProgram
+            ? SelectedMediaAssetPlaying
+                ? $"Playing {asset.Name} on Program"
+                : $"{asset.Name} paused on Program"
+            : SelectedMediaAssetPlaying
+                ? $"Auditioning {asset.Name}"
+                : $"{asset.Name} audition paused";
         CommandStatus = MediaPlaybackStatus;
 
         OnPropertyChanged(nameof(MediaBinGroups));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
         RefreshMultiviewGridTiles();
 
@@ -5902,7 +6251,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private bool _applyingProductionPatch;
-    private int _productionSyncRetryQueued;
+    private int _productionSyncRetryVersion;
+    private int _productionSyncRetryWorkerRunning;
 
     private async Task TrySyncMediaCoreAsync()
     {
@@ -5935,27 +6285,103 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void QueueProductionSyncRetry(string reason)
     {
-        if (Interlocked.Exchange(ref _productionSyncRetryQueued, 1) == 1)
+        var version = Interlocked.Increment(ref _productionSyncRetryVersion);
+        LaunchLog.Write($"media-core sync deferred reason={reason}; request={version}");
+        EnsureProductionSyncRetryWorker();
+    }
+
+    private void EnsureProductionSyncRetryWorker()
+    {
+        if (Interlocked.CompareExchange(ref _productionSyncRetryWorkerRunning, 1, 0) != 0)
         {
             return;
         }
 
-        LaunchLog.Write($"media-core sync deferred reason={reason}; retry queued");
-        _ = Task.Run(async () =>
+        _ = Task.Run(RunProductionSyncRetryWorkerAsync);
+    }
+
+    private async Task RunProductionSyncRetryWorkerAsync()
+    {
+        var handledVersion = 0;
+        try
         {
+            while (_bridge.Running)
+            {
+                var requestedVersion = Volatile.Read(ref _productionSyncRetryVersion);
+                if (requestedVersion == handledVersion)
+                {
+                    break;
+                }
+
+                var synced = await RetryDeferredProductionSyncAsync(
+                        () => _bridge.Running,
+                        () => Volatile.Read(ref _applyingProductionPatch),
+                        async () => { await SyncActiveSceneAsync().ConfigureAwait(false); },
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (!synced)
+                {
+                    break;
+                }
+
+                handledVersion = requestedVersion;
+                LaunchLog.Write($"media-core deferred sync completed request={handledVersion}");
+            }
+        }
+        catch (Exception ex)
+        {
+            // A non-contention failure should be visible to the operator, but should not
+            // spin forever. A later edit creates a new request and gets another attempt.
+            handledVersion = Volatile.Read(ref _productionSyncRetryVersion);
+            RunOnUiThread(() => CommandStatus = ex.Message);
+            LaunchLog.Write($"media-core deferred sync failed request={handledVersion}: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _productionSyncRetryWorkerRunning, 0);
+
+            // Close the handoff race: if an edit arrived while this worker was completing,
+            // its version differs and a new worker is guaranteed to pick it up.
+            if (_bridge.Running && Volatile.Read(ref _productionSyncRetryVersion) != handledVersion)
+            {
+                EnsureProductionSyncRetryWorker();
+            }
+        }
+    }
+
+    public static async Task<bool> RetryDeferredProductionSyncAsync(
+        Func<bool> keepRunning,
+        Func<bool> shouldDefer,
+        Func<Task> syncAttempt,
+        CancellationToken cancellationToken,
+        int retryDelayMs = 50)
+    {
+        ArgumentNullException.ThrowIfNull(keepRunning);
+        ArgumentNullException.ThrowIfNull(shouldDefer);
+        ArgumentNullException.ThrowIfNull(syncAttempt);
+
+        var delayMs = Math.Max(1, retryDelayMs);
+        while (keepRunning())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (shouldDefer())
+            {
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
             try
             {
-                await Task.Delay(350).ConfigureAwait(false);
-                if (_bridge.Running)
-                {
-                    await TrySyncMediaCoreAsync().ConfigureAwait(false);
-                }
+                await syncAttempt().ConfigureAwait(false);
+                return true;
             }
-            finally
+            catch (MediaCoreSyncInFlightException)
             {
-                Interlocked.Exchange(ref _productionSyncRetryQueued, 0);
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
-        });
+        }
+
+        return false;
     }
 
     private async Task StartMediaCoreOnLaunchAsync()
@@ -6193,7 +6619,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RefreshShowInputEditors();
             RefreshPreviewRoutingState();
             RefreshMultiviewGridTiles();
-            CommandStatus = "SRT ingest source routed. Waiting for libsrt receiver frames.";
+            CommandStatus = "SRT source routed. Waiting for video.";
             return;
         }
 
@@ -8044,7 +8470,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (AudioCaptureDevices.All(device =>
                 !string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)))
         {
-            return "Choose an audio input or loopback device";
+            return "Choose an audio input";
         }
 
         var source = _bridge.LastSnapshot?.CaptureAudioSources?.Sources.FirstOrDefault(source =>
@@ -8053,23 +8479,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             string.Equals(source.AudioDeviceName, SelectedLocalAudioCaptureDeviceName, StringComparison.Ordinal));
         if (source is null)
         {
-            return $"Waiting for {SelectedLocalAudioCaptureDeviceName}";
+            return "Waiting for audio";
         }
 
-        var sourceLabel = !string.IsNullOrWhiteSpace(source.EndpointName)
-            ? source.EndpointName
-            : SelectedLocalAudioCaptureDeviceName;
         if (source.SignalPresent)
         {
-            return $"Signal detected - {sourceLabel}";
+            return "Audio detected";
         }
 
         if (!source.CaptureStreaming)
         {
-            return $"Starting - {sourceLabel}";
+            return "Starting audio source";
         }
 
-        return $"Connected - no signal from {sourceLabel}";
+        return "No audio detected";
     }
 
     public static string FormatLocalAudioSourceStatus(
@@ -8105,12 +8528,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
         var alternateText = alternate is null
-            ? "No alternate local audio device is currently available."
-            : $"Try {alternate.DisplayLabel}.";
+            ? string.Empty
+            : $" Try {alternate.DisplayLabel}.";
 
         if (source is null)
         {
-            return $"Waiting for native PCM from {selectedDeviceName}. {alternateText}";
+            return $"Waiting for audio from {selectedDeviceName}.{alternateText}";
         }
 
         var sourceLabel = !string.IsNullOrWhiteSpace(source.EndpointName)
@@ -8119,25 +8542,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (source.SignalPresent)
         {
-            return $"Local audio is receiving signal from {sourceLabel} at {source.PeakDbfs:0.0} dBFS.";
+            return string.Empty;
         }
 
         if (source.CaptureStreaming && source.CaptureFramesReceived <= 0 && IsLoopbackAudioSourceKind(source.AudioSourceKind))
         {
-            return $"No loopback packets from {sourceLabel}. Play audio through that Windows output or choose a different input/loopback. {alternateText}";
+            return $"No audio detected. Play audio through {sourceLabel}, or choose another source.{alternateText}";
         }
 
         if (source.CaptureFramesReceived > 0 && !source.SignalPresent)
         {
-            return $"Selected source is producing silent PCM from {sourceLabel} ({source.PeakDbfs:0.0} dBFS). Confirm Windows is playing to that endpoint or choose another source. {alternateText}";
+            return $"No audio signal detected from {sourceLabel}. Check that the device is active, or choose another source.{alternateText}";
         }
 
         if (!source.CaptureStreaming)
         {
-            return $"Local source is paired but not streaming yet. Reselect {selectedDeviceName} or restart the audio engine. {alternateText}";
+            return $"{selectedDeviceName} is not active yet. Reselect it, or choose another source.{alternateText}";
         }
 
-        return $"Local audio is waiting for signal from {sourceLabel}. {alternateText}";
+        return $"Waiting for audio from {sourceLabel}.{alternateText}";
     }
 
     public static string FormatCaptureAudioSourceStatus(NativeMediaCoreCaptureAudioSource source)
@@ -8554,7 +8977,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _onAirBrowserOverlayIds)
             .ToList();
         var sceneRoutes = resolvedProgramRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes))
+            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
             .ToList();
 
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
@@ -8569,7 +8992,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _previewBrowserOverlayIds)
             .ToList();
         var previewSceneRoutes = resolvedPreviewRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes))
+            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
             .ToList();
 
         var participants = RoomVideoParticipants
@@ -8633,6 +9056,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         audioRoutingSends = EnsureDefaultZoomAudioRoutingSends(
             audioRoutingSends,
             RoomParticipantsForInputs.Select(participant => participant.Id).ToList())
+            .ToList();
+        // Default/fallback sends are synthesized after the matrix rows above.
+        // Attach each bus's insert chain here so MASTER VST processing remains
+        // live even when a source is using an implicit default route.
+        audioRoutingSends = audioRoutingSends
+            .Select(send => send with
+            {
+                BusPluginInserts = ResolveAudioProcessingInserts(FormatBusProcessingTargetId(send.BusId))
+            })
             .ToList();
 
         RefreshAudioMixChannels();
@@ -8717,7 +9149,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     graphic.Id,
                     graphic.Name,
                     graphic.Position,
-                    graphic.Enabled))
+                    graphic.Enabled,
+                    graphic.Kind))
                 .ToList(),
             LowerThirdKey = ProgramLowerThirdKey.IsVisible
                 ? new MediaCoreLowerThirdKeyWire(
@@ -8792,17 +9225,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private MediaCoreSceneRouteWire BuildSceneRouteWire(
         SourceRoute route,
-        IReadOnlyList<SourceRoute> programRoutes)
+        IReadOnlyList<SourceRoute> sceneRoutes,
+        bool isProgramScene)
     {
         var mediaAsset = TryResolveRouteMediaAsset(route);
         var mediaPlayback = mediaAsset is null
             ? null
             : MediaRoutePlaybackService.ResolveSceneRoutePlayback(
                 mediaAsset.Id,
-                isProgramScene: true,
+                isProgramScene,
                 SelectedMediaAssetId,
                 SelectedMediaAssetPlaying,
-                programRoutes,
+                sceneRoutes,
                 _programMediaPlaybackTakeVersion);
         return new MediaCoreSceneRouteWire(
             route.Id,
@@ -10695,6 +11129,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
         }
         OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
+        RefreshSelectedAudioProcessingSlots();
     }
 
     private static string FormatInsertLabel(IReadOnlyList<string> inserts) =>
@@ -11119,7 +11554,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private ProductionOutputPreferences CaptureProductionOutputPreferences() =>
         new()
         {
-            Version = 2,
+            Version = ProductionOutputPreferences.CurrentVersion,
             FfmpegBinDirectory = FfmpegBinDirectory,
             StreamRtmpEnabled = StreamRtmpEnabled,
             StreamNdiEnabled = StreamNdiEnabled,
@@ -11591,6 +12026,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         return string.Join("|", mediaAssetIds);
     }
+
+    public static bool HasPendingProgramMediaCue(
+        IReadOnlyList<SourceRoute> programRoutes,
+        IReadOnlyList<SourceRoute> previewRoutes) =>
+        !string.Equals(
+            BuildProgramMediaRouteSignature(programRoutes),
+            BuildProgramMediaRouteSignature(previewRoutes),
+            StringComparison.Ordinal);
 
     private static bool IsVisualMediaAsset(MediaAsset asset)
     {
@@ -12097,6 +12540,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(SetupProgressSummary));
         OnPropertyChanged(nameof(ShowReadinessSummary));
+        OnPropertyChanged(nameof(ShowStatusSummary));
     }
 
     private void RefreshTransportAutomationState()
@@ -12273,6 +12717,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _livePreviewDraft = null;
         _livePreviewDraftSceneId = null;
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
     }
 
     // Commits the live-scene draft into the stored scene (called by the Update
@@ -12359,21 +12805,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (!lowerThirdEnabled || source is null)
         {
-            // Idempotent: only push a hidden key (and re-sync the media core) when the key
-            // ACTUALLY changes. RefreshSceneCompositionState(program) calls this on every
-            // production-sync response — it runs via the dispatcher-scheduled
-            // SchedulePreviewRoutingRefresh, which fires AFTER ApplyLiveProductionPatch clears
-            // _applyingProductionPatch. So an unconditional TrySyncMediaCoreAsync() here re-armed
-            // a self-sustaining production-sync loop (~13/s back-to-back) that starved the render
-            // (frozen preview) and fail-fast-crashed WinUI (CoreMessagingXP 0xc000027b). When the
-            // lower third is already hidden (the steady state) we now do nothing -> loop broken.
-            var hidden = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
-            if (ProgramLowerThirdKey != hidden)
+            // Keep the shell preview and compositor on the same out phase.
+            // Jumping directly to hidden made the UI vanish while the native
+            // graphic was still moving and let refreshes assert conflicting states.
+            if (ProgramLowerThirdKey.IsVisible &&
+                !string.Equals(ProgramLowerThirdKey.Phase, "building-out", StringComparison.Ordinal))
             {
                 _lowerThirdKeyTransitionCts?.Cancel();
                 _lowerThirdTargetSourceId = string.Empty;
-                ProgramLowerThirdKey = hidden;
-                _ = TrySyncMediaCoreAsync();
+                var outTransitionCts = new CancellationTokenSource();
+                _lowerThirdKeyTransitionCts = outTransitionCts;
+                _ = RunLowerThirdKeyOutAsync(outTransitionCts.Token);
             }
             return;
         }
@@ -12427,7 +12869,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (hasCurrentKey)
             {
                 ProgramLowerThirdKey = ProgramLowerThirdKey with { Phase = "building-out" };
-                _ = TrySyncMediaCoreAsync();
+                if (!await SyncLowerThirdPhaseAsync(cancellationToken).ConfigureAwait(true))
+                {
+                    return;
+                }
                 await WaitForLowerThirdPhaseAsync(
                     () => NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
                     cancellationToken).ConfigureAwait(true);
@@ -12437,7 +12882,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdName = source.SourceName;
             LowerThirdTitle = source.Title;
             LowerThirdOrg = source.Org;
-            _ = TrySyncMediaCoreAsync();
+            if (!await SyncLowerThirdPhaseAsync(cancellationToken).ConfigureAwait(true))
+            {
+                return;
+            }
             await WaitForLowerThirdPhaseAsync(
                 () => NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
                 cancellationToken).ConfigureAwait(true);
@@ -12446,6 +12894,81 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    private async Task RunLowerThirdKeyOutAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProgramLowerThirdKey = ProgramLowerThirdKey with
+            {
+                Phase = "building-out",
+                BuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs)
+            };
+            if (!await SyncLowerThirdPhaseAsync(cancellationToken).ConfigureAwait(true))
+            {
+                return;
+            }
+            await WaitForLowerThirdPhaseAsync(
+                () => NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
+                cancellationToken).ConfigureAwait(true);
+            ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
+            _ = TrySyncMediaCoreAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task<bool> SyncLowerThirdPhaseAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (_applyingProductionPatch)
+            {
+                await Task.Delay(25, cancellationToken).ConfigureAwait(true);
+            }
+
+            await RetryLowerThirdPhaseSyncAsync(
+                async () =>
+                {
+                    await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
+                    await SyncActiveSceneAsync().ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(true);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = ex.Message;
+            return false;
+        }
+    }
+
+    public static async Task RetryLowerThirdPhaseSyncAsync(
+        Func<Task> syncAttempt,
+        CancellationToken cancellationToken,
+        int retryDelayMs = 25)
+    {
+        ArgumentNullException.ThrowIfNull(syncAttempt);
+        var delayMs = Math.Max(1, retryDelayMs);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await syncAttempt().ConfigureAwait(false);
+                return;
+            }
+            catch (MediaCoreSyncInFlightException)
+            {
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -12924,6 +13447,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SceneRoutingService.ApplyNormalizeRouteUpdate(route, RoomVideoParticipants);
         routes.Add(route);
 
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
+
         var label = string.Equals(optionValue, "media", StringComparison.OrdinalIgnoreCase) &&
             SelectedMediaAssetName is { Length: > 0 } mediaName
                 ? mediaName
@@ -13285,9 +13811,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (GetPreviewEditableRoutes()
+            .Select(ResolveRouteFromShowInput)
+            .Select(TryResolveRouteMediaAsset)
+            .Any(routeAsset => string.Equals(routeAsset?.Id, asset.Id, StringComparison.Ordinal)))
+        {
+            MediaPlaybackStatus = $"{asset.Name} is already cued in Preview";
+            CommandStatus = MediaPlaybackStatus;
+            OnPropertyChanged(nameof(MediaPlaybackStatus));
+            return;
+        }
+
         AddCanvasSourceCommand.Execute("media");
-        MediaPlaybackStatus = $"{asset.Name} cued in Preview; Take the scene to Program to auto-play";
+        MediaPlaybackStatus = asset.IsStillImage
+            ? $"{asset.Name} cued in Preview; Take to show it on Program"
+            : $"{asset.Name} cued in Preview; Take to start playback on Program";
         CommandStatus = MediaPlaybackStatus;
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
+        OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
         OnPropertyChanged(nameof(MediaPlaybackStatus));
     }
 
@@ -13420,8 +13962,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             // Explicit operator edits must not disappear when they land during a
             // snapshot patch. TrySyncMediaCoreAsync intentionally ignores calls made
-            // while applying a patch to prevent feedback loops, so queue one bounded
-            // retry here; the edited route remains in the draft and the retry sends it.
+            // while applying a patch to prevent feedback loops, so queue a coalesced
+            // retry; the edited route remains in the draft until the retry sends it.
             if (_applyingProductionPatch)
             {
                 QueueProductionSyncRetry("preview-scene-edit");

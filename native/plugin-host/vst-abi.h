@@ -93,6 +93,10 @@ inline constexpr Tuid kIComponentIid = makeComTuid(0xE831FF31, 0xF2D54301, 0x928
 inline constexpr Tuid kIAudioProcessorIid = makeComTuid(0x42043F99, 0xB7DA453C, 0xA569E79D, 0x9AAEC33D);
 inline constexpr Tuid kIHostApplicationIid = makeComTuid(0x58E595CC, 0xDB2D4969, 0x8B6AAF8C, 0x36A664E5);
 inline constexpr Tuid kIParameterChangesIid = makeComTuid(0xA4779663, 0x0BB64A56, 0xB44384A8, 0x466FEB9D);
+inline constexpr Tuid kIEditControllerIid = makeComTuid(0xDCD7BBE3, 0x7742448D, 0xA874AACC, 0x979C759E);
+inline constexpr Tuid kIComponentHandlerIid = makeComTuid(0x93A0BEA3, 0x0BD045DB, 0x8E890B0C, 0xC1E46AC6);
+inline constexpr Tuid kIPlugViewIid = makeComTuid(0x5BC32507, 0xD06049EA, 0xA6151B52, 0x2B755B29);
+inline constexpr Tuid kIPlugFrameIid = makeComTuid(0x367FAF01, 0xAFA94693, 0x8D4DA2A0, 0xED0882A3);
 
 inline bool tuidEqual(const char* a, const char* b) {
   return a != nullptr && b != nullptr && std::memcmp(a, b, 16) == 0;
@@ -244,6 +248,82 @@ struct IAudioProcessor {
   IAudioProcessorVtbl* vtbl;
 };
 
+struct ParameterInfo {
+  ParamID id = 0;
+  char16_t title[128] = {};
+  char16_t shortTitle[128] = {};
+  char16_t units[128] = {};
+  int32_t stepCount = 0;
+  double defaultNormalizedValue = 0.0;
+  int32_t unitId = 0;
+  int32_t flags = 0;
+};
+static_assert(sizeof(ParameterInfo) == 792, "VST3 ParameterInfo ABI layout");
+static_assert(offsetof(ParameterInfo, defaultNormalizedValue) == 776, "VST3 ParameterInfo ABI layout");
+
+struct IEditController;
+struct IEditControllerVtbl {
+  tresult(CVST_API* queryInterface)(void* self, const char* iid, void** obj);
+  uint32_t(CVST_API* addRef)(void* self);
+  uint32_t(CVST_API* release)(void* self);
+  tresult(CVST_API* initialize)(void* self, void* hostContext);
+  tresult(CVST_API* terminate)(void* self);
+  tresult(CVST_API* setComponentState)(void* self, void* stream);
+  tresult(CVST_API* setState)(void* self, void* stream);
+  tresult(CVST_API* getState)(void* self, void* stream);
+  int32_t(CVST_API* getParameterCount)(void* self);
+  tresult(CVST_API* getParameterInfo)(void* self, int32_t index, ParameterInfo* info);
+  tresult(CVST_API* getParamStringByValue)(void* self, ParamID id, double value, char16_t* string);
+  tresult(CVST_API* getParamValueByString)(void* self, ParamID id, const char16_t* string, double* value);
+  double(CVST_API* normalizedParamToPlain)(void* self, ParamID id, double value);
+  double(CVST_API* plainParamToNormalized)(void* self, ParamID id, double value);
+  double(CVST_API* getParamNormalized)(void* self, ParamID id);
+  tresult(CVST_API* setParamNormalized)(void* self, ParamID id, double value);
+  tresult(CVST_API* setComponentHandler)(void* self, void* handler);
+  void*(CVST_API* createView)(void* self, const char* name);
+};
+struct IEditController { IEditControllerVtbl* vtbl; };
+
+struct ViewRect { int32_t left = 0; int32_t top = 0; int32_t right = 0; int32_t bottom = 0; };
+static_assert(sizeof(ViewRect) == 16, "VST3 ViewRect ABI layout");
+
+struct IPlugView;
+struct IPlugViewVtbl {
+  tresult(CVST_API* queryInterface)(void* self, const char* iid, void** obj);
+  uint32_t(CVST_API* addRef)(void* self);
+  uint32_t(CVST_API* release)(void* self);
+  tresult(CVST_API* isPlatformTypeSupported)(void* self, const char* type);
+  tresult(CVST_API* attached)(void* self, void* parent, const char* type);
+  tresult(CVST_API* removed)(void* self);
+  tresult(CVST_API* onWheel)(void* self, float distance);
+  tresult(CVST_API* onKeyDown)(void* self, char16_t key, int16_t keyCode, int16_t modifiers);
+  tresult(CVST_API* onKeyUp)(void* self, char16_t key, int16_t keyCode, int16_t modifiers);
+  tresult(CVST_API* getSize)(void* self, ViewRect* size);
+  tresult(CVST_API* onSize)(void* self, ViewRect* newSize);
+  tresult(CVST_API* onFocus)(void* self, TBool state);
+  tresult(CVST_API* setFrame)(void* self, void* frame);
+  tresult(CVST_API* canResize)(void* self);
+  tresult(CVST_API* checkSizeConstraint)(void* self, ViewRect* rect);
+};
+struct IPlugView { IPlugViewVtbl* vtbl; };
+
+struct IComponentHandlerVtbl {
+  tresult(CVST_API* queryInterface)(void* self, const char* iid, void** obj);
+  uint32_t(CVST_API* addRef)(void* self);
+  uint32_t(CVST_API* release)(void* self);
+  tresult(CVST_API* beginEdit)(void* self, ParamID id);
+  tresult(CVST_API* performEdit)(void* self, ParamID id, double normalized);
+  tresult(CVST_API* endEdit)(void* self, ParamID id);
+  tresult(CVST_API* restartComponent)(void* self, int32_t flags);
+};
+
+struct IPlugFrameVtbl {
+  tresult(CVST_API* queryInterface)(void* self, const char* iid, void** obj);
+  uint32_t(CVST_API* addRef)(void* self);
+  uint32_t(CVST_API* release)(void* self);
+  tresult(CVST_API* resizeView)(void* self, IPlugView* view, ViewRect* newSize);
+};
+
 // Host-side interfaces the plugin may call back into.
 struct IHostApplicationVtbl {
   // FUnknown
@@ -264,6 +344,16 @@ struct IParameterChangesVtbl {
   int32_t(CVST_API* getParameterCount)(void* self);
   void*(CVST_API* getParameterData)(void* self, int32_t index);  // IParamValueQueue*
   void*(CVST_API* addParameterData)(void* self, const ParamID* id, int32_t* index);
+};
+
+struct IParamValueQueueVtbl {
+  tresult(CVST_API* queryInterface)(void* self, const char* iid, void** obj);
+  uint32_t(CVST_API* addRef)(void* self);
+  uint32_t(CVST_API* release)(void* self);
+  ParamID(CVST_API* getParameterId)(void* self);
+  int32_t(CVST_API* getPointCount)(void* self);
+  tresult(CVST_API* getPoint)(void* self, int32_t index, int32_t* sampleOffset, double* value);
+  tresult(CVST_API* addPoint)(void* self, int32_t sampleOffset, double value, int32_t* index);
 };
 
 // Module entry points (same as the P2a probe).

@@ -36,7 +36,7 @@ public sealed class ShowInputUnifiedSourceTests
 
         var missing = ShowInputRosterService.BuildUnifiedSourceOptions(
             [], [], [], currentSourceId: "capture:gone", currentSourceLabel: "Steven Smith");
-        Assert.Equal("Missing — was Steven Smith",
+        Assert.Equal("Saved source unavailable — Steven Smith",
             ShowInputRosterService.UnifiedSourceDisplayLabel(missing, "capture:gone"));
     }
 
@@ -58,7 +58,7 @@ public sealed class ShowInputUnifiedSourceTests
             currentSourceId: "capture:cam-1", currentSourceLabel: "Steven Smith");
 
         Assert.Equal("capture:cam-1", options[0].Value);
-        Assert.Equal("Missing — was Steven Smith", options[0].Label);
+        Assert.Equal("Saved source unavailable — Steven Smith", options[0].Label);
     }
 
     [Theory]
@@ -157,7 +157,7 @@ public sealed class ShowInputUnifiedSourceTests
     }
 
     [Fact]
-    public void GoneSourceIsMarkedMissingAndNeverSubstituted()
+    public void GoneSourceIsRetainedAndNeverSubstituted()
     {
         var editor = Editor(out var slot);
         editor.RefreshSourceOptions([], [Camera("cam-1", "Elgato"), Camera("cam-2", "Logi")], mediaAssets: []);
@@ -169,12 +169,34 @@ public sealed class ShowInputUnifiedSourceTests
 
         Assert.Equal("cam-1", slot.CaptureDeviceId);
         Assert.True(editor.IsSourceMissing);
-        Assert.Contains(editor.UnifiedSourceOptions, o => o.Value == "capture:cam-1" && o.Label.StartsWith("Missing —"));
+        Assert.False(editor.ShowSourceUnavailableWarning);
+        Assert.Equal("Not in show · saved source", editor.SelectedUnifiedSourceLabel);
+        Assert.Contains(editor.UnifiedSourceOptions, o =>
+            o.Value == "capture:cam-1" && o.Label.StartsWith("Saved source unavailable —"));
 
-        // The device returns: binding re-attaches, missing clears.
+        // Availability becomes an operator warning only while this slot is enabled.
+        editor.InShow = true;
+        Assert.True(editor.ShowSourceUnavailableWarning);
+        Assert.Equal("Source offline — choose or reconnect", editor.SelectedUnifiedSourceLabel);
+
+        editor.InShow = false;
+        Assert.False(editor.ShowSourceUnavailableWarning);
+
+        // The device returns: binding re-attaches and the unavailable state clears.
         editor.RefreshSourceOptions([], [Camera("cam-1", "Elgato"), Camera("cam-2", "Logi")], mediaAssets: []);
         Assert.False(editor.IsSourceMissing);
+        Assert.False(editor.ShowSourceUnavailableWarning);
         Assert.Equal("cam-1", slot.CaptureDeviceId);
+    }
+
+    [Fact]
+    public void UnavailableWindowCaptureUsesFriendlySavedSourceDescription()
+    {
+        var options = ShowInputRosterService.BuildUnifiedSourceOptions(
+            [], [], [], currentSourceId: "capture:window:00000000000307AE");
+
+        Assert.Equal("Saved source unavailable — previous window capture", options[0].Label);
+        Assert.DoesNotContain("00000000000307AE", options[0].Label);
     }
 
     private static ShowInputSlotViewModel Editor(out ShowInputSlot slot)

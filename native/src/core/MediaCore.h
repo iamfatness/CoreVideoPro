@@ -143,6 +143,7 @@ class MediaCore {
   // P2b-2: idempotent async start of the resident serve host (worker-safe:
   // only flips an atomic + detaches a starter thread).
   void ensurePluginHostServeStarted();
+  void openVstPluginEditor(const rpc::Json& command);
   // P2c: resolves a "vst:<name>" insert query against the scan results.
   // Worker-safe: takes only the leaf pluginHostMutex_, briefly. Failures are
   // recorded (snapshot serve.lastError) + logged rate-capped — loud, never fake.
@@ -297,6 +298,12 @@ class MediaCore {
     // Animation clock: the keyPhase the layer is animating toward, and the
     // monotonically-advanced progress [0,1] within the current phase.
     float keyProgress = 0.f;
+    // Generic overlays disabled directly by the native protocol retire when
+    // their build-out completes. Shell-timed lower thirds remain as a fully
+    // transparent, settled building-out layer until the shell sends its final
+    // explicit hidden command. This prevents a late scene sync from recreating
+    // the key for one frame at the transition boundary.
+    bool retireAfterBuildOut = false;
   };
   std::map<std::string, OverlayAssetState> overlayAssets_;
   int overlayInsertionCounter_ = 0;

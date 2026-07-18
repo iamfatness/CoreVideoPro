@@ -35,7 +35,7 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Media playout" Style="{StaticResource OperatorSectionTitle}" />
                         <Button Grid.Column="1"
-                                Content="Add to Preview"
+                                Content="{x:Bind ViewModel.MediaCueButtonLabel, Mode=OneWay}"
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.AddSelectedMediaAssetToPreviewCommand}"
                                 IsEnabled="{x:Bind ViewModel.CanAddSelectedMediaAssetToPreview, Mode=OneWay}" />
@@ -43,7 +43,7 @@
                                 Content="{x:Bind ViewModel.MediaPlaybackButtonLabel, Mode=OneWay}"
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.ToggleSelectedMediaPlaybackCommand}"
-                                IsEnabled="{x:Bind ViewModel.HasSelectedMediaAsset, Mode=OneWay}" />
+                                IsEnabled="{x:Bind ViewModel.CanToggleSelectedMediaPlayback, Mode=OneWay}" />
                     </Grid>
                     <TextBlock Text="{x:Bind ViewModel.MediaPlaybackStatus, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
@@ -91,7 +91,7 @@
                     </Border>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
-                            <TextBlock Text="Now playing" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="Playout status" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                             <TextBlock Text="{x:Bind ViewModel.MediaPlaybackStatus, Mode=OneWay}" FontSize="12" />
                         </StackPanel>
                     </Border>
@@ -132,7 +132,8 @@
                                                     <Button Grid.Column="3" Content="{x:Bind PlaybackLabel, Mode=OneWay}"
                                                             Style="{StaticResource OperatorGhostButton}"
                                                             Command="{Binding ViewModel.PlayMediaAssetCommand, ElementName=MediaRoot}"
-                                                            CommandParameter="{x:Bind Id}" />
+                                                            CommandParameter="{x:Bind Id}"
+                                                            IsEnabled="{x:Bind SupportsPlayback}" />
                                                     <!-- Lifecycle L4: remove asset (to recoverable .trash) -->
                                                     <Button Grid.Column="4" Content="Remove"
                                                             Style="{StaticResource OperatorGhostButton}"

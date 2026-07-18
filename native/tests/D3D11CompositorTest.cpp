@@ -770,6 +770,38 @@ TEST(D3D11Compositor, OverlayTextContentChangesPixelsOnGpu) {
   EXPECT_NE(frameA.preview.bgra, frameB.preview.bgra);
 }
 
+// A remapped Program monitor must hard-clip its animated key. Without the
+// per-layer scissor, a building-out lower third is drawn into the cells below.
+TEST(D3D11Compositor, AnimatedOverlayHonorsCompositeClipRect) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan baselinePlan;
+  baselinePlan.renderPlanId = "overlay-clip-baseline";
+  baselinePlan.width = 640;
+  baselinePlan.height = 360;
+  const auto baseline = compositor->render(baselinePlan, {});
+
+  auto clippedPlan = baselinePlan;
+  clippedPlan.renderPlanId = "overlay-clip-building-out";
+  auto overlay = makeGpuOverlayLayer("multiview-pgm:key:lower-third", 0.08f, 0.43f, 0.38f, 0.12f);
+  overlay.hasClipRect = true;
+  overlay.clipRect = {0.f, 0.f, 0.5f, 0.5f};
+  overlay.overlay.title = "CLIPPED EXIT";
+  overlay.overlay.keyPhase = "building-out";
+  overlay.overlay.keyProgress = 0.5f;
+  clippedPlan.layers.push_back(overlay);
+  const auto clipped = compositor->render(clippedPlan, {});
+
+  ASSERT_EQ(baseline.preview.width, clipped.preview.width);
+  ASSERT_EQ(baseline.preview.height, clipped.preview.height);
+  for (int y = clipped.preview.height / 2; y < clipped.preview.height; ++y) {
+    for (int x = 0; x < clipped.preview.width / 2; ++x) {
+      EXPECT_EQ(previewPixelRgba(clipped.preview, x, y), previewPixelRgba(baseline.preview, x, y));
+    }
+  }
+}
+
 // Captions ride the same raster stage (isCaption selects the speaker/body
 // layout and the top accent strip).
 TEST(D3D11Compositor, CaptionRastersSpeakerAndBodyOnGpu) {

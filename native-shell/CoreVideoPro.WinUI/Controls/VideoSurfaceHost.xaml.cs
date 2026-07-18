@@ -102,7 +102,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public string StatusLine => SurfaceState?.StatusLine ?? "Waiting for frames";
 
-    public string DetailLine => SurfaceState?.DetailLine ?? "Start the engine to receive media-core frames.";
+    public string DetailLine => SurfaceState?.DetailLine ?? "Video will appear when the source is ready.";
 
     public bool HasFrameStats => SurfaceState?.LastFrame is not null;
 

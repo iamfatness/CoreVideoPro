@@ -4,7 +4,9 @@ namespace CoreVideoPro.WinUI.Services;
 
 public sealed class ProductionOutputPreferences
 {
-    public int Version { get; set; } = 2;
+    public const int CurrentVersion = 3;
+
+    public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
     public bool StreamRtmpEnabled { get; set; } = true;
     public bool StreamNdiEnabled { get; set; }
@@ -23,7 +25,10 @@ public sealed class ProductionOutputPreferences
     public string? StreamSrtPassphrase { get; set; }
     public string? CanvasResolution { get; set; }
     public string? CanvasFps { get; set; }
-    public bool LocalAudioSourceEnabled { get; set; } = true;
+    // Opening a capture endpoint can affect multi-endpoint USB interfaces such
+    // as GoXLR. Capture must therefore be an explicit operator action, not a
+    // side effect of launching the application.
+    public bool LocalAudioSourceEnabled { get; set; }
     public string? SelectedLocalAudioCaptureDeviceId { get; set; }
     public bool AudioMonitoringEnabled { get; set; }
     public string? SelectedAudioMonitorDeviceId { get; set; }
@@ -138,7 +143,22 @@ public static class ProductionOutputPreferencesSerializer
 
         try
         {
-            return JsonSerializer.Deserialize<ProductionOutputPreferences>(json, Options);
+            var preferences = JsonSerializer.Deserialize<ProductionOutputPreferences>(json, Options);
+            if (preferences is null)
+            {
+                return null;
+            }
+
+            // Versions 1-2 defaulted local capture to enabled and selected the
+            // first discovered endpoint automatically. Treat that legacy state
+            // as implicit, not consent to seize the device on every launch.
+            if (preferences.Version < ProductionOutputPreferences.CurrentVersion)
+            {
+                preferences.LocalAudioSourceEnabled = false;
+                preferences.Version = ProductionOutputPreferences.CurrentVersion;
+            }
+
+            return preferences;
         }
         catch (JsonException)
         {

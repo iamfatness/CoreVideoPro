@@ -266,6 +266,7 @@ TEST(CompositorFraming, OverlayKeyPhaseHiddenAndOnAir) {
   const auto onAir = computeOverlayKeyTransform("on-air", 1.f, "lower-left");
   EXPECT_TRUE(onAir.visible);
   EXPECT_TRUE(nearly(onAir.alpha, 1.f));
+  EXPECT_TRUE(nearly(onAir.slideX, 0.f));
   EXPECT_TRUE(nearly(onAir.slideY, 0.f));
   EXPECT_TRUE(nearly(onAir.contentScale, 1.f));
 }
@@ -281,23 +282,48 @@ TEST(CompositorFraming, OverlayKeyPhaseBuildingInAnimatesOverProgress) {
   EXPECT_TRUE(nearly(start.alpha, 0.f));
   EXPECT_TRUE(nearly(end.alpha, 1.f));
   // Slide shrinks toward zero as the overlay settles in.
-  EXPECT_TRUE(std::abs(start.slideY) > std::abs(end.slideY));
+  EXPECT_TRUE(std::abs(start.slideX) > std::abs(end.slideX));
+  EXPECT_TRUE(nearly(start.slideY, 0.f));
   EXPECT_TRUE(nearly(end.slideY, 0.f));
 }
 
-// "building-out" fades alpha 1 -> 0 and slides away.
+// "building-out" is a stationary, monotonic dissolve with no edge crossing.
 TEST(CompositorFraming, OverlayKeyPhaseBuildingOutFadesOut) {
   const auto start = computeOverlayKeyTransform("building-out", 0.f, "lower-left");
+  const auto quarter = computeOverlayKeyTransform("building-out", 0.25f, "lower-left");
+  const auto mid = computeOverlayKeyTransform("building-out", 0.5f, "lower-left");
+  const auto threeQuarter = computeOverlayKeyTransform("building-out", 0.75f, "lower-left");
   const auto end = computeOverlayKeyTransform("building-out", 1.f, "lower-left");
   EXPECT_TRUE(nearly(start.alpha, 1.f));
+  EXPECT_TRUE(start.alpha > quarter.alpha);
+  EXPECT_TRUE(quarter.alpha > mid.alpha);
+  EXPECT_TRUE(mid.alpha > threeQuarter.alpha);
+  EXPECT_TRUE(threeQuarter.alpha > end.alpha);
   EXPECT_TRUE(end.alpha < 0.01f);
   EXPECT_TRUE(!end.visible);
+  EXPECT_TRUE(nearly(start.slideX, 0.f));
+  EXPECT_TRUE(nearly(mid.slideX, 0.f));
+  EXPECT_TRUE(nearly(end.slideX, 0.f));
+  EXPECT_TRUE(nearly(start.slideY, 0.f));
+  EXPECT_TRUE(nearly(mid.slideY, 0.f));
+  EXPECT_TRUE(nearly(end.slideY, 0.f));
+  EXPECT_TRUE(nearly(start.contentScale, 1.f));
+  EXPECT_TRUE(nearly(end.contentScale, 1.f));
 }
 
-// keyPosition flips the slide direction: lower-third slides up (+), upper down.
-TEST(CompositorFraming, OverlayKeyPositionFlipsSlideDirection) {
-  const auto lower = computeOverlayKeyTransform("building-in", 0.f, "lower-left");
-  const auto upper = computeOverlayKeyTransform("building-in", 0.f, "upper-left");
-  EXPECT_TRUE(lower.slideY > 0.f);
-  EXPECT_TRUE(upper.slideY < 0.f);
+// Motion scales with a remapped overlay instead of using full-canvas travel.
+TEST(CompositorFraming, OverlayKeyTravelScalesWithOverlayHeight) {
+  const auto fullProgram = computeOverlayKeyTransform("building-in", 0.5f, "lower-left", 0.16f);
+  const auto multiviewCell = computeOverlayKeyTransform("building-in", 0.5f, "lower-left", 0.08f);
+  EXPECT_TRUE(nearly(fullProgram.slideX, multiviewCell.slideX * 2.f));
+}
+
+// Horizontal motion never drops below Program; the anchor controls its side.
+TEST(CompositorFraming, OverlayKeyPositionSlidesTowardHorizontalAnchor) {
+  const auto left = computeOverlayKeyTransform("building-in", 0.5f, "lower-left");
+  const auto right = computeOverlayKeyTransform("building-in", 0.5f, "lower-right");
+  EXPECT_TRUE(left.slideX < 0.f);
+  EXPECT_TRUE(right.slideX > 0.f);
+  EXPECT_TRUE(nearly(left.slideY, 0.f));
+  EXPECT_TRUE(nearly(right.slideY, 0.f));
 }

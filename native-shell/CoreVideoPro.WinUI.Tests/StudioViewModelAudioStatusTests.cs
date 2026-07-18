@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
@@ -1855,13 +1856,13 @@ public sealed class StudioViewModelAudioStatusTests
                 ]
             });
 
-        Assert.Contains("No loopback packets from Game output", recommendation, StringComparison.Ordinal);
-        Assert.Contains("Play audio through that Windows output", recommendation, StringComparison.Ordinal);
+        Assert.Contains("No audio detected", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Play audio through Game output", recommendation, StringComparison.Ordinal);
         Assert.Contains("Try Studio Mic", recommendation, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void FormatLocalAudioSourceRecommendation_ShowsSilentPcmAndAlternateSource()
+    public void FormatLocalAudioSourceRecommendation_UsesPlainLanguageAndAlternateSource()
     {
         var recommendation = StudioViewModel.FormatLocalAudioSourceRecommendation(
             "loopback-game",
@@ -1892,8 +1893,10 @@ public sealed class StudioViewModelAudioStatusTests
                 ]
             });
 
-        Assert.Contains("Selected source is producing silent PCM from Game output (-120.0 dBFS)", recommendation, StringComparison.Ordinal);
-        Assert.Contains("Confirm Windows is playing to that endpoint", recommendation, StringComparison.Ordinal);
+        Assert.Contains("No audio signal detected from Game output", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Check that the device is active", recommendation, StringComparison.Ordinal);
+        Assert.DoesNotContain("PCM", recommendation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("dBFS", recommendation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Try Chat output", recommendation, StringComparison.Ordinal);
     }
 
@@ -1926,7 +1929,7 @@ public sealed class StudioViewModelAudioStatusTests
                 ]
             });
 
-        Assert.Equal("Local audio is receiving signal from Game output at -18.2 dBFS.", recommendation);
+        Assert.Equal(string.Empty, recommendation);
     }
 
     [Fact]
@@ -2268,6 +2271,126 @@ public sealed class StudioViewModelAudioStatusTests
         int expected)
     {
         Assert.Equal(expected, StudioViewModel.RemainingLowerThirdPhaseDelayMs(elapsedMs, currentDurationMs));
+    }
+
+    [Fact]
+    public async Task RetryLowerThirdPhaseSyncAsync_WaitsForInFlightSyncBeforeStartingPhase()
+    {
+        var attempts = 0;
+
+        await StudioViewModel.RetryLowerThirdPhaseSyncAsync(
+            () =>
+            {
+                attempts++;
+                return attempts < 3
+                    ? Task.FromException(new MediaCoreSyncInFlightException())
+                    : Task.CompletedTask;
+            },
+            CancellationToken.None,
+            retryDelayMs: 1);
+
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
+    public async Task RetryDeferredProductionSyncAsync_WaitsForPatchAndInFlightSync()
+    {
+        var patchChecks = 0;
+        var syncAttempts = 0;
+
+        var synced = await StudioViewModel.RetryDeferredProductionSyncAsync(
+            () => true,
+            () => ++patchChecks < 3,
+            () =>
+            {
+                syncAttempts++;
+                return syncAttempts < 3
+                    ? Task.FromException(new MediaCoreSyncInFlightException())
+                    : Task.CompletedTask;
+            },
+            CancellationToken.None,
+            retryDelayMs: 1);
+
+        Assert.True(synced);
+        Assert.Equal(3, syncAttempts);
+        Assert.True(patchChecks >= 5);
+    }
+
+    [Fact]
+    public async Task RetryDeferredProductionSyncAsync_StopsWhenCoreStops()
+    {
+        var runningChecks = 0;
+        var syncAttempts = 0;
+
+        var synced = await StudioViewModel.RetryDeferredProductionSyncAsync(
+            () => ++runningChecks < 3,
+            () => true,
+            () =>
+            {
+                syncAttempts++;
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            retryDelayMs: 1);
+
+        Assert.False(synced);
+        Assert.Equal(0, syncAttempts);
+    }
+
+    [Theory]
+    [InlineData(false, false, "Audition")]
+    [InlineData(false, true, "Pause audition")]
+    [InlineData(true, false, "Restart Program")]
+    [InlineData(true, true, "Pause Program")]
+    public void FormatMediaPlaybackActionLabel_UsesCurrentBus(
+        bool isOnProgram,
+        bool playing,
+        string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatMediaPlaybackActionLabel(isOnProgram, playing));
+    }
+
+    [Theory]
+    [InlineData(null, false, false, false, "No media asset selected")]
+    [InlineData("Clip", false, false, false, "Clip ready to cue")]
+    [InlineData("Clip", false, true, false, "Clip cued in Preview")]
+    [InlineData("Clip", true, true, true, "Playing Clip on Program")]
+    [InlineData("Clip", true, true, false, "Clip paused on Program")]
+    public void FormatSelectedMediaAssetSummary_UsesCurrentWorkflowState(
+        string? assetName,
+        bool isOnProgram,
+        bool isCuedInPreview,
+        bool playing,
+        string expected)
+    {
+        Assert.Equal(
+            expected,
+            StudioViewModel.FormatSelectedMediaAssetSummary(
+                assetName,
+                isOnProgram,
+                isCuedInPreview,
+                playing));
+    }
+
+    [Theory]
+    [InlineData(@"C:\media\still.jpg", false, "Still")]
+    [InlineData(@"C:\media\still.PNG", false, "Still")]
+    [InlineData(@"C:\media\clip.mp4", true, "Play")]
+    public void MediaAsset_PlaybackControlsMatchAssetType(
+        string filePath,
+        bool expectedSupportsPlayback,
+        string expectedLabel)
+    {
+        var asset = new MediaAsset
+        {
+            Id = "asset",
+            Name = "Asset",
+            Kind = "media",
+            FilePath = filePath
+        };
+
+        Assert.Equal(expectedSupportsPlayback, asset.SupportsPlayback);
+        Assert.Equal(expectedLabel, asset.PlaybackLabel);
     }
 
     [Theory]

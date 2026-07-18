@@ -549,6 +549,32 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void EnabledGenericLowerThirdIntent_DoesNotCreateASecondLiveKeyLayer()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "fixed", "isolated", "p2")],
+            Participants = Participants,
+            Graphics = [new("graphic-lower-third", "Lower third", "lower-left", true, "lower-third")],
+            LowerThirdKey = new MediaCoreLowerThirdKeyWire(
+                "p2", "David Chen", "Chief Product Officer", "Main room",
+                "lower-left", "building-in", Enabled: true)
+        });
+
+        var overlayCommands = commands.Where(command => command.Type == "set-overlay-asset").ToList();
+        var liveLowerThirdCommands = overlayCommands.Where(command =>
+            command.ExtensionData!["enabled"].GetBoolean() &&
+            (GetString(command, "overlayId") == "key:lower-third" ||
+             GetString(command, "position").Contains("lower", StringComparison.OrdinalIgnoreCase))).ToList();
+
+        Assert.Single(liveLowerThirdCommands);
+        Assert.Equal("key:lower-third", GetString(liveLowerThirdCommands[0], "overlayId"));
+        var generic = overlayCommands.Single(command => GetString(command, "overlayId") == "graphic-lower-third");
+        Assert.False(generic.ExtensionData!["enabled"].GetBoolean());
+    }
+
+    [Fact]
     public void ClampsLowerThirdTimingForOverlayPayload()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

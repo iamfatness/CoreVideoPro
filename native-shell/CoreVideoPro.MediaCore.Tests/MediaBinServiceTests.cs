@@ -88,9 +88,9 @@ public sealed class MediaBinServiceTests : IDisposable
     {
         Directory.CreateDirectory(Path.Combine(_mediaRoot, "slates"));
         File.WriteAllText(Path.Combine(_mediaRoot, "brand-stinger.mp4"), "video");
-        File.WriteAllText(Path.Combine(_mediaRoot, "lower-third.png"), "image");
+        File.WriteAllBytes(Path.Combine(_mediaRoot, "lower-third.png"), ValidPng);
         File.WriteAllText(Path.Combine(_mediaRoot, "intro-bed.mp3"), "audio");
-        File.WriteAllText(Path.Combine(_mediaRoot, "slates", "opening.png"), "slate");
+        File.WriteAllBytes(Path.Combine(_mediaRoot, "slates", "opening.png"), ValidPng);
         File.WriteAllText(Path.Combine(_mediaRoot, "notes.txt"), "skip");
 
         var assets = MediaBinClassifier.ScanRoot(_mediaRoot);
@@ -112,6 +112,17 @@ public sealed class MediaBinServiceTests : IDisposable
                      asset.FilePath == Path.Combine(_mediaRoot, "slates", "opening.png") &&
                      asset.FileType == "PNG");
         Assert.All(assets, asset => Assert.Null(asset.DurationMs));
+    }
+
+    [Fact]
+    public void ScanRoot_RejectsTruncatedImageWithValidSignature()
+    {
+        var brokenPath = Path.Combine(_mediaRoot, "broken.png");
+        File.WriteAllBytes(brokenPath,
+            [0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0]);
+
+        Assert.False(MediaBinClassifier.IsUsableMediaFile(brokenPath));
+        Assert.Empty(MediaBinClassifier.ScanRoot(_mediaRoot));
     }
 
     [Fact]
@@ -150,4 +161,7 @@ public sealed class MediaBinServiceTests : IDisposable
         Assert.Contains(localRoot, guidance, StringComparison.Ordinal);
         Assert.Contains(packagedRoot, guidance, StringComparison.Ordinal);
     }
+
+    private static readonly byte[] ValidPng = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
 }

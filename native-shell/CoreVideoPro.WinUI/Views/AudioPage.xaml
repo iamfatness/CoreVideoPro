@@ -69,7 +69,7 @@
                                 <ToggleButton Content="ROUTING" FontSize="10" Padding="10,4"
                                               IsChecked="{x:Bind ViewModel.IsAudioRoutingSurface, Mode=OneWay}"
                                               Tag="routing" Click="OnAudioModeClicked"
-                                              ToolTipService.ToolTip="Buses and the crosspoint matrix" />
+                                              ToolTipService.ToolTip="Choose where each source is heard" />
                                 <ToggleButton Content="SETUP" FontSize="10" Padding="10,4"
                                               IsChecked="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay}"
                                               Tag="setup" Click="OnAudioModeClicked"
@@ -151,10 +151,6 @@
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
-                                    <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceRecommendation, Mode=OneWay}"
-                                               FontSize="10"
-                                               Foreground="{StaticResource StudioWarningBrush}"
-                                               TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                                 <ComboBox Header="Input / loopback"
                                           ItemsSource="{x:Bind ViewModel.AudioCaptureDevices, Mode=OneWay}"
@@ -167,10 +163,6 @@
                                                   IsChecked="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}"
                                                   MinWidth="96"
                                                   HorizontalAlignment="Stretch" />
-                                    <TextBlock Text="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceName, Mode=OneWay}"
-                                               FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}"
-                                               TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                             </StackPanel>
                         </Border>
@@ -194,7 +186,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
                             <TextBlock Text="Master processor" Style="{StaticResource OperatorSectionTitle}" />
-                            <TextBlock Text="Native DSP · Program L/R · ordered pre-output chain"
+                            <TextBlock Text="Program L/R · processing order"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1" Header="MASTER IN"
@@ -562,9 +554,46 @@
                     </Border>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
-                            <TextBlock Text="Insert chain" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="SIGNAL FLOW · TOP TO BOTTOM" FontSize="9" FontWeight="Bold"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.SelectedAudioProcessingSlots, Mode=OneWay}">
+                                <ItemsRepeater.Layout>
+                                    <StackLayout Orientation="Vertical" Spacing="4" />
+                                </ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="models:InsertSlotItem">
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button Tag="{x:Bind Name}" Padding="8,5"
+                                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                                    Click="OnProcessingSlotClicked"
+                                                    ToolTipService.ToolTip="{x:Bind StatusTooltip}">
+                                                <Grid ColumnSpacing="7">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="28" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{x:Bind SlotLabel}" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <TextBlock Grid.Column="1" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="2" Text="{x:Bind StatusLabel}" FontSize="9" FontWeight="Bold"
+                                                               Foreground="{x:Bind StatusBrush}" />
+                                                </Grid>
+                                            </Button>
+                                            <Button Grid.Column="1" Content="×" Tag="{x:Bind Name}" Padding="8,4"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    Click="OnRemoveProcessingSlotClicked"
+                                                    ToolTipService.ToolTip="Remove this processor" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
                             <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingInsertLabel, Mode=OneWay}"
-                                       FontSize="12" TextWrapping="WrapWholeWords" />
+                                       FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                       TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>
                     <Grid ColumnSpacing="8" RowSpacing="8">
@@ -573,6 +602,7 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
@@ -585,23 +615,22 @@
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
                                 CommandParameter="Compressor" />
-                        <Button Grid.Row="1"
-                                Content="Add VST3 slot"
-                                Style="{StaticResource OperatorGhostButton}"
-                                Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
-                                CommandParameter="VST3 Bridge" />
+                        <DropDownButton Grid.Row="1"
+                                        Content="Add VST3 plug-in"
+                                        Style="{StaticResource OperatorGhostButton}">
+                            <DropDownButton.Flyout>
+                                <MenuFlyout Opening="OnAddProcessingVstFlyoutOpening" />
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
                         <Button Grid.Row="1" Grid.Column="1"
                                 Content="Clear chain"
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.ClearAudioProcessingInsertsCommand}" />
+                        <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
+                                   Text="Select a VST3 plug-in above to open its controls."
+                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                   TextWrapping="WrapWholeWords" />
                     </Grid>
-                    <Border Style="{StaticResource OperatorReadoutBorder}">
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="VST bridge" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.ProcessingBridgeStatusLabel, Mode=OneWay}"
-                                       FontSize="12" TextWrapping="WrapWholeWords" />
-                        </StackPanel>
-                    </Border>
                     <Button Content="{x:Bind ViewModel.SelectedMuteButtonLabel, Mode=OneWay}"
                             Style="{StaticResource OperatorGhostButton}"
                             Command="{x:Bind ViewModel.ToggleSelectedParticipantMuteCommand}" />
@@ -822,6 +851,7 @@
                                 <ItemsRepeater.ItemTemplate>
                                     <DataTemplate x:DataType="models:InsertSlotItem">
                                         <Button Padding="8,4" CornerRadius="3" BorderThickness="1"
+                                                Tag="{x:Bind Name}"
                                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
                                                 Background="#10222B" BorderBrush="#1B5E6B"
                                                 ToolTipService.ToolTip="{x:Bind StatusTooltip}">

@@ -49,7 +49,7 @@
                                    Foreground="{StaticResource StudioTextBrush}"
                                    FontWeight="SemiBold"
                                    TextAlignment="Center" />
-                        <TextBlock Text="Turn the source on or select a live capture/Zoom feed to grade against real frames."
+                        <TextBlock Text="Turn the source on or select a live camera or Zoom feed to preview the grade."
                                    Foreground="{StaticResource StudioMutedBrush}"
                                    FontSize="12"
                                    TextWrapping="WrapWholeWords"

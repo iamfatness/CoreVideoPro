@@ -771,6 +771,138 @@ TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
   EXPECT_EQ(lowerThird.get("buildOutMs")->asNumber(), 275);
 }
 
+TEST(MediaCoreCommand, LowerThirdAnimationHonorsConfiguredBuildDurations) {
+  corevideo::core::MediaCore mediaCore;
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "building-in"},
+          {"buildInMs", 1000},
+          {"buildOutMs", 900},
+      },
+  });
+
+  // Twelve default render ticks are roughly 400 ms. The former hard-coded
+  // 420 ms clock settled here even though the operator requested one second.
+  for (int i = 0; i < 11; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+  const auto* overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().getString("keyPhase"), "building-in");
+  EXPECT_LT(overlays->asArray().front().get("keyProgress")->asNumber(), 0.75);
+
+  for (int i = 0; i < 55; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+  overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().getString("keyPhase"), "on-air");
+}
+
+TEST(MediaCoreCommand, SettledExplicitLowerThirdBuildOutDoesNotRecreateOrFlash) {
+  corevideo::core::MediaCore mediaCore;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "on-air"},
+          {"buildOutMs", 50},
+      },
+  });
+
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "building-out"},
+          {"buildOutMs", 50},
+      },
+  });
+  for (int i = 0; i < 8; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+
+  const auto* overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().getString("keyPhase"), "building-out");
+  EXPECT_EQ(overlays->asArray().front().get("keyProgress")->asNumber(), 1.0);
+
+  // A normal scene refresh can resend the phase after its visual duration.
+  // It must update the settled invisible asset, not create a fresh build-out.
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "building-out"},
+          {"buildOutMs", 50},
+      },
+  });
+  overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().get("keyProgress")->asNumber(), 1.0);
+
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"position", "lower-third"},
+          {"enabled", false},
+          {"keyPhase", "hidden"},
+      },
+  });
+  overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  EXPECT_TRUE(overlays->asArray().empty());
+  EXPECT_EQ(state.get("overlayCount")->asNumber(), 0);
+}
+
+TEST(MediaCoreCommand, NativeOwnedBuildOutRetiresOverlayIdentityCompletely) {
+  corevideo::core::MediaCore mediaCore;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "generic-overlay"},
+          {"text", "Generic"},
+          {"enabled", true},
+          {"keyPhase", "on-air"},
+          {"buildOutMs", 50},
+      },
+  });
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "generic-overlay"},
+          {"enabled", false},
+      },
+  });
+  for (int i = 0; i < 8; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+
+  const auto* overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  EXPECT_TRUE(overlays->asArray().empty());
+  EXPECT_EQ(state.get("overlayCount")->asNumber(), 0);
+}
+
 TEST(MediaCoreCommand, DisabledOverlayClearsStableKeyLayer) {
   corevideo::core::MediaCore mediaCore;
   const auto active = mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -2337,6 +2469,44 @@ TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
 }
 
 #if !COREVIDEO_STUB && COREVIDEO_WITH_MF_ENCODER
+TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
+  const auto videoPath = std::filesystem::temp_directory_path() / "corevideo-mf-preview-cue.mp4";
+  std::filesystem::remove(videoPath);
+  const auto videoBytes = corevideo::modules::base64Decode(R"(
+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
+)");
+  {
+    std::ofstream output(videoPath, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(videoBytes.data()), static_cast<std::streamsize>(videoBytes.size()));
+  }
+
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "preview:media:diagnostic";
+  layer.mediaAssetId = "diagnostic";
+  layer.mediaAssetKind = "stinger";
+  layer.mediaAssetPath = videoPath.string();
+  layer.mediaPlaybackKey = "preview:diagnostic";
+  layer.mediaAssetPlaying = false;
+  std::vector<corevideo::modules::VideoFrame> frames;
+  for (int i = 0; i < 120 && frames.empty(); ++i) {
+    frames = source->pollMediaFrames({layer}, i * 16);
+  }
+  ASSERT_FALSE(frames.empty());
+  EXPECT_EQ(frames.front().participantId, "preview:media:diagnostic");
+  EXPECT_TRUE(frames.front().hasPixels());
+  EXPECT_EQ(frames.front().width, 64);
+  EXPECT_EQ(frames.front().height, 64);
+  ASSERT_EQ(frames.front().pixels->size(), 64u * 64u * 4u);
+  for (size_t offset = 3; offset < frames.front().pixels->size(); offset += 4) {
+    EXPECT_EQ((*frames.front().pixels)[offset], 0xff);
+  }
+  EXPECT_TRUE(source->warnings().empty());
+  std::filesystem::remove(videoPath);
+}
+
 TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   const auto wavPath = std::filesystem::temp_directory_path() / "corevideo-mf-media-audio-test.wav";
   std::filesystem::remove(wavPath);
@@ -4084,6 +4254,20 @@ TEST(PluginHostTransport, ExchangesBlocksWithTheRealHostAndBypassesOnDeath) {
   EXPECT_FALSE(client.exchange(pcm.data(), pcm.size(), 2, 48000, 30));
   EXPECT_TRUE(std::fabs(pcm[0] - 0.25f) < 1e-6);
   EXPECT_TRUE(client.deadlineMisses() > missesBefore);
+  EXPECT_FALSE(client.ready());
+
+  // A dead host is recoverable without restarting CoreVideo.
+  ASSERT_TRUE(client.start(hostPath, "transport-test-2"));
+  processed = false;
+  for (int attempt = 0; attempt < 50 && !processed; ++attempt) {
+    std::fill(pcm.begin(), pcm.end(), 0.5f);
+    processed = client.exchange(pcm.data(), pcm.size(), 2, 48000, 100);
+    if (!processed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  ASSERT_TRUE(processed);
+  EXPECT_TRUE(std::fabs(pcm[0] - 0.5f * 0.5012f) < 1e-4);
   client.stop();
 }
 #endif

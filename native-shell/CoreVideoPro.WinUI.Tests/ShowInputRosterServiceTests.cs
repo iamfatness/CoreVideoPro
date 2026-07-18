@@ -163,7 +163,7 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
-    public void BuildAudioSourceOptions_LabelsSourceKindAndDriver()
+    public void BuildAudioSourceOptions_UsesFriendlySourceLabels()
     {
         var options = ShowInputRosterService.BuildAudioSourceOptions(
             [
@@ -174,7 +174,7 @@ public sealed class ShowInputRosterServiceTests
         Assert.Equal(string.Empty, options[0].Value);
         Assert.Contains("USB Microphone", options[1].Label, StringComparison.Ordinal);
         Assert.Contains("Mic / line input", options[1].Label, StringComparison.Ordinal);
-        Assert.Contains("WASAPI", options[1].Label, StringComparison.Ordinal);
+        Assert.DoesNotContain("WASAPI", options[1].Label, StringComparison.Ordinal);
         Assert.Contains("Focusrite USB ASIO", options[2].Label, StringComparison.Ordinal);
         Assert.Contains("ASIO", options[2].Label, StringComparison.Ordinal);
     }
@@ -228,7 +228,7 @@ public sealed class ShowInputRosterServiceTests
         Assert.Equal(1, tile.SourceIndex);
         Assert.Equal("capture:cam-uvc", tile.Surface.SurfaceKey);
         Assert.Contains("connected", tile.Surface.DetailLine, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("signal present", tile.Surface.DetailLine, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("waiting for video", tile.Surface.DetailLine, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -289,7 +289,7 @@ public sealed class ShowInputRosterServiceTests
         Assert.Equal("capture:elgato", tile.Participant.Id);
         Assert.Equal("UVC webcam", tile.Participant.Title);
         Assert.True(tile.Surface.HasPreviewBitmap);
-        Assert.Contains("Live capture fallback", tile.Surface.DetailLine, StringComparison.Ordinal);
+        Assert.Contains("Assign this source", tile.Surface.DetailLine, StringComparison.Ordinal);
     }
 
     [Fact]

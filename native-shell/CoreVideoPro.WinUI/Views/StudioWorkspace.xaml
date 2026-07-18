@@ -76,6 +76,38 @@
                 <Setter Property="MinHeight" Value="48" />
             </Style>
 
+            <!-- Compact vector adaptation of the operator-selected L3 mark:
+                 framed program area, identifier tile, and angled lower band. -->
+            <DataTemplate x:Key="LowerThirdIconTemplate">
+                <Viewbox Stretch="Uniform">
+                    <Canvas Width="24" Height="20">
+                        <Path Data="M 2,15 L 2,2 L 22,2 L 22,11"
+                              Stroke="{StaticResource StudioAccentBrush}"
+                              StrokeThickness="2.5" />
+                        <Path Data="M 2,15 L 22,9 L 22,18 L 2,18 Z"
+                              Fill="{StaticResource StudioAccentBrush}" />
+                        <Border Canvas.Left="5" Canvas.Top="5"
+                                Width="11" Height="8"
+                                Background="#101820"
+                                BorderBrush="#62858A"
+                                BorderThickness="0.75">
+                            <TextBlock Text="L3"
+                                       FontSize="7"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource StudioAccentBrush}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Border>
+                        <Rectangle Canvas.Left="7" Canvas.Top="15"
+                                   Width="7" Height="1.5"
+                                   Fill="#0A171A" />
+                        <Rectangle Canvas.Left="7" Canvas.Top="17"
+                                   Width="5" Height="1.2"
+                                   Fill="#0A171A" />
+                    </Canvas>
+                </Viewbox>
+            </DataTemplate>
+
             <!-- Design system: telemetry labels are mono UPPERCASE, values mono. -->
             <Style x:Key="OutputStatLabel" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoLabel}">
                 <Setter Property="Foreground" Value="{StaticResource StudioDimBrush}" />
@@ -127,7 +159,7 @@
                     <StackPanel VerticalAlignment="Center" Spacing="0">
                         <TextBlock Text="CoreVideo Pro" FontWeight="SemiBold" FontSize="14"
                                    Foreground="{StaticResource StudioTextBrush}" />
-                        <TextBlock Text="Zoom-native production" FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Text="Live production" FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
                     </StackPanel>
                 </StackPanel>
 
@@ -175,7 +207,7 @@
                             BorderBrush="{x:Bind ViewModel.RoutingTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.RoutingTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="routing"
-                            ToolTipService.ToolTip="Routing - audio and video crosspoint matrix" />
+                            ToolTipService.ToolTip="Manage audio and video routing" />
                     <Button Content="Overlays" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.OverlaysTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.OverlaysTabChrome.BorderBrush, Mode=OneWay}"
@@ -201,7 +233,7 @@
                                VerticalAlignment="Center" Margin="10,0,2,0" />
                     <Button Content="Health" Style="{StaticResource GhostButton}"
                             Command="{x:Bind ViewModel.OpenDiagnosticsCommand}"
-                            ToolTipService.ToolTip="Diagnostics, support bundle, and native runtime readiness" />
+                            ToolTipService.ToolTip="System status and support tools" />
                     </StackPanel>
                 </ScrollViewer>
 
@@ -248,11 +280,11 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <FontIcon Glyph="&#xE930;" FontSize="14" Foreground="{StaticResource StudioAccentBrush}" />
-                    <TextBlock Text="Show readiness" FontSize="11" FontWeight="ExtraBold"
+                    <TextBlock Text="SHOW" FontSize="11" FontWeight="ExtraBold"
                                Foreground="#8FDCC8" CharacterSpacing="40" />
                 </StackPanel>
                 <TextBlock Grid.Column="1"
-                           Text="{x:Bind ViewModel.ShowReadinessSummary, Mode=OneWay}"
+                           Text="{x:Bind ViewModel.ShowStatusSummary, Mode=OneWay}"
                            FontSize="12"
                            Foreground="{StaticResource StudioTextBrush}"
                            TextTrimming="CharacterEllipsis"
@@ -289,8 +321,6 @@
                     <StackPanel Spacing="2">
                         <TextBlock Text="Scenes" FontWeight="SemiBold" FontSize="14"
                                    Foreground="{StaticResource StudioTextBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.SceneRailDisplaySummary, Mode=OneWay}" FontSize="11"
-                                   Foreground="{StaticResource StudioTextSecondaryBrush}" TextWrapping="Wrap" />
                     </StackPanel>
 
                     <Grid Grid.Row="1" ColumnSpacing="6">
@@ -401,8 +431,6 @@
                     </ScrollViewer>
 
                     <StackPanel Grid.Row="3" Spacing="6">
-                        <TextBlock Text="Tap a scene to queue on preview - Take swaps PVW and PGM"
-                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
                         <Button Style="{StaticResource SceneBuilderCalloutButton}"
                                 HorizontalAlignment="Stretch"
                                 Command="{x:Bind ViewModel.OpenSceneBuilderCommand}">
@@ -411,8 +439,6 @@
                                 <TextBlock Text="Open Scene builder" />
                             </StackPanel>
                         </Button>
-                        <TextBlock Text="{x:Bind ViewModel.SceneBuilderHint, Mode=OneWay}"
-                                   FontSize="9" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
                         <Border Background="#0C1118"
                                 BorderBrush="{StaticResource StudioBorderBrush}"
                                 BorderThickness="1"
@@ -541,12 +567,16 @@
                             </StackPanel>
                         </Button>
                         <Button Grid.Column="6" Style="{StaticResource GhostButton}"
-                                MinWidth="74"
+                                Width="122"
                                 Padding="8,4"
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon Glyph="&#xE8D2;" FontSize="12" />
+                                <ContentPresenter Width="18" Height="15"
+                                                  Content="L3"
+                                                  ContentTemplate="{StaticResource LowerThirdIconTemplate}"
+                                                  VerticalAlignment="Center"
+                                                  IsHitTestVisible="False" />
                                 <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
                                            FontSize="11"
                                            FontWeight="Bold" />
@@ -833,13 +863,20 @@
                         </StackPanel>
                     </Button>
 
-                    <StackPanel Orientation="Horizontal" Spacing="0">
+                    <!-- Keep the lower-third transport footprint fixed. Phase labels such
+                         as "Building out" must not reflow the live control row. -->
+                    <StackPanel Orientation="Horizontal" Spacing="0" Width="148">
                         <Button Style="{StaticResource AutomationToggleButton}"
+                                Width="118"
                                 CornerRadius="8,0,0,8"
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
                             <StackPanel Orientation="Horizontal" Spacing="10">
-                                <FontIcon Glyph="&#xE8D2;" FontSize="18" />
+                                <ContentPresenter Width="22" Height="18"
+                                                  Content="L3"
+                                                  ContentTemplate="{StaticResource LowerThirdIconTemplate}"
+                                                  VerticalAlignment="Center"
+                                                  IsHitTestVisible="False" />
                                 <StackPanel Spacing="1">
                                     <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
                                                FontWeight="Bold" FontSize="12" />
@@ -910,6 +947,10 @@
                                         <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
                                                    FontSize="11"
                                                    Foreground="{StaticResource StudioMutedBrush}" />
+                                        <ComboBox Header="Motion timing"
+                                                  ItemsSource="{x:Bind ViewModel.LowerThirdTimingPresetOptions, Mode=OneWay}"
+                                                  SelectedItem="{x:Bind ViewModel.SelectedLowerThirdTimingPreset, Mode=TwoWay}"
+                                                  HorizontalAlignment="Stretch" />
                                         <Button Content="Rebuild lower third"
                                                 Style="{StaticResource StudioAccentButton}"
                                                 Command="{x:Bind ViewModel.RebuildProgramLowerThirdCommand}" />
@@ -961,7 +1002,7 @@
                         <TextBlock Text="{x:Bind ViewModel.OutputStatusBrief, Mode=OneWay}" VerticalAlignment="Center"
                                    Foreground="{StaticResource StudioMutedBrush}" FontSize="11"
                                    MaxWidth="190" TextTrimming="CharacterEllipsis"
-                                   ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" />
+                                   ToolTipService.ToolTip="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}" />
                         <Button Content="{x:Bind ViewModel.OutputStatusDetailsLabel, Mode=OneWay}"
                                 Padding="8,4"
                                 MinWidth="0"
@@ -976,7 +1017,7 @@
                                                    FontSize="12"
                                                    FontWeight="SemiBold"
                                                    Foreground="{StaticResource StudioTextBrush}" />
-                                        <TextBlock Text="{x:Bind ViewModel.OutputStatus, Mode=OneWay}"
+                                        <TextBlock Text="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}"
                                                    TextWrapping="WrapWholeWords"
                                                    IsTextSelectionEnabled="True"
                                                    Foreground="{StaticResource StudioMutedBrush}" />
@@ -1140,7 +1181,7 @@
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}"
-                            ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}">
+                            ToolTipService.ToolTip="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}">
                         <StackPanel Spacing="1">
                             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
                                 <!-- Design: LIVE = pulsing green dot while streaming. -->
@@ -1349,7 +1390,7 @@
                                       MinHeight="30"
                                       FontSize="12"
                                       VerticalAlignment="Center"
-                                      ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}" />
+                                      ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}" />
 
                         <Border MinWidth="292"
                                 Padding="10,7"

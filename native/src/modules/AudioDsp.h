@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <functional>
 #include <map>
 #include <numeric>
 #include <set>
@@ -849,11 +850,19 @@ struct RoutedAudioCrosspoint {
   double gainLinear = 1.0;  // per-crosspoint send gain (linear)
 };
 
+// Optional out-of-process insert hook. Return true when the insert name is
+// owned by the external host, including fail-open bypass; false leaves it for
+// CoreVideo's built-in DSP matcher. The hook runs on the already-panned stereo
+// source block so a channel VST processes before its crosspoint sends.
+using ExternalAudioInsertProcessor =
+    std::function<bool(const std::string& insertName, std::vector<float>& stereo, double sampleRate)>;
+
 inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     const std::vector<RoutedAudioSource>& sources, const std::vector<RoutedAudioCrosspoint>& crosspoints,
     bool masterLimiter = true,
     std::map<std::string, double>* outCompGainReductionDbBySource = nullptr,
-    std::map<std::string, LimiterState>* busLimiterGainStates = nullptr) {
+    std::map<std::string, LimiterState>* busLimiterGainStates = nullptr,
+    ExternalAudioInsertProcessor externalInsertProcessor = {}) {
   bool soloActive = false;
   for (const auto& source : sources) {
     if (source.solo && !source.muted) {
@@ -909,10 +918,30 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     if ((source.inserts != nullptr && !source.inserts->empty()) || source.noiseSuppression) {
       static const std::vector<std::string> kNoInserts;
       double compGrDb = 0.0;
-      applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
-                              source.inserts != nullptr ? *source.inserts : kNoInserts,
-                              source.noiseSuppression, source.insertSettings, &compGrDb,
-                              source.dspState);
+      if (externalInsertProcessor && source.inserts != nullptr) {
+        // Preserve configured chain order across native and third-party
+        // processors. Noise suppression is a strip control, so it runs once
+        // at the front before the ordered named inserts.
+        if (source.noiseSuppression) {
+          applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
+                                  kNoInserts, true, source.insertSettings, nullptr,
+                                  source.dspState);
+        }
+        for (const auto& insert : *source.inserts) {
+          if (externalInsertProcessor(insert, stereo, source.sampleRate)) {
+            continue;
+          }
+          const std::vector<std::string> oneInsert{insert};
+          applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
+                                  oneInsert, false, source.insertSettings, &compGrDb,
+                                  source.dspState);
+        }
+      } else {
+        applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
+                                source.inserts != nullptr ? *source.inserts : kNoInserts,
+                                source.noiseSuppression, source.insertSettings, &compGrDb,
+                                source.dspState);
+      }
       // C7b: per-source compressor gain reduction, captured for the GR meter.
       if (outCompGainReductionDbBySource != nullptr && compGrDb > 0.0) {
         (*outCompGainReductionDbBySource)[source.sourceId] = compGrDb;
@@ -1021,7 +1050,8 @@ inline int applyBusInsertChain(float* samples, size_t count, double sampleRate, 
       applyCompressor(samples, count, -18.0, 4.0);
       ++applied;
     }
-    // EQ / gate / third-party inserts: pass-through until the plugin host lands.
+    // VST names are consumed by the ordered external-host hook before this
+    // built-in-only matcher is called.
   }
   return applied;
 }
@@ -1376,8 +1406,8 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
                                state != nullptr ? &state->limiter : nullptr);
       ++applied;
     }
-    // Unrecognized third-party plugin names stay pass-through until the
-    // out-of-process host (spec 4.5) lands.
+    // Unrecognized names remain pass-through. VST names are consumed by the
+    // ordered external-host hook before this built-in matcher is called.
   }
   if (noiseSuppression && !gated) {
     applyStereoLinkedGate(stereo, count, -48.0, 5.0, 120.0, sampleRate);

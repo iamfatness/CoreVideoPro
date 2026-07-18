@@ -1057,6 +1057,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     syncAudioMonitor(command);
   } else if (type == "scan-vst-plugins") {
     startPluginHostScan();
+  } else if (type == "open-vst-editor") {
+    openVstPluginEditor(command);
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
   } else if (type == "sync-capture-audio-sources") {
@@ -1386,7 +1388,8 @@ void MediaCore::syncStillMediaDesired() {
     return;
   }
   std::vector<modules::StillMediaFrameCache::StillRequest> desired;
-  const auto addRoutes = [&desired](const std::vector<SceneRouteState>& routes) {
+  const auto addRoutes = [&desired](const std::vector<SceneRouteState>& routes,
+                                    const std::string& sourcePrefix) {
     for (const auto& route : routes) {
       if (route.mediaAssetId.empty() || route.mediaAssetPath.empty()) {
         continue;
@@ -1394,12 +1397,12 @@ void MediaCore::syncStillMediaDesired() {
       if (!modules::isStillImageMediaAsset(route.mediaAssetKind, route.mediaAssetPath)) {
         continue;  // video media routes keep the existing playout path
       }
-      desired.push_back({"media:" + route.mediaAssetId,
+      desired.push_back({sourcePrefix + route.mediaAssetId,
                          modules::normalizeMediaAssetPath(route.mediaAssetPath)});
     }
   };
-  addRoutes(sceneRoutes_);
-  addRoutes(previewSceneRoutes_);
+  addRoutes(sceneRoutes_, "media:");
+  addRoutes(previewSceneRoutes_, "preview:media:");
   stillMediaCache_->setDesired(std::move(desired));
 }
 
@@ -1419,6 +1422,17 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
   if (command.get("enabled") && !command.get("enabled")->asBool()) {
     overlayIds_.erase(overlayId);
     if (auto existing = overlayAssets_.find(overlayId); existing != overlayAssets_.end()) {
+      const auto* requestedPhase = command.get("keyPhase");
+      const bool explicitlyHidden = requestedPhase && requestedPhase->isString() &&
+                                    requestedPhase->asString() == "hidden";
+      if (explicitlyHidden) {
+        // The shell already presented and timed the building-out phase. Its
+        // final hidden command is a retirement acknowledgement, not a request
+        // to start another native build-out.
+        overlayAssets_.erase(existing);
+        overlayCount_ = static_cast<int>(overlayIds_.size());
+        return;
+      }
       // Animate the overlay out rather than dropping it instantly; the render
       // tick retires it once the building-out animation has settled. Only START the
       // build-out once: the shell re-sends enabled=false on every sync while the key is
@@ -1429,6 +1443,7 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
         existing->second.keyPhase = "building-out";
         existing->second.keyProgress = 0.f;
       }
+      existing->second.retireAfterBuildOut = true;
     }
     overlayCount_ = static_cast<int>(overlayIds_.size());
     return;
@@ -1444,6 +1459,7 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
     asset.keyPhase = "building-in";
     asset.keyProgress = 0.f;
   }
+  asset.retireAfterBuildOut = false;
   asset.text = command.getString("text", asset.text);
   asset.imageUri = command.getString("imageUri", asset.imageUri);
   asset.sourceId = command.getString("sourceId", asset.sourceId);
@@ -2492,6 +2508,8 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
           pgmRect.y + src.rect.y * pgmRect.height,
           src.rect.width * pgmRect.width,
           src.rect.height * pgmRect.height};
+      layer.hasClipRect = true;
+      layer.clipRect = {pgmRect.x, pgmRect.y, pgmRect.width, pgmRect.height};
       layer.order = order++;
       layer.borderStyle = "none";
       layer.borderThickness = 0.f;
@@ -2516,6 +2534,8 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
             pvwRect.y + src.rect.y * pvwRect.height,
             src.rect.width * pvwRect.width,
             src.rect.height * pvwRect.height};
+        layer.hasClipRect = true;
+        layer.clipRect = {pvwRect.x, pvwRect.y, pvwRect.width, pvwRect.height};
         layer.order = order++;
         layer.borderStyle = "none";
         layer.borderThickness = 0.f;
@@ -2863,6 +2883,11 @@ rpc::Json MediaCore::audioMixSessionState() const {
   int manualCount = 0;
   int soloCount = 0;
   int insertCount = 0;
+  const bool vstHostRunning = pluginHostClient_.ready() && pluginHostClient_.hostAlive();
+  const auto vstHostExchanges = pluginHostClient_.exchanges();
+  const int vstHostStatusCode = pluginHostClient_.statusCode();
+  const std::string vstHostActivePlugin = pluginHostClient_.activePlugin();
+  const std::string vstHostError = pluginHostClient_.lastError();
 
   for (const auto& channel : audioChannels_) {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
@@ -2889,9 +2914,6 @@ rpc::Json MediaCore::audioMixSessionState() const {
     if (channel.hasManualGain && channel.manualGainDb != 0) ++manualCount;
     if (!channel.pluginInserts.empty()) {
       insertCount += static_cast<int>(channel.pluginInserts.size());
-      if (warningSet.insert("vst-bridge-scan-only").second) {
-        warnings.emplace_back("VST inserts are configured but live third-party plugin processing requires the dev VST bridge.");
-      }
     }
     if (!hasPcm && !channel.muted && warningSet.insert("missing-pcm:" + channel.participantId).second) {
       warnings.emplace_back("No native PCM has been mixed for " + channel.participantId + "; meters are held at silence for that channel.");
@@ -2899,11 +2921,22 @@ rpc::Json MediaCore::audioMixSessionState() const {
 
     rpc::Json::Array pluginInserts;
     for (const auto& insert : channel.pluginInserts) {
+      const bool isVst = isHostHandledInsertName(insert);
+      const std::string query = vstSelectionQueryFromInsertName(insert);
+      const bool active = isVst && vstHostRunning && vstHostExchanges > 0 &&
+                          vstHostStatusCode == corevideo::pluginhost::kHostStatusPluginActive &&
+                          (query.empty() || vstHostActivePlugin == query ||
+                           query.find(vstHostActivePlugin) != std::string::npos);
+      const bool failed = isVst && vstHostStatusCode == corevideo::pluginhost::kHostStatusPluginFailed &&
+                          !vstHostError.empty();
+      if (failed && warningSet.insert("vst-host-failed:" + insert).second) {
+        warnings.emplace_back("VST3 insert bypassed safely: " + vstHostError);
+      }
       pluginInserts.emplace_back(rpc::Json::Object{
           {"name", insert},
-          {"format", insert.rfind("VST", 0) == 0 ? "vst3" : "builtin"},
-          {"status", insert.rfind("VST", 0) == 0 ? "scan-only" : "available"},
-          {"processingEnabled", false},
+          {"format", isVst ? "vst3" : "builtin"},
+          {"status", !isVst ? "available" : active ? "processing" : failed ? "bypassed" : "starting"},
+          {"processingEnabled", !isVst || active},
       });
     }
 
@@ -3760,24 +3793,32 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
 
 void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
   overlayAnimationClockMs_ += frameIntervalMs;
-  // A keyPhase transition completes over a fixed wall-clock window so the
-  // animation is frame-rate independent and deterministic for a given fps.
-  constexpr double kPhaseDurationMs = 420.0;
-  const float step = kPhaseDurationMs > 0.0
-                         ? static_cast<float>(frameIntervalMs / kPhaseDurationMs)
-                         : 1.f;
-
   std::vector<std::string> retired;
   for (auto& [overlayId, asset] : overlayAssets_) {
     if (asset.keyPhase == "building-in" || asset.keyPhase == "building-out") {
+      // The shell and compositor must share one timing contract. Using the old
+      // fixed 420 ms clock here while the shell waited for the operator's
+      // buildInMs/buildOutMs caused the core to settle/retire a key early and
+      // then recreate it on the next phase command -- the visible bounce.
+      const double phaseDurationMs = static_cast<double>(
+          asset.keyPhase == "building-in" ? asset.buildInMs : asset.buildOutMs);
+      const float step = phaseDurationMs > 0.0
+                             ? static_cast<float>(frameIntervalMs / phaseDurationMs)
+                             : 1.f;
       asset.keyProgress = std::min(1.f, asset.keyProgress + step);
       if (asset.keyProgress >= 1.f) {
         if (asset.keyPhase == "building-in") {
           asset.keyPhase = "on-air";
           asset.keyProgress = 1.f;
-        } else {
-          // building-out settled -> retire the asset entirely.
+        } else if (asset.retireAfterBuildOut) {
+          // Native-owned build-out settled -> retire the asset entirely.
           retired.push_back(overlayId);
+        } else {
+          // Shell-owned lower-third build-out has settled. Keep one invisible
+          // layer until the explicit hidden command arrives. Repeated scene
+          // syncs can now update this same stable layer instead of recreating a
+          // fresh key and flashing it back on screen.
+          asset.keyProgress = 1.f;
         }
       }
     } else {
@@ -3786,7 +3827,9 @@ void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
   }
   for (const auto& overlayId : retired) {
     overlayAssets_.erase(overlayId);
+    overlayIds_.erase(overlayId);
   }
+  overlayCount_ = static_cast<int>(overlayIds_.size());
 }
 
 modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
@@ -3800,10 +3843,20 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
 modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   // The preview scene composites its own routes/background/overlays/grade. Captions
   // are a program broadcast element, so the preview bus renders no caption band.
-  return buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
-                                 previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
-                                 previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
-                                 videoFrames);
+  auto plan = buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
+                                      previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
+                                      previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
+                                      videoFrames);
+  // Program and Preview may hold the same asset at different playback positions.
+  // Give Preview its own frame-source namespace so its held cue frame cannot be
+  // replaced by Program's moving decoder (or vice versa).
+  for (auto& layer : plan.layers) {
+    if (!layer.mediaAssetId.empty()) {
+      const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+      layer.sourceId = "preview:" + sourceId;
+    }
+  }
+  return plan;
 }
 
 bool MediaCore::hasPreviewScene() const {
@@ -4172,7 +4225,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive;
 
   if (modules_.mediaFrames) {
-    auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
+    auto mediaLayers = renderPlan.layers;
+    if (hasPreviewScene()) {
+      const auto previewMediaPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      mediaLayers.insert(mediaLayers.end(), previewMediaPlan.layers.begin(), previewMediaPlan.layers.end());
+    }
+    auto mediaFrames = modules_.mediaFrames->pollMediaFrames(mediaLayers, frameTimestampMs);
     videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());
     for (const auto& warning : modules_.mediaFrames->warnings()) {
       if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
@@ -4492,9 +4550,58 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     for (const auto& send : work.routingSends) {
       crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
     }
+    // One fail-open bridge hook for both channel and bus chains. A recognized
+    // host insert always returns true even when unresolved/loading/failed so
+    // no built-in name matcher can accidentally reinterpret it. PCM is copied
+    // back only after a completed isolated-host exchange.
+    const auto processExternalInsert = [this](const std::string& insertName,
+                                              std::vector<float>& pcm,
+                                              double sampleRate) -> bool {
+      if (!isHostHandledInsertName(insertName)) {
+        return false;
+      }
+
+      const std::string vstQuery = vstSelectionQueryFromInsertName(insertName);
+      VstInsertSelection selection;
+      selection.resolved = true;  // legacy host-test names select test gain
+      if (!vstQuery.empty()) {
+        selection = resolveVstInsertForWorker(vstQuery);
+      }
+      if (!selection.resolved || pcm.empty()) {
+        return true;  // recognized, safely bypassed
+      }
+      if (pluginHostClient_.ready()) {
+        pluginHostClient_.exchange(
+            pcm.data(), pcm.size(), 2, static_cast<int>(sampleRate), 4,
+            selection.bundleId, selection.className);
+      } else {
+        ensurePluginHostServeStarted();
+      }
+      return true;
+    };
     const auto tMrb0 = std::chrono::steady_clock::now();
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
-                                                   &results.compGainReductionDbBySource, &busLimiterGains_);
+                                                   &results.compGainReductionDbBySource, &busLimiterGains_,
+                                                   processExternalInsert);
+    std::map<std::string, std::vector<std::string>> busInserts;
+    for (const auto& send : work.routingSends) {
+      if (!send.busPluginInserts.empty()) {
+        busInserts[send.busId] = send.busPluginInserts;
+      }
+    }
+    const auto applyOrderedBusInserts = [&](const std::string& busId) {
+      auto pcmIt = results.routedBusPcm.find(busId);
+      const auto insertsIt = busInserts.find(busId);
+      if (pcmIt == results.routedBusPcm.end() || pcmIt->second.empty() || insertsIt == busInserts.end()) {
+        return;
+      }
+      for (const auto& insert : insertsIt->second) {
+        if (processExternalInsert(insert, pcmIt->second, 48000.0)) {
+          continue;
+        }
+        modules::applyBusInsertChain(pcmIt->second.data(), pcmIt->second.size(), 48000.0, {insert});
+      }
+    };
     // BUS OUTPUT ROUTING (mixer topology): aux/custom bus mixes sum into their
     // destinations in two passes around the mastering block. Pass 1 (targets
     // = "master") runs BEFORE mastering so an aux feeding the program is
@@ -4527,6 +4634,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     if (!preMasterSends.empty()) {
       relimitTouchedBuses(modules::applyBusSends(results.routedBusPcm, preMasterSends));
     }
+    // The master insert chain must run BEFORE Program/Stream/Monitor inherit
+    // the master signal. The previous post-copy placement processed a dead-end
+    // master buffer while the outgoing program retained the unprocessed PCM.
+    applyOrderedBusInserts("master");
     // Mastering chain on the MASTER bus (M1). Topology CONFIRMED by owner
     // 2026-07-06: master and program L/R carry the SAME signal - the chain
     // applies once and pgm-l/pgm-r inherit the processed master.
@@ -4546,16 +4657,41 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                        results.masteringRideDb, masteringState_.loudnessAvgLufs,
                        work.masteringParams.targetLufs);
         }
-        results.routedBusPcm["pgm-l"] = master->second;
-        results.routedBusPcm["pgm-r"] = master->second;
-        results.routedBusPcm["stream"] = master->second;
-        results.routedBusPcm["mon"] = master->second;
       }
+    }
+    // MASTER is the default program signal even when the built-in mastering
+    // chain is bypassed. An explicitly routed STREAM or MON bus is a deliberate
+    // matrix override and must retain its own mix; only missing/empty program
+    // buses inherit the processed master.
+    if (const auto master = results.routedBusPcm.find("master");
+        master != results.routedBusPcm.end() && !master->second.empty()) {
+      const auto inheritWhenUnrouted = [&](const std::string& busId) {
+        auto target = results.routedBusPcm.find(busId);
+        if (target == results.routedBusPcm.end() || target->second.empty()) {
+          results.routedBusPcm[busId] = master->second;
+        }
+      };
+      inheritWhenUnrouted("pgm-l");
+      inheritWhenUnrouted("pgm-r");
+      inheritWhenUnrouted("stream");
+      inheritWhenUnrouted("mon");
     }
     // Bus sends pass 2: non-master targets, after the mastering-inherit so a
     // cue/aux send into MON or STREAM is not wiped by the inherit copy.
     if (!postMasterSends.empty()) {
       relimitTouchedBuses(modules::applyBusSends(results.routedBusPcm, postMasterSends));
+    }
+    const auto tBic0 = std::chrono::steady_clock::now();
+    for (const auto& [busId, inserts] : busInserts) {
+      if (busId != "master" && !inserts.empty()) {
+        applyOrderedBusInserts(busId);
+      }
+    }
+    const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - tBic0)
+                           .count();
+    if (bicMs >= 20) {
+      std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
     }
     if (debugDir != nullptr) {
       const auto monTap = results.routedBusPcm.find("mon");
@@ -4574,57 +4710,6 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     }
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
     if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
-    if (!results.routedBusPcm.empty()) {
-      std::map<std::string, std::vector<std::string>> busInserts;
-      for (const auto& send : work.routingSends) {
-        if (!send.busPluginInserts.empty()) {
-          busInserts[send.busId] = send.busPluginInserts;
-        }
-      }
-      const auto tBic0 = std::chrono::steady_clock::now();
-      for (auto& [busId, pcm] : results.routedBusPcm) {
-        const auto found = busInserts.find(busId);
-        if (found != busInserts.end() && !pcm.empty()) {
-          // P2b-2: host-handled inserts (vst*/host*) route the bus block
-          // through the out-of-process plugin host with a hard 4ms deadline.
-          // Not ready -> kick the async starter and BYPASS this tick; miss ->
-          // BYPASS with the audio untouched. Built-in inserts always run.
-          // P2c: a "vst:<name>" insert selects a REAL scanned plugin (the host
-          // loads it on demand); plain "vst"/"host" names keep the -6dB test
-          // processor. Unresolvable selections BYPASS loudly (serve.lastError
-          // + rate-capped log) — the exchange never runs with a fake target.
-          const bool wantsHost = std::any_of(found->second.begin(), found->second.end(), isHostHandledInsertName);
-          if (wantsHost) {
-            std::string vstQuery;
-            for (const auto& insertName : found->second) {
-              if (!isHostHandledInsertName(insertName)) {
-                continue;
-              }
-              vstQuery = vstSelectionQueryFromInsertName(insertName);
-              if (!vstQuery.empty()) {
-                break;  // first vst: selection wins (one host slot per bus block)
-              }
-            }
-            VstInsertSelection selection;
-            selection.resolved = true;  // legacy names: empty selection = test processor
-            if (!vstQuery.empty()) {
-              selection = resolveVstInsertForWorker(vstQuery);
-            }
-            if (!selection.resolved) {
-              // loud bypass — built-ins below still run
-            } else if (pluginHostClient_.ready()) {
-              pluginHostClient_.exchange(pcm.data(), pcm.size(), 2, 48000, 4,
-                                         selection.bundleId, selection.className);
-            } else {
-              ensurePluginHostServeStarted();
-            }
-          }
-          modules::applyBusInsertChain(pcm.data(), pcm.size(), 48000.0, found->second);
-        }
-      }
-      const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tBic0).count();
-      if (bicMs >= 20) std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
-    }
   }
 
   // LOCAL bus tap lookups over the freshly-mixed routedBusPcm (NOT the published member).
@@ -4982,6 +5067,41 @@ void MediaCore::ensurePluginHostServeStarted() {
     if (!exePath.empty()) {
       pluginHostClient_.start(exePath, "serve-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
     }
+    // Allow a new starter after launch failure or a later isolated-host exit.
+    // The audio worker observes ready()==false and requests a replacement;
+    // program audio stays fail-open while that happens.
+    pluginHostServeStarting_.store(false, std::memory_order_release);
+  }).detach();
+}
+
+void MediaCore::openVstPluginEditor(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  if (query.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "cannot open controls: no VST3 plug-in selected";
+    return;
+  }
+  const VstInsertSelection selection = resolveVstInsertForWorker(query);
+  if (!selection.resolved) return;
+  if (pluginHostClient_.ready() && pluginHostClient_.hostAlive()) {
+    pluginHostClient_.requestEditor(selection.bundleId, selection.className);
+    return;
+  }
+  ensurePluginHostServeStarted();
+  // Opening controls is control-plane work, never the audio worker. Give the
+  // isolated host a short launch window and then signal its dedicated editor
+  // event; audio continues fail-open throughout.
+  std::thread([this, selection] {
+    for (int attempt = 0; attempt < 40; ++attempt) {
+      if (pluginHostClient_.ready() && pluginHostClient_.hostAlive()) {
+        pluginHostClient_.requestEditor(selection.bundleId, selection.className);
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "isolated VST3 host did not start for the editor";
   }).detach();
 }
 
@@ -5044,6 +5164,9 @@ rpc::Json MediaCore::pluginHostState() const {
                     {"activePlugin", pluginHostClient_.activePlugin()},
                     {"statusCode", static_cast<double>(pluginHostClient_.statusCode())},
                     {"lastError", lastError},
+                    {"editorStatusCode", static_cast<double>(pluginHostClient_.editorStatusCode())},
+                    {"editorActivePlugin", pluginHostClient_.editorActivePlugin()},
+                    {"editorLastError", pluginHostClient_.editorLastError()},
                 }},
   };
 }

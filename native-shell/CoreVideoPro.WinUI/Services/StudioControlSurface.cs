@@ -33,6 +33,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         nameof(StudioViewModel.AudioMonitoringEnabled), nameof(StudioViewModel.AudioMonitorVolume),
         nameof(StudioViewModel.MasterLimiterEnabled), nameof(StudioViewModel.MasteringEnabled),
         nameof(StudioViewModel.MasteringTargetIndex), nameof(StudioViewModel.VirtualCameraEnabled),
+        nameof(StudioViewModel.VstPluginHostSummary),
         nameof(StudioViewModel.ProgramLowerThirdKey),
         nameof(StudioViewModel.ProgramLowerThirdEnabled), nameof(StudioViewModel.ShowInputSummary),
         nameof(StudioViewModel.ProductionMode),
@@ -52,7 +53,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "input.assign", "input.name", "input.inShow.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
-        "audio.mastering.set", "audio.mastering.target",
+        "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
         "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
@@ -198,6 +199,9 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
             case "audio.mastering.target":
                 _vm.MasteringTargetIndex = Math.Clamp(Int(args, 0), 0, 2);
+                return ControlInvokeResult.Success;
+            case "audio.vst.scan":
+                _vm.RequestVstPluginScan();
                 return ControlInvokeResult.Success;
 
             // ---- Multiview ----------------------------------------------------------
@@ -402,6 +406,9 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             MasterLimiterOn = _vm.MasterLimiterEnabled,
             MasteringOn = _vm.MasteringEnabled,
             MasteringTarget = _vm.MasteringTargetIndex,
+            VstHostStatus = _vm.VstHostStatus,
+            VstPluginCount = _vm.VstPlugins.Count,
+            VstHostSummary = _vm.VstPluginHostSummary,
             VirtualCameraOn = _vm.VirtualCameraEnabled,
             VirtualCameraStatus = _vm.VirtualCameraStatusLabel,
             VirtualCameraRawStatus = _vm.VirtualCameraRawStatus,

@@ -51,6 +51,32 @@
 
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button Content="{x:Bind ViewModel.StudioLowerThirdButtonLabel, Mode=OneWay}"
+                                Style="{StaticResource StudioAccentButton}"
+                                HorizontalAlignment="Stretch"
+                                Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}" />
+                        <Button Grid.Column="1" Content="Rebuild"
+                                Style="{StaticResource OperatorGhostButton}"
+                                HorizontalAlignment="Stretch"
+                                Command="{x:Bind ViewModel.RebuildProgramLowerThirdCommand}"
+                                ToolTipService.ToolTip="Play the configured build out and build in again" />
+                    </Grid>
+
+                    <Border Style="{StaticResource OperatorReadoutBorder}">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="SOURCE BEHAVIOR" FontSize="9" FontWeight="Bold"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="The keyed name stays locked while that source remains on program. A source change builds the old name out once, then builds the new name in."
+                                       FontSize="10" TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                    </Border>
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
@@ -89,9 +115,20 @@
                                    LargeChange="100"
                                    SpinButtonPlacementMode="Inline" />
                     </Grid>
-                    <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
-                               FontSize="11"
-                               Foreground="{StaticResource StudioMutedBrush}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Header="Motion timing"
+                                  ItemsSource="{x:Bind ViewModel.LowerThirdTimingPresetOptions, Mode=OneWay}"
+                                  SelectedItem="{x:Bind ViewModel.SelectedLowerThirdTimingPreset, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
+                                   FontSize="11" VerticalAlignment="Bottom" Margin="0,0,0,7"
+                                   Foreground="{StaticResource StudioMutedBrush}" />
+                    </Grid>
 
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>

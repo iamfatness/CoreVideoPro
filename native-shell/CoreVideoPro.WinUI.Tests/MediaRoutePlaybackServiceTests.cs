@@ -334,6 +334,25 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
+    public void HasPendingProgramMediaCue_DetectsMediaAddedToLiveSceneDraft()
+    {
+        var programRoutes = new List<SourceRoute>
+        {
+            new()
+            {
+                Id = "route-guest",
+                Mode = SourceRouteMode.Fixed,
+                ParticipantId = "guest-1"
+            }
+        };
+        var previewRoutes = programRoutes.Select(route => route.Clone()).ToList();
+        previewRoutes.Add(MediaRoute("intro"));
+
+        Assert.True(StudioViewModel.HasPendingProgramMediaCue(programRoutes, previewRoutes));
+        Assert.False(StudioViewModel.HasPendingProgramMediaCue(previewRoutes, previewRoutes));
+    }
+
+    [Fact]
     public void BuildProgramMediaRouteSignature_IgnoresFramingChangesForSameMediaRoute()
     {
         var before = MediaRoute("intro");
