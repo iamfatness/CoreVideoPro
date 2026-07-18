@@ -119,6 +119,44 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.True(preferences.MultiviewShowTally);
         Assert.True(preferences.MultiviewShowMeters);
         Assert.False(preferences.MultiviewShowClock);
+        Assert.False(preferences.LocalAudioSourceEnabled);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, preferences.Version);
+    }
+
+    [Fact]
+    public void Serializer_DisablesLegacyImplicitLocalAudioCapture()
+    {
+        const string json = """
+            {
+              "Version": 2,
+              "LocalAudioSourceEnabled": true,
+              "SelectedLocalAudioCaptureDeviceId": "goxlr-chat-mic"
+            }
+            """;
+
+        var migrated = ProductionOutputPreferencesSerializer.Deserialize(json);
+
+        Assert.NotNull(migrated);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
+        Assert.False(migrated.LocalAudioSourceEnabled);
+        Assert.Equal("goxlr-chat-mic", migrated.SelectedLocalAudioCaptureDeviceId);
+    }
+
+    [Fact]
+    public void Serializer_PreservesExplicitLocalAudioCaptureInCurrentVersion()
+    {
+        var preferences = new ProductionOutputPreferences
+        {
+            LocalAudioSourceEnabled = true,
+            SelectedLocalAudioCaptureDeviceId = "goxlr-chat-mic"
+        };
+
+        var roundTripped = ProductionOutputPreferencesSerializer.Deserialize(
+            ProductionOutputPreferencesSerializer.Serialize(preferences));
+
+        Assert.NotNull(roundTripped);
+        Assert.True(roundTripped.LocalAudioSourceEnabled);
+        Assert.Equal("goxlr-chat-mic", roundTripped.SelectedLocalAudioCaptureDeviceId);
     }
 
     [Fact]

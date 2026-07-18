@@ -205,7 +205,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _audioMonitorVolume = 0.75;
 
     [ObservableProperty]
-    private bool _localAudioSourceEnabled = true;
+    private bool _localAudioSourceEnabled;
 
     [ObservableProperty]
     private string _selectedLocalAudioCaptureDeviceId = string.Empty;
@@ -11554,7 +11554,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private ProductionOutputPreferences CaptureProductionOutputPreferences() =>
         new()
         {
-            Version = 2,
+            Version = ProductionOutputPreferences.CurrentVersion,
             FfmpegBinDirectory = FfmpegBinDirectory,
             StreamRtmpEnabled = StreamRtmpEnabled,
             StreamNdiEnabled = StreamNdiEnabled,
