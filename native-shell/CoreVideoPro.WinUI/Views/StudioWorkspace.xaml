@@ -76,6 +76,38 @@
                 <Setter Property="MinHeight" Value="48" />
             </Style>
 
+            <!-- Compact vector adaptation of the operator-selected L3 mark:
+                 framed program area, identifier tile, and angled lower band. -->
+            <DataTemplate x:Key="LowerThirdIconTemplate">
+                <Viewbox Stretch="Uniform">
+                    <Canvas Width="24" Height="20">
+                        <Path Data="M 2,15 L 2,2 L 22,2 L 22,11"
+                              Stroke="{StaticResource StudioAccentBrush}"
+                              StrokeThickness="2.5" />
+                        <Path Data="M 2,15 L 22,9 L 22,18 L 2,18 Z"
+                              Fill="{StaticResource StudioAccentBrush}" />
+                        <Border Canvas.Left="5" Canvas.Top="5"
+                                Width="11" Height="8"
+                                Background="#101820"
+                                BorderBrush="#62858A"
+                                BorderThickness="0.75">
+                            <TextBlock Text="L3"
+                                       FontSize="7"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource StudioAccentBrush}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Border>
+                        <Rectangle Canvas.Left="7" Canvas.Top="15"
+                                   Width="7" Height="1.5"
+                                   Fill="#0A171A" />
+                        <Rectangle Canvas.Left="7" Canvas.Top="17"
+                                   Width="5" Height="1.2"
+                                   Fill="#0A171A" />
+                    </Canvas>
+                </Viewbox>
+            </DataTemplate>
+
             <!-- Design system: telemetry labels are mono UPPERCASE, values mono. -->
             <Style x:Key="OutputStatLabel" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoLabel}">
                 <Setter Property="Foreground" Value="{StaticResource StudioDimBrush}" />
@@ -546,17 +578,11 @@
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <Grid Width="16" Height="12" VerticalAlignment="Center" IsHitTestVisible="False">
-                                    <Border Width="3" Height="12" CornerRadius="1"
-                                            Background="{StaticResource StudioAccentBrush}"
-                                            HorizontalAlignment="Left" />
-                                    <Border Height="3" Margin="5,1,0,0" CornerRadius="1"
-                                            Background="{StaticResource StudioTextBrush}"
-                                            VerticalAlignment="Top" />
-                                    <Border Width="8" Height="2" Margin="5,7,0,0" CornerRadius="1"
-                                            Background="{StaticResource StudioMutedBrush}"
-                                            HorizontalAlignment="Left" VerticalAlignment="Top" />
-                                </Grid>
+                                <ContentPresenter Width="18" Height="15"
+                                                  Content="L3"
+                                                  ContentTemplate="{StaticResource LowerThirdIconTemplate}"
+                                                  VerticalAlignment="Center"
+                                                  IsHitTestVisible="False" />
                                 <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
                                            FontSize="11"
                                            FontWeight="Bold" />
@@ -852,17 +878,11 @@
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
                             <StackPanel Orientation="Horizontal" Spacing="10">
-                                <Grid Width="18" Height="14" VerticalAlignment="Center" IsHitTestVisible="False">
-                                    <Border Width="3" Height="14" CornerRadius="1"
-                                            Background="{StaticResource StudioAccentBrush}"
-                                            HorizontalAlignment="Left" />
-                                    <Border Height="3" Margin="5,1,0,0" CornerRadius="1"
-                                            Background="{StaticResource StudioTextBrush}"
-                                            VerticalAlignment="Top" />
-                                    <Border Width="9" Height="2" Margin="5,8,0,0" CornerRadius="1"
-                                            Background="{StaticResource StudioMutedBrush}"
-                                            HorizontalAlignment="Left" VerticalAlignment="Top" />
-                                </Grid>
+                                <ContentPresenter Width="22" Height="18"
+                                                  Content="L3"
+                                                  ContentTemplate="{StaticResource LowerThirdIconTemplate}"
+                                                  VerticalAlignment="Center"
+                                                  IsHitTestVisible="False" />
                                 <StackPanel Spacing="1">
                                     <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
                                                FontWeight="Bold" FontSize="12" />
