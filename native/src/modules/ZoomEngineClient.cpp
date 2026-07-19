@@ -252,7 +252,8 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     const std::string& sourceUuid,
     std::uint32_t participantId,
     std::uint32_t maxWidth,
-    std::uint32_t maxHeight) {
+    std::uint32_t maxHeight,
+    bool buildThumbnail) {
   if (!sharedMemory || sharedMemorySize < sizeof(ShmFrameHeader) || maxWidth == 0 || maxHeight == 0) {
     return std::nullopt;
   }
@@ -315,6 +316,9 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   frame.i420Width = before.width;
   frame.i420Height = before.height;
   frame.i420 = std::move(planes);
+  if (!buildThumbnail) {
+    return frame;  // I420-only: the compositor path needs no RGBA
+  }
   const std::uint8_t* yPlane = frame.i420.data();
   const std::uint8_t* uPlane = yPlane + yLength;
   const std::uint8_t* vPlane = uPlane + yLength / 4;

@@ -265,6 +265,28 @@ TEST(ZoomEngineClient, ReadsI420SharedMemoryIntoRgbaThumbnail) {
   EXPECT_EQ(frame->rgba[3], 255);
 }
 
+// Thumbnail pacing (2026-07-19 system-audio clicking): throttled reads skip the
+// RGBA convert but MUST still deliver the full-res I420 planes — the compositor
+// path is per-frame, only the shell thumbnail event is paced.
+TEST(ZoomEngineClient, SkipsTheRgbaThumbnailWhenNotRequestedButKeepsI420) {
+  auto memory = makeI420SharedMemory(4, 2, 255, 128, 128);
+  const auto frame = corevideo::modules::readZoomEngineI420FrameSnapshot(
+      memory.data(),
+      memory.size(),
+      "source-123",
+      42,
+      2,
+      2,
+      /*buildThumbnail=*/false);
+
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_TRUE(frame->rgba.empty());
+  EXPECT_EQ(frame->i420Width, 4u);
+  EXPECT_EQ(frame->i420Height, 2u);
+  EXPECT_EQ(frame->i420.size(), 4u * 2u + (4u * 2u / 4u) * 2u);
+  EXPECT_EQ(frame->frameId, 2u);
+}
+
 TEST(ZoomEngineClient, RejectsIncompleteOrInProgressSharedMemoryFrames) {
   auto memory = makeI420SharedMemory(4, 2, 16, 128, 128);
   EXPECT_FALSE(corevideo::modules::readZoomEngineI420FrameSnapshot(memory.data(), sizeof(ShmFrameHeader) + 1, "source", 1, 4, 2).has_value());
