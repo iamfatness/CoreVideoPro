@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -55,6 +56,10 @@ private:
     uint32_t    m_participant_id;
     uint32_t    m_resolution = 1;
     ZOOMSDK::IZoomSDKRenderer *m_renderer = nullptr;
+    // Set by the destructor BEFORE renderer teardown so an in-flight
+    // onRawDataFrameReceived (SDK raw-data thread) bails instead of racing
+    // unSubscribe()/destroyRenderer(). Checked again under m_targets_mtx.
+    std::atomic<bool> m_stopping{false};
     mutable std::mutex m_targets_mtx;
     std::unordered_map<std::string, std::unique_ptr<SourceTarget>> m_targets;
 };

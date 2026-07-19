@@ -108,6 +108,18 @@ ParticipantSubscription::ParticipantSubscription(uint32_t participant_id,
 
 ParticipantSubscription::~ParticipantSubscription()
 {
+    // Teardown must serialize with an in-flight onRawDataFrameReceived (the
+    // ZoomISO rule: never destroy a renderer while a raw-data callback is
+    // running). EngineShare gets this by taking m_mtx in both the callback and
+    // the teardown; here we use the stopping-flag + drain variant instead of
+    // holding m_targets_mtx across the SDK calls, because we cannot prove
+    // unSubscribe()/destroyRenderer() never synchronously wait on a callback
+    // that itself takes m_targets_mtx (holding it across them could deadlock).
+    // Order: (1) flag so new callbacks bail before touching targets,
+    // (2) acquire+release m_targets_mtx to drain a callback already inside,
+    // (3) only then tear the renderer down, (4) free the SHM under the lock.
+    m_stopping.store(true, std::memory_order_release);
+    { std::lock_guard<std::mutex> drain(m_targets_mtx); }
     if (m_renderer) {
         m_renderer->unSubscribe();
         ZOOMSDK::destroyRenderer(m_renderer);
@@ -175,6 +187,7 @@ bool ParticipantSubscription::ensure_shm(SourceTarget &target,
 void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
 {
     if (!data) return;
+    if (m_stopping.load(std::memory_order_acquire)) return; // teardown in progress
     const uint32_t w     = data->GetStreamWidth();
     const uint32_t h     = data->GetStreamHeight();
     size_t y_len = 0;
@@ -187,6 +200,9 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
     }
 
     std::lock_guard<std::mutex> lock(m_targets_mtx);
+    // Re-check under the lock: the destructor may have set the flag between the
+    // early check and this acquisition; past this point it drains behind us.
+    if (m_stopping.load(std::memory_order_acquire)) return;
     for (auto &entry : m_targets) {
         const std::string &source_uuid = entry.first;
         SourceTarget &target = *entry.second;
@@ -248,7 +264,9 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
 void ParticipantSubscription::onRawDataStatusChanged(
     ZOOMSDK::IZoomSDKRendererDelegate::RawDataStatus status)
 {
+    if (m_stopping.load(std::memory_order_acquire)) return; // teardown in progress
     std::lock_guard<std::mutex> lock(m_targets_mtx);
+    if (m_stopping.load(std::memory_order_acquire)) return;
     for (const auto &entry : m_targets) {
         EngineIpc::write(
             R"({"cmd":"debug","stage":"video_raw_status","source_uuid":")" +
