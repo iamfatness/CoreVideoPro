@@ -15,7 +15,7 @@ What exists vs. what the plans assumed:
 | Area | Reality |
 |---|---|
 | Packaging | `scripts/package-native.ps1` (loose folder) and `package-native-msix.ps1` (unsigned MSIX with a robust MakeAppx/layout fallback chain) both stage native core + Zoom runtime + FFmpeg. Neither registers the vcam DLL, sets up crash dumps, nor creates the recording folder |
-| Signing | `sign-native-msix.ps1` is dev-only: self-signed cert, and **exits 0 when signtool is missing** — a silent no-op. No production cert handling anywhere |
+| Signing | **D2 shipped 2026-07-18:** `sign-native-msix.ps1 -Mode production` signs via Azure Trusted Signing (dlib) or PFX/thumbprint from env, requires an RFC3161 timestamp, runs `signtool verify /pa`, enforces the manifest-Publisher/cert-subject match, and **hard-fails on any gap** (distinct exit codes). `-Mode dev` (default) keeps the self-signed flow and still exits 0 without signtool, but now prints a LOUD "ARTIFACT LEFT UNSIGNED" warning. Decision logic covered by `scripts/tests/test-sign-native-msix.ps1` (10 dry-run cases). Cert identity itself still unprovisioned (D0.1) |
 | Versioning | ~~THREE unsynced version sources~~ **Synced via D1 (2026-07-18):** `package.json` is the source of truth; `scripts/stamp-version.mjs` stamps `Package.appxmanifest` (`Identity Version`, still `Publisher="CN=CoreVideo Pro Dev"` — D2 owns that) and the csproj; CI `version-sync` job enforces it. Release tag validation still checks only `package.json` (fine — everything else must now match it) |
 | CI release | `release.yml` builds the **loose folder** (not MSIX), never signs, never creates a GitHub Release; the artifact upload is gated on `COREVIDEO_PUBLISH == 'never'` (inverted/dead). `bump:version` + `release:notes` exist but are unwired |
 | Auto-update | **Zero code.** No version check, no channel, no AppInstaller URI in the manifest |
@@ -66,6 +66,8 @@ diverged), and by the new `version-sync` job in `ci.yml`. npm entry points:
 as part of the D5 rework (not done here).
 
 ### D2 — Production signing mode
+**Status: IMPLEMENTED 2026-07-18** (script + tests; the signing *identity* is
+still pending D0.1, so production mode has been exercised via `-DryRun` only).
 `sign-native-msix.ps1` grows `-Mode production`: signs via Trusted Signing
 (dlib) or a PFX/thumbprint from env/secret, **hard-fails** when the toolchain or
 cert is unavailable (the current exit-0 stub is fine for dev mode only — a
@@ -73,6 +75,32 @@ production pipeline must never emit an unsigned artifact silently). Timestamp
 server required. The appxmanifest `Publisher` must be updated to match the real
 cert subject (it is `CN=CoreVideo Pro Dev` today — MSIX install fails on
 mismatch; this is part of D2, not an afterthought).
+
+Implementation contract (D5 consumes this; full docs in the script header):
+- Route auto-picked from env — exactly ONE of:
+  - Trusted Signing: `COREVIDEO_SIGN_DLIB` (Azure.CodeSigning.Dlib.dll) +
+    `COREVIDEO_SIGN_METADATA` (JSON: Endpoint / CodeSigningAccountName /
+    CertificateProfileName); Azure credentials ride the standard
+    `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET` env consumed by
+    the dlib, not the script. Publisher check compares
+    `COREVIDEO_SIGN_EXPECTED_PUBLISHER` (skip-with-loud-warning if unset).
+  - PFX: `COREVIDEO_SIGN_PFX_PATH` + `COREVIDEO_SIGN_PFX_PASSWORD`.
+  - Store thumbprint: `COREVIDEO_SIGN_CERT_THUMBPRINT` (CurrentUser\My or
+    LocalMachine\My; machine store adds `/sm`).
+- Both/neither routes configured → hard fail (exit 3).
+- Timestamp: `/tr` RFC3161 + `/td SHA256`, URL from
+  `COREVIDEO_SIGN_TIMESTAMP_URL` (default `http://timestamp.digicert.com`);
+  a timestamp failure fails the sign step — no un-timestamped fallback.
+- Post-sign `signtool verify /pa` must pass or the build fails.
+- Publisher check reads the MSIX's own AppxManifest (repo
+  `Package.appxmanifest` fallback) and hard-fails on mismatch with the cert
+  subject (exit 4).
+- Exit codes: 2 signtool missing, 3 cert config, 4 publisher mismatch,
+  5 sign failed, 6 verify failed, 7 package missing.
+- `-DryRun` resolves toolchain + route + publisher check and prints the plan
+  without invoking `signtool sign` — that is what
+  `scripts/tests/test-sign-native-msix.ps1` asserts against (10 cases,
+  including the preserved dev-mode exit-0-with-loud-warning behavior).
 
 ### D3 — Installer completeness (first-launch bootstrap, not install-time magic)
 MSIX cannot run custom install actions, so the app self-completes on launch —
