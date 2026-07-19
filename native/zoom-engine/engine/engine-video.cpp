@@ -286,11 +286,17 @@ void EngineVideo::subscribe(uint32_t participant_id,
                              IpcFd e2p_fd,
                              uint32_t resolution)
 {
+    // Declared BEFORE the lock so retired subscriptions destruct AFTER m_mtx
+    // is released (locals destruct in reverse order): their destructors make
+    // SDK calls (unSubscribe/destroyRenderer) that must not run under m_mtx.
+    std::vector<std::unique_ptr<ParticipantSubscription>> retired;
+    std::unique_lock<std::mutex> lock(m_mtx);
+
     if (participant_id == 0) {
         EngineIpc::write(
             R"({"cmd":"debug","stage":"video_subscribe_skipped","source_uuid":")" +
             source_uuid + R"(","participant_id":0,"reason":"missing_participant"})");
-        unsubscribe_locked(source_uuid);
+        if (auto r = unsubscribe_locked(source_uuid)) retired.push_back(std::move(r));
         return;
     }
 
@@ -328,10 +334,10 @@ void EngineVideo::subscribe(uint32_t participant_id,
                     return;
                 }
             } else {
-                unsubscribe_locked(source_uuid);
+                if (auto r = unsubscribe_locked(source_uuid)) retired.push_back(std::move(r));
             }
         } else {
-            unsubscribe_locked(source_uuid);
+            if (auto r = unsubscribe_locked(source_uuid)) retired.push_back(std::move(r));
         }
     }
 
@@ -369,21 +375,34 @@ void EngineVideo::subscribe(uint32_t participant_id,
                     std::to_string(it->second->resolution()) + R"(,"active_targets":)" +
                     std::to_string(targets.size()) + "}");
 
+                retired.push_back(std::move(it->second));
                 m_subs.erase(it);
                 for (const auto &target : targets)
                     m_source_participants.erase(target.first);
 
-                it = m_subs.emplace(
-                    participant_id,
-                    std::make_unique<ParticipantSubscription>(
-                        participant_id, targets.front().first,
-                        targets.front().second, resolution)).first;
-                if (!it->second || it->second->empty()) {
-                    m_subs.erase(it);
+                // Destroy the old renderer and build the replacement OUTSIDE
+                // m_mtx (ctor/dtor make SDK calls); destroy-before-create so
+                // the participant never has two live renderers.
+                lock.unlock();
+                retired.clear();
+                auto upgraded = std::make_unique<ParticipantSubscription>(
+                    participant_id, targets.front().first,
+                    targets.front().second, resolution);
+                lock.lock();
+                if (!upgraded || upgraded->empty()) {
+                    if (upgraded) retired.push_back(std::move(upgraded));
                     return;
                 }
                 for (size_t i = 1; i < targets.size(); ++i)
-                    it->second->add_source(targets[i].first, targets[i].second);
+                    upgraded->add_source(targets[i].first, targets[i].second);
+                // A concurrent subscribe may have re-created an entry while we
+                // were unlocked - extract it so it is destroyed off-lock too.
+                auto clash = m_subs.find(participant_id);
+                if (clash != m_subs.end()) {
+                    if (clash->second) retired.push_back(std::move(clash->second));
+                    m_subs.erase(clash);
+                }
+                it = m_subs.emplace(participant_id, std::move(upgraded)).first;
                 for (const auto &target : targets) {
                     m_source_participants[target.first] = {
                         participant_id,
@@ -414,19 +433,29 @@ void EngineVideo::subscribe(uint32_t participant_id,
                 std::to_string(it->second->target_count()) + "}");
             return;
         }
+        retired.push_back(std::move(it->second));
         m_subs.erase(it);
         it = m_subs.end();
     }
 
     if (it == m_subs.end()) {
-        it = m_subs.emplace(
-            participant_id,
-            std::make_unique<ParticipantSubscription>(
-                participant_id, source_uuid, e2p_fd, resolution)).first;
-        if (!it->second || it->second->empty()) {
-            m_subs.erase(it);
+        // Build (and destroy any retired predecessor) OUTSIDE m_mtx: the
+        // ParticipantSubscription ctor/dtor call into the SDK.
+        lock.unlock();
+        retired.clear();
+        auto created = std::make_unique<ParticipantSubscription>(
+            participant_id, source_uuid, e2p_fd, resolution);
+        lock.lock();
+        if (!created || created->empty()) {
+            if (created) retired.push_back(std::move(created));
             return;
         }
+        auto clash = m_subs.find(participant_id);
+        if (clash != m_subs.end()) {
+            if (clash->second) retired.push_back(std::move(clash->second));
+            m_subs.erase(clash);
+        }
+        it = m_subs.emplace(participant_id, std::move(created)).first;
     } else {
         it->second->add_source(source_uuid, e2p_fd);
     }
@@ -447,6 +476,7 @@ void EngineVideo::subscribe(uint32_t participant_id,
 
 void EngineVideo::set_raw_media_active(bool active)
 {
+    std::lock_guard<std::mutex> lock(m_mtx);
     if (m_raw_media_active == active) return;
     m_raw_media_active = active;
     EngineIpc::write(
@@ -458,67 +488,90 @@ void EngineVideo::set_raw_media_active(bool active)
 
 void EngineVideo::unsubscribe(const std::string &source_uuid)
 {
-    unsubscribe_locked(source_uuid);
+    std::unique_ptr<ParticipantSubscription> retired;
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        retired = unsubscribe_locked(source_uuid);
+    }
+    // retired (if any) destructs here: unSubscribe/destroyRenderer off-lock.
 }
 
-void EngineVideo::unsubscribe_locked(const std::string &source_uuid)
+std::unique_ptr<ParticipantSubscription>
+EngineVideo::unsubscribe_locked(const std::string &source_uuid)
 {
     auto source_it = m_source_participants.find(source_uuid);
-    if (source_it == m_source_participants.end()) return;
+    if (source_it == m_source_participants.end()) return nullptr;
 
     const uint32_t participant_id = source_it->second.participant_id;
     m_source_participants.erase(source_it);
 
     auto sub_it = m_subs.find(participant_id);
-    if (sub_it == m_subs.end() || !sub_it->second) return;
+    if (sub_it == m_subs.end() || !sub_it->second) return nullptr;
 
     sub_it->second->remove_source(source_uuid);
-    if (sub_it->second->empty()) m_subs.erase(sub_it);
+    if (!sub_it->second->empty()) return nullptr;
+    auto retired = std::move(sub_it->second);
+    m_subs.erase(sub_it);
+    return retired;
 }
 
 void EngineVideo::resubscribe_all()
 {
     std::vector<std::tuple<std::string, uint32_t, IpcFd, uint32_t>> current;
-    for (const auto &entry : m_source_participants) {
-        if (entry.second.e2p_fd != kIpcInvalidFd) {
-            current.emplace_back(entry.first,
-                                 entry.second.participant_id,
-                                 entry.second.e2p_fd,
-                                 entry.second.resolution);
-        }
-    }
-    if (current.empty()) {
-        for (const auto &entry : m_subs) {
-            if (entry.second) {
-                const uint32_t participant_id = entry.second->participant_id();
-                const uint32_t resolution = entry.second->resolution();
-                const auto sources = entry.second->sources();
-                std::transform(sources.begin(), sources.end(),
-                               std::back_inserter(current),
-                               [participant_id, resolution](const auto &source) {
-                                   return std::make_tuple(source.first,
-                                                          participant_id,
-                                                          source.second,
-                                                          resolution);
-                               });
+    std::unordered_map<uint32_t,
+                       std::unique_ptr<ParticipantSubscription>> retired;
+    bool deferred = false;
+    size_t pending = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        for (const auto &entry : m_source_participants) {
+            if (entry.second.e2p_fd != kIpcInvalidFd) {
+                current.emplace_back(entry.first,
+                                     entry.second.participant_id,
+                                     entry.second.e2p_fd,
+                                     entry.second.resolution);
             }
         }
-    }
+        if (current.empty()) {
+            for (const auto &entry : m_subs) {
+                if (entry.second) {
+                    const uint32_t participant_id = entry.second->participant_id();
+                    const uint32_t resolution = entry.second->resolution();
+                    const auto sources = entry.second->sources();
+                    std::transform(sources.begin(), sources.end(),
+                                   std::back_inserter(current),
+                                   [participant_id, resolution](const auto &source) {
+                                       return std::make_tuple(source.first,
+                                                              participant_id,
+                                                              source.second,
+                                                              resolution);
+                                   });
+                }
+            }
+        }
 
-    m_subs.clear();
-    m_source_participants.clear();
-    if (!m_raw_media_active) {
-        std::for_each(current.begin(), current.end(), [this](const auto &entry) {
-            const auto &[source_uuid, participant_id, e2p_fd, resolution] = entry;
-            m_source_participants[source_uuid] = {
-                participant_id,
-                resolution,
-                e2p_fd
-            };
-        });
+        retired.swap(m_subs);
+        m_source_participants.clear();
+        if (!m_raw_media_active) {
+            std::for_each(current.begin(), current.end(), [this](const auto &entry) {
+                const auto &[source_uuid, participant_id, e2p_fd, resolution] = entry;
+                m_source_participants[source_uuid] = {
+                    participant_id,
+                    resolution,
+                    e2p_fd
+                };
+            });
+            deferred = true;
+            pending = m_source_participants.size();
+        }
+    }
+    // Old renderers tear down OUTSIDE m_mtx (SDK calls), and BEFORE the new
+    // subscriptions are built (each subscribe() re-locks internally).
+    retired.clear();
+    if (deferred) {
         EngineIpc::write(
             R"({"cmd":"debug","stage":"video_resubscribe_deferred","pending_sources":)" +
-            std::to_string(m_source_participants.size()) +
+            std::to_string(pending) +
             R"(,"reason":"raw_media_not_ready"})");
         return;
     }
@@ -530,6 +583,13 @@ void EngineVideo::resubscribe_all()
 
 void EngineVideo::unsubscribe_all()
 {
-    m_subs.clear();
-    m_source_participants.clear();
+    std::unordered_map<uint32_t,
+                       std::unique_ptr<ParticipantSubscription>> retired;
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        retired.swap(m_subs);
+        m_source_participants.clear();
+    }
+    // Renderer teardown (unSubscribe/destroyRenderer per subscription) runs
+    // here, outside m_mtx.
 }
