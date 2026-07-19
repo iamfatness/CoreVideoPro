@@ -391,6 +391,33 @@ public sealed partial class SettingsViewModel : ObservableObject
         });
     }
 
+    /// <summary>
+    /// S1 crash pipeline: writes the same redacted support bundle the manual
+    /// export produces, but to a caller-chosen path and without touching the
+    /// settings-page status text. Thin wrapper over the existing export path —
+    /// SupportBundleBuilder itself is untouched (a parallel S2 task extends it).
+    /// Call from the UI thread; the destination factory reads VM state.
+    /// </summary>
+    public async Task<bool> TryWriteSupportBundleSnapshotAsync(string filePath)
+    {
+        try
+        {
+            var outputs = _outputDestinationsFactory?.Invoke();
+            await SupportBundleBuilder.WriteAsync(
+                filePath,
+                _bridge.LastSnapshot,
+                _bridge.Health,
+                new SupportBundleAppInfo(),
+                outputs).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"crash-report: support bundle snapshot failed {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
     [RelayCommand]
     private async Task ExportSupportBundleAsync()
     {

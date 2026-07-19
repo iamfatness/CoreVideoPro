@@ -122,9 +122,9 @@ describe("POST /v1/crashes", () => {
     expect(env.REPORTS_KV.data.size).toBe(0);
   });
 
-  it("rejects non-JSON content types with 415 (until S1 archives)", async () => {
+  it("rejects unknown content types with 415", async () => {
     const res = await worker.fetch(
-      post("/v1/crashes", "zipzipzip", { contentType: "application/zip" }),
+      post("/v1/crashes", "plain text", { contentType: "text/plain" }),
       makeEnv()
     );
     expect(res.status).toBe(415);
@@ -136,6 +136,122 @@ describe("POST /v1/crashes", () => {
     const res = await worker.fetch(post("/v1/crashes", big), env);
     expect(res.status).toBe(413);
     expect(env.REPORTS_BUCKET.data.size).toBe(0);
+  });
+});
+
+describe("POST /v1/crashes (application/zip — S1)", () => {
+  // Not a real archive — the worker must store bytes verbatim, never parse them.
+  const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00, 0x01, 0xfe, 0xff, 0x42]);
+
+  function postZip(body, { headers = {}, query = "" } = {}) {
+    const req = new Request(`https://telemetry.example/v1/crashes${query}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${API_KEY}`,
+        "cf-connecting-ip": uniqueIp(),
+        "content-type": "application/zip",
+        ...headers
+      },
+      body
+    });
+    return req;
+  }
+
+  it("stores the zip verbatim in R2 with a .zip key and indexes header metadata", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      postZip(zipBytes, {
+        headers: {
+          "x-corevideo-version": "0.1.0",
+          "x-corevideo-machine-class": "win-x64-cpu32-ram64gb",
+          "x-corevideo-reason": "wer-dump: corevideo-native.exe"
+        }
+      }),
+      env
+    );
+    expect(res.status).toBe(202);
+
+    const { reportId, accepted } = await res.json();
+    expect(accepted).toBe(true);
+    expect(reportId).toMatch(/^cv-\d{8}-[0-9a-f-]{36}$/);
+
+    const day = new Date().toISOString().slice(0, 10);
+    const r2Key = `crashes/${day}/${reportId}.zip`;
+    const stored = env.REPORTS_BUCKET.data.get(r2Key);
+    expect(stored).toBeDefined();
+    expect(new Uint8Array(stored.value)).toEqual(zipBytes);
+    expect(stored.options.httpMetadata.contentType).toBe("application/zip");
+
+    const meta = JSON.parse(await env.REPORTS_KV.get(`report:${reportId}`));
+    expect(meta).toMatchObject({
+      reportId,
+      kind: "crash",
+      contentType: "application/zip",
+      version: "0.1.0",
+      machineClass: "win-x64-cpu32-ram64gb",
+      reason: "wer-dump: corevideo-native.exe",
+      size: zipBytes.byteLength,
+      r2Key
+    });
+  });
+
+  it("falls back to query params for metadata when headers are absent", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      postZip(zipBytes, { query: "?version=0.2.0&machineClass=rtx4090&reason=smoke" }),
+      env
+    );
+    expect(res.status).toBe(202);
+    const { reportId } = await res.json();
+    const meta = JSON.parse(await env.REPORTS_KV.get(`report:${reportId}`));
+    expect(meta).toMatchObject({ version: "0.2.0", machineClass: "rtx4090", reason: "smoke" });
+  });
+
+  it("prefers headers over query params and nulls missing metadata", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      postZip(zipBytes, {
+        headers: { "x-corevideo-version": "0.3.0" },
+        query: "?version=0.0.0"
+      }),
+      env
+    );
+    expect(res.status).toBe(202);
+    const { reportId } = await res.json();
+    const meta = JSON.parse(await env.REPORTS_KV.get(`report:${reportId}`));
+    expect(meta.version).toBe("0.3.0");
+    expect(meta.machineClass).toBeNull();
+    expect(meta.reason).toBeNull();
+  });
+
+  it("rejects an empty zip body with 400 and stores nothing", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(postZip(new Uint8Array(0)), env);
+    expect(res.status).toBe(400);
+    expect(env.REPORTS_BUCKET.data.size).toBe(0);
+    expect(env.REPORTS_KV.data.size).toBe(0);
+  });
+
+  it("rejects zips over the 25MB cap with 413", async () => {
+    const env = makeEnv();
+    const big = new Uint8Array(MAX_CRASH_BYTES + 1);
+    const res = await worker.fetch(postZip(big), env);
+    expect(res.status).toBe(413);
+    expect(env.REPORTS_BUCKET.data.size).toBe(0);
+  });
+
+  it("leaves the JSON path unchanged (no headers required)", async () => {
+    const env = makeEnv();
+    const body = JSON.stringify({ reason: "json-path", app: { version: "0.1.0" } });
+    const res = await worker.fetch(post("/v1/crashes", body), env);
+    expect(res.status).toBe(202);
+    const { reportId } = await res.json();
+    const meta = JSON.parse(await env.REPORTS_KV.get(`report:${reportId}`));
+    expect(meta).toMatchObject({
+      contentType: "application/json",
+      version: "0.1.0",
+      reason: "json-path"
+    });
   });
 });
 

@@ -1,11 +1,13 @@
 /**
- * Request handlers for the telemetry-ingest worker (S0 storage).
+ * Request handlers for the telemetry-ingest worker (S0 storage + S1 archives).
  *
  * Storage layout:
  * - Crashes: full POSTed body → R2 `REPORTS_BUCKET` at
- *   `crashes/<yyyy-mm-dd>/<reportId><ext>` (ext by content-type; only
- *   application/json is accepted in S0, but the key scheme already handles
- *   the S1 zip/binary uploads), plus a KV index entry.
+ *   `crashes/<yyyy-mm-dd>/<reportId><ext>` (ext by content-type;
+ *   application/json and — since S1 — application/zip are accepted), plus a
+ *   KV index entry. Zip bodies are opaque, so their metadata (version /
+ *   machineClass / reason) arrives via `X-CoreVideo-*` headers or query
+ *   params instead of body fields.
  * - Events: KV `REPORTS_KV` ONLY — the payload is capped at 64KB, which fits
  *   a KV value trivially, so a per-event R2 object would add a second write
  *   and a second read for no benefit. The event payload rides inline in the
@@ -20,9 +22,9 @@ export const MAX_EVENT_BYTES = 64 * 1024; // 64KB — S3 telemetry events are ti
 
 export async function handleCrash(request, env) {
   const contentType = normalizeContentType(request.headers.get("content-type"));
-  if (contentType !== "application/json") {
+  if (contentType !== "application/json" && contentType !== "application/zip") {
     return new Response(
-      "Unsupported content type: S0 accepts application/json (zip archives arrive with S1)",
+      "Unsupported content type: crashes accept application/json or application/zip",
       { status: 415 }
     );
   }
@@ -31,9 +33,26 @@ export async function handleCrash(request, env) {
   if (body.tooLarge) {
     return new Response(`Payload too large (max ${MAX_CRASH_BYTES} bytes)`, { status: 413 });
   }
-  const payload = parseJson(body.bytes);
-  if (payload === undefined) {
-    return new Response("Invalid JSON", { status: 400 });
+
+  let meta;
+  if (contentType === "application/json") {
+    const payload = parseJson(body.bytes);
+    if (payload === undefined) {
+      return new Response("Invalid JSON", { status: 400 });
+    }
+    meta = {
+      version: extractVersion(payload),
+      machineClass: extractMachineClass(payload),
+      reason: typeof payload?.reason === "string" ? payload.reason : null
+    };
+  } else {
+    // S1 zip archives are opaque — never parsed server-side. Metadata rides
+    // in headers (preferred; what the shell's upload client sends) with
+    // query params as a curl-friendly fallback.
+    if (body.bytes.byteLength === 0) {
+      return new Response("Empty archive", { status: 400 });
+    }
+    meta = extractOpaqueMetadata(request);
   }
 
   const receivedAt = new Date().toISOString();
@@ -49,15 +68,37 @@ export async function handleCrash(request, env) {
       reportId,
       kind: "crash",
       receivedAt,
-      version: extractVersion(payload),
-      machineClass: extractMachineClass(payload),
-      reason: typeof payload?.reason === "string" ? payload.reason : null,
+      contentType,
+      version: meta.version,
+      machineClass: meta.machineClass,
+      reason: meta.reason,
       size: body.bytes.byteLength,
       r2Key
     })
   );
 
   return Response.json({ reportId, accepted: true }, { status: 202 });
+}
+
+/**
+ * Metadata for opaque (zip) crash bodies: `X-CoreVideo-Version` /
+ * `X-CoreVideo-Machine-Class` / `X-CoreVideo-Reason` headers first, then
+ * `?version=` / `?machineClass=` / `?reason=` query params. Values are
+ * trimmed and length-capped so the KV index stays sane.
+ */
+export function extractOpaqueMetadata(request) {
+  const url = new URL(request.url);
+  const pick = (headerName, paramName) => {
+    const raw = request.headers.get(headerName) ?? url.searchParams.get(paramName);
+    if (typeof raw !== "string") return null;
+    const trimmed = raw.trim().slice(0, 200);
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  return {
+    version: pick("x-corevideo-version", "version"),
+    machineClass: pick("x-corevideo-machine-class", "machineClass"),
+    reason: pick("x-corevideo-reason", "reason")
+  };
 }
 
 export async function handleEvent(request, env) {

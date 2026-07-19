@@ -275,6 +275,18 @@ place or a `corevideo-native.exe` dump is unreadable:
    `LocalDumps`) to get `DumpType=2` full-memory dumps instead of the default registers+
    stack minidump. Dumps land in `%LOCALAPPDATA%\CrashDumps`.
 
+**Beta crash pipeline (S1, 2026-07-18, `docs/beta-engineering-spec.md` §S1).** On launch
+the shell scans `%LOCALAPPDATA%\CrashDumps` for our exes' dumps newer than the offer-once
+watermark (`%LOCALAPPDATA%\CoreVideoPro\crash-watermark.json`) and shows a one-shot
+consent InfoBar (never auto-sends). Send = zip (dump + ~2MB log tails + redacted support
+bundle + manifest.txt, ~24MB cap) → POST `application/zip` to the telemetry-ingest
+worker's `/v1/crashes` with `X-CoreVideo-*` metadata headers; the zip stays under
+`support-bundles\` either way. Enabled only when `COREVIDEO_TELEMETRY_ENDPOINT` +
+`COREVIDEO_TELEMETRY_API_KEY` are set (empty default = quietly disabled). Pieces:
+`CrashDumpScanner` / `CrashReportWatermarkStore` / `CrashReportArchiveBuilder` /
+`CrashReportUploader` (MediaCore, unit-tested) + `CrashReportCoordinator` +
+`StudioWorkspace.BeginCrashReportScan` (WinUI).
+
 **Capture reader stability (the frozen-webcam / restart-storm class).** A stalled
 MediaCapture reader (`CaptureDeviceFrameReaderService`) used to restart on a fixed ~5s
 cadence forever when it couldn't recover (e.g. an Elgato Game Capture whose HDMI signal

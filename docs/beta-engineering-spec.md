@@ -190,6 +190,23 @@ the R2 bucket + KV namespace and paste the namespace id into
 `services/telemetry-ingest/wrangler.jsonc` (steps in the service README).
 
 ### S1 — Crash pipeline (detect → bundle → offer → upload)
+
+**Status (2026-07-18): SHIPPED (stacked on S0, PR pending merge).** Worker
+accepts `application/zip` on `/v1/crashes` (metadata via `X-CoreVideo-*`
+headers / query params; body stored verbatim to R2 as `.zip`). Shell:
+`CrashDumpScanner` + `CrashReportWatermarkStore` (offer-once watermark at
+`%LOCALAPPDATA%\CoreVideoPro\crash-watermark.json`), launch scan off the
+startup critical path (`StudioWorkspace.BeginCrashReportScan`), static
+one-shot consent InfoBar (never auto-sends), `CrashReportArchiveBuilder`
+(dumps + ~2MB log tails + fresh redacted support-bundle JSON + manifest.txt,
+~24MB cap with largest-that-fits dump selection), `CrashReportUploader`
+(contract classification: 4xx never retried, 429 honors Retry-After,
+5xx/network = retry later; the zip always stays under support-bundles).
+Config: `COREVIDEO_TELEMETRY_ENDPOINT` / `COREVIDEO_TELEMETRY_API_KEY`
+(both empty by default = feature quietly disabled; beta config ships them).
+Remaining S1 scope: the D5 per-release symbol archive (blocked on D5) and
+the D3 opt-in WER `LocalDumps` setup button.
+
 - On launch, scan `%LOCALAPPDATA%\CrashDumps` for new `corevideo-native.exe.*`,
   `CoreVideoPro.WinUI.exe.*`, `corevideo-zoom-engine.exe.*`,
   `corevideo-browser-host.exe.*` dumps since the last-seen watermark (flag file
