@@ -125,13 +125,17 @@ std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength);
 // complete) so pollers skip the full-frame copy when nothing changed.
 std::uint32_t readZoomEngineI420FrameSequence(const void* sharedMemory, std::size_t sharedMemorySize);
 
+// buildThumbnail=false skips the (downscaled) RGBA convert entirely — the frame
+// then carries only the full-res I420 planes for the compositor. Callers use it
+// to pace thumbnail work/events without touching the real video path.
 std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     const void* sharedMemory,
     std::size_t sharedMemorySize,
     const std::string& sourceUuid,
     std::uint32_t participantId,
     std::uint32_t maxWidth,
-    std::uint32_t maxHeight);
+    std::uint32_t maxHeight,
+    bool buildThumbnail = true);
 
 // One PCM chunk snapshot-read from an engine audio SHM region (single-slot
 // seqlock, same tear protocol as the video frames: odd sequence = mid-write).

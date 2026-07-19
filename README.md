@@ -155,6 +155,7 @@ The first fully useful milestone:
 - Compositor architecture (OBS/CasparCG/Natron-informed): [`docs/compositor-architecture-plan.md`](docs/compositor-architecture-plan.md).
 - Sprint-by-sprint demo roadmap: [`docs/roadmap/index.html`](docs/roadmap/index.html) (open in a browser).
 - Alpha build plan & exit bar: [`docs/alpha-plan.md`](docs/alpha-plan.md).
+- **Focus & competitiveness plan (cut line, demos, 90-day sequencing):** [`docs/FOCUS_PLAN.md`](docs/FOCUS_PLAN.md).
 - Native production completion plan: [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md).
 - Product spec & positioning: [`COREVIDEO_PRO_PRODUCT_SPEC.md`](COREVIDEO_PRO_PRODUCT_SPEC.md).
 - WinUI shell setup: [`native-shell/README.md`](native-shell/README.md) · Studio shell: [`studio/README.md`](studio/README.md).

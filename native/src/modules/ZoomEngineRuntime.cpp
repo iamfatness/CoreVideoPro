@@ -867,7 +867,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t sequence = 0;
+    bool buildThumbnail = false;
   };
+  // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
+  // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
+  constexpr std::int64_t kThumbnailEmitIntervalMs = 500;
   std::vector<SnapshotJob> jobs;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -893,7 +897,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       if (sequence == 0 || (sequence & 1u) != 0 || sequence == ref.lastSequence) {
         continue;  // never written, mid-write, or unchanged: 16-byte cost
       }
-      jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence});
+      const auto nowMs = runtimeElapsedMs();
+      const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
+                                  nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
+      jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
+                      buildThumbnail});
     }
   }
 
@@ -907,7 +915,8 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
   results.reserve(jobs.size());
   for (auto& job : jobs) {
     results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
-                                                            job.participantId, 640, 360)});
+                                                            job.participantId, 640, 360,
+                                                            job.buildThumbnail)});
   }
 
   // Phase 3 (locked, cheap): publish.
@@ -941,6 +950,13 @@ void ZoomEngineRuntime::publishVideoFrameLocked(const std::string& uuid, VideoSt
     decoded.height = static_cast<int>(frame.i420Height);
     decoded.frameId = static_cast<std::int64_t>(frame.frameId);
   }
+
+  // Thumbnail-throttled frames carry only the I420 tap (above) — no event. The
+  // pace decision lives in the phase-1 peek (VideoStreamRef.lastThumbnailEmitMs).
+  if (frame.rgba.empty()) {
+    return;
+  }
+  ref.lastThumbnailEmitMs = runtimeElapsedMs();
 
   const auto observedAtMs = runtimeElapsedMs();
   const int thumbW = static_cast<int>(frame.width);

@@ -135,7 +135,7 @@ Embedded OAuth identity (same broker as [CoreVideo plugin](https://github.com/ia
 |-------|-------|
 | Broker start | `https://corevideo.iamfatness.us/oauth/start` |
 | Zoom redirect (broker) | `https://corevideo.iamfatness.us/oauth/callback` |
-| App return URI | `corevideopro://oauth/callback` |
+| App return URI | `corevideo://oauth/callback` (broker allowlists exactly this; `corevideopro://` is a legacy alias the app still accepts) |
 | Public Client ID | `y6sIWSwiTZe1JygMx4C9EQ` |
 
 Operator steps:
@@ -143,12 +143,12 @@ Operator steps:
 1. Open **Settings** -> **Zoom account (Public Client OAuth + PKCE)**.
 2. Confirm readiness shows **OAuth PKCE broker** embedded (not blocked).
 3. Click **Sign in with Zoom**; browser opens the broker start URL.
-4. Complete Zoom consent; browser redirects to `corevideopro://oauth/callback`.
+4. Complete Zoom consent; browser redirects to `corevideo://oauth/callback`.
 5. WinUI should show **Signed in** and mint broker JWT + ZAK on join.
 
 Troubleshooting:
 
-- Deep link does not return to app: confirm `corevideopro` protocol is registered (WinUI manifest / packaged install).
+- Deep link does not return to app: confirm `corevideo` protocol is registered (WinUI manifest / packaged install; unpackaged runs self-register HKCU on launch).
 - `Zoom rejected the OAuth client`: Marketplace app must be **Public Client OAuth (PKCE)**.
 - Override broker URL only when testing staging: `$env:COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`.
 
@@ -247,7 +247,7 @@ These are still not general release guarantees:
 - [ ] Deterministic program preview evidence present (`programPreviewSeen`, `programFramePreview`, stable `renderPlanId`)
 - [ ] Native audio DSP evidence present (`audioMixSession`, `mixedFrameCount`, master/loudness/limiter metrics)
 - [ ] WinUI launches (App Runtime 2.x)
-- [ ] PKCE sign-in completes via `corevideopro://oauth/callback`
+- [ ] PKCE sign-in completes via `corevideo://oauth/callback`
 - [ ] Live join shows roster + program preview
 - [ ] `pack:native` bundles `corevideo-native.exe` from `build-dev`
 - [ ] FFmpeg packaging state is known: runtime manifest/DLLs present, or missing-runtime warning accepted

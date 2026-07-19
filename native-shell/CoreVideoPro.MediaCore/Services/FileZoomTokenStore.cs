@@ -49,20 +49,46 @@ public sealed class FileZoomTokenStore : IZoomTokenStore
 
         try
         {
-            await using var stream = File.OpenRead(_filePath);
-            var parsed = await JsonSerializer.DeserializeAsync<StoredTokens>(stream, cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+            StoredTokens? parsed;
+            // The stream must be disposed before the migration re-save below —
+            // File.Create on a file still open for read is a sharing violation.
+            await using (var stream = File.OpenRead(_filePath))
+            {
+                parsed = await JsonSerializer.DeserializeAsync<StoredTokens>(stream, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             if (parsed?.AccessToken is null || parsed.RefreshToken is null)
             {
                 return null;
             }
 
-            return new ZoomOAuthTokens
+            var tokens = new ZoomOAuthTokens
             {
                 AccessToken = Decrypt(parsed.AccessToken),
                 RefreshToken = Decrypt(parsed.RefreshToken),
                 ExpiresAt = parsed.ExpiresAt ?? 0
             };
+
+            // Migration (beta spec S4): a legacy plaintext file passes through the
+            // decrypt delegate unchanged. When an encrypt delegate is configured,
+            // re-save so the secrets land encrypted at rest. A failed rewrite must
+            // never lose a working token, so it is best-effort.
+            if (_encrypt is not null &&
+                (WasStoredPlaintext(parsed.AccessToken, tokens.AccessToken) ||
+                 WasStoredPlaintext(parsed.RefreshToken, tokens.RefreshToken)))
+            {
+                try
+                {
+                    await SaveAsync(tokens, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Keep serving the loaded tokens even if the encrypted rewrite failed.
+                }
+            }
+
+            return tokens;
         }
         catch
         {
@@ -100,8 +126,16 @@ public sealed class FileZoomTokenStore : IZoomTokenStore
         return Task.CompletedTask;
     }
 
-    private string Encrypt(string value) => _encrypt?.Invoke(value) ?? value;
-    private string Decrypt(string value) => _decrypt?.Invoke(value) ?? value;
+    private string Encrypt(string value) =>
+        string.IsNullOrEmpty(value) ? value : _encrypt?.Invoke(value) ?? value;
+
+    private string Decrypt(string value) =>
+        string.IsNullOrEmpty(value) ? value : _decrypt?.Invoke(value) ?? value;
+
+    // A non-empty stored value that the decrypt delegate passed through unchanged
+    // was plaintext at rest (empty values are stored as-is and prove nothing).
+    private static bool WasStoredPlaintext(string stored, string decrypted) =>
+        stored.Length > 0 && string.Equals(stored, decrypted, StringComparison.Ordinal);
 
     private sealed class StoredTokens
     {

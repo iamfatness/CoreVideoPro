@@ -1,4 +1,7 @@
 // Bumps package.json semver and rolls CHANGELOG [Unreleased] into a dated section.
+// Always re-stamps the appxmanifest/csproj afterwards (scripts/stamp-version.mjs)
+// so a bump can never leave the version sources diverged (spec §D1).
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -33,3 +36,7 @@ const released = changelog.replace(
 writeFileSync(changelogPath, released);
 
 console.info(`[bump] ${pkg.name} -> ${next}`);
+
+execFileSync(process.execPath, [join(root, "scripts", "stamp-version.mjs")], {
+  stdio: "inherit",
+});

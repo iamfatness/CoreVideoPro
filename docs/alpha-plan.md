@@ -100,10 +100,16 @@ A single end-to-end rehearsal that doubles as the backlog of owed rig verificati
 - [ ] Support bundle exports after the run
 
 ### G4 - Stability debt (fix or explicitly accept before alpha)
-- [ ] **Engine-off teardown audit** against the five ZoomISO deadlock rules (stop off
+- [x] **Engine-off teardown audit** against the five ZoomISO deadlock rules (stop off
       the UI thread, stop-then-destroy order, no locks across SDK calls, watchdog on
       async stop confirm, no STA marshaling) - this is the reference product's
-      production failure; same architecture, same risk
+      production failure; same architecture, same risk. DONE 2026-07-18 (PR #302):
+      five confirmed findings fixed - engine exit now stops raw video + drains the
+      pump before CleanUPSDK, ParticipantSubscription teardown serializes with the
+      raw-frame callback (stopping flag + drain), EngineVideo maps got a mutex with
+      SDK calls kept outside it, leave-meeting bridge Stop moved off the UI thread,
+      and vcam stop() no longer deletes the SHM slot file. Owner rig verification
+      (leave/rejoin cycles, exit-in-meeting, vcam stop/restart) listed in the PR
 - [x] **Stale Zoom OAuth token** hard-fails join with no fallback (known since 07-02) -
       refresh/re-auth path shipped 2026-07-15 (#290): `ZoomOAuthService` validates the
       access token and refreshes via the broker `/oauth/refresh` before join; verify

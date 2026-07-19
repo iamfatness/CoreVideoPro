@@ -391,6 +391,33 @@ public sealed partial class SettingsViewModel : ObservableObject
         });
     }
 
+    /// <summary>
+    /// S1 crash pipeline: writes the same redacted support bundle the manual
+    /// export produces, but to a caller-chosen path and without touching the
+    /// settings-page status text. Thin wrapper over the existing export path —
+    /// SupportBundleBuilder itself is untouched (a parallel S2 task extends it).
+    /// Call from the UI thread; the destination factory reads VM state.
+    /// </summary>
+    public async Task<bool> TryWriteSupportBundleSnapshotAsync(string filePath)
+    {
+        try
+        {
+            var outputs = _outputDestinationsFactory?.Invoke();
+            await SupportBundleBuilder.WriteAsync(
+                filePath,
+                _bridge.LastSnapshot,
+                _bridge.Health,
+                new SupportBundleAppInfo(),
+                outputs).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"crash-report: support bundle snapshot failed {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
     [RelayCommand]
     private async Task ExportSupportBundleAsync()
     {
@@ -405,13 +432,59 @@ public sealed partial class SettingsViewModel : ObservableObject
                 _bridge.Health,
                 new SupportBundleAppInfo(),
                 outputs).ConfigureAwait(true);
-            SupportBundleStatus = $"Support bundle exported to {path}";
             LaunchLog.Write($"support-bundle: exported to {path}");
+
+            // S2 bundle v2: also pack the JSON + bounded/redacted log tails +
+            // crash-dump listing into a zip next to the JSON. A zip failure must
+            // never lose the JSON export — report the JSON path instead.
+            string? zipPath = null;
+            try
+            {
+                var archive = await SupportBundleArchiveBuilder.WriteArchiveAsync(
+                    SupportBundleArchiveBuilder.DefaultArchivePath(path),
+                    path).ConfigureAwait(true);
+                zipPath = archive.ZipPath;
+                LaunchLog.Write(
+                    $"support-bundle: archive written {zipPath} ({archive.IncludedCount}/{archive.Entries.Count} entries)");
+            }
+            catch (Exception zipEx)
+            {
+                LaunchLog.Write($"support-bundle: archive failed {zipEx.GetType().Name}: {zipEx.Message}");
+            }
+
+            if (zipPath is not null)
+            {
+                SupportBundleStatus = $"Support bundle exported to {zipPath}";
+                RevealInExplorer(zipPath);
+            }
+            else
+            {
+                SupportBundleStatus = $"Support bundle exported to {path} (zip archive failed; see launch.log)";
+            }
         }
         catch (Exception ex)
         {
             SupportBundleStatus = $"Support bundle export failed: {ex.Message}";
             LaunchLog.Write($"support-bundle: export failed {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    // Reveal the exported bundle zip in Explorer (same non-fatal posture as the
+    // recording-folder reveal in ProductionSettingsWindow).
+    private static void RevealInExplorer(string filePath)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{filePath}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"support-bundle: explorer reveal failed {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -719,7 +792,12 @@ public sealed partial class SettingsViewModel : ObservableObject
                 var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
                 ApplyCaptureSnapshot(snapshot);
                 JoinStatus = "Disconnected from Zoom.";
-                _bridge.Stop();
+                // _bridge.Stop() tears down the media-core child (kill-tree +
+                // WaitForExit(1500) under the supervisor gate) - run it off the
+                // UI thread, exactly like the app-exit path (MainWindow.
+                // ShutdownAsync wraps disposal in Task.Run). Inline it here and
+                // leave-meeting freezes the operator console for ~1.5s.
+                await Task.Run(_bridge.Stop).ConfigureAwait(true);
             }
             else
             {

@@ -125,12 +125,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnVirtualCameraEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        // O1: vcam intent persists across launches (restore sets the backing
+        // field directly, so this save only fires on real operator changes).
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
-    partial void OnVirtualCameraMirrorChanged(bool value) => _ = TrySyncMediaCoreAsync();
+    partial void OnVirtualCameraMirrorChanged(bool value)
+    {
+        SaveProductionOutputPreferences();
+        _ = TrySyncMediaCoreAsync();
+    }
 
-    partial void OnVirtualCameraDeviceNameChanged(string value) => _ = TrySyncMediaCoreAsync();
+    partial void OnVirtualCameraDeviceNameChanged(string value)
+    {
+        SaveProductionOutputPreferences();
+        _ = TrySyncMediaCoreAsync();
+    }
 
     public string VirtualCameraStatusLabel
     {
@@ -1102,7 +1113,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioParticipantRows();
 
         _zoomOAuth = new ZoomOAuthService(
-            new FileZoomTokenStore(FileZoomTokenStore.DefaultTokenStorePath()),
+            // S4 secrets-at-rest: DPAPI (CurrentUser) encrypt/decrypt delegates.
+            // Legacy plaintext token files pass through decrypt unchanged and the
+            // store re-saves them encrypted on first load.
+            new FileZoomTokenStore(
+                FileZoomTokenStore.DefaultTokenStorePath(),
+                encrypt: DpapiSecretProtector.Protect,
+                decrypt: DpapiSecretProtector.Unprotect),
             openUrl: ExternalUriLauncher.OpenAsync);
         _zoomOAuthCoordinator = new ZoomOAuthAppCoordinator(
             _zoomOAuth,
@@ -8983,7 +9000,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
         // as the program routes; the core skips the extra composite for single-source previews.
-        var resolvedScenePreviewRoutes = GetPreviewEditableRoutes()
+        var resolvedScenePreviewRoutes = GetPreviewRoutesForSync()
             .Select(ResolveRouteFromShowInput)
             .ToList();
         var resolvedPreviewRoutes = BrowserOverlayProgramService.ApplyKeyState(
@@ -11518,7 +11535,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             var folder = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
-            return new FileProductionOutputPreferencesStore(folder);
+            return CreateFileStore(folder);
         }
         catch (Exception)
         {
@@ -11527,13 +11544,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 var folder = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "CoreVideoPro");
-                return new FileProductionOutputPreferencesStore(folder);
+                return CreateFileStore(folder);
             }
             catch (Exception)
             {
                 return new InMemoryProductionOutputPreferencesStore();
             }
         }
+
+        // S4 secrets-at-rest: RTMP stream key + SRT passphrase are DPAPI-encrypted
+        // field-level; plaintext legacy files load and re-save encrypted.
+        static FileProductionOutputPreferencesStore CreateFileStore(string folder) =>
+            new(folder,
+                protectSecret: DpapiSecretProtector.Protect,
+                unprotectSecret: DpapiSecretProtector.Unprotect);
     }
 
     private void LoadProductionOutputPreferences()
@@ -11669,6 +11693,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
             BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
+            VirtualCameraEnabled = VirtualCameraEnabled,
+            VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraName = string.IsNullOrWhiteSpace(VirtualCameraDeviceName)
+                ? null
+                : VirtualCameraDeviceName,
             MultiviewLayoutMode = NormalizeMultiviewLayoutMode(MultiviewLayoutMode),
             MultiviewTileCount = ClampMultiviewTileCount(MultiviewTileCount),
             MultiviewShowLabels = MultiviewShowLabels,
@@ -11783,6 +11812,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             };
             Overlays.NotifyBrandKitChanged();
         }
+
+        // O1: restore vcam intent via the BACKING fields, not the properties —
+        // the property setters fire SaveProductionOutputPreferences (a no-op
+        // mid-load, but pointless) and TrySyncMediaCoreAsync (the core is not
+        // up yet during construction). The initial full sync in
+        // StartMediaCoreOnLaunchAsync carries these values to the core over the
+        // exact wire the UI toggle rides (VirtualCameraEnabled/Mirror/DeviceName
+        // on the production sync command), so a persisted enabled=true
+        // re-enables the camera once the core is ready — one declarative sync,
+        // no second registration path, idempotent by construction.
+        _virtualCameraEnabled = preferences.VirtualCameraEnabled;
+        _virtualCameraMirror = preferences.VirtualCameraMirror;
+        _virtualCameraDeviceName = preferences.VirtualCameraName ?? string.Empty;
+        OnPropertyChanged(nameof(VirtualCameraEnabled));
+        OnPropertyChanged(nameof(VirtualCameraMirror));
+        OnPropertyChanged(nameof(VirtualCameraDeviceName));
+        OnPropertyChanged(nameof(VirtualCameraStatusLabel));
 
         MultiviewLayoutMode = NormalizeMultiviewLayoutMode(preferences.MultiviewLayoutMode);
         MultiviewTileCount = ClampMultiviewTileCount(preferences.MultiviewTileCount);
@@ -12778,12 +12824,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return _livePreviewDraft;
     }
 
+    // Read-only companion for sync-context building: returns the draft when one
+    // is valid for the current preview scene, else the stored routes — with ZERO
+    // side effects. BuildProductionSyncContext runs on the spine-sync background
+    // thread as well as the UI thread; the editable accessor above mutates draft
+    // state and (via DiscardLivePreviewDraft) raises binding notifications, which
+    // throw RPC_E_WRONG_THREAD (0x8001010E) off the UI thread — that killed every
+    // spine payload and silently stopped Zoom capture requests (#291 regression).
+    private List<SourceRoute> GetPreviewRoutesForSync()
+    {
+        var draft = _livePreviewDraft;
+        if (draft is not null &&
+            string.Equals(_livePreviewDraftSceneId, PreviewSceneId, StringComparison.Ordinal) &&
+            string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal))
+        {
+            return draft;
+        }
+
+        return GetMutableRoutes(PreviewSceneId);
+    }
+
     private void DiscardLivePreviewDraft()
     {
         _livePreviewDraft = null;
         _livePreviewDraftSceneId = null;
-        OnPropertyChanged(nameof(CanTake));
-        TakeCommand.NotifyCanExecuteChanged();
+        // Binding notifications must land on the UI thread; this can be reached
+        // from non-UI callers (defense-in-depth for the 0x8001010E class above).
+        RunOnUiThread(() =>
+        {
+            OnPropertyChanged(nameof(CanTake));
+            TakeCommand.NotifyCanExecuteChanged();
+        });
     }
 
     // Commits the live-scene draft into the stored scene (called by the Update
