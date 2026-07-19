@@ -16,13 +16,13 @@ What exists vs. what the plans assumed:
 |---|---|
 | Packaging | `scripts/package-native.ps1` (loose folder) and `package-native-msix.ps1` (unsigned MSIX with a robust MakeAppx/layout fallback chain) both stage native core + Zoom runtime + FFmpeg. Neither registers the vcam DLL, sets up crash dumps, nor creates the recording folder |
 | Signing | `sign-native-msix.ps1` is dev-only: self-signed cert, and **exits 0 when signtool is missing** — a silent no-op. No production cert handling anywhere |
-| Versioning | THREE unsynced version sources: `package.json` (0.1.0), `Package.appxmanifest` (0.1.0.0, `Publisher="CN=CoreVideo Pro Dev"`), csproj (`ApplicationDisplayVersion`). Release tag validation checks only `package.json` |
+| Versioning | ~~THREE unsynced version sources~~ **Synced via D1 (2026-07-18):** `package.json` is the source of truth; `scripts/stamp-version.mjs` stamps `Package.appxmanifest` (`Identity Version`, still `Publisher="CN=CoreVideo Pro Dev"` — D2 owns that) and the csproj; CI `version-sync` job enforces it. Release tag validation still checks only `package.json` (fine — everything else must now match it) |
 | CI release | `release.yml` builds the **loose folder** (not MSIX), never signs, never creates a GitHub Release; the artifact upload is gated on `COREVIDEO_PUBLISH == 'never'` (inverted/dead). `bump:version` + `release:notes` exist but are unwired |
 | Auto-update | **Built (D4, 2026-07-18):** `scripts/make-appinstaller.mjs` emits the `.appinstaller` + `latest.json`, and the shell runs a non-blocking startup version check (`COREVIDEO_UPDATE_FEED_URL`, empty default = off). Not yet hosted — the feed URL/domain is the D0/D4 hosting decision (owner) |
 | Crash handling | Shell logs unhandled exceptions to `launch.log` (and swallows recoverable COM ones); `MediaCoreSupervisor` tracks child crashes (ring of 20, respawn ≤5). **No code touches `%LOCALAPPDATA%\CrashDumps`** — no detection, no upload. `setup-crash-dumps.ps1` (elevated, HKLM) is a manual dev-rig script |
 | Support bundle | REAL and tested: `SupportBundleBuilder` (MediaCore) → `%LOCALAPPDATA%\CoreVideoPro\support-bundles\*.json`, stream keys/passphrases redacted (`present-redacted`), endpoint query secrets scrubbed, covered by `SupportBundleExportTests`. Gap: JSON snapshot only — does **not** collect `launch.log` / `media-core.log` / `perf.log` / dumps, no archive, no upload |
 | Secrets at rest | Zoom OAuth tokens (`zoom-oauth.json`) and RTMP stream key / SRT passphrase (`production-output-preferences.json`) are **plaintext**. `FileZoomTokenStore` has encrypt/decrypt delegates — constructed with none |
-| Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest has **no storage** (console.log only). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
+| Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest stores crashes in R2 + a KV index and requires its API key since S0 (2026-07-18). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
 | OAuth broker | External (`corevideo.iamfatness.us`, lives in the CoreVideo repo). Shell is hard-wired to it for sign-in AND refresh (#290). Only the start URL is overridable (`COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`). **Discrepancy: code default app-return URI is `corevideo://oauth/callback`; the appxmanifest + docs say `corevideopro://`** |
 | First-run | No wizard, no first-launch flag. Canvas default is **already 1080p** (`MediaCoreProductionSyncContext.DefaultCanvasOutputProfile` = 1920x1080) — the plan's "4K is an RTX-4090 assumption" worry is stale; 4K is opt-in |
 | Wizard targets | Monitor device, mic (deliberately default-OFF), recording folder (defaults to `%USERPROFILE%\Videos\CoreVideo Pro`), Zoom sign-in all exist as bindable settings. **Vcam enable/mirror/name are NOT persisted** (reset every launch). **No single "selected camera" setting exists** — cameras are scene sources, not a global pick |
@@ -54,6 +54,16 @@ What exists vs. what the plans assumed:
 `scripts/stamp-version.mjs` invoked by both packagers) rewrites the appxmanifest
 `Identity Version` (x.y.z.0) and csproj `ApplicationDisplayVersion`. CI gains a
 version-sync check; the release tag validator keeps validating `package.json`.
+
+**Status: SHIPPED 2026-07-18.** `scripts/stamp-version.mjs` (plain Node, no
+deps, targeted string replacement — no XML reformat) rewrites the appxmanifest
+`Identity Version` (x.y.z.0) and the csproj `ApplicationDisplayVersion` (x.y.z)
++ `ApplicationVersion` (major\*10000 + minor\*100 + patch); `--check` exits
+non-zero with a diff-style report. Invoked by both packagers before staging, by
+`npm run bump:version` after the bump (a bump can never leave sources
+diverged), and by the new `version-sync` job in `ci.yml`. npm entry points:
+`stamp:version` / `stamp:version:check`. `release.yml` picks up the same check
+as part of the D5 rework (not done here).
 
 ### D2 — Production signing mode
 `sign-native-msix.ps1` grows `-Mode production`: signs via Trusted Signing
@@ -113,6 +123,17 @@ in the shell against a static `latest.json` at the same host → non-blocking
   suppresses re-showing until a newer version ships.
 
 ### D5 — CI release pipeline (tag → release)
+**Status: IMPLEMENTED 2026-07-18** (`.github/workflows/release.yml` reworked —
+pending #293 (D1 stamp) + #295 (D2 prod sign) merge, the D4 `make-appinstaller`
+contract landing, and secrets/vars provisioning: `ZOOM_SDK_URL`, exactly one
+signing route, `COREVIDEO_UPDATE_BASE_URL`; the update-host publish step is a
+documented fail-soft TODO until the D0/D4 hosting decision). The workflow's
+header comment lists every required secret/variable. The old loose-folder CI
+job (and its inverted `COREVIDEO_PUBLISH == 'never'` upload gate) is deleted —
+nothing consumed its artifact; `npm run pack:native` remains for local use.
+`workflow_dispatch` is a build dry-run that emits a loudly-named UNSIGNED
+artifact and never creates a release.
+
 Rework `release.yml`: `v*` tag → validate version sync (D1) → windows job:
 stage Zoom SDK (per D0.3; if bundling, CI needs the SDK from a **private**
 source — private repo release asset or R2, never the public repo) → build
@@ -126,11 +147,19 @@ after the tag.
 ## 3. S — Supportability
 
 ### S0 — Give telemetry-ingest real storage (prerequisite for S1/S3)
-The worker accepts crash/event POSTs and **logs them to nowhere**. Add: R2
-bucket binding for report payloads (crash zips can be MBs), KV or D1 index
-(reportId → metadata), require `TELEMETRY_API_KEY` (already supported, must be
-set), size cap + basic rate limit. Keep the API shape (`/v1/crashes`,
-`/v1/events`) — the smoke script already exercises it.
+**Status: SHIPPED 2026-07-18** (branch `claude/beta-s0-telemetry-storage`;
+contract + deploy steps in `services/telemetry-ingest/README.md`). Crashes →
+R2 `REPORTS_BUCKET` at `crashes/<yyyy-mm-dd>/<reportId>.json` (key scheme
+already handles S1's `.zip`/`.bin`); every report → KV `REPORTS_KV` index
+`report:<reportId>` (timestamp/kind/version/machineClass/size/r2Key; events
+≤64KB keep their payload inline in KV — no R2 object per tiny event).
+`TELEMETRY_API_KEY` is REQUIRED (unset = loud 500, bad bearer = 401); size
+caps 25MB crashes / 64KB events (413); per-IP token bucket 60/min (429,
+per-isolate only — limits documented honestly in the worker). API shape
+(`/v1/crashes`, `/v1/events`, `{reportId, accepted}`) unchanged; the smoke
+script now also posts an event. **Owner action before next deploy:** create
+the R2 bucket + KV namespace and paste the namespace id into
+`services/telemetry-ingest/wrangler.jsonc` (steps in the service README).
 
 ### S1 — Crash pipeline (detect → bundle → offer → upload)
 - On launch, scan `%LOCALAPPDATA%\CrashDumps` for new `corevideo-native.exe.*`,

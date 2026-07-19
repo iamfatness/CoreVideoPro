@@ -8,6 +8,15 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **One version, stamped everywhere (beta D1).** `scripts/stamp-version.mjs` makes
+  `package.json` the single version source of truth: it rewrites the appxmanifest
+  `Identity Version` (x.y.z.0) and the csproj `ApplicationDisplayVersion` /
+  `ApplicationVersion`, idempotently and without reformatting the files. Both
+  packagers stamp before staging, `npm run bump:version` stamps after bumping, and
+  a new CI `version-sync` job (`node scripts/stamp-version.mjs --check`) fails the
+  build with a diff-style report when any source drifts. npm scripts:
+  `stamp:version` / `stamp:version:check`.
+
 - **Unified Studio multiviewer + Program/Preview and Multiviewer pop-outs.** The Studio center
   is now ONE unified multiviewer (ATEM/Riedel-style, `pgmPvwTop`) that ALWAYS shows the
   PROGRAM + PREVIEW cells (top, red/green tally) over the enabled Show-Input source tiles

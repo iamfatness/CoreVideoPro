@@ -19,6 +19,14 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw "node is required on PATH for packaging helpers."
 }
 
+# D1: package.json is the single version source of truth; re-stamp the
+# appxmanifest + csproj before anything is built or staged.
+Write-Host "[pack:native] stamping version from package.json..." -ForegroundColor Cyan
+node (Join-Path $repoRoot "scripts\stamp-version.mjs")
+if ($LASTEXITCODE -ne 0) {
+  throw "Version stamp failed (scripts/stamp-version.mjs exited $LASTEXITCODE)."
+}
+
 Write-Host "[pack:native] publishing WinUI shell (Release, win-x64)..." -ForegroundColor Cyan
 dotnet publish $project -c Release -r win-x64 --self-contained false
 if ($LASTEXITCODE -ne 0) {
