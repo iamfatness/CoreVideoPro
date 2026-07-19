@@ -6,8 +6,14 @@ namespace CoreVideoPro.WinUI.Services;
 
 public sealed class ZoomOAuthAppCoordinator
 {
-    public const string Protocol = "corevideopro";
-    public static readonly string[] SupportedProtocols = ["corevideo", Protocol];
+    // "corevideo" is THE OAuth app-return scheme: the deployed broker
+    // (corevideo.iamfatness.us site-worker.js) hard-rejects any return_uri other
+    // than corevideo://oauth/callback, and ZoomOAuthManifest.DefaultAppReturnUri
+    // + Package.appxmanifest both declare it. "corevideopro" is kept as a legacy
+    // alias only (older HKCU registrations / docs).
+    public const string Protocol = "corevideo";
+    public const string LegacyProtocol = "corevideopro";
+    public static readonly string[] SupportedProtocols = [Protocol, LegacyProtocol];
 
     private readonly ZoomOAuthService _oauth;
     private readonly DispatcherQueue _dispatcher;

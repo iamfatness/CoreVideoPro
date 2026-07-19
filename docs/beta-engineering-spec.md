@@ -21,7 +21,7 @@ What exists vs. what the plans assumed:
 | Auto-update | **Zero code.** No version check, no channel, no AppInstaller URI in the manifest |
 | Crash handling | Shell logs unhandled exceptions to `launch.log` (and swallows recoverable COM ones); `MediaCoreSupervisor` tracks child crashes (ring of 20, respawn ≤5). **No code touches `%LOCALAPPDATA%\CrashDumps`** — no detection, no upload. `setup-crash-dumps.ps1` (elevated, HKLM) is a manual dev-rig script |
 | Support bundle | REAL and tested: `SupportBundleBuilder` (MediaCore) → `%LOCALAPPDATA%\CoreVideoPro\support-bundles\*.json`, stream keys/passphrases redacted (`present-redacted`), endpoint query secrets scrubbed, covered by `SupportBundleExportTests`. Gap: JSON snapshot only — does **not** collect `launch.log` / `media-core.log` / `perf.log` / dumps, no archive, no upload |
-| Secrets at rest | Zoom OAuth tokens (`zoom-oauth.json`) and RTMP stream key / SRT passphrase (`production-output-preferences.json`) are **plaintext**. `FileZoomTokenStore` has encrypt/decrypt delegates — constructed with none |
+| Secrets at rest | ~~plaintext~~ **DONE (S4, 2026-07-18):** Zoom OAuth tokens and RTMP stream key / SRT passphrase are DPAPI-encrypted at rest (`DpapiSecretProtector`, CurrentUser, field-level `dpapi:` prefix); plaintext legacy files load and re-save encrypted (prefs schema v4) |
 | Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest has **no storage** (console.log only). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
 | OAuth broker | External (`corevideo.iamfatness.us`, lives in the CoreVideo repo). Shell is hard-wired to it for sign-in AND refresh (#290). Only the start URL is overridable (`COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`). **Discrepancy: code default app-return URI is `corevideo://oauth/callback`; the appxmanifest + docs say `corevideopro://`** |
 | First-run | No wizard, no first-launch flag. Canvas default is **already 1080p** (`MediaCoreProductionSyncContext.DefaultCanvasOutputProfile` = 1920x1080) — the plan's "4K is an RTX-4090 assumption" worry is stale; 4K is opt-in |
@@ -142,6 +142,17 @@ class (GPU tier, CPU cores, RAM band). POST `/v1/events`. This is "is beta
 healthy" data, not analytics — keep the payload enumerable in the settings UI.
 
 ### S4 — Secrets at rest (cheap, do first)
+
+**Status: SHIPPED 2026-07-18 (PR `claude/beta-s4-secrets`).** All three items:
+`DpapiSecretProtector` (WinUI, `ProtectedData` CurrentUser, `"dpapi:"+base64`
+field-level format) feeds `FileZoomTokenStore`'s delegates and
+`FileProductionOutputPreferencesStore` (prefs schema v4); plaintext legacy files
+load fine and re-save encrypted on first load. URI: the deployed broker
+(`site-worker.js handleOauthStart`) hard-rejects any `return_uri` except
+`corevideo://oauth/callback`, so the code default was already correct — the
+manifest/docs were wrong and now declare `corevideo` (with `corevideopro` kept
+as legacy alias); pinned by `ZoomOAuthManifestTests`.
+
 - `FileZoomTokenStore` already takes encrypt/decrypt delegates: pass DPAPI
   (`ProtectedData`, CurrentUser scope) in `StudioViewModel`'s construction.
   Migration: on load, if plaintext parse succeeds → re-save encrypted.

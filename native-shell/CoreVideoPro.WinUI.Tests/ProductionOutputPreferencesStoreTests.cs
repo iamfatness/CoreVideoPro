@@ -212,4 +212,140 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.Null(loaded);
     }
+
+    // ---- S4 secrets at rest (DPAPI field-level encryption + migration) ----
+
+    private static FileProductionOutputPreferencesStore CreateDpapiStore(string folder) =>
+        new(folder,
+            protectSecret: DpapiSecretProtector.Protect,
+            unprotectSecret: DpapiSecretProtector.Unprotect);
+
+    private static string TempFolder() => Path.Combine(
+        Path.GetTempPath(), "corevideo-output-preferences-tests", Guid.NewGuid().ToString("N"));
+
+    [Fact]
+    public void FileStore_WithDpapi_EncryptsOnlyTheSecretFieldsAtRest()
+    {
+        var folder = TempFolder();
+        var store = CreateDpapiStore(folder);
+
+        store.Save(new ProductionOutputPreferences
+        {
+            StreamRtmpServerUrl = "rtmps://live.example/app",
+            StreamRtmpStreamKey = "super-secret-stream-key",
+            StreamSrtPassphrase = "srt-passphrase-42",
+            RecordingFilenamePrefix = "alpha-show"
+        });
+
+        var raw = File.ReadAllText(Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName));
+
+        // Secrets are unreadable and carry the recognizable prefix...
+        Assert.DoesNotContain("super-secret-stream-key", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("srt-passphrase-42", raw, StringComparison.Ordinal);
+        Assert.Contains(DpapiSecretProtector.Prefix, raw, StringComparison.Ordinal);
+        // ...while everything else stays diffable plaintext (field-level, not whole-file).
+        Assert.Contains("rtmps://live.example/app", raw, StringComparison.Ordinal);
+        Assert.Contains("alpha-show", raw, StringComparison.Ordinal);
+
+        var loaded = store.Load();
+        Assert.NotNull(loaded);
+        Assert.Equal("super-secret-stream-key", loaded.StreamRtmpStreamKey);
+        Assert.Equal("srt-passphrase-42", loaded.StreamSrtPassphrase);
+        Assert.Equal("rtmps://live.example/app", loaded.StreamRtmpServerUrl);
+    }
+
+    [Fact]
+    public void FileStore_WithDpapi_MigratesPlaintextV3FileToEncryptedV4()
+    {
+        var folder = TempFolder();
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName);
+        File.WriteAllText(path, """
+            {
+              "Version": 3,
+              "LocalAudioSourceEnabled": true,
+              "StreamRtmpStreamKey": "legacy-plain-key",
+              "StreamSrtPassphrase": "legacy-plain-pass"
+            }
+            """);
+
+        var store = CreateDpapiStore(folder);
+        var loaded = store.Load();
+
+        // Plaintext prefs load fine (never lose a working key)...
+        Assert.NotNull(loaded);
+        Assert.Equal("legacy-plain-key", loaded.StreamRtmpStreamKey);
+        Assert.Equal("legacy-plain-pass", loaded.StreamSrtPassphrase);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, loaded.Version);
+        // ...and the v3 explicit local-audio consent is NOT reset by the v4 bump
+        // (the v1-2 implicit-capture migration is pinned to < 3).
+        Assert.True(loaded.LocalAudioSourceEnabled);
+
+        // The load rewrote the file encrypted at the new version.
+        var raw = File.ReadAllText(path);
+        Assert.DoesNotContain("legacy-plain-key", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("legacy-plain-pass", raw, StringComparison.Ordinal);
+        Assert.Contains(DpapiSecretProtector.Prefix, raw, StringComparison.Ordinal);
+        Assert.Contains($"\"Version\": {ProductionOutputPreferences.CurrentVersion}", raw, StringComparison.Ordinal);
+
+        // The migrated file round-trips.
+        var reloaded = store.Load();
+        Assert.NotNull(reloaded);
+        Assert.Equal("legacy-plain-key", reloaded.StreamRtmpStreamKey);
+        Assert.Equal("legacy-plain-pass", reloaded.StreamSrtPassphrase);
+    }
+
+    [Fact]
+    public void FileStore_WithDpapi_EncryptedFileIsNotRewrittenOnLoad()
+    {
+        var folder = TempFolder();
+        var store = CreateDpapiStore(folder);
+        store.Save(new ProductionOutputPreferences { StreamRtmpStreamKey = "key-1" });
+
+        var path = Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName);
+        var rawBefore = File.ReadAllText(path);
+
+        var loaded = store.Load();
+
+        Assert.NotNull(loaded);
+        Assert.Equal("key-1", loaded.StreamRtmpStreamKey);
+        Assert.Equal(rawBefore, File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void FileStore_WithDpapi_UndecryptableSecretDropsOnlyThatField()
+    {
+        var folder = TempFolder();
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName);
+        File.WriteAllText(path, $$"""
+            {
+              "Version": 4,
+              "StreamRtmpServerUrl": "rtmps://live.example/app",
+              "StreamRtmpStreamKey": "{{DpapiSecretProtector.Prefix}}AAAA"
+            }
+            """);
+
+        var store = CreateDpapiStore(folder);
+        var loaded = store.Load();
+
+        // A blob from another user/machine is unusable — the single field drops
+        // (operator re-enters it) but the rest of the preferences survive.
+        Assert.NotNull(loaded);
+        Assert.Null(loaded.StreamRtmpStreamKey);
+        Assert.Equal("rtmps://live.example/app", loaded.StreamRtmpServerUrl);
+    }
+
+    [Fact]
+    public void FileStore_WithoutDelegates_KeepsPlaintextBehavior()
+    {
+        var folder = TempFolder();
+        var store = new FileProductionOutputPreferencesStore(folder);
+
+        store.Save(new ProductionOutputPreferences { StreamRtmpStreamKey = "plain-key" });
+
+        var raw = File.ReadAllText(Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName));
+        Assert.Contains("plain-key", raw, StringComparison.Ordinal);
+        Assert.Equal("plain-key", store.Load()?.StreamRtmpStreamKey);
+    }
 }
