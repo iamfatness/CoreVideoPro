@@ -125,12 +125,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnVirtualCameraEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        // O1: vcam intent persists across launches (restore sets the backing
+        // field directly, so this save only fires on real operator changes).
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
-    partial void OnVirtualCameraMirrorChanged(bool value) => _ = TrySyncMediaCoreAsync();
+    partial void OnVirtualCameraMirrorChanged(bool value)
+    {
+        SaveProductionOutputPreferences();
+        _ = TrySyncMediaCoreAsync();
+    }
 
-    partial void OnVirtualCameraDeviceNameChanged(string value) => _ = TrySyncMediaCoreAsync();
+    partial void OnVirtualCameraDeviceNameChanged(string value)
+    {
+        SaveProductionOutputPreferences();
+        _ = TrySyncMediaCoreAsync();
+    }
 
     public string VirtualCameraStatusLabel
     {
@@ -11617,6 +11628,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
             BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
+            VirtualCameraEnabled = VirtualCameraEnabled,
+            VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraName = string.IsNullOrWhiteSpace(VirtualCameraDeviceName)
+                ? null
+                : VirtualCameraDeviceName,
             MultiviewLayoutMode = NormalizeMultiviewLayoutMode(MultiviewLayoutMode),
             MultiviewTileCount = ClampMultiviewTileCount(MultiviewTileCount),
             MultiviewShowLabels = MultiviewShowLabels,
@@ -11731,6 +11747,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             };
             Overlays.NotifyBrandKitChanged();
         }
+
+        // O1: restore vcam intent via the BACKING fields, not the properties —
+        // the property setters fire SaveProductionOutputPreferences (a no-op
+        // mid-load, but pointless) and TrySyncMediaCoreAsync (the core is not
+        // up yet during construction). The initial full sync in
+        // StartMediaCoreOnLaunchAsync carries these values to the core over the
+        // exact wire the UI toggle rides (VirtualCameraEnabled/Mirror/DeviceName
+        // on the production sync command), so a persisted enabled=true
+        // re-enables the camera once the core is ready — one declarative sync,
+        // no second registration path, idempotent by construction.
+        _virtualCameraEnabled = preferences.VirtualCameraEnabled;
+        _virtualCameraMirror = preferences.VirtualCameraMirror;
+        _virtualCameraDeviceName = preferences.VirtualCameraName ?? string.Empty;
+        OnPropertyChanged(nameof(VirtualCameraEnabled));
+        OnPropertyChanged(nameof(VirtualCameraMirror));
+        OnPropertyChanged(nameof(VirtualCameraDeviceName));
+        OnPropertyChanged(nameof(VirtualCameraStatusLabel));
 
         MultiviewLayoutMode = NormalizeMultiviewLayoutMode(preferences.MultiviewLayoutMode);
         MultiviewTileCount = ClampMultiviewTileCount(preferences.MultiviewTileCount);

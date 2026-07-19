@@ -8,7 +8,11 @@ public sealed class ProductionOutputPreferences
     // DPAPI-encrypted at rest ("dpapi:" + base64 blob, field-level so the rest
     // of the file stays diffable). Older plaintext files load fine and are
     // re-saved encrypted on first load.
-    public const int CurrentVersion = 4;
+    // v5 (beta spec O1): virtual-camera enable/mirror/name persist so they
+    // survive restarts (they were live-synced but reset every launch). Older
+    // files migrate with the in-app defaults: enabled=false, mirror=false,
+    // name=null (blank keeps the default "CoreVideo Pro Camera" name).
+    public const int CurrentVersion = 5;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -63,6 +67,13 @@ public sealed class ProductionOutputPreferences
     public double LowerThirdBuildOutMs { get; set; }
     public string? BrandLowerThirdStyle { get; set; }
     public string? BrandDefaultOverlayBehavior { get; set; }
+    // Virtual camera (beta spec O1): operator intent survives restarts. Enabled
+    // deliberately defaults to false — exposing the program feed system-wide is
+    // an explicit operator action on a fresh profile, mirroring the local-audio
+    // capture posture above.
+    public bool VirtualCameraEnabled { get; set; }
+    public bool VirtualCameraMirror { get; set; }
+    public string? VirtualCameraName { get; set; }
     public string? MultiviewLayoutMode { get; set; }
     public int MultiviewTileCount { get; set; } = 8;
     public bool MultiviewShowLabels { get; set; } = true;
@@ -191,7 +202,9 @@ public static class ProductionOutputPreferencesSerializer
             // Versions 1-2 defaulted local capture to enabled and selected the
             // first discovered endpoint automatically. Treat that legacy state
             // as implicit, not consent to seize the device on every launch.
-            // (Pinned to < 3: the v4 secrets-at-rest bump must not re-run it.)
+            // (Pinned to < 3: the v4 secrets / v5 vcam bumps must not re-run it.
+            // The v5 vcam fields need no explicit migration — absent fields
+            // deserialize to the documented defaults: off/unmirrored/default name.)
             if (preferences.Version < 3)
             {
                 preferences.LocalAudioSourceEnabled = false;
