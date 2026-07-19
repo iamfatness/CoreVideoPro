@@ -18,7 +18,7 @@ What exists vs. what the plans assumed:
 | Signing | **D2 shipped 2026-07-18:** `sign-native-msix.ps1 -Mode production` signs via Azure Trusted Signing (dlib) or PFX/thumbprint from env, requires an RFC3161 timestamp, runs `signtool verify /pa`, enforces the manifest-Publisher/cert-subject match, and **hard-fails on any gap** (distinct exit codes). `-Mode dev` (default) keeps the self-signed flow and still exits 0 without signtool, but now prints a LOUD "ARTIFACT LEFT UNSIGNED" warning. Decision logic covered by `scripts/tests/test-sign-native-msix.ps1` (10 dry-run cases). Cert identity itself still unprovisioned (D0.1) |
 | Versioning | ~~THREE unsynced version sources~~ **Synced via D1 (2026-07-18):** `package.json` is the source of truth; `scripts/stamp-version.mjs` stamps `Package.appxmanifest` (`Identity Version`, still `Publisher="CN=CoreVideo Pro Dev"` — D2 owns that) and the csproj; CI `version-sync` job enforces it. Release tag validation still checks only `package.json` (fine — everything else must now match it) |
 | CI release | `release.yml` builds the **loose folder** (not MSIX), never signs, never creates a GitHub Release; the artifact upload is gated on `COREVIDEO_PUBLISH == 'never'` (inverted/dead). `bump:version` + `release:notes` exist but are unwired |
-| Auto-update | **Zero code.** No version check, no channel, no AppInstaller URI in the manifest |
+| Auto-update | **Built (D4, 2026-07-18):** `scripts/make-appinstaller.mjs` emits the `.appinstaller` + `latest.json`, and the shell runs a non-blocking startup version check (`COREVIDEO_UPDATE_FEED_URL`, empty default = off). Not yet hosted — the feed URL/domain is the D0/D4 hosting decision (owner) |
 | Crash handling | Shell logs unhandled exceptions to `launch.log` (and swallows recoverable COM ones); `MediaCoreSupervisor` tracks child crashes (ring of 20, respawn ≤5). **No code touches `%LOCALAPPDATA%\CrashDumps`** — no detection, no upload. `setup-crash-dumps.ps1` (elevated, HKLM) is a manual dev-rig script |
 | Support bundle | REAL and tested: `SupportBundleBuilder` (MediaCore) → `%LOCALAPPDATA%\CoreVideoPro\support-bundles\*.json`, stream keys/passphrases redacted (`present-redacted`), endpoint query secrets scrubbed, covered by `SupportBundleExportTests`. Gap: JSON snapshot only — does **not** collect `launch.log` / `media-core.log` / `perf.log` / dumps, no archive, no upload |
 | Secrets at rest | Zoom OAuth tokens (`zoom-oauth.json`) and RTMP stream key / SRT passphrase (`production-output-preferences.json`) are **plaintext**. `FileZoomTokenStore` has encrypt/decrypt delegates — constructed with none |
@@ -124,6 +124,31 @@ stable URL (R2 bucket behind the existing Cloudflare account + a custom domain).
 Belt-and-suspenders (and the fallback if D0.2 goes EXE): a startup version check
 in the shell against a static `latest.json` at the same host → non-blocking
 "update available" bar. No delta/channel logic in beta; one channel.
+
+**Status (2026-07-18): BUILT — hosting decision still the owner's (D0).**
+- `scripts/make-appinstaller.mjs` (`npm run make:appinstaller`) generates the
+  `.appinstaller` (Identity Name/Publisher parsed from the real
+  `Package.appxmanifest`, Version `x.y.z.0`, `<OnLaunch
+  HoursBetweenUpdateChecks="0">`) and, with `--latest-json`, the `latest.json`
+  feed (`{version, msixUrl, appinstallerUrl, sha256?}`; `--msix-path` adds the
+  SHA-256). D5's release pipeline calls it as:
+  `node scripts/make-appinstaller.mjs --version <x.y.z> --msix-url <https>
+  --appinstaller-url <https> --output <path> [--latest-json <path>]
+  [--msix-path <msix>]`. Https URLs and `x.y.z` are validated; failures exit
+  non-zero. Vitest-covered (`scripts/make-appinstaller.test.mjs`).
+- Shell startup check: `UpdateNotificationService` (WinUI) + `UpdateCheckService`
+  / `UpdateFeedParser` / `AppUpdateVersion` / `DismissedUpdateVersionStore`
+  (MediaCore, xunit-covered). Reads **`COREVIDEO_UPDATE_FEED_URL`** (the
+  `latest.json` URL; **empty/unset = check disabled**, the default until
+  hosting exists; https, `file://`, and local paths accepted — the latter two
+  for rig tests). Runs once per launch, ~5 s after startup, fully off-thread;
+  numeric x.y.z compare (packaged = package identity, unpackaged = assembly
+  version); failures are silently logged to `launch.log` (§7: never block or
+  nag). A newer version surfaces a static one-shot InfoBar ("Update available —
+  vX.Y.Z", "Get update" opens the appinstaller URL in the browser); dismissing
+  persists that version in `%LOCALAPPDATA%\CoreVideoPro\update-dismissed.json`
+  (standalone flag file, deliberately not ProductionOutputPreferences) and
+  suppresses re-showing until a newer version ships.
 
 ### D5 — CI release pipeline (tag → release)
 **Status: IMPLEMENTED 2026-07-18** (`.github/workflows/release.yml` reworked —

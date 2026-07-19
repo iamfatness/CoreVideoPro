@@ -39,6 +39,7 @@
     "sign:native-msix:prod": "powershell -ExecutionPolicy Bypass -File scripts/sign-native-msix.ps1 -Mode production",
     "test:sign-native-msix": "powershell -ExecutionPolicy Bypass -File scripts/tests/test-sign-native-msix.ps1",
     "bump:version": "node scripts/bump-version.mjs",
+    "make:appinstaller": "node scripts/make-appinstaller.mjs",
     "stamp:version": "node scripts/stamp-version.mjs",
     "stamp:version:check": "node scripts/stamp-version.mjs --check",
     "release:notes": "node scripts/release-notes.mjs",
