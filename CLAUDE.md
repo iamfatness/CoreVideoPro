@@ -466,9 +466,18 @@ clicks:0 on a full-length capture). Debug taps hold files OPEN across ticks (fop
 per tick on the worker costs ~13ms). tap-ring-<key>.f32 = ring-reader output (splits
 ring vs downstream).
 
-**Mastering chain M1** (docs/mastering-chain-spec.md): AudioMastering.h on the master
-bus (LUFS ride + glue + ceiling; mastering{} params on the audio sync command; ride dB
-is snapshot telemetry). Owner topology question (master == pgm-l/r?) open in spec 0.
+**Mastering chain M1 + B1** (docs/mastering-chain-spec.md,
+docs/master-vst-round2-spec.md §B1): AudioMastering.h on the master bus (trim →
+filters → tone → LUFS ride → glue → width → ceiling; mastering{} params on the
+audio sync command; ride dB is snapshot telemetry). Topology CLOSED: mastering
+applies ONCE on master, pgm-l/r/stream/mon inherit (owner-confirmed 2026-07-06).
+B1 (2026-07-19): the ceiling is a TRUE-PEAK limiter (4x polyphase detector,
+16-sample lookahead/delay, +0.064ms per 20ms tick measured); glue
+ratio/attack/release/makeup are exposed (defaults = old fixed values,
+bit-exact); optional 3-band LR4 multiband glue (`glueMultiband`, 200Hz/3kHz,
+per-band trims) — single-band stays DEFAULT until the owner's listening pass.
+House laws it obeys: every stage bit-identical bypass at neutral, all DSP state
+(incl. crossovers per band per channel) persists across ticks.
 New specs: docs/capture-sources-spec.md (browser sources via WebView2 host process,
 screen capture via Windows.Graphics.Capture).
 

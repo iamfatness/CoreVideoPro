@@ -87,7 +87,18 @@ shipped); each track's PRs refresh the relevant status tables in the same change
 
 ## 2. Track B — Master
 
-### B1. DSP quality (PR 3)
+### B1. DSP quality (PR 3) — SHIPPED 2026-07-19 (this PR)
+
+Status: all three B1 items landed in `AudioMastering.h` + the mastering{} sync
+command + the Master-bus panel. True-peak limiter replaces the sample-peak
+ceiling (4x polyphase detector, 16-sample lookahead = 0.33ms added latency,
+measured +0.064ms/20ms tick at 48k stereo — no perf gate needed); glue
+ratio/attack/release/makeup exposed with the old fixed values as defaults
+(bit-exact back-compat, test-pinned); 3-band LR4 multiband glue behind
+`glueMultiband` (single-band stays default until the owner's listening pass;
+multiband OFF is bit-identical to the single-band path; neutral band sum is
+flat, test-pinned). `mastering-chain-spec.md` §0 topology closed + chain
+description refreshed in the same change.
 
 - **True-peak limiter:** replace the sample-peak ceiling with a true-peak
   limiter using the existing 4× oversampled detector shape (`computeTruePeakDbfs`)

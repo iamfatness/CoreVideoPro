@@ -361,7 +361,16 @@ public static class MediaCoreCommandBuilder
                 lowShelfDb = context.AudioMasteringLowShelfDb,
                 presenceDb = context.AudioMasteringPresenceDb,
                 highShelfDb = context.AudioMasteringHighShelfDb,
-                stereoWidth = context.AudioMasteringStereoWidth
+                stereoWidth = context.AudioMasteringStereoWidth,
+                // B1 glue dynamics + multiband (master-vst-round2-spec §B1).
+                glueRatio = context.AudioMasteringGlueRatio,
+                glueAttackMs = context.AudioMasteringGlueAttackMs,
+                glueReleaseMs = context.AudioMasteringGlueReleaseMs,
+                glueMakeupDb = context.AudioMasteringGlueMakeupDb,
+                glueMultiband = context.AudioMasteringGlueMultiband,
+                glueBandLowDb = context.AudioMasteringGlueBandLowDb,
+                glueBandMidDb = context.AudioMasteringGlueBandMidDb,
+                glueBandHighDb = context.AudioMasteringGlueBandHighDb
             },
             ["channels"] = context.AudioMixChannels.Select(channel => new
             {

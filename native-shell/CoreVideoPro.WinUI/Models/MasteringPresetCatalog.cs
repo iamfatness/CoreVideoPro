@@ -4,6 +4,8 @@ namespace CoreVideoPro.WinUI.Models;
 /// A complete, atomic snapshot of the built-in master-bus processor.
 /// Keeping this as data lets presets and A/B comparison update the native DSP
 /// in one operation instead of firing a separate media-core sync per control.
+/// B1 glue dynamics default to the pre-B1 fixed values (2:1, 30/250 ms, no
+/// makeup, single-band) so neutral settings stay bit-identical to old behavior.
 /// </summary>
 public sealed record MasteringSettings(
     bool Enabled,
@@ -18,7 +20,15 @@ public sealed record MasteringSettings(
     double PresenceDb,
     double HighShelfDb,
     double StereoWidth,
-    bool LimiterEnabled);
+    bool LimiterEnabled,
+    double GlueRatio = 2.0,
+    double GlueAttackMs = 30.0,
+    double GlueReleaseMs = 250.0,
+    double GlueMakeupDb = 0.0,
+    bool GlueMultiband = false,
+    double GlueBandLowDb = 0.0,
+    double GlueBandMidDb = 0.0,
+    double GlueBandHighDb = 0.0);
 
 public static class MasteringPresetCatalog
 {
@@ -40,7 +50,18 @@ public static class MasteringPresetCatalog
             "input" => current with { InputGainDb = 0.0 },
             "filter" => current with { HighPassHz = 0.0, LowPassHz = 0.0 },
             "tone" => current with { LowShelfDb = 0.0, PresenceDb = 0.0, HighShelfDb = 0.0 },
-            "dynamics" => current with { GlueAmount = 0.0 },
+            "dynamics" => current with
+            {
+                GlueAmount = 0.0,
+                GlueRatio = 2.0,
+                GlueAttackMs = 30.0,
+                GlueReleaseMs = 250.0,
+                GlueMakeupDb = 0.0,
+                GlueMultiband = false,
+                GlueBandLowDb = 0.0,
+                GlueBandMidDb = 0.0,
+                GlueBandHighDb = 0.0
+            },
             "loudness" or "image" => current with { MaxRideDb = 0.0, StereoWidth = 1.0 },
             "limiter" => current with { CeilingDbfs = -1.3, LimiterEnabled = true },
             _ => throw new ArgumentOutOfRangeException(nameof(stageId), stageId, "Unknown mastering stage.")

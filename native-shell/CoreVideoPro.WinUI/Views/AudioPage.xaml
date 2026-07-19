@@ -430,6 +430,57 @@
                                         <Slider Header="Glue" Minimum="0" Maximum="1" StepFrequency="0.05"
                                                 IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
                                                 Value="{x:Bind ViewModel.MasteringGlueAmount, Mode=TwoWay}" />
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <NumberBox Header="Ratio" Minimum="1" Maximum="10"
+                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                       Value="{x:Bind ViewModel.MasteringGlueRatio, Mode=TwoWay}" />
+                                            <NumberBox Grid.Column="1" Header="Makeup · dB" Minimum="-6" Maximum="6"
+                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                       Value="{x:Bind ViewModel.MasteringGlueMakeupDb, Mode=TwoWay}" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <NumberBox Header="Attack · ms" Minimum="1" Maximum="200"
+                                                       SmallChange="5" SpinButtonPlacementMode="Compact"
+                                                       IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                       Value="{x:Bind ViewModel.MasteringGlueAttackMs, Mode=TwoWay}" />
+                                            <NumberBox Grid.Column="1" Header="Release · ms" Minimum="20" Maximum="1000"
+                                                       SmallChange="10" SpinButtonPlacementMode="Compact"
+                                                       IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                       Value="{x:Bind ViewModel.MasteringGlueReleaseMs, Mode=TwoWay}" />
+                                        </Grid>
+                                        <ToggleSwitch Header="3-band glue · LR4 200 Hz / 3 kHz"
+                                                      OnContent="Multiband" OffContent="Single band"
+                                                      IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                      IsOn="{x:Bind ViewModel.MasteringGlueMultiband, Mode=TwoWay}" />
+                                        <Grid ColumnSpacing="6" Visibility="{x:Bind ViewModel.MasteringGlueMultiband, Mode=OneWay}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <NumberBox Header="Low · dB" Minimum="-6" Maximum="6"
+                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                       Value="{x:Bind ViewModel.MasteringGlueBandLowDb, Mode=TwoWay}" />
+                                            <NumberBox Grid.Column="1" Header="Mid · dB" Minimum="-6" Maximum="6"
+                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                       Value="{x:Bind ViewModel.MasteringGlueBandMidDb, Mode=TwoWay}" />
+                                            <NumberBox Grid.Column="2" Header="High · dB" Minimum="-6" Maximum="6"
+                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                       Value="{x:Bind ViewModel.MasteringGlueBandHighDb, Mode=TwoWay}" />
+                                        </Grid>
                                         <NumberBox Header="Max loudness ride · dB" Minimum="0" Maximum="12"
                                                    SmallChange="0.5" SpinButtonPlacementMode="Compact"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"

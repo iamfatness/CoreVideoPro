@@ -1702,6 +1702,16 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     if (const auto* v = mastering->get("presenceDb")) params.presenceDb = v->asNumber();
     if (const auto* v = mastering->get("highShelfDb")) params.highShelfDb = v->asNumber();
     if (const auto* v = mastering->get("stereoWidth")) params.stereoWidth = v->asNumber();
+    // B1 glue dynamics + multiband (master-vst-round2-spec §B1). Absent fields
+    // keep the struct defaults, which equal the pre-B1 fixed values.
+    if (const auto* v = mastering->get("glueRatio")) params.glueRatio = v->asNumber();
+    if (const auto* v = mastering->get("glueAttackMs")) params.glueAttackMs = v->asNumber();
+    if (const auto* v = mastering->get("glueReleaseMs")) params.glueReleaseMs = v->asNumber();
+    if (const auto* v = mastering->get("glueMakeupDb")) params.glueMakeupDb = v->asNumber();
+    if (const auto* v = mastering->get("glueMultiband")) params.glueMultiband = v->asBool();
+    if (const auto* v = mastering->get("glueBandLowDb")) params.glueBandLowDb = v->asNumber();
+    if (const auto* v = mastering->get("glueBandMidDb")) params.glueBandMidDb = v->asNumber();
+    if (const auto* v = mastering->get("glueBandHighDb")) params.glueBandHighDb = v->asNumber();
     if (params.enabled != masteringParams_.enabled || params.targetLufs != masteringParams_.targetLufs) {
       std::fprintf(stderr, "[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
                    params.enabled ? 1 : 0, params.targetLufs, params.ceilingDbfs, params.glueAmount,

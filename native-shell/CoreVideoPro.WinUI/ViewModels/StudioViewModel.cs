@@ -206,6 +206,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private double _masteringStereoWidth = 1.0;
 
+    // B1 glue dynamics (master-vst-round2-spec §B1). Defaults are the pre-B1
+    // fixed values, so an untouched panel is bit-identical to old behavior.
+    [ObservableProperty]
+    private double _masteringGlueRatio = 2.0;
+
+    [ObservableProperty]
+    private double _masteringGlueAttackMs = 30.0;
+
+    [ObservableProperty]
+    private double _masteringGlueReleaseMs = 250.0;
+
+    [ObservableProperty]
+    private double _masteringGlueMakeupDb;
+
+    [ObservableProperty]
+    private bool _masteringGlueMultiband;
+
+    [ObservableProperty]
+    private double _masteringGlueBandLowDb;
+
+    [ObservableProperty]
+    private double _masteringGlueBandMidDb;
+
+    [ObservableProperty]
+    private double _masteringGlueBandHighDb;
+
     [ObservableProperty]
     private bool _audioMonitoringEnabled;
 
@@ -2429,6 +2455,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnMasteringPresenceDbChanged(double value) => SyncMasteringControlChange();
     partial void OnMasteringHighShelfDbChanged(double value) => SyncMasteringControlChange();
     partial void OnMasteringStereoWidthChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueRatioChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueAttackMsChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueReleaseMsChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueMakeupDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueMultibandChanged(bool value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueBandLowDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueBandMidDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueBandHighDbChanged(double value) => SyncMasteringControlChange();
 
     private void SyncMasteringControlChange()
     {
@@ -2508,7 +2542,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MasteringPresenceDb,
         MasteringHighShelfDb,
         MasteringStereoWidth,
-        MasterLimiterEnabled);
+        MasterLimiterEnabled,
+        MasteringGlueRatio,
+        MasteringGlueAttackMs,
+        MasteringGlueReleaseMs,
+        MasteringGlueMakeupDb,
+        MasteringGlueMultiband,
+        MasteringGlueBandLowDb,
+        MasteringGlueBandMidDb,
+        MasteringGlueBandHighDb);
 
     private void ApplyMasteringSettings(MasteringSettings settings)
     {
@@ -2528,6 +2570,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MasteringHighShelfDb = settings.HighShelfDb;
             MasteringStereoWidth = settings.StereoWidth;
             MasterLimiterEnabled = settings.LimiterEnabled;
+            MasteringGlueRatio = settings.GlueRatio;
+            MasteringGlueAttackMs = settings.GlueAttackMs;
+            MasteringGlueReleaseMs = settings.GlueReleaseMs;
+            MasteringGlueMakeupDb = settings.GlueMakeupDb;
+            MasteringGlueMultiband = settings.GlueMultiband;
+            MasteringGlueBandLowDb = settings.GlueBandLowDb;
+            MasteringGlueBandMidDb = settings.GlueBandMidDb;
+            MasteringGlueBandHighDb = settings.GlueBandHighDb;
         }
         finally
         {
@@ -9213,6 +9263,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringPresenceDb = MasteringPresenceDb,
             AudioMasteringHighShelfDb = MasteringHighShelfDb,
             AudioMasteringStereoWidth = MasteringStereoWidth,
+            AudioMasteringGlueRatio = MasteringGlueRatio,
+            AudioMasteringGlueAttackMs = MasteringGlueAttackMs,
+            AudioMasteringGlueReleaseMs = MasteringGlueReleaseMs,
+            AudioMasteringGlueMakeupDb = MasteringGlueMakeupDb,
+            AudioMasteringGlueMultiband = MasteringGlueMultiband,
+            AudioMasteringGlueBandLowDb = MasteringGlueBandLowDb,
+            AudioMasteringGlueBandMidDb = MasteringGlueBandMidDb,
+            AudioMasteringGlueBandHighDb = MasteringGlueBandHighDb,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
             VirtualCameraDeviceName = VirtualCameraDeviceName,
