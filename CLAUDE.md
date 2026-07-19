@@ -40,6 +40,11 @@ runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respec
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
+Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
+zip** to `%LOCALAPPDATA%\CoreVideoPro\support-bundles\` — the zip packs ~2MB
+secret-filtered tails of launch/media-core/perf/vcam-serve logs + a CrashDumps
+listing + manifest (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
+beta spec S2); missing logs become manifest skip notes, never a failed export.
 
 ## Testing multi-participant WITHOUT a real meeting (important)
 

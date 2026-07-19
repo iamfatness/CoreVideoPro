@@ -405,13 +405,59 @@ public sealed partial class SettingsViewModel : ObservableObject
                 _bridge.Health,
                 new SupportBundleAppInfo(),
                 outputs).ConfigureAwait(true);
-            SupportBundleStatus = $"Support bundle exported to {path}";
             LaunchLog.Write($"support-bundle: exported to {path}");
+
+            // S2 bundle v2: also pack the JSON + bounded/redacted log tails +
+            // crash-dump listing into a zip next to the JSON. A zip failure must
+            // never lose the JSON export — report the JSON path instead.
+            string? zipPath = null;
+            try
+            {
+                var archive = await SupportBundleArchiveBuilder.WriteArchiveAsync(
+                    SupportBundleArchiveBuilder.DefaultArchivePath(path),
+                    path).ConfigureAwait(true);
+                zipPath = archive.ZipPath;
+                LaunchLog.Write(
+                    $"support-bundle: archive written {zipPath} ({archive.IncludedCount}/{archive.Entries.Count} entries)");
+            }
+            catch (Exception zipEx)
+            {
+                LaunchLog.Write($"support-bundle: archive failed {zipEx.GetType().Name}: {zipEx.Message}");
+            }
+
+            if (zipPath is not null)
+            {
+                SupportBundleStatus = $"Support bundle exported to {zipPath}";
+                RevealInExplorer(zipPath);
+            }
+            else
+            {
+                SupportBundleStatus = $"Support bundle exported to {path} (zip archive failed; see launch.log)";
+            }
         }
         catch (Exception ex)
         {
             SupportBundleStatus = $"Support bundle export failed: {ex.Message}";
             LaunchLog.Write($"support-bundle: export failed {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    // Reveal the exported bundle zip in Explorer (same non-fatal posture as the
+    // recording-folder reveal in ProductionSettingsWindow).
+    private static void RevealInExplorer(string filePath)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{filePath}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"support-bundle: explorer reveal failed {ex.GetType().Name}: {ex.Message}");
         }
     }
 
