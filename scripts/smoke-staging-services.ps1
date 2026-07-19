@@ -5,6 +5,9 @@ $ErrorActionPreference = "Stop"
 if (-not $env:COREVIDEO_LICENSE_API_KEY) {
   throw "COREVIDEO_LICENSE_API_KEY is not set. Check scripts/.staging-secrets.local"
 }
+if (-not $env:COREVIDEO_TELEMETRY_API_KEY) {
+  throw "COREVIDEO_TELEMETRY_API_KEY is not set (telemetry-ingest requires auth since S0). Check scripts/.staging-secrets.local"
+}
 
 $auth = @{
   Authorization = "Bearer $($env:COREVIDEO_LICENSE_API_KEY)"
@@ -48,6 +51,19 @@ $crash = Invoke-RestMethod `
   -Method POST `
   -Headers $telemetryAuth `
   -Body '{"reason":"smoke-test","app":{"version":"0.1.0","platform":"win32"}}'
-Write-Host "Telemetry report: $($crash.reportId)"
+if (-not $crash.reportId) {
+  throw "Telemetry crash upload returned no reportId"
+}
+Write-Host "Telemetry crash report: $($crash.reportId)"
+
+$telemetryEvent = Invoke-RestMethod `
+  -Uri "$($env:COREVIDEO_TELEMETRY_ENDPOINT)/v1/events" `
+  -Method POST `
+  -Headers $telemetryAuth `
+  -Body '{"name":"smoke-event","app":{"version":"0.1.0","platform":"win32"}}'
+if (-not $telemetryEvent.reportId) {
+  throw "Telemetry event upload returned no reportId"
+}
+Write-Host "Telemetry event: $($telemetryEvent.reportId)"
 
 Write-Host "Staging smoke passed."

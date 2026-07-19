@@ -22,7 +22,7 @@ What exists vs. what the plans assumed:
 | Crash handling | Shell logs unhandled exceptions to `launch.log` (and swallows recoverable COM ones); `MediaCoreSupervisor` tracks child crashes (ring of 20, respawn ≤5). **No code touches `%LOCALAPPDATA%\CrashDumps`** — no detection, no upload. `setup-crash-dumps.ps1` (elevated, HKLM) is a manual dev-rig script |
 | Support bundle | REAL and tested: `SupportBundleBuilder` (MediaCore) → `%LOCALAPPDATA%\CoreVideoPro\support-bundles\*.json`, stream keys/passphrases redacted (`present-redacted`), endpoint query secrets scrubbed, covered by `SupportBundleExportTests`. Gap: JSON snapshot only — does **not** collect `launch.log` / `media-core.log` / `perf.log` / dumps, no archive, no upload |
 | Secrets at rest | Zoom OAuth tokens (`zoom-oauth.json`) and RTMP stream key / SRT passphrase (`production-output-preferences.json`) are **plaintext**. `FileZoomTokenStore` has encrypt/decrypt delegates — constructed with none |
-| Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest has **no storage** (console.log only). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
+| Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest stores crashes in R2 + a KV index and requires its API key since S0 (2026-07-18). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
 | OAuth broker | External (`corevideo.iamfatness.us`, lives in the CoreVideo repo). Shell is hard-wired to it for sign-in AND refresh (#290). Only the start URL is overridable (`COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`). **Discrepancy: code default app-return URI is `corevideo://oauth/callback`; the appxmanifest + docs say `corevideopro://`** |
 | First-run | No wizard, no first-launch flag. Canvas default is **already 1080p** (`MediaCoreProductionSyncContext.DefaultCanvasOutputProfile` = 1920x1080) — the plan's "4K is an RTX-4090 assumption" worry is stale; 4K is opt-in |
 | Wizard targets | Monitor device, mic (deliberately default-OFF), recording folder (defaults to `%USERPROFILE%\Videos\CoreVideo Pro`), Zoom sign-in all exist as bindable settings. **Vcam enable/mirror/name are NOT persisted** (reset every launch). **No single "selected camera" setting exists** — cameras are scene sources, not a global pick |
@@ -122,11 +122,19 @@ after the tag.
 ## 3. S — Supportability
 
 ### S0 — Give telemetry-ingest real storage (prerequisite for S1/S3)
-The worker accepts crash/event POSTs and **logs them to nowhere**. Add: R2
-bucket binding for report payloads (crash zips can be MBs), KV or D1 index
-(reportId → metadata), require `TELEMETRY_API_KEY` (already supported, must be
-set), size cap + basic rate limit. Keep the API shape (`/v1/crashes`,
-`/v1/events`) — the smoke script already exercises it.
+**Status: SHIPPED 2026-07-18** (branch `claude/beta-s0-telemetry-storage`;
+contract + deploy steps in `services/telemetry-ingest/README.md`). Crashes →
+R2 `REPORTS_BUCKET` at `crashes/<yyyy-mm-dd>/<reportId>.json` (key scheme
+already handles S1's `.zip`/`.bin`); every report → KV `REPORTS_KV` index
+`report:<reportId>` (timestamp/kind/version/machineClass/size/r2Key; events
+≤64KB keep their payload inline in KV — no R2 object per tiny event).
+`TELEMETRY_API_KEY` is REQUIRED (unset = loud 500, bad bearer = 401); size
+caps 25MB crashes / 64KB events (413); per-IP token bucket 60/min (429,
+per-isolate only — limits documented honestly in the worker). API shape
+(`/v1/crashes`, `/v1/events`, `{reportId, accepted}`) unchanged; the smoke
+script now also posts an event. **Owner action before next deploy:** create
+the R2 bucket + KV namespace and paste the namespace id into
+`services/telemetry-ingest/wrangler.jsonc` (steps in the service README).
 
 ### S1 — Crash pipeline (detect → bundle → offer → upload)
 - On launch, scan `%LOCALAPPDATA%\CrashDumps` for new `corevideo-native.exe.*`,
