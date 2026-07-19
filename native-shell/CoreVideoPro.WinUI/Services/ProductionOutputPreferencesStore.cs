@@ -4,7 +4,11 @@ namespace CoreVideoPro.WinUI.Services;
 
 public sealed class ProductionOutputPreferences
 {
-    public const int CurrentVersion = 3;
+    // v4 (beta spec S4): StreamRtmpStreamKey / StreamSrtPassphrase are stored
+    // DPAPI-encrypted at rest ("dpapi:" + base64 blob, field-level so the rest
+    // of the file stays diffable). Older plaintext files load fine and are
+    // re-saved encrypted on first load.
+    public const int CurrentVersion = 4;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -134,8 +138,43 @@ public static class ProductionOutputPreferencesSerializer
     public static string Serialize(ProductionOutputPreferences preferences) =>
         JsonSerializer.Serialize(preferences, Options);
 
-    public static ProductionOutputPreferences? Deserialize(string? json)
+    /// <summary>
+    /// Runs the two secret-bearing fields (RTMP stream key, SRT passphrase)
+    /// through <paramref name="protect"/> at the JSON level so the caller's
+    /// in-memory preferences object stays plaintext and every other field stays
+    /// human-readable on disk (beta spec S4: field-level, not whole-file).
+    /// </summary>
+    public static string ProtectSecretFields(string json, Func<string, string> protect)
     {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json);
+        if (node is null)
+        {
+            return json;
+        }
+
+        foreach (var field in SecretFieldNames)
+        {
+            if (node[field]?.GetValue<string?>() is { Length: > 0 } value)
+            {
+                node[field] = protect(value);
+            }
+        }
+
+        return node.ToJsonString(Options);
+    }
+
+    public static readonly string[] SecretFieldNames =
+    [
+        nameof(ProductionOutputPreferences.StreamRtmpStreamKey),
+        nameof(ProductionOutputPreferences.StreamSrtPassphrase)
+    ];
+
+    public static ProductionOutputPreferences? Deserialize(string? json) =>
+        Deserialize(json, out _);
+
+    public static ProductionOutputPreferences? Deserialize(string? json, out bool migratedFromOlderVersion)
+    {
+        migratedFromOlderVersion = false;
         if (string.IsNullOrWhiteSpace(json))
         {
             return null;
@@ -152,10 +191,16 @@ public static class ProductionOutputPreferencesSerializer
             // Versions 1-2 defaulted local capture to enabled and selected the
             // first discovered endpoint automatically. Treat that legacy state
             // as implicit, not consent to seize the device on every launch.
-            if (preferences.Version < ProductionOutputPreferences.CurrentVersion)
+            // (Pinned to < 3: the v4 secrets-at-rest bump must not re-run it.)
+            if (preferences.Version < 3)
             {
                 preferences.LocalAudioSourceEnabled = false;
+            }
+
+            if (preferences.Version < ProductionOutputPreferences.CurrentVersion)
+            {
                 preferences.Version = ProductionOutputPreferences.CurrentVersion;
+                migratedFromOlderVersion = true;
             }
 
             return preferences;
@@ -172,10 +217,23 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
     public const string DefaultFileName = "production-output-preferences.json";
 
     private readonly string _filePath;
+    private readonly Func<string, string>? _protectSecret;
+    private readonly Func<string, string>? _unprotectSecret;
 
-    public FileProductionOutputPreferencesStore(string folderPath, string? fileName = null)
+    /// <param name="protectSecret">Optional at-rest encryption for the secret
+    /// fields (RTMP stream key, SRT passphrase); e.g. DPAPI via
+    /// <c>DpapiSecretProtector.Protect</c>. Null keeps plaintext (tests).</param>
+    /// <param name="unprotectSecret">Counterpart decryptor; must pass plaintext
+    /// (unprefixed) values through unchanged so legacy files keep loading.</param>
+    public FileProductionOutputPreferencesStore(
+        string folderPath,
+        string? fileName = null,
+        Func<string, string>? protectSecret = null,
+        Func<string, string>? unprotectSecret = null)
     {
         _filePath = Path.Combine(folderPath, fileName ?? DefaultFileName);
+        _protectSecret = protectSecret;
+        _unprotectSecret = unprotectSecret;
     }
 
     public void Save(ProductionOutputPreferences preferences)
@@ -186,7 +244,13 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(_filePath, ProductionOutputPreferencesSerializer.Serialize(preferences));
+        var json = ProductionOutputPreferencesSerializer.Serialize(preferences);
+        if (_protectSecret is not null)
+        {
+            json = ProductionOutputPreferencesSerializer.ProtectSecretFields(json, _protectSecret);
+        }
+
+        File.WriteAllText(_filePath, json);
     }
 
     public ProductionOutputPreferences? Load()
@@ -198,7 +262,38 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
 
         try
         {
-            return ProductionOutputPreferencesSerializer.Deserialize(File.ReadAllText(_filePath));
+            var preferences = ProductionOutputPreferencesSerializer.Deserialize(
+                File.ReadAllText(_filePath), out var migratedFromOlderVersion);
+            if (preferences is null)
+            {
+                return null;
+            }
+
+            var hadPlaintextSecret = false;
+            if (_unprotectSecret is not null)
+            {
+                preferences.StreamRtmpStreamKey =
+                    UnprotectField(nameof(preferences.StreamRtmpStreamKey), preferences.StreamRtmpStreamKey, ref hadPlaintextSecret);
+                preferences.StreamSrtPassphrase =
+                    UnprotectField(nameof(preferences.StreamSrtPassphrase), preferences.StreamSrtPassphrase, ref hadPlaintextSecret);
+            }
+
+            // Migration (beta spec S4): plaintext secrets or an older schema
+            // version re-save encrypted at the new version. Best-effort — a
+            // failed rewrite must never lose working preferences.
+            if (_protectSecret is not null && (hadPlaintextSecret || migratedFromOlderVersion))
+            {
+                try
+                {
+                    Save(preferences);
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write($"prefs: encrypted re-save failed (keeping loaded preferences): {ex.Message}");
+                }
+            }
+
+            return preferences;
         }
         catch (IOException)
         {
@@ -206,6 +301,30 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
         }
         catch (UnauthorizedAccessException)
         {
+            return null;
+        }
+    }
+
+    private string? UnprotectField(string fieldName, string? stored, ref bool hadPlaintextSecret)
+    {
+        if (string.IsNullOrEmpty(stored))
+        {
+            return stored;
+        }
+
+        try
+        {
+            var value = _unprotectSecret!(stored);
+            // Pass-through of a non-empty value means it sat plaintext at rest.
+            hadPlaintextSecret |= string.Equals(value, stored, StringComparison.Ordinal);
+            return value;
+        }
+        catch (Exception ex)
+        {
+            // A blob that cannot be decrypted (e.g. the file was copied from a
+            // different Windows user) is unusable — drop the single field LOUDLY
+            // rather than failing the whole preferences load.
+            LaunchLog.Write($"prefs: could not decrypt {fieldName}; the value must be re-entered: {ex.Message}");
             return null;
         }
     }

@@ -1102,7 +1102,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioParticipantRows();
 
         _zoomOAuth = new ZoomOAuthService(
-            new FileZoomTokenStore(FileZoomTokenStore.DefaultTokenStorePath()),
+            // S4 secrets-at-rest: DPAPI (CurrentUser) encrypt/decrypt delegates.
+            // Legacy plaintext token files pass through decrypt unchanged and the
+            // store re-saves them encrypted on first load.
+            new FileZoomTokenStore(
+                FileZoomTokenStore.DefaultTokenStorePath(),
+                encrypt: DpapiSecretProtector.Protect,
+                decrypt: DpapiSecretProtector.Unprotect),
             openUrl: ExternalUriLauncher.OpenAsync);
         _zoomOAuthCoordinator = new ZoomOAuthAppCoordinator(
             _zoomOAuth,
@@ -11453,7 +11459,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             var folder = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
-            return new FileProductionOutputPreferencesStore(folder);
+            return CreateFileStore(folder);
         }
         catch (Exception)
         {
@@ -11462,13 +11468,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 var folder = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "CoreVideoPro");
-                return new FileProductionOutputPreferencesStore(folder);
+                return CreateFileStore(folder);
             }
             catch (Exception)
             {
                 return new InMemoryProductionOutputPreferencesStore();
             }
         }
+
+        // S4 secrets-at-rest: RTMP stream key + SRT passphrase are DPAPI-encrypted
+        // field-level; plaintext legacy files load and re-save encrypted.
+        static FileProductionOutputPreferencesStore CreateFileStore(string folder) =>
+            new(folder,
+                protectSecret: DpapiSecretProtector.Protect,
+                unprotectSecret: DpapiSecretProtector.Unprotect);
     }
 
     private void LoadProductionOutputPreferences()
