@@ -117,6 +117,34 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   `::sendMutex_` (never reversed). `coreMutex` holds are budgeted sub-ms outside
   sanctioned sites — `core/LockHoldGuardrail` warns (rate-capped) on violations.
 
+## Engine teardown order (the ZoomISO deadlock class — G4, 2026-07-18)
+
+The reference product (ZoomISO) froze in production because teardown destroyed
+renderers before stopping raw data with a callback in flight. Hard rules:
+
+- **Exit order in the engine:** `Leave()` → `meeting_event.stop_raw_media("shutdown")`
+  (raw-media off + unsubscribe_all across video/share/audio) → bounded message-pump
+  drain (~250ms, never unbounded) → `share_engine.detach()`/audio shutdown →
+  `CleanUPSDK()`. Renderer destructors must NEVER run after `CleanUPSDK()` —
+  `EngineVideo` is a stack local in `main()`, so the explicit stop is what
+  guarantees that.
+- **Callback vs teardown must serialize.** `~ParticipantSubscription` sets
+  `m_stopping` first, drains `m_targets_mtx` (acquire+release), THEN
+  `unSubscribe()`/`destroyRenderer()` — do not hold a mutex across those SDK
+  calls (they may wait on a callback that takes the same mutex). EngineShare's
+  single-mutex callback/teardown pattern is the other accepted shape.
+- **EngineVideo's subscription maps are guarded by `m_mtx`**, but
+  `ParticipantSubscription` build/destroy makes SDK calls
+  (`createRenderer`/`destroyRenderer`) and so runs OUTSIDE the map lock — move
+  unique_ptrs out of the map under the lock, construct/destroy after release.
+  Lock order: `m_mtx` → `m_targets_mtx` (leaf, never reversed).
+- **Shell: stop off the UI thread.** `_bridge.Stop()` is a kill-tree +
+  `WaitForExit(1500)` under the supervisor gate — it always rides `Task.Run`
+  (both leave-meeting in `SettingsViewModel` and app-exit in `MainWindow`).
+- **Never delete the vcam SHM file in `stop()`** — same hard rule as the
+  virtual-camera section below; stop only unmaps/closes handles, the writer
+  re-opens IN PLACE on the next start.
+
 ## Virtual camera (program feed → a webcam for Zoom/Teams/OBS)
 
 The program appears system-wide as **"CoreVideo Pro Camera"** at native **1080p60**.
