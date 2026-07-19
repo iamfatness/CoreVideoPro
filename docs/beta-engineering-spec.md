@@ -98,6 +98,17 @@ in the shell against a static `latest.json` at the same host → non-blocking
 "update available" bar. No delta/channel logic in beta; one channel.
 
 ### D5 — CI release pipeline (tag → release)
+**Status: IMPLEMENTED 2026-07-18** (`.github/workflows/release.yml` reworked —
+pending #293 (D1 stamp) + #295 (D2 prod sign) merge, the D4 `make-appinstaller`
+contract landing, and secrets/vars provisioning: `ZOOM_SDK_URL`, exactly one
+signing route, `COREVIDEO_UPDATE_BASE_URL`; the update-host publish step is a
+documented fail-soft TODO until the D0/D4 hosting decision). The workflow's
+header comment lists every required secret/variable. The old loose-folder CI
+job (and its inverted `COREVIDEO_PUBLISH == 'never'` upload gate) is deleted —
+nothing consumed its artifact; `npm run pack:native` remains for local use.
+`workflow_dispatch` is a build dry-run that emits a loudly-named UNSIGNED
+artifact and never creates a release.
+
 Rework `release.yml`: `v*` tag → validate version sync (D1) → windows job:
 stage Zoom SDK (per D0.3; if bundling, CI needs the SDK from a **private**
 source — private repo release asset or R2, never the public repo) → build
