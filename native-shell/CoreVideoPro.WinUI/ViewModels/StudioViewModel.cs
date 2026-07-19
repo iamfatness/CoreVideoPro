@@ -8983,7 +8983,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
         // as the program routes; the core skips the extra composite for single-source previews.
-        var resolvedScenePreviewRoutes = GetPreviewEditableRoutes()
+        var resolvedScenePreviewRoutes = GetPreviewRoutesForSync()
             .Select(ResolveRouteFromShowInput)
             .ToList();
         var resolvedPreviewRoutes = BrowserOverlayProgramService.ApplyKeyState(
@@ -12713,12 +12713,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return _livePreviewDraft;
     }
 
+    // Read-only companion for sync-context building: returns the draft when one
+    // is valid for the current preview scene, else the stored routes — with ZERO
+    // side effects. BuildProductionSyncContext runs on the spine-sync background
+    // thread as well as the UI thread; the editable accessor above mutates draft
+    // state and (via DiscardLivePreviewDraft) raises binding notifications, which
+    // throw RPC_E_WRONG_THREAD (0x8001010E) off the UI thread — that killed every
+    // spine payload and silently stopped Zoom capture requests (#291 regression).
+    private List<SourceRoute> GetPreviewRoutesForSync()
+    {
+        var draft = _livePreviewDraft;
+        if (draft is not null &&
+            string.Equals(_livePreviewDraftSceneId, PreviewSceneId, StringComparison.Ordinal) &&
+            string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal))
+        {
+            return draft;
+        }
+
+        return GetMutableRoutes(PreviewSceneId);
+    }
+
     private void DiscardLivePreviewDraft()
     {
         _livePreviewDraft = null;
         _livePreviewDraftSceneId = null;
-        OnPropertyChanged(nameof(CanTake));
-        TakeCommand.NotifyCanExecuteChanged();
+        // Binding notifications must land on the UI thread; this can be reached
+        // from non-UI callers (defense-in-depth for the 0x8001010E class above).
+        RunOnUiThread(() =>
+        {
+            OnPropertyChanged(nameof(CanTake));
+            TakeCommand.NotifyCanExecuteChanged();
+        });
     }
 
     // Commits the live-scene draft into the stored scene (called by the Update
