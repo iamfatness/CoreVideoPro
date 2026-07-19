@@ -189,6 +189,24 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         return capture;
     }
 
+    /// <summary>
+    /// Capture-off: stop Zoom raw media in the engine while staying in the
+    /// meeting (see <see cref="MediaCoreSupervisor.StopZoomCaptureAsync"/>).
+    /// Publishing the snapshot keeps the merged meeting state fresh; the spine
+    /// sync stays stopped because the payload factory is already null.
+    /// </summary>
+    public async Task<RawCaptureSnapshot> StopZoomCaptureAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Running)
+        {
+            throw new InvalidOperationException("Media core is not running.");
+        }
+
+        var capture = await _supervisor.StopZoomCaptureAsync(cancellationToken).ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
+    }
+
     public static string SummarizeJoinLeaveMessage(RawCaptureSnapshot snapshot, string verb) =>
         SummarizeCaptureSnapshot(snapshot, verb);
 

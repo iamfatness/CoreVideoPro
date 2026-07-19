@@ -30,6 +30,14 @@ class ZoomEngineRuntime {
   [[nodiscard]] bool configured() const;
   [[nodiscard]] rpc::Json join(const rpc::Json& payload);
   [[nodiscard]] rpc::Json leave();
+  // Capture-off: stop raw media in the engine WITHOUT leaving the meeting.
+  // Enqueues the engine `stop_media` command (engine command loop runs
+  // stop_raw_media: StopRawRecording — which clears Zoom's participant-facing
+  // recording indicator — plus unsubscribe_all across video/share/audio),
+  // clears the local media-started + subscription-dedup state so a later
+  // capture-on re-arms from scratch, and returns the current snapshot.
+  // Non-blocking: pipe I/O rides the dedicated sender thread.
+  [[nodiscard]] rpc::Json stopCapture();
   [[nodiscard]] rpc::Json snapshot();
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();

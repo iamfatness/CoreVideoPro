@@ -93,6 +93,10 @@ A single end-to-end rehearsal that doubles as the backlog of owed rig verificati
       run's evidence — working-set curve, drop counters, any warnings — in an
       alpha-evidence note so it's citable)
 - [ ] Engine off / leave meeting / rejoin mid-show behaves (no deadlock, no orphan state)
+      (Capture-off now actually stops Zoom raw media: shell sends `zoom-stop-capture` →
+      engine `stop_raw_media` (StopRawRecording clears the participant-facing recording
+      indicator); rig-verify banner clears ~2s after Capture off, feeds return on
+      Capture on — see the capture-off PR)
 - [ ] Support bundle exports after the run
 
 ### G4 - Stability debt (fix or explicitly accept before alpha)
