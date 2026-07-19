@@ -208,7 +208,12 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (shmFile_ != INVALID_HANDLE_VALUE) {
       CloseHandle(shmFile_);
       shmFile_ = INVALID_HANDLE_VALUE;
-      ::DeleteFileA(virtualCameraShmFilePath().c_str());  // best-effort cleanup
+      // NEVER delete the slot file here. Frame Server readers hold the file
+      // object via FILE_SHARE_DELETE; deleting unlinks it under them, and a
+      // later start() creates a NEW file object the orphaned readers never
+      // see - frozen frames / slate / program-slate strobing forever (the
+      // "flashing camera" class). The writer re-opens IN PLACE on start()
+      // and the reader self-heals by path (SharedFrameReader).
     }
     started_ = false;
     status_.enabled = false;

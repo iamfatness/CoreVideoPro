@@ -792,7 +792,12 @@ public sealed partial class SettingsViewModel : ObservableObject
                 var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
                 ApplyCaptureSnapshot(snapshot);
                 JoinStatus = "Disconnected from Zoom.";
-                _bridge.Stop();
+                // _bridge.Stop() tears down the media-core child (kill-tree +
+                // WaitForExit(1500) under the supervisor gate) - run it off the
+                // UI thread, exactly like the app-exit path (MainWindow.
+                // ShutdownAsync wraps disposal in Task.Run). Inline it here and
+                // leave-meeting freezes the operator console for ~1.5s.
+                await Task.Run(_bridge.Stop).ConfigureAwait(true);
             }
             else
             {
