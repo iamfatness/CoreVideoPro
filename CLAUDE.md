@@ -40,6 +40,19 @@ runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respec
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
+Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
+zip** to `%LOCALAPPDATA%\CoreVideoPro\support-bundles\` — the zip packs ~2MB
+secret-filtered tails of launch/media-core/perf/vcam-serve logs + a CrashDumps
+listing + manifest (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
+beta spec S2); missing logs become manifest skip notes, never a failed export.
+
+MSIX signing (beta D2, 2026-07-18): `scripts/sign-native-msix.ps1 -Mode dev|production`.
+Dev = self-signed, tolerates missing signtool (exit 0 + LOUD unsigned warning).
+Production = Azure Trusted Signing (`COREVIDEO_SIGN_DLIB`+`COREVIDEO_SIGN_METADATA`)
+or PFX/thumbprint env, RFC3161 timestamp + `verify /pa` + manifest-Publisher match
+all REQUIRED — any gap hard-fails (never a silent unsigned artifact). `-DryRun`
+prints the resolved plan; tests: `scripts/tests/test-sign-native-msix.ps1`. Full
+env contract in the script header and `docs/beta-engineering-spec.md` §D2.
 
 ## Testing multi-participant WITHOUT a real meeting (important)
 
@@ -132,6 +145,34 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   the external CoreVideo repo) 400-rejects any other `return_uri`. `corevideopro` is a
   legacy protocol alias only. Don't change the scheme without updating the broker
   allowlist first; `ZoomOAuthManifestTests`/`ZoomOAuthProtocolTests` pin it.
+
+## Engine teardown order (the ZoomISO deadlock class — G4, 2026-07-18)
+
+The reference product (ZoomISO) froze in production because teardown destroyed
+renderers before stopping raw data with a callback in flight. Hard rules:
+
+- **Exit order in the engine:** `Leave()` → `meeting_event.stop_raw_media("shutdown")`
+  (raw-media off + unsubscribe_all across video/share/audio) → bounded message-pump
+  drain (~250ms, never unbounded) → `share_engine.detach()`/audio shutdown →
+  `CleanUPSDK()`. Renderer destructors must NEVER run after `CleanUPSDK()` —
+  `EngineVideo` is a stack local in `main()`, so the explicit stop is what
+  guarantees that.
+- **Callback vs teardown must serialize.** `~ParticipantSubscription` sets
+  `m_stopping` first, drains `m_targets_mtx` (acquire+release), THEN
+  `unSubscribe()`/`destroyRenderer()` — do not hold a mutex across those SDK
+  calls (they may wait on a callback that takes the same mutex). EngineShare's
+  single-mutex callback/teardown pattern is the other accepted shape.
+- **EngineVideo's subscription maps are guarded by `m_mtx`**, but
+  `ParticipantSubscription` build/destroy makes SDK calls
+  (`createRenderer`/`destroyRenderer`) and so runs OUTSIDE the map lock — move
+  unique_ptrs out of the map under the lock, construct/destroy after release.
+  Lock order: `m_mtx` → `m_targets_mtx` (leaf, never reversed).
+- **Shell: stop off the UI thread.** `_bridge.Stop()` is a kill-tree +
+  `WaitForExit(1500)` under the supervisor gate — it always rides `Task.Run`
+  (both leave-meeting in `SettingsViewModel` and app-exit in `MainWindow`).
+- **Never delete the vcam SHM file in `stop()`** — same hard rule as the
+  virtual-camera section below; stop only unmaps/closes handles, the writer
+  re-opens IN PLACE on the next start.
 
 ## Virtual camera (program feed → a webcam for Zoom/Teams/OBS)
 
@@ -282,6 +323,18 @@ place or a `corevideo-native.exe` dump is unreadable:
 2. **Full dumps.** Run `scripts/setup-crash-dumps.ps1` once (elevated — writes HKLM WER
    `LocalDumps`) to get `DumpType=2` full-memory dumps instead of the default registers+
    stack minidump. Dumps land in `%LOCALAPPDATA%\CrashDumps`.
+
+**Beta crash pipeline (S1, 2026-07-18, `docs/beta-engineering-spec.md` §S1).** On launch
+the shell scans `%LOCALAPPDATA%\CrashDumps` for our exes' dumps newer than the offer-once
+watermark (`%LOCALAPPDATA%\CoreVideoPro\crash-watermark.json`) and shows a one-shot
+consent InfoBar (never auto-sends). Send = zip (dump + ~2MB log tails + redacted support
+bundle + manifest.txt, ~24MB cap) → POST `application/zip` to the telemetry-ingest
+worker's `/v1/crashes` with `X-CoreVideo-*` metadata headers; the zip stays under
+`support-bundles\` either way. Enabled only when `COREVIDEO_TELEMETRY_ENDPOINT` +
+`COREVIDEO_TELEMETRY_API_KEY` are set (empty default = quietly disabled). Pieces:
+`CrashDumpScanner` / `CrashReportWatermarkStore` / `CrashReportArchiveBuilder` /
+`CrashReportUploader` (MediaCore, unit-tested) + `CrashReportCoordinator` +
+`StudioWorkspace.BeginCrashReportScan` (WinUI).
 
 **Capture reader stability (the frozen-webcam / restart-storm class).** A stalled
 MediaCapture reader (`CaptureDeviceFrameReaderService`) used to restart on a fixed ~5s

@@ -24,6 +24,7 @@ public sealed partial class MainWindow : Window
     private StudioControlSurface? _controlSurface;
     private OscControlServer? _controlServer;
     private HttpControlServer? _httpControlServer;
+    private UpdateNotificationService.UpdateOffer? _updateOffer;
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
     private bool _allowWindowClose;
@@ -54,6 +55,50 @@ public sealed partial class MainWindow : Window
 
         StartResourceMonitoring();
         StartControlServer();
+        StartUpdateCheck();
+    }
+
+    // D4 startup version check: delayed, off-thread, one-shot, silent on any
+    // failure (spec §7 — the update check is non-blocking). Only a strictly
+    // newer, not-previously-dismissed version opens the static InfoBar.
+    private void StartUpdateCheck()
+    {
+        if (_dispatcher is null)
+        {
+            return;
+        }
+
+        UpdateNotificationService.Start(_dispatcher, ShowUpdateBanner);
+    }
+
+    private void ShowUpdateBanner(UpdateNotificationService.UpdateOffer offer)
+    {
+        if (_shutdownStarted)
+        {
+            return;
+        }
+
+        _updateOffer = offer;
+        UpdateBanner.Title = $"Update available — v{offer.NewVersion}";
+        UpdateBanner.Message =
+            $"You are on v{offer.CurrentVersion}. Dismiss to be reminded when the next version ships.";
+        UpdateBanner.IsOpen = true;
+    }
+
+    private void OnUpdateBannerGetUpdate(object sender, RoutedEventArgs args)
+    {
+        if (_updateOffer is { } offer)
+        {
+            UpdateNotificationService.OpenDownload(offer.DownloadUrl);
+        }
+    }
+
+    private void OnUpdateBannerDismissed(Microsoft.UI.Xaml.Controls.InfoBar sender, object args)
+    {
+        if (_updateOffer is { } offer)
+        {
+            UpdateNotificationService.RecordDismissed(offer.NewVersion);
+        }
     }
 
     // Remote control (OSC) so control surfaces / a Bitfocus Companion module can drive the app.

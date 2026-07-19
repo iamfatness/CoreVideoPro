@@ -1397,6 +1397,28 @@ int main(int argc, char **argv)
     if (heartbeat.joinable()) heartbeat.join();
 
     if (meeting_svc) meeting_svc->Leave(ZOOMSDK::LEAVE_MEETING);
+
+    // ZoomISO teardown-order rule: stop raw media and destroy every
+    // per-participant video renderer BEFORE CleanUPSDK(). EngineVideo is a
+    // stack local, so without this its ParticipantSubscription destructors
+    // (unSubscribe()/destroyRenderer()) would run AFTER the SDK teardown —
+    // the exact destroy-renderers-after-stopping-the-SDK ordering that froze
+    // the reference product in production. stop_raw_media() drops raw-media
+    // active on video/share/audio and unsubscribes all video sources.
+    meeting_event.stop_raw_media("shutdown");
+
+#if defined(WIN32)
+    // Bounded drain: the SDK delivers Leave/unsubscribe completions on this
+    // STA thread's message pump. Give them a short, bounded window to land
+    // before CleanUPSDK() rips the runtime down. Never wait unbounded here —
+    // a hung SDK must not turn engine exit into a hang.
+    for (int i = 0; i < 5; ++i) {
+        pump_windows_messages();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    pump_windows_messages();
+#endif
+
     share_engine.detach();
     EngineAudio::instance().shutdown();
     ZOOMSDK::CleanUPSDK();

@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -55,6 +56,10 @@ private:
     uint32_t    m_participant_id;
     uint32_t    m_resolution = 1;
     ZOOMSDK::IZoomSDKRenderer *m_renderer = nullptr;
+    // Set by the destructor BEFORE renderer teardown so an in-flight
+    // onRawDataFrameReceived (SDK raw-data thread) bails instead of racing
+    // unSubscribe()/destroyRenderer(). Checked again under m_targets_mtx.
+    std::atomic<bool> m_stopping{false};
     mutable std::mutex m_targets_mtx;
     std::unordered_map<std::string, std::unique_ptr<SourceTarget>> m_targets;
 };
@@ -71,8 +76,22 @@ public:
     void unsubscribe_all();
 
 private:
-    void unsubscribe_locked(const std::string &source_uuid);
+    // Assumes m_mtx is held. Returns the subscription extracted from m_subs
+    // when the last source was removed (or nullptr); the CALLER destroys it
+    // after releasing m_mtx - the destructor makes SDK calls
+    // (unSubscribe/destroyRenderer) that must never run under the map lock.
+    std::unique_ptr<ParticipantSubscription>
+    unsubscribe_locked(const std::string &source_uuid);
 
+    // Guards container MEMBERSHIP of m_subs/m_source_participants and
+    // m_raw_media_active. subscribe()/unsubscribe*/resubscribe_all() are
+    // invoked from both the command loop and SDK meeting-status callbacks.
+    // Lock discipline: never construct or destroy a ParticipantSubscription
+    // while holding m_mtx (its ctor/dtor call createRenderer/destroyRenderer);
+    // build/destroy outside the lock, move in/out of the map under it.
+    // Leaf order: m_mtx -> ParticipantSubscription::m_targets_mtx (never
+    // reversed - the raw-frame callback takes only m_targets_mtx).
+    mutable std::mutex m_mtx;
     std::unordered_map<uint32_t,
                        std::unique_ptr<ParticipantSubscription>> m_subs;
     struct SourceBinding {
