@@ -300,6 +300,36 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Capture-off: asks the core to stop Zoom raw media (zoom-stop-capture →
+    /// engine stop_raw_media: StopRawRecording clears the participant-facing
+    /// recording indicator + unsubscribe_all stops frames) while STAYING in the
+    /// meeting. The returned snapshot carries the engine-reported
+    /// <see cref="RawCaptureSnapshot.RawMediaActive"/>.
+    /// </summary>
+    public async Task<RawCaptureSnapshot> StopZoomCaptureAsync(CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "zoom-stop-capture"
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        using (response)
+        {
+            var snapshot = CoreProtocolParser.TryParseCaptureSnapshot(response, "zoom-stop-capture");
+            if (snapshot is not null)
+            {
+                return snapshot;
+            }
+
+            throw new InvalidOperationException(
+                CoreProtocolParser.DescribeUnexpectedCaptureResponse(response, "zoom-stop-capture"));
+        }
+    }
+
     public async Task<ZoomMediaSpineNativeSnapshot> SyncZoomMediaSpineAsync(
         Dictionary<string, object?> spinePayload,
         double elapsedMs,

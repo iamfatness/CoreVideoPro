@@ -105,6 +105,17 @@ Json JsonRpcServer::handle(const Json& request) {
                        });
   }
 
+  // Capture-off: stop Zoom raw media (recording indicator + frames) while
+  // staying in the meeting. Non-blocking — the engine command is enqueued for
+  // ZoomEngineRuntime's sender thread, so handling this under coreMutex is
+  // sub-ms; the snapshot carries the engine-reported `rawMediaActive`.
+  if (hasType(request, "zoom-stop-capture")) {
+    return success(id, Json::Object{
+                           {"type", "zoom-stop-capture"},
+                           {"snapshot", mediaCore_.stopZoomCapture()},
+                       });
+  }
+
   if (hasType(request, "zoom-snapshot")) {
     return success(id, Json::Object{
                            {"type", "zoom-snapshot"},

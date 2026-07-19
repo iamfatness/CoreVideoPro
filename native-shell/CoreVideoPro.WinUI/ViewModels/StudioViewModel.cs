@@ -10447,6 +10447,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // Unsubscribes the raw Zoom capture spine while leaving the media core / compositor
     // running. The program/preview surfaces fall back to a "capture paused / slate" state
     // (driven by the always-on compositor) rather than "waiting for compositor output".
+    // ALSO tells the engine to stop raw media: dropping the spine sync only stops OUR
+    // payloads — without zoom-stop-capture the engine kept StartRawRecording live, so
+    // Zoom's participant-facing recording indicator stayed up and frames kept flowing
+    // after the Capture button went red (rig-observed).
     private void UnsubscribeZoomCapture(string status)
     {
         _bridge.ConfigureZoomSpineSync(null);
@@ -10454,6 +10458,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ZoomCaptureSubscribed = false;
         EngineStatus = status;
         CommandStatus = status;
+        if (_bridge.Running && Settings.IsInMeeting)
+        {
+            EngineStatus = "Stopping capture…";
+            _ = StopEngineRawMediaAsync(status);
+        }
         if (Settings.IsInMeeting && _bridge.LastSnapshot is { } snapshot)
         {
             ApplyMeetingFieldsFromSnapshot(snapshot);
@@ -10468,6 +10477,62 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
         ToggleEngineCommand.NotifyCanExecuteChanged();
         ToggleRecordingCommand.NotifyCanExecuteChanged();
+    }
+
+    // Capture-off engine stop, off the UI thread (the zoom-stop-capture round-trip is
+    // pipe I/O — never block a [RelayCommand]). The core enqueues stop_media for the
+    // engine's sender thread and answers immediately; the engine's command loop then
+    // runs stop_raw_media (StopRawRecording — clears the participant-facing recording
+    // indicator — + unsubscribe_all). We poll the engine-reported rawMediaActive for a
+    // few seconds so the status line reflects TRUTH, not hope. All bound-property
+    // updates marshal back through the dispatcher (0xc000027b rules).
+    private async Task StopEngineRawMediaAsync(string fallbackStatus)
+    {
+        try
+        {
+            var snapshot = await _bridge.StopZoomCaptureAsync().ConfigureAwait(false);
+            var stopped = snapshot.RawMediaActive != true;
+            for (var attempt = 0; !stopped && attempt < 12; attempt++)
+            {
+                await Task.Delay(250).ConfigureAwait(false);
+                if (!_bridge.Running)
+                {
+                    return; // core went away (leave/shutdown) — nothing left to confirm
+                }
+
+                var poll = await _bridge.GetZoomSnapshotAsync().ConfigureAwait(false);
+                stopped = poll.RawMediaActive != true;
+            }
+
+            var message = stopped
+                ? "Capture stopped — Zoom recording indicator cleared"
+                : "Capture stop sent — Zoom has not confirmed raw media stopped";
+            _dispatcher.TryEnqueue(() =>
+            {
+                if (ZoomCaptureSubscribed || !Settings.IsInMeeting)
+                {
+                    return; // re-enabled or left the meeting while we confirmed
+                }
+
+                EngineStatus = message;
+                CommandStatus = message;
+            });
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"zoom-stop-capture: failed {ex.GetType().Name}: {ex.Message}");
+            _dispatcher.TryEnqueue(() =>
+            {
+                if (ZoomCaptureSubscribed || !_bridge.Running)
+                {
+                    // Re-enabled meanwhile, or the whole core is going down
+                    // (leave/app exit) — the failure is expected teardown noise.
+                    return;
+                }
+
+                EngineStatus = $"{fallbackStatus} — engine stop failed: {ex.Message}";
+            });
+        }
     }
 
     private void StopMediaCoreSession(string status)

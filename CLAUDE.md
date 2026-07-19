@@ -247,6 +247,27 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
    corevideo-virtualcam corevideo-native corevideo-native-tests`.
 4. `native/virtualcam-dll/VcamLog.h` is gated serve-tracing for debugging the DLL side.
 
+## Zoom capture on/off (engine raw-media stop — 2026-07-19)
+
+Capture-off must stop raw media IN THE ENGINE, not just our spine payloads:
+the shell's Capture toggle OFF sends `zoom-stop-capture` (in addition to
+`ConfigureZoomSpineSync(null)`) → core `MediaCore::stopZoomCapture` →
+`ZoomEngineRuntime::stopCapture` enqueues `stop_media` on the sender thread
+(never a direct pipe write) → the engine's command loop runs
+`stop_raw_media`: `StopRawRecording()` (this is what clears Zoom's
+participant-facing recording indicator) + `unsubscribe_all` across
+video/share/audio. Without it the recording banner stayed up and frames kept
+flowing after the button went red. `stopCapture` also clears the
+`sentSubscriptions_` dedup + `mediaStarted_` so Capture ON re-arms through the
+EXISTING path (spine `startCapture:true` → `ensureMediaStartedLocked` →
+`start_media` → engine `start_raw_media` re-request + resubscribe). The engine
+emits a first-class `raw_media_status {active}` event on every start/stop; the
+core mirrors it as `rawMediaActive` in the zoom snapshots and the shell's
+Capture status line reflects that engine-reported truth ("Capture stopped —
+Zoom recording indicator cleared"), polling briefly until confirmed — never
+claiming stopped on hope. (This section belongs with the engine-teardown rules
+from PR #302 once that lands.)
+
 ## Browser sources (BR-1, 2026-07-13 — render-only URL sources)
 
 `docs/capture-sources-spec.md` §4 status block has the full shape. The short version:

@@ -361,6 +361,61 @@ TEST(ZoomEngineRuntime, ConcurrentSpineChurnSnapshotsAndSenderDrainAreRaceFree) 
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
+// Capture-off must actually reach the engine: stopCapture enqueues the
+// stop_media command for the sender thread (never a direct pipe write), resets
+// the media-started latch, and clears the subscription dedup so a fresh
+// capture-on re-subscribes every source from scratch (the engine's
+// stop_raw_media unsubscribed them all).
+TEST(ZoomEngineRuntime, StopCaptureSendsStopMediaAndRearmsSubscriptionsFromScratch) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+
+    const auto payload = spinePayload(corevideo::rpc::Json::Array{
+        subscriptionRequest("601", "participant-video", "active-speaker"),
+    });
+    EXPECT_FALSE(runtime.syncSpine(payload, 0.0).isNull());
+    ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
+
+    // The engine reported raw media running (raw_media_status active:true).
+    corevideo::modules::ZoomEngineEvent statusOn;
+    statusOn.kind = corevideo::modules::ZoomEngineEventKind::RawMediaStatus;
+    statusOn.command = "raw_media_status";
+    statusOn.rawMediaActive = true;
+    runtime.applyEngineEventForTest(statusOn);
+    EXPECT_TRUE(runtime.snapshot().get("rawMediaActive")->asBool());
+
+    // Capture off: exactly one stop_media line rides the sender thread.
+    const auto stopSnapshot = runtime.stopCapture();
+    EXPECT_FALSE(stopSnapshot.isNull());
+    ASSERT_NE(stopSnapshot.get("rawMediaActive"), nullptr);
+    ASSERT_TRUE(fake->waitForSentLines(2, std::chrono::milliseconds(5000)));
+    auto lines = fake->sentLines();
+    ASSERT_EQ(lines.size(), 2u);
+    EXPECT_NE(lines[1].find("\"stop_media\""), std::string::npos);
+
+    // Engine ack flips the reported state to stopped.
+    corevideo::modules::ZoomEngineEvent statusOff;
+    statusOff.kind = corevideo::modules::ZoomEngineEventKind::RawMediaStatus;
+    statusOff.command = "raw_media_status";
+    statusOff.rawMediaActive = false;
+    runtime.applyEngineEventForTest(statusOff);
+    EXPECT_FALSE(runtime.snapshot().get("rawMediaActive")->asBool());
+
+    // Capture on again: the SAME subscription payload must re-send the
+    // subscribe (dedup was cleared — the engine forgot every source on stop).
+    EXPECT_FALSE(runtime.syncSpine(payload, 0.0).isNull());
+    ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
+    lines = fake->sentLines();
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_NE(lines[2].find("participant-video-601-active-speaker"), std::string::npos);
+    EXPECT_NE(lines[2].find("\"subscribe\""), std::string::npos);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
 // End-to-end SHM audio ingest: create the per-source audio region the way the
 // engine does, feed the matching pipe event through the reader path, and the
 // next compositor audio poll must return REAL coalesced PCM for that

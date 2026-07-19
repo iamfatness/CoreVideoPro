@@ -8,6 +8,36 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class CoreProtocolParserTests
 {
     [Fact]
+    public void ParsesZoomStopCaptureResponseWithEngineReportedRawMediaState()
+    {
+        // Pins the capture-off wire contract: the shell sends type
+        // "zoom-stop-capture" and reads back the engine-reported rawMediaActive
+        // (truth for the Capture status line, not command hope).
+        var line = """
+            {"id":"core-9","ok":true,"type":"zoom-stop-capture","snapshot":{"meetingState":"in_meeting","rawMediaActive":false,"tick":7,"participants":[]}}
+            """;
+        using var response = JsonDocument.Parse(line);
+
+        var snapshot = CoreProtocolParser.TryParseCaptureSnapshot(response, "zoom-stop-capture");
+        Assert.NotNull(snapshot);
+        Assert.Equal("in_meeting", snapshot!.MeetingState);
+        Assert.False(snapshot.RawMediaActive);
+
+        // The response type must match the request type it is parsed against.
+        Assert.Null(CoreProtocolParser.TryParseCaptureSnapshot(response, "zoom-leave"));
+
+        // An older core that omits the field yields null (state unknown), never
+        // a fabricated "stopped" claim.
+        var legacy = """
+            {"id":"core-10","ok":true,"type":"zoom-stop-capture","snapshot":{"meetingState":"in_meeting","tick":8,"participants":[]}}
+            """;
+        using var legacyResponse = JsonDocument.Parse(legacy);
+        var legacySnapshot = CoreProtocolParser.TryParseCaptureSnapshot(legacyResponse, "zoom-stop-capture");
+        Assert.NotNull(legacySnapshot);
+        Assert.Null(legacySnapshot!.RawMediaActive);
+    }
+
+    [Fact]
     public void DistinguishesUnsolicitedZoomVideoFrameEventsFromResponses()
     {
         var pixels = new byte[8];

@@ -746,6 +746,18 @@ public:
         }
         EngineAudio::instance().set_raw_media_active(true);
         EngineAudio::instance().retry_subscribe(reason ? reason : "raw_media_ready");
+        emit_raw_media_status(true, reason ? reason : "raw_media_ready");
+    }
+
+    // First-class raw-media state event (IPC_EVT_RAW_MEDIA_STATUS): the core
+    // mirrors this into its snapshot (`zoom.rawMediaActive`) so the shell's
+    // Capture toggle reflects engine-reported truth, not command hope.
+    static void emit_raw_media_status(bool active, const std::string &reason)
+    {
+        EngineIpc::write(
+            std::string(R"({"cmd":")") + IPC_EVT_RAW_MEDIA_STATUS +
+            R"(","active":)" + (active ? "true" : "false") +
+            R"(,"reason":")" + json_escape(reason) + "\"}");
     }
 
     bool start_raw_media(const char *reason)
@@ -874,6 +886,7 @@ public:
         EngineIpc::write(
             R"({"cmd":"debug","stage":"raw_media_stopped","reason":")" +
             std::string(reason ? reason : "manual_stop") + "\"}");
+        emit_raw_media_status(false, reason ? reason : "manual_stop");
     }
 
 #if defined(COREVIDEO_HAS_LIVE_STREAM_CTRL)

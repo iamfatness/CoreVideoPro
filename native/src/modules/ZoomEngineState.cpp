@@ -72,6 +72,12 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
     case ZoomEngineEventKind::ActiveSpeaker:
       activeSpeakerId_ = event.participantId;
       break;
+    case ZoomEngineEventKind::RawMediaStatus:
+      rawMediaActive_ = event.rawMediaActive;
+      events_.emplace_back(event.rawMediaActive
+                               ? "Zoom raw media started" + (event.message.empty() ? "." : " (" + event.message + ").")
+                               : "Zoom raw media stopped" + (event.message.empty() ? "." : " (" + event.message + ")."));
+      break;
     case ZoomEngineEventKind::Frame: {
       auto& stats = subscriptionStats_[event.sourceUuid];
       stats.sourceUuid = event.sourceUuid;
@@ -159,6 +165,7 @@ void ZoomEngineRuntimeState::addWarning(const std::string& warning) {
 void ZoomEngineRuntimeState::reset() {
   meetingState_ = "idle";
   sdkAuthenticated_ = false;
+  rawMediaActive_ = false;
   activeSpeakerId_ = 0;
   screenShareParticipantId_ = 0;
   participants_.clear();
@@ -180,6 +187,7 @@ ZoomEngineRuntimeSnapshot ZoomEngineRuntimeState::snapshot() const {
   }
   snapshot.events = events_;
   snapshot.warnings = warnings_;
+  snapshot.rawMediaActive = rawMediaActive_;
   return snapshot;
 }
 

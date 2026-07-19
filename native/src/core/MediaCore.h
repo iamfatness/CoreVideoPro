@@ -54,6 +54,11 @@ class MediaCore {
   // spawn + SDK auth + join handshake) and must not freeze the render thread.
   [[nodiscard]] bool zoomEngineConfigured() const;
   [[nodiscard]] rpc::Json leaveZoom();
+  // Capture-off (rpc "zoom-stop-capture"): stops Zoom raw media in the engine
+  // (StopRawRecording clears the participant-facing recording indicator +
+  // unsubscribe_all stops frames) while STAYING in the meeting. Non-blocking:
+  // the engine command rides ZoomEngineRuntime's sender thread.
+  [[nodiscard]] rpc::Json stopZoomCapture();
   [[nodiscard]] rpc::Json zoomSnapshot() const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
