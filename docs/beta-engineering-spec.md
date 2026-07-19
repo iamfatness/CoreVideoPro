@@ -20,7 +20,7 @@ What exists vs. what the plans assumed:
 | CI release | `release.yml` builds the **loose folder** (not MSIX), never signs, never creates a GitHub Release; the artifact upload is gated on `COREVIDEO_PUBLISH == 'never'` (inverted/dead). `bump:version` + `release:notes` exist but are unwired |
 | Auto-update | **Built (D4, 2026-07-18):** `scripts/make-appinstaller.mjs` emits the `.appinstaller` + `latest.json`, and the shell runs a non-blocking startup version check (`COREVIDEO_UPDATE_FEED_URL`, empty default = off). Not yet hosted — the feed URL/domain is the D0/D4 hosting decision (owner) |
 | Crash handling | Shell logs unhandled exceptions to `launch.log` (and swallows recoverable COM ones); `MediaCoreSupervisor` tracks child crashes (ring of 20, respawn ≤5). **No code touches `%LOCALAPPDATA%\CrashDumps`** — no detection, no upload. `setup-crash-dumps.ps1` (elevated, HKLM) is a manual dev-rig script |
-| Support bundle | REAL and tested: `SupportBundleBuilder` (MediaCore) → `%LOCALAPPDATA%\CoreVideoPro\support-bundles\*.json`, stream keys/passphrases redacted (`present-redacted`), endpoint query secrets scrubbed, covered by `SupportBundleExportTests`. Gap: JSON snapshot only — does **not** collect `launch.log` / `media-core.log` / `perf.log` / dumps, no archive, no upload |
+| Support bundle | REAL and tested: `SupportBundleBuilder` (MediaCore) → `%LOCALAPPDATA%\CoreVideoPro\support-bundles\*.json`, stream keys/passphrases redacted (`present-redacted`), endpoint query secrets scrubbed, covered by `SupportBundleExportTests`. **S2 shipped 2026-07-18:** export also writes a zip beside the JSON (`SupportBundleArchiveBuilder`) with ~2MB redacted tails of `launch.log`/`media-core.log`/`perf.log`/`vcam-serve.log`, a `dumps.txt` CrashDumps listing (names/sizes/dates only), and a `manifest.txt` of included/skipped entries; Explorer reveals the zip after export. Remaining gap: no upload (S0/S1) |
 | Secrets at rest | Zoom OAuth tokens (`zoom-oauth.json`) and RTMP stream key / SRT passphrase (`production-output-preferences.json`) are **plaintext**. `FileZoomTokenStore` has encrypt/decrypt delegates — constructed with none |
 | Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest stores crashes in R2 + a KV index and requires its API key since S0 (2026-07-18). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
 | OAuth broker | External (`corevideo.iamfatness.us`, lives in the CoreVideo repo). Shell is hard-wired to it for sign-in AND refresh (#290). Only the start URL is overridable (`COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`). **Discrepancy: code default app-return URI is `corevideo://oauth/callback`; the appxmanifest + docs say `corevideopro://`** |
@@ -224,7 +224,7 @@ the D3 opt-in WER `LocalDumps` setup button.
   key setup itself is the D3 opt-in button). A minidump + our logs resolves the
   0xc000027b and native-crash classes we've actually hit.
 
-### S2 — Support bundle v2 (archive, not just JSON)
+### S2 — Support bundle v2 (archive, not just JSON) — DONE 2026-07-18
 Extend `ExportSupportBundleAsync`: write the existing JSON **plus** a zip
 containing it + `launch.log` + `media-core.log` (tail ~2MB) + `perf.log` tail +
 `vcam-serve.log` if present + recent dump list (names/sizes, not the dumps).
@@ -232,6 +232,21 @@ Redaction posture stays builder-side (already tested); add one audit task: grep
 the native core's stderr paths for any secret echo, since `media-core.log` is
 raw child stderr. In-app: "Export bundle" → open Explorer at the zip + show the
 "where to send it" link (B4 feedback channel).
+
+**Shipped:** `SupportBundleArchiveBuilder` + `SupportBundleLogRedactor`
+(MediaCore Services) — bounded tail reads (`FileShare.ReadWrite|Delete`, length
+captured at open so a growing log cannot extend the copy, tail re-aligned to a
+line boundary), per-file failure → manifest skip note (export never fails on a
+missing log), `dumps.txt` listing only. Redaction audit result: no site echoes
+a raw secret today (engine emits `jwt_present`/`has_user_zak` booleans; ffmpeg
+stderr — the one place the keyed rtmp URL would print — goes to a separate temp
+file that is NOT collected; snapshot endpoints pass `redactedEndpoint`), but
+`JsonRpcServer`'s `[parse-dbg]` echoes the first 60 chars of unparseable command
+lines (configure-outputs JSON carries streamKey/passphrase), so all log tails
+pass a secret-shape filter (rtmp URL paths, key/token/passphrase/pwd/zak/jwt
+assignments + JSON fields, Bearer values, JWT-shaped strings) before zipping.
+Covered by `SupportBundleArchiveTests`. The "where to send it" link is
+deliberately NOT added — the feedback channel is a B4 owner decision.
 
 ### S3 — Opt-in telemetry events
 Settings toggle (default OFF, one line of copy about what's sent). On session
