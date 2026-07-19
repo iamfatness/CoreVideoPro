@@ -7,6 +7,19 @@ on:
     branches: [main]
 
 jobs:
+  # D1 (docs/beta-engineering-spec.md): package.json is the single version
+  # source of truth; fail fast when the appxmanifest / csproj drift from it.
+  # release.yml gains the same gate as part of the D5 pipeline rework.
+  version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Version sources agree with package.json
+        run: node scripts/stamp-version.mjs --check
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
