@@ -1,7 +1,7 @@
 export type MediaCoreRouteMode = "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
 export type MediaCoreAudioRole = "mix" | "isolated" | "audience";
 export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
-export const coreRequestTypes = ["sync", "snapshot", "tick", "zoom-join", "zoom-leave", "zoom-snapshot", "zoom-media-spine-sync"] as const;
+export const coreRequestTypes = ["sync", "snapshot", "tick", "zoom-join", "zoom-leave", "zoom-stop-capture", "zoom-snapshot", "zoom-media-spine-sync"] as const;
 export const coreEventTypes = ["zoom-video-frame", "program-frame-preview", "program-shared-texture"] as const;
 export const zoomMediaSpineSyncTypeNames = ["ZoomMediaSpineSyncPayload", "ZoomMediaSpineNativeSnapshot"] as const;
 

@@ -41,9 +41,19 @@
       </uap:VisualElements>
       <Extensions>
         <desktop:Extension Category="windows.fullTrustProcess" EntryPoint="Windows.FullTrustApplication" />
+        <!-- OAuth app-return scheme. The deployed broker (corevideo.iamfatness.us,
+             site-worker.js handleOauthStart) hard-rejects any return_uri other than
+             corevideo://oauth/callback, so "corevideo" is THE scheme; it must match
+             ZoomOAuthManifest.DefaultAppReturnUri. "corevideopro" stays declared as a
+             legacy alias (older docs/registrations); nothing generates such URLs. -->
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="corevideo">
+            <uap:DisplayName>CoreVideo Pro OAuth Callback</uap:DisplayName>
+          </uap:Protocol>
+        </uap:Extension>
         <uap:Extension Category="windows.protocol">
           <uap:Protocol Name="corevideopro">
-            <uap:DisplayName>CoreVideo Pro OAuth Callback</uap:DisplayName>
+            <uap:DisplayName>CoreVideo Pro OAuth Callback (legacy alias)</uap:DisplayName>
           </uap:Protocol>
         </uap:Extension>
       </Extensions>

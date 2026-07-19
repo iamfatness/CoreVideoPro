@@ -78,6 +78,7 @@ ZoomEngineEventKind kindForCommand(const std::string& command) {
   if (command == "active_speaker") return ZoomEngineEventKind::ActiveSpeaker;
   if (command == IPC_EVT_FRAME) return ZoomEngineEventKind::Frame;
   if (command == IPC_EVT_AUDIO) return ZoomEngineEventKind::Audio;
+  if (command == IPC_EVT_RAW_MEDIA_STATUS) return ZoomEngineEventKind::RawMediaStatus;
   if (command == "debug") return ZoomEngineEventKind::Debug;
   if (command == IPC_EVT_ERROR) return ZoomEngineEventKind::Error;
   return ZoomEngineEventKind::Unknown;
@@ -181,6 +182,10 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   event.width = uintField(*parsed, "w");
   event.height = uintField(*parsed, "h");
   event.byteLength = uintField(*parsed, "byte_len");
+  event.rawMediaActive = boolField(*parsed, "active");
+  if (event.message.empty() && event.kind == ZoomEngineEventKind::RawMediaStatus) {
+    event.message = parsed->getString("reason");
+  }
   event.ok = event.kind != ZoomEngineEventKind::Unknown && event.kind != ZoomEngineEventKind::AuthFail &&
              event.kind != ZoomEngineEventKind::Error;
 

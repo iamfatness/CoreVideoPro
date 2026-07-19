@@ -6,5 +6,26 @@
     xmlns:views="using:CoreVideoPro.WinUI.Views"
     Title="CoreVideo Pro">
 
-    <views:StudioWorkspace x:Name="RootContent" />
+    <Grid>
+        <views:StudioWorkspace x:Name="RootContent" />
+
+        <!-- D4 update banner: a STATIC one-shot surface (no bound collections,
+             no churn — 0xc000027b rules). Opened at most once per launch by
+             UpdateNotificationService when the feed advertises a newer version;
+             the X close = "remind me later" (suppresses that version). -->
+        <InfoBar
+            x:Name="UpdateBanner"
+            MaxWidth="520"
+            Margin="0,0,24,24"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Bottom"
+            IsOpen="False"
+            IsClosable="True"
+            Severity="Informational"
+            CloseButtonClick="OnUpdateBannerDismissed">
+            <InfoBar.ActionButton>
+                <Button Content="Get update" Click="OnUpdateBannerGetUpdate" />
+            </InfoBar.ActionButton>
+        </InfoBar>
+    </Grid>
 </Window>

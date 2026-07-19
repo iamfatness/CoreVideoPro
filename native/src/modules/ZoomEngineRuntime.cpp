@@ -251,6 +251,26 @@ rpc::Json ZoomEngineRuntime::leave() {
   return rawCaptureSnapshotLocked();
 }
 
+rpc::Json ZoomEngineRuntime::stopCapture() {
+  if (!configured()) {
+    return nullptr;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  // Operator no longer wants raw capture; a later spine sync with
+  // startCapture=true (or a Joined event) re-arms via ensureMediaStartedLocked.
+  captureRequested_ = false;
+  if (process_ && process_->running()) {
+    enqueueEngineSendLocked("stop_media", buildZoomEngineStopMediaCommand());
+  }
+  mediaStarted_ = false;
+  // The engine's stop_raw_media unsubscribes EVERY source; forget the dedup map
+  // so a fresh capture-on re-sends every subscribe instead of assuming the old
+  // ones survived (they did not).
+  sentSubscriptions_.clear();
+  return rawCaptureSnapshotLocked();
+}
+
 rpc::Json ZoomEngineRuntime::snapshot() {
   if (!configured()) {
     return nullptr;
@@ -711,6 +731,9 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
       {"meetingState", snapshot.meetingState == "in-meeting" ? "in_meeting" : snapshot.meetingState},
       {"participants", participants},
       {"tick", fallbackTick_},
+      // Engine-reported truth (raw_media_status events), NOT the last command
+      // sent: the shell's Capture state/status reads this.
+      {"rawMediaActive", snapshot.rawMediaActive},
   };
   if (!snapshot.activeSpeakerId.empty()) {
     result.emplace("activeSpeakerId", snapshot.activeSpeakerId);
@@ -760,6 +783,7 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
   return rpc::Json::Object{
       {"meetingState", runtime.meetingState},
       {"sdkVersion", "zoom-engine"},
+      {"rawMediaActive", runtime.rawMediaActive},
       {"participantCount", static_cast<int>(runtime.participants.size())},
       {"activeSpeakerId", runtime.activeSpeakerId},
       {"screenShareParticipantId", runtime.screenShareParticipantId},

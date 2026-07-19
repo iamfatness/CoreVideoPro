@@ -641,9 +641,11 @@ int main(int argc, char** argv) {
 
         } else if (line.find(IPC_CMD_START_MEDIA) != std::string::npos) {
             EngineIpc::write(R"({"cmd":"debug","stage":"raw_media_ready","reason":"fake"})");
+            EngineIpc::write(R"({"cmd":"raw_media_status","active":true,"reason":"fake"})");
 
         } else if (line.find(IPC_CMD_STOP_MEDIA) != std::string::npos) {
             EngineIpc::write(R"({"cmd":"debug","stage":"raw_media_stopped","reason":"fake"})");
+            EngineIpc::write(R"({"cmd":"raw_media_status","active":false,"reason":"fake"})");
 
         } else if (line.find(IPC_CMD_SUBSCRIBE_AUDIO) != std::string::npos) {
             // Z4a: start a deterministic tone stream over the real ring transport.

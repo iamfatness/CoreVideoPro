@@ -278,6 +278,15 @@ public sealed class RawCaptureSnapshot
     public string? Caption { get; init; }
     public int Tick { get; init; }
     public IReadOnlyList<string>? Warnings { get; init; }
+
+    /// <summary>
+    /// Engine-reported raw-media state (the engine's raw_media_status events,
+    /// mirrored by the core). True while Zoom raw recording is running (the
+    /// participant-facing recording indicator is up); false once the engine
+    /// confirmed StopRawRecording. Null when the core did not report it
+    /// (stub core / older engine binary).
+    /// </summary>
+    public bool? RawMediaActive { get; init; }
 }
 
 public sealed class RawParticipantEvent

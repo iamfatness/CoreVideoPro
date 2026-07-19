@@ -501,6 +501,16 @@ rpc::Json MediaCore::leaveZoom() {
   return zoomSnapshot();
 }
 
+rpc::Json MediaCore::stopZoomCapture() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->stopCapture();
+  }
+
+  // Stub path: capture-off is NOT a leave — the meeting stays joined.
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
 rpc::Json MediaCore::zoomSnapshot() const {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->snapshot();

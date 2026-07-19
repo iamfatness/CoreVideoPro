@@ -36,7 +36,12 @@
     "pack:native": "powershell -ExecutionPolicy Bypass -File scripts/package-native.ps1",
     "pack:native:msix": "powershell -ExecutionPolicy Bypass -File scripts/package-native-msix.ps1",
     "sign:native-msix": "powershell -ExecutionPolicy Bypass -File scripts/sign-native-msix.ps1",
+    "sign:native-msix:prod": "powershell -ExecutionPolicy Bypass -File scripts/sign-native-msix.ps1 -Mode production",
+    "test:sign-native-msix": "powershell -ExecutionPolicy Bypass -File scripts/tests/test-sign-native-msix.ps1",
     "bump:version": "node scripts/bump-version.mjs",
+    "make:appinstaller": "node scripts/make-appinstaller.mjs",
+    "stamp:version": "node scripts/stamp-version.mjs",
+    "stamp:version:check": "node scripts/stamp-version.mjs --check",
     "release:notes": "node scripts/release-notes.mjs",
     "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
     "validate:record-stream": "node ./scripts/validate-record-stream.mjs"

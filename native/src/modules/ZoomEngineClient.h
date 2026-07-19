@@ -56,6 +56,7 @@ enum class ZoomEngineEventKind {
   ActiveSpeaker,
   Frame,
   Audio,
+  RawMediaStatus,
   Error,
 };
 
@@ -72,6 +73,11 @@ struct ZoomEngineEvent {
   std::uint32_t byteLength = 0;
   std::size_t participantCount = 0;
   bool ok = false;
+  // RawMediaStatus events only: engine-reported raw-media state ("active" field
+  // of the raw_media_status event). True after StartRawRecording succeeds and
+  // subscriptions re-arm; false after stop_raw_media (StopRawRecording +
+  // unsubscribe_all) completes on the engine's command loop.
+  bool rawMediaActive = false;
   std::vector<ZoomEngineParticipant> participants;
 };
 

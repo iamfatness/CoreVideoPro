@@ -22,6 +22,11 @@
 #define IPC_EVT_FRAME       "frame"
 #define IPC_EVT_AUDIO       "audio"
 #define IPC_EVT_ERROR       "error"
+// First-class raw-media state event ({"cmd":"raw_media_status","active":bool,
+// "reason":"..."}): emitted by the engine whenever raw recording actually starts
+// (resubscribe_raw_media) or stops (stop_raw_media), so the core/shell can show
+// engine-reported truth instead of assuming the stop_media command worked.
+#define IPC_EVT_RAW_MEDIA_STATUS "raw_media_status"
 
 // Shared-memory name prefix (no leading slash — added per-platform below)
 #define IPC_SHM_PREFIX "ZoomObsPlugin_"

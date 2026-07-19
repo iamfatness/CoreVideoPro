@@ -312,6 +312,18 @@ TEST(JsonRpcServer, HandlesZoomLifecycleRequests) {
   EXPECT_TRUE(snapshot.get("snapshot")->get("evidence")->get("synthetic")->asBool());
   EXPECT_EQ(snapshot.get("snapshot")->get("evidence")->get("participantCount")->asNumber(), 2);
 
+  // Capture-off dispatch: zoom-stop-capture stops raw media but is NOT a
+  // leave — the meeting stays joined and the participants stay in the snapshot.
+  const auto stoppedCapture = server.handle(corevideo::rpc::Json::Object{
+      {"id", "zoom-stop-capture-1"},
+      {"type", "zoom-stop-capture"},
+  });
+  EXPECT_EQ(stoppedCapture.getString("id"), "zoom-stop-capture-1");
+  EXPECT_TRUE(stoppedCapture.get("ok")->asBool());
+  EXPECT_EQ(stoppedCapture.getString("type"), "zoom-stop-capture");
+  EXPECT_EQ(stoppedCapture.get("snapshot")->getString("meetingState"), "in_meeting");
+  EXPECT_FALSE(stoppedCapture.get("snapshot")->get("participants")->asArray().empty());
+
   const auto left = server.handle(corevideo::rpc::Json::Object{
       {"id", "zoom-leave-1"},
       {"type", "zoom-leave"},

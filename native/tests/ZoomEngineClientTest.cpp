@@ -148,6 +148,25 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   EXPECT_EQ(speaker->participantId, 77u);
 }
 
+TEST(ZoomEngineClient, ParsesRawMediaStatusEvents) {
+  // Capture-off truth channel: the engine emits raw_media_status whenever raw
+  // recording actually starts/stops; the runtime mirrors it into the snapshot's
+  // `rawMediaActive` so the shell shows engine-reported state.
+  const auto stopped = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"raw_media_status","active":false,"reason":"capture-off"})");
+  ASSERT_TRUE(stopped.has_value());
+  EXPECT_EQ(stopped->kind, corevideo::modules::ZoomEngineEventKind::RawMediaStatus);
+  EXPECT_TRUE(stopped->ok);
+  EXPECT_FALSE(stopped->rawMediaActive);
+  EXPECT_EQ(stopped->message, "capture-off");
+
+  const auto started = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"raw_media_status","active":true,"reason":"manual_start"})");
+  ASSERT_TRUE(started.has_value());
+  EXPECT_EQ(started->kind, corevideo::modules::ZoomEngineEventKind::RawMediaStatus);
+  EXPECT_TRUE(started->rawMediaActive);
+}
+
 TEST(ZoomEngineClient, ParsesImmediateJoinFailureAsErrorEvent) {
   const auto event = corevideo::modules::parseZoomEngineEvent(
       R"({"cmd":"error","stage":"join","msg":"join_failed","code":3,"reason":"SDKERR_UNAUTHENTICATION"})");

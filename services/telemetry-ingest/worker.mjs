@@ -1,7 +1,17 @@
 /**
- * Cloudflare Worker ingest stub for CoreVideo Pro crash + telemetry uploads.
- * Deploy separately from the demo site worker; bind KV in production if persistence is needed.
+ * Cloudflare Worker ingest for CoreVideo Pro crash + telemetry uploads (S0).
+ *
+ * Bindings (wrangler.jsonc): REPORTS_BUCKET (R2, crash payloads),
+ * REPORTS_KV (KV, report index). Secret: TELEMETRY_API_KEY — REQUIRED;
+ * an unset key rejects everything loudly instead of running open.
+ * See README.md for the API contract, storage layout, and deploy steps.
  */
+import { handleCrash, handleEvent } from "./lib/handlers.mjs";
+import { createIpRateLimiter } from "./lib/rateLimit.mjs";
+
+// Per-isolate token bucket (honest limits documented in lib/rateLimit.mjs).
+const limiter = createIpRateLimiter({ limit: 60, windowMs: 60_000 });
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -9,38 +19,34 @@ export default {
       return new Response("Method not allowed", { status: 405 });
     }
 
-    const authorized = authorize(request, env);
-    if (!authorized) {
+    // Rate-limit before auth so the bucket also blunts key brute-forcing.
+    const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+    if (!limiter.allow(ip)) {
+      return new Response("Too many requests", {
+        status: 429,
+        headers: { "retry-after": "60" }
+      });
+    }
+
+    const expected = env.TELEMETRY_API_KEY?.trim();
+    if (!expected) {
+      // Misconfigured deploy: fail LOUD, never silently accept unauthenticated uploads.
+      console.error("telemetry-ingest: TELEMETRY_API_KEY is not set; rejecting all requests");
+      return new Response("Service misconfigured: TELEMETRY_API_KEY is not set", {
+        status: 500
+      });
+    }
+    const header = request.headers.get("authorization") ?? "";
+    if (header !== `Bearer ${expected}`) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    let payload;
-    try {
-      payload = await request.json();
-    } catch {
-      return new Response("Invalid JSON", { status: 400 });
-    }
-
-    const reportId = `cv-${crypto.randomUUID()}`;
     if (url.pathname === "/v1/crashes") {
-      console.log("crash", reportId, payload?.reason ?? "unknown");
-      return Response.json({ reportId, accepted: true }, { status: 202 });
+      return handleCrash(request, env);
     }
-
     if (url.pathname === "/v1/events") {
-      console.log("event", reportId, payload?.name ?? "unknown");
-      return Response.json({ reportId, accepted: true }, { status: 202 });
+      return handleEvent(request, env);
     }
-
     return new Response("Not found", { status: 404 });
   }
 };
-
-function authorize(request, env) {
-  const expected = env.TELEMETRY_API_KEY?.trim();
-  if (!expected) {
-    return true;
-  }
-  const header = request.headers.get("authorization") ?? "";
-  return header === `Bearer ${expected}`;
-}

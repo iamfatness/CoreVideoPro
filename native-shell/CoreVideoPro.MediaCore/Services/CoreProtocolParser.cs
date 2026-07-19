@@ -573,7 +573,8 @@ public static class CoreProtocolParser
             ActiveSpeakerId = snapshot.ActiveSpeakerId,
             Caption = snapshot.Caption,
             Tick = snapshot.Tick,
-            Warnings = snapshot.Warnings
+            Warnings = snapshot.Warnings,
+            RawMediaActive = snapshot.RawMediaActive
         };
     }
 
