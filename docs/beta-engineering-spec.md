@@ -25,7 +25,7 @@ What exists vs. what the plans assumed:
 | Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest stores crashes in R2 + a KV index and requires its API key since S0 (2026-07-18). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
 | OAuth broker | External (`corevideo.iamfatness.us`, lives in the CoreVideo repo). Shell is hard-wired to it for sign-in AND refresh (#290). Only the start URL is overridable (`COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`). **Discrepancy: code default app-return URI is `corevideo://oauth/callback`; the appxmanifest + docs say `corevideopro://`** |
 | First-run | No wizard, no first-launch flag. Canvas default is **already 1080p** (`MediaCoreProductionSyncContext.DefaultCanvasOutputProfile` = 1920x1080) — the plan's "4K is an RTX-4090 assumption" worry is stale; 4K is opt-in |
-| Wizard targets | Monitor device, mic (deliberately default-OFF), recording folder (defaults to `%USERPROFILE%\Videos\CoreVideo Pro`), Zoom sign-in all exist as bindable settings. **Vcam enable/mirror/name are NOT persisted** (reset every launch). **No single "selected camera" setting exists** — cameras are scene sources, not a global pick |
+| Wizard targets | Monitor device, mic (deliberately default-OFF), recording folder (defaults to `%USERPROFILE%\Videos\CoreVideo Pro`), Zoom sign-in all exist as bindable settings. ~~Vcam enable/mirror/name are NOT persisted~~ **DONE (O1, 2026-07-18):** vcam enable/mirror/name persist in `ProductionOutputPreferences` (schema v5) and re-apply on launch via the initial production sync. **No single "selected camera" setting exists** — cameras are scene sources, not a global pick |
 
 ## 2. D — Distribution
 
@@ -287,9 +287,20 @@ domains + deploy hygiene for the broker itself are tracked in beta-plan B2.
 ## 4. O — Onboarding / first-run
 
 ### O1 — Persist what the wizard will set (prerequisite)
-Vcam enable/mirror/name move into `ProductionOutputPreferences` (version bump +
-migration; they are live-synced but reset every launch today). Without this the
-wizard's vcam step is a lie.
+
+**Status: SHIPPED 2026-07-18 (PR `claude/beta-o1-vcam-persist`, stacked on S4).**
+`VirtualCameraEnabled` / `VirtualCameraMirror` / `VirtualCameraName` live in
+`ProductionOutputPreferences` (schema v5; v4 files migrate with defaults —
+camera off, unmirrored, default name — and secrets untouched). Saved whenever
+the operator changes them (UI toggle or control API), restored in
+`ApplyProductionOutputPreferences` via the backing fields, and carried to the
+core by the initial full production sync in `StartMediaCoreOnLaunchAsync` —
+the same declarative wire the UI toggle rides, so the restore is idempotent
+and cannot double-fire the D3 first-enable registration.
+
+Original scope: vcam enable/mirror/name move into `ProductionOutputPreferences`
+(version bump + migration; they were live-synced but reset every launch).
+Without this the wizard's vcam step is a lie.
 
 ### O2 — First-run wizard
 First-launch flag in app-data (absence of the flag + absence of prefs = fresh).

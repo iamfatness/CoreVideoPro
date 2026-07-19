@@ -48,6 +48,9 @@ public sealed class ProductionOutputPreferencesStoreTests
             LowerThirdBuildOutMs = 300,
             BrandLowerThirdStyle = "minimal",
             BrandDefaultOverlayBehavior = "manual",
+            VirtualCameraEnabled = true,
+            VirtualCameraMirror = true,
+            VirtualCameraName = "Studio A Program",
             MultiviewLayoutMode = "pgmPvwLarge",
             MultiviewTileCount = 5,
             MultiviewShowLabels = false,
@@ -98,6 +101,9 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal("media-bg-2", roundTripped.SceneBackgroundAssetIds["eight-up"]);
         Assert.Equal("Main Camera", roundTripped.SourceDisplayNames["capture:cam-uvc"]);
         Assert.Equal("Dr. Jane Smith", roundTripped.SourceDisplayNames["zoom:p-42"]);
+        Assert.True(roundTripped.VirtualCameraEnabled);
+        Assert.True(roundTripped.VirtualCameraMirror);
+        Assert.Equal("Studio A Program", roundTripped.VirtualCameraName);
         Assert.Equal("pgmPvwLarge", roundTripped.MultiviewLayoutMode);
         Assert.Equal(5, roundTripped.MultiviewTileCount);
         Assert.False(roundTripped.MultiviewShowLabels);
@@ -120,6 +126,11 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.True(preferences.MultiviewShowMeters);
         Assert.False(preferences.MultiviewShowClock);
         Assert.False(preferences.LocalAudioSourceEnabled);
+        // O1: fresh profiles never expose the program feed system-wide without
+        // an explicit operator action; blank name keeps the built-in default.
+        Assert.False(preferences.VirtualCameraEnabled);
+        Assert.False(preferences.VirtualCameraMirror);
+        Assert.Null(preferences.VirtualCameraName);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, preferences.Version);
     }
 
@@ -293,6 +304,79 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.NotNull(reloaded);
         Assert.Equal("legacy-plain-key", reloaded.StreamRtmpStreamKey);
         Assert.Equal("legacy-plain-pass", reloaded.StreamSrtPassphrase);
+    }
+
+    // ---- O1 vcam persistence (v5 bump + v4 -> v5 migration) ----
+
+    [Fact]
+    public void FileStore_WithDpapi_MigratesV4FileToV5WithVcamDefaultsAndSecretsIntact()
+    {
+        var folder = TempFolder();
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName);
+        // A real v4 file: secrets already DPAPI-encrypted, no vcam fields yet.
+        File.WriteAllText(path, $$"""
+            {
+              "Version": 4,
+              "LocalAudioSourceEnabled": true,
+              "StreamRtmpServerUrl": "rtmps://live.example/app",
+              "StreamRtmpStreamKey": "{{DpapiSecretProtector.Protect("v4-stream-key")}}",
+              "StreamSrtPassphrase": "{{DpapiSecretProtector.Protect("v4-srt-pass")}}",
+              "RecordingTargetFolder": "D:\\Shows"
+            }
+            """);
+
+        var store = CreateDpapiStore(folder);
+        var loaded = store.Load();
+
+        Assert.NotNull(loaded);
+        // The v5 vcam fields land at their defaults (camera off, unmirrored,
+        // default name) — a migration must never switch the camera on.
+        Assert.False(loaded.VirtualCameraEnabled);
+        Assert.False(loaded.VirtualCameraMirror);
+        Assert.Null(loaded.VirtualCameraName);
+        // Secrets and other fields survive the bump untouched...
+        Assert.Equal("v4-stream-key", loaded.StreamRtmpStreamKey);
+        Assert.Equal("v4-srt-pass", loaded.StreamSrtPassphrase);
+        Assert.Equal("D:\\Shows", loaded.RecordingTargetFolder);
+        // ...and the v4 explicit local-audio consent is NOT reset (pinned < 3).
+        Assert.True(loaded.LocalAudioSourceEnabled);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, loaded.Version);
+
+        // The load rewrote the file at v5 with the secrets still encrypted.
+        var raw = File.ReadAllText(path);
+        Assert.Contains($"\"Version\": {ProductionOutputPreferences.CurrentVersion}", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("v4-stream-key", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("v4-srt-pass", raw, StringComparison.Ordinal);
+        Assert.Contains(DpapiSecretProtector.Prefix, raw, StringComparison.Ordinal);
+
+        // The migrated file round-trips.
+        var reloaded = store.Load();
+        Assert.NotNull(reloaded);
+        Assert.Equal("v4-stream-key", reloaded.StreamRtmpStreamKey);
+        Assert.False(reloaded.VirtualCameraEnabled);
+    }
+
+    [Fact]
+    public void FileStore_RoundTripsVirtualCameraIntent()
+    {
+        var folder = TempFolder();
+        var store = new FileProductionOutputPreferencesStore(folder);
+
+        store.Save(new ProductionOutputPreferences
+        {
+            VirtualCameraEnabled = true,
+            VirtualCameraMirror = true,
+            VirtualCameraName = "Booth Cam"
+        });
+
+        var loaded = store.Load();
+
+        Assert.NotNull(loaded);
+        Assert.True(loaded.VirtualCameraEnabled);
+        Assert.True(loaded.VirtualCameraMirror);
+        Assert.Equal("Booth Cam", loaded.VirtualCameraName);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, loaded.Version);
     }
 
     [Fact]
