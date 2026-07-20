@@ -50,17 +50,39 @@ class RecordingPtsClock {
     return pts;
   }
 
+  // A3 (VST latency compensation): audio that passed through a
+  // latency-reporting plugin is CONTENT-late — the samples in the buffer
+  // stamped "now" actually happened `latencySamples` earlier. The offset is
+  // LATCHED at the first audio buffer: changing it mid-session would jump the
+  // audio timeline against the gapless AAC sample clock (an audible A/V
+  // glitch), so a mid-recording plugin swap keeps the latched offset and the
+  // next recording picks up the new value. Clamped so the first buffer's PTS
+  // never goes below the shared epoch (MF rejects negative sample times).
+  void setAudioContentLatency(int latencySamples) {
+    if (!audioStarted_) {
+      audioLatencySamples_ = latencySamples > 0 ? latencySamples : 0;
+    }
+  }
+
+  [[nodiscard]] int audioContentLatencySamples() const { return audioLatencySamples_; }
+
   // PTS for an audio buffer of `frameCount` sample-frames; advances the
   // sample clock. Multiplying the TOTAL sample count (instead of accumulating
   // per-packet durations) keeps the track free of cumulative rounding drift.
   std::int64_t audioPts(std::int64_t now100ns, int frameCount, int sampleRate) {
     ensureEpoch(now100ns);
+    const std::int64_t rate = sampleRate > 0 ? sampleRate : 48000;
     if (!audioStarted_) {
       audioStarted_ = true;
       audioBase100ns_ = now100ns - epoch100ns_;
+      // Latch the content-latency offset (see setAudioContentLatency): the
+      // whole audio track shifts EARLIER by the plugin latency, clamped to
+      // the epoch so the first PTS stays >= 0.
+      const std::int64_t latency100ns = audioLatencySamples_ * 10'000'000LL / rate;
+      audioLatencyOffset100ns_ = latency100ns < audioBase100ns_ ? latency100ns : audioBase100ns_;
     }
-    const std::int64_t rate = sampleRate > 0 ? sampleRate : 48000;
-    const std::int64_t pts = audioBase100ns_ + audioSamples_ * 10'000'000LL / rate;
+    const std::int64_t pts =
+        audioBase100ns_ - audioLatencyOffset100ns_ + audioSamples_ * 10'000'000LL / rate;
     audioSamples_ += frameCount > 0 ? frameCount : 0;
     return pts;
   }
@@ -84,6 +106,8 @@ class RecordingPtsClock {
   bool audioStarted_ = false;
   std::int64_t audioBase100ns_ = 0;
   std::int64_t audioSamples_ = 0;
+  int audioLatencySamples_ = 0;               // set until the first buffer latches it
+  std::int64_t audioLatencyOffset100ns_ = 0;  // latched, clamped to the epoch
 };
 
 }  // namespace corevideo::modules

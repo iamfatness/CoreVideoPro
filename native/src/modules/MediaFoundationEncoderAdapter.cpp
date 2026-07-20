@@ -17,6 +17,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -537,6 +538,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     updateBytesWritten();
   }
 
+  void setAudioContentLatencySamples(int latencySamples) override {
+    audioContentLatencySamples_.store(latencySamples > 0 ? latencySamples : 0,
+                                      std::memory_order_relaxed);
+  }
+
   void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override {
     if (!session_.active || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
       return;
@@ -567,6 +573,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Down/area-mix to the program writer's channel count is handled by MF's PCM
     // input type matching what we declared; we pass channels through unchanged
     // since the program tap is already stereo. Convert/write float -> 16-bit PCM.
+    // A3: the clock LATCHES the plugin content latency at the first buffer
+    // (see RecordingPtsClock) so a delayed program mix keeps A/V truth.
+    recordingClock_.setAudioContentLatency(audioContentLatencySamples_.load(std::memory_order_relaxed));
     const LONGLONG audioPts = recordingClock_.audioPts(now100ns(), frameCount, sampleRate);
     if (program_.writeAudio(interleaved, frameCount, audioPts, error)) {
       session_.recordingAudioPacketCount = program_.audioPacketCount();
@@ -749,6 +758,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   RecordingPtsClock recordingClock_;
   std::chrono::steady_clock::time_point clockOrigin_ = std::chrono::steady_clock::now();
   bool comInitialized_ = false;
+  // A3: plugin content latency (atomic — the audio worker sets it, the writer
+  // thread reads it; the PTS clock latches per session).
+  std::atomic<int> audioContentLatencySamples_{0};
 };
 
 }  // namespace

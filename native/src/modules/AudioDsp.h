@@ -771,6 +771,75 @@ inline void resampleLinearTo(std::vector<float>& pcm, int channels, int fromRate
   pcm = std::move(out);
 }
 
+// ---------------------------------------------------------------------------
+// A3 (VST latency compensation): a persistent compensating delay line for
+// interleaved STEREO blocks. Paths that did NOT pass through a
+// latency-reporting plugin are delayed by the plugin's reported latency so
+// they stay time-aligned with the path that did.
+//
+// Delay changes ONLY on plugin selection / latency change (rare, operator
+// action) and are DECLICKED: for ~5ms the output crossfades from the
+// old-delay read tap to the new-delay read tap over the same history ring —
+// no gap, no duplicated hard splice. The ring is allocated once at the
+// capacity cap (a delay line is a fixed cost, not per-tick churn) and starts
+// zero-filled, so a newly delayed path fades in from silence exactly like a
+// real delay would.
+// ---------------------------------------------------------------------------
+inline constexpr size_t kMaxCompensationDelayFrames = 48000;  // 1s @ 48k — beyond any sane plugin
+
+struct CompensatingDelayState {
+  std::vector<float> ring;      // interleaved stereo history, fixed capacity
+  size_t writeFrame = 0;        // next frame slot to write (modulo capacity)
+  size_t delayFrames = 0;       // currently applied delay
+  size_t previousDelayFrames = 0;
+  size_t fadeRemaining = 0;     // crossfade frames left after a delay change
+  size_t fadeTotal = 0;
+};
+
+inline void applyCompensatingDelay(float* stereo, size_t frames, CompensatingDelayState& state,
+                                   size_t targetDelayFrames, double sampleRate) {
+  if (stereo == nullptr || frames == 0) {
+    return;
+  }
+  if (targetDelayFrames > kMaxCompensationDelayFrames) {
+    targetDelayFrames = kMaxCompensationDelayFrames;
+  }
+  if (targetDelayFrames == 0 && state.delayFrames == 0 && state.fadeRemaining == 0 &&
+      state.ring.empty()) {
+    return;  // never-delayed fast path: bit-identical pass-through
+  }
+  const size_t capacity = kMaxCompensationDelayFrames + 1;
+  if (state.ring.size() != capacity * 2) {
+    state.ring.assign(capacity * 2, 0.0f);  // first activation only
+    state.writeFrame = 0;
+  }
+  if (targetDelayFrames != state.delayFrames) {
+    state.previousDelayFrames = state.delayFrames;
+    state.delayFrames = targetDelayFrames;
+    state.fadeTotal = static_cast<size_t>(0.005 * (sampleRate > 0.0 ? sampleRate : 48000.0));
+    state.fadeRemaining = state.fadeTotal;
+  }
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const size_t writeIndex = state.writeFrame * 2;
+    state.ring[writeIndex] = stereo[frame * 2];
+    state.ring[writeIndex + 1] = stereo[frame * 2 + 1];
+    const size_t readNew = (state.writeFrame + capacity - state.delayFrames) % capacity;
+    float left = state.ring[readNew * 2];
+    float right = state.ring[readNew * 2 + 1];
+    if (state.fadeRemaining > 0 && state.fadeTotal > 0) {
+      const size_t readOld = (state.writeFrame + capacity - state.previousDelayFrames) % capacity;
+      const auto progress = static_cast<float>(
+          static_cast<double>(state.fadeTotal - state.fadeRemaining) / static_cast<double>(state.fadeTotal));
+      left = state.ring[readOld * 2] * (1.0f - progress) + left * progress;
+      right = state.ring[readOld * 2 + 1] * (1.0f - progress) + right * progress;
+      --state.fadeRemaining;
+    }
+    stereo[frame * 2] = left;
+    stereo[frame * 2 + 1] = right;
+    state.writeFrame = (state.writeFrame + 1) % capacity;
+  }
+}
+
 // C7c: PERSISTENT per-source DSP state. The chain runs on 20ms blocks; without
 // state carried across blocks every biquad and envelope restarts at each block
 // boundary - audible as a 50Hz buzz/distortion layered on the signal (owner-
@@ -796,6 +865,9 @@ struct ChannelDspState {
   // Fader/pan slew (mixRoutedBuses) - control changes must not zipper.
   double gainSlew = -1.0;  // <0 = uninitialized (snap to target)
   double panSlew = -2.0;   // <-1 = uninitialized
+  // A3: compensating delay so this channel stays aligned with a sibling
+  // channel whose chain hosts a latency-reporting plugin.
+  CompensatingDelayState alignDelay;
 };
 
 // P2 helper: slew a control value toward its target across blocks. Stateless
@@ -842,6 +914,11 @@ struct RoutedAudioSource {
   // C7c: persistent DSP state for this source (owned by the caller, one per
   // source lifetime). Null = stateless single-block processing.
   ChannelDspState* dspState = nullptr;
+  // A3: frames of compensating delay for THIS source's panned stereo (0 = no
+  // delay). The caller sets it to the active plugin latency on sources whose
+  // chain does NOT host the plugin, so plugin-hosting channels aren't late vs
+  // their siblings. Requires dspState (the delay is persistent by nature).
+  size_t alignDelayFrames = 0;
 };
 
 struct RoutedAudioCrosspoint {
@@ -946,6 +1023,15 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
       if (outCompGainReductionDbBySource != nullptr && compGrDb > 0.0) {
         (*outCompGainReductionDbBySource)[source.sourceId] = compGrDb;
       }
+    }
+    // A3: compensating delay AFTER the full channel chain, BEFORE the
+    // crosspoint sends — this source stays time-aligned with a sibling whose
+    // chain hosts a latency-reporting plugin. The call itself is stateful and
+    // declicked; a persistent 0 target with an idle state is a no-op.
+    if (source.dspState != nullptr &&
+        (source.alignDelayFrames > 0 || !source.dspState->alignDelay.ring.empty())) {
+      applyCompensatingDelay(stereo.data(), stereo.size() / 2, source.dspState->alignDelay,
+                             source.alignDelayFrames, source.sampleRate);
     }
     sourceStereo[source.sourceId] = std::move(stereo);
   }

@@ -154,6 +154,12 @@ void AsyncEncoderSink::submitAudio(const float* interleaved, int frameCount, int
   enqueue(std::move(item));
 }
 
+void AsyncEncoderSink::setAudioContentLatencySamples(int latencySamples) {
+  // Thread-safe by interface contract (the inner sink stores an atomic) — no
+  // queue item, so the value is in place before the next Audio item applies.
+  state_->inner->setAudioContentLatencySamples(latencySamples);
+}
+
 void AsyncEncoderSink::stopRecording() {
   // NON-BLOCKING: the caller (MediaCore::stopRecordingSession) holds coreMutex, so
   // blocking here would stall the render thread for the whole finalize. Instead we

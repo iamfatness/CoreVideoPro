@@ -124,6 +124,10 @@ public sealed class InsertSlotItem
     public bool IsProcessing { get; init; }
     public string StatusLabel { get; init; } = "";
     public string StatusTooltip { get; init; } = "";
+    // A3: the plugin's reported latency badge ("+12.4 ms"), empty for
+    // built-ins and zero-latency plugins.
+    public string LatencyLabel { get; init; } = "";
+    public bool HasLatency => LatencyLabel.Length > 0;
     public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn || IsProcessing ? LiveBrush : PendingBrush;
 }
 

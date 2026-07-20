@@ -720,10 +720,15 @@
                                                         <ColumnDefinition Width="28" />
                                                         <ColumnDefinition Width="*" />
                                                         <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock Text="{x:Bind SlotLabel}" Foreground="{StaticResource StudioMutedBrush}" />
                                                     <TextBlock Grid.Column="1" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="2" Text="{x:Bind StatusLabel}" FontSize="9" FontWeight="Bold"
+                                                    <!-- A3: reported plugin latency badge -->
+                                                    <TextBlock Grid.Column="2" Text="{x:Bind LatencyLabel}" FontSize="9"
+                                                               Foreground="#C79A2E" Visibility="{x:Bind HasLatency}"
+                                                               ToolTipService.ToolTip="Plug-in reported latency; the mix and recording timestamps compensate." />
+                                                    <TextBlock Grid.Column="3" Text="{x:Bind StatusLabel}" FontSize="9" FontWeight="Bold"
                                                                Foreground="{x:Bind StatusBrush}" />
                                                 </Grid>
                                             </Button>
@@ -1009,6 +1014,7 @@
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
                                                 <TextBlock Text="{x:Bind SlotLabel}" FontSize="9"
                                                            Foreground="{StaticResource StudioMutedBrush}"
@@ -1016,7 +1022,12 @@
                                                 <TextBlock Grid.Column="1" Text="{x:Bind Name}" FontSize="10" FontWeight="SemiBold"
                                                            Foreground="#A7E8F2" VerticalAlignment="Center"
                                                            TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Grid.Column="2" Text="{x:Bind StatusLabel}" FontSize="8" FontWeight="Bold"
+                                                <!-- A3: reported plugin latency badge -->
+                                                <TextBlock Grid.Column="2" Text="{x:Bind LatencyLabel}" FontSize="8"
+                                                           Foreground="#C79A2E" VerticalAlignment="Center"
+                                                           Visibility="{x:Bind HasLatency}"
+                                                           ToolTipService.ToolTip="Plug-in reported latency; the mix and recording timestamps compensate." />
+                                                <TextBlock Grid.Column="3" Text="{x:Bind StatusLabel}" FontSize="8" FontWeight="Bold"
                                                            Foreground="{x:Bind StatusBrush}"
                                                            VerticalAlignment="Center" />
                                             </Grid>

@@ -1069,6 +1069,10 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     startPluginHostScan();
   } else if (type == "open-vst-editor") {
     openVstPluginEditor(command);
+  } else if (type == "set-vst-param") {
+    setVstInsertParam(command);
+  } else if (type == "set-vst-state") {
+    setVstInsertState(command);
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
   } else if (type == "sync-capture-audio-sources") {
@@ -4512,6 +4516,46 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
   if (mixMs >= 30) std::fprintf(stderr, "[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
 
+  // A3 (latency compensation, owner decision: COMPENSATE): the active
+  // plugin's reported latency, valid only while the host is genuinely
+  // processing. Channel-level alignment delays every source WITHOUT a
+  // host-handled insert by this amount so a plugin-hosting sibling channel is
+  // not late against the rest of its bus. Cross-BUS alignment needs per-path
+  // latency attribution the single-slot telemetry cannot express yet — the
+  // honest scope note lives in docs/master-vst-round2-spec.md §A3.
+  // COREVIDEO_VST_LATENCY_ALIGN=0 disables the delay wiring (telemetry stays).
+  static const bool vstLatencyAlignEnabled = [] {
+    const char* flag = std::getenv("COREVIDEO_VST_LATENCY_ALIGN");
+    return flag == nullptr || flag[0] != '0';
+  }();
+  uint32_t vstActiveLatencySamples = 0;
+  bool anyChannelVstInsert = false;
+  bool anyBusVstInsert = false;
+  {
+    for (const auto& channel : work.channels) {
+      for (const auto& insert : channel.pluginInserts) {
+        if (isHostHandledInsertName(insert)) {
+          anyChannelVstInsert = true;
+          break;
+        }
+      }
+      if (anyChannelVstInsert) break;
+    }
+    for (const auto& send : work.routingSends) {
+      for (const auto& insert : send.busPluginInserts) {
+        if (isHostHandledInsertName(insert)) {
+          anyBusVstInsert = true;
+          break;
+        }
+      }
+      if (anyBusVstInsert) break;
+    }
+    if ((anyChannelVstInsert || anyBusVstInsert) && pluginHostClient_.ready() &&
+        pluginHostClient_.statusCode() == corevideo::pluginhost::kHostStatusPluginActive) {
+      vstActiveLatencySamples = pluginHostClient_.latencySamples();
+    }
+  }
+
   // Routed-bus matrix mix over the real PCM into a LOCAL bus map (published later).
   {
     std::vector<modules::RoutedAudioSource> routedSources;
@@ -4544,8 +4588,28 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           }
           source.noiseSuppression = channel.noiseSuppression;
           source.sampleRate = modules_.mixer->monitorBusSampleRate();
+          // A3: sources whose own chain hosts the plugin already carry its
+          // latency; every OTHER source gets the compensating delay.
+          if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
+            bool hostsPlugin = false;
+            for (const auto& insert : channel.pluginInserts) {
+              if (isHostHandledInsertName(insert)) {
+                hostsPlugin = true;
+                break;
+              }
+            }
+            source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
+          }
           break;
         }
+      }
+      // A3: sources with no channel-strip entry still need the compensating
+      // delay (they sum into the same buses); give them their persistent DSP
+      // state so the delay line survives across ticks.
+      if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0 &&
+          source.dspState == nullptr) {
+        source.dspState = &channelDspStates_[frame.participantId];
+        source.alignDelayFrames = vstActiveLatencySamples;
       }
       routedSources.push_back(source);
     }
@@ -4915,6 +4979,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
     const int audioChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
     if (!programAudio.empty() && audioChannels > 0) {
+      // A3: the recording PTS clock latches this at the session's first audio
+      // buffer — with a latency-reporting plugin anywhere in the program path
+      // (channel via alignment, bus/master directly), the whole program mix is
+      // content-late by that amount and the muxed audio timeline reflects it.
+      modules_.encoder->setAudioContentLatencySamples(static_cast<int>(vstActiveLatencySamples));
       modules_.encoder->submitAudio(programAudio.data(),
                                     static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
                                     audioChannels, modules_.mixer->monitorBusSampleRate());
@@ -5071,9 +5140,14 @@ void MediaCore::startPluginHostScan() {
       }
     }
 
-    std::lock_guard<std::mutex> lock(pluginHostMutex_);
-    pluginHostStatus_ = "ready";
-    pluginHostScanInFlight_ = false;
+    {
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      pluginHostStatus_ = "ready";
+      pluginHostScanInFlight_ = false;
+    }
+    // A2: saved states pushed BEFORE the scan resolved (the shell restores
+    // them at startup) can resolve now — inject any still pending.
+    injectPendingVstStates();
   }).detach();
 }
 
@@ -5126,6 +5200,10 @@ void MediaCore::ensurePluginHostServeStarted() {
     if (!launched) {
       std::fprintf(stderr, "[plugin-host] serve launch FAILED (%s)\n",
                    exePath.empty() ? "corevideo-plugin-host.exe not found" : exePath.c_str());
+    } else {
+      // A2: every fresh host generation (first launch AND respawns) gets the
+      // saved states re-pushed — a respawned host must not run default state.
+      injectPendingVstStates();
     }
     // Allow a new starter after launch failure or a later isolated-host exit.
     // The audio worker observes ready()==false and requests a replacement;
@@ -5170,6 +5248,124 @@ void MediaCore::openVstPluginEditor(const rpc::Json& command) {
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
     pluginHostInsertError_ = "isolated VST3 host did not start for the editor";
   }).detach();
+}
+
+void MediaCore::setVstInsertParam(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  if (query.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "cannot set a parameter: no VST3 plug-in selected";
+    return;
+  }
+  const auto paramId = static_cast<uint32_t>(command.getNumber("paramId", 0));
+  double normalized = command.getNumber("normalized", 0.0);
+  normalized = std::max(0.0, std::min(1.0, normalized));
+  const VstInsertSelection selection = resolveVstInsertForWorker(query);
+  if (!selection.resolved) {
+    return;  // resolveVstInsertForWorker already surfaced the loud error
+  }
+  if (!pluginHostClient_.ready() || !pluginHostClient_.hostAlive() ||
+      !pluginHostClient_.setParam(selection.bundleId, selection.className, paramId, normalized)) {
+    // No silent drops: the host is down — kick the (backoff-gated) respawn so
+    // the next slider move lands; saved state restores the value either way.
+    ensurePluginHostServeStarted();
+  }
+}
+
+rpc::Json MediaCore::getVstInsertState(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  const auto failed = [](const std::string& message) {
+    return rpc::Json(rpc::Json::Object{{"error", message}});
+  };
+  if (query.empty()) {
+    return failed("cannot capture state: no VST3 plug-in selected");
+  }
+  const VstInsertSelection selection = resolveVstInsertForWorker(query);
+  if (!selection.resolved) {
+    return failed(selection.error);
+  }
+  if (!pluginHostClient_.ready() || !pluginHostClient_.hostAlive()) {
+    return failed("isolated VST3 host is not running");
+  }
+  std::vector<uint8_t> blob;
+  std::string error;
+  if (!pluginHostClient_.getState(selection.bundleId, selection.className, &blob, &error)) {
+    return failed(error.empty() ? "state capture failed" : error);
+  }
+  return rpc::Json(rpc::Json::Object{
+      {"stateBase64", modules::base64Encode(blob.data(), blob.size())},
+      {"bytes", static_cast<double>(blob.size())},
+  });
+}
+
+void MediaCore::setVstInsertState(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  const std::string stateBase64 = command.getString("stateBase64");
+  if (query.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "cannot restore state: no VST3 plug-in selected";
+    return;
+  }
+  std::vector<uint8_t> blob = modules::base64Decode(stateBase64);
+  if (blob.empty() && !stateBase64.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "saved state for '" + query + "' is not valid base64; restore skipped";
+    std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    VstSavedState& saved = vstSavedStates_[query];
+    saved.blob = std::move(blob);
+    saved.injectedHostGeneration = 0;  // new blob: every generation needs it
+  }
+  // Immediate attempt when the host is already running; otherwise the scan /
+  // serve-launch triggers retry it. Detached: injection does state round
+  // trips (ms-to-seconds when the host must load the plugin first).
+  std::thread([this] { injectPendingVstStates(); }).detach();
+}
+
+void MediaCore::injectPendingVstStates() {
+  if (!pluginHostClient_.ready() || !pluginHostClient_.hostAlive()) {
+    return;  // retried on the next launch/scan trigger
+  }
+  const int64_t hostGeneration = pluginHostClient_.startCount();
+  struct PendingInjection {
+    std::string query;
+    std::vector<uint8_t> blob;
+  };
+  std::vector<PendingInjection> pending;
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    for (auto& [query, saved] : vstSavedStates_) {
+      if (saved.injectedHostGeneration != hostGeneration && !saved.blob.empty()) {
+        pending.push_back({query, saved.blob});
+      }
+    }
+  }
+  for (auto& entry : pending) {
+    const VstInsertSelection selection = resolveVstInsertForWorker(entry.query);
+    if (!selection.resolved) {
+      continue;  // scan not ready yet — the scan-complete trigger retries
+    }
+    std::string error;
+    if (pluginHostClient_.setState(selection.bundleId, selection.className, entry.blob, &error)) {
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      auto found = vstSavedStates_.find(entry.query);
+      if (found != vstSavedStates_.end()) {
+        found->second.injectedHostGeneration = hostGeneration;
+      }
+    } else {
+      // LOUD: restore failure = chip status via serve.lastError, never a
+      // silent default state.
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      pluginHostInsertError_ = "saved state restore for '" + entry.query + "' failed: " + error;
+      std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+    }
+  }
 }
 
 VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query) {
@@ -5238,6 +5434,30 @@ rpc::Json MediaCore::pluginHostState() const {
     lastError = "isolated VST3 host crashed repeatedly; plug-in bypassed — re-select it or "
                 "reopen its controls to retry";
   }
+  // A2: the published param surface, generation-gated — the Json array is
+  // rebuilt ONLY when the host bumped a param generation (list change or an
+  // actual value change), never per snapshot tick. Callers hold
+  // pluginHostMutex_ (this function), which guards the cache members.
+  const modules::VstPublishedParams publishedParams = pluginHostClient_.params();
+  if (publishedParams.listGeneration != cachedVstParamsListGeneration_ ||
+      publishedParams.valuesGeneration != cachedVstParamsValuesGeneration_) {
+    cachedVstParamsListGeneration_ = publishedParams.listGeneration;
+    cachedVstParamsValuesGeneration_ = publishedParams.valuesGeneration;
+    rpc::Json::Array paramsJson;
+    paramsJson.reserve(publishedParams.entries.size());
+    for (const auto& param : publishedParams.entries) {
+      paramsJson.emplace_back(rpc::Json::Object{
+          {"id", static_cast<double>(param.id)},
+          {"title", param.title},
+          {"units", param.units},
+          {"display", param.display},
+          {"stepCount", static_cast<double>(param.stepCount)},
+          {"normalized", param.normalized},
+      });
+    }
+    cachedVstParamsJson_ = std::move(paramsJson);
+  }
+  const uint32_t latencySamples = pluginHostClient_.latencySamples();
   return rpc::Json::Object{
       {"status", pluginHostStatus_},
       {"plugins", plugins},
@@ -5252,6 +5472,16 @@ rpc::Json MediaCore::pluginHostState() const {
                     {"editorStatusCode", static_cast<double>(pluginHostClient_.editorStatusCode())},
                     {"editorActivePlugin", pluginHostClient_.editorActivePlugin()},
                     {"editorLastError", pluginHostClient_.editorLastError()},
+                    // A3: the active plugin's reported latency (0 = none) —
+                    // feeds the per-insert badge and the PTS compensation.
+                    {"latencySamples", static_cast<double>(latencySamples)},
+                    {"latencyMs", static_cast<double>(latencySamples) / 48.0},
+                    // A2: generic param surface for the ACTIVE selection.
+                    {"paramPluginClass", publishedParams.pluginClass},
+                    {"paramTotalCount", static_cast<double>(publishedParams.totalCount)},
+                    {"paramListGeneration", static_cast<double>(publishedParams.listGeneration)},
+                    {"paramValuesGeneration", static_cast<double>(publishedParams.valuesGeneration)},
+                    {"params", cachedVstParamsJson_},
                     // A1: respawn backoff telemetry (attempts = consecutive
                     // failed respawns; gaveUp = auto-bypassed until reset).
                     {"respawn", rpc::Json::Object{

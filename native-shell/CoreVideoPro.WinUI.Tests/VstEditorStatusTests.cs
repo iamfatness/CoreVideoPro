@@ -96,4 +96,27 @@ public sealed class VstEditorStatusTests
     {
         Assert.Equal(expected, StudioViewModel.InsertMatchesVstPlugin(insertName, pluginName));
     }
+
+    // A3: the per-insert latency badge maps serve.latency to "+N.N ms" and is
+    // empty for zero-latency plugins.
+    [Fact]
+    public void FormatVstLatencyLabel_ZeroLatencyIsEmpty()
+    {
+        Assert.Equal(string.Empty, StudioViewModel.FormatVstLatencyLabel(new NativeMediaCorePluginHostServe
+        {
+            LatencySamples = 0,
+            LatencyMs = 0,
+        }));
+    }
+
+    [Fact]
+    public void FormatVstLatencyLabel_NonZeroShowsMilliseconds()
+    {
+        // 128 samples @48k = 2.666... ms -> "+2.7 ms".
+        Assert.Equal("+2.7 ms", StudioViewModel.FormatVstLatencyLabel(new NativeMediaCorePluginHostServe
+        {
+            LatencySamples = 128,
+            LatencyMs = 128.0 / 48.0,
+        }));
+    }
 }

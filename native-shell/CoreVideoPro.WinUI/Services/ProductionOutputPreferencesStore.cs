@@ -18,7 +18,13 @@ public sealed class ProductionOutputPreferences
     // (built-ins stay code-defined in MasteringPresetCatalog and are never
     // written here). Older files migrate with null blocks = keep the in-app
     // defaults (mastering off, both slots neutral, no user presets).
-    public const int CurrentVersion = 6;
+    // v7 (VST round-2 A2): VstInsertStates persists VST3 component-state
+    // blobs (base64) keyed by insert selection name ("vst:<class>"). Older
+    // files migrate with an empty map (no saved plugin state). Keying is per
+    // SELECTION, not per slot: the isolated host runs ONE instance per
+    // selection, so two chips naming the same plugin share one state by
+    // construction. Not a secret-bearing field (plugin DSP settings).
+    public const int CurrentVersion = 7;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -96,6 +102,13 @@ public sealed class ProductionOutputPreferences
     // keys are per-meeting (the SDK participant id changes), so those entries are
     // effectively session-scoped.
     public Dictionary<string, string> SourceDisplayNames { get; set; } = new(StringComparer.Ordinal);
+
+    // VST round-2 A2: persisted VST3 component states. Key = insert selection
+    // name (e.g. "vst:Curves AQ Stereo"), value = base64 IComponent state.
+    // Captured on a debounce after param/editor activity; restored at startup
+    // by pushing every entry to the core (which re-injects after host
+    // respawns too).
+    public Dictionary<string, string> VstInsertStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops
@@ -254,11 +267,11 @@ public static class ProductionOutputPreferencesSerializer
             // Versions 1-2 defaulted local capture to enabled and selected the
             // first discovered endpoint automatically. Treat that legacy state
             // as implicit, not consent to seize the device on every launch.
-            // (Pinned to < 3: the v4 secrets / v5 vcam / v6 mastering bumps must
-            // not re-run it. The v5 vcam and v6 mastering fields need no explicit
+            // (Pinned to < 3: the v4 secrets / v5 vcam / v6 mastering / v7 VST
+            // state bumps must not re-run it. Those fields need no explicit
             // migration — absent fields deserialize to the documented defaults:
             // vcam off/unmirrored/default name; mastering blocks null = in-app
-            // defaults, no user presets.)
+            // defaults, no user presets; VstInsertStates empty = no saved state.)
             if (preferences.Version < 3)
             {
                 preferences.LocalAudioSourceEnabled = false;

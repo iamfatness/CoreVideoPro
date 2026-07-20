@@ -119,6 +119,25 @@ class MediaCore {
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
 
+  // A2 (round-2 PR 2): param bridge + state persistence commands, called by
+  // JsonRpcServer's dedicated routes (hence public). All control-plane — they
+  // touch only leaf mutexes and the client's dedicated param/state events,
+  // NEVER the realtime audio req/done exchange.
+  void setVstInsertParam(const rpc::Json& command);
+  // Pull command: fetches the plugin's CURRENT component state fresh from the
+  // isolated host; returns {stateBase64,bytes} or {error} — loud, never a
+  // silent default blob.
+  [[nodiscard]] rpc::Json getVstInsertState(const rpc::Json& command);
+  // Caches a saved state blob per selection query and injects it into every
+  // host generation that has not received it yet — including after each
+  // respawn (closes "respawn loses state"). Injection retries on scan
+  // completion + host launch, so pushing states before the first scan
+  // resolves is safe.
+  void setVstInsertState(const rpc::Json& command);
+  // Injection worker body (detached threads + the serve launch thread call
+  // it; never the audio worker, never under coreMutex).
+  void injectPendingVstStates();
+
  private:
   void loadSceneGraph(const rpc::Json& command);
   void setParticipantTransform(const rpc::Json& command);
@@ -510,6 +529,21 @@ class MediaCore {
   modules::PluginHostRespawnPolicy pluginHostRespawnPolicy_;
   std::string pluginHostLastSelectionKey_;
   bool pluginHostGaveUpAnnounced_ = false;  // one-shot stderr on give-up
+  // A2: saved component-state blobs per "vst:" selection QUERY (the shell's
+  // persistence key), injected into each host generation exactly once.
+  // Guarded by pluginHostMutex_ (leaf). injectedHostGeneration tracks the
+  // pluginHostClient_.startCount() the blob last landed in, so a respawned
+  // host (new generation) gets it re-pushed.
+  struct VstSavedState {
+    std::vector<uint8_t> blob;
+    int64_t injectedHostGeneration = 0;  // 0 = never injected
+  };
+  std::map<std::string, VstSavedState> vstSavedStates_;
+  // A2: snapshot param surface cache — rebuilt ONLY when a host param
+  // generation moved (never per snapshot tick). Guarded by pluginHostMutex_.
+  mutable rpc::Json cachedVstParamsJson_ = rpc::Json::Array{};
+  mutable uint32_t cachedVstParamsListGeneration_ = 0;
+  mutable uint32_t cachedVstParamsValuesGeneration_ = 0;
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;

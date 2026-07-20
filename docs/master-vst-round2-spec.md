@@ -70,7 +70,21 @@ Editor embedding stays out (P4 follow-up).
 - Editor embedding as a shell-owned child window is explicitly OUT of this round
   (P4 follow-up); a reliable top-level window is acceptable for beta.
 
-### A2. Params + state — the real P3 (PR 2)
+### A2. Params + state — the real P3 (PR 2) — **SHIPPED** (2026-07-20, stacked on #311)
+
+Delivered exactly as designed below, with these concrete choices: SHM magic
+bumped **CVP2 → CVP3**; the published param surface caps at the first 64 by
+controller index + carries the real total ("64 of 511 shown" in the flyout);
+set-param rides a latest-wins ring + dedicated event; get/set-state use a
+single-shot 1 MiB block area (chunking deliberately NOT built — a bounded loud
+contract over a brittle multi-round one; larger states loud-fail with size);
+state blobs persist per SELECTION (not per slot — the host runs one instance per
+selection) in `ProductionOutputPreferences` **v6** (next free number; main and
+master-b1 were still on v5); re-injection covers every host generation including
+respawn. `--state-roundtrip` CLI proof mode added. Tests: `VstHostAbiTest`
+(ABI static_asserts + IBStream/param/state round trips), `ProductionOutputPreferencesStoreTests`
+(v6 migration + blob round trip), `VstEditorStatusTests` (latency-badge mapping).
+Original design notes below.
 
 - **Param bridge:** extend the host protocol (SHM block + host-transport.h,
   version-bump the magic like CVP2 did) with param enumeration
@@ -88,7 +102,31 @@ Editor embedding stays out (P4 follow-up).
 - Editor tweaks therefore survive restart: editor edits mutate controller state →
   captured by getState on a debounce/timer and at shutdown.
 
-### A3. Latency compensation (in PR 2, decided: COMPENSATE)
+### A3. Latency compensation (in PR 2, decided: COMPENSATE) — **SHIPPED (honest partial scope)** (2026-07-20)
+
+**What shipped:** `latencySamples` carried in the block →
+`pluginHost.serve.{latencySamples,latencyMs}` telemetry + a per-insert "+N.N ms"
+badge (every plugin, zero-latency adds nothing). CHANNEL-level alignment: a
+persistent per-source compensating delay line (`AudioDsp.h applyCompensatingDelay`,
+declick crossfade on change, delay changes only on selection/latency change)
+delays sibling channels WITHOUT a host-handled insert to the active plugin
+latency, so a plugin-hosting channel is not late vs the rest of its bus.
+Default-ON behind `COREVIDEO_VST_LATENCY_ALIGN` (set `=0` to keep telemetry+badge
+only). The added audio latency rides the shared-epoch PTS clock:
+`RecordingPtsClock` latches the plugin content latency at the first audio buffer
+of a session (clamped to the epoch so the first PTS stays ≥ 0) and shifts the
+whole audio timeline earlier, so a delayed program mix stays A/V-synced. Pinned
+by tests: aligned-output delay, declick ramp, PTS invariance + latch
+(`VstLatencyCompensationTest`).
+
+**What is DEFERRED (honest):** cross-BUS latency attribution. The single-slot
+host telemetry reports ONE active-selection latency, not a per-path value, so a
+plugin on bus A and a different-latency plugin on bus B cannot be aligned against
+each other from this telemetry. Channel-within-a-bus alignment (the common case:
+a plugin on one mic, dry siblings) IS handled. Full per-path alignment needs
+per-instance latency in the block (a multi-slot protocol) — a follow-up. The mix
+never gets LESS synced than before: with no plugin, the delay wiring is a
+bit-identical no-op.
 
 - Carry `latencySamples` per active instance through the SHM block →
   `pluginHost.serve` telemetry → the mix.

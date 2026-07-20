@@ -142,3 +142,7 @@ inline int RUN_ALL_TESTS() {
 #define EXPECT_LE(left, right) ::testing::AssertionStream(((left) <= (right)), __FILE__, __LINE__)
 #define EXPECT_GT(left, right) ::testing::AssertionStream(((left) > (right)), __FILE__, __LINE__)
 #define EXPECT_LT(left, right) ::testing::AssertionStream(((left) < (right)), __FILE__, __LINE__)
+// Absolute-tolerance comparison (real gtest provides this; the stub adds it so
+// numeric tests read the same in both builds).
+#define EXPECT_NEAR(left, right, tol) \
+  ::testing::AssertionStream(((((left) - (right)) < 0 ? ((right) - (left)) : ((left) - (right))) <= (tol)), __FILE__, __LINE__)
