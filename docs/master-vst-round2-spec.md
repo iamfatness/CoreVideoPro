@@ -132,7 +132,26 @@ description refreshed in the same change.
 - All stages keep persistent DSP state across ticks (the block-boundary
   distortion class is a solved lesson — every new kernel carries state).
 
-### B2. Rack workflow + persistence (PR 4)
+### B2. Rack workflow + persistence (PR 4) — SHIPPED 2026-07-19 (this PR, stacked on PR 3)
+
+Status: all three B2 items landed. Persistence: `ProductionOutputPreferences`
+**v6** (migration from v5 = null mastering blocks → in-app defaults; a bump can
+never flip mastering on) carries the full settings block incl. B1's glue
+dynamics/multiband, both A/B slots + the active slot, the selected target, and
+user-saved presets (`MasteringPresetLibrary` — save/rename/delete, built-in
+names reserved/immutable); restore rides the ApplyProductionOutputPreferences
+backing-field pattern (the O1 vcam shape) into the initial full sync. Metering:
+`audioMixSession.masterMeter` is the POST-mastering master (the meter tap sits
+after `processMasteringChain`); its TP detector is now STREAMING
+(`streamingTruePeakBlockDbfs`, sinc history across ticks — the finite-buffer
+meter's ~+0.4dB block-edge over-report is test-pinned as excluded), surfaced on
+the rack as integrated-LUFS-with-target-guide + TP-with-ceiling-guide
+(`MasteringGuideMeter`, scalar snapshot props only). Rack UI: 7 stages in DSP
+chain order (INPUT→FILTER→TONE→RIDE→GLUE→WIDTH→CEILING), per-stage bright/dim
+engage opacity mirroring the exact neutral-bypass conditions, A/B + built-in +
+user-preset controls adjacent to the meters. `mastering-chain-spec.md` §1 rack
+status refreshed same-change (`vst-host-spec.md` corrections ride Track A's PR 2,
+which owns those changes).
 
 - Presets, A/B slots, and current mastering settings persist in
   ProductionOutputPreferences (schema bump + migration); user-saved named
