@@ -1606,7 +1606,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var inserts = SelectedAudioMix?.PluginInserts ?? [];
         var serve = VstServeState;
         var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts) +
-                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}";
+                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:" +
+                        $"{serve.Respawn.Attempts}:{serve.Respawn.GaveUp}";
         if (string.Equals(signature, _insertSlotsSignature, StringComparison.Ordinal))
         {
             return;
@@ -1618,8 +1620,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 var builtIn = IsBuiltInInsert(name);
                 var processing = !builtIn && IsVstInsertProcessing(name);
-                var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
-                             !string.IsNullOrWhiteSpace(serve.LastError);
+                // A1: a respawn give-up is an auto-bypass — as loud as a load
+                // failure on every VST chip.
+                var failed = !builtIn && IsVstInsert(name) &&
+                             ((serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)) ||
+                              serve.Respawn.GaveUp);
+                var editorText = !builtIn && IsVstInsert(name) &&
+                                 InsertMatchesVstPlugin(name, serve.EditorActivePlugin)
+                    ? FormatVstEditorStatus(serve)
+                    : string.Empty;
+                var tooltip = builtIn
+                    ? "Processing active."
+                    : processing
+                        ? "Plug-in active. Click to open its controls."
+                        : failed
+                            ? serve.Respawn.GaveUp
+                                ? "Plug-in host crashed repeatedly; bypassed. Re-select the plug-in to retry."
+                                : "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                            : "Plug-in starting; audio continues unchanged.";
                 return new InsertSlotItem
                 {
                     // Keep the canonical value: removal/reordering use it as
@@ -1629,13 +1647,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     IsBuiltIn = builtIn,
                     IsProcessing = processing,
                     StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
-                    StatusTooltip = builtIn
-                        ? "Processing active."
-                        : processing
-                            ? "Plug-in active. Click to open its controls."
-                            : failed
-                                ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
-                                : "Plug-in starting; audio continues unchanged.",
+                    StatusTooltip = editorText.Length == 0 ? tooltip : $"{tooltip} {editorText}",
                 };
             })
             .ToList();
@@ -1864,6 +1876,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? FormatVstServeStatus(VstServeState)
             : "No VST3 insert on selected channel";
 
+    private int _openVstControlsGeneration;
+
     public async Task OpenVstControlsAsync(string insertName)
     {
         if (!IsVstInsert(insertName))
@@ -1876,14 +1890,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? insertName[4..].Trim()
             : insertName;
         CommandStatus = $"Opening {label} controls…";
+        var pollGeneration = ++_openVstControlsGeneration;
         try
         {
             await _bridge.OpenVstEditorAsync(insertName);
         }
         catch (Exception ex)
         {
+            // A1: a rejected/failed command is status text, never a silent no-op.
             CommandStatus = $"Could not open plug-in controls: {ex.Message}";
+            return;
         }
+
+        // The editor verdict lands via serve telemetry (the host may load the
+        // plug-in first — Waves shells take seconds). Poll briefly so the
+        // operator always gets a verdict in the status line, loud either way.
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            await Task.Delay(500);
+            if (pollGeneration != _openVstControlsGeneration)
+            {
+                return;  // a newer click owns the status line
+            }
+
+            var serve = VstServeState;
+            if (serve.EditorStatusCode != 0 &&
+                InsertMatchesVstPlugin(insertName, serve.EditorActivePlugin))
+            {
+                CommandStatus = FormatVstEditorStatus(serve);
+                return;
+            }
+        }
+
+        CommandStatus = $"No verdict opening {label} controls — see the processing rack status line.";
     }
 
     public Task OpenSelectedAudioProcessingVstControlsAsync()
@@ -1943,7 +1982,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var serve = VstServeState;
         var signature = (SelectedAudioProcessingTargetId ?? string.Empty) + "|" + string.Join("\u0001", inserts) +
                         $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
-                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}";
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:" +
+                        $"{serve.Respawn.Attempts}:{serve.Respawn.GaveUp}";
         if (string.Equals(signature, _audioProcessingSlotsSignature, StringComparison.Ordinal)) return;
 
         _audioProcessingSlotsSignature = signature;
@@ -1951,8 +1991,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             var builtIn = IsBuiltInInsert(name);
             var processing = !builtIn && IsVstInsertProcessing(name);
-            var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
-                         !string.IsNullOrWhiteSpace(serve.LastError);
+            // A1: a respawn give-up is an auto-bypass — as loud as a load failure.
+            var failed = !builtIn && IsVstInsert(name) &&
+                         ((serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)) ||
+                          serve.Respawn.GaveUp);
+            var editorText = !builtIn && IsVstInsert(name) &&
+                             InsertMatchesVstPlugin(name, serve.EditorActivePlugin)
+                ? FormatVstEditorStatus(serve)
+                : string.Empty;
+            var tooltip = builtIn
+                ? "Processing active."
+                : processing
+                    ? "Plug-in active. Click to open its controls."
+                    : failed
+                        ? serve.Respawn.GaveUp
+                            ? "Plug-in host crashed repeatedly; bypassed. Re-select the plug-in to retry."
+                            : "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                        : "Plug-in starting; audio continues unchanged. Click to open its controls.";
             return new InsertSlotItem
             {
                 Name = name,
@@ -1960,13 +2015,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 IsBuiltIn = builtIn,
                 IsProcessing = processing,
                 StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
-                StatusTooltip = builtIn
-                    ? "Processing active."
-                    : processing
-                        ? "Plug-in active. Click to open its controls."
-                        : failed
-                            ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
-                            : "Plug-in starting; audio continues unchanged. Click to open its controls."
+                StatusTooltip = editorText.Length == 0 ? tooltip : $"{tooltip} {editorText}"
             };
         }).ToList();
         OnPropertyChanged(nameof(SelectedAudioProcessingSlots));
@@ -1977,14 +2026,61 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? FormatVstServeStatus(VstServeState)
             : "Built-in processing settings are synced with the native media core metadata.";
 
-    private static string FormatVstServeStatus(NativeMediaCorePluginHostServe serve) =>
-        serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0
+    // A1: the rack status line — audio state first, then the editor state so a
+    // controls failure is visible text, never a silent no-op. Public static for
+    // unit tests (the StudioViewModelAudioStatusTests pattern).
+    public static string FormatVstServeStatus(NativeMediaCorePluginHostServe serve)
+    {
+        if (serve.Respawn.GaveUp)
+        {
+            return "VST3 host crashed repeatedly — plug-in bypassed, audio continues unprocessed. " +
+                   "Re-select the plug-in or reopen its controls to retry.";
+        }
+
+        var audioStatus = serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0
             ? $"Processing {serve.ActivePlugin} in the isolated VST3 host."
             : serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)
                 ? $"Bypassed safely: {serve.LastError}"
                 : serve.DeadlineMisses > 0
                     ? $"Host starting or missed its deadline ({serve.DeadlineMisses}); audio remains bypassed."
                     : "Isolated VST3 host starting; audio remains bypassed until the first processed block returns.";
+        var editorStatus = FormatVstEditorStatus(serve);
+        return editorStatus.Length == 0 ? audioStatus : $"{audioStatus} {editorStatus}";
+    }
+
+    /// <summary>
+    /// A1: operator words for pluginHost.serve.editor{StatusCode,ActivePlugin,
+    /// LastError}. Empty when the editor is idle. The createView-null case is
+    /// called out verbatim per spec: "This plugin has no editor."
+    /// </summary>
+    public static string FormatVstEditorStatus(NativeMediaCorePluginHostServe serve) =>
+        serve.EditorStatusCode switch
+        {
+            1 => $"Controls open: {serve.EditorActivePlugin}.",
+            2 => serve.EditorLastError.Contains("does not provide a native editor",
+                                                StringComparison.OrdinalIgnoreCase)
+                ? "This plugin has no editor."
+                : $"Controls failed: {(string.IsNullOrWhiteSpace(serve.EditorLastError) ? "unknown editor error" : serve.EditorLastError)}",
+            _ => string.Empty,
+        };
+
+    // Does an insert-chain name ("VST: Curves AQ Stereo", "vst:<bundle>/<class>")
+    // refer to the plugin the host is reporting about? Same loose matching the
+    // processing badge uses — the host reports the resolved class name.
+    public static bool InsertMatchesVstPlugin(string insertName, string pluginName)
+    {
+        if (string.IsNullOrWhiteSpace(pluginName))
+        {
+            return false;
+        }
+
+        var query = insertName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? insertName[4..].Trim()
+            : insertName;
+        return string.Equals(pluginName, query, StringComparison.OrdinalIgnoreCase) ||
+               query.Contains(pluginName, StringComparison.OrdinalIgnoreCase) ||
+               pluginName.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
 
     // Status-pill design language: a pill is GREEN (dot + tint + text) when its
     // thing is on/live, RED when off/offline. Capture and Zoom share this so the
@@ -4989,7 +5085,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var serve = host.Serve;
         var serveSignature = $"{serve.Running}|{serve.StatusCode}|{serve.ActivePlugin}|{serve.LastError}|" +
                              $"{serve.DeadlineMisses}|{(serve.Exchanges > 0)}|" +
-                             $"{serve.EditorStatusCode}|{serve.EditorActivePlugin}|{serve.EditorLastError}";
+                             $"{serve.EditorStatusCode}|{serve.EditorActivePlugin}|{serve.EditorLastError}|" +
+                             $"{serve.Respawn.Attempts}|{serve.Respawn.GaveUp}";
         if (!string.Equals(serveSignature, _vstServeSignature, StringComparison.Ordinal))
         {
             _vstServeSignature = serveSignature;
