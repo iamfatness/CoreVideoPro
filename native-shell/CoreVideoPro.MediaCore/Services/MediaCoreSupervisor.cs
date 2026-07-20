@@ -179,7 +179,26 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 ["selection"] = selection
             },
             cancellationToken).ConfigureAwait(false);
-        response.Dispose();
+        using (response)
+        {
+            // A1 regression guard: this response used to be discarded unread,
+            // which made a core-side rejection (e.g. the pre-fix protocol-error
+            // for a top-level open-vst-editor request) a SILENT no-op — the
+            // owner-reported "Open controls never shows a plugin UI" defect.
+            // Any ok:false must surface to the operator as status text.
+            if (response.RootElement.TryGetProperty("ok", out var okElement) &&
+                okElement.ValueKind == JsonValueKind.False)
+            {
+                var message =
+                    response.RootElement.TryGetProperty("error", out var errorElement) &&
+                    errorElement.ValueKind == JsonValueKind.Object &&
+                    errorElement.TryGetProperty("message", out var messageElement)
+                        ? messageElement.GetString()
+                        : null;
+                throw new InvalidOperationException(
+                    message ?? "the native media core rejected the open-vst-editor command");
+            }
+        }
     }
 
     public async Task<NativeMediaCoreProfile?> HandshakeAsync(CancellationToken cancellationToken = default)

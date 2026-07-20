@@ -5075,17 +5075,55 @@ void MediaCore::startPluginHostScan() {
   }).detach();
 }
 
+namespace {
+int64_t pluginHostSteadyNowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+}  // namespace
+
 void MediaCore::ensurePluginHostServeStarted() {
   bool expected = false;
   if (!pluginHostServeStarting_.compare_exchange_strong(expected, true)) {
     return;  // starter already ran (or is running)
   }
+  // A1: respawns ride the house backoff ladder (5→10→20→40→60s, give up after
+  // 5 consecutive failed retries) so a crash-on-load plugin cannot hot-loop
+  // CreateProcess during a show. The policy lives under pluginHostMutex_ — a
+  // tiny leaf the worker already takes per tick in resolveVstInsertForWorker.
+  bool allowed = false;
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    allowed = pluginHostRespawnPolicy_.requestStart(pluginHostSteadyNowMs());
+    if (!allowed && pluginHostRespawnPolicy_.gaveUp() && !pluginHostGaveUpAnnounced_) {
+      pluginHostGaveUpAnnounced_ = true;
+      std::fprintf(stderr,
+                   "[plugin-host] serve respawn GAVE UP after %d consecutive failures; VST inserts "
+                   "stay BYPASSED (audio unprocessed) until the plug-in is re-selected\n",
+                   pluginHostRespawnPolicy_.consecutiveFailures());
+    }
+  }
+  if (!allowed) {
+    pluginHostServeStarting_.store(false, std::memory_order_release);
+    return;
+  }
   // Detached: CreateProcess + kernel-object setup never runs in the audio
   // worker; the worker bypasses until ready() flips.
   std::thread([this] {
     const auto exePath = resolvePluginHostExecutablePath();
+    bool launched = false;
     if (!exePath.empty()) {
-      pluginHostClient_.start(exePath, "serve-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+      launched = pluginHostClient_.start(
+          exePath, "serve-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+    }
+    {
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      pluginHostRespawnPolicy_.onLaunchResult(pluginHostSteadyNowMs(), launched);
+    }
+    if (!launched) {
+      std::fprintf(stderr, "[plugin-host] serve launch FAILED (%s)\n",
+                   exePath.empty() ? "corevideo-plugin-host.exe not found" : exePath.c_str());
     }
     // Allow a new starter after launch failure or a later isolated-host exit.
     // The audio worker observes ready()==false and requests a replacement;
@@ -5101,6 +5139,13 @@ void MediaCore::openVstPluginEditor(const rpc::Json& command) {
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
     pluginHostInsertError_ = "cannot open controls: no VST3 plug-in selected";
     return;
+  }
+  {
+    // Operator action: clicking "Open controls" resets the respawn ladder so a
+    // gave-up host is always recoverable without an app restart (spec A1).
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostRespawnPolicy_.reset();
+    pluginHostGaveUpAnnounced_ = false;
   }
   const VstInsertSelection selection = resolveVstInsertForWorker(query);
   if (!selection.resolved) return;
@@ -5132,6 +5177,16 @@ VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
     selection = resolveVstInsertSelection(query, pluginHostPlugins_);
     pluginHostInsertError_ = selection.resolved ? std::string{} : selection.error;
+    if (selection.resolved) {
+      // A NEW selection is an operator action: reset the respawn ladder so a
+      // crash-looped previous plug-in never blocks trying a different one.
+      const std::string selectionKey = selection.bundleId + "\x1f" + selection.className;
+      if (selectionKey != pluginHostLastSelectionKey_) {
+        pluginHostLastSelectionKey_ = selectionKey;
+        pluginHostRespawnPolicy_.reset();
+        pluginHostGaveUpAnnounced_ = false;
+      }
+    }
     if (!selection.resolved && pluginHostStatus_ == "absent" && !pluginHostScanAutoKicked_) {
       // No scan has ever run but the operator named a plugin: kick ONE scan
       // (async, detached) so the insert self-heals once results land.
@@ -5170,9 +5225,17 @@ rpc::Json MediaCore::pluginHostState() const {
   }
   // P2c failure honesty: a core-side selection error (typo'd insert name, no
   // scan) outranks the host-side status; otherwise report what the host
-  // actually did (active plugin, or its load/process error).
-  const std::string lastError =
+  // actually did (active plugin, or its load/process error). A respawn
+  // give-up outranks both — the insert is auto-bypassed and only an operator
+  // action recovers it, so the message must never be masked (it is DERIVED
+  // from policy state here, not stored, because the worker rewrites
+  // pluginHostInsertError_ every tick).
+  std::string lastError =
       !pluginHostInsertError_.empty() ? pluginHostInsertError_ : pluginHostClient_.lastError();
+  if (pluginHostRespawnPolicy_.gaveUp()) {
+    lastError = "isolated VST3 host crashed repeatedly; plug-in bypassed — re-select it or "
+                "reopen its controls to retry";
+  }
   return rpc::Json::Object{
       {"status", pluginHostStatus_},
       {"plugins", plugins},
@@ -5187,6 +5250,13 @@ rpc::Json MediaCore::pluginHostState() const {
                     {"editorStatusCode", static_cast<double>(pluginHostClient_.editorStatusCode())},
                     {"editorActivePlugin", pluginHostClient_.editorActivePlugin()},
                     {"editorLastError", pluginHostClient_.editorLastError()},
+                    // A1: respawn backoff telemetry (attempts = consecutive
+                    // failed respawns; gaveUp = auto-bypassed until reset).
+                    {"respawn", rpc::Json::Object{
+                                    {"attempts", static_cast<double>(
+                                                     pluginHostRespawnPolicy_.consecutiveFailures())},
+                                    {"gaveUp", pluginHostRespawnPolicy_.gaveUp()},
+                                }},
                 }},
   };
 }

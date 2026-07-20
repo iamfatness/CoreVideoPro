@@ -31,7 +31,24 @@ shipped); each track's PRs refresh the relevant status tables in the same change
 
 ## 1. Track A — VST
 
-### A1. Editor launch fix + host reliability (PR 1)
+### A1. Editor launch fix + host reliability (PR 1) — **SHIPPED 2026-07-19**
+
+Status: Phase 0 diagnosis PROVED the root cause — the shell sends
+`open-vst-editor` as a TOP-LEVEL RPC and `JsonRpcServer::handle` had no route
+for it (only `media-core-sync`/`commands` batches reached `handleCommand`), so
+the core answered `protocol-error "Unsupported native media-core command"` and
+`MediaCoreSupervisor.OpenVstEditorAsync` disposed the response unread: a fully
+silent no-op. The editor machinery itself worked when driven correctly
+(headless probe: Waves Curves AQ Stereo editor opened, attached, plugin-resized
+via IPlugFrame). Shipped: top-level routing + regression test, supervisor
+ok-check (rejections now surface as status text), editor window centered +
+raised best-effort (background-process foreground denial was real — topmost
+pulse + taskbar flash), single-editor invariant, clean detach on WM_CLOSE
+(`removed()` before DestroyWindow), user-close republishes idle status,
+`serve.editor*` and `serve.respawn{attempts,gaveUp}` surfaced on chips + rack
+status line ("This plugin has no editor" for createView-null), and the respawn
+backoff ladder (`PluginHostRespawnPolicy`, 5→10→20→40→60s, give up after 5).
+Editor embedding stays out (P4 follow-up).
 
 - **Phase 0 (diagnosis, first):** reproduce the editor failure live via
   systematic-debugging — drive `open-vst-editor` against a real WaveShell, read

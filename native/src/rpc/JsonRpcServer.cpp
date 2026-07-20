@@ -244,8 +244,15 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"type", "ack"}});
   }
 
+  // A1 regression guard (owner-reported "Open controls shows no plugin UI,
+  // ever"): the shell sends open-vst-editor (and can send scan-vst-plugins) as
+  // a TOP-LEVEL request, not inside a media-core-sync commands batch. Before
+  // these types were routed here the request fell through to the
+  // protocol-error below — a silently swallowed rejection, so the editor
+  // command never reached MediaCore::openVstPluginEditor.
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
-      hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset")) {
+      hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset") ||
+      hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins")) {
     return success(id, Json::Object{{"snapshot", mediaCore_.applyCommands(commandBatch(request))}});
   }
 

@@ -442,6 +442,17 @@ public sealed class NativeMediaCorePluginHostServe
     public int EditorStatusCode { get; init; }
     public string EditorActivePlugin { get; init; } = string.Empty;
     public string EditorLastError { get; init; } = string.Empty;
+    // A1: serve respawn backoff telemetry. GaveUp means the isolated host
+    // crashed repeatedly and the insert stays auto-bypassed (audio flows
+    // unprocessed) until the operator re-selects the plug-in or reopens its
+    // controls.
+    public NativeMediaCorePluginHostRespawn Respawn { get; init; } = new();
+}
+
+public sealed class NativeMediaCorePluginHostRespawn
+{
+    public int Attempts { get; init; }
+    public bool GaveUp { get; init; }
 }
 
 public sealed class NativeMediaCorePluginInfo

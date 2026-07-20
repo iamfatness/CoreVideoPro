@@ -439,6 +439,11 @@ int serveInstance(const std::string& instance) {
   std::map<std::string, std::unique_ptr<ServeSlot>> slots;
   std::string publishedStatusKey;  // dedupes statusGeneration bumps
   std::string publishedEditorStatusKey;
+  // A1: ONE editor window at a time (the editor telemetry is singular, and a
+  // second plugin GUI stacking over the first from a faceless host process is
+  // operator-hostile). Tracks the slot whose editor is open so a user close
+  // and a selection switch both keep the status truthful.
+  ServeSlot* editorSlot = nullptr;
 
   const auto publishStatus = [&](int32_t code, const std::string& activePlugin, const std::string& error) {
     const std::string key = std::to_string(code) + "\x1f" + activePlugin + "\x1f" + error;
@@ -480,11 +485,22 @@ int serveInstance(const std::string& instance) {
     return slots.emplace(slotKey, std::move(slot)).first->second.get();
   };
 
+  // The operator closing the editor window (WM_CLOSE → clean detach inside
+  // pumpEditorMessages) must flip the telemetry back to idle — otherwise the
+  // shell chip claims an open editor that no longer exists.
+  const auto publishEditorCloseIfUserClosed = [&] {
+    if (editorSlot != nullptr && !editorSlot->instance.editorOpen()) {
+      editorSlot = nullptr;
+      publishEditorStatus(kHostEditorIdle, "", "");
+    }
+  };
+
   for (;;) {
     HANDLE waits[] = {req, editor};
     const DWORD wait = ::MsgWaitForMultipleObjects(2, waits, FALSE, 30000, QS_ALLINPUT);
     if (wait == WAIT_OBJECT_0 + 2) {
       for (auto& entry : slots) entry.second->instance.pumpEditorMessages();
+      publishEditorCloseIfUserClosed();
       continue;
     }
     if (wait == WAIT_OBJECT_0 + 1) {
@@ -493,11 +509,21 @@ int serveInstance(const std::string& instance) {
       const std::string className(block->editorPluginClass,
                                   strnlen(block->editorPluginClass, sizeof(block->editorPluginClass)));
       ServeSlot* slot = ensureSlot(bundle, className);
+      // Selection switch: close the previous plugin's editor cleanly before
+      // showing the new one (single-editor invariant).
+      if (editorSlot != nullptr && editorSlot != slot) {
+        editorSlot->instance.closeEditor();
+        editorSlot = nullptr;
+      }
       if (slot == nullptr || !slot->error.empty()) {
         publishEditorStatus(kHostEditorFailed, className,
                             slot != nullptr ? slot->error : "editor slot could not load");
       } else if (slot->instance.showEditor("CoreVideo Pro - " + slot->instance.activeClassName())) {
+        editorSlot = slot;
         publishEditorStatus(kHostEditorOpen, slot->instance.activeClassName(), "");
+        // Deliver the window's initial message burst (paint/show) immediately
+        // rather than waiting for the next queue wake.
+        slot->instance.pumpEditorMessages();
       } else {
         publishEditorStatus(kHostEditorFailed, slot->instance.activeClassName(), slot->instance.lastError());
       }

@@ -580,6 +580,20 @@ G5 packaging-lite. Beta scope (signing/installer/updates, onboarding, licensing,
 crash pipeline, hardware matrix) lives in `docs/beta-plan.md`. The audio overhaul
 (4.1–4.4b incl. the console) and the Scenes redesign (S1–S3, R1) are SHIPPED; VST
 host P1/P2a/P2b/**P2c** are shipped (P3 channel inserts + params remaining).
+DONE 2026-07-19: **VST round-2 A1 — editor launch fix + host reliability**
+(docs/master-vst-round2-spec.md §A1). Root cause of "Open controls shows no
+plugin UI, ever": the shell sends `open-vst-editor` as a TOP-LEVEL RPC and
+`JsonRpcServer::handle` had no route for it — protocol-error, silently
+discarded by the supervisor. Now routed (+ regression test), the supervisor
+surfaces ok:false as status text, the host window opens centered + raised
+best-effort (background processes lack foreground rights — topmost pulse +
+FlashWindowEx; proven headless with Waves Curves AQ), WM_CLOSE detaches
+cleanly (`removed()` before DestroyWindow) and republishes idle status, one
+editor at a time. Serve respawn rides `PluginHostRespawnPolicy`
+(5→10→20→40→60s, give up after 5 → loud auto-bypass via
+`serve.respawn{attempts,gaveUp}` + chip BYPASS; healthy ≥30s runs and operator
+actions reset). Headless editor drills: `native/build-dev/probe/` in a
+worktree (spawn `--serve`, drive the SHM editor event, EnumWindows the host).
 DONE 2026-07-12: **VST P2c — real VST3 instantiation + processing in the
 out-of-process host.** Raw COM-ABI (NO VST3 SDK — GPLv3 house rule) in
 `native/plugin-host/vst-abi.h` (layout static_asserts) + `vst-processor.h`

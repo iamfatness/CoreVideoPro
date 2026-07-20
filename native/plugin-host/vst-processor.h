@@ -350,6 +350,9 @@ class VstPluginInstance {
   void pumpEditorMessages() {}
   vst3::tresult resizeEditor(vst3::ViewRect*) { return vst3::kNotImplemented; }
 #endif
+  // True while an editor window exists (the serve loop uses the open→closed
+  // transition to publish the idle editor status after a user close).
+  [[nodiscard]] bool editorOpen() const { return editorWindow_ != nullptr; }
 
   bool start(vst3::IPluginFactory* factory, const std::string& className,
              const VstProcessorConfig& config = {}) {
@@ -666,12 +669,43 @@ inline LRESULT CALLBACK vstEditorWindowProc(HWND hwnd, UINT message, WPARAM wPar
   }
   switch (message) {
     case WM_CLOSE:
-      ::ShowWindow(hwnd, SW_HIDE);
+      // A1 lifecycle: closing the window DETACHES cleanly — removed() before
+      // DestroyWindow (the VST3 contract) — instead of hiding with the view
+      // still attached. The serve loop notices editorOpen() flipped and
+      // publishes the idle editor status so the shell chip stays truthful.
+      if (owner != nullptr) {
+        owner->closeEditor();
+      } else {
+        ::DestroyWindow(hwnd);
+      }
       return 0;
     case WM_SETFOCUS:
       return 0;
     default:
       return ::DefWindowProcW(hwnd, message, wParam, lParam);
+  }
+}
+
+// Best-effort raise for a window created by a BACKGROUND process. The serve
+// host is spawned by the core with no console and no foreground rights, so
+// SetForegroundWindow is routinely denied — Phase 0 diagnosis showed the
+// editor opening VISIBLE but foreground=0 at a CW_USEDEFAULT cascade
+// position, i.e. BEHIND the maximized operator console: the owner-visible
+// symptom "no plugin UI ever appears". A topmost pulse puts the window at the
+// top of the z-order even without activation; when the OS still refuses
+// foreground, flash the taskbar button so the operator always gets a visible
+// signal. Deliberately no AttachThreadInput/input-hook tricks — never steal
+// foreground aggressively.
+inline void raiseEditorWindowBestEffort(HWND hwnd) {
+  ::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  ::SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  ::SetForegroundWindow(hwnd);
+  if (::GetForegroundWindow() != hwnd) {
+    FLASHWINFO flash{};
+    flash.cbSize = sizeof(flash);
+    flash.hwnd = hwnd;
+    flash.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
+    ::FlashWindowEx(&flash);
   }
 }
 
@@ -681,8 +715,11 @@ inline bool VstPluginInstance::showEditor(const std::string& title) {
     return false;
   }
   if (editorWindow_ != nullptr) {
-    ::ShowWindow(static_cast<HWND>(editorWindow_), SW_SHOWNORMAL);
-    ::SetForegroundWindow(static_cast<HWND>(editorWindow_));
+    // Second "Open controls": focus the EXISTING window (restoring a minimized
+    // one) — never a double createView/attached.
+    HWND existing = static_cast<HWND>(editorWindow_);
+    ::ShowWindow(existing, ::IsIconic(existing) ? SW_RESTORE : SW_SHOW);
+    raiseEditorWindowBestEffort(existing);
     return true;
   }
   editorView_ = static_cast<vst3::IPlugView*>(controller_->vtbl->createView(controller_, "editor"));
@@ -724,10 +761,21 @@ inline bool VstPluginInstance::showEditor(const std::string& title) {
   RECT outer{0, 0, width, height};
   const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   ::AdjustWindowRect(&outer, style, FALSE);
+  // Sane placement instead of the CW_USEDEFAULT cascade: centered on the
+  // primary monitor's work area (clamped so the title bar always stays
+  // reachable). The operator's console is usually maximized there — center is
+  // where an opened panel is expected.
+  RECT workArea{0, 0, 1920, 1080};
+  ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+  const int outerWidth = outer.right - outer.left;
+  const int outerHeight = outer.bottom - outer.top;
+  const int posX = std::max<int>(workArea.left,
+                                 workArea.left + (workArea.right - workArea.left - outerWidth) / 2);
+  const int posY = std::max<int>(workArea.top,
+                                 workArea.top + (workArea.bottom - workArea.top - outerHeight) / 2);
   std::wstring wideTitle(title.begin(), title.end());
   HWND hwnd = ::CreateWindowExW(0, kClassName, wideTitle.c_str(), style,
-                                CW_USEDEFAULT, CW_USEDEFAULT,
-                                outer.right - outer.left, outer.bottom - outer.top,
+                                posX, posY, outerWidth, outerHeight,
                                 nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
   if (hwnd == nullptr) {
     lastError_ = "could not create editor host window";
@@ -745,7 +793,7 @@ inline bool VstPluginInstance::showEditor(const std::string& title) {
   editorAttached_ = true;
   ::ShowWindow(hwnd, SW_SHOWNORMAL);
   ::UpdateWindow(hwnd);
-  ::SetForegroundWindow(hwnd);
+  raiseEditorWindowBestEffort(hwnd);
   return true;
 }
 

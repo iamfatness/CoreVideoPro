@@ -4,6 +4,7 @@
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
 #include "modules/PluginHostClient.h"
+#include "modules/PluginHostRespawnPolicy.h"
 #include "modules/AudioDsp.h"
 #include "modules/AudioMastering.h"
 #include "modules/VirtualCameraPublisher.h"
@@ -497,6 +498,12 @@ class MediaCore {
   // 10-second diagnosis, not silence.
   std::string pluginHostInsertError_;
   bool pluginHostScanAutoKicked_ = false;  // one-shot scan kick from the worker path
+  // A1: serve respawn backoff (5→10→20→40→60s, give up after 5 consecutive
+  // failures → insert stays loudly auto-bypassed). Guarded by pluginHostMutex_;
+  // operator actions (new selection, "Open controls") reset the ladder.
+  modules::PluginHostRespawnPolicy pluginHostRespawnPolicy_;
+  std::string pluginHostLastSelectionKey_;
+  bool pluginHostGaveUpAnnounced_ = false;  // one-shot stderr on give-up
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;
