@@ -41,6 +41,11 @@ struct FakeProcessor {
   FakeState* state;
 };
 
+struct FakeController {
+  IEditControllerVtbl* vtbl;
+  FakeState* state;
+};
+
 struct FakeState {
   std::vector<std::string> log;
   bool failInitialize = false;
@@ -53,11 +58,92 @@ struct FakeState {
   uint32_t latency = 7;
   float leftGain = 2.0f;
   float rightGain = 0.5f;
+  // A2: edit-controller param surface + component state.
+  bool exposeController = false;
+  std::vector<double> paramValues{0.25, 0.5};  // two params, ids 100 + 200
+  std::vector<uint8_t> stateBlob;               // getState writes, setState reads
   FakeComponent* component = nullptr;
   FakeProcessor* processor = nullptr;
+  FakeController* controller = nullptr;
 };
 
 constexpr char kFakeCid[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+
+// FUnknown ref-counting shared by every fake interface (defined below).
+uint32_t CVST_API fakeAddRef(void*);
+uint32_t CVST_API fakeRelease(void*);
+
+// --- edit controller vtable (A2) ---
+tresult CVST_API fakeControllerQueryInterface(void* self, const char* iid, void** obj) {
+  auto* controller = static_cast<FakeController*>(self);
+  if (tuidEqual(iid, kFUnknownIid.bytes) || tuidEqual(iid, kIEditControllerIid.bytes)) {
+    *obj = self;
+    return kResultOk;
+  }
+  (void)controller;
+  *obj = nullptr;
+  return kNoInterface;
+}
+tresult CVST_API fakeControllerInit(void*, void*) { return kResultOk; }
+tresult CVST_API fakeControllerTerm(void*) { return kResultOk; }
+tresult CVST_API fakeSetComponentState(void*, void*) { return kResultOk; }
+tresult CVST_API fakeControllerSetState(void*, void*) { return kResultOk; }
+tresult CVST_API fakeControllerGetState(void*, void*) { return kResultOk; }
+int32_t CVST_API fakeGetParameterCount(void* self) {
+  return static_cast<int32_t>(static_cast<FakeController*>(self)->state->paramValues.size());
+}
+tresult CVST_API fakeGetParameterInfo(void* self, int32_t index, ParameterInfo* info) {
+  auto* controller = static_cast<FakeController*>(self);
+  if (index < 0 || index >= static_cast<int32_t>(controller->state->paramValues.size()) || info == nullptr) {
+    return kResultFalse;
+  }
+  std::memset(info, 0, sizeof(*info));
+  info->id = static_cast<ParamID>(100 * (index + 1));  // 100, 200
+  const char16_t* title = index == 0 ? u"Drive" : u"Mix";
+  std::memcpy(info->title, title, (index == 0 ? sizeof(u"Drive") : sizeof(u"Mix")));
+  const char16_t units[] = u"dB";
+  std::memcpy(info->units, units, sizeof(units));
+  info->stepCount = 0;
+  info->defaultNormalizedValue = 0.5;
+  return kResultOk;
+}
+tresult CVST_API fakeGetParamStringByValue(void* self, ParamID, double value, char16_t* string) {
+  (void)self;
+  if (string == nullptr) return kResultFalse;
+  const char16_t* text = value >= 0.99 ? u"MAX" : u"val";
+  std::memcpy(string, text, value >= 0.99 ? sizeof(u"MAX") : sizeof(u"val"));
+  return kResultOk;
+}
+tresult CVST_API fakeGetParamValueByString(void*, ParamID, const char16_t*, double*) { return kResultFalse; }
+double CVST_API fakeNormalizedToPlain(void*, ParamID, double v) { return v; }
+double CVST_API fakePlainToNormalized(void*, ParamID, double v) { return v; }
+double CVST_API fakeGetParamNormalized(void* self, ParamID id) {
+  auto* controller = static_cast<FakeController*>(self);
+  const size_t index = id == 100 ? 0 : 1;
+  return index < controller->state->paramValues.size() ? controller->state->paramValues[index] : 0.0;
+}
+tresult CVST_API fakeSetParamNormalized(void* self, ParamID id, double value) {
+  auto* controller = static_cast<FakeController*>(self);
+  const size_t index = id == 100 ? 0 : 1;
+  if (index >= controller->state->paramValues.size()) return kResultFalse;
+  controller->state->paramValues[index] = value;
+  controller->state->log.push_back("setParamNormalized:" + std::to_string(id));
+  return kResultOk;
+}
+tresult CVST_API fakeSetComponentHandler(void*, void*) { return kResultOk; }
+void* CVST_API fakeCreateView(void*, const char*) { return nullptr; }
+
+IEditControllerVtbl* fakeControllerVtbl() {
+  static IEditControllerVtbl vtbl = {
+      &fakeControllerQueryInterface, &fakeAddRef, &fakeRelease,
+      &fakeControllerInit, &fakeControllerTerm, &fakeSetComponentState,
+      &fakeControllerSetState, &fakeControllerGetState, &fakeGetParameterCount,
+      &fakeGetParameterInfo, &fakeGetParamStringByValue, &fakeGetParamValueByString,
+      &fakeNormalizedToPlain, &fakePlainToNormalized, &fakeGetParamNormalized,
+      &fakeSetParamNormalized, &fakeSetComponentHandler, &fakeCreateView,
+  };
+  return &vtbl;
+}
 
 // --- component vtable ---
 tresult CVST_API fakeComponentQueryInterface(void* self, const char* iid, void** obj) {
@@ -65,6 +151,10 @@ tresult CVST_API fakeComponentQueryInterface(void* self, const char* iid, void**
   if (tuidEqual(iid, kIAudioProcessorIid.bytes)) {
     component->state->log.push_back("queryInterface:IAudioProcessor");
     *obj = component->state->processor;
+    return kResultOk;
+  }
+  if (component->state->exposeController && tuidEqual(iid, kIEditControllerIid.bytes)) {
+    *obj = component->state->controller;
     return kResultOk;
   }
   if (tuidEqual(iid, kFUnknownIid.bytes) || tuidEqual(iid, kIComponentIid.bytes)) {
@@ -132,8 +222,11 @@ tresult CVST_API fakeSetActive(void* self, TBool state) {
   static_cast<FakeComponent*>(self)->state->log.push_back("setActive:" + std::to_string(state));
   return kResultOk;
 }
-tresult CVST_API fakeSetState(void*, void*) { return kResultOk; }
-tresult CVST_API fakeGetState(void*, void*) { return kResultOk; }
+// A2: the fake serializes its FakeState::stateBlob through the host's real
+// IBStream (writing on getState, reading on setState) — proves the raw-ABI
+// MemoryStream marshals bytes both directions.
+tresult CVST_API fakeSetState(void* self, void* stream);
+tresult CVST_API fakeGetState(void* self, void* stream);
 
 IComponentVtbl* fakeComponentVtbl() {
   static IComponentVtbl vtbl = {
@@ -223,6 +316,32 @@ tresult CVST_API fakeProcess(void* self, ProcessData* data) {
 }
 uint32_t CVST_API fakeGetTailSamples(void*) { return 0; }
 
+// A2: getState writes stateBlob out through the host IBStream; setState reads
+// the whole stream back into stateBlob — the real byte-marshalling round trip.
+tresult CVST_API fakeGetState(void* self, void* stream) {
+  auto* component = static_cast<FakeComponent*>(self);
+  auto* bstream = static_cast<IBStream*>(stream);
+  const auto& blob = component->state->stateBlob;
+  int32_t written = 0;
+  if (!blob.empty()) {
+    bstream->vtbl->write(bstream, const_cast<uint8_t*>(blob.data()),
+                         static_cast<int32_t>(blob.size()), &written);
+  }
+  return written == static_cast<int32_t>(blob.size()) ? kResultOk : kResultFalse;
+}
+tresult CVST_API fakeSetState(void* self, void* stream) {
+  auto* component = static_cast<FakeComponent*>(self);
+  auto* bstream = static_cast<IBStream*>(stream);
+  component->state->stateBlob.clear();
+  uint8_t buffer[64];
+  int32_t read = 0;
+  while (bstream->vtbl->read(bstream, buffer, sizeof(buffer), &read) == kResultOk && read > 0) {
+    component->state->stateBlob.insert(component->state->stateBlob.end(), buffer, buffer + read);
+    if (read < static_cast<int32_t>(sizeof(buffer))) break;
+  }
+  return kResultOk;
+}
+
 IAudioProcessorVtbl* fakeProcessorVtbl() {
   static IAudioProcessorVtbl vtbl = {
       &fakeProcessorQueryInterface, &fakeAddRef, &fakeRelease,
@@ -291,10 +410,12 @@ struct FakePlugin {
   FakeState state;
   FakeComponent component{fakeComponentVtbl(), &state};
   FakeProcessor processor{fakeProcessorVtbl(), &state};
+  FakeController controller{fakeControllerVtbl(), &state};
   FakeFactory factory{fakeFactoryVtbl(), &state};
   FakePlugin() {
     state.component = &component;   // createInstance returns this
     state.processor = &processor;   // component QI(IAudioProcessor) returns this
+    state.controller = &controller; // component QI(IEditController) when exposed
   }
   IPluginFactory* factoryInterface() { return reinterpret_cast<IPluginFactory*>(&factory); }
 };
@@ -317,12 +438,100 @@ TEST(VstHostAbi, StructLayoutsMatchTheVst3ComAbi) {
   EXPECT_EQ(sizeof(AudioBusBuffers), 24u);
   EXPECT_EQ(sizeof(ProcessData), 80u);
   EXPECT_EQ(sizeof(BusInfo), 276u);
+  EXPECT_EQ(sizeof(ParameterInfo), 792u);
   EXPECT_EQ(offsetof(ProcessData, inputs), 24u);
   EXPECT_EQ(offsetof(BusInfo, busType), 268u);
+  EXPECT_EQ(offsetof(ParameterInfo, defaultNormalizedValue), 776u);
+  EXPECT_EQ(sizeof(ViewRect), 16u);
   // COM byte order for a known TUID: IComponent Data1 0xE831FF31 -> LE.
   EXPECT_EQ(static_cast<unsigned char>(kIComponentIid.bytes[0]), 0x31u);
   EXPECT_EQ(static_cast<unsigned char>(kIComponentIid.bytes[3]), 0xE8u);
   EXPECT_EQ(static_cast<unsigned char>(kIComponentIid.bytes[15]), 0x02u);
+  // A2: IEditController IID Data1 0xDCD7BBE3 in COM LE byte order.
+  EXPECT_EQ(static_cast<unsigned char>(kIEditControllerIid.bytes[0]), 0xE3u);
+  EXPECT_EQ(static_cast<unsigned char>(kIEditControllerIid.bytes[3]), 0xDCu);
+}
+
+// A2: the memory IBStream marshals bytes both directions and honors the VST3
+// partial-read EOF contract (kResultOk + short count at end of stream).
+TEST(VstHostAbi, MemoryStreamRoundTripsAndReportsEof) {
+  std::vector<uint8_t> backing;
+  auto stream = corevideo::vsthost::detail::makeMemoryStream(&backing);
+  const uint8_t payload[] = {1, 2, 3, 4, 5, 6, 7, 8};
+  int32_t written = 0;
+  ASSERT_EQ(stream.vtbl->write(&stream, const_cast<uint8_t*>(payload), 8, &written), kResultOk);
+  EXPECT_EQ(written, 8);
+  EXPECT_EQ(backing.size(), 8u);
+
+  int64_t pos = 0;
+  ASSERT_EQ(stream.vtbl->seek(&stream, 0, kIBSeekSet, &pos), kResultOk);
+  EXPECT_EQ(pos, 0);
+  uint8_t out[16] = {};
+  int32_t read = 0;
+  ASSERT_EQ(stream.vtbl->read(&stream, out, 16, &read), kResultOk);
+  EXPECT_EQ(read, 8);  // only 8 available — short read, still kResultOk (EOF)
+  EXPECT_EQ(std::memcmp(out, payload, 8), 0);
+  // A second read at EOF returns 0 bytes, still ok.
+  ASSERT_EQ(stream.vtbl->read(&stream, out, 16, &read), kResultOk);
+  EXPECT_EQ(read, 0);
+}
+
+// A2: the host enumerates the controller's params (id/title/units/value) and
+// setParamNormalized routes to the controller AND queues a process change.
+TEST(VstHostAbi, ParamBridgeEnumeratesAndSetsThroughTheController) {
+  FakePlugin fake;
+  fake.state.exposeController = true;
+  corevideo::vsthost::VstPluginInstance instance;
+  ASSERT_TRUE(instance.start(fake.factoryInterface(), "Fake Gain Stereo")) << instance.lastError();
+  ASSERT_TRUE(instance.hasController());
+  EXPECT_EQ(instance.parameterCount(), 2);
+
+  ParameterInfo info{};
+  ASSERT_TRUE(instance.parameterInfoAt(0, &info));
+  EXPECT_EQ(info.id, 100u);
+  EXPECT_NEAR(instance.paramNormalized(100), 0.25, 1e-9);
+  EXPECT_NEAR(instance.paramNormalized(200), 0.5, 1e-9);
+
+  EXPECT_TRUE(instance.setParamNormalized(100, 0.9));
+  EXPECT_NEAR(instance.paramNormalized(100), 0.9, 1e-9);
+  EXPECT_TRUE(logContains(fake.state.log, "setParamNormalized:100"));
+  // Clamp out-of-range.
+  EXPECT_TRUE(instance.setParamNormalized(200, 5.0));
+  EXPECT_NEAR(instance.paramNormalized(200), 1.0, 1e-9);
+}
+
+// A2: component state getState -> setState round trip through the real IBStream.
+TEST(VstHostAbi, ComponentStateRoundTripsThroughIbStream) {
+  FakePlugin source;
+  source.state.exposeController = true;
+  source.state.stateBlob = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x42};
+  corevideo::vsthost::VstPluginInstance sourceInstance;
+  ASSERT_TRUE(sourceInstance.start(source.factoryInterface(), "Fake Gain Stereo"));
+
+  std::vector<uint8_t> captured;
+  std::string error;
+  ASSERT_TRUE(sourceInstance.getComponentState(&captured, &error)) << error;
+  EXPECT_EQ(captured, source.state.stateBlob);
+
+  // Push the captured blob into a FRESH plugin instance — proves setState
+  // marshals the same bytes back in.
+  FakePlugin target;
+  target.state.exposeController = true;
+  corevideo::vsthost::VstPluginInstance targetInstance;
+  ASSERT_TRUE(targetInstance.start(target.factoryInterface(), "Fake Gain Stereo"));
+  ASSERT_TRUE(targetInstance.setComponentState(captured, &error)) << error;
+  EXPECT_EQ(target.state.stateBlob, source.state.stateBlob);
+}
+
+// A2 (no-controller honesty): a plugin without an edit controller reports 0
+// params and setParamNormalized fails — never fakes a param surface.
+TEST(VstHostAbi, NoControllerMeansNoParamSurface) {
+  FakePlugin fake;  // exposeController stays false
+  corevideo::vsthost::VstPluginInstance instance;
+  ASSERT_TRUE(instance.start(fake.factoryInterface(), "Fake Gain Stereo"));
+  EXPECT_FALSE(instance.hasController());
+  EXPECT_EQ(instance.parameterCount(), 0);
+  EXPECT_FALSE(instance.setParamNormalized(100, 0.5));
 }
 
 TEST(VstHostAbi, FullLifecycleProcessesStereoBlocksThroughAFakeFactory) {

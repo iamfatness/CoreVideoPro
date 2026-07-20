@@ -77,6 +77,9 @@ class AsyncEncoderSink final : public IEncoderSink {
                       const std::vector<std::string>& isoParticipantIds) override;
   void submit(const ProgramFrame& frame) override;
   void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override;
+  // A3: forwarded straight to the inner sink — the interface contract makes
+  // the implementation thread-safe (an atomic store), so no queue item.
+  void setAudioContentLatencySamples(int latencySamples) override;
   void stopRecording() override;
   OutputSession session() const override;
 

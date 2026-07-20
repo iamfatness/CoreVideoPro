@@ -12,7 +12,13 @@ public sealed class ProductionOutputPreferences
     // survive restarts (they were live-synced but reset every launch). Older
     // files migrate with the in-app defaults: enabled=false, mirror=false,
     // name=null (blank keeps the default "CoreVideo Pro Camera" name).
-    public const int CurrentVersion = 5;
+    // v6 (VST round-2 A2): VstInsertStates persists VST3 component-state
+    // blobs (base64) keyed by insert selection name ("vst:<class>"). Older
+    // files migrate with an empty map (no saved plugin state). Keying is per
+    // SELECTION, not per slot: the isolated host runs ONE instance per
+    // selection, so two chips naming the same plugin share one state by
+    // construction. Not a secret-bearing field (plugin DSP settings).
+    public const int CurrentVersion = 6;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -90,6 +96,13 @@ public sealed class ProductionOutputPreferences
     // keys are per-meeting (the SDK participant id changes), so those entries are
     // effectively session-scoped.
     public Dictionary<string, string> SourceDisplayNames { get; set; } = new(StringComparer.Ordinal);
+
+    // VST round-2 A2: persisted VST3 component states. Key = insert selection
+    // name (e.g. "vst:Curves AQ Stereo"), value = base64 IComponent state.
+    // Captured on a debounce after param/editor activity; restored at startup
+    // by pushing every entry to the core (which re-injects after host
+    // respawns too).
+    public Dictionary<string, string> VstInsertStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops

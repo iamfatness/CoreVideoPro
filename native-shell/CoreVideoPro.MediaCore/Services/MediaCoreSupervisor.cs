@@ -201,6 +201,94 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    // A2: generic VST param slider -> core -> isolated host. Fire-and-forget
+    // semantics with a loud failure: an ok:false response surfaces as an
+    // exception the view model turns into status text.
+    public async Task SetVstParamAsync(string selection, long paramId, double normalized,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "set-vst-param",
+                ["selection"] = selection,
+                ["paramId"] = paramId,
+                ["normalized"] = normalized
+            },
+            cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            ThrowIfRejected(response, "set-vst-param");
+        }
+    }
+
+    // A2: push a saved component-state blob (base64). The core caches it per
+    // selection and injects it into every isolated-host generation — including
+    // after a respawn — so plugin state survives restarts and host crashes.
+    public async Task SetVstStateAsync(string selection, string stateBase64,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "set-vst-state",
+                ["selection"] = selection,
+                ["stateBase64"] = stateBase64
+            },
+            cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            ThrowIfRejected(response, "set-vst-state");
+        }
+    }
+
+    // A2: pull the plugin's CURRENT component state (base64) from the isolated
+    // host. Returns null when the core reports a loud error (host down, no
+    // selection) — the caller keeps the previously persisted state.
+    public async Task<string?> GetVstStateAsync(string selection, CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "get-vst-state",
+                ["selection"] = selection
+            },
+            cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            if (response.RootElement.TryGetProperty("ok", out var okElement) &&
+                okElement.ValueKind == JsonValueKind.False)
+            {
+                return null;
+            }
+
+            return response.RootElement.TryGetProperty("state", out var stateElement) &&
+                   stateElement.ValueKind == JsonValueKind.Object &&
+                   stateElement.TryGetProperty("stateBase64", out var blobElement)
+                ? blobElement.GetString()
+                : null;
+        }
+    }
+
+    private static void ThrowIfRejected(JsonDocument response, string commandName)
+    {
+        if (response.RootElement.TryGetProperty("ok", out var okElement) &&
+            okElement.ValueKind == JsonValueKind.False)
+        {
+            var message =
+                response.RootElement.TryGetProperty("error", out var errorElement) &&
+                errorElement.ValueKind == JsonValueKind.Object &&
+                errorElement.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString()
+                    : null;
+            throw new InvalidOperationException(
+                message ?? $"the native media core rejected the {commandName} command");
+        }
+    }
+
     public async Task<NativeMediaCoreProfile?> HandshakeAsync(CancellationToken cancellationToken = default)
     {
         lock (_gate)

@@ -244,12 +244,38 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"type", "ack"}});
   }
 
+  // A2: state pull needs a REAL response payload (the base64 blob), so it gets
+  // a dedicated route instead of the applyCommands snapshot path. Control
+  // plane: the state round trip runs on this command thread against the
+  // host's dedicated state events, never the audio exchange.
+  if (hasType(request, "get-vst-state")) {
+    const Json state = mediaCore_.getVstInsertState(request);
+    const std::string error = state.getString("error");
+    if (!error.empty()) {
+      return failure(id, "vst-state-error", error);
+    }
+    return success(id, Json::Object{{"type", "vst-state"}, {"state", state}});
+  }
+
+  // A2: slider drags send set-vst-param at gesture rate — a cheap ack instead
+  // of a full snapshot rebuild per tick. Both handlers touch only the plugin
+  // host leaf mutexes (no coreMutex), so they are safe on this thread.
+  if (hasType(request, "set-vst-param")) {
+    mediaCore_.setVstInsertParam(request);
+    return success(id, Json::Object{{"type", "ack"}});
+  }
+  if (hasType(request, "set-vst-state")) {
+    mediaCore_.setVstInsertState(request);
+    return success(id, Json::Object{{"type", "ack"}});
+  }
+
   // A1 regression guard (owner-reported "Open controls shows no plugin UI,
   // ever"): the shell sends open-vst-editor (and can send scan-vst-plugins) as
   // a TOP-LEVEL request, not inside a media-core-sync commands batch. Before
   // these types were routed here the request fell through to the
   // protocol-error below — a silently swallowed rejection, so the editor
-  // command never reached MediaCore::openVstPluginEditor.
+  // command never reached MediaCore::openVstPluginEditor. (set-vst-param /
+  // set-vst-state have their own cheap-ack routes above.)
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
       hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset") ||
       hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins")) {

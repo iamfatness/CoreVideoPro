@@ -645,6 +645,13 @@ class IEncoderSink {
     (void)channels;
     (void)sampleRate;
   }
+  // A3 (VST latency compensation): the program-audio content latency added by
+  // an active out-of-process plugin, in samples at the program rate. The
+  // recording PTS clock latches it at the FIRST audio buffer of a session so
+  // the muxed audio timeline reflects the delayed content (A/V stays true).
+  // Must be thread-safe (called from the audio worker; implementations store
+  // an atomic). Default no-op keeps non-recording sinks valid.
+  virtual void setAudioContentLatencySamples(int latencySamples) { (void)latencySamples; }
   // Finalize any open recording container(s) — moov write + writer close — so
   // the artifact on disk is playable the moment the operator stops recording,
   // WITHOUT tearing down the encoder session (streaming destinations keep

@@ -580,6 +580,35 @@ G5 packaging-lite. Beta scope (signing/installer/updates, onboarding, licensing,
 crash pipeline, hardware matrix) lives in `docs/beta-plan.md`. The audio overhaul
 (4.1–4.4b incl. the console) and the Scenes redesign (S1–S3, R1) are SHIPPED; VST
 host P1/P2a/P2b/**P2c** are shipped (P3 channel inserts + params remaining).
+DONE 2026-07-20: **VST round-2 A2/A3 — params + state + latency compensation**
+(docs/master-vst-round2-spec.md §A2/§A3, stacked on #311). Param bridge:
+`IEditController` raw COM-ABI in `vst-abi.h` (+ `IBStream` for state, layout
+static_asserts). The out-of-process host publishes the active selection's param
+surface — first 64 params by controller index + real total count
+(id/title/units/plugin-display/step/value) — and drains a latest-wins set-param
+ring on a DEDICATED event; the core copies it out of the SHM block only on a
+param-generation change → `pluginHost.serve.params[]`; the shell renders generic
+sliders in the insert flyout (rebuilt on Opening). The host is the value
+authority (`setParamNormalized` on the controller + a queued process change), so
+an open editor and the sliders never fight. State persistence:
+`IComponent::get/setState` over a raw-ABI **memory IBStream** in the host,
+get-state pull command (base64) + set-state over a single-shot **1 MiB** block
+area (chunking deliberately NOT built — bounded loud contract; larger states
+fail with their size). `host-transport.h` magic bumped **CVP2 → CVP3** (stale
+host fails loud). Blobs persist per SELECTION in `ProductionOutputPreferences`
+**v6** (one instance per selection in the host), captured on a debounce after
+param/editor activity, restored on load, and **re-injected into every host
+generation including after respawn** (closes respawn-loses-state). A3 latency
+(owner: COMPENSATE): `latencySamples` in the block →
+`serve.{latencySamples,latencyMs}` telemetry + per-insert "+N.N ms" badge;
+CHANNEL-level compensating delay lines (`AudioDsp.h applyCompensatingDelay`,
+declick ramp, default-ON behind `COREVIDEO_VST_LATENCY_ALIGN`) delay dry sibling
+channels to the plugin latency; `RecordingPtsClock` latches the content latency
+at the first audio buffer (clamped to the epoch) so recordings stay A/V-synced.
+DEFERRED honestly: cross-BUS per-path latency attribution (single-slot telemetry
+can't express it — a multi-slot protocol follow-up). All param/state traffic
+uses SEPARATE events — the 4 ms audio exchange is never stalled. CLI proof:
+`corevideo-plugin-host --state-roundtrip <bundle> <class>`.
 DONE 2026-07-19: **VST round-2 A1 — editor launch fix + host reliability**
 (docs/master-vst-round2-spec.md §A1). Root cause of "Open controls shows no
 plugin UI, ever": the shell sends `open-vst-editor` as a TOP-LEVEL RPC and

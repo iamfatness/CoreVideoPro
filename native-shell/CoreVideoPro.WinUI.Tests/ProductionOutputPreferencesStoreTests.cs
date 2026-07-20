@@ -154,6 +154,53 @@ public sealed class ProductionOutputPreferencesStoreTests
     }
 
     [Fact]
+    public void Serializer_RoundTripsVstInsertStates()
+    {
+        // A2: persisted VST3 component states (base64) keyed by insert selection.
+        var preferences = new ProductionOutputPreferences
+        {
+            VstInsertStates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["vst:Curves AQ Stereo"] = "3q2+7wBC",  // base64 of some blob
+                ["vst:TDR Nova"] = "AAECAwQ="
+            }
+        };
+
+        var roundTripped = ProductionOutputPreferencesSerializer.Deserialize(
+            ProductionOutputPreferencesSerializer.Serialize(preferences));
+
+        Assert.NotNull(roundTripped);
+        // The base64 blobs survive verbatim, keyed by the exact selection name.
+        // (The runtime lookup in StudioViewModel rebuilds the map with an
+        // OrdinalIgnoreCase comparer; System.Text.Json cannot preserve the
+        // comparer through a plain-Dictionary round trip.)
+        Assert.Equal("3q2+7wBC", roundTripped.VstInsertStates["vst:Curves AQ Stereo"]);
+        Assert.Equal("AAECAwQ=", roundTripped.VstInsertStates["vst:TDR Nova"]);
+    }
+
+    [Fact]
+    public void Serializer_MigratesOlderSchemaToV6WithEmptyVstStates()
+    {
+        // A v5 file (no VstInsertStates) migrates to the current version with an
+        // empty map — no saved plugin state, never a crash.
+        const string json = """
+            {
+              "Version": 5,
+              "VirtualCameraEnabled": true
+            }
+            """;
+
+        var migrated = ProductionOutputPreferencesSerializer.Deserialize(json, out var wasMigrated);
+
+        Assert.NotNull(migrated);
+        Assert.True(wasMigrated);
+        Assert.Equal(6, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
+        Assert.Empty(migrated.VstInsertStates);
+        Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
+    }
+
+    [Fact]
     public void Serializer_PreservesExplicitLocalAudioCaptureInCurrentVersion()
     {
         var preferences = new ProductionOutputPreferences

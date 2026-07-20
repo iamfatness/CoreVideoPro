@@ -104,6 +104,18 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public Task OpenVstEditorAsync(string selection, CancellationToken cancellationToken = default) =>
         _supervisor.OpenVstEditorAsync(selection, cancellationToken);
 
+    // A2: generic VST param bridge + state persistence passthroughs.
+    public Task SetVstParamAsync(string selection, long paramId, double normalized,
+        CancellationToken cancellationToken = default) =>
+        _supervisor.SetVstParamAsync(selection, paramId, normalized, cancellationToken);
+
+    public Task SetVstStateAsync(string selection, string stateBase64,
+        CancellationToken cancellationToken = default) =>
+        _supervisor.SetVstStateAsync(selection, stateBase64, cancellationToken);
+
+    public Task<string?> GetVstStateAsync(string selection, CancellationToken cancellationToken = default) =>
+        _supervisor.GetVstStateAsync(selection, cancellationToken);
+
     public Task SetCaptureAudioSyncOffsetAsync(
         string deviceId,
         int offsetMs,

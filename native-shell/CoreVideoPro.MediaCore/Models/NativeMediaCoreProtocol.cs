@@ -442,11 +442,35 @@ public sealed class NativeMediaCorePluginHostServe
     public int EditorStatusCode { get; init; }
     public string EditorActivePlugin { get; init; } = string.Empty;
     public string EditorLastError { get; init; } = string.Empty;
+    // A3: the active plugin's reported latency (0 = none). Feeds the
+    // per-insert latency badge; the core compensates the mix + recording PTS.
+    public long LatencySamples { get; init; }
+    public double LatencyMs { get; init; }
+    // A2: generic parameter surface for the ACTIVE selection. Params carries
+    // the first 64 by controller index; ParamTotalCount is the plugin's real
+    // total ("64 of 511 shown"). ParamValuesGeneration moves whenever any
+    // published value changed (editor knob turns) — the shell's state-capture
+    // debounce keys off it.
+    public string ParamPluginClass { get; init; } = string.Empty;
+    public int ParamTotalCount { get; init; }
+    public long ParamListGeneration { get; init; }
+    public long ParamValuesGeneration { get; init; }
+    public IReadOnlyList<NativeMediaCoreVstParam> Params { get; init; } = [];
     // A1: serve respawn backoff telemetry. GaveUp means the isolated host
     // crashed repeatedly and the insert stays auto-bypassed (audio flows
     // unprocessed) until the operator re-selects the plug-in or reopens its
     // controls.
     public NativeMediaCorePluginHostRespawn Respawn { get; init; } = new();
+}
+
+public sealed class NativeMediaCoreVstParam
+{
+    public long Id { get; init; }
+    public string Title { get; init; } = string.Empty;
+    public string Units { get; init; } = string.Empty;
+    public string Display { get; init; } = string.Empty;
+    public int StepCount { get; init; }
+    public double Normalized { get; init; }
 }
 
 public sealed class NativeMediaCorePluginHostRespawn

@@ -1633,7 +1633,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var serve = VstServeState;
         var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts) +
                         $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
-                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:" +
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:{serve.LatencySamples}:" +
                         $"{serve.Respawn.Attempts}:{serve.Respawn.GaveUp}";
         if (string.Equals(signature, _insertSlotsSignature, StringComparison.Ordinal))
         {
@@ -1674,6 +1674,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     IsProcessing = processing,
                     StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
                     StatusTooltip = editorText.Length == 0 ? tooltip : $"{tooltip} {editorText}",
+                    LatencyLabel = processing ? FormatVstLatencyLabel(serve) : "",
                 };
             })
             .ToList();
@@ -2008,7 +2009,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var serve = VstServeState;
         var signature = (SelectedAudioProcessingTargetId ?? string.Empty) + "|" + string.Join("\u0001", inserts) +
                         $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
-                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:" +
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:{serve.LatencySamples}:" +
                         $"{serve.Respawn.Attempts}:{serve.Respawn.GaveUp}";
         if (string.Equals(signature, _audioProcessingSlotsSignature, StringComparison.Ordinal)) return;
 
@@ -2041,7 +2042,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 IsBuiltIn = builtIn,
                 IsProcessing = processing,
                 StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
-                StatusTooltip = editorText.Length == 0 ? tooltip : $"{tooltip} {editorText}"
+                StatusTooltip = editorText.Length == 0 ? tooltip : $"{tooltip} {editorText}",
+                LatencyLabel = processing ? FormatVstLatencyLabel(serve) : ""
             };
         }).ToList();
         OnPropertyChanged(nameof(SelectedAudioProcessingSlots));
@@ -2073,6 +2075,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var editorStatus = FormatVstEditorStatus(serve);
         return editorStatus.Length == 0 ? audioStatus : $"{audioStatus} {editorStatus}";
     }
+
+    /// <summary>
+    /// A3: the latency badge text for a processing VST slot — "+2.7 ms" from
+    /// the host's reported latencySamples, "" for zero-latency plugins.
+    /// Public static for unit tests.
+    /// </summary>
+    public static string FormatVstLatencyLabel(NativeMediaCorePluginHostServe serve) =>
+        serve.LatencySamples > 0 ? $"+{serve.LatencyMs:0.#} ms" : "";
 
     /// <summary>
     /// A1: operator words for pluginHost.serve.editor{StatusCode,ActivePlugin,
@@ -5136,6 +5146,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var serveSignature = $"{serve.Running}|{serve.StatusCode}|{serve.ActivePlugin}|{serve.LastError}|" +
                              $"{serve.DeadlineMisses}|{(serve.Exchanges > 0)}|" +
                              $"{serve.EditorStatusCode}|{serve.EditorActivePlugin}|{serve.EditorLastError}|" +
+                             $"{serve.LatencySamples}|{serve.ParamPluginClass}|{serve.ParamTotalCount}|" +
                              $"{serve.Respawn.Attempts}|{serve.Respawn.GaveUp}";
         if (!string.Equals(serveSignature, _vstServeSignature, StringComparison.Ordinal))
         {
@@ -5144,6 +5155,142 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
             RefreshSelectedChannelInsertSlots();
             RefreshSelectedAudioProcessingSlots();
+        }
+
+        // A2: restore-once push + the param-activity state-capture debounce.
+        TrackVstStatePersistence(serve);
+    }
+
+    // ---- A2: generic VST param surface + component-state persistence -------
+
+    /// <summary>
+    /// The host-published params for this insert, when it is the plugin the
+    /// host is currently reporting about (one active param surface at a time —
+    /// the host instance model). Empty otherwise; the flyout says so.
+    /// </summary>
+    public IReadOnlyList<NativeMediaCoreVstParam> VstParamsForInsert(string insertName)
+    {
+        var serve = VstServeState;
+        return serve.Params.Count > 0 && InsertMatchesVstPlugin(insertName, serve.ParamPluginClass)
+            ? serve.Params
+            : [];
+    }
+
+    public int VstParamTotalCount => VstServeState.ParamTotalCount;
+
+    /// <summary>Slider edit → core → isolated host setParamNormalized. The host
+    /// is the value authority: the applied value flows back through the
+    /// published params (and the plugin's own editor follows).</summary>
+    public async Task SetVstInsertParamAsync(string insertName, long paramId, double normalized)
+    {
+        try
+        {
+            await _bridge.SetVstParamAsync(insertName, paramId, Math.Clamp(normalized, 0.0, 1.0));
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = $"Plug-in parameter change failed: {ex.Message}";
+        }
+    }
+
+    // Persisted VST3 component states, keyed by insert selection name
+    // ("vst:<class>"). Loaded from ProductionOutputPreferences v6, pushed to
+    // the core once the bridge runs (the core injects them into every host
+    // generation, including respawns), and re-captured on a debounce after
+    // param/editor activity.
+    private readonly Dictionary<string, string> _vstInsertStates = new(StringComparer.OrdinalIgnoreCase);
+    private bool _vstStatesRestorePushed;
+    private long _vstParamValuesGenerationSeen;
+    private string _vstParamPluginClassSeen = string.Empty;
+    private DateTime _vstParamPluginClassSince = DateTime.MinValue;
+    private CancellationTokenSource? _vstStateCaptureDebounce;
+
+    // Captures scheduled only after the plugin has been the active param
+    // surface for a grace window: the first generation bumps after a (re)load
+    // are the publish + the saved-state injection themselves — capturing then
+    // could persist a DEFAULT state over the operator's saved one.
+    private static readonly TimeSpan VstStateCaptureGrace = TimeSpan.FromSeconds(5);
+
+    private void TrackVstStatePersistence(NativeMediaCorePluginHostServe serve)
+    {
+        if (!_vstStatesRestorePushed && _bridge.Running && _vstInsertStates.Count > 0)
+        {
+            _vstStatesRestorePushed = true;
+            foreach (var pair in _vstInsertStates.ToList())
+            {
+                _ = PushSavedVstStateAsync(pair.Key, pair.Value);
+            }
+        }
+
+        if (!string.Equals(serve.ParamPluginClass, _vstParamPluginClassSeen, StringComparison.OrdinalIgnoreCase))
+        {
+            _vstParamPluginClassSeen = serve.ParamPluginClass;
+            _vstParamPluginClassSince = DateTime.UtcNow;
+            _vstParamValuesGenerationSeen = serve.ParamValuesGeneration;
+            return;
+        }
+
+        if (serve.ParamValuesGeneration == _vstParamValuesGenerationSeen)
+        {
+            return;
+        }
+
+        _vstParamValuesGenerationSeen = serve.ParamValuesGeneration;
+        if (string.IsNullOrWhiteSpace(serve.ParamPluginClass) ||
+            DateTime.UtcNow - _vstParamPluginClassSince < VstStateCaptureGrace)
+        {
+            return;
+        }
+
+        ScheduleVstStateCapture($"vst:{serve.ParamPluginClass}");
+    }
+
+    private void ScheduleVstStateCapture(string selection)
+    {
+        _vstStateCaptureDebounce?.Cancel();
+        var debounce = new CancellationTokenSource();
+        _vstStateCaptureDebounce = debounce;
+        _ = CaptureVstStateAfterDelayAsync(selection, debounce.Token);
+    }
+
+    private async Task CaptureVstStateAfterDelayAsync(string selection, CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(2000, token);
+        }
+        catch (TaskCanceledException)
+        {
+            return;  // superseded by newer activity
+        }
+
+        try
+        {
+            var stateBase64 = await _bridge.GetVstStateAsync(selection);
+            if (!string.IsNullOrEmpty(stateBase64))
+            {
+                _vstInsertStates[selection] = stateBase64;
+                SaveProductionOutputPreferences();
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"vst: state capture for {selection} failed: {ex.Message}");
+        }
+    }
+
+    private async Task PushSavedVstStateAsync(string selection, string stateBase64)
+    {
+        try
+        {
+            await _bridge.SetVstStateAsync(selection, stateBase64);
+        }
+        catch (Exception ex)
+        {
+            // LOUD: a failed restore is operator-visible status, never a
+            // silently-default plugin.
+            LaunchLog.Write($"vst: state restore push for {selection} failed: {ex.Message}");
+            CommandStatus = $"Plug-in state restore failed for {selection}: {ex.Message}";
         }
     }
 
@@ -11867,6 +12014,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 pair => pair.Key,
                 pair => pair.Value,
                 StringComparer.Ordinal),
+            VstInsertStates = _vstInsertStates.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.OrdinalIgnoreCase),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -12007,6 +12158,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
             {
                 _sourceDisplayNames[pair.Key] = pair.Value.Trim();
+            }
+        }
+
+        // A2: saved VST3 component states. Pushed to the core once the bridge
+        // runs (TrackVstStatePersistence); the core re-injects after every
+        // host respawn.
+        _vstInsertStates.Clear();
+        foreach (var pair in preferences.VstInsertStates)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+            {
+                _vstInsertStates[pair.Key] = pair.Value;
             }
         }
 
