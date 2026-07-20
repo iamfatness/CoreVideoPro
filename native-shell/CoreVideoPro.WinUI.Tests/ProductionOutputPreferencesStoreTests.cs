@@ -194,7 +194,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(6, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(7, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
