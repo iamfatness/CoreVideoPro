@@ -36,7 +36,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
-    private readonly DispatcherQueueTimer _automationTimer;
     private readonly ZoomOAuthService _zoomOAuth;
     private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
@@ -517,48 +516,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     ];
 
     [ObservableProperty]
-    private ProductionMode _productionMode = ProductionMode.Manual;
-
-    [ObservableProperty]
-    private string _magicSceneStatus = "Join a meeting to enable Magic Scene";
-
-    [ObservableProperty]
-    private string _autoProductionReadout = "Join a Zoom meeting to enable scene recommendations.";
-
-    [ObservableProperty]
-    private string _automationButtonLabel = "Automation disabled";
-
-    [ObservableProperty]
-    private bool _automationAutoTakeEnabled = true;
-
-    [ObservableProperty]
-    private bool _automationPreferScreenShare = true;
-
-    [ObservableProperty]
-    private bool _automationLowerThirdsEnabled = true;
-
-    // When on, newly-joined Zoom participants auto-fill FREE Show Input slots (never
-    // disturbing operator- or capture-assigned slots). See SyncShowInputsFromMeeting.
-    [ObservableProperty]
-    private bool _automationAutoAssignInputsEnabled = true;
-
-    [ObservableProperty]
-    private bool _automationCaptionsEnabled = true;
-
-    [ObservableProperty]
     private string _takeTransitionMode = "fade";
-
-    [ObservableProperty]
-    private double _automationConfidenceThreshold = 70;
-
-    [ObservableProperty]
-    private double _automationSwitchDelaySeconds = 4;
-
-    [ObservableProperty]
-    private double _automationPanelParticipantThreshold = 4;
-
-    [ObservableProperty]
-    private string _automationLastAction = "Automation is idle";
 
     [ObservableProperty]
     private ColorGrade _colorGrade = ProductionCatalog.ColorGrade;
@@ -622,9 +580,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, string> _sourceDisplayNames = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
-    private string? _automationPendingSceneId;
-    private DateTimeOffset? _automationPendingSince;
-    private bool _automationTakeInFlight;
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
     private int _programMediaPlaybackTakeVersion;
@@ -759,7 +714,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private readonly List<ParticipantAudioMix> _audioMixChannels = [];
-    private AutoProductionState _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
 
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
@@ -913,13 +867,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProductionStateHelper.BuildSceneIntelligenceSummary(RoomVideoParticipants, ProductionMode);
 
     public string RecommendedSceneName =>
-        ProductionStateHelper.RecommendedSceneName(Scenes, _automationRecommendation.RecommendedSceneId);
+        ProductionStateHelper.RecommendedSceneName(Scenes, MagicScene.Recommendation.RecommendedSceneId);
 
     public string RecommendedLayout =>
-        ProductionStateHelper.RecommendedLayout(Scenes, _automationRecommendation.RecommendedSceneId);
+        ProductionStateHelper.RecommendedLayout(Scenes, MagicScene.Recommendation.RecommendedSceneId);
 
     public string RecommendedConfidence =>
-        _automationRecommendation.Confidence > 0 ? $"{_automationRecommendation.Confidence}%" : "—";
+        MagicScene.Recommendation.Confidence > 0 ? $"{MagicScene.Recommendation.Confidence}%" : "—";
 
     public string AutoSwitchLabel => ProductionMode == ProductionMode.SetAndForget ? "Auto" : "Manual";
 
@@ -941,7 +895,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string ScreenShareLabel => RoomVideoParticipants.Any(p => p.IsScreenSharing) ? "Active" : "Off";
 
-    public string AutoProductionReason => _automationRecommendation.Reason;
+    public string AutoProductionReason => MagicScene.Recommendation.Reason;
 
     public AudioMixState AudioMix => new()
     {
@@ -1288,10 +1242,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
         Overlays = new OverlaysViewModel(this);
+        MagicScene = new global::CoreVideoPro.WinUI.ViewModels.MagicScene.MagicSceneCoordinator(this);
+        MagicScene.PropertyChanged += OnMagicScenePropertyChanged;
         LoadProductionOutputPreferences();
-        _automationTimer = _dispatcher.CreateTimer();
-        _automationTimer.Interval = TimeSpan.FromMilliseconds(500);
-        _automationTimer.Tick += (_, _) => EvaluateAutomationPolicy();
         InitializeGraphicsCatalog();
         InitializeSceneRoutes();
         RefreshPreviewRoutingState();
@@ -3286,14 +3239,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnRecordingQualityChanged(string value) => OnRecordingOutputOptionChanged();
 
-    partial void OnProductionModeChanged(ProductionMode value)
-    {
-        RefreshTransportAutomationState();
-        EvaluateAutomationPolicy();
-        OnPropertyChanged(nameof(AutomationButtonLabel));
-        OnPropertyChanged(nameof(AutoProductionReadout));
-    }
-
     partial void OnActiveTabChanged(StudioTab value)
     {
         OnPropertyChanged(nameof(IsStudioTab));
@@ -3416,21 +3361,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StudioLowerThirdToolTip));
     }
 
-    partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationPreferScreenShareChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationLowerThirdsEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationAutoAssignInputsEnabledChanged(bool value)
-    {
-        OnAutomationPolicyChanged();
-        // Turning it on should immediately fill free slots from the current roster.
-        ReapplyShowInputAutoAssign();
-    }
-
-    partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
     partial void OnTakeTransitionModeChanged(string value)
     {
         var normalized = NormalizeTakeTransitionMode(value);
@@ -3444,54 +3374,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(TakeToolTip));
     }
 
-    partial void OnAutomationConfidenceThresholdChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 0, 100);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationConfidenceThreshold = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    partial void OnAutomationSwitchDelaySecondsChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 0, 30);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationSwitchDelaySeconds = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    partial void OnAutomationPanelParticipantThresholdChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 2, 10);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationPanelParticipantThreshold = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    private void OnAutomationPolicyChanged()
-    {
-        _automationPendingSceneId = null;
-        _automationPendingSince = null;
-        OnPropertyChanged(nameof(AutomationPolicySummary));
-        OnPropertyChanged(nameof(AutomationScenePolicySummary));
-        OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
-        OnPropertyChanged(nameof(AutomationTakeModeLabel));
-        RefreshProgramLowerThirdKeyPosition();
-        RefreshProductionReadouts();
-    }
-
     private static string NormalizeTakeTransitionMode(string? transitionMode) =>
         transitionMode?.Trim().ToLowerInvariant() switch
         {
@@ -3500,21 +3382,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "wipe" => "wipe",
             _ => "fade"
         };
-
-    [RelayCommand]
-    private void ResetAutomationDefaults()
-    {
-        AutomationAutoTakeEnabled = true;
-        AutomationPreferScreenShare = true;
-        AutomationLowerThirdsEnabled = true;
-        AutomationAutoAssignInputsEnabled = true;
-        AutomationCaptionsEnabled = true;
-        AutomationConfidenceThreshold = 70;
-        AutomationSwitchDelaySeconds = 4;
-        AutomationPanelParticipantThreshold = 4;
-        AutomationLastAction = "Automation defaults restored";
-        CommandStatus = "Automation defaults restored";
-    }
 
     // The top-right toggle controls the Zoom CAPTURE SUBSCRIPTION, not the media core.
     // The media core / compositor is always on (started on join, stopped on leave) so
@@ -5968,181 +5835,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return true;
     }
 
-    [RelayCommand]
-    private void ToggleAutomation()
-    {
-        if (!CanToggleSetAndForget() && ProductionMode != ProductionMode.SetAndForget)
-        {
-            CommandStatus = "Set & Forget is locked on this license tier";
-            return;
-        }
-
-        ProductionMode = ProductionMode == ProductionMode.SetAndForget
-            ? ProductionMode.Manual
-            : ProductionMode.SetAndForget;
-        AutomationButtonLabel = ProductionMode == ProductionMode.SetAndForget
-            ? "Automation enabled"
-            : "Automation disabled";
-        RefreshProductionReadouts();
-        CommandStatus = ProductionMode == ProductionMode.SetAndForget
-            ? $"Set & Forget enabled: {_automationRecommendation.Reason}"
-            : "Manual mode — operator controls scenes";
-        RefreshTransportAutomationState();
-    }
-
-    [RelayCommand]
-    private void RunMagicScene()
-    {
-        if (!Settings.IsInMeeting)
-        {
-            CommandStatus = "Magic Scene requires an active Zoom meeting";
-            return;
-        }
-
-        var recommendedSceneId = _automationRecommendation.RecommendedSceneId;
-        PreviewSceneId = recommendedSceneId;
-        var sceneName = RecommendedSceneName;
-        MagicSceneStatus = $"Magic Scene applied: {sceneName} queued on preview";
-        ApplyAutomationOverlayPolicy();
-        SchedulePreviewRoutingRefresh();
-        CommandStatus = $"{sceneName} queued by Magic Scene";
-        RefreshSceneItems();
-    }
-
-    private void EvaluateAutomationPolicy()
-    {
-        if (ProductionMode != ProductionMode.SetAndForget)
-        {
-            if (_automationTimer.IsRunning)
-            {
-                _automationTimer.Stop();
-            }
-
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = "Manual mode - automation is not changing scenes";
-            return;
-        }
-
-        if (!_automationTimer.IsRunning)
-        {
-            _automationTimer.Start();
-        }
-
-        ApplyAutomationOverlayPolicy();
-
-        if (RoomVideoParticipants.Count == 0)
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = "Waiting for meeting participants";
-            return;
-        }
-
-        if (_automationRecommendation.Confidence < AutomationConfidenceThreshold)
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"Holding current scene - confidence {_automationRecommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
-            return;
-        }
-
-        var targetSceneId = _automationRecommendation.RecommendedSceneId;
-        if (string.Equals(targetSceneId, ActiveSceneId, StringComparison.Ordinal))
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"{RecommendedSceneName} is already on program";
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        if (!string.Equals(_automationPendingSceneId, targetSceneId, StringComparison.Ordinal))
-        {
-            _automationPendingSceneId = targetSceneId;
-            _automationPendingSince = now;
-            AutomationLastAction = $"Holding {RecommendedSceneName} for {AutomationSwitchDelaySeconds:0}s before switching";
-            return;
-        }
-
-        var elapsedSeconds = _automationPendingSince is { } pendingSince
-            ? (now - pendingSince).TotalSeconds
-            : 0;
-        if (elapsedSeconds < AutomationSwitchDelaySeconds)
-        {
-            AutomationLastAction = $"Holding {RecommendedSceneName}: {elapsedSeconds:0.0}/{AutomationSwitchDelaySeconds:0}s";
-            return;
-        }
-
-        if (!string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal))
-        {
-            PreviewSceneId = targetSceneId;
-            SchedulePreviewRoutingRefresh();
-        }
-
-        if (AutomationAutoTakeEnabled)
-        {
-            AutomationLastAction = $"Taking {RecommendedSceneName} to program";
-            _ = TakeAutomationPreviewAsync(targetSceneId);
-        }
-        else
-        {
-            AutomationLastAction = $"{RecommendedSceneName} queued on preview";
-            CommandStatus = AutomationLastAction;
-        }
-    }
-
-    private async Task TakeAutomationPreviewAsync(string targetSceneId)
-    {
-        if (_automationTakeInFlight || !string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal) || !CanTake)
-        {
-            return;
-        }
-
-        _automationTakeInFlight = true;
-        try
-        {
-            await TakeAsync();
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"{Scenes.First(scene => scene.Id == targetSceneId).Name} taken by automation";
-        }
-        finally
-        {
-            _automationTakeInFlight = false;
-        }
-    }
-
-    private void ApplyAutomationOverlayPolicy()
-    {
-        var changed = false;
-        changed |= SetAutomationGraphic("lower-third", AutomationLowerThirdsEnabled);
-        changed |= SetAutomationGraphic("caption", AutomationCaptionsEnabled);
-
-        RefreshProgramLowerThirdKeyPosition();
-
-        if (!AutomationCaptionsEnabled)
-        {
-            if (!string.IsNullOrEmpty(CaptionText))
-            {
-                CaptionText = string.Empty;
-                changed = true;
-            }
-
-            if (!string.IsNullOrEmpty(CaptionSpeaker))
-            {
-                CaptionSpeaker = string.Empty;
-                changed = true;
-            }
-        }
-
-        if (changed)
-        {
-            OnPropertyChanged(nameof(EnabledGraphics));
-            _ = TrySyncMediaCoreAsync();
-        }
-    }
-
     private bool SetAutomationGraphic(string kind, bool enabled)
     {
         var automationGraphicId = $"automation-{kind}";
@@ -7753,7 +7445,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshProductionReadouts()
     {
-        _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation(
+        MagicScene.Recommendation = ProductionStateHelper.BuildAutomationRecommendation(
             _bridge.LastSnapshot?.AutoProduction,
             RoomVideoParticipants,
             Scenes,
@@ -7763,7 +7455,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
-        AutoProductionReadout = BuildAutoProductionReadout();
+        AutoProductionReadout = MagicScene.BuildAutoProductionReadout();
         RefreshAudioMixChannels();
         RefreshCaptureFleetSummary();
 
@@ -7784,7 +7476,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AutomationTakeModeLabel));
         OnPropertyChanged(nameof(CaptionQualitySummary));
         RefreshAudioReadoutBindings();
-        EvaluateAutomationPolicy();
+        MagicScene.EvaluateAutomationPolicy();
     }
 
     private void RefreshAudioReadoutBindings()
@@ -8901,14 +8593,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PluginInserts = prior?.PluginInserts.ToList() ?? [],
             InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
         };
-
-    private string BuildAutoProductionReadout()
-    {
-        var auto = _automationRecommendation;
-        return auto.Confidence > 0
-            ? $"Auto: {auto.Action} {auto.Confidence}% — {auto.Reason}"
-            : auto.Reason;
-    }
 
     private Dictionary<string, object?> BuildSpinePayload()
     {
@@ -12701,7 +12385,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshTransportState()
     {
-        RefreshTransportAutomationState();
+        MagicScene.RefreshTransportAutomationState();
         Transport.ApplyMeetingState(Settings.IsInMeeting);
 
         if (_bridge.Running && _bridge.LastSnapshot is { } snapshot)
@@ -12752,20 +12436,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SetupProgressSummary));
         OnPropertyChanged(nameof(ShowReadinessSummary));
         OnPropertyChanged(nameof(ShowStatusSummary));
-    }
-
-    private void RefreshTransportAutomationState()
-    {
-        var canToggle = CanToggleSetAndForget() || ProductionMode == ProductionMode.SetAndForget;
-        Transport.ApplyAutomationState(ProductionMode, canToggle);
-    }
-
-    private bool CanToggleSetAndForget()
-    {
-        var entitlements = LicenseCatalog.DeriveEntitlements(
-            new LicenseState { Tier = Settings.LicenseTier, Status = Settings.LicenseStatus },
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        return entitlements.SetAndForget;
     }
 
     private static string ResolveProgramResolutionLabel(NativeMediaCoreStateSnapshot snapshot) =>
@@ -14236,7 +13906,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
-        _automationTimer.Stop();
+        MagicScene.Stop();
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
         _bridge.ProfileChanged -= OnBridgeProfileChanged;
