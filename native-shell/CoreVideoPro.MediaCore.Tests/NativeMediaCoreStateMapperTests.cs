@@ -465,6 +465,16 @@ public sealed class NativeMediaCoreStateMapperTests
                 },
                 MasteringEnabled = true,
                 MasteringRideDb = 1.5,
+                // B2: the post-mastering master meter must survive the mapper's
+                // warning-merge copy (CopyAudioMixSession) untouched.
+                MasterMeter = new NativeMediaCoreMasterMeter
+                {
+                    MomentaryLufs = -13.2,
+                    ShortTermLufs = -14.1,
+                    IntegratedLufs = -14.6,
+                    TruePeakDbfs = -1.4,
+                    WindowMs = 3000
+                },
                 MixedFrameCount = 12,
                 Summary = "Program mix receiving PCM.",
                 Warnings = []
@@ -491,6 +501,9 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("Curves AQ Stereo", Assert.Single(snapshot.AudioMixSession.PluginHost.Plugins).ClassNames[0]);
         Assert.True(snapshot.AudioMixSession.MasteringEnabled);
         Assert.Equal(1.5, snapshot.AudioMixSession.MasteringRideDb);
+        Assert.Equal(-14.6, snapshot.AudioMixSession.MasterMeter.IntegratedLufs);
+        Assert.Equal(-1.4, snapshot.AudioMixSession.MasterMeter.TruePeakDbfs);
+        Assert.Equal(3000, snapshot.AudioMixSession.MasterMeter.WindowMs);
         Assert.Contains(
             "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
             snapshot.Diagnostics.Warnings);

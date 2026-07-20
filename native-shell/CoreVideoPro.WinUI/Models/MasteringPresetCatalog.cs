@@ -44,13 +44,18 @@ public static class MasteringPresetCatalog
     public static MasteringSettings Neutral =>
         new(true, 0, 0.0, -1.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, true);
 
+    // Stage ids follow the DSP chain order (B2 rack): input, filter, tone,
+    // ride, glue, width, ceiling. The pre-B2 aliases (dynamics = glue,
+    // loudness/image = ride+width, limiter = ceiling) stay accepted so nothing
+    // that scripted the old ids breaks.
     public static MasteringSettings ResetStage(MasteringSettings current, string stageId) =>
         stageId.Trim().ToLowerInvariant() switch
         {
             "input" => current with { InputGainDb = 0.0 },
             "filter" => current with { HighPassHz = 0.0, LowPassHz = 0.0 },
             "tone" => current with { LowShelfDb = 0.0, PresenceDb = 0.0, HighShelfDb = 0.0 },
-            "dynamics" => current with
+            "ride" => current with { MaxRideDb = 0.0 },
+            "glue" or "dynamics" => current with
             {
                 GlueAmount = 0.0,
                 GlueRatio = 2.0,
@@ -62,8 +67,9 @@ public static class MasteringPresetCatalog
                 GlueBandMidDb = 0.0,
                 GlueBandHighDb = 0.0
             },
+            "width" => current with { StereoWidth = 1.0 },
             "loudness" or "image" => current with { MaxRideDb = 0.0, StereoWidth = 1.0 },
-            "limiter" => current with { CeilingDbfs = -1.3, LimiterEnabled = true },
+            "ceiling" or "limiter" => current with { CeilingDbfs = -1.3, LimiterEnabled = true },
             _ => throw new ArgumentOutOfRangeException(nameof(stageId), stageId, "Unknown mastering stage.")
         };
 }

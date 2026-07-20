@@ -496,11 +496,26 @@ public sealed class NativeMediaCorePluginInfo
     };
 }
 
+/// <summary>
+/// BS.1770 loudness + true-peak of the POST-mastering master bus (the core
+/// meters the routed master AFTER processMasteringChain ran — B2 rack meters).
+/// Values are LUFS/dBTP; -120 = meter not primed yet.
+/// </summary>
+public sealed class NativeMediaCoreMasterMeter
+{
+    public double MomentaryLufs { get; init; } = -120.0;
+    public double ShortTermLufs { get; init; } = -120.0;
+    public double IntegratedLufs { get; init; } = -120.0;
+    public double TruePeakDbfs { get; init; } = -120.0;
+    public int WindowMs { get; init; }
+}
+
 public sealed class NativeMediaCoreAudioMixSession
 {
     public required string Status { get; init; }
     public int MasterLevel { get; init; }
     public double LoudnessLufs { get; init; }
+    public NativeMediaCoreMasterMeter MasterMeter { get; init; } = new();
     public NativeMediaCorePluginHost PluginHost { get; init; } = new();
     public bool LimiterEnabled { get; init; } = true;
     public bool LimiterActive { get; init; }

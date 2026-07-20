@@ -321,6 +321,67 @@ TEST(AudioMasteringTruePeak, TransparentBelowCeilingAfterDelayPreRoll) {
   }
 }
 
+// --- B2: streaming true-peak METER (rack meters ride this, not the block meter) ---
+
+TEST(AudioMasteringStreamingMeter, ReadsIspPeakTheSamplePeakMisses) {
+  // fs/4 ISP vector at amplitude 1.0: samples sit at ~-3dBFS, the
+  // reconstruction peaks at 0dBFS. The streaming detector must read ~0dBFS.
+  corevideo::modules::StreamingTruePeakMeterState state;
+  const auto mono = leftChannel(makeIspSignal(1.0, 4800, 0));
+  const double dbfs = corevideo::modules::streamingTruePeakBlockDbfs(state, mono.data(), mono.size());
+  EXPECT_GT(dbfs, -0.2);
+  EXPECT_LT(dbfs, 0.2);
+}
+
+TEST(AudioMasteringStreamingMeter, SplitBlocksMatchSingleShotExactly) {
+  // The whole point of the streaming state: feeding the same signal in 20ms
+  // blocks must observe the same peaks as one call — the per-sample arithmetic
+  // is identical, only the state carries across, so the maxima agree exactly.
+  const auto mono = leftChannel(makeIspSignal(0.9, 3840, 0));
+  corevideo::modules::StreamingTruePeakMeterState wholeState;
+  const double whole =
+      corevideo::modules::streamingTruePeakBlockLinear(wholeState, mono.data(), mono.size());
+  corevideo::modules::StreamingTruePeakMeterState splitState;
+  double splitMax = 0.0;
+  for (size_t offset = 0; offset < mono.size(); offset += 960) {
+    splitMax = std::max(splitMax, corevideo::modules::streamingTruePeakBlockLinear(
+                                      splitState, mono.data() + offset, 960));
+  }
+  EXPECT_EQ(whole, splitMax);  // exact: identical per-sample arithmetic (no EXPECT_DOUBLE_EQ in the vendored gtest)
+}
+
+TEST(AudioMasteringStreamingMeter, NoEdgeOverReportUnlikeTheBlockMeter) {
+  // Chunked metering with the finite-buffer meter rings at every block edge
+  // (~+0.4dB over-report on the fs/4 vector — the #309 verification note).
+  // Fade the vector's OUTER ends (a real stream start/stop transient would be
+  // a legitimate peak for the streaming detector too) so the only remaining
+  // discontinuities are the interior 960-frame chunk seams — which exist for
+  // the block meter alone; the streaming detector carries its sinc context
+  // across them and must stay honest against the whole-buffer reference.
+  auto mono = leftChannel(makeIspSignal(0.5, 4800, 0));
+  const size_t fade = 64;
+  for (size_t i = 0; i < fade; ++i) {
+    const double w = 0.5 - 0.5 * std::cos(3.14159265358979323846 * static_cast<double>(i) /
+                                          static_cast<double>(fade));
+    mono[i] = static_cast<float>(mono[i] * w);
+    mono[mono.size() - 1 - i] = static_cast<float>(mono[mono.size() - 1 - i] * w);
+  }
+  // Steady-state truth (~-6dBFS): one whole-buffer pass sees no interior seams.
+  const double reference = computeTruePeakDbfs(mono.data(), mono.size(), 4);
+
+  double blockMeterMax = corevideo::modules::kAudioDbfsFloor;
+  corevideo::modules::StreamingTruePeakMeterState state;
+  double streamingMax = corevideo::modules::kAudioDbfsFloor;
+  for (size_t offset = 0; offset < mono.size(); offset += 960) {
+    blockMeterMax = std::max(blockMeterMax, computeTruePeakDbfs(mono.data() + offset, 960, 4));
+    streamingMax = std::max(streamingMax, corevideo::modules::streamingTruePeakBlockDbfs(
+                                              state, mono.data() + offset, 960));
+  }
+  EXPECT_GT(blockMeterMax, reference + 0.2);   // the edge artifact the rack must not show
+  EXPECT_LT(streamingMax, reference + 0.1);    // streaming reads the real peak...
+  EXPECT_GT(streamingMax, reference - 0.2);    // ...without under-reporting either
+}
+
 TEST(AudioMasteringGlue, ExposedParamDefaultsAreBitExactLegacyBehavior) {
   // The exposed glue controls default to the pre-B1 fixed constants (2:1,
   // 30ms/250ms, no makeup, single-band). Defaults vs explicit legacy values

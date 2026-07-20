@@ -3084,12 +3084,14 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
   programLufsMomentary_ = modules::computeMomentaryLufs(programMeterL_.data() + momentaryOffset,
                                                         programMeterR_.data() + momentaryOffset, momentarySamples, rate);
   programLufsShortTerm_ = modules::computeShortTermLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
-  // True peak uses 4x oversampling (a polyphase FIR per sample). Re-scanning the
-  // full 3 s window every tick costs ~240ms and was starving the 60fps render â€”
-  // oversample only THIS chunk and hold a slowly-decaying peak, which is what a
-  // true-peak meter displays anyway.
-  const double chunkTruePeak = std::max(modules::computeTruePeakDbfs(chunkL.data(), frames, 4),
-                                        modules::computeTruePeakDbfs(chunkR.data(), frames, 4));
+  // True peak: STREAMING 4x-oversampled detector (B2). The old per-chunk
+  // computeTruePeakDbfs zero-padded both block edges, so inter-sample peaks
+  // near/straddling a 20ms boundary were misread (~+0.4 dB over-report on
+  // ISP-heavy content — #309 verification note). The streaming state keeps the
+  // sinc history across chunks; display still holds a slowly-decaying peak.
+  const double chunkTruePeak =
+      std::max(modules::streamingTruePeakBlockDbfs(programTruePeakMeterL_, chunkL.data(), frames),
+               modules::streamingTruePeakBlockDbfs(programTruePeakMeterR_, chunkR.data(), frames));
   programTruePeakDbfs_ = std::max(chunkTruePeak, programTruePeakDbfs_ - 0.5);
   programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
 }
