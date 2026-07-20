@@ -60,6 +60,33 @@ input trim → HP/LP filters → 3-band tone (shelves + presence bell)
 Every stage is **bit-identical bypass at its neutral value** — the invariant every
 B1 addition preserves (unit-test pinned).
 
+### Rack workflow + persistence — SHIPPED (B2, 2026-07-19)
+
+- **Everything persists** (`ProductionOutputPreferences` schema **v6**): the full
+  mastering settings block (incl. the B1 glue dynamics/multiband params), BOTH A/B
+  compare slots + which slot is active, the selected loudness target, and
+  operator-saved named presets (`MasteringUserPresets`). Restore rides the
+  `ApplyProductionOutputPreferences` backing-field pattern (the O1 vcam shape) and
+  reaches the core on the initial full sync — no second wire. Pre-v6 files migrate
+  with null mastering blocks = in-app defaults; a migration can never flip
+  mastering on or invent a rack state.
+- **User presets** save/rename/delete beside the 4 built-ins
+  (`MasteringPresetLibrary`, pure + unit-tested; built-ins are code-defined in
+  `MasteringPresetCatalog` and immutable — their names are reserved).
+- **Post-mastering meters on the rack**: integrated LUFS with the -14/-16/-23
+  target guide + true peak with the ceiling guide (`MasteringGuideMeter`). The
+  core meters the routed master AFTER `processMasteringChain`
+  (`updateProgramLoudnessMeter` runs on the post-chain master tap), published as
+  `audioMixSession.masterMeter`. The TP detector is **streaming**
+  (`streamingTruePeakBlockDbfs`, sinc history persists across 20ms chunks) — the
+  finite-buffer `computeTruePeakDbfs` rings at block edges (~+0.4dB over-report
+  on ISP content) and must not drive an operator-facing meter.
+- **Rack reads as one chain**: stages 01 INPUT → 02 FILTER → 03 TONE → 04 RIDE →
+  05 GLUE → 06 WIDTH → 07 CEILING in DSP order, per-stage bright/dim engage
+  opacity mirroring the exact neutral-bypass conditions in the chain (the
+  DspResponseCurve convention: dim = arithmetically a no-op). Stage reset ids
+  follow the same names (old aliases still accepted).
+
 ## 2. The matchering idea, adapted to LIVE (the differentiator)
 
 matchering matches a finished track to a reference OFFLINE (spectrum, RMS, peak,

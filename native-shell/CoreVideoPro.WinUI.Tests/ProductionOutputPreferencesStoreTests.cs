@@ -357,6 +357,139 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.False(reloaded.VirtualCameraEnabled);
     }
 
+    // ---- B2 master-rack persistence (v6 bump + v5 -> v6 migration) ----
+
+    [Fact]
+    public void FileStore_RoundTripsMasteringRackAndUserPresets()
+    {
+        var folder = TempFolder();
+        var store = new FileProductionOutputPreferencesStore(folder);
+
+        store.Save(new ProductionOutputPreferences
+        {
+            MasteringCurrent = new PersistedMasteringSettings
+            {
+                Enabled = true,
+                TargetIndex = 1,
+                GlueAmount = 0.45,
+                CeilingDbfs = -1.0,
+                MaxRideDb = 8,
+                InputGainDb = 1.5,
+                HighPassHz = 70,
+                LowShelfDb = -1,
+                PresenceDb = 1.5,
+                HighShelfDb = 0.5,
+                StereoWidth = 1.1,
+                LimiterEnabled = true,
+                GlueRatio = 3,
+                GlueAttackMs = 20,
+                GlueReleaseMs = 300,
+                GlueMakeupDb = 1,
+                GlueMultiband = true,
+                GlueBandLowDb = -2,
+                GlueBandMidDb = 0.5,
+                GlueBandHighDb = 1
+            },
+            MasteringCompareA = new PersistedMasteringSettings { Enabled = true, TargetIndex = 1 },
+            MasteringCompareB = new PersistedMasteringSettings { Enabled = true, TargetIndex = 2, GlueAmount = 0.3 },
+            MasteringCompareSlot = "B",
+            MasteringUserPresets =
+            [
+                new PersistedMasteringPreset
+                {
+                    Id = "user-abc",
+                    Name = "Sunday Show",
+                    Settings = new PersistedMasteringSettings { Enabled = true, GlueAmount = 0.6, GlueMultiband = true }
+                }
+            ]
+        });
+
+        var loaded = store.Load();
+
+        Assert.NotNull(loaded);
+        Assert.NotNull(loaded.MasteringCurrent);
+        Assert.True(loaded.MasteringCurrent.Enabled);
+        Assert.Equal(1, loaded.MasteringCurrent.TargetIndex);
+        Assert.Equal(0.45, loaded.MasteringCurrent.GlueAmount);
+        Assert.Equal(-1.0, loaded.MasteringCurrent.CeilingDbfs);
+        Assert.Equal(8, loaded.MasteringCurrent.MaxRideDb);
+        Assert.Equal(1.5, loaded.MasteringCurrent.InputGainDb);
+        Assert.Equal(70, loaded.MasteringCurrent.HighPassHz);
+        Assert.Equal(3, loaded.MasteringCurrent.GlueRatio);
+        Assert.Equal(20, loaded.MasteringCurrent.GlueAttackMs);
+        Assert.Equal(300, loaded.MasteringCurrent.GlueReleaseMs);
+        Assert.Equal(1, loaded.MasteringCurrent.GlueMakeupDb);
+        Assert.True(loaded.MasteringCurrent.GlueMultiband);
+        Assert.Equal(-2, loaded.MasteringCurrent.GlueBandLowDb);
+        Assert.Equal(1.1, loaded.MasteringCurrent.StereoWidth);
+        Assert.Equal("B", loaded.MasteringCompareSlot);
+        Assert.Equal(1, loaded.MasteringCompareA?.TargetIndex);
+        Assert.Equal(2, loaded.MasteringCompareB?.TargetIndex);
+        Assert.Equal(0.3, loaded.MasteringCompareB?.GlueAmount);
+        var preset = Assert.Single(loaded.MasteringUserPresets);
+        Assert.Equal("user-abc", preset.Id);
+        Assert.Equal("Sunday Show", preset.Name);
+        Assert.Equal(0.6, preset.Settings.GlueAmount);
+        Assert.True(preset.Settings.GlueMultiband);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, loaded.Version);
+    }
+
+    [Fact]
+    public void Serializer_MigratesV5FileToV6WithMasteringDefaults()
+    {
+        // A real v5 file: vcam fields present, no mastering blocks yet.
+        const string json = """
+            {
+              "Version": 5,
+              "LocalAudioSourceEnabled": true,
+              "VirtualCameraEnabled": true,
+              "RecordingTargetFolder": "D:\\Shows"
+            }
+            """;
+
+        var migrated = ProductionOutputPreferencesSerializer.Deserialize(json, out var migratedFromOlderVersion);
+
+        Assert.NotNull(migrated);
+        Assert.True(migratedFromOlderVersion);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
+        // The v6 mastering blocks land null/empty = in-app defaults; the bump
+        // must never invent a rack state or flip mastering on.
+        Assert.Null(migrated.MasteringCurrent);
+        Assert.Null(migrated.MasteringCompareA);
+        Assert.Null(migrated.MasteringCompareB);
+        Assert.Equal("A", migrated.MasteringCompareSlot);
+        Assert.Empty(migrated.MasteringUserPresets);
+        // Earlier consents survive untouched (implicit-capture reset pinned < 3).
+        Assert.True(migrated.LocalAudioSourceEnabled);
+        Assert.True(migrated.VirtualCameraEnabled);
+        Assert.Equal("D:\\Shows", migrated.RecordingTargetFolder);
+    }
+
+    [Fact]
+    public void PersistedMasteringSettings_AbsentFieldsDeserializeToNeutralDefaults()
+    {
+        // A partial block (e.g. hand-edited or from a future field removal)
+        // must land on the documented neutral values, not zeros that would
+        // slam the ceiling to 0 dBFS or collapse the width.
+        const string json = """
+            {
+              "Version": 6,
+              "MasteringCurrent": { "Enabled": true }
+            }
+            """;
+
+        var loaded = ProductionOutputPreferencesSerializer.Deserialize(json);
+
+        Assert.NotNull(loaded?.MasteringCurrent);
+        Assert.Equal(-1.3, loaded.MasteringCurrent.CeilingDbfs);
+        Assert.Equal(1.0, loaded.MasteringCurrent.StereoWidth);
+        Assert.True(loaded.MasteringCurrent.LimiterEnabled);
+        Assert.Equal(2.0, loaded.MasteringCurrent.GlueRatio);
+        Assert.Equal(30.0, loaded.MasteringCurrent.GlueAttackMs);
+        Assert.Equal(250.0, loaded.MasteringCurrent.GlueReleaseMs);
+        Assert.False(loaded.MasteringCurrent.GlueMultiband);
+    }
+
     [Fact]
     public void FileStore_RoundTripsVirtualCameraIntent()
     {

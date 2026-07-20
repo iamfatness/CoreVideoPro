@@ -12,7 +12,13 @@ public sealed class ProductionOutputPreferences
     // survive restarts (they were live-synced but reset every launch). Older
     // files migrate with the in-app defaults: enabled=false, mirror=false,
     // name=null (blank keeps the default "CoreVideo Pro Camera" name).
-    public const int CurrentVersion = 5;
+    // v6 (master-vst-round2-spec §B2): the master rack persists — the full
+    // mastering settings block (incl. B1 glue dynamics/multiband), both A/B
+    // compare slots + which slot is active, and the operator's saved presets
+    // (built-ins stay code-defined in MasteringPresetCatalog and are never
+    // written here). Older files migrate with null blocks = keep the in-app
+    // defaults (mastering off, both slots neutral, no user presets).
+    public const int CurrentVersion = 6;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -98,6 +104,52 @@ public sealed class ProductionOutputPreferences
     // Zoom participant ids inside routes are per-meeting and go stale across
     // sessions; show-input-slot assignments (the primary path) survive.
     public List<PersistedScene> CustomScenes { get; set; } = [];
+
+    // Master rack (v6, master-vst-round2-spec §B2). Null blocks = an older
+    // file or a fresh profile — the in-app defaults apply and nothing syncs
+    // to the core beyond what the operator had before the bump.
+    public PersistedMasteringSettings? MasteringCurrent { get; set; }
+    public PersistedMasteringSettings? MasteringCompareA { get; set; }
+    public PersistedMasteringSettings? MasteringCompareB { get; set; }
+    public string MasteringCompareSlot { get; set; } = "A";
+    public List<PersistedMasteringPreset> MasteringUserPresets { get; set; } = [];
+}
+
+/// <summary>
+/// One complete mastering-processor state at rest (mirrors
+/// <c>MasteringSettings</c>; defaults are the neutral in-app values so absent
+/// JSON fields deserialize to the documented pre-B2 behavior).
+/// </summary>
+public sealed class PersistedMasteringSettings
+{
+    public bool Enabled { get; set; }
+    public int TargetIndex { get; set; }
+    public double GlueAmount { get; set; }
+    public double CeilingDbfs { get; set; } = -1.3;
+    public double MaxRideDb { get; set; }
+    public double InputGainDb { get; set; }
+    public double HighPassHz { get; set; }
+    public double LowPassHz { get; set; }
+    public double LowShelfDb { get; set; }
+    public double PresenceDb { get; set; }
+    public double HighShelfDb { get; set; }
+    public double StereoWidth { get; set; } = 1.0;
+    public bool LimiterEnabled { get; set; } = true;
+    public double GlueRatio { get; set; } = 2.0;
+    public double GlueAttackMs { get; set; } = 30.0;
+    public double GlueReleaseMs { get; set; } = 250.0;
+    public double GlueMakeupDb { get; set; }
+    public bool GlueMultiband { get; set; }
+    public double GlueBandLowDb { get; set; }
+    public double GlueBandMidDb { get; set; }
+    public double GlueBandHighDb { get; set; }
+}
+
+public sealed class PersistedMasteringPreset
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public PersistedMasteringSettings Settings { get; set; } = new();
 }
 
 public sealed class PersistedScene
@@ -202,9 +254,11 @@ public static class ProductionOutputPreferencesSerializer
             // Versions 1-2 defaulted local capture to enabled and selected the
             // first discovered endpoint automatically. Treat that legacy state
             // as implicit, not consent to seize the device on every launch.
-            // (Pinned to < 3: the v4 secrets / v5 vcam bumps must not re-run it.
-            // The v5 vcam fields need no explicit migration — absent fields
-            // deserialize to the documented defaults: off/unmirrored/default name.)
+            // (Pinned to < 3: the v4 secrets / v5 vcam / v6 mastering bumps must
+            // not re-run it. The v5 vcam and v6 mastering fields need no explicit
+            // migration — absent fields deserialize to the documented defaults:
+            // vcam off/unmirrored/default name; mastering blocks null = in-app
+            // defaults, no user presets.)
             if (preferences.Version < 3)
             {
                 preferences.LocalAudioSourceEnabled = false;

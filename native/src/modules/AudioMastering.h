@@ -192,6 +192,66 @@ inline double applyTruePeakCeiling(float* interleaved, size_t frames, double cei
   return maxReductionDb;
 }
 
+// ---------------------------------------------------------------------------
+// B2 streaming true-peak METER. The finite-buffer computeTruePeakDbfs treats
+// everything outside the block as silence, so the sinc interpolator mis-reads
+// the reconstructed waveform near both block edges (measured ~+0.4 dB over-
+// report on ISP-heavy content at 20ms-block edges — #309 verification note).
+// This detector keeps the sample history in a persistent ring across blocks,
+// so every inter-sample estimate has its full 32-tap context, including peaks
+// that straddle a block boundary. Detector only — no gain path; the reported
+// value trails the input by kTruePeakLookaheadFrames (16 samples, 0.33 ms @
+// 48k), irrelevant at meter timescales.
+// ---------------------------------------------------------------------------
+
+struct StreamingTruePeakMeterState {
+  std::array<float, kTruePeakRingSize> hist{};
+  uint64_t framesWritten = 0;
+};
+
+// Feed one mono block; returns the maximum true-peak magnitude (LINEAR, >= 0)
+// observed among the samples whose full interpolation context became available
+// with this block. Callers convert to dBFS via linearToDbfs.
+inline double streamingTruePeakBlockLinear(StreamingTruePeakMeterState& state,
+                                           const float* samples, size_t frames) {
+  if (samples == nullptr || frames == 0) {
+    return 0.0;
+  }
+  const auto& taps = truePeakPolyphaseTaps();
+  const auto ringAt = [&state](int64_t n) -> double {
+    return n < 0 ? 0.0 : static_cast<double>(state.hist[static_cast<size_t>(n) & kTruePeakRingMask]);
+  };
+  double maxMagnitude = 0.0;
+  for (size_t frame = 0; frame < frames; ++frame) {
+    state.hist[static_cast<size_t>(state.framesWritten) & kTruePeakRingMask] = samples[frame];
+    ++state.framesWritten;
+    // Evaluate the inter-sample interval [base, base+1] whose newest required
+    // tap (base + kTruePeakHalfTaps) is the sample just written — identical
+    // geometry to the limiter's detector.
+    const int64_t base = static_cast<int64_t>(state.framesWritten) - 1 -
+                         static_cast<int64_t>(kTruePeakLookaheadFrames);
+    if (base < 0) {
+      continue;  // stream pre-roll: no fully-contexted interval yet
+    }
+    double magnitude = std::fabs(ringAt(base));
+    for (int sub = 1; sub < kTruePeakOversample; ++sub) {
+      double accum = 0.0;
+      const auto& branch = taps[sub];
+      for (int tap = -kTruePeakHalfTaps + 1; tap <= kTruePeakHalfTaps; ++tap) {
+        accum += ringAt(base + tap) * branch[tap + kTruePeakHalfTaps - 1];
+      }
+      magnitude = std::max(magnitude, std::fabs(accum));
+    }
+    maxMagnitude = std::max(maxMagnitude, magnitude);
+  }
+  return maxMagnitude;
+}
+
+inline double streamingTruePeakBlockDbfs(StreamingTruePeakMeterState& state,
+                                         const float* samples, size_t frames) {
+  return linearToDbfs(streamingTruePeakBlockLinear(state, samples, frames));
+}
+
 // Per-band dynamics state for the multiband glue mode.
 struct MasteringGlueBandState {
   double envelope = 0.0;

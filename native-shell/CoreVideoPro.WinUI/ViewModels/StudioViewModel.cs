@@ -64,6 +64,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _masteringCompareSlot = "A";
     private MasteringSettings _masteringCompareA = MasteringPresetCatalog.Neutral;
     private MasteringSettings _masteringCompareB = MasteringPresetCatalog.Neutral;
+    // Operator-saved master-rack presets (B2). Mutated only on explicit user
+    // actions (save/rename/delete) and once at preferences load — never at
+    // snapshot rate, so binding a collection here is outside the 0xc000027b
+    // rules.
+    public ObservableCollection<MasteringUserPreset> MasteringUserPresets { get; } = [];
+
+    [ObservableProperty]
+    private string? _selectedMasteringUserPresetId;
+
+    [ObservableProperty]
+    private string _masteringPresetNameInput = string.Empty;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -884,7 +895,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                             : "on target"
             : "awaiting audio";
 
-    public string TruePeakLabel => "—";
+    // B2: real post-mastering true peak from the core's streaming detector
+    // (masterMeter rides the audio snapshot; -120 = meter not primed yet).
+    public string TruePeakLabel =>
+        _bridge.LastSnapshot?.AudioMixSession.MasterMeter is { TruePeakDbfs: > -119.0 } meter
+            ? $"{meter.TruePeakDbfs:0.0} dBTP"
+            : "—";
 
     public string GainAdjustLabel => SelectedGainLabel;
 
@@ -957,6 +973,81 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MasterLimiterEnabled
             ? "Master protection is armed; activity only lights when peaks reach the ceiling."
             : "Master protection is bypassed; no limiting is applied.";
+
+    // ---- B2 rack meters: POST-mastering integrated LUFS + true peak --------
+    // Scalar props notified per snapshot apply (RefreshAudioReadoutBindings) —
+    // the sanctioned meter pattern (WorkspaceCompGrLevel); never a collection.
+
+    public double MasteringMeterIntegratedLufs =>
+        _bridge.LastSnapshot?.AudioMixSession.MasterMeter.IntegratedLufs ?? -120.0;
+
+    public double MasteringMeterTruePeakDbfs =>
+        _bridge.LastSnapshot?.AudioMixSession.MasterMeter.TruePeakDbfs ?? -120.0;
+
+    public string MasteringMeterIntegratedLabel =>
+        MasteringMeterIntegratedLufs > -119.0 ? $"{MasteringMeterIntegratedLufs:0.0} LUFS" : "—";
+
+    public string MasteringMeterTruePeakLabel =>
+        MasteringMeterTruePeakDbfs > -119.0 ? $"{MasteringMeterTruePeakDbfs:0.0} dBTP" : "—";
+
+    public string MasteringMeterTargetLabel => $"target {MasteringTargetLufs:0} LUFS";
+
+    public string MasteringMeterCeilingLabel => $"ceiling {MasteringCeilingDbfs:0.0} dBTP";
+
+    // ---- B2 rack stage engagement (bright = the core is processing the stage,
+    // dim = neutral/bypassed — the DspResponseCurve IsEngaged convention).
+    // Each mirrors the exact neutral-value bypass conditions in
+    // processMasteringChain (AudioMastering.h), so a dim stage IS a no-op.
+
+    public bool MasteringStageInputEngaged => MasteringEnabled && MasteringInputGainDb != 0.0;
+
+    public bool MasteringStageFilterEngaged =>
+        MasteringEnabled && (MasteringHighPassHz > 0.0 || MasteringLowPassHz > 0.0);
+
+    public bool MasteringStageToneEngaged =>
+        MasteringEnabled &&
+        (MasteringLowShelfDb != 0.0 || MasteringPresenceDb != 0.0 || MasteringHighShelfDb != 0.0);
+
+    public bool MasteringStageRideEngaged => MasteringEnabled && MasteringMaxRideDb > 0.0;
+
+    public bool MasteringStageGlueEngaged => MasteringEnabled && MasteringGlueAmount > 0.0;
+
+    public bool MasteringStageWidthEngaged => MasteringEnabled && MasteringStereoWidth != 1.0;
+
+    // The mastering true-peak ceiling always runs while MASTER IN is on (it is
+    // the chain's safety stage) — honesty rule: brightness reflects processing.
+    public bool MasteringStageCeilingEngaged => MasteringEnabled;
+
+    private const double StageDimOpacity = 0.55;
+
+    public double MasteringStageInputOpacity => MasteringStageInputEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageFilterOpacity => MasteringStageFilterEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageToneOpacity => MasteringStageToneEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageRideOpacity => MasteringStageRideEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageGlueOpacity => MasteringStageGlueEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageWidthOpacity => MasteringStageWidthEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageCeilingOpacity => MasteringStageCeilingEngaged ? 1.0 : StageDimOpacity;
+
+    private void RefreshMasteringStageBindings()
+    {
+        OnPropertyChanged(nameof(MasteringStageInputEngaged));
+        OnPropertyChanged(nameof(MasteringStageFilterEngaged));
+        OnPropertyChanged(nameof(MasteringStageToneEngaged));
+        OnPropertyChanged(nameof(MasteringStageRideEngaged));
+        OnPropertyChanged(nameof(MasteringStageGlueEngaged));
+        OnPropertyChanged(nameof(MasteringStageWidthEngaged));
+        OnPropertyChanged(nameof(MasteringStageCeilingEngaged));
+        OnPropertyChanged(nameof(MasteringStageInputOpacity));
+        OnPropertyChanged(nameof(MasteringStageFilterOpacity));
+        OnPropertyChanged(nameof(MasteringStageToneOpacity));
+        OnPropertyChanged(nameof(MasteringStageRideOpacity));
+        OnPropertyChanged(nameof(MasteringStageGlueOpacity));
+        OnPropertyChanged(nameof(MasteringStageWidthOpacity));
+        OnPropertyChanged(nameof(MasteringStageCeilingOpacity));
+        OnPropertyChanged(nameof(MasteringTargetLufs));
+        OnPropertyChanged(nameof(MasteringMeterTargetLabel));
+        OnPropertyChanged(nameof(MasteringMeterCeilingLabel));
+    }
 
     public string SelectedAudioMonitorDeviceName =>
         AudioRenderDevices.FirstOrDefault(device =>
@@ -2522,7 +2613,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
         RefreshTransportState();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2534,6 +2627,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2568,6 +2663,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
+        // B2: every rack tweak persists (schema v6) so mastering survives a
+        // restart; the load-time restore rides the initial full sync.
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2690,9 +2789,104 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
         RefreshTransportState();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
+
+    // ---- B2 operator-saved presets (save/rename/delete beside the built-ins) ----
+
+    private MasteringUserPreset? FindSelectedMasteringUserPreset() =>
+        MasteringUserPresets.FirstOrDefault(preset =>
+            string.Equals(preset.Id, SelectedMasteringUserPresetId, StringComparison.Ordinal));
+
+    [RelayCommand]
+    private void SaveMasteringUserPreset()
+    {
+        if (MasteringPresetLibrary.Save(
+                MasteringUserPresets.ToList(), MasteringPresetNameInput, CaptureMasteringSettings())
+            is not { } result)
+        {
+            CommandStatus = MasteringPresetLibrary.IsBuiltInName(MasteringPresetNameInput)
+                ? "That name belongs to a built-in starting point — pick another."
+                : "Preset not saved — enter a short name (built-in names are reserved).";
+            return;
+        }
+
+        ReplaceMasteringUserPresets(result.Presets);
+        SelectedMasteringUserPresetId = result.Saved.Id;
+        SaveProductionOutputPreferences();
+        CommandStatus = $"Master preset \"{result.Saved.Name}\" saved.";
+    }
+
+    [RelayCommand]
+    private void ApplyMasteringUserPreset(string? presetId)
+    {
+        var preset = MasteringUserPresets.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, presetId ?? SelectedMasteringUserPresetId, StringComparison.Ordinal));
+        if (preset is null)
+        {
+            CommandStatus = "Select a saved master preset first.";
+            return;
+        }
+
+        SelectedMasteringUserPresetId = preset.Id;
+        ApplyMasteringSettings(preset.Settings);
+        CommandStatus = $"Master preset \"{preset.Name}\" applied to comparison {_masteringCompareSlot}.";
+    }
+
+    [RelayCommand]
+    private void RenameMasteringUserPreset()
+    {
+        if (FindSelectedMasteringUserPreset() is not { } selected)
+        {
+            CommandStatus = "Select a saved master preset to rename.";
+            return;
+        }
+
+        if (MasteringPresetLibrary.Rename(MasteringUserPresets.ToList(), selected.Id, MasteringPresetNameInput)
+            is not { } result)
+        {
+            CommandStatus = "Rename failed — the new name is empty, reserved, or already in use.";
+            return;
+        }
+
+        ReplaceMasteringUserPresets(result.Presets);
+        SelectedMasteringUserPresetId = result.Renamed.Id;
+        SaveProductionOutputPreferences();
+        CommandStatus = $"Master preset renamed to \"{result.Renamed.Name}\".";
+    }
+
+    [RelayCommand]
+    private void DeleteMasteringUserPreset()
+    {
+        if (FindSelectedMasteringUserPreset() is not { } selected ||
+            MasteringPresetLibrary.Delete(MasteringUserPresets.ToList(), selected.Id) is not { } result)
+        {
+            CommandStatus = "Select a saved master preset to delete.";
+            return;
+        }
+
+        ReplaceMasteringUserPresets(result.Presets);
+        SelectedMasteringUserPresetId = null;
+        SaveProductionOutputPreferences();
+        CommandStatus = $"Master preset \"{selected.Name}\" deleted.";
+    }
+
+    private void ReplaceMasteringUserPresets(IEnumerable<MasteringUserPreset> presets)
+    {
+        // User-action rate only (save/rename/delete/load) — never snapshot rate.
+        MasteringUserPresets.Clear();
+        foreach (var preset in presets)
+        {
+            MasteringUserPresets.Add(preset);
+        }
+
+        OnPropertyChanged(nameof(HasMasteringUserPresets));
+    }
+
+    public bool HasMasteringUserPresets => MasteringUserPresets.Count > 0;
 
     partial void OnAudioMonitoringEnabledChanged(bool value)
     {
@@ -7578,6 +7772,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MasterLimiterActivityLabel));
         OnPropertyChanged(nameof(MasterLimiterSummary));
         OnPropertyChanged(nameof(MasteringActivityLabel));
+        // B2 post-mastering rack meters — scalar notifications per snapshot
+        // apply (the WorkspaceCompGrLevel pattern; no bound collections).
+        OnPropertyChanged(nameof(MasteringMeterIntegratedLufs));
+        OnPropertyChanged(nameof(MasteringMeterTruePeakDbfs));
+        OnPropertyChanged(nameof(MasteringMeterIntegratedLabel));
+        OnPropertyChanged(nameof(MasteringMeterTruePeakLabel));
         RefreshAudioMonitorBindings();
     }
 
@@ -11872,6 +12072,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .Select(scene => ScenePersistenceService.ToPersisted(
                     scene,
                     _sceneRoutes.TryGetValue(scene.Id, out var routes) ? routes : []))
+                .ToList(),
+            // B2 (v6): the whole master rack — live settings, both A/B slots,
+            // the active slot, and the operator's saved presets. The ACTIVE
+            // slot's stored copy is refreshed from the live controls first so
+            // a tweak made after the last A/B switch is not lost.
+            MasteringCurrent = MasteringPresetLibrary.ToPersisted(CaptureMasteringSettings()),
+            MasteringCompareA = MasteringPresetLibrary.ToPersisted(
+                IsMasteringCompareA ? CaptureMasteringSettings() : _masteringCompareA),
+            MasteringCompareB = MasteringPresetLibrary.ToPersisted(
+                IsMasteringCompareB ? CaptureMasteringSettings() : _masteringCompareB),
+            MasteringCompareSlot = _masteringCompareSlot,
+            MasteringUserPresets = MasteringUserPresets
+                .Select(MasteringPresetLibrary.ToPersistedPreset)
                 .ToList()
         };
 
@@ -11985,6 +12198,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(VirtualCameraDeviceName));
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
 
+        RestoreMasteringFromPreferences(preferences);
+
         MultiviewLayoutMode = NormalizeMultiviewLayoutMode(preferences.MultiviewLayoutMode);
         MultiviewTileCount = ClampMultiviewTileCount(preferences.MultiviewTileCount);
         MultiviewShowLabels = preferences.MultiviewShowLabels;
@@ -12037,6 +12252,87 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         RefreshAudioMonitorBindings();
         RefreshSceneBackgroundSelection();
+    }
+
+    /// <summary>
+    /// B2 (prefs v6): restore the master rack through the BACKING fields, the
+    /// O1 vcam pattern — the property setters would fire
+    /// SaveProductionOutputPreferences (a no-op mid-load) and
+    /// TrySyncMediaCoreAsync (the core is not up yet during construction).
+    /// The initial full sync in StartMediaCoreOnLaunchAsync carries these
+    /// values to the core on the same mastering{} wire every rack tweak rides,
+    /// so a persisted rack re-applies once the core is ready — one declarative
+    /// sync, idempotent by construction. Null blocks (pre-v6 files) keep the
+    /// in-app defaults untouched.
+    /// </summary>
+    private void RestoreMasteringFromPreferences(ProductionOutputPreferences preferences)
+    {
+        ReplaceMasteringUserPresets(
+            MasteringPresetLibrary.FromPersistedPresets(preferences.MasteringUserPresets));
+
+        if (preferences.MasteringCurrent is not { } persistedCurrent)
+        {
+            return;
+        }
+
+        var current = MasteringPresetLibrary.FromPersisted(persistedCurrent);
+        _masteringCompareSlot =
+            string.Equals(preferences.MasteringCompareSlot, "B", StringComparison.OrdinalIgnoreCase) ? "B" : "A";
+        _masteringCompareA = preferences.MasteringCompareA is { } persistedA
+            ? MasteringPresetLibrary.FromPersisted(persistedA)
+            : current;
+        _masteringCompareB = preferences.MasteringCompareB is { } persistedB
+            ? MasteringPresetLibrary.FromPersisted(persistedB)
+            : current;
+
+        _masteringEnabled = current.Enabled;
+        _masteringTargetIndex = current.TargetIndex;
+        _masteringGlueAmount = current.GlueAmount;
+        _masteringCeilingDbfs = current.CeilingDbfs;
+        _masteringMaxRideDb = current.MaxRideDb;
+        _masteringInputGainDb = current.InputGainDb;
+        _masteringHighPassHz = current.HighPassHz;
+        _masteringLowPassHz = current.LowPassHz;
+        _masteringLowShelfDb = current.LowShelfDb;
+        _masteringPresenceDb = current.PresenceDb;
+        _masteringHighShelfDb = current.HighShelfDb;
+        _masteringStereoWidth = current.StereoWidth;
+        _masterLimiterEnabled = current.LimiterEnabled;
+        _masteringGlueRatio = current.GlueRatio;
+        _masteringGlueAttackMs = current.GlueAttackMs;
+        _masteringGlueReleaseMs = current.GlueReleaseMs;
+        _masteringGlueMakeupDb = current.GlueMakeupDb;
+        _masteringGlueMultiband = current.GlueMultiband;
+        _masteringGlueBandLowDb = current.GlueBandLowDb;
+        _masteringGlueBandMidDb = current.GlueBandMidDb;
+        _masteringGlueBandHighDb = current.GlueBandHighDb;
+
+        OnPropertyChanged(nameof(MasteringEnabled));
+        OnPropertyChanged(nameof(MasteringTargetIndex));
+        OnPropertyChanged(nameof(MasteringGlueAmount));
+        OnPropertyChanged(nameof(MasteringCeilingDbfs));
+        OnPropertyChanged(nameof(MasteringMaxRideDb));
+        OnPropertyChanged(nameof(MasteringInputGainDb));
+        OnPropertyChanged(nameof(MasteringHighPassHz));
+        OnPropertyChanged(nameof(MasteringLowPassHz));
+        OnPropertyChanged(nameof(MasteringLowShelfDb));
+        OnPropertyChanged(nameof(MasteringPresenceDb));
+        OnPropertyChanged(nameof(MasteringHighShelfDb));
+        OnPropertyChanged(nameof(MasteringStereoWidth));
+        OnPropertyChanged(nameof(MasterLimiterEnabled));
+        OnPropertyChanged(nameof(MasteringGlueRatio));
+        OnPropertyChanged(nameof(MasteringGlueAttackMs));
+        OnPropertyChanged(nameof(MasteringGlueReleaseMs));
+        OnPropertyChanged(nameof(MasteringGlueMakeupDb));
+        OnPropertyChanged(nameof(MasteringGlueMultiband));
+        OnPropertyChanged(nameof(MasteringGlueBandLowDb));
+        OnPropertyChanged(nameof(MasteringGlueBandMidDb));
+        OnPropertyChanged(nameof(MasteringGlueBandHighDb));
+        OnPropertyChanged(nameof(MasteringCompareSlot));
+        OnPropertyChanged(nameof(IsMasteringCompareA));
+        OnPropertyChanged(nameof(IsMasteringCompareB));
+        OnPropertyChanged(nameof(MasteringTargetLufs));
+        RefreshMasteringStageBindings();
     }
 
     // Persistence for Input 1-10 slot assignments (alpha #2). The store is abstracted so the

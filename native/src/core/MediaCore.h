@@ -387,6 +387,12 @@ class MediaCore {
   double programLufsShortTerm_ = -120.0;
   double programLufsIntegrated_ = -120.0;
   double programTruePeakDbfs_ = -120.0;
+  // Streaming true-peak detector state (B2): sinc history persists across
+  // 20ms chunks so inter-sample peaks straddling a block edge are measured
+  // correctly (the finite-buffer meter misreads there). Worker-only, under
+  // audioOutputMutex_ like the loudness members above.
+  modules::StreamingTruePeakMeterState programTruePeakMeterL_;
+  modules::StreamingTruePeakMeterState programTruePeakMeterR_;
   std::chrono::steady_clock::time_point lastLoudnessCompute_{};
   modules::ProgramFrame lastProgramFrame_;
   std::string encoderLifecycleStatus_ = "idle";

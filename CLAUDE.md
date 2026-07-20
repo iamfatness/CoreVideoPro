@@ -499,6 +499,18 @@ bit-exact); optional 3-band LR4 multiband glue (`glueMultiband`, 200Hz/3kHz,
 per-band trims) — single-band stays DEFAULT until the owner's listening pass.
 House laws it obeys: every stage bit-identical bypass at neutral, all DSP state
 (incl. crossovers per band per channel) persists across ticks.
+B2 (2026-07-19, stacked on B1): the master rack PERSISTS — prefs schema **v6**
+carries the full mastering block, both A/B slots + active slot, and user-saved
+presets (MasteringPresetLibrary; built-in names reserved); restore rides the
+ApplyProductionOutputPreferences BACKING-FIELD pattern into the initial full
+sync (the O1 vcam shape — property setters would sync a core that isn't up).
+Rack meters are the POST-mastering master (`audioMixSession.masterMeter`; the
+meter tap sits after processMasteringChain) with target/ceiling guide lines;
+the TP meter detector is STREAMING (`streamingTruePeakBlockDbfs` — the
+finite-buffer computeTruePeakDbfs rings ~+0.4dB at block edges and must never
+drive an operator meter). Rack stages render in DSP order with bright/dim
+engage opacity mirroring the exact neutral-bypass conditions (honesty rule:
+dim = arithmetically a no-op).
 New specs: docs/capture-sources-spec.md (browser sources via WebView2 host process,
 screen capture via Windows.Graphics.Capture).
 
