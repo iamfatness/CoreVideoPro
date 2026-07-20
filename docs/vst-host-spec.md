@@ -27,6 +27,15 @@ death of the host = ALL third-party inserts bypass to built-ins + a warning, res
 capped backoff and state re-injection. (Per-plugin isolation processes are a P4 option for
 plugins flagged unstable.)
 
+**Respawn backoff (AS BUILT, round-2 A1):** `PluginHostRespawnPolicy` (pure, unit-tested)
+gates `ensurePluginHostServeStarted` — retries back off 5→10→20→40→60s and after 5
+consecutive failed respawns the core GIVES UP: the insert stays loudly auto-bypassed
+(`serve.lastError` + `serve.respawn{attempts,gaveUp}` + chip BYPASS status) while audio
+keeps flowing unprocessed. A run alive ≥30s counts healthy and resets the ladder (the
+host's by-design 30s idle exit never pays a backoff). Operator actions reset the ladder:
+selecting a different plugin or clicking "Open controls". State re-injection after
+respawn is still open (round-2 PR 2, with get/set-state).
+
 - **Control plane** — JSON lines over a token-named pipe (mirrors `engine-ipc.h` naming):
   core → host: `scan`, `probe {pluginId}`, `load {instanceId, pluginId, channels, sampleRate}`,
   `unload {instanceId}`, `set-param {instanceId, paramId, normalized}`, `get-state`/`set-state`
@@ -86,8 +95,8 @@ P3.
 | P2a | **Probe**: load the module in the host process, enumerate classes via raw COM-ABI factory vtables (no VST3 SDK), pass/fail verdicts incl. crash-on-load | `--probe <bundle>`; a crashing plugin kills only the probe process | **SHIPPED** |
 | P2b | Live processing on **bus** inserts: single-slot SHM block exchange + req/done events, 4ms deadline bypass, bypass-on-host-death, serve auto-start | Transport e2e test (kill the host mid-test → bypass, no hang); rig drill with the -6dB test processor | **SHIPPED** |
 | P2c | **Real VST3 instantiation + processing**: raw COM-ABI IComponent/IAudioProcessor (vst-abi.h, layout static_asserts), `vst:<name>` insert selection against scan results (shell-bundle classes supported), load-on-demand + per-selection cache in the serve loop, status/error telemetry (`serve.activePlugin`/`lastError`), `--process <bundle> <class>` CLI proof mode, fake-factory ABI unit tests | `--process` against an installed plugin prints rms/changed JSON; failure paths (license refusal, non-stereo, NaN, crash) bypass honestly | **SHIPPED** (see PR; Waves headless verdict recorded there) |
-| P3 | **Channel** inserts + generic parameter surface (slider list from `params[]`) + state persistence in production prefs | Param moves are audible + survive restart | — |
-| P4 | Plugin editor GUI (child-HWND host window), CLAP, per-plugin isolation for flagged plugins | — | — |
+| P3 | **Channel** inserts (SHIPPED — `AudioDsp.h` routes channel + bus chains through the host) + generic parameter surface (slider list from `params[]`) + state persistence in production prefs | Param moves are audible + survive restart | **PARTIAL** (routing shipped; params/state = round-2 PR 2) |
+| P4 | Plugin editor GUI, CLAP, per-plugin isolation for flagged plugins | — | **PARTIAL** (round-2 A1): editor opens as a top-level window IN THE HOST (`vst-processor.h showEditor`), centered + raised best-effort (background processes lack foreground rights — topmost pulse + taskbar flash), one editor at a time, clean detach on close (`removed()` before DestroyWindow), user-close republishes idle status. Editor telemetry `pluginHost.serve.editor{StatusCode,ActivePlugin,LastError}` surfaces on the shell chips + rack status line ("This plugin has no editor" for createView-null). Root cause of the original "no UI ever" defect: the shell sent `open-vst-editor` as a top-level RPC and `JsonRpcServer` rejected it unrouted (silently discarded) — now routed + regression-pinned (`JsonRpcServerTest.TopLevelOpenVstEditorRoutesToMediaCore`). Shell-owned child-window embedding + CLAP remain open. |
 
 ## 6. Testing
 
