@@ -25,6 +25,22 @@ Three processes, not a web app:
 IPC: JSON-line commands/snapshots over named pipes; video as keyed-mutex **DXGI shared
 textures** (cross-process) for program/preview, and shared-memory I420 for Zoom frames.
 
+Process boundaries + where spine features (ISO/NDI/SRT/browser) plug in: `docs/architecture-seams.md`.
+
+## StudioViewModel strangler (maintainability, FOCUS_PLAN §9)
+
+`StudioViewModel` (the shell god object) is reduced by **vertical-slice extraction** — new
+behavior goes in focused `MagicScene*` / `Transport*` types, never new methods on the god
+file. **PR1 (done):** `MagicSceneCoordinator` + `IMagicSceneHost` (Magic Scene / Set & Forget
+automation) and `TransportStatusFormatter` (pure transport status/rollback/validation
+statics). Move-only, XAML x:Bind unchanged (same-named forwarders on StudioViewModel + a
+PropertyChanged bridge; StudioViewModel implements `IMagicSceneHost` over `this`, the
+Transport/Overlays sub-VM pattern). The extracted types are independently constructible so
+they carry real characterization tests (`MagicSceneCoordinatorTests`) — StudioViewModel itself
+is still NOT constructible in tests (field-init `DispatcherQueue.GetForCurrentThread()` + ctor
+hard-`new()`s ~10 services + launches the core; a later DI-seam PR). **PR2** = Transport
+orchestration behind an `IMediaCoreBridge` DI seam; **PR3** = ShowInputs.
+
 ## Build & run (Windows)
 
 ```powershell

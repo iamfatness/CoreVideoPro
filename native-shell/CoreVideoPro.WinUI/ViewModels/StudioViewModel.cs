@@ -9,6 +9,7 @@ using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.WinUI.ViewModels.Transport;
 using CoreVideoPro.WinUI.Views;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -35,7 +36,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
-    private readonly DispatcherQueueTimer _automationTimer;
     private readonly ZoomOAuthService _zoomOAuth;
     private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
@@ -516,48 +516,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     ];
 
     [ObservableProperty]
-    private ProductionMode _productionMode = ProductionMode.Manual;
-
-    [ObservableProperty]
-    private string _magicSceneStatus = "Join a meeting to enable Magic Scene";
-
-    [ObservableProperty]
-    private string _autoProductionReadout = "Join a Zoom meeting to enable scene recommendations.";
-
-    [ObservableProperty]
-    private string _automationButtonLabel = "Automation disabled";
-
-    [ObservableProperty]
-    private bool _automationAutoTakeEnabled = true;
-
-    [ObservableProperty]
-    private bool _automationPreferScreenShare = true;
-
-    [ObservableProperty]
-    private bool _automationLowerThirdsEnabled = true;
-
-    // When on, newly-joined Zoom participants auto-fill FREE Show Input slots (never
-    // disturbing operator- or capture-assigned slots). See SyncShowInputsFromMeeting.
-    [ObservableProperty]
-    private bool _automationAutoAssignInputsEnabled = true;
-
-    [ObservableProperty]
-    private bool _automationCaptionsEnabled = true;
-
-    [ObservableProperty]
     private string _takeTransitionMode = "fade";
-
-    [ObservableProperty]
-    private double _automationConfidenceThreshold = 70;
-
-    [ObservableProperty]
-    private double _automationSwitchDelaySeconds = 4;
-
-    [ObservableProperty]
-    private double _automationPanelParticipantThreshold = 4;
-
-    [ObservableProperty]
-    private string _automationLastAction = "Automation is idle";
 
     [ObservableProperty]
     private ColorGrade _colorGrade = ProductionCatalog.ColorGrade;
@@ -621,9 +580,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, string> _sourceDisplayNames = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
-    private string? _automationPendingSceneId;
-    private DateTimeOffset? _automationPendingSince;
-    private bool _automationTakeInFlight;
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
     private int _programMediaPlaybackTakeVersion;
@@ -758,7 +714,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private readonly List<ParticipantAudioMix> _audioMixChannels = [];
-    private AutoProductionState _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
 
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
@@ -912,13 +867,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProductionStateHelper.BuildSceneIntelligenceSummary(RoomVideoParticipants, ProductionMode);
 
     public string RecommendedSceneName =>
-        ProductionStateHelper.RecommendedSceneName(Scenes, _automationRecommendation.RecommendedSceneId);
+        ProductionStateHelper.RecommendedSceneName(Scenes, MagicScene.Recommendation.RecommendedSceneId);
 
     public string RecommendedLayout =>
-        ProductionStateHelper.RecommendedLayout(Scenes, _automationRecommendation.RecommendedSceneId);
+        ProductionStateHelper.RecommendedLayout(Scenes, MagicScene.Recommendation.RecommendedSceneId);
 
     public string RecommendedConfidence =>
-        _automationRecommendation.Confidence > 0 ? $"{_automationRecommendation.Confidence}%" : "—";
+        MagicScene.Recommendation.Confidence > 0 ? $"{MagicScene.Recommendation.Confidence}%" : "—";
 
     public string AutoSwitchLabel => ProductionMode == ProductionMode.SetAndForget ? "Auto" : "Manual";
 
@@ -940,7 +895,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string ScreenShareLabel => RoomVideoParticipants.Any(p => p.IsScreenSharing) ? "Active" : "Off";
 
-    public string AutoProductionReason => _automationRecommendation.Reason;
+    public string AutoProductionReason => MagicScene.Recommendation.Reason;
 
     public AudioMixState AudioMix => new()
     {
@@ -1287,10 +1242,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
         Overlays = new OverlaysViewModel(this);
+        MagicScene = new global::CoreVideoPro.WinUI.ViewModels.MagicScene.MagicSceneCoordinator(this);
+        MagicScene.PropertyChanged += OnMagicScenePropertyChanged;
         LoadProductionOutputPreferences();
-        _automationTimer = _dispatcher.CreateTimer();
-        _automationTimer.Interval = TimeSpan.FromMilliseconds(500);
-        _automationTimer.Tick += (_, _) => EvaluateAutomationPolicy();
         InitializeGraphicsCatalog();
         InitializeSceneRoutes();
         RefreshPreviewRoutingState();
@@ -3285,14 +3239,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnRecordingQualityChanged(string value) => OnRecordingOutputOptionChanged();
 
-    partial void OnProductionModeChanged(ProductionMode value)
-    {
-        RefreshTransportAutomationState();
-        EvaluateAutomationPolicy();
-        OnPropertyChanged(nameof(AutomationButtonLabel));
-        OnPropertyChanged(nameof(AutoProductionReadout));
-    }
-
     partial void OnActiveTabChanged(StudioTab value)
     {
         OnPropertyChanged(nameof(IsStudioTab));
@@ -3415,21 +3361,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StudioLowerThirdToolTip));
     }
 
-    partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationPreferScreenShareChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationLowerThirdsEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationAutoAssignInputsEnabledChanged(bool value)
-    {
-        OnAutomationPolicyChanged();
-        // Turning it on should immediately fill free slots from the current roster.
-        ReapplyShowInputAutoAssign();
-    }
-
-    partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
     partial void OnTakeTransitionModeChanged(string value)
     {
         var normalized = NormalizeTakeTransitionMode(value);
@@ -3443,54 +3374,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(TakeToolTip));
     }
 
-    partial void OnAutomationConfidenceThresholdChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 0, 100);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationConfidenceThreshold = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    partial void OnAutomationSwitchDelaySecondsChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 0, 30);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationSwitchDelaySeconds = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    partial void OnAutomationPanelParticipantThresholdChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 2, 10);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationPanelParticipantThreshold = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    private void OnAutomationPolicyChanged()
-    {
-        _automationPendingSceneId = null;
-        _automationPendingSince = null;
-        OnPropertyChanged(nameof(AutomationPolicySummary));
-        OnPropertyChanged(nameof(AutomationScenePolicySummary));
-        OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
-        OnPropertyChanged(nameof(AutomationTakeModeLabel));
-        RefreshProgramLowerThirdKeyPosition();
-        RefreshProductionReadouts();
-    }
-
     private static string NormalizeTakeTransitionMode(string? transitionMode) =>
         transitionMode?.Trim().ToLowerInvariant() switch
         {
@@ -3499,21 +3382,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "wipe" => "wipe",
             _ => "fade"
         };
-
-    [RelayCommand]
-    private void ResetAutomationDefaults()
-    {
-        AutomationAutoTakeEnabled = true;
-        AutomationPreferScreenShare = true;
-        AutomationLowerThirdsEnabled = true;
-        AutomationAutoAssignInputsEnabled = true;
-        AutomationCaptionsEnabled = true;
-        AutomationConfidenceThreshold = 70;
-        AutomationSwitchDelaySeconds = 4;
-        AutomationPanelParticipantThreshold = 4;
-        AutomationLastAction = "Automation defaults restored";
-        CommandStatus = "Automation defaults restored";
-    }
 
     // The top-right toggle controls the Zoom CAPTURE SUBSCRIPTION, not the media core.
     // The media core / compositor is always on (started on join, stopped on leave) so
@@ -4408,12 +4276,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    public static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
+    private static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) =>
+        TransportStatusFormatter.ResolveStreamingStateAfterFailedRetry(requestedStarting);
 
-    public static string FormatStreamSyncRetryExhaustedStatus(bool requestedStarting) =>
-        requestedStarting
-            ? "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again."
-            : "Streaming stop failed: Media core is busy applying changes. Wait a moment and try Stream again.";
+    private static string FormatStreamSyncRetryExhaustedStatus(bool requestedStarting) =>
+        TransportStatusFormatter.FormatStreamSyncRetryExhaustedStatus(requestedStarting);
 
     private async Task<(NativeMediaCoreStateSnapshot Snapshot, string? FailureStatus)> WaitForStreamingStartProofAsync(
         IReadOnlyList<string> requestedDestinations,
@@ -4441,145 +4308,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : (snapshot, null);
     }
 
-    private static bool IsStreamingStartProven(
-        NativeMediaCoreStateSnapshot snapshot,
-        IReadOnlyList<string> requestedDestinations)
-    {
-        if (requestedDestinations.Count == 0)
-        {
-            return false;
-        }
+    private static bool IsStreamingStartProven(NativeMediaCoreStateSnapshot snapshot, IReadOnlyList<string> requestedDestinations) =>
+        TransportStatusFormatter.IsStreamingStartProven(snapshot, requestedDestinations);
 
-        return requestedDestinations.Any(destination =>
-            snapshot.OutputSenderSession.Senders.Any(sender =>
-                sender.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
-                sender.Status is "starting" or "live") ||
-            snapshot.OutputHealth.Any(item =>
-                item.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
-                item.Status == "live"));
-    }
+    private static bool TryFormatStreamingStartNoSenderFailure(NativeMediaCoreStateSnapshot snapshot, IReadOnlyList<string> requestedDestinations, out string failureStatus) =>
+        TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, requestedDestinations, out failureStatus);
 
-    public static bool TryFormatStreamingStartNoSenderFailure(
-        NativeMediaCoreStateSnapshot snapshot,
-        IReadOnlyList<string> requestedDestinations,
-        out string failureStatus)
-    {
-        failureStatus = string.Empty;
-        if (requestedDestinations.Count == 0)
-        {
-            return false;
-        }
+    private static bool ResolveRecordingStateAfterFailedRetry(bool requestedStarting) =>
+        TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(requestedStarting);
 
-        if (IsStreamingStartProven(snapshot, requestedDestinations))
-        {
-            return false;
-        }
+    private static string FormatRecordingSyncRetryExhaustedStatus(bool requestedStarting) =>
+        TransportStatusFormatter.FormatRecordingSyncRetryExhaustedStatus(requestedStarting);
 
-        var unavailableSender = snapshot.OutputSenderSession.Senders.FirstOrDefault(sender =>
-            requestedDestinations.Any(destination => sender.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase)) &&
-            IsUnavailableOutputSenderWarning(sender));
-        if (unavailableSender is not null)
-        {
-            var unavailableDetail = BuildOutputSenderFailureDetail(unavailableSender);
-            failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(unavailableDetail));
-            return true;
-        }
+    private static bool TryFormatRecordingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus) =>
+        TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out failureStatus);
 
-        var destinations = string.Join(", ", requestedDestinations.Select(destination => destination.ToUpperInvariant()));
-        var senderState = $"{snapshot.OutputSenderSession.Status}:{snapshot.OutputSenderSession.ActiveSenderCount}";
-        var detail = $"Selected stream destinations ({destinations}) did not arm a native output sender. Sender state {senderState}.";
-        failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
-        return true;
-    }
-
-    private static bool IsUnavailableOutputSenderWarning(NativeMediaCoreOutputSender sender)
-    {
-        var detail = string.Join(
-            " ",
-            new[] { sender.LastResultCode, sender.Warning, sender.RuntimeDetail, sender.LastError }
-                .Where(static part => !string.IsNullOrWhiteSpace(part)))
-            .ToLowerInvariant();
-        return detail.Contains("output-unavailable", StringComparison.Ordinal) ||
-               detail.Contains("not available in this build", StringComparison.Ordinal) ||
-               detail.Contains("runtime-missing", StringComparison.Ordinal) ||
-               detail.Contains("libndi runtime", StringComparison.Ordinal) ||
-               detail.Contains("no ndi sender module", StringComparison.Ordinal) ||
-               detail.Contains("no srt sender module", StringComparison.Ordinal);
-    }
-
-    private static bool IsUnavailableOutputHealthWarning(NativeMediaCoreOutputHealth item)
-    {
-        var detail = item.Message?.ToLowerInvariant() ?? string.Empty;
-        return detail.Contains("output-unavailable", StringComparison.Ordinal) ||
-               detail.Contains("not available in this build", StringComparison.Ordinal) ||
-               detail.Contains("runtime-missing", StringComparison.Ordinal) ||
-               detail.Contains("libndi runtime", StringComparison.Ordinal) ||
-               detail.Contains("no ndi sender module", StringComparison.Ordinal) ||
-               detail.Contains("no srt sender module", StringComparison.Ordinal);
-    }
-
-    public static bool ResolveRecordingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
-
-    public static string FormatRecordingSyncRetryExhaustedStatus(bool requestedStarting) =>
-        requestedStarting
-            ? "Recording start failed: Media core is busy applying changes. Wait a moment and try Record again."
-            : "Recording stop failed: Media core is busy applying changes. Wait a moment and try Record again.";
-
-    public static bool TryFormatRecordingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
-    {
-        var detail = snapshot.OutputHealth
-            .Where(item =>
-                item.Status is "failed" or "warning" &&
-                item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
-            .Select(item => item.Message)
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        detail ??= snapshot.Recording is { Active: true, Status: "failed" or "warning" } recording
-            ? recording.Error ?? recording.Warning
-            : null;
-
-        if (string.IsNullOrWhiteSpace(detail))
-        {
-            failureStatus = string.Empty;
-            return false;
-        }
-
-        failureStatus = FormatRecordingFailureStatus("start", new InvalidOperationException(detail));
-        return true;
-    }
-
-    public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
-    {
-        var detail = snapshot.OutputSenderSession.Senders
-            .Where(static sender => sender.Status is "failed" or "warning")
-            .Select(BuildOutputSenderFailureDetail)
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        detail ??= snapshot.OutputHealth
-            .Where(item =>
-                item.Status is "failed" or "warning" &&
-                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
-            .Select(item => item.Message)
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        detail ??= snapshot.OutputSenderSession.Warnings
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        if (string.IsNullOrWhiteSpace(detail))
-        {
-            failureStatus = string.Empty;
-            return false;
-        }
-
-        failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
-        return true;
-    }
-
-    private static string BuildOutputSenderFailureDetail(NativeMediaCoreOutputSender sender) =>
-        string.Join(
-            " ",
-            new[] { sender.LastResultCode, sender.Warning, sender.RuntimeDetail, sender.LastError }
-                .Where(static part => !string.IsNullOrWhiteSpace(part)));
+    private static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus) =>
+        TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out failureStatus);
 
     [RelayCommand]
     private void SetViewMode(string mode)
@@ -6088,181 +5833,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"{label} added";
         _ = TrySyncMediaCoreAsync();
         return true;
-    }
-
-    [RelayCommand]
-    private void ToggleAutomation()
-    {
-        if (!CanToggleSetAndForget() && ProductionMode != ProductionMode.SetAndForget)
-        {
-            CommandStatus = "Set & Forget is locked on this license tier";
-            return;
-        }
-
-        ProductionMode = ProductionMode == ProductionMode.SetAndForget
-            ? ProductionMode.Manual
-            : ProductionMode.SetAndForget;
-        AutomationButtonLabel = ProductionMode == ProductionMode.SetAndForget
-            ? "Automation enabled"
-            : "Automation disabled";
-        RefreshProductionReadouts();
-        CommandStatus = ProductionMode == ProductionMode.SetAndForget
-            ? $"Set & Forget enabled: {_automationRecommendation.Reason}"
-            : "Manual mode — operator controls scenes";
-        RefreshTransportAutomationState();
-    }
-
-    [RelayCommand]
-    private void RunMagicScene()
-    {
-        if (!Settings.IsInMeeting)
-        {
-            CommandStatus = "Magic Scene requires an active Zoom meeting";
-            return;
-        }
-
-        var recommendedSceneId = _automationRecommendation.RecommendedSceneId;
-        PreviewSceneId = recommendedSceneId;
-        var sceneName = RecommendedSceneName;
-        MagicSceneStatus = $"Magic Scene applied: {sceneName} queued on preview";
-        ApplyAutomationOverlayPolicy();
-        SchedulePreviewRoutingRefresh();
-        CommandStatus = $"{sceneName} queued by Magic Scene";
-        RefreshSceneItems();
-    }
-
-    private void EvaluateAutomationPolicy()
-    {
-        if (ProductionMode != ProductionMode.SetAndForget)
-        {
-            if (_automationTimer.IsRunning)
-            {
-                _automationTimer.Stop();
-            }
-
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = "Manual mode - automation is not changing scenes";
-            return;
-        }
-
-        if (!_automationTimer.IsRunning)
-        {
-            _automationTimer.Start();
-        }
-
-        ApplyAutomationOverlayPolicy();
-
-        if (RoomVideoParticipants.Count == 0)
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = "Waiting for meeting participants";
-            return;
-        }
-
-        if (_automationRecommendation.Confidence < AutomationConfidenceThreshold)
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"Holding current scene - confidence {_automationRecommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
-            return;
-        }
-
-        var targetSceneId = _automationRecommendation.RecommendedSceneId;
-        if (string.Equals(targetSceneId, ActiveSceneId, StringComparison.Ordinal))
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"{RecommendedSceneName} is already on program";
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        if (!string.Equals(_automationPendingSceneId, targetSceneId, StringComparison.Ordinal))
-        {
-            _automationPendingSceneId = targetSceneId;
-            _automationPendingSince = now;
-            AutomationLastAction = $"Holding {RecommendedSceneName} for {AutomationSwitchDelaySeconds:0}s before switching";
-            return;
-        }
-
-        var elapsedSeconds = _automationPendingSince is { } pendingSince
-            ? (now - pendingSince).TotalSeconds
-            : 0;
-        if (elapsedSeconds < AutomationSwitchDelaySeconds)
-        {
-            AutomationLastAction = $"Holding {RecommendedSceneName}: {elapsedSeconds:0.0}/{AutomationSwitchDelaySeconds:0}s";
-            return;
-        }
-
-        if (!string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal))
-        {
-            PreviewSceneId = targetSceneId;
-            SchedulePreviewRoutingRefresh();
-        }
-
-        if (AutomationAutoTakeEnabled)
-        {
-            AutomationLastAction = $"Taking {RecommendedSceneName} to program";
-            _ = TakeAutomationPreviewAsync(targetSceneId);
-        }
-        else
-        {
-            AutomationLastAction = $"{RecommendedSceneName} queued on preview";
-            CommandStatus = AutomationLastAction;
-        }
-    }
-
-    private async Task TakeAutomationPreviewAsync(string targetSceneId)
-    {
-        if (_automationTakeInFlight || !string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal) || !CanTake)
-        {
-            return;
-        }
-
-        _automationTakeInFlight = true;
-        try
-        {
-            await TakeAsync();
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"{Scenes.First(scene => scene.Id == targetSceneId).Name} taken by automation";
-        }
-        finally
-        {
-            _automationTakeInFlight = false;
-        }
-    }
-
-    private void ApplyAutomationOverlayPolicy()
-    {
-        var changed = false;
-        changed |= SetAutomationGraphic("lower-third", AutomationLowerThirdsEnabled);
-        changed |= SetAutomationGraphic("caption", AutomationCaptionsEnabled);
-
-        RefreshProgramLowerThirdKeyPosition();
-
-        if (!AutomationCaptionsEnabled)
-        {
-            if (!string.IsNullOrEmpty(CaptionText))
-            {
-                CaptionText = string.Empty;
-                changed = true;
-            }
-
-            if (!string.IsNullOrEmpty(CaptionSpeaker))
-            {
-                CaptionSpeaker = string.Empty;
-                changed = true;
-            }
-        }
-
-        if (changed)
-        {
-            OnPropertyChanged(nameof(EnabledGraphics));
-            _ = TrySyncMediaCoreAsync();
-        }
     }
 
     private bool SetAutomationGraphic(string kind, bool enabled)
@@ -7875,7 +7445,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshProductionReadouts()
     {
-        _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation(
+        MagicScene.Recommendation = ProductionStateHelper.BuildAutomationRecommendation(
             _bridge.LastSnapshot?.AutoProduction,
             RoomVideoParticipants,
             Scenes,
@@ -7885,7 +7455,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
-        AutoProductionReadout = BuildAutoProductionReadout();
+        AutoProductionReadout = MagicScene.BuildAutoProductionReadout();
         RefreshAudioMixChannels();
         RefreshCaptureFleetSummary();
 
@@ -7906,7 +7476,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AutomationTakeModeLabel));
         OnPropertyChanged(nameof(CaptionQualitySummary));
         RefreshAudioReadoutBindings();
-        EvaluateAutomationPolicy();
+        MagicScene.EvaluateAutomationPolicy();
     }
 
     private void RefreshAudioReadoutBindings()
@@ -8171,386 +7741,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return cleaned.Length <= maxLength ? cleaned : $"{cleaned[..(maxLength - 3)]}...";
     }
 
-    public static string FormatRecordingFailureStatus(string action, Exception exception)
-    {
-        var detail = NormalizeStreamingFailureDetail(exception.Message);
-        var lowered = detail.ToLowerInvariant();
-        var mediaCoreFailure =
-            lowered.Contains("media core", StringComparison.Ordinal) ||
-            lowered.Contains("media-core", StringComparison.Ordinal) ||
-            lowered.Contains("native media core", StringComparison.Ordinal) ||
-            lowered.Contains("native-media-core", StringComparison.Ordinal) ||
-            lowered.Contains("json-rpc", StringComparison.Ordinal) ||
-            lowered.Contains("json rpc", StringComparison.Ordinal) ||
-            lowered.Contains("broken pipe", StringComparison.Ordinal) ||
-            lowered.Contains("process exited", StringComparison.Ordinal) ||
-            lowered.Contains("process is not running", StringComparison.Ordinal);
-        var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
-                     lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
-            ? "Media core is busy applying changes. Wait a moment and try Record again."
-            : lowered.Contains("program frame", StringComparison.Ordinal) ||
-              lowered.Contains("program pixels", StringComparison.Ordinal)
-                ? "Program video is not ready. Put a valid source on Program before recording."
-            : lowered.Contains("target folder", StringComparison.Ordinal) ||
-              lowered.Contains("path", StringComparison.Ordinal) ||
-              lowered.Contains("directory", StringComparison.Ordinal) ||
-              lowered.Contains("disk", StringComparison.Ordinal)
-                ? "Recording target is not ready. Check the folder path and disk space."
-            : mediaCoreFailure
-                ? "Media core failed while starting recording. Open Details for the native error."
-                : "Media core rejected the recording request.";
+    private static string FormatRecordingFailureStatus(string action, Exception exception) =>
+        TransportStatusFormatter.FormatRecordingFailureStatus(action, exception);
 
-        var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
-        return $"Recording {normalizedAction} failed: {prefix} {detail}";
-    }
+    private static string FormatStreamingFailureStatus(string action, Exception exception) =>
+        TransportStatusFormatter.FormatStreamingFailureStatus(action, exception);
 
-    public static string FormatStreamingFailureStatus(string action, Exception exception)
-    {
-        var rawLowered = exception.Message?.ToLowerInvariant() ?? string.Empty;
-        var detail = NormalizeStreamingFailureDetail(exception.Message);
-        var lowered = detail.ToLowerInvariant();
-        var rtmpContext =
-            rawLowered.Contains("rtmp", StringComparison.Ordinal) ||
-            rawLowered.Contains("rtmps", StringComparison.Ordinal) ||
-            lowered.Contains("rtmp", StringComparison.Ordinal) ||
-            lowered.Contains("rtmps", StringComparison.Ordinal);
-        var ffmpegRuntimeMissing =
-            lowered.Contains("ffmpeg executable", StringComparison.Ordinal) ||
-            lowered.Contains("ffmpeg.exe was not found", StringComparison.Ordinal) ||
-            lowered.Contains("ffmpeg folder not found", StringComparison.Ordinal) ||
-            lowered.Contains("does not contain ffmpeg.exe", StringComparison.Ordinal) ||
-            lowered.Contains("choose the bin folder", StringComparison.Ordinal);
-        var mediaCoreFailure =
-            lowered.Contains("media core", StringComparison.Ordinal) ||
-            lowered.Contains("media-core", StringComparison.Ordinal) ||
-            lowered.Contains("native media core", StringComparison.Ordinal) ||
-            lowered.Contains("native-media-core", StringComparison.Ordinal) ||
-            lowered.Contains("json-rpc", StringComparison.Ordinal) ||
-            lowered.Contains("json rpc", StringComparison.Ordinal) ||
-            lowered.Contains("broken pipe", StringComparison.Ordinal) ||
-            lowered.Contains("process exited", StringComparison.Ordinal) ||
-            lowered.Contains("process is not running", StringComparison.Ordinal);
-        var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
-                     lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
-            ? "Media core is busy applying changes. Wait a moment and try Stream again."
-            : lowered.Contains("program frame", StringComparison.Ordinal) ||
-                     lowered.Contains("program pixels", StringComparison.Ordinal)
-            ? "Program video is not ready. Put a valid source on Program before streaming."
-            : lowered.Contains("did not arm a native output sender", StringComparison.Ordinal) ||
-              lowered.Contains("sender state idle", StringComparison.Ordinal)
-                ? "Native output sender did not start. Check Stream settings and open Health for sender diagnostics."
-            : lowered.Contains("select at least one stream destination", StringComparison.Ordinal)
-                ? "No stream destination is selected. Enable RTMP, NDI, or SRT before streaming."
-            : lowered.Contains("configure rtmp", StringComparison.Ordinal) ||
-              lowered.Contains("rtmp server url", StringComparison.Ordinal) ||
-              lowered.Contains("rtmp stream key", StringComparison.Ordinal)
-                ? "RTMP settings are incomplete. Configure the server URL and stream key before streaming."
-            : lowered.Contains("configure an ndi program name", StringComparison.Ordinal)
-                ? "NDI settings are incomplete. Set the NDI program name before streaming."
-            : lowered.Contains("ndi", StringComparison.Ordinal) &&
-              (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
-               lowered.Contains("no ndi sender module", StringComparison.Ordinal) ||
-               lowered.Contains("not available in this build", StringComparison.Ordinal) ||
-               lowered.Contains("libndi runtime", StringComparison.Ordinal) ||
-               lowered.Contains("runtime-missing", StringComparison.Ordinal) ||
-               lowered.Contains("missing ndi-output", StringComparison.Ordinal))
-                ? "NDI output is not available. Install the NDI runtime or use a build with NDI output enabled."
-            : lowered.Contains("srt", StringComparison.Ordinal) &&
-              (lowered.Contains("configure", StringComparison.Ordinal) ||
-               lowered.Contains("must", StringComparison.Ordinal) ||
-               lowered.Contains("passphrase", StringComparison.Ordinal))
-                ? "SRT settings are incomplete. Check host, port, latency, and passphrase before streaming."
-            : lowered.Contains("srt", StringComparison.Ordinal) &&
-              (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
-               lowered.Contains("no srt sender module", StringComparison.Ordinal) ||
-               lowered.Contains("not available in this build", StringComparison.Ordinal) ||
-               lowered.Contains("missing srt-output", StringComparison.Ordinal))
-                ? "SRT output is not available in this build. Use RTMP/NDI or install a build with SRT output enabled."
-            : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
-                ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
-                : rtmpContext ||
-                  lowered.Contains("connection refused", StringComparison.Ordinal)
-                    ? "RTMP output failed. Check the server URL, stream key, and network."
-                    : mediaCoreFailure
-                        ? "Media core failed while starting stream. Open Details for the native error."
-                        : "Media core rejected the stream request.";
+    private static string FormatOutputStatusBrief(string? status) =>
+        TransportStatusFormatter.FormatOutputStatusBrief(status);
 
-        var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
-        return $"Streaming {normalizedAction} failed: {prefix} {detail}";
-    }
+    private static bool ShouldShowOutputStatusDetails(string? status) =>
+        TransportStatusFormatter.ShouldShowOutputStatusDetails(status);
 
-    public static string FormatOutputStatusBrief(string? status)
-    {
-        if (string.IsNullOrWhiteSpace(status))
-        {
-            return "Outputs idle";
-        }
-
-        var normalized = status.Trim();
-        if (normalized.StartsWith("Streaming start failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return FormatStreamingFailureBrief(normalized, "Streaming start failed");
-        }
-
-        if (normalized.StartsWith("Streaming stop failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream stop failed";
-        }
-
-        if (normalized.StartsWith("Recording start failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return FormatRecordingFailureBrief(normalized, "Recording start failed");
-        }
-
-        if (normalized.StartsWith("Recording stop failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Recording stop failed";
-        }
-
-        if (normalized.StartsWith("Streaming settings sync failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream settings failed";
-        }
-
-        if (normalized.StartsWith("Streaming settings failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return FormatStreamingFailureBrief(normalized, "Stream settings failed");
-        }
-
-        if (normalized.StartsWith("RTMP output failed:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("RTMPS output failed:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("SRT output failed:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("NDI output failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            var separatorIndex = normalized.IndexOf(':', StringComparison.Ordinal);
-            return separatorIndex > 0 ? normalized[..separatorIndex] : "Streaming failed";
-        }
-
-        if (normalized.StartsWith("Output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("Output failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            if (normalized.Contains("rtmp", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("rtmps", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase))
-            {
-                return normalized.Contains("failed", StringComparison.OrdinalIgnoreCase)
-                    ? "RTMP output failed"
-                    : "RTMP output warning";
-            }
-
-            return normalized.Contains("failed", StringComparison.OrdinalIgnoreCase)
-                ? "Output failed"
-                : "Output warning";
-        }
-
-        if (normalized.StartsWith("RTMP output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("RTMPS output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("SRT output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("NDI output warning:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream warning";
-        }
-
-        if (normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("error", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Output failed";
-        }
-
-        return normalized.Length <= 28 ? normalized : $"{normalized[..25]}...";
-    }
-
-    private static string FormatRecordingFailureBrief(string normalized, string fallback)
-    {
-        if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Program video not ready";
-        }
-
-        if (normalized.Contains("Recording target is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Recording target not ready";
-        }
-
-        if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core rejected recording";
-        }
-
-        if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
-        {
-            if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core exited";
-            }
-
-            if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core pipe failed";
-            }
-
-            return "Media core failed";
-        }
-
-        if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core busy";
-        }
-
-        return fallback;
-    }
-
-    private static string FormatStreamingFailureBrief(string normalized, string fallback)
-    {
-        if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Program video not ready";
-        }
-
-        if (normalized.Contains("Native output sender did not start", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream sender not armed";
-        }
-
-        if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
-        {
-            return "RTMP output failed";
-        }
-
-        if (normalized.Contains("No stream destination is selected", StringComparison.OrdinalIgnoreCase))
-        {
-            return "No stream destination";
-        }
-
-        if (normalized.Contains("RTMP settings are incomplete", StringComparison.OrdinalIgnoreCase))
-        {
-            return "RTMP settings missing";
-        }
-
-        if (normalized.Contains("NDI settings are incomplete", StringComparison.OrdinalIgnoreCase))
-        {
-            return "NDI settings missing";
-        }
-
-        if (normalized.Contains("NDI output is not available", StringComparison.OrdinalIgnoreCase))
-        {
-            return "NDI unavailable";
-        }
-
-        if (normalized.Contains("SRT settings are incomplete", StringComparison.OrdinalIgnoreCase))
-        {
-            return "SRT settings missing";
-        }
-
-        if (normalized.Contains("SRT output is not available", StringComparison.OrdinalIgnoreCase))
-        {
-            return "SRT unavailable";
-        }
-
-        if (normalized.Contains("FFmpeg is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "FFmpeg not ready";
-        }
-
-        if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core rejected stream";
-        }
-
-        if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
-        {
-            if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core exited";
-            }
-
-            if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core pipe failed";
-            }
-
-            return "Media core failed";
-        }
-
-        if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core busy";
-        }
-
-        return fallback;
-    }
-
-    public static bool ShouldShowOutputStatusDetails(string? status)
-    {
-        if (string.IsNullOrWhiteSpace(status))
-        {
-            return false;
-        }
-
-        var normalized = status.Trim();
-        return normalized.Length > 28 ||
-            normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("rejected", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeStreamingFailureDetail(string? message)
-    {
-        var detail = string.IsNullOrWhiteSpace(message)
-            ? "No native error detail was returned."
-            : message.Trim();
-
-        if (detail.Contains("media-core sync in flight", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("sync in flight", StringComparison.OrdinalIgnoreCase) &&
-            detail.Contains("backpressure", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core is still applying another output change. Wait a moment and try again.";
-        }
-
-        string[] noisyPrefixes =
-        [
-            "media-core sync failed:",
-            "native-media-core-sync failed:",
-            "native media core sync failed:",
-            "media-core request failed:",
-            "native media core request failed:",
-            "start-program-output failed:",
-            "start-program-output failed.",
-            "program-output failed:",
-            "program-output failed.",
-            "stop-program-output failed:",
-            "stop-program-output failed.",
-            "output sender failed during sync:",
-            "output sender failed:",
-            "rtmp output sender failed:",
-            "rtmp sender failed:"
-        ];
-
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var prefix in noisyPrefixes)
-            {
-                if (!detail.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                detail = detail[prefix.Length..].Trim();
-                changed = true;
-            }
-        }
-
-        if (detail.Equals("missing:ffmpeg executable", StringComparison.OrdinalIgnoreCase))
-        {
-            return "FFmpeg executable was not found in the configured bin folder, app folder, or PATH.";
-        }
-
-        return detail;
-    }
+    private static string NormalizeStreamingFailureDetail(string? message) =>
+        TransportStatusFormatter.NormalizeStreamingFailureDetail(message);
 
     public static string FormatAudioMonitorEngineStatus(NativeMediaCoreAudioMixSession audio)
         => FormatAudioMonitorEngineStatus(audio, capture: null);
@@ -9389,14 +8593,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PluginInserts = prior?.PluginInserts.ToList() ?? [],
             InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
         };
-
-    private string BuildAutoProductionReadout()
-    {
-        var auto = _automationRecommendation;
-        return auto.Confidence > 0
-            ? $"Auto: {auto.Action} {auto.Confidence}% — {auto.Reason}"
-            : auto.Reason;
-    }
 
     private Dictionary<string, object?> BuildSpinePayload()
     {
@@ -10242,37 +9438,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _bridge.Profile);
     }
 
-    public static string? ValidateStreamDestinationCapabilities(
-        bool streamRtmpEnabled,
-        bool streamNdiEnabled,
-        bool streamSrtEnabled,
-        NativeMediaCoreProfile? profile)
-    {
-        if (profile is null)
-        {
-            return null;
-        }
-
-        if (streamRtmpEnabled && !HasNativeOutputCapability(profile, "rtmp-output"))
-        {
-            return "RTMP output is selected, but the native media core profile is missing rtmp-output.";
-        }
-
-        if (streamNdiEnabled && !HasNativeOutputCapability(profile, "ndi-output"))
-        {
-            return "NDI output is selected, but the native media core profile is missing ndi-output.";
-        }
-
-        if (streamSrtEnabled && !HasNativeOutputCapability(profile, "srt-output"))
-        {
-            return "SRT output is selected, but the native media core profile is missing srt-output.";
-        }
-
-        return null;
-    }
+    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile) =>
+        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamNdiEnabled, streamSrtEnabled, profile);
 
     private static bool HasNativeOutputCapability(NativeMediaCoreProfile profile, string capability) =>
-        profile.Capabilities.Contains(capability, StringComparer.OrdinalIgnoreCase);
+        TransportStatusFormatter.HasNativeOutputCapability(profile, capability);
 
     private bool IsRtmpConfigured()
         => ValidateRtmpSettings() is null;
@@ -13215,7 +12385,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshTransportState()
     {
-        RefreshTransportAutomationState();
+        MagicScene.RefreshTransportAutomationState();
         Transport.ApplyMeetingState(Settings.IsInMeeting);
 
         if (_bridge.Running && _bridge.LastSnapshot is { } snapshot)
@@ -13268,30 +12438,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ShowStatusSummary));
     }
 
-    private void RefreshTransportAutomationState()
-    {
-        var canToggle = CanToggleSetAndForget() || ProductionMode == ProductionMode.SetAndForget;
-        Transport.ApplyAutomationState(ProductionMode, canToggle);
-    }
-
-    private bool CanToggleSetAndForget()
-    {
-        var entitlements = LicenseCatalog.DeriveEntitlements(
-            new LicenseState { Tier = Settings.LicenseTier, Status = Settings.LicenseStatus },
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        return entitlements.SetAndForget;
-    }
-
-    private static string ResolveProgramResolutionLabel(NativeMediaCoreStateSnapshot snapshot)
-    {
-        var profile = snapshot.OutputProfile;
-        if (profile.Width > 0 && profile.Height > 0)
-        {
-            return TransportFormatting.ShortResolutionLabel($"{profile.Width}x{profile.Height}", profile.Fps);
-        }
-
-        return TransportFormatting.ShortResolutionLabel(profile.Resolution, profile.Fps);
-    }
+    private static string ResolveProgramResolutionLabel(NativeMediaCoreStateSnapshot snapshot) =>
+        TransportStatusFormatter.ResolveProgramResolutionLabel(snapshot);
 
     public string SceneRailSummary =>
         $"{Scenes.Count} scenes · PGM {ProgramScene.Name} · PVW {PreviewScene.Name}";
@@ -14758,7 +13906,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
-        _automationTimer.Stop();
+        MagicScene.Stop();
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
         _bridge.ProfileChanged -= OnBridgeProfileChanged;
