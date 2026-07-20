@@ -463,6 +463,7 @@ if(BUILD_TESTING)
     tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/OverlayTileRasterTest.cpp
+    tests/PluginHostRespawnPolicyTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
