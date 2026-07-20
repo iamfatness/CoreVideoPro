@@ -364,6 +364,40 @@ TEST(JsonRpcServer, HandlesCaptureDeviceBridgeRequests) {
   EXPECT_EQ(connected.get("devices")->asArray()[1].getString("connectionState"), "connected");
 }
 
+// A1 regression (owner-reported "Open controls never shows a plugin UI"): the
+// shell sends open-vst-editor as a TOP-LEVEL request. handle() used to reject
+// it with "Unsupported native media-core command" — and the shell discarded the
+// ok:false response, so the defect was a silent no-op. The request must route
+// into MediaCore::handleCommand and the resolution failure must surface LOUDLY
+// in pluginHost.serve.lastError (never silence).
+// (scan-vst-plugins rides the same routing branch; it is not driven end-to-end
+// here because a real scan would spawn probe processes from a unit test.)
+TEST(JsonRpcServer, TopLevelOpenVstEditorRoutesToMediaCore) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+
+  // A non-"vst:" selection fails in openVstPluginEditor BEFORE any scan
+  // auto-kick or host spawn — deterministic and thread-free for a unit test.
+  const auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "open-editor-1"},
+      {"type", "open-vst-editor"},
+      {"selection", "gate"},
+  });
+  EXPECT_EQ(response.getString("id"), "open-editor-1");
+  ASSERT_NE(response.get("ok"), nullptr);
+  EXPECT_TRUE(response.get("ok")->asBool()) << response.stringify();
+  ASSERT_NE(response.get("snapshot"), nullptr);
+
+  const auto* mixSession = response.get("snapshot")->get("audioMixSession");
+  ASSERT_NE(mixSession, nullptr);
+  const auto* pluginHost = mixSession->get("pluginHost");
+  ASSERT_NE(pluginHost, nullptr);
+  const auto* serve = pluginHost->get("serve");
+  ASSERT_NE(serve, nullptr);
+  EXPECT_NE(serve->getString("lastError").find("cannot open controls"), std::string::npos)
+      << serve->stringify();
+}
+
 // Phase 2 increment 6: the coreMutex hold-duration guardrail must be wired into
 // the live server loop — handling a command under coreMutex records a hold at
 // the sanctioned "cmd.handle" site (and the render thread at
