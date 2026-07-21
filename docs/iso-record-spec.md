@@ -188,10 +188,14 @@ auto-import reads.
   per-source frame refs from gather, NV12 input path on `Mp4Writer`, per-source PTS dedup
   on the shared epoch, folder scheme + `manifest.json`, per-stream snapshot health, loud
   disk/path errors. Proves the pipeline; ISO video files openable and time-aligned.
-- **ISO-2 — per-source AUDIO stems muxed into the ISO MP4s.** Tap `work.audioFrames`
-  pre-mix PCM per source, silence-fill gaps epoch-aligned, mux into each ISO writer →
-  self-contained A+V (the owner's decision-1 shape). **This is the Demo E claim** (program
-  + ISO stems openable and aligned in an NLE/DAW).
+- **ISO-2 — per-source AUDIO stems muxed into the ISO MP4s.** _(DELIVERED 2026-07-20.)_
+  Tap `work.audioFrames` pre-mix PCM per source, silence-fill gaps epoch-aligned, mux
+  into each ISO writer → self-contained A+V (the owner's decision-1 shape). **This is the
+  Demo E claim** (program + ISO stems openable and aligned in an NLE/DAW). Landed:
+  `submitIsoAudio` boundary + `Kind::IsoAudio` async lane (never evicts program audio);
+  `RecordingPtsClock::isoAudioAdvance` wall-anchored silence-fill; up-front per-ISO AAC
+  stream (#286) at the lazy writer open; `audioSamples`/`hasAudio` snapshot + manifest;
+  `validate-iso-record.mjs` Demo E leg (ffprobe A+V + head-clap alignment 0.0 ms).
 - **ISO-3 — UVC/capture sources.** `capture:<id>` video (BGRA path) + capture-device PCM;
   `isoSourceIds` accepts capture ids. Broadens to the host camera / screen share.
 - **ISO-4 — polish.** Disk pre-flight gate, support-bundle ISO health, the Show-mode UI

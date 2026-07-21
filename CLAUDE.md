@@ -490,6 +490,62 @@ ISO-4). What landed:
   `node scripts/validate-iso-record.mjs` (fake engine, ISO on 2 → 2 ISO mp4s with
   h264 video, deduped). ISO-2 extends it into A+V + clap alignment.
 
+## ISO recording — ISO-2 (per-source AUDIO stems muxed into the ISO MP4s, 2026-07-20)
+
+ISO-2 completes the **Demo E** shape: each Zoom-participant ISO is now a
+self-contained **A+V** MP4 (its own video from ISO-1 **and** its own raw-stem
+audio), time-aligned to program. Stacked on ISO-1 (`submitIsoVideo` boundary,
+per-source `Mp4Writer` map, folder scheme). What landed:
+
+- **Raw-stem tap = PRE-DSP, PRE-MIX** (owner decision-3). The stem is
+  `work.audioFrames[i].pcm` — each source's isolated PCM, resampled to the 48k bus
+  rate at gather but tapped BEFORE the channel-strip DSP and the bus mix. Proof
+  it's pre-DSP: `RoutedAudioSource.pcm` is a `const` pointer into these buffers and
+  `mixRoutedBuses` runs the gate/EQ/comp/inserts on COPIES — the source buffers are
+  never mutated (`MediaCore.cpp` runAudioOutputWork, just after the program
+  `submitAudio`). Do NOT move the tap after `mixRoutedBuses`; that would be the
+  post-DSP signal (the option the owner explicitly did NOT choose).
+- **`IEncoderSink::submitIsoAudio(vector<IsoSourceAudio>)`** (`Interfaces.h`), a
+  separate boundary paired with `submitIsoVideo`. Submitted **every tick for EVERY
+  selected source**: a source with PCM this tick muxes it; a source Zoom gated
+  silent this tick rides an **empty** entry (frameCount==0). Rides its own
+  `AsyncEncoderSink` `Kind::IsoAudio` with the audio budget but SEPARATE
+  drop-to-latest accounting, so a slow disk drops ISO audio to silence-filled gaps
+  and can NEVER evict a program-audio packet (program is priority-1, spec §9).
+- **Silence-fill (spec §2c), the correctness core.** `RecordingPtsClock::isoAudioAdvance`
+  anchors every stem to the ONE shared epoch (t=0 == program start): the expected
+  sample position at wall time `now` is `(now-epoch)` worth of samples, so a buffer
+  emits exactly enough leading silence to reach that position, then the real
+  samples. A guest silent for K ticks (empty submits) advances by silence alone and
+  lands the next real burst at the correct, program-aligned position — never a
+  drift EARLIER of program. A dropped ISO-audio tick simply becomes silence in the
+  stem (the next tick's wall-anchored fill covers it), timeline intact. The sink
+  chunks long leading silence (`Mp4Writer::writeAudioSilence`, 0.1s blocks) so a
+  guest who talks minutes in never emits one giant sample.
+- **#286 up-front audio stream, per ISO writer.** The ISO writer opens LAZILY at
+  its first video frame; the AAC stream is added THERE — `open()` →
+  `ensureAudioStream(2, 48000, …)` → `beginWriting()` — never after BeginWriting
+  (0xC00D36B2). `Mp4Writer::open()` already resets `audioConfigured_`, so a REUSED
+  ISO writer across the double `start()` re-adds its stream cleanly (regression
+  test proves a reused ISO writer keeps its audio track). ISO AAC is uniformly 48k
+  **stereo**; mono Zoom `isolate_audio` stems are up-mixed L=R in `submitIsoAudio`.
+- **Snapshot + manifest:** `recording.streams[]` ISO nodes now carry
+  `audioSamples` (silence+real) and `hasAudio` (= `audioSamples > 0`);
+  `manifest.json` marks every entry `"hasAudio": true`. A track-less ISO where
+  audio was expected folds into `recording.warning` (as loud as #286 made a
+  video-only program).
+- **Tests:** `RecordingPtsClock.IsoAudioSilenceFillKeepsGappedStemAligned` (the key
+  gapped-stem test — silent K ticks then resume lands at the right sample
+  position) + `IsoAudioLateStartSilenceFillsFromEpoch`; real-MF
+  `EncoderRecordingSession.MediaFoundationIsoWritersMuxOwnAudioStems` (2 ISO writers
+  with DIFFERENT audio, #286 reused-writer audio-track reset, **program A+V not
+  regressed with ISO audio enabled**); and `scripts/validate-iso-record.mjs`
+  extended to the **Demo E leg** — ffprobe each ISO has h264 video AND aac audio,
+  head-clap alignment (ISO audio start vs program audio start on the shared epoch)
+  measured **0.0 ms** (budget 50 ms). Fake tone engine gives distinct
+  per-participant sines (220Hz + pid%8·110), so the two ISO stems carry different
+  content (956685 vs 969374 samples over 20s), not the program mix.
+
 ## Current state addendum (2026-07-13, the zero-audio recording bug)
 
 **Recordings muxed ZERO audio while the master bus carried signal — FIXED.** Root
