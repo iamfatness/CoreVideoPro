@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <string>
 
 namespace corevideo::modules {
 
@@ -47,6 +49,32 @@ class RecordingPtsClock {
     }
     hasLastVideoPts_ = true;
     lastVideoPts_ = pts;
+    return pts;
+  }
+
+  // PTS for one ISO source's video frame, or nullopt when this (sourceId,
+  // frameId) pair was already muxed. ISO record shares the ONE program epoch so
+  // a clap on program lands at the same timeline position on every ISO
+  // (spec 2c) — but dedup must be PER SOURCE: the audio worker re-submits every
+  // selected source's latest frame each ~20ms tick, and each source advances on
+  // its own frameId/sequence (Zoom decode order), independent of the program
+  // frameNumber. Keeping a per-source last-frameId + last-pts map (one shared
+  // epoch) means an unchanged source frame muxes exactly once, and each ISO
+  // stream stays strictly monotonic for Media Foundation.
+  std::optional<std::int64_t> videoPtsForSource(std::int64_t now100ns, const std::string& sourceId,
+                                                std::int64_t frameId) {
+    auto lastFrame = isoLastFrameId_.find(sourceId);
+    if (lastFrame != isoLastFrameId_.end() && lastFrame->second == frameId) {
+      return std::nullopt;  // this source frame is already in its file
+    }
+    ensureEpoch(now100ns);
+    isoLastFrameId_[sourceId] = frameId;
+    std::int64_t pts = now100ns - epoch100ns_;
+    auto lastPts = isoLastVideoPts_.find(sourceId);
+    if (lastPts != isoLastVideoPts_.end() && pts <= lastPts->second) {
+      pts = lastPts->second + 1;
+    }
+    isoLastVideoPts_[sourceId] = pts;
     return pts;
   }
 
@@ -108,6 +136,9 @@ class RecordingPtsClock {
   std::int64_t audioSamples_ = 0;
   int audioLatencySamples_ = 0;               // set until the first buffer latches it
   std::int64_t audioLatencyOffset100ns_ = 0;  // latched, clamped to the epoch
+  // ISO per-source video dedup + monotonic pts (all on the shared epoch above).
+  std::map<std::string, std::int64_t> isoLastFrameId_;
+  std::map<std::string, std::int64_t> isoLastVideoPts_;
 };
 
 }  // namespace corevideo::modules

@@ -192,15 +192,49 @@ export function validateIsoAgainstDisk(
 }
 
 /**
+ * Sanitize a roster/display name into a safe file-name fragment. Mirrors the
+ * native `sanitizeForFilename` (MediaFoundationEncoderAdapter.cpp) so the shell
+ * planner and the core agree on the ISO-1 folder scheme (spec §5): keep
+ * alphanumerics + underscore, collapse other runs to a single dash, trim, cap.
+ */
+export function sanitizeIsoName(name: string, fallback = "source"): string {
+  let out = "";
+  let lastDash = false;
+  for (const ch of name) {
+    if (/[A-Za-z0-9_]/.test(ch)) {
+      out += ch;
+      lastDash = false;
+    } else if (/[ \-.]/.test(ch)) {
+      if (out.length > 0 && !lastDash) {
+        out += "-";
+        lastDash = true;
+      }
+    }
+    if (out.length >= 48) break;
+  }
+  out = out.replace(/-+$/, "");
+  return out.length > 0 ? out : fallback;
+}
+
+/**
  * Build a per-track output file path for use in an NLE or archive.
+ *
+ * ISO-1 folder scheme (spec §5), matching the native encoder: program is
+ * `Program.mp4`; every other track is `ISO-NN-<SafeName>.mp4` (selection order,
+ * self-contained muxed MP4). This replaces the older `track-NN-*.mov` scheme so
+ * the shell planner and the core write the same layout.
  */
 export function isoOutputPath(
   outputFolder: string,
   trackLabel: string,
-  trackIndex: number
+  trackIndex: number,
+  source: IsoTrackSource = "participant"
 ): string {
-  const slug = trackLabel.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-  return `${outputFolder}/track-${String(trackIndex + 1).padStart(2, "0")}-${slug}.mov`;
+  if (source === "program-mix") {
+    return `${outputFolder}/Program.mp4`;
+  }
+  const safe = sanitizeIsoName(trackLabel);
+  return `${outputFolder}/ISO-${String(trackIndex + 1).padStart(2, "0")}-${safe}.mp4`;
 }
 
 export function summarizeIsoPlan(plan: IsoRecordingPlan): string {

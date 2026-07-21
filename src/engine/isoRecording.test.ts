@@ -151,18 +151,24 @@ describe("validateIsoAgainstDisk", () => {
 });
 
 describe("isoOutputPath", () => {
-  it("builds a zero-padded track path", () => {
-    expect(isoOutputPath("recordings/show", "Alice", 0)).toBe(
-      "recordings/show/track-01-alice.mov"
+  it("builds a zero-padded ISO track path (spec §5 scheme)", () => {
+    expect(isoOutputPath("recordings/show", "Alice", 0, "participant")).toBe(
+      "recordings/show/ISO-01-Alice.mp4"
     );
-    expect(isoOutputPath("recordings/show", "Program Mix", 9)).toBe(
-      "recordings/show/track-10-program-mix.mov"
+    expect(isoOutputPath("recordings/show", "Bob Jones", 9, "participant")).toBe(
+      "recordings/show/ISO-10-Bob-Jones.mp4"
     );
   });
 
-  it("slugifies label with spaces and special chars", () => {
-    expect(isoOutputPath("recordings/show", "Screen Share", 2)).toBe(
-      "recordings/show/track-03-screen-share.mov"
+  it("names the program mix Program.mp4", () => {
+    expect(isoOutputPath("recordings/show", "Program Mix", 9, "program-mix")).toBe(
+      "recordings/show/Program.mp4"
+    );
+  });
+
+  it("sanitizes label with spaces and special chars, preserving case", () => {
+    expect(isoOutputPath("recordings/show", "Screen Share!", 2, "screen-share")).toBe(
+      "recordings/show/ISO-03-Screen-Share.mp4"
     );
   });
 });

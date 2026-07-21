@@ -1522,12 +1522,15 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
       destination.videoCodec = streamVideoCodec_;
     }
   }
+  if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
+    recordingIsoParticipantIds_ = readIsoSourceIds(command);
+  }
   {
     // Encoder module mutation: guard against the audio/output worker's concurrent
     // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     configureEncoderRecordingRequest();
-    modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
+    modules_.encoder->start(command.getStringArray("destinations"), recordingIsoParticipantIds_);
   }
   if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
     encoderLifecycleStatus_ = "encoding";
@@ -1592,8 +1595,8 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
         recordingTargetBitrateMbps_,
         recordingVideoCodec_);
   }
-  if (command.get("isoParticipantIds")) {
-    recordingIsoParticipantIds_ = command.getStringArray("isoParticipantIds");
+  if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
+    recordingIsoParticipantIds_ = readIsoSourceIds(command);
   }
   {
     // encoder->configureRecording mutation: guard against the worker's encoder use.
@@ -1687,6 +1690,14 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.format = recordingFormat_;
   request.quality = recordingQuality_;
   request.isoParticipantIds = recordingIsoParticipantIds_;
+  // ISO-1: canonical id + roster display name per selected source, so the writer
+  // names files ISO-01-<SafeName>.mp4 (spec §5) instead of a per-meeting id.
+  request.isoSources.clear();
+  request.isoSources.reserve(recordingIsoParticipantIds_.size());
+  for (const auto& rawId : recordingIsoParticipantIds_) {
+    const std::string sourceId = normalizeIsoSourceId(rawId);
+    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId)});
+  }
   request.width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : (lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_);
   request.height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : (lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_);
   request.fps = recordingOutputFps_ > 0 ? recordingOutputFps_ : outputFps_;
@@ -1695,6 +1706,43 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.audioBitrateKbps = std::max(32, std::min(512, recordingAudioBitrateKbps_));
   request.targetBitrateMbps = static_cast<int>(std::max(1.0, recordingTargetBitrateMbps_));
   modules_.encoder->configureRecording(request);
+}
+
+std::vector<std::string> MediaCore::readIsoSourceIds(const rpc::Json& command) const {
+  // Prefer the ISO-1 scheme-qualified list; fall back to the legacy bare-id list.
+  if (command.get("isoSourceIds")) {
+    return command.getStringArray("isoSourceIds");
+  }
+  return command.getStringArray("isoParticipantIds");
+}
+
+std::string MediaCore::normalizeIsoSourceId(const std::string& rawId) {
+  if (rawId.empty() || rawId.find(':') != std::string::npos) {
+    return rawId;  // already scheme-qualified (zoom:/capture:/media:)
+  }
+  return "zoom:" + rawId;  // bare id = a Zoom participant (back-compat)
+}
+
+std::string MediaCore::resolveIsoDisplayName(const std::string& sourceId) const {
+  // Strip the scheme to get the underlying id.
+  const auto colon = sourceId.find(':');
+  const std::string scheme = colon == std::string::npos ? "" : sourceId.substr(0, colon);
+  const std::string bareId = colon == std::string::npos ? sourceId : sourceId.substr(colon + 1);
+  if (scheme == "zoom" || scheme.empty()) {
+    // Look the participant up in the live roster (userId → displayName).
+    const auto snapshot = zoomSnapshot();
+    if (const rpc::Json* participants = snapshot.get("participants"); participants && participants->isArray()) {
+      for (const auto& participant : participants->asArray()) {
+        if (participant.getString("userId") == bareId) {
+          const std::string name = participant.getString("displayName");
+          if (!name.empty()) {
+            return name;
+          }
+        }
+      }
+    }
+  }
+  return bareId.empty() ? sourceId : bareId;
 }
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
@@ -3720,10 +3768,16 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   const bool metadataValid = session.recordingMetadataValid ||
                              (programFramesWritten > 0 && !containerFormat.empty() && !videoCodec.empty() && recordingWidth > 0 && recordingHeight > 0 &&
                               recordingFps > 0 && !audioCodec.empty());
+  // Prefer the sink's REAL artifact path (the MF sink writes into a per-session
+  // subfolder, spec §5); fall back to the synthesized flat path for the stub.
+  const std::string programPath = !session.recordingArtifactPath.empty()
+                                      ? session.recordingArtifactPath
+                                      : recordingTargetFolder_ + "/" + recordingFilenamePrefix_ +
+                                            "-program-0." + recordingFormat_;
   rpc::Json::Array streams{
       rpc::Json::Object{
           {"kind", "program"},
-          {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
+          {"path", programPath},
           {"status", recordingWriterStatus_},
           {"expectedFrames", static_cast<double>(programFramesWritten + recordingDroppedFrames_)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
@@ -3736,20 +3790,52 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"metadataValid", metadataValid},
       },
   };
-  for (const auto& participantId : isoIds) {
-    streams.emplace_back(rpc::Json::Object{
-        {"kind", "iso"},
-        {"participantId", participantId},
-        {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
-        {"status", recordingWriterStatus_},
-        {"readiness", "ready"},
-        {"framesWritten", static_cast<double>(programFramesWritten)},
-        {"durationMs", durationMs},
-        {"frameRate", recordingFps},
-        {"hasAudio", audioPresent},
-        {"bytesWritten", static_cast<double>(programFramesWritten * 140000)},
-        {"metadataValid", metadataValid},
-    });
+  if (!session.isoStreams.empty()) {
+    // ISO-1: real per-writer health from the Media Foundation sink — one node per
+    // selected ISO source with its own path, frame count, open state and warning.
+    // A video-only-broken ISO (writer failed to open / lost its track) is as loud
+    // as a video-only program was (#286): its warning shows here AND folds into
+    // recording.warning below.
+    for (const auto& iso : session.isoStreams) {
+      rpc::Json::Object node{
+          {"kind", "iso"},
+          {"sourceId", iso.sourceId},
+          {"participantId", iso.sourceId},
+          {"displayName", iso.displayName},
+          {"path", iso.path},
+          {"status", iso.warning.empty() ? recordingWriterStatus_ : std::string("warning")},
+          {"readiness", iso.trackOpen ? "ready" : "missing"},
+          {"framesWritten", static_cast<double>(iso.videoFrameCount)},
+          {"durationMs", durationMs},
+          {"frameRate", recordingFps},
+          {"hasAudio", false},  // ISO-1 is video-only; per-source audio is ISO-2
+          {"audioSamples", static_cast<double>(iso.audioSampleCount)},
+          {"bytesWritten", static_cast<double>(iso.bytesWritten)},
+          {"metadataValid", iso.trackOpen},
+      };
+      if (!iso.warning.empty()) {
+        node.emplace("warning", iso.warning);
+      }
+      streams.emplace_back(std::move(node));
+    }
+  } else {
+    // Stub / non-MF sink: synthesize ISO nodes from the selected ids (no real
+    // per-writer stats available).
+    for (const auto& participantId : isoIds) {
+      streams.emplace_back(rpc::Json::Object{
+          {"kind", "iso"},
+          {"participantId", participantId},
+          {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
+          {"status", recordingWriterStatus_},
+          {"readiness", "ready"},
+          {"framesWritten", static_cast<double>(programFramesWritten)},
+          {"durationMs", durationMs},
+          {"frameRate", recordingFps},
+          {"hasAudio", audioPresent},
+          {"bytesWritten", static_cast<double>(programFramesWritten * 140000)},
+          {"metadataValid", metadataValid},
+      });
+    }
   }
 
   rpc::Json::Object recording{
@@ -3771,7 +3857,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
        }},
       {"estimatedDiskRateMBps", 4.99},
-      {"programPath", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
+      {"programPath", programPath},
       {"streams", streams},
       {"proof",
        rpc::Json::Object{
@@ -3801,6 +3887,12 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   };
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);
+  }
+  if (!session.recordingSessionDir.empty()) {
+    recording.emplace("sessionDir", session.recordingSessionDir);
+  }
+  if (!session.recordingManifestPath.empty()) {
+    recording.emplace("manifestPath", session.recordingManifestPath);
   }
   if (!recordingError_.empty()) {
     recording.emplace("error", recordingError_);
@@ -4216,6 +4308,30 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     videoFrames.insert(videoFrames.end(), std::make_move_iterator(stillFrames.begin()),
                        std::make_move_iterator(stillFrames.end()));
   }
+  // ISO-1: snapshot the latest per-source video frame (keyed by canonical source
+  // id) so the audio worker's gather can hand each selected ISO writer its own
+  // frame. Zero-copy: VideoFrame carries shared_ptr payloads, so this is a cheap
+  // ref copy under coreMutex — NO pixel work under the lock (spec §9 LAW). Only
+  // built while recording ISO, and only for frames with real decoded content.
+  if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
+      !recordingIsoParticipantIds_.empty()) {
+    latestIsoSourceFrames_.clear();
+    for (const auto& frame : videoFrames) {
+      if (!frame.hasI420() && !frame.hasPixels()) {
+        continue;  // metadata-only roster frame — no pixels to ISO-record yet
+      }
+      const std::string& pid = frame.participantId;
+      if (pid.rfind("media:", 0) == 0) {
+        continue;  // media routes are not ISO sources (v1 non-goal)
+      }
+      // capture:/browser: frames already carry their scheme; a bare id is a Zoom
+      // participant → `zoom:<pid>` (matches normalizeIsoSourceId).
+      const std::string key = pid.find(':') != std::string::npos ? pid : "zoom:" + pid;
+      latestIsoSourceFrames_[key] = frame;
+    }
+  } else if (!latestIsoSourceFrames_.empty()) {
+    latestIsoSourceFrames_.clear();
+  }
   markStage(s_stageIngestUs);
 
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
@@ -4446,6 +4562,20 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
   }
   work.recordingActive = (recordingStatus_ == "recording" || recordingStatus_ == "warning");
   work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
+  // ISO-1: pick the selected sources' latest frames (snapshotted under coreMutex
+  // above in the render gather) into the work item — zero-copy shared_ptr refs.
+  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && !latestIsoSourceFrames_.empty()) {
+    for (const auto& rawId : recordingIsoParticipantIds_) {
+      const std::string sourceId = normalizeIsoSourceId(rawId);
+      const auto it = latestIsoSourceFrames_.find(sourceId);
+      if (it != latestIsoSourceFrames_.end()) {
+        // displayName left empty here: the sink maps by sourceId to a writer
+        // whose name/path were resolved at recording start (avoids a roster
+        // lookup under coreMutex every tick).
+        work.isoSources.push_back({sourceId, std::string(), it->second});
+      }
+    }
+  }
   work.outputDestinations = outputDestinations_;
   work.outputDestinationSettings = outputDestinationSettings_;
   work.programFrame = lastProgramFrame_;
@@ -4886,6 +5016,13 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // recording mux. encoder->submit early-returns when the frame carries no CPU
   // pixels, so when no output is active (readback skipped) this is harmless.
   modules_.encoder->submit(work.programFrame);
+  // ISO-1: each selected source's OWN video into its own MP4 (rides the same
+  // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
+  // drop-to-latest under back-pressure, never program A/V). Program above is
+  // priority-1 and unaffected by ISO.
+  if (!work.isoSources.empty()) {
+    modules_.encoder->submitIsoVideo(work.isoSources);
+  }
   const auto session = modules_.encoder->session();
   auto outputDestinations = work.outputDestinations;
   outputDestinations.erase(

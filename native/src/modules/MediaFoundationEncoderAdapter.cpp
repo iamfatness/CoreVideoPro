@@ -21,9 +21,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -62,13 +66,109 @@ std::string canonicalVideoCodecName(const std::string& codec) {
   return "h264";
 }
 
+// The input pixel format a writer accepts. Program keeps BGRA (RGB32); ISO Zoom
+// sources feed NV12 so raw I420 needs no CPU color-convert (spec §2b) — a cheap
+// plane interleave (below) runs on the async encoder thread, never a lock.
+enum class VideoInput { Bgra, Nv12 };
+
+// Cheap I420 (planar Y/U/V) -> NV12 (Y plane + interleaved UV) conversion. No
+// color-space math, just a chroma-plane interleave; runs on the async encoder
+// writer thread (off coreMutex / the audio worker). `w`/`h` must be even (Zoom
+// I420 always is — hasI420() guarantees it). `out` is resized to w*h*3/2.
+void i420ToNv12(const uint8_t* i420, int w, int h, std::vector<uint8_t>& out) {
+  const size_t ySize = static_cast<size_t>(w) * static_cast<size_t>(h);
+  const size_t chromaW = static_cast<size_t>(w) / 2;
+  const size_t chromaH = static_cast<size_t>(h) / 2;
+  const size_t uSize = chromaW * chromaH;
+  out.resize(ySize + uSize * 2);
+  std::memcpy(out.data(), i420, ySize);
+  const uint8_t* u = i420 + ySize;
+  const uint8_t* v = i420 + ySize + uSize;
+  uint8_t* uv = out.data() + ySize;
+  for (size_t i = 0; i < uSize; ++i) {
+    uv[2 * i] = u[i];
+    uv[2 * i + 1] = v[i];
+  }
+}
+
+// Sanitize a roster/display name into a safe MP4 file-name fragment (spec §5):
+// keep alphanumerics, space→'-', dash/underscore; drop everything else; collapse
+// runs; trim; cap length; fall back to a stable token so a file is always named.
+std::string sanitizeForFilename(const std::string& name, const std::string& fallback) {
+  std::string out;
+  out.reserve(name.size());
+  bool lastDash = false;
+  for (char c : name) {
+    const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    if (alnum || c == '_') {
+      out.push_back(c);
+      lastDash = false;
+    } else if (c == ' ' || c == '-' || c == '.') {
+      if (!out.empty() && !lastDash) {
+        out.push_back('-');
+        lastDash = true;
+      }
+    }
+    // all other characters (incl. path separators, control chars) are dropped
+    if (out.size() >= 48) break;
+  }
+  while (!out.empty() && out.back() == '-') out.pop_back();
+  if (out.empty()) {
+    // Derive a token from the fallback id (strip scheme + unsafe chars).
+    for (char c : fallback) {
+      const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+      if (alnum) out.push_back(c);
+      if (out.size() >= 32) break;
+    }
+  }
+  if (out.empty()) out = "source";
+  return out;
+}
+
+// Per-session subfolder timestamp `yyyymmdd-hhmmss` (local time).
+std::string sessionTimestampFolder() {
+  const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  std::tm tmBuf{};
+#if defined(_WIN32)
+  localtime_s(&tmBuf, &now);
+#else
+  localtime_r(&now, &tmBuf);
+#endif
+  char out[32] = {0};
+  std::strftime(out, sizeof(out), "%Y%m%d-%H%M%S", &tmBuf);
+  return std::string(out);
+}
+
+std::string jsonEscape(const std::string& in) {
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (char c : in) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+          out += buf;
+        } else {
+          out.push_back(c);
+        }
+    }
+  }
+  return out;
+}
+
 // A single MP4 sink writer (program or one ISO participant). Owns its own video
 // + audio stream indices and per-stream timing, so program and ISO writers stay
 // independent and individually finalizable.
 class Mp4Writer {
  public:
   bool open(const std::filesystem::path& path, int width, int height, int fps, int bitrateMbps,
-            const std::string& codec, std::string& errorOut) {
+            const std::string& codec, std::string& errorOut, VideoInput videoInput = VideoInput::Bgra) {
     // RESET ALL per-session state before configuring the new sink writer. This
     // writer object is REUSED across recording sessions (every encoder start()
     // reopens it), and stream indices / audioConfigured_ describe the PREVIOUS
@@ -90,8 +190,10 @@ class Mp4Writer {
     audioWriteFailureCount_ = 0;
     bytesWritten_ = 0;
     path_ = path;
-    width_ = std::max(2, width);
-    height_ = std::max(2, height);
+    videoInput_ = videoInput;
+    // NV12 requires even luma dimensions; floor to even (Zoom I420 is already even).
+    width_ = videoInput == VideoInput::Nv12 ? std::max(2, width & ~1) : std::max(2, width);
+    height_ = videoInput == VideoInput::Nv12 ? std::max(2, height & ~1) : std::max(2, height);
     fps_ = std::max(1, fps);
     frameDuration100ns_ = 10'000'000LL / fps_;
     videoCodec_ = canonicalVideoCodecName(codec);
@@ -134,22 +236,30 @@ class Mp4Writer {
     ComPtr<IMFMediaType> inputType;
     result = MFCreateMediaType(&inputType);
     if (FAILED(result)) {
-      errorOut = "create RGB32 input type: " + hresultString(result);
+      errorOut = "create video input type: " + hresultString(result);
       return false;
     }
     inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
     inputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    // Top-down BGRA: negative stride so row 0 is the top scanline, matching the
-    // ProgramFrame preview/shared-texture layout.
-    inputType->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(-(width_ * 4)));
+    if (videoInput_ == VideoInput::Nv12) {
+      // NV12: top-down (positive stride = luma width), Y plane then interleaved
+      // UV. Zoom ISO frames arrive I420 and are plane-interleaved to NV12 on the
+      // async encoder thread — no CPU color-convert (spec §2b).
+      inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+      inputType->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(width_));
+    } else {
+      inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+      // Top-down BGRA: negative stride so row 0 is the top scanline, matching the
+      // ProgramFrame preview/shared-texture layout.
+      inputType->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(-(width_ * 4)));
+    }
     MFSetAttributeSize(inputType.Get(), MF_MT_FRAME_SIZE, static_cast<UINT32>(width_), static_cast<UINT32>(height_));
     MFSetAttributeRatio(inputType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(fps_), 1);
     MFSetAttributeRatio(inputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 
     result = sinkWriter_->SetInputMediaType(videoStreamIndex_, inputType.Get(), nullptr);
     if (FAILED(result)) {
-      errorOut = "set RGB32 input type: " + hresultString(result);
+      errorOut = "set video input type: " + hresultString(result);
       return false;
     }
 
@@ -293,6 +403,84 @@ class Mp4Writer {
     return true;
   }
 
+  // Writes one NV12 frame (Y plane then interleaved UV). `nv12` is tightly packed
+  // top-down at the SOURCE size; pixels outside the writer's configured size are
+  // cropped and any shortfall is filled black (Y=0) / neutral chroma (UV=128) so
+  // a resolution change never corrupts the stream. Used by the Zoom ISO writers.
+  bool writeVideoNv12(const uint8_t* nv12, int srcWidth, int srcHeight, LONGLONG pts100ns,
+                      std::string& errorOut) {
+    if (!writing_ || nv12 == nullptr) {
+      return false;
+    }
+    const int dstY = width_ * height_;
+    const int dstUv = width_ * (height_ / 2);
+    const DWORD byteCount = static_cast<DWORD>(dstY + dstUv);
+
+    ComPtr<IMFMediaBuffer> buffer;
+    HRESULT result = MFCreateMemoryBuffer(byteCount, &buffer);
+    if (FAILED(result)) {
+      errorOut = "allocate NV12 buffer: " + hresultString(result);
+      return false;
+    }
+    BYTE* locked = nullptr;
+    DWORD maxLength = 0;
+    DWORD currentLength = 0;
+    result = buffer->Lock(&locked, &maxLength, &currentLength);
+    if (FAILED(result)) {
+      errorOut = "lock NV12 buffer: " + hresultString(result);
+      return false;
+    }
+    const int srcStrideY = srcWidth;
+    const int srcStrideUv = srcWidth;  // one interleaved UV row = srcWidth bytes
+    const int copyWidth = std::min(srcWidth, width_);
+    const int copyRows = std::min(srcHeight, height_);
+    // Luma plane.
+    for (int y = 0; y < height_; ++y) {
+      BYTE* dstRow = locked + static_cast<size_t>(y) * width_;
+      if (y < copyRows) {
+        std::memcpy(dstRow, nv12 + static_cast<size_t>(y) * srcStrideY, static_cast<size_t>(copyWidth));
+        if (copyWidth < width_) std::memset(dstRow + copyWidth, 0, static_cast<size_t>(width_ - copyWidth));
+      } else {
+        std::memset(dstRow, 0, static_cast<size_t>(width_));
+      }
+    }
+    // Interleaved UV plane (half-height). Round copyWidth up to an even byte count
+    // so a UV pair is never split.
+    const uint8_t* srcUv = nv12 + static_cast<size_t>(srcStrideY) * srcHeight;
+    const int copyUvWidth = std::min(srcWidth, width_) & ~1;
+    const int copyUvRows = std::min(srcHeight, height_) / 2;
+    for (int y = 0; y < height_ / 2; ++y) {
+      BYTE* dstRow = locked + dstY + static_cast<size_t>(y) * width_;
+      if (y < copyUvRows) {
+        std::memcpy(dstRow, srcUv + static_cast<size_t>(y) * srcStrideUv, static_cast<size_t>(copyUvWidth));
+        if (copyUvWidth < width_) std::memset(dstRow + copyUvWidth, 128, static_cast<size_t>(width_ - copyUvWidth));
+      } else {
+        std::memset(dstRow, 128, static_cast<size_t>(width_));
+      }
+    }
+    buffer->Unlock();
+    buffer->SetCurrentLength(byteCount);
+
+    ComPtr<IMFSample> sample;
+    result = MFCreateSample(&sample);
+    if (FAILED(result)) {
+      errorOut = "create NV12 sample: " + hresultString(result);
+      return false;
+    }
+    sample->AddBuffer(buffer.Get());
+    sample->SetSampleTime(pts100ns);
+    sample->SetSampleDuration(frameDuration100ns_);
+
+    result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+    if (FAILED(result)) {
+      errorOut = "write NV12 sample: " + hresultString(result);
+      return false;
+    }
+    ++videoFrameCount_;
+    bytesWritten_ += byteCount;
+    return true;
+  }
+
   // Converts interleaved float PCM [-1,1] to 16-bit and writes one audio sample.
   bool writeAudio(const float* interleaved, int frameCount, LONGLONG pts100ns, std::string& errorOut) {
     if (!writing_ || !audioConfigured_ || interleaved == nullptr || frameCount <= 0) {
@@ -411,6 +599,7 @@ class Mp4Writer {
   bool open_ = false;
   bool writing_ = false;
   bool audioConfigured_ = false;
+  VideoInput videoInput_ = VideoInput::Bgra;
   std::vector<int16_t> pcm16_;
 };
 
@@ -462,6 +651,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
     session_.encodedFrameCount = 0;
     session_.recordingArtifactPath.clear();
+    session_.recordingSessionDir.clear();
+    session_.recordingManifestPath.clear();
+    session_.isoStreams.clear();
     session_.recordingBytesWritten = 0;
     session_.recordingDurationMs = 0;
     session_.recordingVideoFrameCount = 0;
@@ -525,13 +717,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       setRecordingFailure("Media Foundation could not write program video", error);
       return;
     }
-    // ISO writers mux the same composed frame per selected participant. The
-    // IEncoderSink boundary does not (yet) carry per-source pixel buffers, so the
-    // composed program frame is the per-participant proxy; each writer is a real,
-    // independently playable MP4 with its routed audio.
-    for (auto& iso : isoWriters_) {
-      iso.writeVideo(preview.bgra.data(), preview.width, preview.height, srcStride, *pts, error);
-    }
+    // ISO-1: each selected source's OWN video is muxed by submitIsoVideo (mapped
+    // sourceId → per-source writer), not the composed program frame. Program is
+    // priority-1 and never regressed by ISO — the two paths are independent.
 
     ++session_.recordingVideoFrameCount;
     session_.recordingDurationMs = recordingClock_.lastVideoPts100ns() / 10'000;
@@ -592,9 +780,79 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       // which previously masked the drop entirely.
       session_.recordingWarning = "Media Foundation dropped program audio: " + error + ".";
     }
-    for (auto& iso : isoWriters_) {
-      iso.writeAudio(interleaved, frameCount, audioPts, error);
+    // ISO-1 is VIDEO-ONLY: the ISO writers have no audio stream (per-source audio
+    // stems are ISO-2). The old placeholder wrote the PROGRAM mix into every ISO
+    // — removed; an ISO must carry its own source, not the program proxy.
+    updateBytesWritten();
+  }
+
+  // ISO-1: mux each selected source's own video into its own MP4. Runs on the
+  // async encoder writer thread (never coreMutex / the audio worker), so the
+  // I420->NV12 interleave and disk WriteSample are off every hot path.
+  void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override {
+    if (!session_.active || isoWriters_.empty() || sources.empty()) {
+      return;
     }
+    const int fps = request_.fps > 0 ? request_.fps : kDefaultFps;
+    const int bitrate = request_.targetBitrateMbps > 0 ? request_.targetBitrateMbps : 18;
+    const std::string codec = request_.videoCodec.empty() ? "h264" : request_.videoCodec;
+    for (const auto& src : sources) {
+      auto idxIt = isoIndexBySource_.find(src.sourceId);
+      if (idxIt == isoIndexBySource_.end()) {
+        continue;  // frame for a source that is not selected — ignore
+      }
+      auto& entry = isoWriters_[idxIt->second];
+      if (entry.failed) {
+        continue;
+      }
+      const auto& frame = src.frame;
+      const bool haveI420 = frame.hasI420();
+      const bool haveBgra = frame.hasPixels();
+      if (!haveI420 && !haveBgra) {
+        continue;  // metadata-only frame this tick (source has not decoded yet)
+      }
+      // Per-(sourceId,frameId) dedup on the SHARED program epoch (spec 2c): the
+      // audio worker re-submits each source's latest frame every tick; each real
+      // decoded frame muxes exactly once, on the program timeline.
+      const auto pts = recordingClock_.videoPtsForSource(now100ns(), src.sourceId, frame.frameId);
+      if (!pts) {
+        continue;
+      }
+      std::string error;
+      if (!entry.opened) {
+        // Lazy open sized to this source's native frame (no scaling). Zoom I420
+        // → NV12 input; BGRA (capture, ISO-3) → RGB32 input.
+        const int w = haveI420 ? frame.i420Width : frame.pixelWidth;
+        const int h = haveI420 ? frame.i420Height : frame.pixelHeight;
+        const VideoInput input = haveI420 ? VideoInput::Nv12 : VideoInput::Bgra;
+        if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input) ||
+            !entry.writer.beginWriting(error)) {
+          entry.failed = true;
+          entry.warning = "ISO writer open failed for " + entry.displayName + " (" + src.sourceId +
+                          "): " + error + ".";
+          raiseIsoWarning(entry.warning);
+          continue;
+        }
+        entry.opened = true;
+      }
+      bool ok = false;
+      if (haveI420) {
+        i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
+        ok = entry.writer.writeVideoNv12(entry.nv12Scratch.data(), frame.i420Width, frame.i420Height,
+                                         *pts, error);
+      } else {
+        ok = entry.writer.writeVideo(frame.pixels->data(), frame.pixelWidth, frame.pixelHeight,
+                                     frame.pixelStride, *pts, error);
+      }
+      if (ok) {
+        ++entry.videoFrameCount;
+      } else if (entry.warning.empty()) {
+        entry.warning = "ISO writer dropped video for " + entry.displayName + " (" + src.sourceId +
+                        "): " + error + ".";
+        raiseIsoWarning(entry.warning);
+      }
+    }
+    refreshIsoStreams();
     updateBytesWritten();
   }
 
@@ -628,61 +886,111 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
                                   requestedFormat + " will be recorded as MP4.";
     }
 
-    const auto baseDir = resolveTargetDir();
-    const std::string suffix = "-" + std::to_string(now) + ".mp4";
+    // Resolve the base folder; a bad target folder is LOUD (spec §4 — the silent
+    // %TEMP% redirect is killed for ISO). `targetOk` is false when we fell back.
+    bool targetOk = false;
+    const auto baseDir = resolveTargetDir(targetOk);
 
-    const auto programPath = baseDir / (request_.filenamePrefix + "-program" + suffix);
+    // Per-session subfolder so a show's artifacts stay together (spec §5):
+    // <prefix>-<yyyymmdd-hhmmss>/Program.mp4 + ISO-NN-<SafeName>.mp4 + manifest.json.
+    isoWriters_.clear();
+    isoIndexBySource_.clear();
+    sessionDir_.clear();
+    sessionDirActive_ = false;
+    std::filesystem::path programPath;
+    {
+      std::error_code ec;
+      const auto candidate = baseDir / (request_.filenamePrefix + "-" + sessionTimestampFolder());
+      std::filesystem::create_directories(candidate, ec);
+      if (!ec && std::filesystem::is_directory(candidate)) {
+        sessionDir_ = candidate;
+        sessionDirActive_ = true;
+        programPath = candidate / "Program.mp4";
+      }
+    }
+    if (!sessionDirActive_) {
+      // Fall back to a flat program file in the base dir (program is priority-1 —
+      // it still records). Old-scheme name with a ms suffix to avoid collisions.
+      programPath = baseDir / (request_.filenamePrefix + "-program-" + std::to_string(now) + ".mp4");
+    }
+
+    // Select the ISO sources (prefer the display-name-bearing list; fall back to
+    // the legacy flat id list where the id doubles as the display name).
+    std::vector<IsoSourceSelection> isoSel = request_.isoSources;
+    if (isoSel.empty()) {
+      const auto& ids =
+          !request_.isoParticipantIds.empty() ? request_.isoParticipantIds : session_.isoParticipantIds;
+      for (const auto& id : ids) isoSel.push_back({id, id});
+    }
+
+    // LOUD refusal (spec §7): never write ISO files into the temp fallback or a
+    // non-creatable session folder. Program still records; ISO is disabled.
+    if (!isoSel.empty() && (!targetOk || !sessionDirActive_)) {
+      raiseIsoWarning(std::string("ISO recording disabled: ") +
+                      (!targetOk ? "the recording folder '" + request_.targetFolder +
+                                       "' is not writable (program is recording to a temporary folder)."
+                                 : "could not create the per-session subfolder under '" +
+                                       request_.targetFolder + "'."));
+      isoSel.clear();
+    }
+
     std::string error;
     if (!program_.open(programPath, width, height, fps, bitrate, codec, error)) {
       setRecordingFailure("Media Foundation could not open program MP4 writer", error);
       return;
     }
 
-    // ISO: one real sink writer per selected participant, driven by the same
-    // configured resolution/FPS/codec/bitrate.
-    isoWriters_.clear();
-    isoWriters_.resize(session_.isoParticipantIds.size());
-    for (size_t i = 0; i < session_.isoParticipantIds.size(); ++i) {
-      const auto isoPath =
-          baseDir / (request_.filenamePrefix + "-iso-" + session_.isoParticipantIds[i] + suffix);
-      std::string isoError;
-      if (!isoWriters_[i].open(isoPath, width, height, fps, bitrate, codec, isoError) &&
-          session_.recordingWarning.empty()) {
-        session_.recordingWarning = "Media Foundation could not open ISO MP4 writer for " +
-                                    session_.isoParticipantIds[i] + ": " + isoError + ".";
+    // ISO writers: pre-assign ISO-NN-<SafeName>.mp4 in selection order (the writer
+    // itself opens LAZILY at the source's first frame — no 0-byte tails, native
+    // size, NV12 for Zoom I420). #286 per-writer reset lives in Mp4Writer::open().
+    isoWriters_.reserve(isoSel.size());
+    std::map<std::string, int> nameCollisions;
+    for (size_t i = 0; i < isoSel.size(); ++i) {
+      IsoWriterEntry entry;
+      entry.sourceId = isoSel[i].sourceId;
+      entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
+      std::string safe = sanitizeForFilename(entry.displayName, entry.sourceId);
+      // Disambiguate duplicate sanitized names within a session.
+      if (int& seen = nameCollisions[safe]; ++seen > 1) {
+        safe += "-" + std::to_string(seen);
       }
+      char idxBuf[8];
+      std::snprintf(idxBuf, sizeof(idxBuf), "%02zu", i + 1);
+      entry.path = sessionDir_ / ("ISO-" + std::string(idxBuf) + "-" + safe + ".mp4");
+      isoIndexBySource_[entry.sourceId] = isoWriters_.size();
+      isoWriters_.push_back(std::move(entry));
     }
+    session_.recordingSessionDir = sessionDirActive_ ? sessionDir_.string() : baseDir.string();
 
-    // Configure the AAC audio stream UP FRONT. The MF sink writer rejects
+    // Configure the program AAC audio stream UP FRONT. The MF sink writer rejects
     // AddStream after BeginWriting with MF_E_INVALIDREQUEST (0xC00D36B2), so the
     // previous "add the audio stream lazily on first audio" flow killed every
     // recording ~1 second in as soon as real program audio arrived (found by the
     // 2026-07-02 alpha soak: 10-min recording produced a 1-frame MP4 with
     // "could not add program AAC stream: 0xC00D36B2"). The program audio tap is
     // canonically 48kHz stereo; submitAudio drops mismatched formats with a
-    // warning instead of failing the session.
+    // warning instead of failing the session. (ISO-1 ISO writers are video-only;
+    // per-source audio stems are ISO-2, and slot into the same up-front-stream
+    // discipline via Mp4Writer::open() then.)
     if (!program_.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) {
       setRecordingFailure("Media Foundation could not add program AAC stream", error);
       return;
     }
-    for (auto& iso : isoWriters_) {
-      std::string isoError;
-      iso.ensureAudioStream(2, 48000, request_.audioBitrateKbps, isoError);
-    }
 
-    // Begin writing only after BOTH streams are configured.
+    // Begin writing only after the stream is configured.
     if (!program_.beginWriting(error)) {
       setRecordingFailure("Media Foundation could not begin program writing", error);
       return;
     }
-    for (auto& iso : isoWriters_) {
-      std::string isoError;
-      iso.beginWriting(isoError);
-    }
 
     // Fresh shared-epoch clock per recording session: the epoch anchors to the
-    // first media submitted after this point (spec 4.3).
+    // first media submitted after this point (spec 4.3). One clock serves program
+    // + every ISO writer, so a clap on program lands at the same timeline position
+    // on every ISO.
     recordingClock_.reset();
+
+    writeManifest(programPath);
+    refreshIsoStreams();
 
     session_.recordingArtifactPath = programPath.string();
     session_.recordingWidth = program_.width();
@@ -695,24 +1003,85 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingMetadataValid = true;
   }
 
-  std::filesystem::path resolveTargetDir() {
-    // Prefer the requested target folder when it is usable; otherwise fall back
-    // to a temp directory so the writer always has a valid path on a dev rig.
+  // `targetOk` reports whether the REQUESTED folder was usable (true) or we fell
+  // back to temp (false). Program still records on a fallback (priority-1), but
+  // the caller makes the fallback LOUD and refuses ISO (spec §4/§7).
+  std::filesystem::path resolveTargetDir(bool& targetOk) {
+    targetOk = false;
     if (!request_.targetFolder.empty()) {
       std::error_code ec;
       std::filesystem::path target(request_.targetFolder);
       std::filesystem::create_directories(target, ec);
       if (!ec && std::filesystem::is_directory(target)) {
+        targetOk = true;
         return target;
       }
     }
     return std::filesystem::temp_directory_path();
   }
 
+  // Fold an ISO failure into the loud recording.warning channel (#286) without
+  // clobbering an existing program-audio drop note.
+  void raiseIsoWarning(const std::string& message) {
+    if (session_.recordingWarning.empty() ||
+        session_.recordingWarning.rfind("Media Foundation dropped program audio", 0) != 0) {
+      session_.recordingWarning = message;
+    }
+  }
+
+  // Rebuild the per-ISO-writer status vector the snapshot reads (spec §3/§6).
+  void refreshIsoStreams() {
+    session_.isoStreams.clear();
+    session_.isoStreams.reserve(isoWriters_.size());
+    for (const auto& iso : isoWriters_) {
+      IsoStreamStatus status;
+      status.sourceId = iso.sourceId;
+      status.displayName = iso.displayName;
+      status.path = iso.path.string();
+      status.videoFrameCount = iso.videoFrameCount;
+      status.bytesWritten = iso.writer.bytesWritten();
+      status.trackOpen = iso.opened && !iso.failed;
+      status.warning = iso.warning;
+      session_.isoStreams.push_back(std::move(status));
+    }
+  }
+
+  // Session manifest.json (spec §5): what the support bundle + any future
+  // auto-import reads. Written up-front from the planned entries.
+  void writeManifest(const std::filesystem::path& programPath) {
+    if (!sessionDirActive_) {
+      session_.recordingManifestPath.clear();
+      return;
+    }
+    const auto manifestPath = sessionDir_ / "manifest.json";
+    std::ofstream out(manifestPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      raiseIsoWarning("Could not write recording manifest to " + manifestPath.string() + ".");
+      return;
+    }
+    const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+    out << "{\n";
+    out << "  \"sessionId\": \"" << jsonEscape(session_.recordingSessionId) << "\",\n";
+    out << "  \"epochMs\": " << epochMs << ",\n";
+    out << "  \"entries\": [\n";
+    out << "    { \"sourceId\": \"program\", \"name\": \"Program\", \"path\": \""
+        << jsonEscape(programPath.filename().string()) << "\", \"kind\": \"program\" }";
+    for (const auto& iso : isoWriters_) {
+      out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
+          << jsonEscape(iso.displayName) << "\", \"path\": \""
+          << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\" }";
+    }
+    out << "\n  ]\n}\n";
+    out.close();
+    session_.recordingManifestPath = manifestPath.string();
+  }
+
   void updateBytesWritten() {
     int64_t total = program_.bytesWritten();
     for (const auto& iso : isoWriters_) {
-      total += iso.bytesWritten();
+      total += iso.writer.bytesWritten();
     }
     session_.recordingBytesWritten = total;
   }
@@ -727,14 +1096,19 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   void closeWriters() {
     program_.finalize();
+    // Each ISO writer finalizes INDEPENDENTLY (its own moov) so a source that
+    // dropped mid-show still leaves a playable file, no 0-byte tails (spec §4).
     for (auto& iso : isoWriters_) {
-      iso.finalize();
+      iso.writer.finalize();
     }
+    // Refresh the on-disk sizes into the ISO status before clearing.
+    refreshIsoStreams();
     if (session_.recordingWarning.empty()) {
       // Surface the finalized on-disk size of the program file.
       updateBytesWritten();
     }
     isoWriters_.clear();
+    isoIndexBySource_.clear();
   }
 
   void setRecordingFailure(const std::string& message, const std::string& detail) {
@@ -743,15 +1117,35 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingStatus = "warning";
     program_.finalize();
     for (auto& iso : isoWriters_) {
-      iso.finalize();
+      iso.writer.finalize();
     }
     isoWriters_.clear();
+    isoIndexBySource_.clear();
+    session_.isoStreams.clear();
   }
+
+  // One ISO source's writer + its pre-assigned on-disk path (assigned at
+  // recording start; the writer opens LAZILY at the source's first frame, sized
+  // to that frame — no scaling, no 0-byte files for sources that never deliver).
+  struct IsoWriterEntry {
+    std::string sourceId;
+    std::string displayName;
+    std::filesystem::path path;
+    Mp4Writer writer;
+    bool opened = false;
+    bool failed = false;
+    int64_t videoFrameCount = 0;
+    std::string warning;
+    std::vector<uint8_t> nv12Scratch;  // reused I420->NV12 buffer (writer thread)
+  };
 
   OutputSession session_;
   RecordingSessionRequest request_;
   Mp4Writer program_;
-  std::vector<Mp4Writer> isoWriters_;
+  std::vector<IsoWriterEntry> isoWriters_;
+  std::map<std::string, size_t> isoIndexBySource_;
+  std::filesystem::path sessionDir_;
+  bool sessionDirActive_ = false;
   // Shared-epoch A/V PTS clock (spec 4.3) + the steady-clock origin its 100ns
   // tick count is measured from. One clock serves program + ISO writers (they
   // mux the same frames on the same timeline).

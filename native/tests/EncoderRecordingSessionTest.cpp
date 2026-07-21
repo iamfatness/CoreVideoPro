@@ -340,6 +340,47 @@ TEST(RecordingPtsClock, TenSimulatedSecondsStayAligned) {
   EXPECT_TRUE(lastVideo >= 9'900 * kMs) << "video timeline ended at " << lastVideo / kMs << "ms";
 }
 
+// --- ISO-1: per-(sourceId,frameId) video dedup on the SHARED epoch ----------
+
+TEST(RecordingPtsClock, IsoVideoDedupsPerSourceOnSharedEpoch) {
+  corevideo::modules::RecordingPtsClock clock;
+
+  // Program frame at t=0 anchors the shared epoch.
+  ASSERT_TRUE(clock.videoPts(0, 1).has_value());
+
+  // Two ISO sources advance on their OWN frameIds. Both share the epoch, so a
+  // clap on program lands at the same timeline position on every ISO.
+  const auto a0 = clock.videoPtsForSource(10 * kMs, "zoom:A", 100);
+  ASSERT_TRUE(a0.has_value());
+  EXPECT_EQ(*a0, 10 * kMs);  // wall time on the shared epoch, not 0
+
+  // Source B is INDEPENDENT of A — its dedup + monotonic pts are per-source, so
+  // its first frame carries the shared-epoch wall time with no cross-source bump.
+  const auto b0 = clock.videoPtsForSource(10 * kMs, "zoom:B", 500);
+  ASSERT_TRUE(b0.has_value());
+  EXPECT_EQ(*b0, 10 * kMs);
+
+  // Re-submitting the SAME (source, frameId) each tick muxes once per source.
+  EXPECT_FALSE(clock.videoPtsForSource(30 * kMs, "zoom:A", 100).has_value());
+  EXPECT_FALSE(clock.videoPtsForSource(30 * kMs, "zoom:B", 500).has_value());
+
+  // A fresh frameId for A advances A only; B's dedup is independent.
+  const auto a1 = clock.videoPtsForSource(50 * kMs, "zoom:A", 101);
+  ASSERT_TRUE(a1.has_value());
+  EXPECT_EQ(*a1, 50 * kMs);
+  EXPECT_FALSE(clock.videoPtsForSource(50 * kMs, "zoom:B", 500).has_value());
+}
+
+TEST(RecordingPtsClock, IsoVideoStaysStrictlyMonotonicPerSource) {
+  corevideo::modules::RecordingPtsClock clock;
+  // Two frames of the same source in the SAME 100ns instant must not collide.
+  const auto first = clock.videoPtsForSource(5 * kMs, "zoom:A", 1);
+  const auto second = clock.videoPtsForSource(5 * kMs, "zoom:A", 2);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  EXPECT_GT(*second, *first);
+}
+
 // ---------------------------------------------------------------------------
 // Regression: the 2026-07-13 alpha-blocking zero-audio-recording bug.
 //
@@ -351,6 +392,7 @@ TEST(RecordingPtsClock, TenSimulatedSecondsStayAligned) {
 // every audio WriteSample failed with MF_E_INVALIDSTREAMNUMBER (0xC00D36B3) —
 // a video-only MP4 while the master bus carried live program audio.
 // ---------------------------------------------------------------------------
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -413,6 +455,144 @@ TEST(EncoderRecordingSession, MediaFoundationRestartedSessionStillMuxesAudio) {
   encoder->stopRecording();
   encoder.reset();
   fs::remove_all(targetDir, cleanupError);
+}
+
+namespace {
+// Build a VideoFrame carrying a synthetic I420 payload (a flat mid-gray field),
+// keyed by `sourceId`/`frameId` — the shape the ISO gather hands to the encoder.
+corevideo::modules::IsoSourceVideoFrame makeIsoI420(const std::string& sourceId, int w, int h,
+                                                    int64_t frameId, uint8_t luma) {
+  corevideo::modules::IsoSourceVideoFrame iso;
+  iso.sourceId = sourceId;
+  auto buf = std::make_shared<std::vector<uint8_t>>();
+  const size_t ySize = static_cast<size_t>(w) * h;
+  buf->assign(ySize + ySize / 2, 128);            // neutral chroma
+  std::fill(buf->begin(), buf->begin() + ySize, luma);  // flat luma
+  iso.frame.participantId = sourceId;
+  iso.frame.i420 = buf;
+  iso.frame.i420Width = w;
+  iso.frame.i420Height = h;
+  iso.frame.frameId = frameId;
+  return iso;
+}
+}  // namespace
+
+// ISO-1: N per-source ISO writers open with their OWN NV12 video, finalize
+// independently (no 0-byte tails), and PROGRAM is never regressed (it still muxes
+// A+V with ISO writers present). Exercises the real Media Foundation sink.
+TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayableFiles) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable — nothing to test.
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso1-regression";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso1-show";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 4;
+  // Two ISO sources with roster names → ISO-01-Alice.mp4 / ISO-02-Bob-Jones.mp4.
+  request.isoSources = {{"zoom:A", "Alice"}, {"zoom:B", "Bob Jones"}};
+  encoder->configureRecording(request);
+
+  // #286 shape: start() runs twice (arm, then restart) — every ISO writer's
+  // per-session state must reset in Mp4Writer::open().
+  encoder->start({"recording"}, {});
+  encoder->start({"recording"}, {});
+
+  // Program A+V (priority-1, must never regress).
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> pcm(static_cast<size_t>(960) * 2, 0.2f);
+
+  for (int i = 0; i < 4; ++i) {
+    frame.frameNumber = i + 1;
+    encoder->submit(frame);
+    // Each ISO source advances its own frameId; re-submitting the same id twice
+    // must dedup (proves the per-source clock).
+    encoder->submitIsoVideo({makeIsoI420("zoom:A", 320, 240, i, 90),
+                             makeIsoI420("zoom:B", 640, 360, i, 200)});
+    encoder->submitIsoVideo({makeIsoI420("zoom:A", 320, 240, i, 90)});  // duplicate frameId
+    encoder->submitAudio(pcm.data(), 960, 2, 48000);
+  }
+
+  const auto session = encoder->session();
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  // Program not regressed: A+V both present.
+  EXPECT_GT(session.recordingVideoFrameCount, 0);
+  EXPECT_GT(session.recordingAudioPacketCount, 0) << session.recordingWarning;
+  // Two ISO writers, each with its own video and no cross-source contamination.
+  ASSERT_EQ(session.isoStreams.size(), 2u);
+  for (const auto& iso : session.isoStreams) {
+    EXPECT_TRUE(iso.trackOpen) << iso.sourceId << ": " << iso.warning;
+    EXPECT_EQ(iso.videoFrameCount, 4) << iso.sourceId;  // 4 distinct frames, dupes deduped
+    EXPECT_TRUE(iso.warning.empty()) << iso.warning;
+    EXPECT_EQ(iso.audioSampleCount, 0);  // ISO-1 video-only
+  }
+  EXPECT_EQ(session.isoStreams[0].displayName, "Alice");
+  EXPECT_EQ(session.isoStreams[1].displayName, "Bob Jones");
+
+  encoder->stopRecording();
+
+  // Files are finalized + playable: program + two ISOs + manifest, all non-zero.
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path dir(session.recordingSessionDir);
+  EXPECT_TRUE(fs::exists(dir / "Program.mp4"));
+  EXPECT_TRUE(fs::exists(dir / "ISO-01-Alice.mp4"));
+  EXPECT_TRUE(fs::exists(dir / "ISO-02-Bob-Jones.mp4"));
+  EXPECT_TRUE(fs::exists(dir / "manifest.json"));
+  EXPECT_GT(fs::file_size(dir / "ISO-01-Alice.mp4", ec), 0u);
+  EXPECT_GT(fs::file_size(dir / "ISO-02-Bob-Jones.mp4", ec), 0u);
+  EXPECT_FALSE(session.recordingManifestPath.empty());
+
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+// ISO-1 loud-failure: a bad/uncreatable target folder must NOT silently redirect
+// ISO files to %TEMP% — it raises recording.warning and refuses ISO, while the
+// program keeps recording (priority-1).
+TEST(EncoderRecordingSession, MediaFoundationIsoRefusesBadFolderLoudly) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;
+  }
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso1-badfolder";
+  // A path that cannot be created (a NUL device style / reserved path on Windows).
+  request.targetFolder = "\\\\?\\Z:\\nonexistent-volume\\corevideo-iso";
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.width = 320;
+  request.height = 240;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.isoSources = {{"zoom:A", "Alice"}};
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  const auto session = encoder->session();
+  // ISO was refused loudly (a warning is set) and no ISO writer is armed.
+  EXPECT_FALSE(session.recordingWarning.empty());
+  EXPECT_TRUE(session.isoStreams.empty());
+  encoder->stopRecording();
+  encoder.reset();
 }
 
 #endif  // !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER

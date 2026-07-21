@@ -63,6 +63,19 @@ struct VideoFrame {
   }
 };
 
+// One selected ISO source's video for a single encoder tick (ISO-1). Carries a
+// zero-copy VideoFrame (the frame's I420/BGRA payload is a shared_ptr, so this
+// whole struct is cheap to copy across the coreMutex → audio worker → async
+// encoder thread hops — NO pixel copy under any lock). `sourceId` is the
+// canonical ISO id (`zoom:<pid>` today; `capture:<id>` in ISO-3); `displayName`
+// is informational (the authoritative roster name + file path are assigned at
+// recording start on the RecordingSessionRequest).
+struct IsoSourceVideoFrame {
+  std::string sourceId;
+  std::string displayName;
+  VideoFrame frame;
+};
+
 struct AudioFrame {
   std::string participantId;
   int sampleRate = 48000;
@@ -309,10 +322,33 @@ struct CompositorRenderPlan {
   bool fullProgramReadback = false;
 };
 
+// Per-ISO-writer health (ISO-1). One node per selected ISO source, surfaced in
+// the recording snapshot streams[] and folded into recording.warning so a
+// video-only-broken ISO is as loud as a video-only program was (#286). Populated
+// by the Media Foundation sink from its per-source writers.
+struct IsoStreamStatus {
+  std::string sourceId;
+  std::string displayName;
+  std::string path;
+  std::string kind = "iso";
+  int64_t videoFrameCount = 0;
+  int64_t audioSampleCount = 0;  // 0 until ISO-2 muxes per-source audio
+  int64_t bytesWritten = 0;
+  bool trackOpen = false;        // the writer opened + began writing its video track
+  std::string warning;           // per-source open/write failure (empty = healthy)
+};
+
 struct OutputSession {
   bool active = false;
   std::vector<std::string> destinations;
   std::vector<std::string> isoParticipantIds;
+  // Per-session subfolder + manifest (ISO-1 folder scheme, spec §5). Empty for
+  // the stub / non-MF sinks.
+  std::string recordingSessionDir;
+  std::string recordingManifestPath;
+  // Real per-ISO-writer health from the Media Foundation sink (empty on the
+  // stub, where the snapshot synthesizes ISO nodes from the selected ids).
+  std::vector<IsoStreamStatus> isoStreams;
   int64_t encodedFrameCount = 0;
   std::string encoderName = "software-counting";
   std::string codec = "h264";
@@ -345,13 +381,25 @@ struct OutputSession {
   std::string recordingError;
 };
 
+// One selected ISO source at recording start: the canonical id + the roster
+// display name used to sanitize the on-disk file name (spec §5). Resolved in
+// MediaCore (roster lookup) so post-production sees `ISO-01-<Name>.mp4`, not a
+// per-meeting participant id.
+struct IsoSourceSelection {
+  std::string sourceId;      // `zoom:<pid>` (ISO-1) or `capture:<id>` (ISO-3)
+  std::string displayName;   // roster / device name (sanitized at file-open)
+};
+
 struct RecordingSessionRequest {
   std::string sessionId = "native-recording-session";
   std::string targetFolder = "Recordings/CoreVideo Pro/native-core";
   std::string filenamePrefix = "program";
   std::string format = "mp4";
   std::string quality = "high";
+  // Legacy flat id list (back-compat: bare participant ids). Prefer isoSources
+  // below, which carries display names for the ISO-1 folder/name scheme.
   std::vector<std::string> isoParticipantIds;
+  std::vector<IsoSourceSelection> isoSources;
   int width = 1920;
   int height = 1080;
   int fps = 30;
@@ -634,6 +682,12 @@ class IEncoderSink {
   virtual void configureRecording(const RecordingSessionRequest& request) = 0;
   virtual OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) = 0;
   virtual void submit(const ProgramFrame& frame) = 0;
+  // ISO-1: mux each selected source's OWN video into its own MP4 (mapped
+  // sourceId → per-source writer), alongside the program submit above. The
+  // frames carry zero-copy shared_ptr payloads (I420 for Zoom → NV12 encoder
+  // input, no CPU color-convert under any lock; any convert happens on the
+  // async encoder thread). Default no-op keeps non-recording / stub sinks valid.
+  virtual void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) { (void)sources; }
   // Mux real program-audio PCM alongside the video frames. `interleaved` holds
   // `frameCount` sample-frames of `channels` float samples in [-1, 1] at
   // `sampleRate` Hz. Default no-op so encoders that don't yet handle audio stay
