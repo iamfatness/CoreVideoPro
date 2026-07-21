@@ -196,8 +196,18 @@ auto-import reads.
   `RecordingPtsClock::isoAudioAdvance` wall-anchored silence-fill; up-front per-ISO AAC
   stream (#286) at the lazy writer open; `audioSamples`/`hasAudio` snapshot + manifest;
   `validate-iso-record.mjs` Demo E leg (ffprobe A+V + head-clap alignment 0.0 ms).
-- **ISO-3 — UVC/capture sources.** `capture:<id>` video (BGRA path) + capture-device PCM;
-  `isoSourceIds` accepts capture ids. Broadens to the host camera / screen share.
+- **ISO-3 — UVC/capture sources.** _(DELIVERED 2026-07-21.)_ `capture:<id>` video (BGRA
+  writer path, mixed with Zoom NV12 in one session) + capture-device PCM; `isoSourceIds`
+  accepts capture ids across all three mirrors; snapshot emits canonical `isoSourceIds`;
+  planner gains a `capture` source. **Audio-pairing rule (owner-confirmed against the
+  codebase):** a capture ISO carries audio ONLY when the operator paired an audio input to
+  that capture device (`sync-capture-audio-sources` → `capture:<captureDeviceId>` PCM keyed
+  to the same id as the video); a pure camera → VIDEO-ONLY ISO (no all-silence AAC track),
+  via `IsoSourceSelection.hasAudio` / `MediaCore::isoSourceHasAudio`. Capture display names
+  resolve from the enumerated device. Stall interaction: a stalled capture source
+  holds/finalizes gracefully (dedup on held frameId → no churn), loud only on real failure.
+  **Harness gap:** the fake engine is Zoom-only, so capture ISO is covered by real-MF unit
+  tests + synthetic capture frames and is rig-verified only for a live camera.
 - **ISO-4 — polish.** Disk pre-flight gate, support-bundle ISO health, the Show-mode UI
   switch + per-source toggles, quickstart note.
 
