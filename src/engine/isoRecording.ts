@@ -4,7 +4,12 @@
  * constraints, and builds the output folder structure for a recording session.
  */
 
-export type IsoTrackSource = "participant" | "program-mix" | "screen-share" | "ambient";
+export type IsoTrackSource =
+  | "participant"
+  | "capture"
+  | "program-mix"
+  | "screen-share"
+  | "ambient";
 
 export type IsoResolutionTier = "1080p" | "720p" | "480p";
 
@@ -13,6 +18,11 @@ export type IsoTrack = {
   source: IsoTrackSource;
   /** Participant id when source is "participant" */
   participantId?: string;
+  /**
+   * Canonical ISO source id fed to the core's `isoSourceIds`
+   * (`zoom:<pid>` for a participant, `capture:<id>` for a capture device).
+   */
+  sourceId?: string;
   label: string;
   /** Estimated video bitrate in Mbps */
   estimatedBitrateMbps: number;
@@ -34,6 +44,13 @@ export type IsoRecordingPlan = {
 export type IsoRecordingOptions = {
   /** Include a program mix (down-mix of all participants) track */
   includeProgramMix?: boolean;
+  /**
+   * Host capture devices (UVC cameras, screen/window capture) to ISO-record
+   * (ISO-3). Each becomes a `capture:<id>` track after the participant tracks,
+   * in selection order. `id` is the capture device id (NOT scheme-prefixed);
+   * `name` is the device label used for the on-disk `ISO-NN-<name>.mp4`.
+   */
+  captureSources?: Array<{ id: string; name: string }>;
   /** Include a screen-share ISO track when a screen share is active */
   includeScreenShare?: boolean;
   /** Resolution tier to record participant tracks at */
@@ -60,6 +77,8 @@ export function estimateIsoTrackBitrateMbps(
   if (source === "program-mix") return BITRATE_BY_TIER[resolution] * 1.5;
   if (source === "screen-share") return 8; // screen share needs higher bitrate for text clarity
   if (source === "ambient") return 1;
+  // A capture device (host camera / screen) records at the same tier as a
+  // participant — it is native-resolution BGRA, not a composited proxy.
   return BITRATE_BY_TIER[resolution];
 }
 
@@ -70,6 +89,8 @@ export function isoTrackLabel(
   switch (source) {
     case "participant":
       return participantName ?? "Participant";
+    case "capture":
+      return participantName ?? "Capture";
     case "program-mix":
       return "Program Mix";
     case "screen-share":
@@ -89,6 +110,7 @@ export function planIsoRecording(
 ): IsoRecordingPlan {
   const {
     includeProgramMix = true,
+    captureSources = [],
     includeScreenShare = false,
     participantResolution = "1080p",
     sessionName = "session",
@@ -111,8 +133,23 @@ export function planIsoRecording(
       trackIndex: i,
       source: "participant",
       participantId: p.id,
+      sourceId: `zoom:${p.id}`,
       label: isoTrackLabel("participant", p.name),
       estimatedBitrateMbps: estimateIsoTrackBitrateMbps("participant", participantResolution),
+      resolutionTier: participantResolution,
+    });
+  }
+
+  // Capture-device tracks (ISO-3: host camera / screen / window capture). Each
+  // rides a `capture:<id>` source id; the audio-pairing decision (video-only vs
+  // muxed audio) is made core-side from the operator's capture-audio pairing.
+  for (const c of captureSources) {
+    tracks.push({
+      trackIndex: tracks.length,
+      source: "capture",
+      sourceId: `capture:${c.id}`,
+      label: isoTrackLabel("capture", c.name),
+      estimatedBitrateMbps: estimateIsoTrackBitrateMbps("capture", participantResolution),
       resolutionTier: participantResolution,
     });
   }

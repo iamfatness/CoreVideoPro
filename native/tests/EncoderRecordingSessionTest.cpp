@@ -381,6 +381,32 @@ TEST(RecordingPtsClock, IsoVideoStaysStrictlyMonotonicPerSource) {
   EXPECT_GT(*second, *first);
 }
 
+// ISO-3: per-(sourceId,frameId) dedup is scheme-agnostic — a capture source
+// (`capture:<id>`, its own advancing frameId) dedups independently of a Zoom
+// source, both on the ONE shared program epoch. This is the capture leg of the
+// same per-source clock ISO-1 proved for Zoom (the fake engine is Zoom-only, so
+// this pure test is the capture-frameId coverage; §10 harness-gap note).
+TEST(RecordingPtsClock, IsoVideoDedupsCaptureSourceIndependentlyOfZoom) {
+  corevideo::modules::RecordingPtsClock clock;
+  ASSERT_TRUE(clock.videoPts(0, 1).has_value());  // program anchors the epoch
+
+  const auto cam0 = clock.videoPtsForSource(10 * kMs, "capture:cam0", 7);
+  const auto zoomA = clock.videoPtsForSource(10 * kMs, "zoom:A", 7);  // same frameId, other src
+  ASSERT_TRUE(cam0.has_value());
+  ASSERT_TRUE(zoomA.has_value());
+  EXPECT_EQ(*cam0, 10 * kMs);   // shared-epoch wall time
+  EXPECT_EQ(*zoomA, 10 * kMs);  // no cross-source collision despite equal frameId
+
+  // The capture reader holds its last frame on a stall (CaptureReaderStallPolicy):
+  // the same frameId re-submitted every tick muxes exactly once — no churn.
+  EXPECT_FALSE(clock.videoPtsForSource(30 * kMs, "capture:cam0", 7).has_value());
+  EXPECT_FALSE(clock.videoPtsForSource(50 * kMs, "capture:cam0", 7).has_value());
+  // A fresh capture frameId advances capture only.
+  const auto cam1 = clock.videoPtsForSource(70 * kMs, "capture:cam0", 8);
+  ASSERT_TRUE(cam1.has_value());
+  EXPECT_EQ(*cam1, 70 * kMs);
+}
+
 // --- ISO-2: per-source raw-stem audio silence-fill on the SHARED epoch -------
 //
 // THE key correctness test (spec §10): a Zoom guest's isolate_audio is gated —
@@ -786,6 +812,183 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
   fs::remove_all(targetDir, ec);
 }
 
+namespace {
+// Build a VideoFrame carrying a synthetic BGRA payload (a flat color field),
+// keyed by `sourceId`/`frameId` — the shape a CAPTURE source (UVC camera /
+// screen / browser) hands the ISO gather. Capture frames are BGRA on the CPU
+// (unlike Zoom's I420), so the writer opens with the RGB32 input path.
+corevideo::modules::IsoSourceVideoFrame makeIsoBgra(const std::string& sourceId, int w, int h,
+                                                    int64_t frameId, uint8_t value) {
+  corevideo::modules::IsoSourceVideoFrame iso;
+  iso.sourceId = sourceId;
+  auto buf = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(w) * h * 4, value);
+  iso.frame.participantId = sourceId;
+  iso.frame.pixels = buf;
+  iso.frame.pixelWidth = w;
+  iso.frame.pixelHeight = h;
+  iso.frame.pixelStride = w * 4;
+  iso.frame.frameId = frameId;
+  return iso;
+}
+}  // namespace
+
+// ISO-3: a CAPTURE (BGRA) ISO writer produces a playable file, AND a mixed
+// session — zoom (NV12) + capture (BGRA) writers side by side — muxes both with
+// the correct per-source input type, program A+V is never regressed, and a
+// paired capture source carries its own audio stem.
+TEST(EncoderRecordingSession, MediaFoundationCaptureBgraIsoMixedWithZoomNv12) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso3-capture";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso3-show";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 4;
+  // A Zoom participant (NV12, has audio) + a paired capture camera (BGRA, has
+  // audio — Elgato-class). hasAudio=true on both → each ISO is self-contained A+V.
+  request.isoSources = {{"zoom:A", "Alice", true}, {"capture:cam0", "Logitech Cam", true}};
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  encoder->start({"recording"}, {});  // #286 double-start
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+
+  int64_t camFrames = 0;
+  for (int i = 0; i < 8; ++i) {
+    frame.frameNumber = i + 1;
+    encoder->submit(frame);
+    // Zoom source → NV12 path; capture source → BGRA path. Both in ONE submit.
+    encoder->submitIsoVideo({makeIsoI420("zoom:A", 320, 240, i, 90),
+                             makeIsoBgra("capture:cam0", 640, 360, i, 0x80)});
+    encoder->submitAudio(programPcm.data(), 960, 2, 48000);
+    encoder->submitIsoAudio({makeIsoTone("zoom:A", 960, 1, 220.0, camFrames),
+                             makeIsoTone("capture:cam0", 960, 2, 330.0, camFrames)});
+    camFrames += 960;
+  }
+
+  const auto session = encoder->session();
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  // PROGRAM NOT REGRESSED with a capture ISO enabled.
+  EXPECT_GT(session.recordingVideoFrameCount, 0);
+  EXPECT_GT(session.recordingAudioPacketCount, 0) << session.recordingWarning;
+  ASSERT_EQ(session.isoStreams.size(), 2u);
+  for (const auto& iso : session.isoStreams) {
+    EXPECT_TRUE(iso.trackOpen) << iso.sourceId << ": " << iso.warning;
+    EXPECT_TRUE(iso.warning.empty()) << iso.warning;
+    EXPECT_EQ(iso.videoFrameCount, 8) << iso.sourceId;
+    EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId << " lost its paired audio";
+  }
+  EXPECT_EQ(session.isoStreams[1].sourceId, "capture:cam0");
+  EXPECT_EQ(session.isoStreams[1].displayName, "Logitech Cam");
+
+  encoder->stopRecording();
+
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path dir(session.recordingSessionDir);
+  const auto camPath = dir / "ISO-02-Logitech-Cam.mp4";
+  EXPECT_TRUE(fs::exists(dir / "ISO-01-Alice.mp4"));
+  EXPECT_TRUE(fs::exists(camPath));
+  EXPECT_GT(fs::file_size(camPath, ec), 0u);
+  EXPECT_TRUE(fs::exists(dir / "Program.mp4"));
+
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+// ISO-3 pairing rule: a PURE-VIDEO capture source (a camera with no paired
+// audio, hasAudio=false) produces a VIDEO-ONLY ISO — its writer opens WITHOUT an
+// AAC stream, so even if the audio worker submits an (empty) stem the file stays
+// honestly video-only (no all-silence track), and program is never regressed.
+TEST(EncoderRecordingSession, MediaFoundationVideoOnlyCaptureIsoHasNoAudioTrack) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso3-videoonly";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso3-videoonly";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 4;
+  // A camera with NO paired audio → hasAudio=false → video-only ISO.
+  request.isoSources = {{"capture:cam0", "Webcam", false}};
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+
+  for (int i = 0; i < 6; ++i) {
+    frame.frameNumber = i + 1;
+    encoder->submit(frame);
+    encoder->submitIsoVideo({makeIsoBgra("capture:cam0", 640, 360, i, 0x70)});
+    encoder->submitAudio(programPcm.data(), 960, 2, 48000);
+    // The worker submits an EMPTY stem for a video-only capture source; the sink
+    // must skip it (no audio stream), never silence-fill an all-silence track.
+    corevideo::modules::IsoSourceAudio empty;
+    empty.sourceId = "capture:cam0";
+    empty.sampleRate = 48000;
+    encoder->submitIsoAudio({empty});
+  }
+
+  const auto session = encoder->session();
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  EXPECT_GT(session.recordingVideoFrameCount, 0);      // program video
+  EXPECT_GT(session.recordingAudioPacketCount, 0);     // program audio (not regressed)
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  const auto& iso = session.isoStreams[0];
+  EXPECT_TRUE(iso.trackOpen) << iso.warning;
+  EXPECT_EQ(iso.videoFrameCount, 6);
+  EXPECT_EQ(iso.audioSampleCount, 0) << "a pure-video capture ISO must have NO audio track";
+
+  encoder->stopRecording();
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path dir(session.recordingSessionDir);
+  const auto camPath = dir / "ISO-01-Webcam.mp4";
+  EXPECT_TRUE(fs::exists(camPath));
+  EXPECT_GT(fs::file_size(camPath, ec), 0u);
+
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
 #endif  // !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
 namespace {
@@ -813,6 +1016,86 @@ class WarningEncoderSink final : public corevideo::modules::IEncoderSink {
 };
 
 }  // namespace
+
+namespace {
+// Records the RecordingSessionRequest MediaCore builds, so a test can assert the
+// ISO-3 source resolution (display name + audio-pairing hasAudio per source).
+class RequestCapturingSink final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    lastRequest = request;
+    session_.recordingSessionId = request.sessionId;
+  }
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    session_.active = true;
+    session_.destinations = destinations;
+    session_.recordingStatus = "recording";
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override {}
+  corevideo::modules::OutputSession session() const override { return session_; }
+
+  corevideo::modules::RecordingSessionRequest lastRequest;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
+}  // namespace
+
+// ISO-3: MediaCore resolves each ISO source's display name AND its audio-pairing
+// decision. A Zoom participant always has audio; a capture device has audio ONLY
+// when the operator paired an audio input to it (sync-capture-audio-sources) —
+// otherwise it is a VIDEO-ONLY capture ISO. Capture display names come from the
+// enumerated device (post sees ISO-NN-<CameraName>.mp4, not a hashed id).
+TEST(EncoderRecordingSession, MediaCoreResolvesCaptureIsoDisplayNamesAndAudioPairing) {
+  auto modules = corevideo::modules::createStubModules();
+  auto sink = std::make_unique<RequestCapturingSink>();
+  auto* sinkPtr = sink.get();
+  modules.encoder = std::move(sink);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      // Pair a real audio input to the DeckLink capture device (Elgato-class);
+      // leave the AJA device unpaired (a pure-video capture card).
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources", corevideo::rpc::Json::Array{
+                          corevideo::rpc::Json::Object{
+                              {"captureDeviceId", "decklink-1"},
+                              {"audioDeviceId", "board-feed-1"},
+                              {"audioDeviceName", "Board Feed"},
+                              {"audioSourceKind", "wasapi-input"},
+                          },
+                      }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "set-recording-targets"},
+          {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+          {"filenamePrefix", "iso3"},
+          {"format", "mp4"},
+          {"isoSourceIds", corevideo::rpc::Json::Array{"zoom:host", "capture:decklink-1",
+                                                       "capture:aja-io-1"}},
+      },
+  });
+
+  const auto& req = sinkPtr->lastRequest;
+  ASSERT_EQ(req.isoSources.size(), 3u);
+
+  // [0] Zoom participant — always has its own isolate_audio stem.
+  EXPECT_EQ(req.isoSources[0].sourceId, "zoom:host");
+  EXPECT_TRUE(req.isoSources[0].hasAudio);
+
+  // [1] Paired capture device — display name from enumerate, audio muxed.
+  EXPECT_EQ(req.isoSources[1].sourceId, "capture:decklink-1");
+  EXPECT_EQ(req.isoSources[1].displayName, "DeckLink Mini Recorder 4K");
+  EXPECT_TRUE(req.isoSources[1].hasAudio) << "a capture device with paired audio must mux audio";
+
+  // [2] Unpaired capture device — VIDEO-ONLY ISO (no all-silence audio track).
+  EXPECT_EQ(req.isoSources[2].sourceId, "capture:aja-io-1");
+  EXPECT_EQ(req.isoSources[2].displayName, "AJA Io 4K Plus");
+  EXPECT_FALSE(req.isoSources[2].hasAudio) << "a pure-video capture source must be video-only";
+}
 
 TEST(EncoderRecordingSession, EncoderRecordingWarningSurfacesInSnapshotRecordingSection) {
   auto modules = corevideo::modules::createStubModules();
