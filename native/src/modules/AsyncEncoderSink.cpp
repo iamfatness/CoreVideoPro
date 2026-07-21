@@ -61,9 +61,16 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
     // Drop-to-latest / bounded backlog: when the pending count for this item's
     // media kind is at capacity, drop the OLDEST pending item of that kind so we
     // keep flowing the freshest frames rather than blocking or growing unbounded.
-    if (item.kind == Kind::Video || item.kind == Kind::IsoVideo || item.kind == Kind::Audio) {
+    if (item.kind == Kind::Video || item.kind == Kind::IsoVideo || item.kind == Kind::Audio ||
+        item.kind == Kind::IsoAudio) {
       const Kind kind = item.kind;
-      const size_t cap = kind == Kind::Audio ? state_->maxAudioQueue : state_->maxVideoQueue;
+      // ISO audio drops-to-latest on the AUDIO budget but with its OWN pending
+      // accounting (a separate Kind) so it can NEVER evict a program-audio
+      // packet — program is priority-1 (spec §9). A dropped ISO-audio tick
+      // becomes silence in the stem (the next tick's wall-anchored silence-fill
+      // covers the gap), the timeline stays aligned, program is untouched.
+      const size_t cap =
+          (kind == Kind::Audio || kind == Kind::IsoAudio) ? state_->maxAudioQueue : state_->maxVideoQueue;
       size_t pending = 0;
       for (const auto& queued : state_->queue) {
         if (queued.kind == kind) {
@@ -74,7 +81,7 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
           if (it->kind == kind) {
             state_->queue.erase(it);
-            if (kind == Kind::Audio) {
+            if (kind == Kind::Audio || kind == Kind::IsoAudio) {
               state_->droppedAudio.fetch_add(1);
             } else {
               // Video + IsoVideo both count as dropped video frames (ISO frames
@@ -153,6 +160,19 @@ void AsyncEncoderSink::submitIsoVideo(const std::vector<IsoSourceVideoFrame>& so
   Item item;
   item.kind = Kind::IsoVideo;
   item.isoSources = sources;
+  enqueue(std::move(item));
+}
+
+void AsyncEncoderSink::submitIsoAudio(const std::vector<IsoSourceAudio>& sources) {
+  if (!state_->active.load() || sources.empty()) {
+    return;
+  }
+  // The PCM vectors are small (~one 20ms tick per source) and copied by value —
+  // safe to hand across to the writer thread. Drops-to-latest on the audio
+  // budget with its OWN accounting (never evicts program audio).
+  Item item;
+  item.kind = Kind::IsoAudio;
+  item.isoAudioSources = sources;
   enqueue(std::move(item));
 }
 
@@ -235,6 +255,9 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           break;
         case Kind::IsoVideo:
           state->inner->submitIsoVideo(item.isoSources);
+          break;
+        case Kind::IsoAudio:
+          state->inner->submitIsoAudio(item.isoAudioSources);
           break;
         case Kind::Audio:
           state->inner->submitAudio(item.audioPcm.data(), item.audioFrameCount, item.audioChannels,
