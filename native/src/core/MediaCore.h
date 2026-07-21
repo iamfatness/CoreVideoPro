@@ -163,9 +163,18 @@ class MediaCore {
   // Normalize a raw ISO id to its canonical form: a bare (scheme-less) id is a
   // Zoom participant, so `zoom:<id>`; anything already scheme-qualified is kept.
   [[nodiscard]] static std::string normalizeIsoSourceId(const std::string& rawId);
-  // Resolve a canonical ISO source id to a human display name from the roster
-  // (Zoom userId → displayName; capture id → its own tail). Falls back to the id.
+  // Resolve a canonical ISO source id to a human display name (Zoom userId →
+  // roster displayName; `capture:<id>` → the capture device name, or a browser
+  // source's URL host; ISO-3). Falls back to the bare id tail.
   [[nodiscard]] std::string resolveIsoDisplayName(const std::string& sourceId) const;
+  // ISO-3 audio pairing: does this ISO source carry its own audio stem? A Zoom
+  // participant always does; a `capture:<id>` source does ONLY when the operator
+  // paired an audio input to that capture device (captureAudioSources_). A pure
+  // camera → false → a VIDEO-ONLY ISO (no all-silence audio track).
+  [[nodiscard]] bool isoSourceHasAudio(const std::string& sourceId) const;
+  // The current ISO selection as canonical scheme-qualified ids (`zoom:<pid>` /
+  // `capture:<id>`), for the snapshot `isoSourceIds` mirror.
+  [[nodiscard]] std::vector<std::string> canonicalIsoSourceIds() const;
   void syncParticipantAudioMix(const rpc::Json& command);
   void syncVirtualCamera(const rpc::Json& command);
   [[nodiscard]] rpc::Json virtualCameraState() const;

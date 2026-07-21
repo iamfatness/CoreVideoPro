@@ -405,6 +405,14 @@ struct OutputSession {
 struct IsoSourceSelection {
   std::string sourceId;      // `zoom:<pid>` (ISO-1) or `capture:<id>` (ISO-3)
   std::string displayName;   // roster / device name (sanitized at file-open)
+  // ISO-3 capture audio-pairing rule: a Zoom participant always has audio (its
+  // `isolate_audio` stem). A `capture:<id>` source has audio ONLY when the
+  // operator paired an audio input to that capture device (Elgato-class embedded
+  // audio / a mic assigned to the camera via sync-capture-audio-sources); a pure
+  // camera with no paired audio is a VIDEO-ONLY ISO (no all-silence AAC track).
+  // Resolved in MediaCore from captureAudioSources_ at request-build time. When
+  // false, the ISO writer opens WITHOUT an audio stream.
+  bool hasAudio = true;
 };
 
 struct RecordingSessionRequest {
