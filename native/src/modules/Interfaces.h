@@ -76,6 +76,23 @@ struct IsoSourceVideoFrame {
   VideoFrame frame;
 };
 
+// One selected ISO source's RAW-STEM audio for a single encoder tick (ISO-2).
+// `pcm` is the source's isolated, interleaved float PCM in [-1, 1] tapped
+// PRE-channel-strip-DSP and PRE-bus-mix (owner decision: raw stems for post) —
+// resampled to the recording bus rate at gather but otherwise untouched. When
+// the source delivered NO audio this tick (Zoom gates non-active speakers), the
+// entry is submitted with an EMPTY `pcm`/`frameCount == 0`: the sink then
+// silence-fills that stem to its epoch-anchored expected sample position so the
+// stem stays time-aligned to program and never drifts (spec §2c). `sourceId`
+// maps to the same per-source ISO writer as the video (`zoom:<pid>`).
+struct IsoSourceAudio {
+  std::string sourceId;
+  std::vector<float> pcm;  // interleaved; size == frameCount * channels (may be empty)
+  int frameCount = 0;
+  int channels = 0;
+  int sampleRate = 48000;
+};
+
 struct AudioFrame {
   std::string participantId;
   int sampleRate = 48000;
@@ -388,6 +405,14 @@ struct OutputSession {
 struct IsoSourceSelection {
   std::string sourceId;      // `zoom:<pid>` (ISO-1) or `capture:<id>` (ISO-3)
   std::string displayName;   // roster / device name (sanitized at file-open)
+  // ISO-3 capture audio-pairing rule: a Zoom participant always has audio (its
+  // `isolate_audio` stem). A `capture:<id>` source has audio ONLY when the
+  // operator paired an audio input to that capture device (Elgato-class embedded
+  // audio / a mic assigned to the camera via sync-capture-audio-sources); a pure
+  // camera with no paired audio is a VIDEO-ONLY ISO (no all-silence AAC track).
+  // Resolved in MediaCore from captureAudioSources_ at request-build time. When
+  // false, the ISO writer opens WITHOUT an audio stream.
+  bool hasAudio = true;
 };
 
 struct RecordingSessionRequest {
@@ -688,6 +713,16 @@ class IEncoderSink {
   // input, no CPU color-convert under any lock; any convert happens on the
   // async encoder thread). Default no-op keeps non-recording / stub sinks valid.
   virtual void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) { (void)sources; }
+  // ISO-2: mux each selected source's OWN raw-stem audio into its own MP4 (the
+  // same sourceId → per-source writer map as submitIsoVideo), so each ISO is a
+  // self-contained A+V file. Submitted every tick for every selected source:
+  // entries with real PCM mux it; entries with empty PCM silence-fill that
+  // stem's timeline to the shared epoch (spec §2c) so a gated guest's ISO has
+  // silence exactly where they were not talking, staying sample-aligned to
+  // program. Rides AsyncEncoderSink like the video, so a slow disk drops ISO
+  // audio (→ silence in the stem, timeline intact), never program audio, never
+  // a worker stall. Default no-op keeps non-recording / stub sinks valid.
+  virtual void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) { (void)sources; }
   // Mux real program-audio PCM alongside the video frames. `interleaved` holds
   // `frameCount` sample-frames of `channels` float samples in [-1, 1] at
   // `sampleRate` Hz. Default no-op so encoders that don't yet handle audio stay

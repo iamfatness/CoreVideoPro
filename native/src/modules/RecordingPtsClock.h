@@ -78,6 +78,48 @@ class RecordingPtsClock {
     return pts;
   }
 
+  // ISO-2: per-source raw-stem audio accumulate with SILENCE-FILL, on the ONE
+  // shared program epoch. A Zoom guest's isolate_audio is gated server-side —
+  // packets stop between talk bursts — so a naive gapless counter would pull
+  // each resumed burst back-to-back and the stem would drift EARLIER of program
+  // by the total silence. Instead every stem's timeline is anchored to the epoch
+  // (t=0 == program start): the expected sample position at wall time `now` is
+  // `(now - epoch)` worth of samples, so when a buffer arrives we emit exactly
+  // enough leading silence to reach that position, then the real samples. A
+  // source silent for K ticks (submitted with frameCount==0 each tick) advances
+  // by silence alone and lands the next real buffer at the correct, program-
+  // aligned position — never a drift. Pure logic (caller supplies `now100ns`).
+  struct IsoAudioAdvance {
+    std::int64_t silenceFrames = 0;      // leading silence sample-frames to write
+    std::int64_t silencePts100ns = 0;    // PTS of the first silence frame
+    std::int64_t realPts100ns = 0;       // PTS where the real buffer begins
+  };
+  IsoAudioAdvance isoAudioAdvance(std::int64_t now100ns, const std::string& sourceId, int frameCount,
+                                  int sampleRate) {
+    ensureEpoch(now100ns);
+    const std::int64_t rate = sampleRate > 0 ? sampleRate : 48000;
+    std::int64_t& written = isoAudioSamples_[sourceId];  // 0 on first sight
+    std::int64_t nowOffset = now100ns - epoch100ns_;
+    if (nowOffset < 0) nowOffset = 0;
+    // Where this buffer SHOULD start, in sample-frames since the epoch. Clamp so
+    // the timeline is never rewound (MF requires strictly monotonic PTS).
+    std::int64_t target = nowOffset * rate / 10'000'000LL;
+    if (target < written) target = written;
+    IsoAudioAdvance out;
+    out.silenceFrames = target - written;
+    out.silencePts100ns = written * 10'000'000LL / rate;
+    out.realPts100ns = target * 10'000'000LL / rate;
+    written = target + (frameCount > 0 ? frameCount : 0);
+    return out;
+  }
+
+  // Total sample-frames (silence + real) accumulated on one ISO stem — its
+  // wall-anchored track length. 0 for a source never seen.
+  [[nodiscard]] std::int64_t isoAudioSamples(const std::string& sourceId) const {
+    const auto it = isoAudioSamples_.find(sourceId);
+    return it == isoAudioSamples_.end() ? 0 : it->second;
+  }
+
   // A3 (VST latency compensation): audio that passed through a
   // latency-reporting plugin is CONTENT-late — the samples in the buffer
   // stamped "now" actually happened `latencySamples` earlier. The offset is
@@ -139,6 +181,9 @@ class RecordingPtsClock {
   // ISO per-source video dedup + monotonic pts (all on the shared epoch above).
   std::map<std::string, std::int64_t> isoLastFrameId_;
   std::map<std::string, std::int64_t> isoLastVideoPts_;
+  // ISO-2 per-source audio: accumulated sample-frames (silence + real) per stem,
+  // wall-anchored to the shared epoch for silence-fill (see isoAudioAdvance).
+  std::map<std::string, std::int64_t> isoAudioSamples_;
 };
 
 }  // namespace corevideo::modules

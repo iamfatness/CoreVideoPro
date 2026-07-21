@@ -506,6 +506,122 @@ ISO-4). What landed:
   `node scripts/validate-iso-record.mjs` (fake engine, ISO on 2 → 2 ISO mp4s with
   h264 video, deduped). ISO-2 extends it into A+V + clap alignment.
 
+## ISO recording — ISO-2 (per-source AUDIO stems muxed into the ISO MP4s, 2026-07-20)
+
+ISO-2 completes the **Demo E** shape: each Zoom-participant ISO is now a
+self-contained **A+V** MP4 (its own video from ISO-1 **and** its own raw-stem
+audio), time-aligned to program. Stacked on ISO-1 (`submitIsoVideo` boundary,
+per-source `Mp4Writer` map, folder scheme). What landed:
+
+- **Raw-stem tap = PRE-DSP, PRE-MIX** (owner decision-3). The stem is
+  `work.audioFrames[i].pcm` — each source's isolated PCM, resampled to the 48k bus
+  rate at gather but tapped BEFORE the channel-strip DSP and the bus mix. Proof
+  it's pre-DSP: `RoutedAudioSource.pcm` is a `const` pointer into these buffers and
+  `mixRoutedBuses` runs the gate/EQ/comp/inserts on COPIES — the source buffers are
+  never mutated (`MediaCore.cpp` runAudioOutputWork, just after the program
+  `submitAudio`). Do NOT move the tap after `mixRoutedBuses`; that would be the
+  post-DSP signal (the option the owner explicitly did NOT choose).
+- **`IEncoderSink::submitIsoAudio(vector<IsoSourceAudio>)`** (`Interfaces.h`), a
+  separate boundary paired with `submitIsoVideo`. Submitted **every tick for EVERY
+  selected source**: a source with PCM this tick muxes it; a source Zoom gated
+  silent this tick rides an **empty** entry (frameCount==0). Rides its own
+  `AsyncEncoderSink` `Kind::IsoAudio` with the audio budget but SEPARATE
+  drop-to-latest accounting, so a slow disk drops ISO audio to silence-filled gaps
+  and can NEVER evict a program-audio packet (program is priority-1, spec §9).
+- **Silence-fill (spec §2c), the correctness core.** `RecordingPtsClock::isoAudioAdvance`
+  anchors every stem to the ONE shared epoch (t=0 == program start): the expected
+  sample position at wall time `now` is `(now-epoch)` worth of samples, so a buffer
+  emits exactly enough leading silence to reach that position, then the real
+  samples. A guest silent for K ticks (empty submits) advances by silence alone and
+  lands the next real burst at the correct, program-aligned position — never a
+  drift EARLIER of program. A dropped ISO-audio tick simply becomes silence in the
+  stem (the next tick's wall-anchored fill covers it), timeline intact. The sink
+  chunks long leading silence (`Mp4Writer::writeAudioSilence`, 0.1s blocks) so a
+  guest who talks minutes in never emits one giant sample.
+- **#286 up-front audio stream, per ISO writer.** The ISO writer opens LAZILY at
+  its first video frame; the AAC stream is added THERE — `open()` →
+  `ensureAudioStream(2, 48000, …)` → `beginWriting()` — never after BeginWriting
+  (0xC00D36B2). `Mp4Writer::open()` already resets `audioConfigured_`, so a REUSED
+  ISO writer across the double `start()` re-adds its stream cleanly (regression
+  test proves a reused ISO writer keeps its audio track). ISO AAC is uniformly 48k
+  **stereo**; mono Zoom `isolate_audio` stems are up-mixed L=R in `submitIsoAudio`.
+- **Snapshot + manifest:** `recording.streams[]` ISO nodes now carry
+  `audioSamples` (silence+real) and `hasAudio` (= `audioSamples > 0`);
+  `manifest.json` marks every entry `"hasAudio": true`. A track-less ISO where
+  audio was expected folds into `recording.warning` (as loud as #286 made a
+  video-only program).
+- **Tests:** `RecordingPtsClock.IsoAudioSilenceFillKeepsGappedStemAligned` (the key
+  gapped-stem test — silent K ticks then resume lands at the right sample
+  position) + `IsoAudioLateStartSilenceFillsFromEpoch`; real-MF
+  `EncoderRecordingSession.MediaFoundationIsoWritersMuxOwnAudioStems` (2 ISO writers
+  with DIFFERENT audio, #286 reused-writer audio-track reset, **program A+V not
+  regressed with ISO audio enabled**); and `scripts/validate-iso-record.mjs`
+  extended to the **Demo E leg** — ffprobe each ISO has h264 video AND aac audio,
+  head-clap alignment (ISO audio start vs program audio start on the shared epoch)
+  measured **0.0 ms** (budget 50 ms). Fake tone engine gives distinct
+  per-participant sines (220Hz + pid%8·110), so the two ISO stems carry different
+  content (956685 vs 969374 samples over 20s), not the program mix.
+
+## ISO recording — ISO-3 (UVC/capture sources, 2026-07-21)
+
+ISO-3 broadens ISO to **capture-class** sources (`capture:<id>` — UVC cameras,
+screen/window capture, browser sources). Most of the machinery was already
+capture-generic in ISO-1/2 — the delta is small and surgical:
+
+- **Capture VIDEO rides ISO-1's BGRA writer path, no new code.** Capture frames
+  merge into `videoFrames` keyed `capture:<id>` (`capture:browser:<n>` for
+  browser) at the render gather, and ISO-1's `latestIsoSourceFrames_` snapshot
+  already keys ANY `<scheme>:<id>` frame and skips only `media:`. So a capture
+  frame flows to `submitIsoVideo`, which already branches `frame.hasI420() ?
+  NV12(Zoom) : RGB32(BGRA)` — capture is BGRA, so it takes the RGB32 path (spec
+  §2b, "the writer picks input type per source at open"). Per-`(sourceId,frameId)`
+  dedup is scheme-agnostic; all three capture paths (WinUI bridge / native UVC /
+  browser host) carry advancing `frameId`, so it holds.
+- **Capture AUDIO pairing — THE decision (owner rule confirmed against the
+  codebase).** A capture VIDEO source and its audio can be SEPARATE devices. The
+  codebase pairs them via `sync-capture-audio-sources`: a `CaptureAudioSourceInput`
+  has a `captureDeviceId` (the VIDEO device) + an optional `audioDeviceId`, and
+  `WasapiAudioCaptureSourceAdapter::participantIdForSource` keys the PCM
+  `capture:<captureDeviceId>` — the SAME id as the video. So paired capture audio
+  muxes into the same ISO writer AUTOMATICALLY (ISO-2's `work.audioFrames` tap,
+  same sourceId match). **Rule: a capture ISO carries audio IFF the operator paired
+  an audio input to that capture device (Elgato-class embedded audio / a mic
+  assigned to the camera). A pure camera (no paired audio) → VIDEO-ONLY ISO — no
+  all-silence AAC track, no fabricated stem.** Implemented via
+  `IsoSourceSelection.hasAudio` (`MediaCore::isoSourceHasAudio`: zoom→always,
+  capture→matched real pairing in `captureAudioSources_`, browser→false); the ISO
+  writer skips `ensureAudioStream` at lazy-open when `hasAudio==false`, so
+  `submitIsoAudio` naturally skips it (`audioConfigured()` stays false). Snapshot
+  `hasAudio`/`audioSamples` and `manifest.json` reflect the per-source decision.
+- **Display names:** `resolveIsoDisplayName` resolves `capture:<id>` to the
+  enumerated device name (`CaptureDeviceInfo.name`, match by id/`nativeDeviceId`),
+  a browser source's URL, or the paired audio device name — so post sees
+  `ISO-NN-<CameraName>.mp4`, falling back to the id tail (loud, never fabricated).
+- **Command/snapshot parity (3 mirrors):** `isoSourceIds` already accepted
+  `capture:<id>` (ISO-1 generalized `normalizeIsoSourceId`); the snapshot now also
+  emits the canonical `isoSourceIds` list alongside `isoParticipantIds`
+  (`canonicalIsoSourceIds`); `src/engine/isoRecording.ts` planner gains a
+  `capture` `IsoTrackSource` (+`captureSources` option, `capture:<id>` track ids,
+  participant-tier bitrate). `Protocol.h` (`iso-recording` capability + the
+  scheme-qualified reader) needed no change.
+- **Capture-stall interaction (CaptureReaderStallPolicy):** a stalled capture
+  source either holds its last frame (same `frameId` → dedup muxes once, no churn)
+  or stops appearing in `videoFrames` (its writer simply stops advancing and
+  finalizes gracefully at stop) — never a churn/spam loop on the ISO writer. Loud
+  in `recording.warning` only on a real writer failure.
+- **Tests:** `MediaFoundationCaptureBgraIsoMixedWithZoomNv12` (capture BGRA +
+  zoom NV12 in ONE session, both playable, **program A+V green with capture ISO**,
+  paired capture audio muxed), `MediaFoundationVideoOnlyCaptureIsoHasNoAudioTrack`
+  (a pure camera → `audioSampleCount==0`, no all-silence track),
+  `MediaCoreResolvesCaptureIsoDisplayNamesAndAudioPairing` (display name from
+  enumerate + the paired/unpaired hasAudio decision),
+  `RecordingPtsClock.IsoVideoDedupsCaptureSourceIndependentlyOfZoom`; TS planner
+  tests for the `capture` source. **Harness gap (honest):** the fake zoom engine
+  is Zoom-only, so capture ISO has no headless E2E — it is covered by the real-MF
+  unit tests + synthetic capture frames above, and is **rig-verified only** for a
+  live camera. `validate-iso-record.mjs` (Zoom) still PASSES (2 ISO A+V streams,
+  clap 0.0 ms) — proof ISO-1/2 is not regressed.
+
 ## Current state addendum (2026-07-13, the zero-audio recording bug)
 
 **Recordings muxed ZERO audio while the master bus carried signal — FIXED.** Root

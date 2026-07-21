@@ -577,6 +577,10 @@ rpc::Json MediaCore::sessionState() const {
       {"overlayCount", overlayCount_},
       {"outputs", stringArray(session.destinations)},
       {"isoParticipantIds", stringArray(session.isoParticipantIds)},
+      // ISO-3 parity: the canonical scheme-qualified selection (`zoom:<pid>` /
+      // `capture:<id>`) alongside the legacy bare list, so the shell reads back
+      // exactly the ids it can pass to isoSourceIds.
+      {"isoSourceIds", stringArray(canonicalIsoSourceIds())},
       {"outputProfile", outputProfileJson(outputProfileId_, outputResolution_, outputWidth_, outputHeight_, outputFps_, outputTargetBitrateMbps_)},
       {"encoder", session.encoderName},
       {"codec", session.codec},
@@ -1696,7 +1700,9 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.isoSources.reserve(recordingIsoParticipantIds_.size());
   for (const auto& rawId : recordingIsoParticipantIds_) {
     const std::string sourceId = normalizeIsoSourceId(rawId);
-    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId)});
+    // ISO-3: hasAudio is the capture audio-pairing decision — a pure-video
+    // capture source gets a VIDEO-ONLY ISO (no all-silence AAC track).
+    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId), isoSourceHasAudio(sourceId)});
   }
   request.width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : (lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_);
   request.height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : (lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_);
@@ -1741,8 +1747,67 @@ std::string MediaCore::resolveIsoDisplayName(const std::string& sourceId) const 
         }
       }
     }
+  } else if (scheme == "capture") {
+    // ISO-3: a capture source id is `capture:<deviceId>` (UVC / screen / window)
+    // or `capture:browser:<n>`. Resolve the friendly device name so post sees
+    // `ISO-NN-<CameraName>.mp4`, not a hashed device id. Browser sources carry a
+    // URL; the rest are enumerated capture devices (match by id OR OS device id).
+    if (bareId.rfind("browser:", 0) == 0) {
+      for (const auto& item : browserSources_->telemetry()) {
+        if ("browser:" + item.id == bareId && !item.url.empty()) {
+          return item.url;  // sanitized to a safe fragment at file-open
+        }
+      }
+    }
+    if (modules_.captureDevice) {
+      for (const auto& device : modules_.captureDevice->enumerate()) {
+        if ((device.id == bareId || device.nativeDeviceId == bareId) && !device.name.empty()) {
+          return device.name;
+        }
+      }
+    }
+    // Fall back to a paired audio device name if one was configured (a capture
+    // card that presents only through its audio input still reads better named).
+    for (const auto& source : captureAudioSources_) {
+      if (source.captureDeviceId == bareId && !source.audioDeviceName.empty()) {
+        return source.audioDeviceName;
+      }
+    }
   }
   return bareId.empty() ? sourceId : bareId;
+}
+
+bool MediaCore::isoSourceHasAudio(const std::string& sourceId) const {
+  const auto colon = sourceId.find(':');
+  const std::string scheme = colon == std::string::npos ? "" : sourceId.substr(0, colon);
+  const std::string bareId = colon == std::string::npos ? sourceId : sourceId.substr(colon + 1);
+  // A Zoom participant always carries its own isolate_audio stem (silence-filled
+  // when gated) — the ISO-2 self-contained-A+V shape.
+  if (scheme == "zoom" || scheme.empty()) {
+    return true;
+  }
+  // ISO-3 capture: audio only when the operator paired a real audio input to
+  // THIS capture device (Elgato-class embedded audio, or a mic assigned to the
+  // camera). A pure camera (no paired audio) and browser sources (no page audio
+  // in BR-1) → VIDEO-ONLY ISO, no all-silence AAC track.
+  if (scheme == "capture") {
+    for (const auto& source : captureAudioSources_) {
+      if (source.captureDeviceId == bareId && source.audioSourceKind != "none" &&
+          !source.audioDeviceId.empty()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<std::string> MediaCore::canonicalIsoSourceIds() const {
+  std::vector<std::string> out;
+  out.reserve(recordingIsoParticipantIds_.size());
+  for (const auto& rawId : recordingIsoParticipantIds_) {
+    out.push_back(normalizeIsoSourceId(rawId));
+  }
+  return out;
 }
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
@@ -3808,7 +3873,10 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"framesWritten", static_cast<double>(iso.videoFrameCount)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
-          {"hasAudio", false},  // ISO-1 is video-only; per-source audio is ISO-2
+          // ISO-2: each ISO is self-contained A+V — hasAudio reflects real muxed
+          // raw-stem samples (silence-fill keeps a gated stem's timeline aligned,
+          // so a talking guest reports audio; a never-opened writer reports none).
+          {"hasAudio", iso.audioSampleCount > 0},
           {"audioSamples", static_cast<double>(iso.audioSampleCount)},
           {"bytesWritten", static_cast<double>(iso.bytesWritten)},
           {"metadataValid", iso.trackOpen},
@@ -5124,6 +5192,51 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       modules_.encoder->submitAudio(programAudio.data(),
                                     static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
                                     audioChannels, modules_.mixer->monitorBusSampleRate());
+    }
+    // ISO-2: per-source RAW-STEM audio → each ISO's own MP4 (self-contained A+V).
+    // The stem is work.audioFrames[i].pcm — each source's isolated PCM, resampled
+    // to the bus rate at gather but tapped BEFORE the channel-strip DSP and the
+    // bus mix (RoutedAudioSource.pcm is a const pointer into these buffers; the
+    // DSP runs on copies inside mixRoutedBuses), matching the owner's raw-stem
+    // decision. Submitted every tick for EVERY selected source: a source with no
+    // PCM this tick (Zoom gates non-active speakers) rides an EMPTY entry so the
+    // sink silence-fills its stem to the shared epoch and it never drifts (§2c).
+    // Rides AsyncEncoderSink like the video — disk pressure drops ISO audio to
+    // silence-filled gaps, never program audio (spec §9).
+    if (!recordingIsoParticipantIds_.empty()) {
+      std::map<std::string, const modules::AudioFrame*> stemByCanonicalId;
+      for (const auto& frame : work.audioFrames) {
+        if (frame.pcm.empty() || frame.channels <= 0) {
+          continue;
+        }
+        const std::string key = frame.participantId.find(':') != std::string::npos
+                                    ? frame.participantId
+                                    : "zoom:" + frame.participantId;
+        stemByCanonicalId[key] = &frame;
+      }
+      std::vector<modules::IsoSourceAudio> isoAudio;
+      isoAudio.reserve(recordingIsoParticipantIds_.size());
+      for (const auto& rawId : recordingIsoParticipantIds_) {
+        const std::string sourceId = normalizeIsoSourceId(rawId);
+        modules::IsoSourceAudio stem;
+        stem.sourceId = sourceId;
+        const auto it = stemByCanonicalId.find(sourceId);
+        if (it != stemByCanonicalId.end()) {
+          const modules::AudioFrame& frame = *it->second;
+          stem.pcm = frame.pcm;  // raw stem copy (small; safe across threads)
+          stem.channels = frame.channels;
+          stem.sampleRate = frame.sampleRate;
+          stem.frameCount = static_cast<int>(frame.pcm.size() / static_cast<size_t>(frame.channels));
+        } else {
+          stem.channels = 0;  // no audio this tick → silence-fill
+          stem.frameCount = 0;
+          stem.sampleRate = modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
+        }
+        isoAudio.push_back(std::move(stem));
+      }
+      if (!isoAudio.empty()) {
+        modules_.encoder->submitIsoAudio(isoAudio);
+      }
     }
     const auto encoderSession = modules_.encoder->session();
     results.recordingAudioPacketsObserved = encoderSession.recordingAudioPacketCount;

@@ -91,6 +91,27 @@ void i420ToNv12(const uint8_t* i420, int w, int h, std::vector<uint8_t>& out) {
   }
 }
 
+// ISO-2: normalize a raw-stem PCM buffer to interleaved STEREO (the ISO writers'
+// uniform AAC layout). Mono → duplicated L/R; stereo → passed through; >2ch →
+// first two channels. `out` is resized to frameCount*2. Runs on the async
+// encoder writer thread (off every lock).
+void toStereo(const std::vector<float>& in, int channels, int frameCount, std::vector<float>& out) {
+  out.resize(static_cast<size_t>(frameCount) * 2);
+  const int ch = channels > 0 ? channels : 1;
+  const size_t have = in.size();
+  for (int i = 0; i < frameCount; ++i) {
+    const size_t base = static_cast<size_t>(i) * ch;
+    float l = 0.0f;
+    float r = 0.0f;
+    if (base < have) {
+      l = in[base];
+      r = ch >= 2 && base + 1 < have ? in[base + 1] : l;  // mono → both channels
+    }
+    out[static_cast<size_t>(i) * 2] = l;
+    out[static_cast<size_t>(i) * 2 + 1] = r;
+  }
+}
+
 // Sanitize a roster/display name into a safe MP4 file-name fragment (spec §5):
 // keep alphanumerics, space→'-', dash/underscore; drop everything else; collapse
 // runs; trim; cap length; fall back to a stable token so a file is always named.
@@ -546,6 +567,35 @@ class Mp4Writer {
     return true;
   }
 
+  // ISO-2: write `frames` sample-frames of digital silence starting at
+  // `ptsStart100ns`, advancing the AAC sample clock so a gated ISO stem stays
+  // time-aligned to program (spec §2c). Chunked so a long leading gap (a guest
+  // who talks minutes in) never allocates or emits one giant sample. Returns
+  // false on the first WriteSample failure (surfaced as an ISO warning by the
+  // caller — a stem that silently loses its track is the #286 class).
+  bool writeAudioSilence(int64_t frames, LONGLONG ptsStart100ns, std::string& errorOut) {
+    if (!writing_ || !audioConfigured_ || frames <= 0) {
+      return true;  // nothing to do (not a failure)
+    }
+    constexpr int64_t kChunkFrames = 4800;  // 0.1s at 48kHz — bounded sample size
+    const int64_t rate = std::max(1, audioSampleRate_);
+    std::vector<float> zeros(static_cast<size_t>(std::min<int64_t>(frames, kChunkFrames)) *
+                                 static_cast<size_t>(audioChannels_),
+                             0.0f);
+    int64_t remaining = frames;
+    int64_t emitted = 0;
+    while (remaining > 0) {
+      const int chunk = static_cast<int>(std::min<int64_t>(remaining, kChunkFrames));
+      const LONGLONG pts = ptsStart100ns + emitted * 10'000'000LL / rate;
+      if (!writeAudio(zeros.data(), chunk, pts, errorOut)) {
+        return false;
+      }
+      remaining -= chunk;
+      emitted += chunk;
+    }
+    return true;
+  }
+
   void finalize() {
     if (writing_ && sinkWriter_) {
       sinkWriter_->Finalize();
@@ -825,7 +875,21 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         const int w = haveI420 ? frame.i420Width : frame.pixelWidth;
         const int h = haveI420 ? frame.i420Height : frame.pixelHeight;
         const VideoInput input = haveI420 ? VideoInput::Nv12 : VideoInput::Bgra;
+        // #286: the AAC audio stream MUST be added UP FRONT — before
+        // BeginWriting — or AddStream fails 0xC00D36B2 and the ISO silently
+        // becomes a track-less/audio-less file. ISO stems are uniformly 48kHz
+        // stereo (matches program); mono source stems are up-mixed to stereo in
+        // submitIsoAudio. Mp4Writer::open() reset audioConfigured_ (the #286
+        // reset), so a REUSED ISO writer re-adds its stream cleanly.
+        //
+        // ISO-3 pairing: only add the audio stream when this source HAS audio —
+        // a Zoom participant, or a capture device with a paired audio input. A
+        // pure-video capture source (a camera with no paired audio) opens
+        // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
+        // track. submitIsoAudio then skips it (audioConfigured() stays false).
         if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input) ||
+            (entry.hasAudio &&
+             !entry.writer.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
             !entry.writer.beginWriting(error)) {
           entry.failed = true;
           entry.warning = "ISO writer open failed for " + entry.displayName + " (" + src.sourceId +
@@ -848,6 +912,53 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         ++entry.videoFrameCount;
       } else if (entry.warning.empty()) {
         entry.warning = "ISO writer dropped video for " + entry.displayName + " (" + src.sourceId +
+                        "): " + error + ".";
+        raiseIsoWarning(entry.warning);
+      }
+    }
+    refreshIsoStreams();
+    updateBytesWritten();
+  }
+
+  // ISO-2: mux each selected source's OWN raw-stem audio into its own MP4. Runs
+  // on the async encoder writer thread (never coreMutex / the audio worker). For
+  // each source: silence-fill the stem to its epoch-anchored expected position,
+  // then (if PCM present) write the real samples — so a gated guest's ISO carries
+  // silence exactly where they were not talking and stays sample-aligned to
+  // program (spec §2c). A stem whose writer never opened (no video yet) is
+  // skipped: the wall-anchored clock silence-fills the whole gap when it opens.
+  void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
+    if (!session_.active || isoWriters_.empty() || sources.empty()) {
+      return;
+    }
+    for (const auto& src : sources) {
+      auto idxIt = isoIndexBySource_.find(src.sourceId);
+      if (idxIt == isoIndexBySource_.end()) {
+        continue;  // audio for a source that is not selected — ignore
+      }
+      auto& entry = isoWriters_[idxIt->second];
+      if (entry.failed || !entry.opened || !entry.writer.audioConfigured()) {
+        continue;  // writer not open yet (no video frame) or already failed
+      }
+      const int rate = entry.writer.audioSampleRate();
+      const int frameCount = src.frameCount > 0 && !src.pcm.empty() ? src.frameCount : 0;
+      const auto advance = recordingClock_.isoAudioAdvance(now100ns(), src.sourceId, frameCount, rate);
+      std::string error;
+      bool ok = true;
+      if (advance.silenceFrames > 0) {
+        ok = entry.writer.writeAudioSilence(advance.silenceFrames, advance.silencePts100ns, error);
+      }
+      if (ok && frameCount > 0) {
+        // Up-mix the raw stem to the writer's stereo AAC layout (Zoom
+        // isolate_audio is typically mono). Reused scratch — no per-tick alloc
+        // churn beyond a grow.
+        toStereo(src.pcm, src.channels > 0 ? src.channels : 1, frameCount, entry.audioScratch);
+        ok = entry.writer.writeAudio(entry.audioScratch.data(), frameCount, advance.realPts100ns, error);
+      }
+      if (!ok && entry.warning.empty()) {
+        // Loud, per #286: a video-only ISO where audio was expected must be as
+        // loud as a video-only program was.
+        entry.warning = "ISO writer dropped audio for " + entry.displayName + " (" + src.sourceId +
                         "): " + error + ".";
         raiseIsoWarning(entry.warning);
       }
@@ -949,6 +1060,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       IsoWriterEntry entry;
       entry.sourceId = isoSel[i].sourceId;
       entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
+      entry.hasAudio = isoSel[i].hasAudio;  // ISO-3: video-only for an unpaired capture source
       std::string safe = sanitizeForFilename(entry.displayName, entry.sourceId);
       // Disambiguate duplicate sanitized names within a session.
       if (int& seen = nameCollisions[safe]; ++seen > 1) {
@@ -1039,6 +1151,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       status.displayName = iso.displayName;
       status.path = iso.path.string();
       status.videoFrameCount = iso.videoFrameCount;
+      status.audioSampleCount = iso.writer.audioSampleCount();  // ISO-2: silence + real
       status.bytesWritten = iso.writer.bytesWritten();
       status.trackOpen = iso.opened && !iso.failed;
       status.warning = iso.warning;
@@ -1067,11 +1180,17 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     out << "  \"epochMs\": " << epochMs << ",\n";
     out << "  \"entries\": [\n";
     out << "    { \"sourceId\": \"program\", \"name\": \"Program\", \"path\": \""
-        << jsonEscape(programPath.filename().string()) << "\", \"kind\": \"program\" }";
+        << jsonEscape(programPath.filename().string())
+        << "\", \"kind\": \"program\", \"hasAudio\": true }";
+    // ISO-2: a Zoom ISO is a self-contained A+V MP4 (its own video + raw-stem
+    // audio). ISO-3: a pure-video capture source (a camera with no paired audio)
+    // is VIDEO-ONLY, so hasAudio reflects the per-source pairing decision, not a
+    // blanket true (spec §5).
     for (const auto& iso : isoWriters_) {
       out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
           << jsonEscape(iso.displayName) << "\", \"path\": \""
-          << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\" }";
+          << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": "
+          << (iso.hasAudio ? "true" : "false") << " }";
     }
     out << "\n  ]\n}\n";
     out.close();
@@ -1134,9 +1253,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     Mp4Writer writer;
     bool opened = false;
     bool failed = false;
+    bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
     int64_t videoFrameCount = 0;
     std::string warning;
-    std::vector<uint8_t> nv12Scratch;  // reused I420->NV12 buffer (writer thread)
+    std::vector<uint8_t> nv12Scratch;   // reused I420->NV12 buffer (writer thread)
+    std::vector<float> audioScratch;    // reused mono->stereo up-mix (ISO-2)
   };
 
   OutputSession session_;
