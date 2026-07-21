@@ -1,21 +1,21 @@
 /**
- * Headless ISO-record validation harness (ISO-1: per-source Zoom VIDEO ISO).
+ * Headless ISO-record validation harness (ISO-1 video + ISO-2 audio = Demo E).
  *
- * Proves the ISO-1 pipeline end-to-end WITHOUT a real meeting or an operator:
+ * Proves the ISO pipeline end-to-end WITHOUT a real meeting or an operator:
  * spawns the native core with COREVIDEO_ZOOM_ENGINE_PATH pointed at the FAKE
- * zoom engine (multi-participant animated I420 over the real IPC), joins,
- * subscribes participant video through `zoom-media-spine-sync`, enables ISO on
- * TWO participants (`isoSourceIds: ["zoom:<id>", ...]`), records, and FAILS
- * unless:
+ * zoom engine (multi-participant animated I420 + deterministic per-participant
+ * tones over the real IPC), joins, subscribes participant video + isolate audio
+ * through `zoom-media-spine-sync`, enables ISO on TWO participants
+ * (`isoSourceIds: ["zoom:<id>", ...]`), records, and FAILS unless:
  *   - the recording snapshot reports one ISO stream per selected source,
  *   - each ISO stream muxed video frames (framesWritten > 0) with no per-stream
- *     warning, and the frame count is frameId-DEDUPED (well below the raw
- *     ~50 submit/s tick rate — each real decoded frame muxes once),
- *   - recording.warning stays empty (program never regressed),
- *   - each ISO-NN-*.mp4 exists on disk, is non-zero, and (when ffprobe is
- *     available) carries a video stream.
- *
- * Full A+V + head-clap alignment is ISO-2's `validate-iso-record` extension.
+ *     warning, frameId-DEDUPED (well below the raw ~50 submit/s tick rate),
+ *   - each ISO stream reports audioSamples > 0 and hasAudio (ISO-2 stems),
+ *   - recording.warning stays empty (program never regressed — the #286 class),
+ *   - each ISO-NN-*.mp4 exists on disk, non-zero, and (with ffprobe) carries
+ *     BOTH a video stream AND an aac audio stream,
+ *   - **Demo E head-clap alignment**: each ISO audio start vs the PROGRAM audio
+ *     start is within 50 ms (inherited from the ONE shared recording epoch).
  *
  * Usage: node ./scripts/validate-iso-record.mjs [--seconds 20] [--keep-artifacts]
  */
@@ -123,16 +123,26 @@ function isoStreamsOf(snapshot) {
   return streams.filter((s) => s.kind === "iso");
 }
 
-function ffprobeHasVideo(artifactPath) {
+function ffprobeStreams(artifactPath) {
   for (const bin of ["ffprobe", "C:\\ffmpeg\\bin\\ffprobe.exe"]) {
     const probe = spawnSync(bin, ["-v", "error", "-print_format", "json", "-show_streams", artifactPath], { encoding: "utf8", timeout: 20000 });
     if (probe.error || probe.status !== 0) continue;
     let parsed;
     try { parsed = JSON.parse(probe.stdout); } catch { continue; }
-    const video = (parsed.streams ?? []).find((s) => s.codec_type === "video");
-    return { available: true, video: Boolean(video), videoCodec: video?.codec_name ?? null };
+    const streams = parsed.streams ?? [];
+    const video = streams.find((s) => s.codec_type === "video");
+    const audio = streams.find((s) => s.codec_type === "audio");
+    const audioStart = audio && audio.start_time != null ? Number(audio.start_time) : null;
+    return {
+      available: true,
+      video: Boolean(video),
+      videoCodec: video?.codec_name ?? null,
+      audio: Boolean(audio),
+      audioCodec: audio?.codec_name ?? null,
+      audioStartSec: Number.isFinite(audioStart) ? audioStart : null,
+    };
   }
-  return { available: false, video: true };  // skip gracefully without ffprobe
+  return { available: false, video: true, audio: true, audioCodec: "aac", audioStartSec: null };  // skip gracefully
 }
 
 const failures = [];
@@ -189,37 +199,71 @@ try {
     const snap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] })).snapshot;
     lastStreams = isoStreamsOf(snap);
     lastWarning = snap?.recording?.warning ?? null;
-    console.log(`poll          : iso=[${lastStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}`).join(", ")}] warning=${lastWarning ?? "none"}`);
+    console.log(`poll          : iso=[${lastStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}f/${s.audioSamples ?? 0}a`).join(", ")}] warning=${lastWarning ?? "none"}`);
     if (lastWarning) failures.push(`recording.warning surfaced: ${lastWarning}`);
   }
 
   const stopSnap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [{ type: "stop-recording-session", reason: "iso-record validation complete" }] })).snapshot;
   const finalStreams = isoStreamsOf(stopSnap);
+  const programPath = stopSnap?.recording?.programPath ??
+    (stopSnap?.recording?.streams ?? []).find((s) => s.kind === "program")?.path ?? null;
+
+  // Wait for the async finalize to flush a writer's moov before probing.
+  async function settle(abs) {
+    let lastSize = -1;
+    for (let i = 0; i < 20; i += 1) {
+      await sleep(250);
+      let size = 0;
+      try { size = statSync(abs).size; } catch { continue; }
+      if (size > 1024 && size === lastSize) break;
+      lastSize = size;
+    }
+    return existsSync(abs) && statSync(abs).size > 0;
+  }
+
+  // Demo E baseline: the PROGRAM audio start on the shared epoch (every ISO
+  // audio start is measured against this — same recordingClock_ epoch).
+  let programAudioStartSec = null;
+  if (programPath) {
+    const programAbs = isAbsolute(programPath) ? programPath : resolve(buildDir, programPath);
+    artifacts.push(programAbs);
+    if (await settle(programAbs)) {
+      const pp = ffprobeStreams(programAbs);
+      programAudioStartSec = pp.audioStartSec;
+      console.log(`ffprobe pgm   : ${JSON.stringify(pp)}`);
+      if (pp.available && !pp.audio) failures.push("PROGRAM has no audio stream (program regressed)");
+    }
+  }
 
   if (finalStreams.length < 2) failures.push(`expected 2 ISO streams, got ${finalStreams.length}`);
   const rawTickRate = recordSeconds * 50;  // ~50 submit ticks/s upper bound
+  const clapAlignmentsMs = [];
   for (const s of finalStreams) {
     if (Number(s.framesWritten) <= 0) failures.push(`ISO ${s.sourceId} muxed 0 frames`);
     if (s.warning) failures.push(`ISO ${s.sourceId} warning: ${s.warning}`);
     if (Number(s.framesWritten) >= rawTickRate) failures.push(`ISO ${s.sourceId} framesWritten=${s.framesWritten} not deduped (>= ${rawTickRate} raw ticks)`);
+    // ISO-2: each ISO must carry its own audio stem (self-contained A+V).
+    if (Number(s.audioSamples ?? 0) <= 0) failures.push(`ISO ${s.sourceId} muxed 0 audio samples (no stem)`);
+    if (s.hasAudio === false) failures.push(`ISO ${s.sourceId} snapshot hasAudio=false`);
     if (s.path) {
       const abs = isAbsolute(s.path) ? s.path : resolve(buildDir, s.path);
       artifacts.push(abs);
-      // Wait for the async finalize to flush the moov.
-      let lastSize = -1;
-      for (let i = 0; i < 20; i += 1) {
-        await sleep(250);
-        let size = 0;
-        try { size = statSync(abs).size; } catch { continue; }
-        if (size > 1024 && size === lastSize) break;
-        lastSize = size;
-      }
-      if (!existsSync(abs) || statSync(abs).size <= 0) {
+      if (!(await settle(abs))) {
         failures.push(`ISO artifact missing/empty: ${abs}`);
       } else {
-        const probe = ffprobeHasVideo(abs);
+        const probe = ffprobeStreams(abs);
         console.log(`ffprobe       : ${s.displayName ?? s.sourceId} -> ${JSON.stringify(probe)}`);
         if (!probe.video) failures.push(`ISO ${s.sourceId} has no video stream`);
+        if (probe.available && !probe.audio) failures.push(`ISO ${s.sourceId} has no audio stream (not self-contained A+V)`);
+        if (probe.available && probe.audio && probe.audioCodec !== "aac") failures.push(`ISO ${s.sourceId} audio codec ${probe.audioCodec} != aac`);
+        // Demo E head-clap alignment: ISO audio start vs program audio start on
+        // the ONE shared epoch, budget < 50 ms.
+        if (probe.audioStartSec != null && programAudioStartSec != null) {
+          const skewMs = Math.abs(probe.audioStartSec - programAudioStartSec) * 1000;
+          clapAlignmentsMs.push(skewMs);
+          console.log(`clap-align    : ${s.displayName ?? s.sourceId} audioStart=${probe.audioStartSec}s vs program=${programAudioStartSec}s -> ${skewMs.toFixed(1)}ms`);
+          if (skewMs >= 50) failures.push(`ISO ${s.sourceId} head-clap skew ${skewMs.toFixed(1)}ms >= 50ms (Demo E)`);
+        }
       }
     } else {
       failures.push(`ISO ${s.sourceId} has no path in the snapshot`);
@@ -227,7 +271,11 @@ try {
   }
 
   console.log("");
-  console.log(`Result        : ${finalStreams.length} ISO streams -> [${finalStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}f`).join(", ")}]`);
+  if (clapAlignmentsMs.length > 0) {
+    const worst = Math.max(...clapAlignmentsMs);
+    console.log(`Demo E clap   : worst ISO-vs-program audio-start skew ${worst.toFixed(1)}ms (budget 50ms)`);
+  }
+  console.log(`Result        : ${finalStreams.length} ISO streams -> [${finalStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}f/${s.audioSamples ?? 0}a`).join(", ")}]`);
   if (failures.length === 0) {
     console.log("ISO-RECORD VALIDATION PASS");
   } else {

@@ -381,6 +381,76 @@ TEST(RecordingPtsClock, IsoVideoStaysStrictlyMonotonicPerSource) {
   EXPECT_GT(*second, *first);
 }
 
+// --- ISO-2: per-source raw-stem audio silence-fill on the SHARED epoch -------
+//
+// THE key correctness test (spec §10): a Zoom guest's isolate_audio is gated —
+// it stops between talk bursts — so a stem must silence-fill the gap and land
+// the NEXT real buffer at the correct, program-aligned sample position, never
+// drifting earlier. Drives isoAudioAdvance the way the audio worker does: one
+// call per ~20ms tick per source, empty (frameCount==0) when the source is
+// silent, real (960 frames) when it talks.
+TEST(RecordingPtsClock, IsoAudioSilenceFillKeepsGappedStemAligned) {
+  corevideo::modules::RecordingPtsClock clock;
+  constexpr int kRate = 48000;
+  constexpr int kTickFrames = 960;  // 20ms at 48kHz
+
+  // Program frame at t=0 anchors the shared epoch (the stem is aligned to THIS).
+  ASSERT_TRUE(clock.videoPts(0, 1).has_value());
+
+  const std::string src = "zoom:A";
+
+  // Ticks 0..4: the guest talks — five contiguous 960-frame buffers from t=0.
+  for (int tick = 0; tick < 5; ++tick) {
+    const std::int64_t now = tick * 20 * kMs;
+    const auto adv = clock.isoAudioAdvance(now, src, kTickFrames, kRate);
+    EXPECT_EQ(adv.silenceFrames, 0) << "tick " << tick << " should need no silence";
+    EXPECT_EQ(adv.realPts100ns, static_cast<std::int64_t>(tick) * 20 * kMs);
+  }
+  // 5 contiguous ticks written == 5 * 960 frames.
+  EXPECT_EQ(clock.isoAudioSamples(src), 5 * kTickFrames);
+
+  // Ticks 5..9: the guest goes SILENT — the worker still submits every tick with
+  // an EMPTY buffer, so the stem's timeline advances by silence alone. The gap is
+  // filled by real silence (the exact per-tick split straddles a tick boundary —
+  // tick 4's real buffer already reached the 100ms mark — so assert the TOTAL).
+  std::int64_t totalSilence = 0;
+  for (int tick = 5; tick < 10; ++tick) {
+    const std::int64_t now = tick * 20 * kMs;
+    const auto adv = clock.isoAudioAdvance(now, src, 0, kRate);
+    totalSilence += adv.silenceFrames;
+  }
+  EXPECT_EQ(totalSilence, 4 * kTickFrames) << "5 silent ticks fill the 80ms gap after t=100ms";
+
+  // Tick 10: the guest RESUMES. The real buffer must land at the position that
+  // matches wall time on the shared epoch (10 ticks == 200ms == 9600 frames),
+  // NOT back-to-back after tick 4 (that would be a 100ms drift EARLIER of
+  // program). Silence-fill covered ticks 5..9 exactly.
+  const std::int64_t resumeNow = 10 * 20 * kMs;
+  const auto resume = clock.isoAudioAdvance(resumeNow, src, kTickFrames, kRate);
+  EXPECT_EQ(resume.realPts100ns, 200 * kMs) << "resumed buffer must land at 200ms, not drift";
+  EXPECT_EQ(clock.isoAudioSamples(src), 10 * kTickFrames + kTickFrames);
+
+  // Two sources are INDEPENDENT (own accumulators) but share the one epoch, so a
+  // clap at the same wall time lands at the same position on both stems.
+  const auto a = clock.isoAudioAdvance(300 * kMs, "zoom:X", kTickFrames, kRate);
+  const auto b = clock.isoAudioAdvance(300 * kMs, "zoom:Y", kTickFrames, kRate);
+  EXPECT_EQ(a.realPts100ns, b.realPts100ns);
+  EXPECT_EQ(a.realPts100ns, 300 * kMs);
+}
+
+// A stem that FIRST delivers audio well after the epoch (a guest silent for the
+// show's opening) silence-fills from the epoch so its track still starts at t=0,
+// staying aligned to program — the leading silence is chunked by the writer.
+TEST(RecordingPtsClock, IsoAudioLateStartSilenceFillsFromEpoch) {
+  corevideo::modules::RecordingPtsClock clock;
+  ASSERT_TRUE(clock.videoPts(0, 1).has_value());  // epoch at t=0
+  // First audio for this source arrives at t=5s.
+  const auto adv = clock.isoAudioAdvance(5000 * kMs, "zoom:Late", 960, 48000);
+  EXPECT_EQ(adv.silencePts100ns, 0) << "leading silence must start at the epoch (t=0)";
+  EXPECT_EQ(adv.silenceFrames, 5 * 48000) << "5s of leading silence at 48kHz";
+  EXPECT_EQ(adv.realPts100ns, 5000 * kMs) << "real audio lands at its wall position";
+}
+
 // ---------------------------------------------------------------------------
 // Regression: the 2026-07-13 alpha-blocking zero-audio-recording bug.
 //
@@ -393,10 +463,13 @@ TEST(RecordingPtsClock, IsoVideoStaysStrictlyMonotonicPerSource) {
 // a video-only MP4 while the master bus carried live program audio.
 // ---------------------------------------------------------------------------
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -593,6 +666,124 @@ TEST(EncoderRecordingSession, MediaFoundationIsoRefusesBadFolderLoudly) {
   EXPECT_TRUE(session.isoStreams.empty());
   encoder->stopRecording();
   encoder.reset();
+}
+
+namespace {
+// One tick of a distinct-frequency raw-stem for `sourceId` (so two ISO writers
+// carry DIFFERENT audio content, not the same program mix).
+corevideo::modules::IsoSourceAudio makeIsoTone(const std::string& sourceId, int frameCount,
+                                               int channels, double freqHz, int64_t startFrame) {
+  corevideo::modules::IsoSourceAudio iso;
+  iso.sourceId = sourceId;
+  iso.frameCount = frameCount;
+  iso.channels = channels;
+  iso.sampleRate = 48000;
+  iso.pcm.resize(static_cast<size_t>(frameCount) * channels);
+  for (int i = 0; i < frameCount; ++i) {
+    const double t = static_cast<double>(startFrame + i) / 48000.0;
+    const float s = static_cast<float>(0.25 * std::sin(2.0 * 3.14159265358979 * freqHz * t));
+    for (int c = 0; c < channels; ++c) iso.pcm[static_cast<size_t>(i) * channels + c] = s;
+  }
+  return iso;
+}
+}  // namespace
+
+// ISO-2: each ISO writer muxes its OWN raw-stem audio (self-contained A+V), the
+// #286 per-ISO-writer audio-stream reset holds across a double start (a reused
+// ISO writer must NOT lose its audio track), silence-fill advances a gapped stem,
+// and PROGRAM A+V is never regressed with ISO AUDIO enabled.
+TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso2-audio";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso2-show";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 4;
+  request.isoSources = {{"zoom:A", "Alice"}, {"zoom:B", "Bob Jones"}};
+  encoder->configureRecording(request);
+
+  // #286 double-start: arm then restart. Every ISO writer's audioConfigured_
+  // must reset in Mp4Writer::open() so the reused writer re-adds its AAC stream.
+  encoder->start({"recording"}, {});
+  encoder->start({"recording"}, {});
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+
+  // 20 ticks. Source A talks the whole time (mono 220Hz). Source B is SILENT for
+  // ticks 5..14 (submitted with empty PCM → silence-fill), talking otherwise
+  // (mono 440Hz) — proves distinct content AND the gapped-stem silence-fill.
+  int64_t aFrames = 0;
+  int64_t bFrames = 0;
+  for (int i = 0; i < 20; ++i) {
+    frame.frameNumber = i + 1;
+    encoder->submit(frame);
+    encoder->submitIsoVideo({makeIsoI420("zoom:A", 320, 240, i, 90),
+                             makeIsoI420("zoom:B", 640, 360, i, 200)});
+    encoder->submitAudio(programPcm.data(), 960, 2, 48000);
+
+    std::vector<corevideo::modules::IsoSourceAudio> isoAudio;
+    isoAudio.push_back(makeIsoTone("zoom:A", 960, 1, 220.0, aFrames));
+    aFrames += 960;
+    if (i < 5 || i >= 15) {
+      isoAudio.push_back(makeIsoTone("zoom:B", 960, 1, 440.0, bFrames));
+      bFrames += 960;
+    } else {
+      corevideo::modules::IsoSourceAudio silent;  // gated: empty → silence-fill
+      silent.sourceId = "zoom:B";
+      silent.sampleRate = 48000;
+      isoAudio.push_back(silent);
+    }
+    encoder->submitIsoAudio(isoAudio);
+  }
+
+  const auto session = encoder->session();
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  // PROGRAM NOT REGRESSED: A+V both present WITH ISO audio enabled (#286 class).
+  EXPECT_GT(session.recordingVideoFrameCount, 0);
+  EXPECT_GT(session.recordingAudioPacketCount, 0) << session.recordingWarning;
+  ASSERT_EQ(session.isoStreams.size(), 2u);
+  for (const auto& iso : session.isoStreams) {
+    EXPECT_TRUE(iso.trackOpen) << iso.sourceId << ": " << iso.warning;
+    EXPECT_TRUE(iso.warning.empty()) << iso.warning;
+    // Each ISO muxed its OWN audio (silence + real), so the AAC track is present.
+    EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId << " lost its audio track";
+  }
+
+  encoder->stopRecording();
+
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path dir(session.recordingSessionDir);
+  const auto aPath = dir / "ISO-01-Alice.mp4";
+  const auto bPath = dir / "ISO-02-Bob-Jones.mp4";
+  EXPECT_TRUE(fs::exists(aPath));
+  EXPECT_TRUE(fs::exists(bPath));
+  EXPECT_GT(fs::file_size(aPath, ec), 0u);
+  EXPECT_GT(fs::file_size(bPath, ec), 0u);
+
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
 }
 
 #endif  // !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
