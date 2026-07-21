@@ -430,6 +430,66 @@ before first frames, then silent. Companion audit: `WgcSession` was the ONLY fre
 callback in the capture layer — `UvcCaptureSession` owns its pull thread and signal+joins in
 its destructor — so the WGC teardown-drain fix closed that crash class everywhere.
 
+## ISO recording — ISO-1 (per-source Zoom VIDEO ISO, 2026-07-20)
+
+`docs/iso-record-spec.md` is the source of truth; ISO-1 ships the video slice for
+Zoom participants (audio stems = ISO-2, capture sources = ISO-3, UI/pre-flight =
+ISO-4). What landed:
+
+- **The encoder boundary is widened, not rebuilt.** The MF sink already held
+  `Mp4Writer program_` + N ISO writers on ONE shared `RecordingPtsClock`. ISO-1
+  stops feeding ISO writers the composed program frame and instead carries each
+  source's OWN video across `IEncoderSink::submitIsoVideo(vector<IsoSourceVideoFrame>)`
+  (`Interfaces.h`). The frames are **zero-copy** — `VideoFrame` holds `shared_ptr`
+  I420/BGRA payloads, so the whole hop (render gather under `coreMutex` →
+  `latestIsoSourceFrames_` → `gatherAudioOutputWork` `work.isoSources` → async
+  sink) copies refs, never pixels. Any I420→NV12 interleave happens on the
+  **AsyncEncoderSink writer thread** (`i420ToNv12` in `MediaFoundationEncoderAdapter.cpp`),
+  never under a lock or the audio worker. The convert law holds.
+- **NV12 input path on `Mp4Writer`** (`VideoInput::Nv12`): Zoom I420 needs no CPU
+  color-convert — the writer opens LAZILY at the source's FIRST frame, sized to
+  that frame's native dims (no scaling), and picks NV12 input for `zoom:` sources
+  / RGB32(BGRA) for capture (ISO-3). Program keeps its BGRA path untouched.
+- **Per-`(sourceId,frameId)` PTS dedup** on the SAME epoch (`RecordingPtsClock::videoPtsForSource`):
+  the audio worker re-submits every selected source's latest frame each tick, and
+  each source advances on its own Zoom frameId, so a per-source last-frameId map
+  (one shared epoch) muxes each real frame once. Proven headless: two ISO guests
+  recorded **different** frame counts (402 vs 375 over 12s) — real per-source
+  video, not the program proxy, and deduped well below the ~50/s resubmit rate.
+- **Folder scheme + manifest (spec §5):** per-session subfolder
+  `<prefix>-<yyyymmdd-hhmmss>/` with `Program.mp4` + `ISO-NN-<SafeName>.mp4`
+  (roster/display name, sanitized, selection order) + `manifest.json`
+  ({sessionId, epochMs, entries[{sourceId,name,path,kind}]}). `sanitizeForFilename`
+  in the core mirrors `sanitizeIsoName` in `src/engine/isoRecording.ts` (the older
+  planner was reconciled to this scheme — `ISO-NN-*.mp4`, no more `track-NN-*.mov`).
+- **Command surface:** `isoParticipantIds` generalized → `isoSourceIds` accepting
+  `zoom:<pid>` (capture ids arrive in ISO-3), with back-compat parse (a bare id =
+  `zoom:<id>`) across all THREE mirrors in lockstep: `Protocol.h` (capability),
+  `native-core/src/protocol.ts` (types), and the core parser
+  (`MediaCore::readIsoSourceIds`/`normalizeIsoSourceId`). `src/engine/isoRecording.ts`
+  reconciled. A "Program only ↔ Program + ISOs" switch is a payload flag; per-source
+  selection is `isoSourceIds` (UI wiring is ISO-4).
+- **Loud, never silent (spec §4/§7):** the silent `%TEMP%` fallback is KILLED for
+  ISO — a bad/uncreatable target or session subfolder → `recording.warning` +
+  ISO refused, program still records (priority-1). Per-ISO-writer open/write
+  failures fold into `recording.warning` with the source name AND surface per
+  stream in `recording.streams[]` ({sourceId, displayName, path, kind:"iso",
+  framesWritten, warning, trackOpen}). A video-only-broken ISO is as loud as
+  #286 made a video-only program. Each ISO writer finalizes independently on stop
+  (its own moov, no 0-byte tails).
+- **INVARIANTS honored:** lock order `coreMutex → audioOutputMutex_ → …`
+  unchanged; ISO gather is under `coreMutex` (zero-copy refs), encode under the
+  async sink; ISO frames drop-to-latest under disk pressure (video budget in
+  `AsyncEncoderSink`), NEVER program A/V. **PROGRAM IS NEVER REGRESSED** — proven
+  both ways: `EncoderRecordingSession.MediaFoundationIsoWritersProduceIndependentPlayableFiles`
+  (program A+V green with 2 ISO writers present) and
+  `validate-record-audio.mjs` (program A+V unchanged with ISO disabled).
+- **Tests:** `EncoderRecordingSessionTest.cpp` (RecordingPtsClock per-source
+  dedup + monotonic; real-MF N-writer open/reset #286 shape, NV12 playable,
+  independent finalize, bad-folder-loud) + headless
+  `node scripts/validate-iso-record.mjs` (fake engine, ISO on 2 → 2 ISO mp4s with
+  h264 video, deduped). ISO-2 extends it into A+V + clap alignment.
+
 ## Current state addendum (2026-07-13, the zero-audio recording bug)
 
 **Recordings muxed ZERO audio while the master bus carried signal — FIXED.** Root
