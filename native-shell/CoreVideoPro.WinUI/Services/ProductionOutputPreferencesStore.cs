@@ -24,7 +24,13 @@ public sealed class ProductionOutputPreferences
     // SELECTION, not per slot: the isolated host runs ONE instance per
     // selection, so two chips naming the same plugin share one state by
     // construction. Not a secret-bearing field (plugin DSP settings).
-    public const int CurrentVersion = 7;
+    // v8 (ISO-record-spec §7, ISO-4): the operator's ISO recording selection
+    // persists — the "Program + ISOs" master switch (IsoRecordingEnabled) and
+    // the set of canonical ISO source ids (IsoRecordingSourceIds:
+    // "zoom:<pid>"/"capture:<id>"). Older files migrate with enabled=false + an
+    // empty set = program-only (byte-identical to the pre-ISO product). Not
+    // secret-bearing (source ids are per-meeting handles, not credentials).
+    public const int CurrentVersion = 8;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -109,6 +115,15 @@ public sealed class ProductionOutputPreferences
     // by pushing every entry to the core (which re-injects after host
     // respawns too).
     public Dictionary<string, string> VstInsertStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    // v8 (ISO-4, spec §7): the "Program only" ↔ "Program + ISOs" master switch.
+    // Default false = program-only. Not secret-bearing.
+    public bool IsoRecordingEnabled { get; set; }
+
+    // v8 (ISO-4): the operator's per-source ISO selection — canonical scheme-qualified
+    // source ids ("zoom:<pid>" / "capture:<id>"). zoom: ids are per-meeting handles;
+    // capture: ids are stable across sessions. Not secret-bearing.
+    public List<string> IsoRecordingSourceIds { get; set; } = [];
 
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops

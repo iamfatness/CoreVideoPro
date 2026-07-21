@@ -162,7 +162,10 @@ public sealed record MediaCoreRecordingTargetsWire(
     string FilenamePrefix,
     string Format,
     string Quality,
-    IReadOnlyList<string> IsoParticipantIds);
+    IReadOnlyList<string> IsoParticipantIds,
+    // Canonical scheme-qualified ISO selection (`zoom:<pid>` / `capture:<id>`). The core
+    // prefers this over IsoParticipantIds (the legacy bare-id list, kept for back-compat).
+    IReadOnlyList<string>? IsoSourceIds = null);
 
 public sealed record MediaCoreStreamDestinationWire(
     string Id,

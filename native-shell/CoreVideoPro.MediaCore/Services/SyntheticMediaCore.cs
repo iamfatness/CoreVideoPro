@@ -65,7 +65,12 @@ public static class SyntheticMediaCore
         var sceneId = TryGetString(sceneGraph, "sceneId") ?? "idle";
         var routeCount = TryGetRouteCount(sceneGraph);
         var outputs = TryGetStringArray(outputCommand, "destinations");
-        var isoParticipantIds = TryGetStringArray(outputCommand, "isoParticipantIds");
+        // Prefer the canonical scheme-qualified selection (ISO-4), fall back to the legacy
+        // bare-id list — mirrors the native core's readIsoSourceIds preference.
+        var isoSourceIds = TryGetStringArray(outputCommand, "isoSourceIds");
+        var isoParticipantIds = isoSourceIds.Count > 0
+            ? isoSourceIds
+            : TryGetStringArray(outputCommand, "isoParticipantIds");
         var recordingOutputProfile = TryGetObject(outputCommand, "recordingOutputProfile") ??
             TryGetObject(recordingCommand, "renderProfile");
         var recordingCodec = NormalizeVideoCodec(TryGetString(recordingOutputProfile, "codec"));

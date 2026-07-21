@@ -606,6 +606,59 @@ capture-generic in ISO-1/2 — the delta is small and surgical:
   live camera. `validate-iso-record.mjs` (Zoom) still PASSES (2 ISO A+V streams,
   clap 0.0 ms) — proof ISO-1/2 is not regressed.
 
+## ISO recording — ISO-4 (disk pre-flight + support-bundle health + Show-mode UI, 2026-07-21)
+
+ISO-4 is the operator-facing polish; it adds NO new media protocol beyond the
+`isoSourceIds` selection ISO-1/2/3 already defined, and — critically — **program
+recording is never regressed**: the new "Program + ISOs" switch DEFAULTS OFF, so a
+fresh install records program-only exactly like the pre-ISO product (no ISO writers
+arm). Four pieces:
+
+- **Disk pre-flight (spec §6) is SHELL-SIDE by design.** `IsoDiskPreflight.Evaluate`
+  (`CoreVideoPro.MediaCore/Services/IsoDiskPreflight.cs`, pure/unit-tested) ports the
+  TS `isoRecording.ts`/`diskSpace.ts` math: combined rate = program bitrate + N×6.192
+  Mbps (1080p video + one raw-stem AAC), vs free bytes on the target volume
+  (`DriveInfo`). Runs at the top of `StudioViewModel.ToggleRecordingAsync` BEFORE
+  arming: **Insufficient** (< 5 min headroom) hard-blocks the start with a loud
+  `OutputStatus`; **Low** (< 30 min planning window) sets a persistent
+  `RecordingDiskWarning` (surfaced in the record flyout, survives the "start
+  requested" status) but proceeds; an unmeasurable volume never blocks (warn-not-
+  silent). No core/protocol/snapshot field — the shell already owns the folder,
+  program bitrate, and ISO selection, so core-side would need a needless 3-mirror
+  protocol change.
+- **Support-bundle ISO health (spec §6, DoD).** `NativeMediaCoreRecordingStream` (wire)
+  + `SupportBundleMediaCoreRecordingStream` (model) gained `SourceId/DisplayName/Path/
+  AudioSamples/HasAudio` (camelCase deserialize auto-populates the ISO-1/2/3 snapshot
+  fields that were previously dropped). `SupportBundleBuilder` maps them + adds an "ISO
+  recordings: N stream(s)…" triage block listing each ISO's path + encode health.
+  Paths are NOT secrets and are emitted verbatim; redaction stays green (no new field
+  carries a key/token) — `SupportBundleBuilderTests.Build_ListsIsoStreamPathsAndEncodeHealth`.
+- **Show-mode UI (spec §7, N1).** A transport-level **"Program only" ↔ "Program +
+  ISOs"** ToggleSwitch in the record-output flyout (`StudioWorkspace.xaml`) bound to
+  `IsoRecordingEnabled`; a per-source **"ISO" checkbox** on each eligible row in
+  Sources → Inputs (`SourcesInputsPage.xaml`, `ShowInputSlotViewModel.IsoEnabled`/
+  `ShowIsoToggle` — Zoom guests + capture devices only, media excluded); and an **ISO
+  health readout** ("Program + N ISOs" + first per-stream warning) that reuses the
+  recording-warning surface. **0xc000027b-safe:** the toggle rides the EXISTING
+  signature-gated `ShowInputEditors` collection (never a new snapshot-rate bound
+  collection; re-projected in place via `ApplyIsoSelectionToEditors` under the same
+  id-set signature as `RefreshShowInputEditors`); ISO health strings are scalar props
+  notified per snapshot apply (the `WorkspaceCompGrLevel` pattern), UI mutations via
+  `RunOnUiThread`.
+- **The pure selection logic is EXTRACTED and tested.** `IsoSourceSelectionResolver`
+  (MediaCore) turns (enabled, selected set, eligible-present roster) → ordered
+  `isoSourceIds` (OFF → empty; drops departed sources; deduped; capped at 8) — so the
+  logic trapped in `StudioViewModel` (`BuildIsoSourceTargets`) is unit-tested without
+  the VM. The command builder now emits canonical `isoSourceIds` (`zoom:<pid>`/
+  `capture:<id>`) on all three recording payloads (the core prefers it over legacy
+  `isoParticipantIds`; `SyntheticMediaCore` mirrors the preference).
+- **Persistence: prefs schema v8.** `ProductionOutputPreferences.IsoRecordingEnabled` +
+  `IsoRecordingSourceIds` persist the switch + selection; restore rides the O1/vcam
+  BACKING-FIELD pattern (a setter would sync a core that isn't up), re-projected onto
+  the editors on first `RefreshShowInputEditors`. v7→v8 migrates to program-only
+  defaults. (v7 was the true current version — the "v6" in the B2 notes was stale; v7
+  added VstInsertStates.)
+
 ## Current state addendum (2026-07-13, the zero-audio recording bug)
 
 **Recordings muxed ZERO audio while the master bus carried signal — FIXED.** Root

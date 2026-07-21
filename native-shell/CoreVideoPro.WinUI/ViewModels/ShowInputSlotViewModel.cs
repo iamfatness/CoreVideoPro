@@ -13,24 +13,30 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     private readonly Func<string?, string, string> _resolveDisplayName;
     // (canonical source id, new name | null-to-reset) -> persist the override.
     private readonly Action<string?, string?> _setDisplayName;
+    // ISO-4: (canonical source id, enabled) -> update the operator's ISO selection.
+    private readonly Action<string?, bool> _onIsoToggled;
     private IReadOnlyList<Participant> _participants = [];
     private IReadOnlyList<CaptureDevice> _captureDevices = [];
     private IReadOnlyList<AudioCaptureDevice> _audioDevices = [];
     private IReadOnlyList<MediaAsset> _mediaAssets = [];
     private bool _suppressChangedCallback;
+    private bool _isoEnabled;
+    private bool _suppressIsoCallback;
 
     public ShowInputSlotViewModel(
         ShowInputSlot slot,
         Action onChanged,
         Action<string?, string?>? onAudioDeviceChanged = null,
         Func<string?, string, string>? resolveDisplayName = null,
-        Action<string?, string?>? setDisplayName = null)
+        Action<string?, string?>? setDisplayName = null,
+        Action<string?, bool>? onIsoToggled = null)
     {
         _slot = slot;
         _onChanged = onChanged;
         _onAudioDeviceChanged = onAudioDeviceChanged ?? ((_, _) => { });
         _resolveDisplayName = resolveDisplayName ?? ((_, derived) => derived);
         _setDisplayName = setDisplayName ?? ((_, _) => { });
+        _onIsoToggled = onIsoToggled ?? ((_, _) => { });
         _slot.PropertyChanged += (_, _) =>
         {
             // Re-raise the VM's bound properties on ANY underlying model change. The roster
@@ -148,6 +154,61 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     public bool IsSourcePickerEnabled => _slot.IsSourcePickerEnabled;
 
     public bool ShowInShowToggle => true;
+
+    /// <summary>ISO-4: this source is eligible for per-source ISO recording — an assigned,
+    /// video-bearing Zoom guest or capture device (media playout is a non-goal). Drives
+    /// visibility of the per-row "ISO" toggle.</summary>
+    public bool ShowIsoToggle => IsAssigned && Kind switch
+    {
+        ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or
+        ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or
+        ShowInputKind.Browser => true,
+        _ => false
+    };
+
+    /// <summary>ISO-4: whether this source is selected for ISO recording. TwoWay-bound to the
+    /// per-row "ISO" checkbox; toggling raises the ISO callback so the StudioViewModel updates
+    /// (and persists) the operator's ISO selection. Re-projected in place from the persisted
+    /// selection via <see cref="SetIsoSelected"/> on every roster apply.</summary>
+    public bool IsoEnabled
+    {
+        get => _isoEnabled;
+        set
+        {
+            if (_isoEnabled == value)
+            {
+                return;
+            }
+
+            _isoEnabled = value;
+            OnPropertyChanged(nameof(IsoEnabled));
+            if (!_suppressIsoCallback)
+            {
+                _onIsoToggled(SourceId, value);
+            }
+        }
+    }
+
+    /// <summary>Set the ISO-selected state WITHOUT firing the toggle callback (used when the
+    /// StudioViewModel re-projects the persisted selection onto the row).</summary>
+    public void SetIsoSelected(bool enabled)
+    {
+        if (_isoEnabled == enabled)
+        {
+            return;
+        }
+
+        _suppressIsoCallback = true;
+        try
+        {
+            _isoEnabled = enabled;
+            OnPropertyChanged(nameof(IsoEnabled));
+        }
+        finally
+        {
+            _suppressIsoCallback = false;
+        }
+    }
 
     public bool ShowAudioDevicePicker => _slot.IsAudioPickerEnabled;
 
@@ -368,6 +429,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SourceId));
         OnPropertyChanged(nameof(DisplayName));
         OnPropertyChanged(nameof(IsDisplayNameEditable));
+        OnPropertyChanged(nameof(ShowIsoToggle));
     }
 
     private void SyncAudioDeviceFromCaptureDevice()
@@ -405,6 +467,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SourceId));
         OnPropertyChanged(nameof(DisplayName));
         OnPropertyChanged(nameof(IsDisplayNameEditable));
+        OnPropertyChanged(nameof(ShowIsoToggle));
     }
 
     private void OnPropertyChanged(string propertyName) =>

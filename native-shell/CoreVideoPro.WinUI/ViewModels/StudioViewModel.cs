@@ -154,6 +154,209 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
+    // ── ISO recording (ISO-4, spec §7 — Show-mode progressive disclosure) ──────────
+    // The transport-level "Program only" ↔ "Program + ISOs" master switch. OFF (the
+    // default) = program-only: NO ISO writers arm and the recording-arm path is
+    // behaviorally identical to the pre-ISO product. Persisted in
+    // ProductionOutputPreferences (v8); restore sets the backing field directly (the O1
+    // vcam pattern), so this handler only fires on real operator changes.
+    [ObservableProperty]
+    private bool _isoRecordingEnabled;
+
+    // Operator's per-source ISO selection: canonical scheme-qualified source ids
+    // (`zoom:<pid>` / `capture:<id>`). The per-source ISO toggles in the Sources tab drive
+    // it; it is re-projected onto the ShowInput editors on every apply. Persisted (v8).
+    private readonly HashSet<string> _isoSelectedSourceIds = new(StringComparer.Ordinal);
+
+    partial void OnIsoRecordingEnabledChanged(bool value)
+    {
+        SaveProductionOutputPreferences();
+        ApplyIsoSelectionToEditors();
+        RefreshIsoReadouts();
+        // Arm/disarm ISO writers if a recording is live; otherwise the next arm picks it up.
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    /// <summary>Callback from a Sources-tab per-source ISO toggle. Updates the persisted
+    /// selection and re-syncs (arming/disarming that ISO writer when recording is live).</summary>
+    private void OnShowInputIsoToggled(string? sourceId, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        var changed = enabled ? _isoSelectedSourceIds.Add(sourceId) : _isoSelectedSourceIds.Remove(sourceId);
+        if (!changed)
+        {
+            return;
+        }
+
+        SaveProductionOutputPreferences();
+        RefreshIsoReadouts();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    /// <summary>Re-project the persisted ISO selection + eligibility onto the live editor
+    /// rows (in place — never a collection rebuild; obeys the 0xc000027b rules). Suppresses
+    /// the toggle callback so a re-projection never loops back into a save/sync.</summary>
+    private void ApplyIsoSelectionToEditors()
+    {
+        foreach (var editor in ShowInputEditors)
+        {
+            editor.SetIsoSelected(editor.SourceId is { Length: > 0 } id && _isoSelectedSourceIds.Contains(id));
+        }
+    }
+
+    /// <summary>ISO health readouts are scalar computed props notified per snapshot apply
+    /// (the WorkspaceCompGrLevel pattern) — never a snapshot-rate bound collection.</summary>
+    private void RefreshIsoReadouts()
+    {
+        OnPropertyChanged(nameof(IsoArmedSummary));
+        OnPropertyChanged(nameof(IsoHealthWarning));
+        OnPropertyChanged(nameof(IsoHealthWarningVisibility));
+    }
+
+    /// <summary>"Program only" / "Program + N ISO(s)" readout for the transport/record area.
+    /// While recording, counts the live ISO streams from the snapshot; otherwise the armed
+    /// selection.</summary>
+    public string IsoArmedSummary
+    {
+        get
+        {
+            if (!IsoRecordingEnabled)
+            {
+                return "Program only";
+            }
+
+            int armed;
+            var streams = _bridge.LastSnapshot?.Recording?.Streams;
+            if (Recording && streams is { Count: > 0 })
+            {
+                armed = streams.Count(stream =>
+                    !string.Equals(stream.Kind, "program", StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                armed = IsoSourceSelectionResolver
+                    .Resolve(true, _isoSelectedSourceIds, ComputeEligiblePresentIsoSourceIds())
+                    .Count;
+            }
+
+            return armed == 0
+                ? "Program + ISOs (no sources selected)"
+                : $"Program + {armed} ISO{(armed == 1 ? string.Empty : "s")}";
+        }
+    }
+
+    /// <summary>First per-stream ISO warning from the recording snapshot (reuses the loud
+    /// recording-warning channel), or null when every ISO is healthy.</summary>
+    public string? IsoHealthWarning
+    {
+        get
+        {
+            var streams = _bridge.LastSnapshot?.Recording?.Streams;
+            if (streams is null)
+            {
+                return null;
+            }
+
+            foreach (var stream in streams)
+            {
+                if (string.Equals(stream.Kind, "program", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(stream.Warning))
+                {
+                    continue;
+                }
+
+                var name = string.IsNullOrWhiteSpace(stream.DisplayName)
+                    ? stream.SourceId ?? stream.ParticipantId ?? "ISO"
+                    : stream.DisplayName;
+                return $"{name}: {stream.Warning}";
+            }
+
+            return null;
+        }
+    }
+
+    public Microsoft.UI.Xaml.Visibility IsoHealthWarningVisibility =>
+        string.IsNullOrWhiteSpace(IsoHealthWarning)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    // ISO-4 (spec §6): a persistent low-disk-space warning set by the recording-arm
+    // pre-flight (survives the transient "start requested" status). Null when disk is ample.
+    [ObservableProperty]
+    private string? _recordingDiskWarning;
+
+    partial void OnRecordingDiskWarningChanged(string? value) =>
+        OnPropertyChanged(nameof(RecordingDiskWarningVisibility));
+
+    public Microsoft.UI.Xaml.Visibility RecordingDiskWarningVisibility =>
+        string.IsNullOrWhiteSpace(RecordingDiskWarning)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    /// <summary>ISO-4 (spec §6): evaluate free space on the recording target volume against
+    /// the program + selected-ISO write rate. Returns false (skip — never block) when the
+    /// volume can't be measured. Shell-side by design: no core protocol/snapshot field is
+    /// needed — the shell already owns the folder, program bitrate, and ISO selection.</summary>
+    private bool TryEvaluateRecordingDiskPreflight(out IsoDiskPreflightResult result)
+    {
+        result = null!;
+        var folder = NormalizeOutputText(RecordingTargetFolder, ResolveDefaultRecordingFolder());
+        if (!TryGetVolumeFreeBytes(folder, out var freeBytes))
+        {
+            return false;
+        }
+
+        var programBitrateMbps = NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps);
+        var isoCount = BuildIsoSourceTargets().SourceIds.Count;
+        result = IsoDiskPreflight.Evaluate(programBitrateMbps, isoCount, freeBytes);
+        return true;
+    }
+
+    /// <summary>Free bytes on the volume that holds <paramref name="folder"/>. Walks up to an
+    /// existing ancestor so a not-yet-created target folder still resolves its drive.</summary>
+    private static bool TryGetVolumeFreeBytes(string folder, out long freeBytes)
+    {
+        freeBytes = 0;
+        try
+        {
+            var dir = folder;
+            while (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+            {
+                var parent = System.IO.Path.GetDirectoryName(dir);
+                if (string.IsNullOrEmpty(parent) || string.Equals(parent, dir, StringComparison.Ordinal))
+                {
+                    dir = parent ?? string.Empty;
+                    break;
+                }
+
+                dir = parent;
+            }
+
+            var root = System.IO.Path.GetPathRoot(string.IsNullOrEmpty(dir) ? folder : dir);
+            if (string.IsNullOrEmpty(root))
+            {
+                return false;
+            }
+
+            var drive = new System.IO.DriveInfo(root);
+            if (!drive.IsReady)
+            {
+                return false;
+            }
+
+            freeBytes = drive.AvailableFreeSpace;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public string VirtualCameraStatusLabel
     {
         get
@@ -3984,6 +4187,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             $"format={NormalizeRecordingFormat(RecordingFormat)} " +
             $"bitrate={NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps):0.0}Mbps " +
             $"codec={RecordingVideoCodec}");
+
+        // ISO-4 (spec §6): disk pre-flight BEFORE arming, not a mid-show surprise.
+        // Genuinely-insufficient space hard-blocks the start; low space warns loudly (a
+        // persistent RecordingDiskWarning that survives the "start requested" status) but
+        // proceeds; an unmeasurable volume never blocks (warn-not-silent). The `finally`
+        // resets _recordingToggleInFlight on the early return.
+        if (starting)
+        {
+            RecordingDiskWarning = null;
+            if (TryEvaluateRecordingDiskPreflight(out var preflight))
+            {
+                if (preflight.ShouldBlock)
+                {
+                    LaunchLog.Write($"recording: start BLOCKED by disk pre-flight — {preflight.Message}");
+                    OutputStatus = preflight.Message;
+                    OutputSessionStatus = OutputStatus;
+                    RefreshOutputStatus();
+                    return;
+                }
+
+                if (preflight.ShouldWarn)
+                {
+                    LaunchLog.Write($"recording: disk pre-flight WARNING — {preflight.Message}");
+                    RecordingDiskWarning = preflight.Message;
+                }
+            }
+        }
+        else
+        {
+            RecordingDiskWarning = null;
+        }
 
         Recording = starting;
         RefreshOutputStatus();
@@ -7906,6 +8140,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AutomationTakeModeLabel));
         OnPropertyChanged(nameof(CaptionQualitySummary));
         RefreshAudioReadoutBindings();
+        // ISO-4: "N ISOs armed" + per-stream health, scalar props per snapshot apply.
+        RefreshIsoReadouts();
         EvaluateAutomationPolicy();
     }
 
@@ -9581,12 +9817,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioMixChannels();
         var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
 
-        var isoParticipantIds = BuildIsoParticipantTargets();
-
-        if (isoParticipantIds.Count == 0)
-        {
-            isoParticipantIds = MediaCoreProductionSyncContext.DefaultRecordingTargets.IsoParticipantIds.ToList();
-        }
+        var isoTargets = BuildIsoSourceTargets();
 
         var playbackSelection = MediaRoutePlaybackService.ResolvePlaybackSelection(
             SelectedMediaAssetId,
@@ -9654,7 +9885,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RecordingVideoCodec,
                 NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps),
                 NormalizeAudioBitrateKbps(RecordingAudioBitrateKbps)),
-            RecordingTargets = BuildRecordingTargets(isoParticipantIds),
+            RecordingTargets = BuildRecordingTargets(isoTargets.SourceIds, isoTargets.ParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
                     graphic.Id,
@@ -10295,65 +10526,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtKeyLength,
             StreamSrtPassphrase);
 
-    private MediaCoreRecordingTargetsWire BuildRecordingTargets(IReadOnlyList<string> isoParticipantIds) =>
+    private MediaCoreRecordingTargetsWire BuildRecordingTargets(
+        IReadOnlyList<string> isoSourceIds,
+        IReadOnlyList<string> isoParticipantIds) =>
         new(
             TargetFolder: NormalizeOutputText(RecordingTargetFolder, ResolveDefaultRecordingFolder()),
             FilenamePrefix: NormalizeOutputText(RecordingFilenamePrefix, MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix),
             Format: NormalizeRecordingFormat(RecordingFormat),
             Quality: NormalizeRecordingQuality(RecordingQuality),
-            IsoParticipantIds: isoParticipantIds.Take(8).ToList());
+            IsoParticipantIds: isoParticipantIds,
+            IsoSourceIds: isoSourceIds);
 
-    private IReadOnlyList<string> BuildIsoParticipantTargets()
+    /// <summary>
+    /// ISO-4 (spec §7): resolve the operator's ISO recording selection into the canonical
+    /// scheme-qualified `isoSourceIds` (plus the legacy bare-id projection). Gated by the
+    /// "Program + ISOs" master switch — OFF returns EMPTY so no ISO writers arm and program
+    /// recording is byte-identical to the program-only path. Pure logic lives in the
+    /// unit-tested <see cref="IsoSourceSelectionResolver"/>.
+    /// </summary>
+    private (IReadOnlyList<string> SourceIds, IReadOnlyList<string> ParticipantIds) BuildIsoSourceTargets()
     {
-        var ordered = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var cell in VideoRoutingMatrix.Rows
-            .SelectMany(row => row.Cells)
-            .Where(cell => cell.IsRouted && cell.Destination.Id.StartsWith("iso-", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(cell => cell.Destination.Id, StringComparer.Ordinal))
-        {
-            if (TryResolveRoutingSourceParticipantId(cell.SourceId, out var participantId) &&
-                seen.Add(participantId))
-            {
-                ordered.Add(participantId);
-            }
-        }
-
-        foreach (var participantId in GetMutableRoutes(ActiveSceneId)
-            .Where(route =>
-                route.AudioRole == SourceAudioRole.Isolated &&
-                route.ParticipantId is not null)
-            .Select(route => route.ParticipantId!)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(id => id, StringComparer.Ordinal))
-        {
-            if (seen.Add(participantId))
-            {
-                ordered.Add(participantId);
-            }
-        }
-
-        return ordered.Take(8).ToList();
+        var sourceIds = IsoSourceSelectionResolver.Resolve(
+            IsoRecordingEnabled,
+            _isoSelectedSourceIds,
+            ComputeEligiblePresentIsoSourceIds());
+        var participantIds = IsoSourceSelectionResolver.ToLegacyParticipantIds(sourceIds);
+        return (sourceIds, participantIds);
     }
 
-    private bool TryResolveRoutingSourceParticipantId(string sourceId, out string participantId)
+    /// <summary>
+    /// The currently ISO-eligible + present video-bearing source ids (`zoom:&lt;pid&gt;` /
+    /// `capture:&lt;id&gt;`), in roster order. Only assigned, non-missing Zoom guests and
+    /// capture devices are eligible (media playout is a non-goal). A selected source that
+    /// has since left / unplugged is excluded here, so no dangling ISO writer arms.
+    /// </summary>
+    private IReadOnlyList<string> ComputeEligiblePresentIsoSourceIds()
     {
-        participantId = string.Empty;
-        if (!TryParseInputSourceId(sourceId, out var slotNumber))
+        var list = new List<string>();
+        foreach (var editor in ShowInputEditors)
         {
-            return false;
+            if (editor.ShowIsoToggle && !editor.IsSourceMissing && editor.SourceId is { Length: > 0 } id)
+            {
+                list.Add(id);
+            }
         }
 
-        var slot = ShowInputs.FirstOrDefault(input => input.SlotNumber == slotNumber);
-        if (slot?.Kind != ShowInputKind.ZoomParticipant ||
-            string.IsNullOrWhiteSpace(slot.ParticipantId))
-        {
-            return false;
-        }
-
-        participantId = slot.ParticipantId;
-        return true;
+        return list;
     }
 
     private static string NormalizeOutputText(string? value, string fallback) =>
@@ -12218,6 +12436,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 pair => pair.Key,
                 pair => pair.Value,
                 StringComparer.OrdinalIgnoreCase),
+            // v8 (ISO-4): the "Program + ISOs" master switch + the operator's ISO source
+            // selection persist across launches.
+            IsoRecordingEnabled = IsoRecordingEnabled,
+            IsoRecordingSourceIds = _isoSelectedSourceIds
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList(),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -12348,6 +12572,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(VirtualCameraMirror));
         OnPropertyChanged(nameof(VirtualCameraDeviceName));
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+
+        // v8 (ISO-4): restore the ISO selection + "Program + ISOs" switch via the BACKING
+        // field (same reason as vcam above — the setter would sync a core that isn't up).
+        // The persisted selection rides the next full sync; the editors re-project it on
+        // their first RefreshShowInputEditors.
+        _isoRecordingEnabled = preferences.IsoRecordingEnabled;
+        _isoSelectedSourceIds.Clear();
+        foreach (var id in preferences.IsoRecordingSourceIds)
+        {
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                _isoSelectedSourceIds.Add(id);
+            }
+        }
+        OnPropertyChanged(nameof(IsoRecordingEnabled));
+        RefreshIsoReadouts();
 
         RestoreMasteringFromPreferences(preferences);
 
@@ -12573,7 +12813,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 OnShowInputChanged,
                 SetCaptureDeviceAudioSource,
                 ResolveSourceDisplayName,
-                SetSourceDisplayName));
+                SetSourceDisplayName,
+                OnShowInputIsoToggled));
         }
 
         RefreshShowInputEditors(force: true);
@@ -12613,9 +12854,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             editor.RefreshSourceOptions(RoomParticipantsForInputs, CaptureDevices, AudioCaptureDevices, mediaAssets);
         }
 
+        // ISO-4: re-project the persisted ISO selection onto the (in-place) editor rows so
+        // the per-source ISO toggle reflects the saved selection after roster churn. Gated
+        // on the SAME id-set signature above — never a per-tick rebuild (0xc000027b rules).
+        ApplyIsoSelectionToEditors();
+
         OnPropertyChanged(nameof(ShowInputSummary));
         OnPropertyChanged(nameof(MultiviewHeader));
         NotifyShowReadinessChanged();
+        RefreshIsoReadouts();
     }
 
     private void OnShowInputChanged() => ScheduleShowInputRefresh();
