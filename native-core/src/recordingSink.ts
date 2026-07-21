@@ -72,7 +72,7 @@ export class RecordingSink {
       stream.expectedFrames = (stream.expectedFrames ?? 0) + expectedFrames;
       stream.framesWritten += matchingFrames;
       stream.missingFrames = (stream.missingFrames ?? 0) + missingFrames;
-      stream.droppedFrames += matchingDropped;
+      stream.droppedFrames = (stream.droppedFrames ?? 0) + matchingDropped;
       stream.bytesWritten += matchingFrames * BYTES_PER_FRAME[stream.kind];
       stream.lastFrameTimestampMs = matchingFrames > 0 ? elapsedMs : stream.lastFrameTimestampMs;
     });
@@ -238,7 +238,7 @@ function sameTargets(session: MediaCoreRecordingSession, targets: MediaCoreRecor
 
 function updateSessionTotals(session: MediaCoreRecordingSession) {
   session.totalFramesWritten = session.streams.reduce((total, stream) => total + stream.framesWritten, 0);
-  session.totalDroppedFrames = session.streams.reduce((total, stream) => total + stream.droppedFrames, 0);
+  session.totalDroppedFrames = session.streams.reduce((total, stream) => total + (stream.droppedFrames ?? 0), 0);
   session.totalBytesWritten = session.streams.reduce((total, stream) => total + stream.bytesWritten, 0);
 }
 
@@ -288,7 +288,7 @@ function streamWarningFor(stream: MediaCoreRecordingStream) {
     return `${stream.participantId ?? "Unknown participant"} ISO has no clean participant frames.`;
   }
 
-  if (stream.droppedFrames > 0) {
+  if ((stream.droppedFrames ?? 0) > 0) {
     return stream.kind === "program" ? "Program recording is skipping dropped frames." : `${stream.participantId ?? "Unknown participant"} ISO is skipping dropped frames.`;
   }
 
