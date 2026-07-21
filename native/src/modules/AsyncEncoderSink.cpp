@@ -61,9 +61,9 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
     // Drop-to-latest / bounded backlog: when the pending count for this item's
     // media kind is at capacity, drop the OLDEST pending item of that kind so we
     // keep flowing the freshest frames rather than blocking or growing unbounded.
-    if (item.kind == Kind::Video || item.kind == Kind::Audio) {
+    if (item.kind == Kind::Video || item.kind == Kind::IsoVideo || item.kind == Kind::Audio) {
       const Kind kind = item.kind;
-      const size_t cap = kind == Kind::Video ? state_->maxVideoQueue : state_->maxAudioQueue;
+      const size_t cap = kind == Kind::Audio ? state_->maxAudioQueue : state_->maxVideoQueue;
       size_t pending = 0;
       for (const auto& queued : state_->queue) {
         if (queued.kind == kind) {
@@ -74,10 +74,13 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
           if (it->kind == kind) {
             state_->queue.erase(it);
-            if (kind == Kind::Video) {
-              state_->droppedVideo.fetch_add(1);
-            } else {
+            if (kind == Kind::Audio) {
               state_->droppedAudio.fetch_add(1);
+            } else {
+              // Video + IsoVideo both count as dropped video frames (ISO frames
+              // drop-to-latest under disk pressure — logged as ISO health, never
+              // program A/V, per spec §9).
+              state_->droppedVideo.fetch_add(1);
             }
             break;
           }
@@ -138,6 +141,18 @@ void AsyncEncoderSink::submit(const ProgramFrame& frame) {
   Item item;
   item.kind = Kind::Video;
   item.frame = frame;
+  enqueue(std::move(item));
+}
+
+void AsyncEncoderSink::submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) {
+  if (!state_->active.load() || sources.empty()) {
+    return;
+  }
+  // Zero-copy: the entries carry shared_ptr payloads, so this vector copy shares
+  // the source buffers (no pixel copy). Drops-to-latest with the video budget.
+  Item item;
+  item.kind = Kind::IsoVideo;
+  item.isoSources = sources;
   enqueue(std::move(item));
 }
 
@@ -217,6 +232,9 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           break;
         case Kind::Video:
           state->inner->submit(item.frame);
+          break;
+        case Kind::IsoVideo:
+          state->inner->submitIsoVideo(item.isoSources);
           break;
         case Kind::Audio:
           state->inner->submitAudio(item.audioPcm.data(), item.audioFrameCount, item.audioChannels,
