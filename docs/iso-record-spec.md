@@ -208,8 +208,20 @@ auto-import reads.
   holds/finalizes gracefully (dedup on held frameId → no churn), loud only on real failure.
   **Harness gap:** the fake engine is Zoom-only, so capture ISO is covered by real-MF unit
   tests + synthetic capture frames and is rig-verified only for a live camera.
-- **ISO-4 — polish.** Disk pre-flight gate, support-bundle ISO health, the Show-mode UI
-  switch + per-source toggles, quickstart note.
+- **ISO-4 — polish.** _(DELIVERED 2026-07-21.)_ Disk pre-flight gate, support-bundle ISO
+  health, the Show-mode UI switch + per-source toggles, quickstart note. Landed:
+  shell-side `IsoDiskPreflight` (ported TS math; DriveInfo free-space) in the
+  recording-arm path — genuinely-insufficient space hard-blocks arming, low space warns
+  loudly (persistent `RecordingDiskWarning`) but proceeds, unmeasurable never blocks;
+  support bundle lists every ISO `sourceId/displayName/path/frames/audioSamples/hasAudio/
+  warning` + a triage block (paths not secrets, redaction green); a transport "Program
+  only ↔ Program + ISOs" switch (default OFF = program-only, byte-identical to pre-ISO)
+  + per-source "ISO" toggles on eligible Sources → Inputs rows (Zoom guests + capture
+  devices), feeding `isoSourceIds`; ISO health readout ("Program + N ISOs" + per-stream
+  warning). 0xc000027b-safe: reuses the signature-gated `ShowInputEditors` collection
+  (no new snapshot-rate bound collection), scalar health props per snapshot apply. Pure
+  selection logic extracted to `IsoSourceSelectionResolver` (unit-tested); selection +
+  mode persist in ProductionOutputPreferences **v8**.
 
 Ship ISO-1+2 for Zoom before ISO-3 — the podcast/interview ICP (Zoom guests + host cam) is
 covered by 1+2+3, but Demo E is claimable after 1+2 on Zoom alone.

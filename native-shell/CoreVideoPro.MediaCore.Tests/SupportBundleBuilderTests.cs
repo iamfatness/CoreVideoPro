@@ -333,6 +333,87 @@ public sealed class SupportBundleBuilderTests
     }
 
     [Fact]
+    public void Build_ListsIsoStreamPathsAndEncodeHealth()
+    {
+        // ISO-4 DoD: the support bundle lists every ISO path + per-stream encode health.
+        var recording = BuildRecordingSession(null) with
+        {
+            Warning = "ISO cam0: writer failed to open its audio track",
+            Streams =
+            [
+                new NativeMediaCoreRecordingStream
+                {
+                    Kind = "program",
+                    Path = "Recordings/show/Program.mp4",
+                    Status = "writing",
+                    FramesWritten = 120,
+                    BytesWritten = 4096
+                },
+                new NativeMediaCoreRecordingStream
+                {
+                    Kind = "iso",
+                    SourceId = "zoom:p2",
+                    ParticipantId = "p2",
+                    DisplayName = "Bob",
+                    Path = "Recordings/show/ISO-01-Bob.mp4",
+                    Status = "writing",
+                    FramesWritten = 118,
+                    AudioSamples = 96000,
+                    HasAudio = true,
+                    BytesWritten = 2048
+                },
+                new NativeMediaCoreRecordingStream
+                {
+                    Kind = "iso",
+                    SourceId = "capture:cam0",
+                    DisplayName = "Logitech Cam",
+                    Path = "Recordings/show/ISO-02-Logitech-Cam.mp4",
+                    Status = "warning",
+                    FramesWritten = 40,
+                    HasAudio = false,
+                    BytesWritten = 512,
+                    Warning = "writer failed to open its audio track"
+                }
+            ]
+        };
+        var snapshot = BuildSampleSnapshot() with { Recording = recording };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+
+        var isoStreams = bundle.MediaCore!.Recording!.Streams
+            .Where(stream => stream.Kind == "iso")
+            .ToArray();
+        Assert.Equal(2, isoStreams.Length);
+
+        var bob = isoStreams.Single(stream => stream.SourceId == "zoom:p2");
+        Assert.Equal("Bob", bob.DisplayName);
+        Assert.Equal("Recordings/show/ISO-01-Bob.mp4", bob.Path);
+        Assert.Equal(96000, bob.AudioSamples);
+        Assert.True(bob.HasAudio);
+
+        var cam = isoStreams.Single(stream => stream.SourceId == "capture:cam0");
+        Assert.Equal("Recordings/show/ISO-02-Logitech-Cam.mp4", cam.Path);
+        Assert.False(cam.HasAudio);
+        Assert.Equal("writer failed to open its audio track", cam.Warning);
+
+        // Triage lists the ISO summary + each ISO's path + health.
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("ISO recordings: 2 stream(s); 1 with audio; 1 with warnings", StringComparison.Ordinal));
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("Recordings/show/ISO-02-Logitech-Cam.mp4", StringComparison.Ordinal) &&
+                    line.Contains("WARNING", StringComparison.Ordinal));
+
+        // Redaction stays green: paths are emitted verbatim (not secrets), and no new
+        // field leaks a key/token — the serialized bundle contains no stream-key material.
+        var json = SupportBundleBuilder.Serialize(bundle);
+        Assert.Contains("ISO-01-Bob.mp4", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("present-redacted", isoStreams.Select(stream => stream.Path ?? string.Empty)
+            .Aggregate(string.Empty, (a, b) => a + b), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Build_WithoutSnapshot_StillProducesRuntimeAndTriage()
     {
         var bundle = SupportBundleBuilder.Build(

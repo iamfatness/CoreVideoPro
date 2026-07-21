@@ -194,9 +194,50 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(7, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(8, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
+        Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
+    }
+
+    [Fact]
+    public void Serializer_RoundTripsIsoRecordingSelection()
+    {
+        // ISO-4 (v8): the "Program + ISOs" switch + the operator's ISO source selection.
+        var preferences = new ProductionOutputPreferences
+        {
+            IsoRecordingEnabled = true,
+            IsoRecordingSourceIds = ["zoom:p2", "capture:cam0"]
+        };
+
+        var roundTripped = ProductionOutputPreferencesSerializer.Deserialize(
+            ProductionOutputPreferencesSerializer.Serialize(preferences));
+
+        Assert.NotNull(roundTripped);
+        Assert.True(roundTripped.IsoRecordingEnabled);
+        Assert.Equal(["zoom:p2", "capture:cam0"], roundTripped.IsoRecordingSourceIds);
+    }
+
+    [Fact]
+    public void Serializer_MigratesV7FileToV8WithProgramOnlyIsoDefaults()
+    {
+        // A v7 file (no ISO fields) migrates to v8 = program-only: ISO off, empty
+        // selection — byte-identical program-only behavior to the pre-ISO product.
+        const string json = """
+            {
+              "Version": 7,
+              "VirtualCameraEnabled": true
+            }
+            """;
+
+        var migrated = ProductionOutputPreferencesSerializer.Deserialize(json, out var wasMigrated);
+
+        Assert.NotNull(migrated);
+        Assert.True(wasMigrated);
+        Assert.Equal(8, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
+        Assert.False(migrated.IsoRecordingEnabled);
+        Assert.Empty(migrated.IsoRecordingSourceIds);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
     }
 

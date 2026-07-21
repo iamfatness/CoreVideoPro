@@ -582,6 +582,9 @@ public static class MediaCoreCommandBuilder
             }).ToList(),
             ["isoParticipantIds"] = context.Recording
                 ? context.RecordingTargets.IsoParticipantIds
+                : Array.Empty<string>(),
+            ["isoSourceIds"] = context.Recording
+                ? (IReadOnlyList<string>)(context.RecordingTargets.IsoSourceIds ?? [])
                 : Array.Empty<string>()
         });
     }
@@ -598,8 +601,14 @@ public static class MediaCoreCommandBuilder
         }
 
         var targets = context.RecordingTargets;
-        var isoSuffix = targets.IsoParticipantIds.Count > 0
-            ? string.Join("-", targets.IsoParticipantIds)
+        var isoSourceIds = (IReadOnlyList<string>)(targets.IsoSourceIds ?? []);
+        // Session-id suffix: prefer the canonical ISO selection, else the legacy bare ids,
+        // else "program" (program-only). Sanitized so a `capture:<id>` never breaks the id.
+        var isoSuffixSource = isoSourceIds.Count > 0
+            ? isoSourceIds
+            : (IReadOnlyList<string>)targets.IsoParticipantIds;
+        var isoSuffix = isoSuffixSource.Count > 0
+            ? string.Join("-", isoSuffixSource.Select(id => id.Replace(':', '-')))
             : "program";
         var sessionId = $"{targets.FilenamePrefix}-{isoSuffix}";
 
@@ -612,7 +621,8 @@ public static class MediaCoreCommandBuilder
             ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
             ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
-            ["isoParticipantIds"] = targets.IsoParticipantIds
+            ["isoParticipantIds"] = targets.IsoParticipantIds,
+            ["isoSourceIds"] = isoSourceIds
         });
 
         yield return Command("start-recording-session", new Dictionary<string, object?>
@@ -625,7 +635,8 @@ public static class MediaCoreCommandBuilder
             ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
             ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
-            ["isoParticipantIds"] = targets.IsoParticipantIds
+            ["isoParticipantIds"] = targets.IsoParticipantIds,
+            ["isoSourceIds"] = isoSourceIds
         });
     }
 
