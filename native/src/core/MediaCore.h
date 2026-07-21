@@ -156,6 +156,16 @@ class MediaCore {
   void failRecordingSession(const rpc::Json& command);
   void recoverRecordingSession(const rpc::Json& command);
   void configureEncoderRecordingRequest();
+  // Read the ISO source selection from a recording command: prefers
+  // `isoSourceIds` (scheme-qualified `zoom:<pid>`/`capture:<id>`), falls back to
+  // legacy `isoParticipantIds` (bare ids). Returns the RAW list as given.
+  [[nodiscard]] std::vector<std::string> readIsoSourceIds(const rpc::Json& command) const;
+  // Normalize a raw ISO id to its canonical form: a bare (scheme-less) id is a
+  // Zoom participant, so `zoom:<id>`; anything already scheme-qualified is kept.
+  [[nodiscard]] static std::string normalizeIsoSourceId(const std::string& rawId);
+  // Resolve a canonical ISO source id to a human display name from the roster
+  // (Zoom userId → displayName; capture id → its own tail). Falls back to the id.
+  [[nodiscard]] std::string resolveIsoDisplayName(const std::string& sourceId) const;
   void syncParticipantAudioMix(const rpc::Json& command);
   void syncVirtualCamera(const rpc::Json& command);
   [[nodiscard]] rpc::Json virtualCameraState() const;
@@ -426,7 +436,15 @@ class MediaCore {
   std::string recordingFilenamePrefix_ = "program";
   std::string recordingFormat_ = "mp4";
   std::string recordingQuality_ = "high";
+  // Raw ISO source-id selection from the command (accepts `isoSourceIds` with
+  // `zoom:<pid>`/`capture:<id>`, back-compat `isoParticipantIds` bare ids). The
+  // canonical id + roster display name are resolved at request-build time.
   std::vector<std::string> recordingIsoParticipantIds_;
+  // Latest per-ISO-source video frame snapshotted under coreMutex at the render
+  // gather, keyed by canonical source id (`zoom:<pid>` / `capture:<id>`). Cheap
+  // zero-copy VideoFrame refs (shared_ptr payloads) — NO pixel copy under the
+  // lock. The audio worker's gather picks the selected sources into the ISO work.
+  std::map<std::string, modules::VideoFrame> latestIsoSourceFrames_;
   double recordingStartedAtMs_ = 0;
   double recordingElapsedMs_ = 0;
   int64_t recordingProgramFramesWritten_ = 0;
@@ -593,6 +611,9 @@ class MediaCore {
     std::vector<std::string> loopbackCaptureEndpointIds;
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
+    // Per-source ISO video for this tick (ISO-1), zero-copy shared_ptr refs
+    // snapshotted from latestIsoSourceFrames_ under coreMutex at gather.
+    std::vector<modules::IsoSourceVideoFrame> isoSources;
     std::vector<std::string> outputDestinations;
     std::vector<modules::OutputDestinationSettings> outputDestinationSettings;
     modules::ProgramFrame programFrame;
