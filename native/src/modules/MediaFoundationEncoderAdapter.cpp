@@ -881,8 +881,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         // stereo (matches program); mono source stems are up-mixed to stereo in
         // submitIsoAudio. Mp4Writer::open() reset audioConfigured_ (the #286
         // reset), so a REUSED ISO writer re-adds its stream cleanly.
+        //
+        // ISO-3 pairing: only add the audio stream when this source HAS audio —
+        // a Zoom participant, or a capture device with a paired audio input. A
+        // pure-video capture source (a camera with no paired audio) opens
+        // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
+        // track. submitIsoAudio then skips it (audioConfigured() stays false).
         if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input) ||
-            !entry.writer.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error) ||
+            (entry.hasAudio &&
+             !entry.writer.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
             !entry.writer.beginWriting(error)) {
           entry.failed = true;
           entry.warning = "ISO writer open failed for " + entry.displayName + " (" + src.sourceId +
@@ -1053,6 +1060,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       IsoWriterEntry entry;
       entry.sourceId = isoSel[i].sourceId;
       entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
+      entry.hasAudio = isoSel[i].hasAudio;  // ISO-3: video-only for an unpaired capture source
       std::string safe = sanitizeForFilename(entry.displayName, entry.sourceId);
       // Disambiguate duplicate sanitized names within a session.
       if (int& seen = nameCollisions[safe]; ++seen > 1) {
@@ -1174,12 +1182,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     out << "    { \"sourceId\": \"program\", \"name\": \"Program\", \"path\": \""
         << jsonEscape(programPath.filename().string())
         << "\", \"kind\": \"program\", \"hasAudio\": true }";
-    // ISO-2: every ISO entry is now a self-contained A+V MP4 (its own video +
-    // its own raw-stem audio), so hasAudio is true (spec §5).
+    // ISO-2: a Zoom ISO is a self-contained A+V MP4 (its own video + raw-stem
+    // audio). ISO-3: a pure-video capture source (a camera with no paired audio)
+    // is VIDEO-ONLY, so hasAudio reflects the per-source pairing decision, not a
+    // blanket true (spec §5).
     for (const auto& iso : isoWriters_) {
       out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
           << jsonEscape(iso.displayName) << "\", \"path\": \""
-          << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": true }";
+          << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": "
+          << (iso.hasAudio ? "true" : "false") << " }";
     }
     out << "\n  ]\n}\n";
     out.close();
@@ -1242,6 +1253,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     Mp4Writer writer;
     bool opened = false;
     bool failed = false;
+    bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
     int64_t videoFrameCount = 0;
     std::string warning;
     std::vector<uint8_t> nv12Scratch;   // reused I420->NV12 buffer (writer thread)
