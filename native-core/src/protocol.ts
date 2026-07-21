@@ -253,7 +253,11 @@ export type MediaCoreRecordingStream = {
   readiness?: "ready" | "missing" | "video-off" | "unsubscribable";
   expectedFrames?: number;
   framesWritten: number;
-  /** Per-source audio samples muxed (0 for ISO-1 video-only; ISO-2 adds stems). */
+  /**
+   * Per-source audio sample-frames muxed into this ISO's own raw-stem AAC track
+   * (ISO-2: silence + real; silence-fill keeps a gated stem time-aligned to
+   * program). 0 while a writer has not opened yet; `hasAudio` reflects `> 0`.
+   */
   audioSamples?: number;
   missingFrames?: number;
   droppedFrames?: number;
