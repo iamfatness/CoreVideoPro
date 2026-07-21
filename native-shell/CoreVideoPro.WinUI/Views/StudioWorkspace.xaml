@@ -1155,6 +1155,38 @@
                                                   DisplayMemberPath="Label"
                                                   HorizontalAlignment="Stretch" />
                                     </Grid>
+                                    <!-- ISO-4 (spec §7): transport-level "Program only" ↔ "Program + ISOs"
+                                         switch + ISO health readout. Per-source ISO selection lives on the
+                                         Sources → Inputs rows; this gates whether the selection arms. -->
+                                    <Border Background="#0C1118" CornerRadius="6" Padding="10,8">
+                                        <StackPanel Spacing="6">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <TextBlock Text="ISO recording" FontWeight="SemiBold" FontSize="13" />
+                                                    <TextBlock Text="{x:Bind ViewModel.IsoArmedSummary, Mode=OneWay}"
+                                                               FontSize="12"
+                                                               Foreground="{StaticResource StudioMutedBrush}" />
+                                                </StackPanel>
+                                                <ToggleSwitch Grid.Column="1" VerticalAlignment="Center"
+                                                              OffContent="Program only" OnContent="Program + ISOs"
+                                                              IsOn="{x:Bind ViewModel.IsoRecordingEnabled, Mode=TwoWay}" />
+                                            </Grid>
+                                            <TextBlock Text="Pick per-source ISOs in Sources → Inputs (the ISO checkbox on each Zoom guest / capture device)."
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
+                                            <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
+                                                     Message="{x:Bind ViewModel.IsoHealthWarning, Mode=OneWay}"
+                                                     Visibility="{x:Bind ViewModel.IsoHealthWarningVisibility, Mode=OneWay}" />
+                                            <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
+                                                     Message="{x:Bind ViewModel.RecordingDiskWarning, Mode=OneWay}"
+                                                     Visibility="{x:Bind ViewModel.RecordingDiskWarningVisibility, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </Border>
                                     <Grid ColumnSpacing="10">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
