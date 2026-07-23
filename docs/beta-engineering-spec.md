@@ -284,6 +284,37 @@ AND refresh. In this repo: a scheduled uptime check (Worker cron hitting
 and `smoke:staging-services` wired into CI as a daily scheduled job. Production
 domains + deploy hygiene for the broker itself are tracked in beta-plan B2.
 
+**Status: SHIPPED 2026-07-23 (branch `chore/beta-s5-ops-monitoring`).**
+- **`services/ops-monitor`** — a Cron-triggered Worker (`*/5 * * * *`) that
+  probes the OAuth broker + `licensing-api` / `telemetry-ingest` /
+  `caption-broker` + itself, and alerts a generic webhook (Discord/Slack:
+  payload carries both `content` and `text`) **on state change only**
+  (KV-backed flap-dampener, `OPS_STATE`). Alert destination is owner-deferred:
+  `OPS_ALERT_WEBHOOK_URL` unset = log-only (never crash, never spam); no email
+  path exists in-repo so it is webhook-or-log-only (allowed). All probe targets
+  are env-overridable (`OPS_*_URL`; `""`/`off` skips one). Never throws on a
+  probe failure. Pure logic (`lib/checks.mjs`) is vitest-covered
+  (flap-dampener, multi-target aggregation, no-destination log-only, alert
+  payload shape, never-throw probe, KV-failure resilience).
+- **Broker probe is side-effect-free:** `GET /oauth/start?probe=ops-monitor`
+  with **no `return_uri`** — the broker 4xx-rejects it (per S4) BEFORE any
+  OAuth state/redirect, and a `<500` answer proves liveness. `redirect:
+  "manual"` never follows a redirect off to Zoom. Overridable if the broker
+  grows a dedicated health endpoint.
+- **`GET /health`** added (unauthenticated, before the auth gate) to
+  `licensing-api`, `telemetry-ingest`, `caption-broker`, and `ops-monitor` for
+  clean liveness probing.
+- **`.github/workflows/smoke-staging.yml`** — runs `smoke-staging-services.ps1`
+  daily (cron `0 13 * * *`) + `workflow_dispatch`, **never on push/PR**. Writes
+  `scripts/.staging-secrets.local` from repo secrets
+  (`COREVIDEO_LICENSE_API_KEY` / `COREVIDEO_CAPTION_BROKER_API_KEY` /
+  `COREVIDEO_TELEMETRY_API_KEY`) and fails loud if any is missing/unhealthy.
+- **Deploy:** `deploy-staging-workers.ps1` now deploys `ops-monitor` too (its
+  webhook secret is optional). Owner steps: create the `OPS_STATE` KV namespace
+  + paste its id into `services/ops-monitor/wrangler.jsonc`, optionally set
+  `OPS_ALERT_WEBHOOK_URL`, then `npm run deploy:staging-workers`
+  (`services/ops-monitor/README.md` has the full runbook).
+
 ## 4. O — Onboarding / first-run
 
 ### O1 — Persist what the wizard will set (prerequisite)

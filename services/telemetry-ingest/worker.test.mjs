@@ -77,6 +77,14 @@ describe("routing", () => {
     const res = await worker.fetch(post("/v1/nope", "{}"), makeEnv());
     expect(res.status).toBe(404);
   });
+
+  it("serves an unauthenticated GET /health (beta S5 ops-monitor liveness)", async () => {
+    const req = new Request("https://telemetry.example/health", { method: "GET" });
+    const res = await worker.fetch(req, makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ status: "ok", service: "telemetry-ingest" });
+  });
 });
 
 describe("POST /v1/crashes", () => {

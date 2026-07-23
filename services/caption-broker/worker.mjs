@@ -7,6 +7,13 @@ import { handleEndSession, handlePushChunk, handleStartSession } from "./lib/han
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // Unauthenticated liveness probe (beta S5 ops-monitor). No secrets, no
+    // side effects — just "the worker is up and routing".
+    if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
+      return Response.json({ status: "ok", service: "caption-broker", environment: env.ENVIRONMENT ?? "staging" });
+    }
+
     if (!authorize(request, env)) {
       return new Response("Unauthorized", { status: 401 });
     }
