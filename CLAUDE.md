@@ -38,8 +38,14 @@ PropertyChanged bridge; StudioViewModel implements `IMagicSceneHost` over `this`
 Transport/Overlays sub-VM pattern). The extracted types are independently constructible so
 they carry real characterization tests (`MagicSceneCoordinatorTests`) — StudioViewModel itself
 is still NOT constructible in tests (field-init `DispatcherQueue.GetForCurrentThread()` + ctor
-hard-`new()`s ~10 services + launches the core; a later DI-seam PR). **PR2** = Transport
-orchestration behind an `IMediaCoreBridge` DI seam; **PR3** = ShowInputs.
+hard-`new()`s ~10 services + launches the core; a later DI-seam PR). **PR2 (done):** the
+`IMediaCoreBridge` DI seam + `TransportCoordinator` (`ITransportHost` + `ITransportDispatcher`)
+owning the Engine/Take/Record/Stream async command bodies, in-flight guards, #286 rollback,
+backpressure-retry, and sender-proof — constructible + characterization-tested
+(`TransportCoordinatorTests`). Same move-only façade rules: the `[RelayCommand]` objects stay
+generated on StudioViewModel as thin forwarders (XAML + external `NotifyCanExecuteChanged` pokes
+unchanged); bound transport state stays `[ObservableProperty]` on the god file, written through
+`ITransportHost`. **PR3** = ShowInputs; **PR4+** = the C++ hot core.
 
 ## Build & run (Windows)
 
