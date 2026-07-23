@@ -196,20 +196,12 @@ internal sealed class CrashReportCoordinator
         }
     }
 
-    /// <summary>Coarse machine class (S1 metadata; the full probe is S3 scope).</summary>
-    private static string DescribeMachineClass()
-    {
-        try
-        {
-            var ramGb = (int)Math.Round(
-                GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024.0 * 1024 * 1024));
-            return $"win-x64-cpu{Environment.ProcessorCount}-ram{ramGb}gb";
-        }
-        catch
-        {
-            return "win-x64";
-        }
-    }
+    /// <summary>
+    /// Coarse machine class (S1 crash metadata). Reuses the shared
+    /// <see cref="MachineClassProbe.Describe"/> so the S1 and S3 pipelines emit
+    /// the identical <c>win-x64-cpuN-ramNgb</c> string from one place.
+    /// </summary>
+    private static string DescribeMachineClass() => MachineClassProbe.Describe();
 
     private static string DescribeReason(IReadOnlyList<CrashDumpFile> dumps)
     {

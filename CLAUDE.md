@@ -395,6 +395,27 @@ worker's `/v1/crashes` with `X-CoreVideo-*` metadata headers; the zip stays unde
 `CrashReportUploader` (MediaCore, unit-tested) + `CrashReportCoordinator` +
 `StudioWorkspace.BeginCrashReportScan` (WinUI).
 
+**Beta opt-in telemetry (S3, 2026-07-23, `docs/beta-engineering-spec.md` §S3).**
+A Settings-tab toggle (default OFF) sends "is beta healthy" events to the
+telemetry-ingest worker's `/v1/events` on app close (session-end, fire-and-forget
+at the top of `ShutdownAsync` — never blocks the close) and a daily heartbeat.
+Reuses S1's config (`COREVIDEO_TELEMETRY_ENDPOINT`/`COREVIDEO_TELEMETRY_API_KEY`,
+empty = disabled) and Bearer/202 contract. Consent lives in a STANDALONE flag file
+`telemetry-consent.json` (NOT prefs — avoids the prefs-version race), default OFF.
+Payload is COUNTS/KINDS ONLY (`TelemetryPayloadBuilder`, sourced from
+`_bridge.LastSnapshot`, never StudioViewModel): version + sessionLengthSeconds +
+outputConfigShape {recording/streaming/vcam bools, iso/capture/participant counts} +
+crashCountSinceLastSend (from the S1 crash-watermark) + machineClass (the SAME
+`win-x64-cpuN-ramNgb` string as S1 via shared `MachineClassProbe`) + banded machine
+{cpuCores,ramBand,gpuTier}. **NEVER a secret/endpoint/path/name** — the no-leak unit
+test (`Serialize_NeverLeaksAnySecretOrEndpoint`) seeds a snapshot full of stream
+keys/URLs/paths and asserts none appear. Settings "Preview what's sent" shows the
+exact JSON (works with consent OFF), and every send logs the JSON locally first
+(§7 inspectable-before-egress). Pieces: `TelemetryConsentStore`/`MachineClassProbe`/
+`TelemetryEvent`/`TelemetryEventClient` (MediaCore) + `TelemetryEventService`/
+`GpuTierProbe` (WinUI). Any new telemetry field MUST be a count/kind and get a
+no-leak assertion.
+
 **Capture reader stability (the frozen-webcam / restart-storm class).** A stalled
 MediaCapture reader (`CaptureDeviceFrameReaderService`) used to restart on a fixed ~5s
 cadence forever when it couldn't recover (e.g. an Elgato Game Capture whose HDMI signal

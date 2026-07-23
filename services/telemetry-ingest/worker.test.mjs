@@ -285,6 +285,51 @@ describe("POST /v1/events", () => {
     expect(res.status).toBe(413);
     expect(env.REPORTS_KV.data.size).toBe(0);
   });
+
+  it("indexes the S3 session-end shape and retains the structured payload inline", async () => {
+    const env = makeEnv();
+    // The exact shape the shell's TelemetryPayloadBuilder emits (spec §S3): a
+    // top-level string machineClass (server-indexed, S1-parity) plus a structured
+    // `machine` object and a counts/kinds `outputConfigShape` — and NO secrets.
+    const payload = {
+      name: "session-end",
+      version: "0.3.0",
+      sessionLengthSeconds: 3720,
+      outputConfigShape: {
+        recordingEnabled: true,
+        streamingEnabled: false,
+        vcamEnabled: true,
+        isoSourceCount: 2,
+        captureSourceCount: 1,
+        zoomParticipantCount: 4
+      },
+      crashCountSinceLastSend: 0,
+      machineClass: "win-x64-cpu16-ram32gb",
+      machine: { label: "win-x64-cpu16-ram32gb", cpuCores: 16, ramBand: "32-64GB", gpuTier: "nvidia-vram16gb+" }
+    };
+    const body = JSON.stringify(payload);
+    const res = await worker.fetch(post("/v1/events", body), env);
+    expect(res.status).toBe(202);
+
+    const { reportId } = await res.json();
+    const meta = JSON.parse(await env.REPORTS_KV.get(`report:${reportId}`));
+    // The worker indexes the top-level string version + machineClass + name (S1-parity).
+    expect(meta).toMatchObject({
+      kind: "event",
+      name: "session-end",
+      version: "0.3.0",
+      machineClass: "win-x64-cpu16-ram32gb",
+      r2Key: null
+    });
+    // The full structured payload survives inline (no R2 object for a tiny event).
+    expect(meta.payload).toEqual(payload);
+    expect(env.REPORTS_BUCKET.data.size).toBe(0);
+
+    // Contract guard: no secret/endpoint shape can ride in this payload.
+    const stored = await env.REPORTS_KV.get(`report:${reportId}`);
+    expect(stored).not.toMatch(/rtmp:\/\//i);
+    expect(stored).not.toMatch(/streamkey|passphrase|Bearer /i);
+  });
 });
 
 describe("rate limiting", () => {
