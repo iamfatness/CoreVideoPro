@@ -163,11 +163,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _isoRecordingEnabled;
 
-    // Operator's per-source ISO selection: canonical scheme-qualified source ids
-    // (`zoom:<pid>` / `capture:<id>`). The per-source ISO toggles in the Sources tab drive
-    // it; it is re-projected onto the ShowInput editors on every apply. Persisted (v8).
-    private readonly HashSet<string> _isoSelectedSourceIds = new(StringComparer.Ordinal);
-
+    // Operator's per-source ISO selection (canonical scheme-qualified source ids `zoom:<pid>` /
+    // `capture:<id>`) now lives on the ShowInputsCoordinator (PR3 strangler) as
+    // IsoSelectedSourceIds — the ISO × ShowInputs integration moved with the roster cluster.
     partial void OnIsoRecordingEnabledChanged(bool value)
     {
         SaveProductionOutputPreferences();
@@ -177,36 +175,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
-    /// <summary>Callback from a Sources-tab per-source ISO toggle. Updates the persisted
-    /// selection and re-syncs (arming/disarming that ISO writer when recording is live).</summary>
-    private void OnShowInputIsoToggled(string? sourceId, bool enabled)
-    {
-        if (string.IsNullOrWhiteSpace(sourceId))
-        {
-            return;
-        }
-
-        var changed = enabled ? _isoSelectedSourceIds.Add(sourceId) : _isoSelectedSourceIds.Remove(sourceId);
-        if (!changed)
-        {
-            return;
-        }
-
-        SaveProductionOutputPreferences();
-        RefreshIsoReadouts();
-        _ = TrySyncMediaCoreAsync();
-    }
-
-    /// <summary>Re-project the persisted ISO selection + eligibility onto the live editor
-    /// rows (in place — never a collection rebuild; obeys the 0xc000027b rules). Suppresses
-    /// the toggle callback so a re-projection never loops back into a save/sync.</summary>
-    private void ApplyIsoSelectionToEditors()
-    {
-        foreach (var editor in ShowInputEditors)
-        {
-            editor.SetIsoSelected(editor.SourceId is { Length: > 0 } id && _isoSelectedSourceIds.Contains(id));
-        }
-    }
+    // OnShowInputIsoToggled + ApplyIsoSelectionToEditors moved to ShowInputsCoordinator (PR3
+    // strangler); ApplyIsoSelectionToEditors keeps a same-named private forwarder in
+    // StudioViewModel.ShowInputs.cs so its call sites are unchanged.
 
     /// <summary>ISO health readouts are scalar computed props notified per snapshot apply
     /// (the WorkspaceCompGrLevel pattern) — never a snapshot-rate bound collection.</summary>
@@ -239,7 +210,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             else
             {
                 armed = IsoSourceSelectionResolver
-                    .Resolve(true, _isoSelectedSourceIds, ComputeEligiblePresentIsoSourceIds())
+                    .Resolve(true, _showInputsCoordinator.IsoSelectedSourceIds, ComputeEligiblePresentIsoSourceIds())
                     .Count;
             }
 
@@ -711,7 +682,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<ShowInputSlot> ShowInputs { get; } =
         new(ShowInputRosterService.CreateDefaultSlots());
 
-    public ObservableCollection<ShowInputSlotViewModel> ShowInputEditors { get; } = [];
+    // The projected editor rows are OWNED by ShowInputsCoordinator (PR3 strangler). This stays a
+    // property named ShowInputEditors so XAML x:Bind is unchanged; it forwards onto the
+    // coordinator's stable collection instance (diff-updated in place, never replaced).
+    public ObservableCollection<ShowInputSlotViewModel> ShowInputEditors => _showInputsCoordinator.ShowInputEditors;
 
     public ObservableCollection<SrtIngestSource> SrtIngestSources { get; } =
     [
@@ -786,8 +760,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
     private int _programMediaPlaybackTakeVersion;
-    private readonly IShowInputRosterStore _showInputRosterStore = CreateShowInputRosterStore();
-    private bool _showInputRosterLoaded;
+    // ShowInputs roster store + loaded-flag + editor-signature + ISO selection moved to
+    // ShowInputsCoordinator (PR3 strangler). The coordinator is constructed in the ctor (it needs
+    // `this` as its IShowInputsHost) before the first LoadShowInputRoster/InitializeShowInputEditors.
+    private global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator _showInputsCoordinator = null!;
     private bool _multiviewGridRefreshScheduled;
     private bool _canvasInteractionActive;
     private bool _refreshingSceneBackgroundSelection;
@@ -1380,6 +1356,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RoomVideoParticipants = [];
         CurrentRoomLabel = "No meeting";
         _multiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        // PR3 strangler: the ShowInputs roster/projection/auto-assign/ISO cluster is owned by
+        // ShowInputsCoordinator. Construct it (with `this` as its IShowInputsHost) BEFORE the first
+        // roster load/projection so the same-named forwarders route through it.
+        _showInputsCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator(
+            _bridge, CreateShowInputRosterStore(), this);
         LoadShowInputRoster();
         InitializeShowInputEditors();
         RefreshMultiviewGridTiles();
@@ -6667,41 +6648,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // SRT-ingest add/remove bodies moved to ShowInputsCoordinator (PR3 strangler). These stay the
+    // generated [RelayCommand]s (AddSrtIngestSourceCommand / RemoveSrtIngestSourceCommand) so XAML
+    // x:Bind + the CanAddSrtIngestSource CanExecute wiring are unchanged.
     [RelayCommand(CanExecute = nameof(CanAddSrtIngestSource))]
-    private void AddSrtIngestSource()
-    {
-        if (!CanAddSrtIngestSource)
-        {
-            CommandStatus = $"SRT ingest is capped at {MaxSrtIngestSources} sources.";
-            return;
-        }
-
-        var nextNumber = Enumerable.Range(1, MaxSrtIngestSources)
-            .First(number => SrtIngestSources.All(source => source.Number != number));
-        var source = CreateSrtIngestSource(nextNumber);
-        SrtIngestSources.Add(source);
-        CommandStatus = $"{source.Name} added as a routable SRT input";
-    }
+    private void AddSrtIngestSource() => _showInputsCoordinator.AddSrtIngestSource();
 
     [RelayCommand]
-    private void RemoveSrtIngestSource(string sourceId)
-    {
-        if (SrtIngestSources.Count <= 1)
-        {
-            CommandStatus = "Keep at least one SRT ingest source configured.";
-            return;
-        }
-
-        var source = SrtIngestSources.FirstOrDefault(item => string.Equals(item.Id, sourceId, StringComparison.Ordinal));
-        if (source is null)
-        {
-            return;
-        }
-
-        SrtIngestSources.Remove(source);
-        RemoveVirtualSrtIngestDevice(source.DeviceId);
-        CommandStatus = $"{source.Name} removed from SRT inputs";
-    }
+    private void RemoveSrtIngestSource(string sourceId) => _showInputsCoordinator.RemoveSrtIngestSource(sourceId);
 
     private void OnSrtIngestSourcesChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
@@ -9101,42 +9055,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             IsoParticipantIds: isoParticipantIds,
             IsoSourceIds: isoSourceIds);
 
-    /// <summary>
-    /// ISO-4 (spec §7): resolve the operator's ISO recording selection into the canonical
-    /// scheme-qualified `isoSourceIds` (plus the legacy bare-id projection). Gated by the
-    /// "Program + ISOs" master switch — OFF returns EMPTY so no ISO writers arm and program
-    /// recording is byte-identical to the program-only path. Pure logic lives in the
-    /// unit-tested <see cref="IsoSourceSelectionResolver"/>.
-    /// </summary>
-    private (IReadOnlyList<string> SourceIds, IReadOnlyList<string> ParticipantIds) BuildIsoSourceTargets()
-    {
-        var sourceIds = IsoSourceSelectionResolver.Resolve(
-            IsoRecordingEnabled,
-            _isoSelectedSourceIds,
-            ComputeEligiblePresentIsoSourceIds());
-        var participantIds = IsoSourceSelectionResolver.ToLegacyParticipantIds(sourceIds);
-        return (sourceIds, participantIds);
-    }
-
-    /// <summary>
-    /// The currently ISO-eligible + present video-bearing source ids (`zoom:&lt;pid&gt;` /
-    /// `capture:&lt;id&gt;`), in roster order. Only assigned, non-missing Zoom guests and
-    /// capture devices are eligible (media playout is a non-goal). A selected source that
-    /// has since left / unplugged is excluded here, so no dangling ISO writer arms.
-    /// </summary>
-    private IReadOnlyList<string> ComputeEligiblePresentIsoSourceIds()
-    {
-        var list = new List<string>();
-        foreach (var editor in ShowInputEditors)
-        {
-            if (editor.ShowIsoToggle && !editor.IsSourceMissing && editor.SourceId is { Length: > 0 } id)
-            {
-                list.Add(id);
-            }
-        }
-
-        return list;
-    }
+    // BuildIsoSourceTargets + ComputeEligiblePresentIsoSourceIds moved to ShowInputsCoordinator
+    // (PR3 strangler); both keep same-named private forwarders in StudioViewModel.ShowInputs.cs so
+    // the recording-payload builders + IsoArmedSummary call sites are unchanged.
 
     private static string NormalizeOutputText(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
@@ -10183,39 +10104,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasCaptionTranscript));
     }
 
-    private void SyncShowInputsFromMeeting(
-        IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
-    {
-        // Free slots whose participant left, and (when auto-assign is on) fill FREE slots
-        // with newly-joined participants without disturbing operator/capture assignments.
-        ShowInputRosterService.SyncZoomParticipantSlots(
-            ShowInputs,
-            participants.Select(participant => participant.Id).ToList(),
-            AutomationAutoAssignInputsEnabled);
-
-        RefreshShowInputEditors();
-        RefreshMultiviewGridTiles();
-    }
-
-    // Re-run the roster→slot auto-assign from the CURRENT room roster (used when the operator
-    // flips the auto-assign toggle). No-op stale-removal when there is no meeting.
-    // MUST use RoomParticipantsForInputs (all in-room, video on OR off) — the SAME set the
-    // meeting-sync path passes. RoomVideoParticipants filters out camera-off participants, so
-    // using it here would make the helper's stale-removal pass free a camera-off participant's
-    // assigned slot the moment the operator flips the toggle.
-    private void ReapplyShowInputAutoAssign()
-    {
-        ShowInputRosterService.SyncZoomParticipantSlots(
-            ShowInputs,
-            RoomParticipantsForInputs
-                .Select(participant => participant.Id)
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .ToList(),
-            AutomationAutoAssignInputsEnabled);
-
-        RefreshShowInputEditors();
-        RefreshMultiviewGridTiles();
-    }
+    // SyncShowInputsFromMeeting + ReapplyShowInputAutoAssign (roster→slot auto-assign) moved to
+    // ShowInputsCoordinator (PR3 strangler); same-named private forwarders in
+    // StudioViewModel.ShowInputs.cs keep the meeting-sync + auto-assign-toggle call sites unchanged.
 
     private void RefreshParticipantListItems()
     {
@@ -11003,7 +10894,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // v8 (ISO-4): the "Program + ISOs" master switch + the operator's ISO source
             // selection persist across launches.
             IsoRecordingEnabled = IsoRecordingEnabled,
-            IsoRecordingSourceIds = _isoSelectedSourceIds
+            IsoRecordingSourceIds = _showInputsCoordinator.IsoSelectedSourceIds
                 .OrderBy(id => id, StringComparer.Ordinal)
                 .ToList(),
             CustomScenes = _scenes
@@ -11142,12 +11033,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // The persisted selection rides the next full sync; the editors re-project it on
         // their first RefreshShowInputEditors.
         _isoRecordingEnabled = preferences.IsoRecordingEnabled;
-        _isoSelectedSourceIds.Clear();
+        _showInputsCoordinator.IsoSelectedSourceIds.Clear();
         foreach (var id in preferences.IsoRecordingSourceIds)
         {
             if (!string.IsNullOrWhiteSpace(id))
             {
-                _isoSelectedSourceIds.Add(id);
+                _showInputsCoordinator.IsoSelectedSourceIds.Add(id);
             }
         }
         OnPropertyChanged(nameof(IsoRecordingEnabled));
@@ -11329,105 +11220,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void LoadShowInputRoster()
-    {
-        try
-        {
-            var snapshot = _showInputRosterStore.Load();
-            // Intent is restored even if the referenced participant/device is no longer present;
-            // RefreshShowInputEditors / BuildMultiviewTiles surface unresolved sources as
-            // unavailable rather than dropping the assignment.
-            ShowInputRosterSerializer.ApplyTo(ShowInputs, snapshot);
-        }
-        catch (Exception)
-        {
-            // Persistence is best-effort; never block startup on a bad/locked store.
-        }
-        finally
-        {
-            _showInputRosterLoaded = true;
-        }
-    }
-
-    private void SaveShowInputRoster()
-    {
-        // Guard against persisting before the saved roster has been loaded/applied.
-        if (!_showInputRosterLoaded)
-        {
-            return;
-        }
-
-        try
-        {
-            _showInputRosterStore.Save(ShowInputRosterSerializer.CaptureFrom(ShowInputs));
-        }
-        catch (Exception)
-        {
-            // Best-effort; a failed save must not surface as a user-facing error.
-        }
-    }
-
-    private void InitializeShowInputEditors()
-    {
-        ShowInputEditors.Clear();
-        foreach (var slot in ShowInputs)
-        {
-            ShowInputEditors.Add(new ShowInputSlotViewModel(
-                slot,
-                OnShowInputChanged,
-                SetCaptureDeviceAudioSource,
-                ResolveSourceDisplayName,
-                SetSourceDisplayName,
-                OnShowInputIsoToggled));
-        }
-
-        RefreshShowInputEditors(force: true);
-    }
-
-    private string _showInputEditorsSignature = "";
-
-    private void RefreshShowInputEditors(bool force = false)
-    {
-        EnsureAssignedScreensConnected();
-        var mediaAssets = MediaBinGroups.SelectMany(group => group.Assets).ToList();
-
-        // Rebuild each slot's Source dropdown options ONLY when the set the picker
-        // depends on actually changes. This method is called from many per-snapshot
-        // paths (~10/s); rebuilding the ComboBox ItemsSource every tick resets the
-        // operator's in-progress selection (can't pick a participant) and fires a
-        // SelectionChanged storm. Skip when nothing changed.
-        //
-        // The picker membership depends only on WHO is in the room (participant ids) +
-        // devices + assets — NOT on participant Health. Health (talking/active-speaker/
-        // camera on-off) churns constantly during a live meeting; including it here
-        // rebuilt every slot's ItemsSource on every health tick, which blanked the
-        // selected Source/name in the picker and flooded the dispatcher (a churn/crash
-        // vector). Key the signature on id-set only so options rebuild on join/leave.
-        var signature =
-            string.Join("|", RoomParticipantsForInputs.Select(p => p.Id)) + "#" +
-            string.Join(",", CaptureDevices.Select(d => d.Id)) + "#" +
-            AudioCaptureDevices.Count + "#" + mediaAssets.Count;
-        if (!force && signature == _showInputEditorsSignature)
-        {
-            return;
-        }
-        _showInputEditorsSignature = signature;
-
-        foreach (var editor in ShowInputEditors)
-        {
-            editor.RefreshSourceOptions(RoomParticipantsForInputs, CaptureDevices, AudioCaptureDevices, mediaAssets);
-        }
-
-        // ISO-4: re-project the persisted ISO selection onto the (in-place) editor rows so
-        // the per-source ISO toggle reflects the saved selection after roster churn. Gated
-        // on the SAME id-set signature above — never a per-tick rebuild (0xc000027b rules).
-        ApplyIsoSelectionToEditors();
-
-        OnPropertyChanged(nameof(ShowInputSummary));
-        OnPropertyChanged(nameof(MultiviewHeader));
-        NotifyShowReadinessChanged();
-        RefreshIsoReadouts();
-    }
+    // LoadShowInputRoster / SaveShowInputRoster / InitializeShowInputEditors / RefreshShowInputEditors
+    // (the signature-gated roster→editor projection) + the _showInputEditorsSignature gate moved to
+    // ShowInputsCoordinator (PR3 strangler). Same-named private forwarders in
+    // StudioViewModel.ShowInputs.cs keep the ~20 snapshot-apply call sites unchanged; the 0xc000027b
+    // signature-gating + in-place diff-update + ISO re-projection are preserved exactly.
 
     private void OnShowInputChanged() => ScheduleShowInputRefresh();
 
@@ -11750,62 +11547,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // unassign every slot that references it, refresh. Webcams using the WinUI
     // MediaCapture bridge keep their existing capture-toggle path; this covers
     // the core-session kinds (screens today).
+    // Lifecycle L2 take-offline body moved to ShowInputsCoordinator (PR3 strangler). This stays the
+    // generated [RelayCommand] (TakeCaptureDeviceOfflineCommand) so XAML x:Bind is unchanged.
     [RelayCommand]
-    private async Task TakeCaptureDeviceOfflineAsync(string deviceId)
-    {
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            return;
-        }
-        LaunchLog.Write(string.Format("lifecycle: take offline {0}", deviceId));
-        try
-        {
-            var statuses = await _bridge.DisconnectNativeCaptureDeviceAsync(deviceId).ConfigureAwait(false);
-            var match = statuses.FirstOrDefault(s => s.Id == deviceId);
-            RunOnUiThread(() =>
-            {
-                var device = CaptureDevices.FirstOrDefault(d => d.Id == deviceId);
-                if (device is not null)
-                {
-                    device.ConnectionState = CaptureConnectionState.Detected;
-                    device.SignalPresent = match?.SignalPresent ?? false;
-                }
-                foreach (var editor in ShowInputEditors.Where(e => string.Equals(e.CaptureDeviceId, deviceId, StringComparison.Ordinal)).ToList())
-                {
-                    LaunchLog.Write(string.Format("lifecycle: offline {0} unassigns slot {1}", deviceId, editor.SlotNumber));
-                    editor.Unassign();
-                }
-                RefreshShowInputEditors(force: true);
-                RefreshDualCaptureSourceOptions();
-                RefreshCaptureFleetSummary();
-                RefreshPreviewRoutingState();
-                RefreshMultiviewGridTiles();
-                CommandStatus = string.Format("{0} is offline.", device?.Name ?? deviceId);
-                _ = TrySyncMediaCoreAsync();
-            });
-        }
-        catch (Exception ex)
-        {
-            LaunchLog.Write(string.Format("lifecycle: take offline failed {0}: {1}", deviceId, ex.Message));
-        }
-    }
+    private Task TakeCaptureDeviceOfflineAsync(string deviceId) =>
+        _showInputsCoordinator.TakeCaptureDeviceOfflineAsync(deviceId);
 
-    // Lifecycle L1: operator-facing unassign (button on each Show Input row).
+    // Lifecycle L1: operator-facing unassign (button on each Show Input row). Body moved to
+    // ShowInputsCoordinator (PR3 strangler); this stays the generated [RelayCommand].
     [RelayCommand]
-    private void UnassignShowInput(ShowInputSlotViewModel editor)
-    {
-        if (editor is null)
-        {
-            return;
-        }
-        LaunchLog.Write(string.Format("lifecycle: unassign slot {0} (was {1} cap={2} pid={3})",
-            editor.SlotNumber, editor.Kind, editor.CaptureDeviceId ?? "-", editor.ParticipantId ?? "-"));
-        editor.Unassign();
-        RefreshShowInputEditors(force: true);
-        RefreshPreviewRoutingState();
-        RefreshMultiviewGridTiles();
-        _ = TrySyncMediaCoreAsync();
-    }
+    private void UnassignShowInput(ShowInputSlotViewModel editor) =>
+        _showInputsCoordinator.UnassignShowInput(editor);
 
     // Lifecycle L1: startup/refresh ghost sweep - parked slots whose source is
     // gone or which duplicate a lower slot get cleared automatically, LOGGED.

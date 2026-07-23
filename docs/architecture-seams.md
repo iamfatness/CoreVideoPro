@@ -77,14 +77,37 @@ types, never new methods on the god file — `FOCUS_PLAN.md` §9):
 > coordinator writes it through `ITransportHost`. Deferred to a follow-up (kept on the façade to
 > bound the host surface + honor no-XAML-churn): the readout-projection `RefreshTransportState`/
 > `ApplyConfiguredOutputReadouts`, the bound `TakeTransitionMode`, and the vcam enable/mirror/name
-> handlers. **PR3** = ShowInputs. **PR4+** = the C++ hot core (MediaCore / compositor /
-> JsonRpcServer).
+> handlers.
+> **PR3** (this change) extracted the **ShowInputs** cluster — the roster persistence, the
+> signature-gated roster → `ShowInputEditors` projection, the newly-joined-participant auto-assign,
+> the operator unassign / take-device-offline lifecycle, the SRT-ingest source add/remove, and the
+> per-source **ISO selection** (the ISO-4 ISO × ShowInputs integration) — into `ShowInputsCoordinator`
+> behind `IShowInputsHost` (+ the injected `IShowInputRosterStore` and `IMediaCoreBridge`). The
+> coordinator OWNS the `ShowInputEditors` collection (StudioViewModel exposes it via a same-named
+> forwarder property, so XAML x:Bind is unchanged) and `IsoSelectedSourceIds` (StudioViewModel's v8
+> persistence save/restores through it). Independently constructible (real `InMemoryShowInputRosterStore`
+> + fake host + fake bridge), so the roster projection + auto-assign + the ISO-survives-a-refresh
+> integration now carry their first-ever characterization tests (`ShowInputsCoordinatorTests`).
+> Move-only: the ~20 snapshot-apply call sites of `RefreshShowInputEditors`/`BuildIsoSourceTargets`
+> etc. are untouched (same-named private forwarders); the four `[RelayCommand]`s (Unassign, take-offline,
+> SRT add/remove) stay generated on the god file and forward their bodies; the 0xc000027b
+> signature-gating + in-place diff-update + ISO re-projection are preserved exactly.
+> **Deferred (a verification finding):** **dual-capture** selection is entangled with capture-fleet
+> enumeration (6 device-discovery call sites, `ResolveCaptureDevice`/`ApplyCaptureDeviceToShowInputSlot`)
+> and is `[ObservableProperty]`-bound; it belongs to a future **CaptureFleet** extraction, not the
+> roster cluster, so its state stayed on the god file this PR.
+> **PR4+** = the C++ hot core (MediaCore / compositor / JsonRpcServer).
 
-**StudioViewModel LOC:** `StudioViewModel.cs` (the monolithic file) **14,423 → 13,817** after
-PR2; the four transport command bodies + their five async helpers + eight now-dead static
-wrappers + the two in-flight fields relocated into `TransportCoordinator.cs` (651, incl. docs) /
-`ITransportHost.cs` (126) / a 165-line façade partial (`StudioViewModel.Transport.cs`) that keeps
-XAML x:Bind unchanged, plus the assembly-level `IMediaCoreBridge.cs` (95) seam.
-`[ObservableProperty]` 136 and `[RelayCommand]` 72 are UNCHANGED (forwarders preserve every bound
-member). (PR1 took the file 15,028 → 14,176 for MagicScene; the 14,423 baseline here includes the
-intervening ISO-1..4 work, #316/#318/#320.)
+**StudioViewModel LOC:** `StudioViewModel.cs` (the monolithic file) **14,423 → 13,817** after PR2,
+**13,817 → 13,569** after PR3; the ShowInputs roster/projection/auto-assign/ISO-selection cluster
+(roster store field, `_showInputRosterLoaded`/`_showInputEditorsSignature`/`_isoSelectedSourceIds`
+state, and ~14 methods incl. `RefreshShowInputEditors`, `Initialize/Load/SaveShowInputRoster`,
+`ApplyIsoSelectionToEditors`, `BuildIsoSourceTargets`, `SyncShowInputsFromMeeting`/`ReapplyShowInputAutoAssign`,
+`UnassignShowInput`, `TakeCaptureDeviceOfflineAsync`, `AddSrtIngestSource`/`RemoveSrtIngestSource`)
+relocated into `ShowInputsCoordinator.cs` (352, incl. docs) / `IShowInputsHost.cs` (92) / a 90-line
+façade partial (`StudioViewModel.ShowInputs.cs`) that keeps XAML x:Bind unchanged.
+`[ObservableProperty]` and `[RelayCommand]` counts are UNCHANGED (forwarders preserve every bound
+member). (PR2 relocated Transport into `TransportCoordinator.cs` (651) / `ITransportHost.cs` (126) /
+`StudioViewModel.Transport.cs` (165) + the assembly-level `IMediaCoreBridge.cs` (95) seam; PR1 took
+the file 15,028 → 14,176 for MagicScene; the 14,423 baseline includes the intervening ISO-1..4 work,
+#316/#318/#320.)
