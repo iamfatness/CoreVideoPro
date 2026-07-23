@@ -286,4 +286,19 @@ YuvColorHints deriveYuvColorHints(int nominalRange, int transferMatrix, int fram
   return hints;
 }
 
+bool uvcNoFirstFrameTimedOut(int64_t frameId, int64_t elapsedMs, int64_t timeoutMs) {
+  if (frameId > 0) {
+    return false;  // a first frame already arrived — the device is healthy.
+  }
+  return elapsedMs >= timeoutMs;
+}
+
+std::string uvcNoFirstFrameWarning(const std::string& deviceName, int64_t timeoutMs) {
+  const std::string name = deviceName.empty() ? "Camera" : deviceName;
+  return name + " connected but delivered no frames within " +
+         std::to_string(timeoutMs / 1000) +
+         "s — the device may be in use by another app (Zoom, Camera Hub, OBS) or "
+         "have no input signal.";
+}
+
 }  // namespace corevideo::modules::uvc

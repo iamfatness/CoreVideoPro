@@ -100,4 +100,34 @@ struct YuvColorHints {
 // frame height: >= 720 is BT.709, below is BT.601.
 [[nodiscard]] YuvColorHints deriveYuvColorHints(int nominalRange, int transferMatrix, int frameHeight);
 
+// ---------------------------------------------------------------------------
+// No-first-frame watchdog (single-consumer capture-card safety).
+//
+// A UVC device that OPENS and NEGOTIATES a format but then delivers no samples
+// (the classic single-consumer capture card — Elgato Game Capture / HD60 S+ —
+// held by another app, or an HDMI source with no signal) used to sit forever on
+// a placeholder tile: open+negotiate succeeded, so no stall policy ever fired.
+// This is the native-reader analogue of the shell's CaptureReaderStallPolicy:
+// once negotiation succeeds, the reader gives the device a bounded window to
+// produce its FIRST frame; past that, it fails LOUD and releases the device so
+// the WinUI MediaCapture bridge (the robust default) can take over.
+// ---------------------------------------------------------------------------
+
+// Default window (ms) a negotiated UVC device gets to deliver its first frame
+// before the reader declares a no-first-frame stall. Long enough to cover a
+// slow capture-card handshake, short enough that an operator is not left on a
+// blank tile.
+constexpr int64_t kUvcNoFirstFrameTimeoutMs = 4000;
+
+// True when a running, negotiated session has produced no frame
+// (`frameId == 0`) and has been waiting at least `timeoutMs`. `frameId > 0`
+// (a first frame already arrived) is never a stall.
+[[nodiscard]] bool uvcNoFirstFrameTimedOut(
+    int64_t frameId, int64_t elapsedMs, int64_t timeoutMs = kUvcNoFirstFrameTimeoutMs);
+
+// The LOUD, human-readable warning surfaced on the device (connectionState
+// "error") when the watchdog fires — names the device and the likely cause so
+// the operator (and the shell fallback log) sees WHY the camera went dark.
+[[nodiscard]] std::string uvcNoFirstFrameWarning(const std::string& deviceName, int64_t timeoutMs);
+
 }  // namespace corevideo::modules::uvc

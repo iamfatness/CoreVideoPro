@@ -138,8 +138,12 @@ constexpr auto kEnumerateRefreshInterval = std::chrono::milliseconds(2000);
 // tick (pollVideoFrames) only swaps shared_ptrs — no MF calls, no conversion.
 class UvcCaptureSession {
  public:
-  UvcCaptureSession(std::string deviceId, std::wstring symbolicLink)
-      : deviceId_(std::move(deviceId)), symbolicLink_(std::move(symbolicLink)) {
+  UvcCaptureSession(std::string deviceId, std::string deviceName, std::wstring symbolicLink,
+                    int64_t noFirstFrameTimeoutMs = uvc::kUvcNoFirstFrameTimeoutMs)
+      : deviceId_(std::move(deviceId)),
+        deviceName_(std::move(deviceName)),
+        symbolicLink_(std::move(symbolicLink)),
+        noFirstFrameTimeoutMs_(noFirstFrameTimeoutMs) {
     thread_ = std::thread([this] { run(); });
   }
 
@@ -392,8 +396,28 @@ class UvcCaptureSession {
     const auto stream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
     std::vector<uint8_t> converted;
     bool loggedFirstFrame = false;
+    // Watchdog: negotiation succeeded, so the device is OPEN — but a
+    // single-consumer capture card held by another app (or an HDMI input with
+    // no signal) can now deliver zero samples forever. Give it a bounded window
+    // to produce its first frame; past that, fail LOUD and release the device
+    // so the shell can fall back to the WinUI MediaCapture bridge. (Fires on any
+    // iteration where MF returns — a stream tick / gap / any ReadSample return —
+    // which is the shape a no-signal capture card presents.)
+    const auto streamStart = std::chrono::steady_clock::now();
 
     while (!stop_.load()) {
+      if (!loggedFirstFrame) {
+        // loggedFirstFrame flips true the instant the first frame is produced
+        // (below), and readLoop is the sole writer — so this is a lock-free
+        // "no frame yet" test.
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - streamStart)
+                                   .count();
+        if (uvc::uvcNoFirstFrameTimedOut(0, elapsedMs, noFirstFrameTimeoutMs_)) {
+          fail(uvc::uvcNoFirstFrameWarning(deviceName_, noFirstFrameTimeoutMs_));
+          return;  // ends the read loop; MF source/reader release below → device freed.
+        }
+      }
       DWORD actualStream = 0;
       DWORD flags = 0;
       LONGLONG timestamp = 0;
@@ -489,7 +513,9 @@ class UvcCaptureSession {
   }
 
   const std::string deviceId_;
+  const std::string deviceName_;
   const std::wstring symbolicLink_;
+  const int64_t noFirstFrameTimeoutMs_;
   std::thread thread_;
   std::atomic<bool> stop_{false};
 
@@ -566,7 +592,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       // (Re)start the capture session — a fresh attempt clears a prior error
       // (e.g. the camera was re-plugged after an unplug).
       entry.session.reset();
-      entry.session = std::make_unique<UvcCaptureSession>(entry.info.id, entry.symbolicLink);
+      entry.session = std::make_unique<UvcCaptureSession>(entry.info.id, entry.info.name, entry.symbolicLink);
       // Emit frames keyed by the shell's routing id when it supplied one (WinRT vs
       // Media Foundation stable-id reconciliation), else the adapter's own id.
       entry.outputSourceId = outputSourceId;
@@ -576,6 +602,28 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       std::fprintf(stderr, "[uvc-capture] connect '%s' (%s) frameKey='%s'\n",
                    entry.info.id.c_str(), entry.info.name.c_str(),
                    outputSourceId.empty() ? entry.info.id.c_str() : outputSourceId.c_str());
+      break;
+    }
+    return snapshotLocked();
+  }
+
+  std::vector<CaptureDeviceInfo> disconnect(const std::string& deviceId) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& entry : devices_) {
+      if (!matchesDeviceId(entry, deviceId)) {
+        continue;
+      }
+      // Stop the reader (joins its pull thread in ~UvcCaptureSession). Safe: the
+      // no-first-frame watchdog guarantees a starved reader has already exited
+      // its ReadSample loop, and a live reader returns from ReadSample on its
+      // next frame, so the join never blocks on a wedged device.
+      entry.session.reset();
+      entry.outputSourceId.clear();
+      entry.info.connectionState = "detected";
+      entry.info.signalPresent = false;
+      entry.info.warning.clear();
+      std::fprintf(stderr, "[uvc-capture] disconnect '%s' (%s)\n",
+                   entry.info.id.c_str(), entry.info.name.c_str());
       break;
     }
     return snapshotLocked();

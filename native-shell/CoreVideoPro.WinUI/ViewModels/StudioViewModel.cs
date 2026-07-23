@@ -7061,6 +7061,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 return false;
             }
 
+            // The core reports the device "connected" — but connect() flips to
+            // "connected" the instant the reader thread STARTS, before any frame
+            // arrives. A single-consumer capture card (Elgato HD60 S+) held by
+            // another app opens + negotiates fine, then delivers no samples: it
+            // would sit forever on a placeholder tile. CONFIRM a real first frame
+            // (signalPresent) before committing; if the core's no-first-frame
+            // watchdog fires (device → "error") or the window elapses, release
+            // native and fall back to the WinUI MediaCapture bridge below.
+            if (!await ConfirmNativeFirstFrameAsync(device).ConfigureAwait(false))
+            {
+                try
+                {
+                    await _bridge.DisconnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
+                }
+                catch (Exception disconnectEx)
+                {
+                    LaunchLog.Write($"capture: native uvc release failed {device.Id}: {disconnectEx.Message}");
+                }
+                LaunchLog.Write($"capture: native uvc no first frame {device.Id}; releasing and falling back to bridge");
+                return false;
+            }
+
             // The core now owns this camera via Media Foundation. Tear down any managed
             // MediaCapture bridge session for the same device so we never run two readers
             // against one device (the bridge reader would otherwise keep restarting — see
@@ -7087,6 +7109,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         catch (Exception ex)
         {
             LaunchLog.Write($"capture: native uvc connect failed {device.Id}: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    // Polls the core's capture-device status until the native reader delivers a
+    // real first frame (signalPresent=true → commit) or the reader fails to
+    // (device errors / disappears / the window elapses → fall back to the WinUI
+    // MediaCapture bridge). Bounded and off the UI thread; never throws.
+    private async Task<bool> ConfirmNativeFirstFrameAsync(CaptureDevice device)
+    {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            while (true)
+            {
+                IReadOnlyList<NativeCaptureDeviceStatus> devices;
+                try
+                {
+                    devices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write($"capture: native uvc first-frame poll failed {device.Id}: {ex.Message}");
+                    return false;
+                }
+
+                var status = NativeUvcCapturePolicy.FindDevice(devices, device.Id, device.NativeDeviceId);
+                switch (NativeUvcCapturePolicy.EvaluateFirstFrame(status, (int)elapsed.ElapsedMilliseconds))
+                {
+                    case NativeUvcCapturePolicy.FirstFrameOutcome.Confirmed:
+                        return true;
+                    case NativeUvcCapturePolicy.FirstFrameOutcome.FallBack:
+                        if (!string.IsNullOrWhiteSpace(status?.Warning))
+                        {
+                            LaunchLog.Write($"capture: native uvc device warning {device.Id}: {status!.Warning}");
+                        }
+                        return false;
+                    default:
+                        await Task.Delay(250).ConfigureAwait(false);
+                        break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"capture: native uvc first-frame wait error {device.Id}: {ex.Message}");
             return false;
         }
     }
