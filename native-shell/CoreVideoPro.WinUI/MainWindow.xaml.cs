@@ -282,6 +282,18 @@ public sealed partial class MainWindow : Window
 
     private async Task ShutdownAsync()
     {
+        // S3: kick the opt-in session-end telemetry FIRST so it runs concurrently
+        // with teardown. Fire-and-forget with its own tight timeout — never awaited,
+        // never gates the close (spec §S3.4 / §7). No-op unless consent is ON.
+        try
+        {
+            ViewModel.Settings.FlushTelemetrySessionEnd();
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"telemetry: session-end flush skipped ({ex.Message})");
+        }
+
         ApplicationLifecycle.PrepareShutdown();
         using var watchdog = new System.Threading.Timer(
             _ => ApplicationLifecycle.ForceExit(),

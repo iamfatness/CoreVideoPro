@@ -154,6 +154,47 @@
                                Style="{StaticResource StudioBody}" />
                 </StackPanel>
             </Border>
+
+            <!-- S3 opt-in telemetry: default OFF, one line of copy stating exactly
+                 what's sent, and a "preview what's sent" affordance so egress is
+                 inspectable before consent (spec §S3 / §7). -->
+            <Border Style="{StaticResource SettingsSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Diagnostics &amp; telemetry" Style="{StaticResource StudioSectionTitle}" />
+
+                    <ToggleSwitch Header="Share anonymous health data"
+                                  OffContent="Off"
+                                  OnContent="On"
+                                  IsOn="{x:Bind ViewModel.TelemetryEnabled, Mode=TwoWay}" />
+
+                    <TextBlock Text="{x:Bind ViewModel.TelemetryConsentCopy}"
+                               Style="{StaticResource StudioBody}"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Text="{x:Bind ViewModel.TelemetryConfigStatus}"
+                               Style="{StaticResource StudioBody}"
+                               FontSize="12"
+                               Foreground="{StaticResource StudioAccentBrush}"
+                               TextWrapping="Wrap" />
+
+                    <Button Style="{StaticResource StudioGhostButton}"
+                            Content="Preview what's sent"
+                            Command="{x:Bind ViewModel.PreviewTelemetryCommand}" />
+
+                    <Border Background="#0D0D0D" BorderBrush="{StaticResource StudioBorderBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="12"
+                            Visibility="{x:Bind ViewModel.ShowTelemetryPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      MaxHeight="320">
+                            <TextBlock Text="{x:Bind ViewModel.TelemetryPreviewJson, Mode=OneWay}"
+                                       FontFamily="Consolas" FontSize="12"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       IsTextSelectionEnabled="True"
+                                       TextWrapping="NoWrap" />
+                        </ScrollViewer>
+                    </Border>
+                </StackPanel>
+            </Border>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

@@ -255,6 +255,44 @@ shape (counts/kinds only — no endpoints), crash count since last send, machine
 class (GPU tier, CPU cores, RAM band). POST `/v1/events`. This is "is beta
 healthy" data, not analytics — keep the payload enumerable in the settings UI.
 
+**Status: SHIPPED 2026-07-23** (branch `chore/beta-s3-telemetry`). Reuses S1's
+config (`CrashReportingConfig` — `COREVIDEO_TELEMETRY_ENDPOINT` /
+`COREVIDEO_TELEMETRY_API_KEY`, empty default = disabled) and the same
+`Authorization: Bearer` + `/v1/events` (202) contract — one config, one HTTP path.
+
+- **Consent = a standalone flag file** `%LOCALAPPDATA%\CoreVideoPro\telemetry-consent.json`
+  (`TelemetryConsentStore`, default OFF, holds `enabled` + `lastSentUtc`) — the
+  update-dismissed/crash-watermark pattern, deliberately NOT a
+  ProductionOutputPreferences field so the opt-in never races the ISO/O1/mastering
+  prefs-version bumps and a fresh profile sends nothing.
+- **Payload (`TelemetryPayloadBuilder`, pure/unit-tested)** — enumerable, counts/kinds
+  only: `name` (`session-end`|`heartbeat`), `version` (the D4/S1
+  `UpdateNotificationService.ResolveCurrentVersion()` way), `sessionLengthSeconds`,
+  `outputConfigShape` {`recordingEnabled`,`streamingEnabled`,`vcamEnabled`,
+  `isoSourceCount`,`captureSourceCount`,`zoomParticipantCount`} read from
+  `_bridge.LastSnapshot` (NEVER StudioViewModel transport), `crashCountSinceLastSend`
+  (counts the S1 crash-watermark `Reports` since `lastSentUtc`), `machineClass`
+  (top-level string — the SAME `win-x64-cpuN-ramNgb` S1 sends, via a shared
+  `MachineClassProbe` reused by the crash pipeline) + a structured `machine`
+  {`cpuCores`,`ramBand`,`gpuTier`} (banded; GPU via a failure-safe DXGI probe).
+  NO stream keys, endpoints, URLs, paths, participant names, or meeting ids —
+  proven by `Serialize_NeverLeaksAnySecretOrEndpoint` (seeds a snapshot full of
+  secrets, asserts none appear in the JSON).
+- **Consent before egress (§7):** nothing sends unless the toggle is explicitly ON
+  AND the endpoint/key are configured; the settings "Preview what's sent" button
+  renders the exact payload (works with consent OFF so it's auditable before opt-in),
+  and every send logs the exact JSON to launch.log first.
+- **Silent-safe (§S3.4):** session-end is fire-and-forget with a 2 s timeout kicked
+  off at the top of `ShutdownAsync` — never awaited, never blocks the close, never
+  honors Retry-After; only the daily heartbeat honors Retry-After (reschedules).
+- **Server:** `/v1/events` needed NO change (it already stores the payload inline in
+  KV and indexes top-level `name`/`version`/`machineClass`); vitest extended with the
+  exact S3 shape round-trip. Pieces: `TelemetryConsentStore` / `MachineClassProbe` /
+  `TelemetryEvent`(models+builder) / `TelemetryEventClient` (MediaCore) +
+  `TelemetryEventService` / `GpuTierProbe` (WinUI) + the Settings-tab toggle on
+  `SettingsViewModel`. StudioViewModel untouched (MainWindow only reads the existing
+  public `Settings` to flush at shutdown).
+
 ### S4 — Secrets at rest (cheap, do first)
 
 **Status: SHIPPED 2026-07-18 (PR `claude/beta-s4-secrets`).** All three items:
