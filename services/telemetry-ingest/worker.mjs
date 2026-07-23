@@ -15,6 +15,14 @@ const limiter = createIpRateLimiter({ limit: 60, windowMs: 60_000 });
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // Unauthenticated liveness probe (beta S5 ops-monitor). No secrets, no
+    // side effects — just "the worker is up and routing". Answered before the
+    // POST-only gate so a simple GET health check works.
+    if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
+      return Response.json({ status: "ok", service: "telemetry-ingest", environment: env.ENVIRONMENT ?? "staging" });
+    }
+
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
     }

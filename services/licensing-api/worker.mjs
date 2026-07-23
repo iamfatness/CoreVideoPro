@@ -15,6 +15,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // Unauthenticated liveness probe (beta S5 ops-monitor). No secrets, no
+    // side effects — just "the worker is up and routing".
+    if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
+      return json({ status: "ok", service: "licensing-api", environment: env.ENVIRONMENT ?? "staging" });
+    }
+
     if (url.pathname === "/v1/webhooks/stripe" && request.method === "POST") {
       const result = await handleStripeWebhook(request, env);
       return json(result, result.status ?? (result.ok ? 200 : 500));
