@@ -2,7 +2,7 @@ using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-public sealed class MediaCoreBridgeService : IAsyncDisposable
+public sealed class MediaCoreBridgeService : IMediaCoreBridge
 {
     private readonly MediaCoreSupervisor _supervisor;
     private readonly object _gate = new();
