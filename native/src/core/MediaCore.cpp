@@ -1362,10 +1362,13 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       if (state.fitMode != "fit" && state.fitMode != "fill" && state.fitMode != "stretch") {
         state.fitMode = "fill";
       }
-      state.borderStyle = route.getString("borderStyle", "accent");
+      // Default "none": PROGRAM (and everything downstream of it — virtual
+      // camera, recordings, streams) must composite clean unless the operator
+      // explicitly opts a route into a border.
+      state.borderStyle = route.getString("borderStyle", "none");
       if (state.borderStyle != "none" && state.borderStyle != "solid" && state.borderStyle != "accent" &&
           state.borderStyle != "program" && state.borderStyle != "warning") {
-        state.borderStyle = "accent";
+        state.borderStyle = "none";
       }
       state.borderColor = route.getString("borderColor", "#44C1A1");
       state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
@@ -2495,7 +2498,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       if (state.fitMode != "fit" && state.fitMode != "fill" && state.fitMode != "stretch") {
         state.fitMode = "fill";
       }
-      state.borderStyle = route.getString("borderStyle", "accent");
+      state.borderStyle = route.getString("borderStyle", "none");
       state.borderColor = route.getString("borderColor", "#44C1A1");
       state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
       state.sourceScale = static_cast<float>((std::max)(0.25, (std::min)(4.0, route.getNumber("sourceScale", 1.0))));

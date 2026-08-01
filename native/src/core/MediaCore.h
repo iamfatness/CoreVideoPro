@@ -275,7 +275,9 @@ class MediaCore {
     int zIndex = 0;
     bool hasRect = false;
     std::string fitMode = "fill";
-    std::string borderStyle = "accent";
+    // "none" by default: borders are opt-in styling; PROGRAM (and the vcam/
+    // recording/stream outputs downstream of it) must composite clean.
+    std::string borderStyle = "none";
     std::string borderColor = "#44C1A1";
     float borderThickness = 2.f;
     float sourceScale = 1.f;

@@ -1107,6 +1107,48 @@ TEST(MediaCoreCommand, PerRouteColorGradeChangesCompositorRenderPlanSignature) {
       second.get("programFrame")->get("renderPlanSignature")->asNumber());
 }
 
+// PROGRAM output must be clean by default: a route that does not opt into a
+// border composites identically to an explicit borderStyle:"none" route. The
+// old default ("accent") baked a studio-green frame around every default route
+// into the composed program — which the virtual camera, recordings, and
+// streams all inherit (the 2026-07-31 "green outline on webcam out" report).
+TEST(MediaCoreCommand, RouteWithoutBorderStyleCompositesAsBorderless) {
+  const auto loadScene = [](const char* borderStyle) {
+    auto route = corevideo::rpc::Json::Object{
+        {"routeId", "a"},
+        {"mode", "fixed"},
+        {"audioRole", "mix"},
+        {"participantId", "speaker-1"},
+    };
+    if (borderStyle != nullptr) {
+      route["borderStyle"] = borderStyle;
+    }
+    return corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "load-scene-graph"},
+            {"sceneId", "solo"},
+            {"routes", corevideo::rpc::Json::Array{std::move(route)}},
+        },
+    };
+  };
+  const auto signatureOf = [](const corevideo::rpc::Json& state) {
+    const auto* frame = state.get("programFrame");
+    EXPECT_NE(frame, nullptr);
+    return frame->get("renderPlanSignature")->asNumber();
+  };
+
+  corevideo::core::MediaCore defaulted(corevideo::modules::createStubModules());
+  corevideo::core::MediaCore borderless(corevideo::modules::createStubModules());
+  corevideo::core::MediaCore accented(corevideo::modules::createStubModules());
+
+  const auto defaultSignature = signatureOf(defaulted.applyCommands(loadScene(nullptr)));
+  const auto noneSignature = signatureOf(borderless.applyCommands(loadScene("none")));
+  const auto accentSignature = signatureOf(accented.applyCommands(loadScene("accent")));
+
+  EXPECT_EQ(defaultSignature, noneSignature);
+  EXPECT_NE(defaultSignature, accentSignature);
+}
+
 // The compositor must be ALWAYS ON: even with no scene graph, no Zoom input frames,
 // and an empty command tick, every applyCommands call advances the program frame and
 // emits a synthetic black/slate program preview so the operator's Preview/Program

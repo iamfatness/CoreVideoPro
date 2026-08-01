@@ -100,4 +100,21 @@ public sealed class ScenePersistenceServiceTests
         Assert.Equal("Interview copy 3", ScenePersistenceService.MakeUniqueSceneName("Interview copy", existing));
         Assert.Equal("Solo copy", ScenePersistenceService.MakeUniqueSceneName("Solo copy", existing));
     }
+
+    // PROGRAM output must be clean by default (the 2026-07-31 "green outline on
+    // webcam out" report): a freshly created route carries NO border unless the
+    // operator opts in, and a missing/unknown persisted style normalizes to
+    // "none" — the old "accent" fallback baked a studio-green frame into the
+    // composed program, which the virtual camera, recordings, and streams all
+    // inherit. Explicit styles still round-trip untouched.
+    [Fact]
+    public void DefaultRouteBorderIsNone()
+    {
+        Assert.Equal("none", SourceRouteVisualDefaults.BorderStyle);
+        Assert.Equal("none", new SourceRoute { Id = "route-1" }.BorderStyle);
+        Assert.Equal("none", SceneRoutingService.NormalizeBorderStyle(null));
+        Assert.Equal("none", SceneRoutingService.NormalizeBorderStyle("bogus"));
+        Assert.Equal("accent", SceneRoutingService.NormalizeBorderStyle("accent"));
+        Assert.Equal("program", SceneRoutingService.NormalizeBorderStyle("program"));
+    }
 }

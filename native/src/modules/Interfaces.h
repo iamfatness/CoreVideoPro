@@ -293,7 +293,9 @@ struct CompositorRenderPlanLayer {
   CompositorLayerRect rect;
   float opacity = 1.f;
   std::string fitMode = "fill";
-  std::string borderStyle = "accent";
+  // "none" by default: borders are opt-in styling (multiview tiles set theirs
+  // explicitly); a defaulted layer must never bake chrome into PROGRAM.
+  std::string borderStyle = "none";
   std::string borderColor = "#44C1A1";
   float borderThickness = 2.f;
   float sourceScale = 1.f;
