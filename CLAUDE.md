@@ -122,19 +122,22 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
 
 ## Other gotchas
 
-- **Scene-route borders are OPT-IN — every default is "none" (2026-07-31).** The
-  route border default used to be "accent" (studio green #44C1A1/#3ddc97, thickness 2)
-  at every tier — shell `SourceRouteVisualDefaults`/`NormalizeBorderStyle`, core
-  `load-scene-graph` parse defaults, `SceneRouteState`, and
-  `CompositorRenderPlanLayer` — so any route that didn't explicitly opt out
-  composited a green frame (`computeBorderFraming` ≈ thickness/200 → ~1% of the layer
-  edge, ~11–19px at fullscreen 1080p) INTO THE PROGRAM. The virtual camera,
-  recordings, and streams all inherit the composed program, so all outputs showed a
-  green outline ("webcam out green border" regression). All defaults are now "none";
-  multiview tiles keep their EXPLICIT accent/program tally borders. Regression tests:
-  `MediaCoreCommand.RouteWithoutBorderStyleCompositesAsBorderless` (core) and
-  `ScenePersistenceServiceTests.DefaultRouteBorderIsNone` (shell). Never reintroduce
-  a visible-adornment default on the program path.
+- **Borders are MULTIVIEW-ONLY — they NEVER composite into program/preview
+  (owner rule, 2026-07-31).** Borders exist to separate tiles in the multiview
+  (which sets its own explicit accent/program tally borders in
+  `buildMultiviewRenderPlan`). Route borders used to default to "accent" (studio
+  green, thickness 2 → `computeBorderFraming` ≈ thickness/200 → ~11–19px at
+  fullscreen 1080p) and composited INTO THE PROGRAM — the virtual camera,
+  recordings, and streams all inherit the composed program, so every output showed
+  a green outline ("webcam out green border" regression). Now enforced in layers:
+  `buildRenderPlanForScene` hard-forces `borderStyle="none"`/thickness 0 on every
+  route layer (program AND preview bus), every default is "none", the Sources
+  layer editor has no border controls, and `ScenePersistenceService.FromPersisted`
+  retires stale persisted styles to "none". Regression tests:
+  `MediaCoreCommand.RouteBordersNeverCompositeIntoProgram` (core — explicit
+  "accent" composites identically to "none") and
+  `ScenePersistenceServiceTests.DefaultRouteBorderIsNone` (shell). Never render a
+  visible adornment on the program path outside the multiview grid.
 - The WinUI window often **opens minimized off-screen** (rect ≈ -32000,-32000). Restore
   gently with `ShowWindow(SW_RESTORE=9)`; do NOT aggressively maximize/move a
   SwapChainPanel window across monitors — it can kill the window (and resize can crash).

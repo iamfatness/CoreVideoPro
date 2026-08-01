@@ -4141,9 +4141,14 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.order = videoLayerIndex;
       }
       layer.fitMode = route.fitMode;
-      layer.borderStyle = route.borderStyle;
+      // Borders NEVER composite into program/preview: they exist solely to
+      // separate tiles in the MULTIVIEW (which sets its own explicit tally
+      // borders). Whatever a route carries on the wire, the feed stays clean —
+      // a green route-border frame baked into program reached the virtual
+      // camera, recordings, and streams (owner rule, 2026-07-31).
+      layer.borderStyle = "none";
       layer.borderColor = route.borderColor;
-      layer.borderThickness = route.borderThickness;
+      layer.borderThickness = 0.f;
       layer.sourceScale = route.sourceScale;
       layer.sourceOffsetX = route.sourceOffsetX;
       layer.sourceOffsetY = route.sourceOffsetY;

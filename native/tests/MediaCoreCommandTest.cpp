@@ -1107,12 +1107,12 @@ TEST(MediaCoreCommand, PerRouteColorGradeChangesCompositorRenderPlanSignature) {
       second.get("programFrame")->get("renderPlanSignature")->asNumber());
 }
 
-// PROGRAM output must be clean by default: a route that does not opt into a
-// border composites identically to an explicit borderStyle:"none" route. The
-// old default ("accent") baked a studio-green frame around every default route
-// into the composed program — which the virtual camera, recordings, and
-// streams all inherit (the 2026-07-31 "green outline on webcam out" report).
-TEST(MediaCoreCommand, RouteWithoutBorderStyleCompositesAsBorderless) {
+// Borders NEVER composite into program/preview — they exist solely to separate
+// tiles in the multiview (owner rule, 2026-07-31). Whatever borderStyle a route
+// carries on the wire (missing, "none", or an explicit "accent"), the composed
+// feed is identical: the old "accent" default baked a studio-green frame into
+// the program, which the virtual camera, recordings, and streams all inherit.
+TEST(MediaCoreCommand, RouteBordersNeverCompositeIntoProgram) {
   const auto loadScene = [](const char* borderStyle) {
     auto route = corevideo::rpc::Json::Object{
         {"routeId", "a"},
@@ -1146,7 +1146,7 @@ TEST(MediaCoreCommand, RouteWithoutBorderStyleCompositesAsBorderless) {
   const auto accentSignature = signatureOf(accented.applyCommands(loadScene("accent")));
 
   EXPECT_EQ(defaultSignature, noneSignature);
-  EXPECT_NE(defaultSignature, accentSignature);
+  EXPECT_EQ(defaultSignature, accentSignature);
 }
 
 // The compositor must be ALWAYS ON: even with no scene graph, no Zoom input frames,
