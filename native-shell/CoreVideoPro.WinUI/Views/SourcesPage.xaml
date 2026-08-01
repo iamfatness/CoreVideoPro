@@ -279,49 +279,17 @@
                                                                    SpinButtonPlacementMode="Hidden" />
                                                     </Grid>
                                                 </StackPanel>
-                                                <Grid ColumnSpacing="8">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*" />
-                                                        <ColumnDefinition Width="*" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel Spacing="2">
-                                                        <TextBlock Text="Fit" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                        <ComboBox ItemsSource="{x:Bind FitModeOptions}"
-                                                                  SelectedValue="{x:Bind FitMode, Mode=TwoWay}"
-                                                                  SelectedValuePath="Value"
-                                                                  DisplayMemberPath="Label"
-                                                                  HorizontalAlignment="Stretch" />
-                                                    </StackPanel>
-                                                    <StackPanel Grid.Column="1" Spacing="2">
-                                                        <TextBlock Text="Border" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                        <ComboBox ItemsSource="{x:Bind BorderStyleOptions}"
-                                                                  SelectedValue="{x:Bind BorderStyle, Mode=TwoWay}"
-                                                                  SelectedValuePath="Value"
-                                                                  DisplayMemberPath="Label"
-                                                                  HorizontalAlignment="Stretch" />
-                                                    </StackPanel>
-                                                </Grid>
-                                                <Grid ColumnSpacing="8">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*" />
-                                                        <ColumnDefinition Width="92" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel Spacing="2">
-                                                        <TextBlock Text="Border color" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                        <TextBox Text="{x:Bind BorderColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                 PlaceholderText="#44C1A1"
-                                                                 Style="{StaticResource StudioField}" />
-                                                    </StackPanel>
-                                                    <StackPanel Grid.Column="1" Spacing="2">
-                                                        <TextBlock Text="Width" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                        <NumberBox Value="{x:Bind BorderThickness, Mode=TwoWay}"
-                                                                   Minimum="0"
-                                                                   Maximum="12"
-                                                                   SmallChange="1"
-                                                                   LargeChange="2"
-                                                                   SpinButtonPlacementMode="Inline" />
-                                                    </StackPanel>
-                                                </Grid>
+                                                <!-- No border controls here: borders never composite into the
+                                                     program/preview feeds — they exist solely to separate tiles
+                                                     in the multiview (owner rule, 2026-07-31). -->
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Text="Fit" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <ComboBox ItemsSource="{x:Bind FitModeOptions}"
+                                                              SelectedValue="{x:Bind FitMode, Mode=TwoWay}"
+                                                              SelectedValuePath="Value"
+                                                              DisplayMemberPath="Label"
+                                                              HorizontalAlignment="Stretch" />
+                                                </StackPanel>
                                                 <StackPanel Spacing="2">
                                                     <Grid>
                                                         <TextBlock Text="Opacity" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />

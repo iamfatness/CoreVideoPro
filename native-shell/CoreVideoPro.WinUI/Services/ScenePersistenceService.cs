@@ -64,7 +64,11 @@ public static class ScenePersistenceService
             ShowInputSlotNumber = persisted.ShowInputSlotNumber,
             ProductionRoleId = string.IsNullOrWhiteSpace(persisted.ProductionRoleId) ? null : persisted.ProductionRoleId,
             FitMode = SceneRoutingService.NormalizeFitMode(persisted.FitMode),
-            BorderStyle = SceneRoutingService.NormalizeBorderStyle(persisted.BorderStyle),
+            // Route borders were retired from the feeds (owner rule, 2026-07-31:
+            // borders separate multiview tiles only, never composite into
+            // program/preview) — stale persisted styles load as "none" so shell
+            // previews match what the core actually renders.
+            BorderStyle = "none",
             BorderColor = SceneRoutingService.NormalizeBorderColor(persisted.BorderColor),
             BorderThickness = Math.Clamp(persisted.BorderThickness, 0, 12),
             SourceScale = SceneRoutingService.NormalizeSourceScale(persisted.SourceScale),
