@@ -723,17 +723,21 @@ bool blitVideoFrameLayerClipped(
 }
 
 rpc::Json programSharedTextureJson(const ProgramFrame& frame) {
-  if (frame.sharedTexture.sharedHandleHex.empty() || frame.sharedTexture.width <= 0 || frame.sharedTexture.height <= 0) {
+  if ((frame.sharedTexture.sharedHandleHex.empty() && frame.sharedTexture.iosurfaceId == 0) || frame.sharedTexture.width <= 0 || frame.sharedTexture.height <= 0) {
     return nullptr;
   }
 
-  return rpc::Json::Object{
+  rpc::Json::Object body{
       {"sharedHandleHex", frame.sharedTexture.sharedHandleHex},
       {"width", frame.sharedTexture.width},
       {"height", frame.sharedTexture.height},
       {"format", frame.sharedTexture.format.empty() ? "B8G8R8A8_UNORM" : frame.sharedTexture.format},
       {"frameNumber", static_cast<double>(frame.sharedTexture.frameNumber > 0 ? frame.sharedTexture.frameNumber : frame.frameNumber)},
   };
+  if (frame.sharedTexture.iosurfaceId != 0) {
+    body.emplace("iosurfaceId", static_cast<double>(frame.sharedTexture.iosurfaceId));
+  }
+  return body;
 }
 
 rpc::Json programSharedTextureEvent(const ProgramFrame& frame) {
@@ -771,7 +775,7 @@ std::vector<rpc::Json> participantSharedTextureEvents(const ProgramFrame& frame)
 
 rpc::Json multiviewSharedTextureJson(const ProgramFrame& frame) {
   const auto& texture = frame.multiviewSharedTexture;
-  if (texture.sharedHandleHex.empty() || texture.width <= 0 || texture.height <= 0) {
+  if ((texture.sharedHandleHex.empty() && texture.iosurfaceId == 0) || texture.width <= 0 || texture.height <= 0) {
     return nullptr;
   }
 
@@ -793,15 +797,18 @@ rpc::Json multiviewSharedTextureJson(const ProgramFrame& frame) {
     });
   }
 
+  rpc::Json::Object textureBody{
+      {"sharedHandleHex", texture.sharedHandleHex},
+      {"width", texture.width},
+      {"height", texture.height},
+      {"format", texture.format.empty() ? "B8G8R8A8_UNORM" : texture.format},
+      {"frameNumber", static_cast<double>(texture.frameNumber > 0 ? texture.frameNumber : frame.frameNumber)},
+  };
+  if (texture.iosurfaceId != 0) {
+    textureBody.emplace("iosurfaceId", static_cast<double>(texture.iosurfaceId));
+  }
   return rpc::Json::Object{
-      {"texture",
-       rpc::Json::Object{
-           {"sharedHandleHex", texture.sharedHandleHex},
-           {"width", texture.width},
-           {"height", texture.height},
-           {"format", texture.format.empty() ? "B8G8R8A8_UNORM" : texture.format},
-           {"frameNumber", static_cast<double>(texture.frameNumber > 0 ? texture.frameNumber : frame.frameNumber)},
-       }},
+      {"texture", textureBody},
       {"canvasWidth", frame.multiviewWidth > 0 ? frame.multiviewWidth : texture.width},
       {"canvasHeight", frame.multiviewHeight > 0 ? frame.multiviewHeight : texture.height},
       {"tiles", tiles},
@@ -820,17 +827,21 @@ rpc::Json multiviewSharedTextureEvent(const ProgramFrame& frame) {
 
 rpc::Json previewSharedTextureJson(const ProgramFrame& frame) {
   const auto& texture = frame.previewSharedTexture;
-  if (texture.sharedHandleHex.empty() || texture.width <= 0 || texture.height <= 0) {
+  if ((texture.sharedHandleHex.empty() && texture.iosurfaceId == 0) || texture.width <= 0 || texture.height <= 0) {
     return nullptr;
   }
 
-  return rpc::Json::Object{
+  rpc::Json::Object body{
       {"sharedHandleHex", texture.sharedHandleHex},
       {"width", texture.width},
       {"height", texture.height},
       {"format", texture.format.empty() ? "B8G8R8A8_UNORM" : texture.format},
       {"frameNumber", static_cast<double>(texture.frameNumber > 0 ? texture.frameNumber : frame.frameNumber)},
   };
+  if (texture.iosurfaceId != 0) {
+    body.emplace("iosurfaceId", static_cast<double>(texture.iosurfaceId));
+  }
+  return body;
 }
 
 rpc::Json previewSharedTextureEvent(const ProgramFrame& frame) {

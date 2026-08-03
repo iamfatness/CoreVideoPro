@@ -154,7 +154,13 @@ struct ProgramFramePreviewPixels {
 };
 
 struct ProgramFrameSharedTexture {
+  // Windows: a keyed-mutex DXGI shared HANDLE in hex. Empty on macOS.
   std::string sharedHandleHex;
+  // macOS: the global IOSurface ID of the IOSurface backing the compositor's
+  // render target (IOSurfaceGetID; the shell resolves it with IOSurfaceLookup).
+  // 0 on Windows. A texture is "present" when EITHER identifier is set — the
+  // two are platform-exclusive siblings, never both set.
+  uint32_t iosurfaceId = 0;
   int width = 0;
   int height = 0;
   std::string format = "B8G8R8A8_UNORM";
