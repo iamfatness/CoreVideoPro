@@ -1377,8 +1377,8 @@ describe("ISO recording plan", () => {
     await goToTab(user, "Settings");
 
     const plan = screen.getByLabelText("ISO recording plan");
-    // track files should show .mov filenames
-    const tracks = within(plan).getAllByText(/\.mov$/i);
+    // track files should show .mp4 filenames (ISO-NN-<SafeName>.mp4, see isoRecording.ts)
+    const tracks = within(plan).getAllByText(/\.mp4$/i);
     expect(tracks.length).toBeGreaterThanOrEqual(1);
   });
 });
