@@ -1,8 +1,13 @@
 # macOS port Phase 3 — AVFoundation/VideoToolbox recording encoder
 
-Status: increment 1 landed (program A+V, full-res via
-wantsFullProgramReadbackForRecording; iso-recording capability deliberately
-NOT advertised by this sink until increment 2). Twin of
+Status: increments 1 AND 2 landed — program A+V (full-res via
+wantsFullProgramReadbackForRecording) plus the ISO writers: lazy open at
+first frame (NV12 for Zoom I420 / BGRA for capture), per-source dedup,
+isoAudioAdvance silence-fill, hasAudio gating (video-only ISOs carry no
+fabricated track), independent finalize, session subfolder + manifest via
+the shared RecordingArtifactNaming.h helpers, iso-recording capability
+advertised. Remaining parity gap vs the six real-MF tests: none functional;
+MF-side helper dedup still waits on a verified Windows build. Twin of
 `MediaFoundationEncoderAdapter.cpp`; boundary map performed 2026-08-03.
 
 ## What the boundary map established

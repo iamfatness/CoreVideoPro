@@ -180,6 +180,165 @@ TEST(AvfEncoderRecording, NonRecordingDestinationsStayIdle) {
   fs::remove_all(dir);
 }
 
+VideoFrame isoI420Frame(const std::string& sourceId, int64_t frameId, uint8_t yValue) {
+  VideoFrame frame;
+  frame.participantId = sourceId;
+  frame.frameId = frameId;
+  frame.i420Width = 320;
+  frame.i420Height = 180;
+  const size_t yLen = 320u * 180u;
+  auto planes = std::make_shared<std::vector<uint8_t>>(yLen + (yLen / 4) * 2, yValue);
+  frame.i420 = std::move(planes);
+  return frame;
+}
+
+VideoFrame isoBgraFrame(const std::string& sourceId, int64_t frameId) {
+  VideoFrame frame;
+  frame.participantId = sourceId;
+  frame.frameId = frameId;
+  frame.pixelWidth = 256;
+  frame.pixelHeight = 144;
+  frame.pixelStride = 256 * 4;
+  frame.pixels = std::make_shared<std::vector<uint8_t>>(256u * 144u * 4u, 0x80);
+  return frame;
+}
+
+RecordingSessionRequest isoRequest(const std::string& folder) {
+  auto request = testRequest(folder);
+  IsoSourceSelection alice;
+  alice.sourceId = "zoom:101";
+  alice.displayName = "Alice";
+  alice.hasAudio = true;
+  IsoSourceSelection bob;
+  bob.sourceId = "capture:cam1";
+  bob.displayName = "Bob Jones";
+  bob.hasAudio = false;  // video-only capture ISO: no fabricated stem
+  request.isoSources = {alice, bob};
+  return request;
+}
+
+TEST(AvfEncoderRecording, IsoWritersProduceIndependentFilesWithManifest) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("iso");
+  encoder->configureRecording(isoRequest(dir.string()));
+  const auto started = encoder->start({"recording"}, {"zoom:101", "capture:cam1"});
+  EXPECT_EQ(started.recordingStatus, "recording");
+  ASSERT_FALSE(started.recordingSessionDir.empty());
+  ASSERT_FALSE(started.recordingManifestPath.empty());
+
+  for (int i = 1; i <= 20; ++i) {
+    encoder->submit(frameWithFullBgra(i, 640, 360));
+    const auto pcm = tonePcm(960, 2);
+    encoder->submitAudio(pcm.data(), 960, 2, 48000);
+    std::vector<IsoSourceVideoFrame> iso;
+    iso.push_back({"zoom:101", "Alice", isoI420Frame("zoom:101", i, 90)});
+    iso.push_back({"capture:cam1", "Bob Jones", isoBgraFrame("capture:cam1", i)});
+    encoder->submitIsoVideo(iso);
+    IsoSourceAudio stem;
+    stem.sourceId = "zoom:101";
+    stem.pcm = tonePcm(960, 1);
+    stem.frameCount = 960;
+    stem.channels = 1;
+    encoder->submitIsoAudio({stem});
+  }
+  encoder->stopRecording();
+
+  const auto session = encoder->session();
+  // Program never regressed by ISO work.
+  EXPECT_GT(session.recordingVideoFrameCount, 0);
+  EXPECT_GT(session.recordingAudioPacketCount, 0);
+  ASSERT_EQ(session.isoStreams.size(), 2u);
+  namespace fs = std::filesystem;
+  int64_t zoomAudio = 0;
+  for (const auto& stream : session.isoStreams) {
+    EXPECT_TRUE(stream.trackOpen) << stream.sourceId;
+    EXPECT_GT(stream.videoFrameCount, 0) << stream.sourceId;
+    EXPECT_TRUE(stream.warning.empty()) << stream.warning;
+    std::error_code ec;
+    EXPECT_GT(fs::file_size(stream.path, ec), 0u) << stream.path;
+    const auto filename = fs::path(stream.path).filename().string();
+    if (stream.sourceId == "zoom:101") {
+      EXPECT_EQ(filename.rfind("ISO-", 0), 0u);
+      EXPECT_NE(filename.find("Alice"), std::string::npos);
+      zoomAudio = stream.audioSampleCount;
+    } else {
+      EXPECT_NE(filename.find("Bob-Jones"), std::string::npos);
+      // Video-only ISO: NO fabricated audio track.
+      EXPECT_EQ(stream.audioSampleCount, 0);
+    }
+  }
+  EXPECT_GT(zoomAudio, 0);
+  std::error_code ec;
+  EXPECT_GT(fs::file_size(session.recordingManifestPath, ec), 0u);
+  fs::remove_all(dir);
+}
+
+TEST(AvfEncoderRecording, IsoGappedStemSilenceFillsToSharedEpoch) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("iso-gap");
+  auto request = isoRequest(dir.string());
+  request.isoSources.resize(1);  // Alice only
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {"zoom:101"});
+
+  // Open the writer with a first frame, deliver one audio burst, then submit
+  // EMPTY stems (Zoom gating) for several ticks, then a resumed burst.
+  std::vector<IsoSourceVideoFrame> iso;
+  iso.push_back({"zoom:101", "Alice", isoI420Frame("zoom:101", 1, 120)});
+  encoder->submitIsoVideo(iso);
+  IsoSourceAudio real;
+  real.sourceId = "zoom:101";
+  real.pcm = tonePcm(960, 1);
+  real.frameCount = 960;
+  real.channels = 1;
+  encoder->submitIsoAudio({real});
+  IsoSourceAudio gap;
+  gap.sourceId = "zoom:101";  // empty pcm/frameCount==0 = the gating signal
+  for (int i = 0; i < 5; ++i) {
+    encoder->submitIsoAudio({gap});
+  }
+  encoder->submitIsoAudio({real});
+  encoder->stopRecording();
+
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  // The stem accumulated real + silence samples ≥ two real bursts; the
+  // wall-anchored position math itself is pinned by the portable
+  // RecordingPtsClock tests — here we prove the sink WIRES it (silence was
+  // actually written between the bursts, so the count exceeds 2*960).
+  EXPECT_GE(session.isoStreams[0].audioSampleCount, 2 * 960);
+  fs::remove_all(dir);
+}
+
+TEST(AvfEncoderRecording, IsoRefusedLoudlyOnBadSessionFolder) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  auto request = isoRequest("/dev/null/nope");
+  encoder->configureRecording(request);
+  const auto started = encoder->start({"recording"}, {"zoom:101", "capture:cam1"});
+  EXPECT_EQ(started.recordingStatus, "failed");
+  EXPECT_FALSE(started.recordingWarning.empty());
+}
+
+TEST(AvfEncoderRecording, IsoPerSourceDedupSkipsResubmittedFrames) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("iso-dedup");
+  auto request = isoRequest(dir.string());
+  request.isoSources.resize(1);
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {"zoom:101"});
+  std::vector<IsoSourceVideoFrame> iso;
+  iso.push_back({"zoom:101", "Alice", isoI420Frame("zoom:101", 7, 60)});
+  // The worker resubmits the latest frame every tick; same frameId must mux ONCE.
+  for (int i = 0; i < 6; ++i) {
+    encoder->submitIsoVideo(iso);
+  }
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  EXPECT_EQ(session.isoStreams[0].videoFrameCount, 1);
+  fs::remove_all(dir);
+}
+
 }  // namespace
 
 #endif  // COREVIDEO_WITH_AVF_ENCODER

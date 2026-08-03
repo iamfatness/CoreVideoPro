@@ -28,15 +28,23 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "modules/Interfaces.h"
+#include "modules/RecordingArtifactNaming.h"
 #include "modules/RecordingPtsClock.h"
 
 namespace corevideo::modules {
 namespace {
+
+using recording::i420ToNv12;
+using recording::jsonEscape;
+using recording::sanitizeForFilename;
+using recording::sessionTimestampFolder;
+using recording::toStereo;
 
 constexpr int64_t kHundredNsPerSecond = 10'000'000;
 
@@ -44,14 +52,22 @@ CMTime ptsToTime(int64_t pts100ns) {
   return CMTimeMake(pts100ns, static_cast<int32_t>(kHundredNsPerSecond));
 }
 
+enum class VideoInput { Bgra, Nv12 };
+
 class AvfMp4Writer {
  public:
   ~AvfMp4Writer() { finalize(); }
 
   bool open(const std::string& path, int width, int height, int fps, double bitrateMbps,
-            const std::string& codec, std::string& errorOut) {
-    (void)codec;  // increment 1 is H.264-only, matching the product default
+            const std::string& codec, std::string& errorOut,
+            VideoInput videoInput = VideoInput::Bgra) {
+    (void)codec;  // H.264-only, matching the product default
     finalize();
+    inputKind_ = videoInput;
+    if (inputKind_ == VideoInput::Nv12) {
+      width &= ~1;  // NV12 needs even luma dims (mirrors the MF writer)
+      height &= ~1;
+    }
     width_ = std::max(16, width);
     height_ = std::max(16, height);
     fps_ = std::max(1, fps);
@@ -86,8 +102,11 @@ class AvfMp4Writer {
       return false;
     }
     [writer_ addInput:videoInput_];
+    const OSType pixelFormat = inputKind_ == VideoInput::Nv12
+                                   ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                                   : kCVPixelFormatType_32BGRA;
     NSDictionary* adaptorAttrs = @{
-      (__bridge NSString*)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+      (__bridge NSString*)kCVPixelBufferPixelFormatTypeKey : @(pixelFormat),
       (__bridge NSString*)kCVPixelBufferWidthKey : @(width_),
       (__bridge NSString*)kCVPixelBufferHeightKey : @(height_),
     };
@@ -185,6 +204,83 @@ class AvfMp4Writer {
       return false;
     }
     ++videoFrameCount_;
+    return true;
+  }
+
+  // NV12 frame into the biplanar pixel buffer (ISO Zoom sources). Crops /
+  // fills to the configured dims like the MF writer: luma fill 0, chroma 128.
+  bool writeVideoNv12(const uint8_t* nv12, int srcWidth, int srcHeight, int64_t pts100ns,
+                      std::string& errorOut) {
+    if (!writing_ || !adaptor_ || inputKind_ != VideoInput::Nv12) {
+      errorOut = "writer not accepting NV12";
+      return false;
+    }
+    if (!videoInput_.readyForMoreMediaData) {
+      return true;
+    }
+    CVPixelBufferRef buffer = nullptr;
+    CVPixelBufferPoolRef pool = adaptor_.pixelBufferPool;
+    if (!pool ||
+        CVPixelBufferPoolCreatePixelBuffer(nullptr, pool, &buffer) != kCVReturnSuccess || !buffer) {
+      errorOut = "pixel buffer pool exhausted";
+      return false;
+    }
+    CVPixelBufferLockBaseAddress(buffer, 0);
+    const int copyWidth = std::min(srcWidth & ~1, width_);
+    const int copyHeight = std::min(srcHeight & ~1, height_);
+    auto* yDst = static_cast<uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(buffer, 0));
+    const size_t yStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0);
+    for (int y = 0; y < height_; ++y) {
+      uint8_t* row = yDst + static_cast<size_t>(y) * yStride;
+      if (y < copyHeight) {
+        std::memcpy(row, nv12 + static_cast<size_t>(y) * srcWidth, static_cast<size_t>(copyWidth));
+        if (copyWidth < width_) {
+          std::memset(row + copyWidth, 0, static_cast<size_t>(width_ - copyWidth));
+        }
+      } else {
+        std::memset(row, 0, static_cast<size_t>(width_));
+      }
+    }
+    auto* uvDst = static_cast<uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(buffer, 1));
+    const size_t uvStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1);
+    const uint8_t* uvSrc = nv12 + static_cast<size_t>(srcWidth) * srcHeight;
+    for (int y = 0; y < height_ / 2; ++y) {
+      uint8_t* row = uvDst + static_cast<size_t>(y) * uvStride;
+      if (y < copyHeight / 2) {
+        std::memcpy(row, uvSrc + static_cast<size_t>(y) * srcWidth, static_cast<size_t>(copyWidth));
+        if (copyWidth < width_) {
+          std::memset(row + copyWidth, 128, static_cast<size_t>(width_ - copyWidth));
+        }
+      } else {
+        std::memset(row, 128, static_cast<size_t>(width_));
+      }
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, 0);
+    const BOOL appended = [adaptor_ appendPixelBuffer:buffer withPresentationTime:ptsToTime(pts100ns)];
+    CVPixelBufferRelease(buffer);
+    if (!appended) {
+      errorOut = std::string("appendPixelBuffer (NV12) failed: ") +
+                 (writer_.error ? writer_.error.localizedDescription.UTF8String : "unknown");
+      return false;
+    }
+    ++videoFrameCount_;
+    return true;
+  }
+
+  // Silence-fill for gapped ISO stems (0.1s chunks like the MF writer).
+  bool writeAudioSilence(int64_t frames, int64_t ptsStart100ns, std::string& errorOut) {
+    constexpr int kChunkFrames = 4800;
+    std::vector<float> zeros;
+    int64_t written = 0;
+    while (written < frames) {
+      const int chunk = static_cast<int>(std::min<int64_t>(kChunkFrames, frames - written));
+      zeros.assign(static_cast<size_t>(chunk) * audioChannels_, 0.f);
+      const int64_t pts = ptsStart100ns + written * kHundredNsPerSecond / audioSampleRate_;
+      if (!writeAudio(zeros.data(), chunk, pts, errorOut)) {
+        return false;
+      }
+      written += chunk;
+    }
     return true;
   }
 
@@ -292,6 +388,7 @@ class AvfMp4Writer {
   int fps_ = 30;
   int audioChannels_ = 2;
   int audioSampleRate_ = 48000;
+  VideoInput inputKind_ = VideoInput::Bgra;
   bool writing_ = false;
   bool audioConfigured_ = false;
   int64_t videoFrameCount_ = 0;
@@ -325,10 +422,104 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     recordingArmed_ = std::find(destinations.begin(), destinations.end(), "recording") !=
                       destinations.end();
     clock_.reset();
+    isoWriters_.clear();
     if (recordingArmed_) {
       openRecordingWriter();
     }
     return session_;
+  }
+
+  void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override {
+    if (!recordingArmed_ || session_.recordingStatus == "failed") {
+      return;
+    }
+    for (const auto& source : sources) {
+      auto it = isoWriters_.find(source.sourceId);
+      if (it == isoWriters_.end() || it->second.failed) {
+        continue;
+      }
+      auto& entry = it->second;
+      const auto& frame = source.frame;
+      const bool isI420 = frame.hasI420();
+      if (!isI420 && !frame.hasPixels()) {
+        continue;
+      }
+      const auto pts = clock_.videoPtsForSource(now100ns(), source.sourceId, frame.frameId);
+      if (!pts) {
+        continue;  // same frame resubmitted this tick
+      }
+      std::string error;
+      if (!entry.opened) {
+        // Lazy open at the source's FIRST frame, sized to its native dims.
+        const int width = isI420 ? frame.i420Width : frame.pixelWidth;
+        const int height = isI420 ? frame.i420Height : frame.pixelHeight;
+        if (!entry.writer->open(entry.status.path, width, height, request_.fps,
+                                request_.targetBitrateMbps, request_.videoCodec, error,
+                                isI420 ? VideoInput::Nv12 : VideoInput::Bgra) ||
+            (entry.hasAudio &&
+             !entry.writer->ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
+            !entry.writer->beginWriting(error)) {
+          entry.failed = true;
+          entry.status.warning = "ISO writer open failed: " + error;
+          raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
+          continue;
+        }
+        entry.opened = true;
+        entry.status.trackOpen = true;
+      }
+      bool ok = false;
+      if (isI420) {
+        i420ToNv12(frame.i420->data(), frame.i420Width & ~1, frame.i420Height & ~1,
+                   entry.nv12Scratch);
+        ok = entry.writer->writeVideoNv12(entry.nv12Scratch.data(), frame.i420Width & ~1,
+                                          frame.i420Height & ~1, *pts, error);
+      } else {
+        ok = entry.writer->writeVideo(frame.pixels->data(), frame.pixelWidth, frame.pixelHeight,
+                                      frame.pixelStride, *pts, error);
+      }
+      if (!ok) {
+        entry.status.warning = "ISO video write failed: " + error;
+        raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
+      }
+      entry.status.videoFrameCount = entry.writer->videoFrameCount();
+      entry.status.bytesWritten = entry.writer->bytesWritten();
+    }
+    refreshIsoStreams();
+  }
+
+  void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
+    if (!recordingArmed_ || session_.recordingStatus == "failed") {
+      return;
+    }
+    for (const auto& source : sources) {
+      auto it = isoWriters_.find(source.sourceId);
+      if (it == isoWriters_.end() || it->second.failed || !it->second.opened) {
+        continue;
+      }
+      auto& entry = it->second;
+      if (!entry.writer->audioConfigured()) {
+        continue;  // video-only ISO (hasAudio=false): no fabricated stem
+      }
+      const auto advance =
+          clock_.isoAudioAdvance(now100ns(), source.sourceId, source.frameCount, source.sampleRate);
+      std::string error;
+      if (advance.silenceFrames > 0 &&
+          !entry.writer->writeAudioSilence(advance.silenceFrames, advance.silencePts100ns, error)) {
+        entry.status.warning = "ISO silence-fill failed: " + error;
+        raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
+        continue;
+      }
+      if (source.frameCount > 0 && !source.pcm.empty()) {
+        toStereo(source.pcm, source.channels, source.frameCount, entry.stereoScratch);
+        if (!entry.writer->writeAudio(entry.stereoScratch.data(), source.frameCount,
+                                      advance.realPts100ns, error)) {
+          entry.status.warning = "ISO audio write failed: " + error;
+          raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
+        }
+      }
+      entry.status.audioSampleCount = entry.writer->audioSampleCount();
+    }
+    refreshIsoStreams();
   }
 
   void submit(const ProgramFrame& frame) override {
@@ -389,6 +580,14 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       return;
     }
     writer_.finalize();
+    // Each ISO finalizes independently — its own moov, no 0-byte tails.
+    for (auto& [sourceId, entry] : isoWriters_) {
+      if (entry.opened) {
+        entry.writer->finalize();
+        entry.status.bytesWritten = entry.writer->bytesWritten();
+      }
+    }
+    refreshIsoStreams();
     session_.recordingBytesWritten = writer_.bytesWritten();
     if (session_.recordingStatus != "failed") {
       session_.recordingStatus = "stopped";
@@ -410,7 +609,36 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       return;
     }
     const std::string prefix = request_.filenamePrefix.empty() ? "show" : request_.filenamePrefix;
-    const fs::path artifact = dir / (prefix + "-program-0.mp4");
+    // ISO sessions get the per-session subfolder + manifest (spec §5, shared
+    // scheme with the MF sink); program-only sessions keep the flat artifact.
+    fs::path artifact;
+    if (!request_.isoSources.empty()) {
+      dir = dir / (prefix + "-" + sessionTimestampFolder());
+      fs::create_directories(dir, ec);
+      if (!fs::exists(dir)) {
+        failRecording("recording session folder could not be created: " + dir.string());
+        return;
+      }
+      artifact = dir / "Program.mp4";
+      int index = 0;
+      for (const auto& selection : request_.isoSources) {
+        IsoWriterEntry entry;
+        entry.writer = std::make_unique<AvfMp4Writer>();
+        entry.hasAudio = selection.hasAudio;
+        entry.status.sourceId = selection.sourceId;
+        entry.status.displayName = selection.displayName;
+        char number[8];
+        std::snprintf(number, sizeof(number), "%02d", ++index);
+        std::string name = sanitizeForFilename(selection.displayName, selection.sourceId);
+        fs::path isoPath = dir / ("ISO-" + std::string(number) + "-" + name + ".mp4");
+        entry.status.path = isoPath.string();
+        isoWriters_.emplace(selection.sourceId, std::move(entry));
+      }
+      writeManifest(dir);
+      session_.recordingSessionDir = dir.string();
+    } else {
+      artifact = dir / (prefix + "-program-0.mp4");
+    }
     std::string error;
     const int width = request_.width > 0 ? request_.width : 1920;
     const int height = request_.height > 0 ? request_.height : 1080;
@@ -437,6 +665,43 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     session_.recordingMetadataValid = true;
   }
 
+  void refreshIsoStreams() {
+    session_.isoStreams.clear();
+    session_.isoStreams.reserve(isoWriters_.size());
+    for (const auto& [sourceId, entry] : isoWriters_) {
+      session_.isoStreams.push_back(entry.status);
+    }
+  }
+
+  void writeManifest(const std::filesystem::path& dir) {
+    const auto path = dir / "manifest.json";
+    std::string body = "{\"sessionId\":\"" + jsonEscape(request_.sessionId) +
+                       "\",\"epochMs\":" +
+                       std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count()) +
+                       ",\"entries\":[";
+    bool first = true;
+    for (const auto& [sourceId, entry] : isoWriters_) {
+      if (!first) {
+        body += ",";
+      }
+      first = false;
+      const auto filename = std::filesystem::path(entry.status.path).filename().string();
+      body += "{\"sourceId\":\"" + jsonEscape(sourceId) + "\",\"name\":\"" +
+              jsonEscape(entry.status.displayName) + "\",\"path\":\"" + jsonEscape(filename) +
+              "\",\"kind\":\"iso\",\"hasAudio\":" + (entry.hasAudio ? "true" : "false") + "}";
+    }
+    body += "]}";
+    if (FILE* f = std::fopen(path.string().c_str(), "wb")) {
+      std::fwrite(body.data(), 1, body.size(), f);
+      std::fclose(f);
+      session_.recordingManifestPath = path.string();
+    } else {
+      raiseWarning("manifest write failed: " + path.string());
+    }
+  }
+
   void failRecording(const std::string& why) {
     session_.recordingStatus = "failed";
     session_.recordingError = why;
@@ -458,9 +723,20 @@ class AVFoundationEncoderSink final : public IEncoderSink {
            100;
   }
 
+  struct IsoWriterEntry {
+    std::unique_ptr<AvfMp4Writer> writer;
+    IsoStreamStatus status;
+    bool hasAudio = false;
+    bool opened = false;
+    bool failed = false;
+    std::vector<uint8_t> nv12Scratch;
+    std::vector<float> stereoScratch;
+  };
+
   RecordingSessionRequest request_;
   OutputSession session_;
   AvfMp4Writer writer_;
+  std::map<std::string, IsoWriterEntry> isoWriters_;
   RecordingPtsClock clock_;
   std::chrono::steady_clock::time_point origin_;
   std::atomic<int> audioContentLatencySamples_{0};
