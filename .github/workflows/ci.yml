@@ -119,10 +119,13 @@ jobs:
           cmake -S native -B native/build-metal -G Ninja
           -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON
           -DCOREVIDEO_WITH_METAL=ON
+          -DCOREVIDEO_WITH_AVF_ENCODER=ON
       - name: Build
         run: cmake --build native/build-metal
       - name: Metal compositor tests
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='MetalCompositor.*'
+      - name: AVFoundation encoder tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='AvfEncoderRecording.*'
       - name: Full native tests (Metal configuration)
         run: ctest --test-dir native/build-metal --output-on-failure
 

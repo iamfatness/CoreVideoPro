@@ -950,6 +950,9 @@ std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource() {
 std::unique_ptr<ICompositor> createMetalCompositor() {
   return nullptr;
 }
+std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink() {
+  return nullptr;
+}
 #endif
 
 ModuleSet createDefaultModules() {
@@ -968,7 +971,9 @@ ModuleSet createDefaultModules() {
   if (auto audioCapture = createWasapiAudioCaptureSource()) {
     modules.audioCapture = std::move(audioCapture);
   }
-  if (auto encoder = createMediaFoundationEncoderSink()) {
+  if (auto avfEncoder = createAVFoundationEncoderSink()) {
+    modules.encoder = std::move(avfEncoder);
+  } else if (auto encoder = createMediaFoundationEncoderSink()) {
     modules.encoder = std::move(encoder);
   }
   std::vector<std::unique_ptr<IOutputSender>> outputSenders;
