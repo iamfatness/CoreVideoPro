@@ -24,6 +24,16 @@ Source files:
 - `engine/` from the prior capture engine (`main`, `engine-video`,
   `engine-audio`, `engine-share`, `engine-writer.h`)
 - `shared/engine-ipc.h` from the prior capture IPC header
+- `engine/main-macos.mm` — the **macOS engine**, re-forked 2026-08-02 from the
+  CoreVideo OBS plugin's mac port (its `engine/src/main-macos.mm`, live-verified
+  there against real meetings). The macOS Meeting SDK is Objective-C-only, so
+  this is a self-contained ObjC++ rewrite of all four Windows files speaking
+  the SAME wire protocol. Adapted to Pro's protocol on the way in: 128-slot
+  audio SHM ring (`ShmAudioRingHeader`), beacon-cadence frame/audio pipe
+  events, `--ipc-token` instance-spliced socket/SHM names, `raw_media_status`
+  events, `{stage,msg,code,reason}` join failures, mono raw audio, 32-source
+  caps. Its header comment lists the deltas; keep it in sync with the Windows
+  engine when the protocol moves.
 
 ## Building (dev machine only)
 
@@ -41,6 +51,21 @@ cmake --build native/build --target corevideo-zoom-engine
 dev-adapter gates. Media Foundation, RTMP, D3D11, DeckLink, and AJA builds must
 still configure without a Zoom SDK unless they explicitly enable either this
 helper target or `COREVIDEO_WITH_ZOOM`.
+
+### macOS
+
+On macOS, `ZOOM_SDK_DIR` is the directory **containing** `ZoomSDK.framework`
+and the target builds `main-macos.mm`. The SDK is not self-contained — it loads
+its runtime bundles through the main bundle's `Contents/Frameworks`, so a bare
+binary auths `Failed(1)` synchronously. Wrap it with:
+
+```
+scripts/make-macos-engine-bundle.sh --build-dir native/build-engine --link-sdk
+```
+
+(`--link-sdk` symlinks the ~600MB SDK for local iteration; omit for a
+distributable copy. Never commit any Zoom SDK file.) Point the core at the
+bundled binary with `COREVIDEO_ZOOM_ENGINE_PATH=<...>.app/Contents/MacOS/corevideo-zoom-engine`.
 
 ## Dev runtime wiring
 

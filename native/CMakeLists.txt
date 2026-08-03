@@ -394,7 +394,13 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
   if(NOT ZOOM_SDK_DIR)
     message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE requires -DZOOM_SDK_DIR=<path to Zoom SDK>")
   endif()
-  if(EXISTS "${ZOOM_SDK_DIR}/include")
+  if(APPLE)
+    # The macOS SDK is ZoomSDK.framework (headers live inside the framework);
+    # ZOOM_SDK_DIR is the directory CONTAINING the framework (-F search path).
+    if(NOT EXISTS "${ZOOM_SDK_DIR}/ZoomSDK.framework")
+      message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE expected ZoomSDK.framework under ZOOM_SDK_DIR=${ZOOM_SDK_DIR}")
+    endif()
+  elseif(EXISTS "${ZOOM_SDK_DIR}/include")
     set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/include")
   elseif(EXISTS "${ZOOM_SDK_DIR}/h")
     set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/h")
@@ -402,36 +408,67 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
     message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE expected include/ or h/ under ZOOM_SDK_DIR=${ZOOM_SDK_DIR}")
   endif()
 
-  add_executable(corevideo-zoom-engine
-    zoom-engine/engine/main.cpp
-    zoom-engine/engine/engine-video.cpp
-    zoom-engine/engine/engine-audio.cpp
-    zoom-engine/engine/engine-share.cpp
-  )
-  target_include_directories(corevideo-zoom-engine PRIVATE
-    zoom-engine/engine
-    zoom-engine/shared
-    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}"
-    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/rawdata"
-    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/meeting_service_components"
-  )
-  if(WIN32)
-    file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
+  if(APPLE)
+    # The macOS Meeting SDK is a pure Objective-C framework (no C++ surface),
+    # so the engine is the self-contained ObjC++ rewrite in main-macos.mm —
+    # the Windows sources cannot compile against it. Re-forked from the
+    # CoreVideo OBS plugin's mac port; see the header of main-macos.mm.
+    add_executable(corevideo-zoom-engine zoom-engine/engine/main-macos.mm)
+    target_include_directories(corevideo-zoom-engine PRIVATE
+      zoom-engine/engine
+      zoom-engine/shared
+    )
+    # -F must be on BOTH the compile line (so `#import <ZoomSDK/ZoomSDK.h>`
+    # resolves via the framework's Headers dir) and the link line.
+    target_compile_options(corevideo-zoom-engine PRIVATE "-F${ZOOM_SDK_DIR}")
     target_link_libraries(corevideo-zoom-engine PRIVATE
-      ws2_32 crypt32 winhttp shlwapi ${ZOOM_SDK_LIBRARY})
-    if(EXISTS "${ZOOM_SDK_DIR}/bin")
-      add_custom_command(TARGET corevideo-zoom-engine POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${ZOOM_SDK_DIR}/bin"
-          "$<TARGET_FILE_DIR:corevideo-zoom-engine>")
-    endif()
-  elseif(APPLE)
-    target_link_libraries(corevideo-zoom-engine PRIVATE
-      "-F${ZOOM_SDK_DIR}/lib" "-framework ZoomSDK"
-      "-framework CoreFoundation" "-framework Foundation")
+      "-F${ZOOM_SDK_DIR}"
+      "-framework ZoomSDK"
+      "-framework Foundation"
+      # The engine hosts an NSApplication: the Zoom macOS SDK is an AppKit
+      # client, so a bare NSRunLoop cannot service its delegate callbacks.
+      "-framework AppKit"
+    )
+    # BUILD_RPATH is required, not optional: the framework is linked through
+    # raw -F/-framework flags, so CMake infers no build-tree rpath — without
+    # this the binary has ZERO LC_RPATH entries and dyld aborts at launch.
+    # INSTALL_RPATH targets the shipped bundle layout: the SDK loads its
+    # runtime bundles through the MAIN bundle's Contents/Frameworks, so the
+    # engine must run as <App>.app/Contents/MacOS/<engine> with the SDK there
+    # (without that, sdkAuth fails synchronously with no delegate callback).
+    set_target_properties(corevideo-zoom-engine PROPERTIES
+      BUILD_WITH_INSTALL_RPATH OFF
+      BUILD_RPATH "${ZOOM_SDK_DIR}"
+      INSTALL_RPATH "@executable_path/../Frameworks"
+    )
   else()
-    target_link_libraries(corevideo-zoom-engine PRIVATE
-      "${ZOOM_SDK_DIR}/lib/libsdk.so" rt)
+    add_executable(corevideo-zoom-engine
+      zoom-engine/engine/main.cpp
+      zoom-engine/engine/engine-video.cpp
+      zoom-engine/engine/engine-audio.cpp
+      zoom-engine/engine/engine-share.cpp
+    )
+    target_include_directories(corevideo-zoom-engine PRIVATE
+      zoom-engine/engine
+      zoom-engine/shared
+      "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}"
+      "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/rawdata"
+      "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/meeting_service_components"
+    )
+    if(WIN32)
+      file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
+      target_link_libraries(corevideo-zoom-engine PRIVATE
+        ws2_32 crypt32 winhttp shlwapi ${ZOOM_SDK_LIBRARY})
+      if(EXISTS "${ZOOM_SDK_DIR}/bin")
+        add_custom_command(TARGET corevideo-zoom-engine POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${ZOOM_SDK_DIR}/bin"
+            "$<TARGET_FILE_DIR:corevideo-zoom-engine>")
+      endif()
+    else()
+      target_link_libraries(corevideo-zoom-engine PRIVATE
+        "${ZOOM_SDK_DIR}/lib/libsdk.so" rt)
+    endif()
   endif()
 endif()
 
