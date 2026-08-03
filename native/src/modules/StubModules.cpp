@@ -953,6 +953,12 @@ std::unique_ptr<ICompositor> createMetalCompositor() {
 std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink() {
   return nullptr;
 }
+std::unique_ptr<ICaptureDevice> createAvfCaptureDevice() {
+  return nullptr;
+}
+std::unique_ptr<ICaptureDevice> createSckScreenCaptureDevice() {
+  return nullptr;
+}
 #endif
 
 ModuleSet createDefaultModules() {
@@ -1011,6 +1017,14 @@ ModuleSet createDefaultModules() {
   // remains the fallback arbiter for the same device id.
   if (auto uvc = createUvcCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(uvc));
+  }
+  // macOS camera capture (AVFoundation): the UVC twin, same arbitration rules.
+  if (auto avfCameras = createAvfCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(avfCameras));
+  }
+  // macOS screen/window capture (ScreenCaptureKit): the WGC twin.
+  if (auto sckScreens = createSckScreenCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(sckScreens));
   }
   // Screen capture (WGC): monitors as sources, same arbitration rules.
   if (auto wgcScreens = createWgcScreenCaptureDevice()) {

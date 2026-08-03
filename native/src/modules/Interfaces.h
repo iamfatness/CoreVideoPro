@@ -849,6 +849,10 @@ std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 // macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
 std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();
 std::unique_ptr<IAudioCaptureSource> createCoreAudioCaptureSource();
+// macOS capture twins (AVFoundation cameras / ScreenCaptureKit screens+windows);
+// nullptr unless COREVIDEO_WITH_AVF_CAPTURE / COREVIDEO_WITH_SCK.
+std::unique_ptr<ICaptureDevice> createAvfCaptureDevice();
+std::unique_ptr<ICaptureDevice> createSckScreenCaptureDevice();
 std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();
 std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource();
 std::unique_ptr<IAudioCaptureSource> createWasapiAudioCaptureSource();
