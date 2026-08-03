@@ -27,6 +27,11 @@ final class MediaCoreBridge {
     private let lock = NSLock()
     private var relaunchAttempts = 0
     private var stopped = false
+    // ALL stdin writes go through one serial queue: requests originate from
+    // concurrent tasks (10Hz sync + zoom poll + operator commands), and
+    // interleaved FileHandle writes tear the JSON lines — the core answers
+    // with id "unknown" and every request times out.
+    private let writeQueue = DispatchQueue(label: "us.iamfatness.corevideopro.bridge-write")
 
     var onStatus: ((BridgeStatus) -> Void)?
     var onEvent: ((JSONObject) -> Void)?
@@ -95,17 +100,32 @@ final class MediaCoreBridge {
         }
     }
 
+    // NOTE: Data slice indices do NOT rebase after removeSubrange — the naive
+    // firstIndex/removeSubrange loop corrupted framing whenever one chunk
+    // carried multiple lines (constant, with 30fps preview events), silently
+    // dropping RESPONSE lines while the tiny early handshake survived. Split
+    // on a plain byte array instead.
+    private var lineBuffer: [UInt8] = []
+
     private func consumeStdout(_ data: Data) {
         guard !data.isEmpty else { return }
-        stdoutBuffer.append(data)
-        while let newline = stdoutBuffer.firstIndex(of: 0x0A) {
-            let lineData = stdoutBuffer.subdata(in: stdoutBuffer.startIndex..<newline)
-            stdoutBuffer.removeSubrange(stdoutBuffer.startIndex...newline)
-            guard !lineData.isEmpty,
-                  let object = (try? JSONSerialization.jsonObject(with: lineData)) as? JSONObject
-            else { continue }
-            dispatch(object)
+        lineBuffer.append(contentsOf: data)
+        var start = 0
+        var index = 0
+        while index < lineBuffer.count {
+            if lineBuffer[index] == 0x0A {
+                if index > start {
+                    let lineData = Data(lineBuffer[start..<index])
+                    if let object =
+                        (try? JSONSerialization.jsonObject(with: lineData)) as? JSONObject {
+                        dispatch(object)
+                    }
+                }
+                start = index + 1
+            }
+            index += 1
         }
+        lineBuffer.removeFirst(start)
     }
 
     private func dispatch(_ object: JSONObject) {
@@ -117,6 +137,7 @@ final class MediaCoreBridge {
                 onStatus?(.connected(renderer: renderer))
                 return
             }
+            print("bridge: response \(id)")
             lock.lock()
             let completion = pending.removeValue(forKey: id)
             lock.unlock()
@@ -163,8 +184,16 @@ final class MediaCoreBridge {
                 box.finish(with: .failure(BridgeError.notRunning))
                 return
             }
-            handle.write(data)
-            handle.write(Data([0x0A]))
+            writeQueue.async {
+                var line = data
+                line.append(0x0A)
+                do {
+                    try handle.write(contentsOf: line)
+                    print("bridge: wrote \(id) (\(line.count)B)")
+                } catch {
+                    print("bridge: WRITE FAILED \(id): \(error)")
+                }
+            }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
                 guard let self else { return }
                 self.lock.lock()

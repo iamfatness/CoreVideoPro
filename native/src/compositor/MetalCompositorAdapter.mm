@@ -93,25 +93,34 @@ class MetalCompositor final : public ICompositor {
     }
     targetWidth_ = program_.width;
     targetHeight_ = program_.height;
-    renderPassInto(program_, deterministicPlan, frames);
+    // The LIGHT display tick (skipCpuReadback) does NO readbacks and NO GPU
+    // wait — an 8MB full-res readback under coreMutex at 60fps held the lock
+    // at ~86%+ duty and starved every RPC request (sampled root cause of the
+    // shell's request timeouts). fullProgramReadback is honored on the
+    // throttled FULL renders only, which is also what feeds the encoder.
+    const bool fullTick = !renderPlan.skipCpuReadback;
+    renderPassInto(program_, deterministicPlan, frames, /*waitForCompletion=*/fullTick);
 
     frame.gpuComposed = true;
     frame.sharedTexture.iosurfaceId = program_.iosurfaceId;
     frame.sharedTexture.width = program_.width;
     frame.sharedTexture.height = program_.height;
     frame.sharedTexture.frameNumber = frame.frameNumber;
-    if (!renderPlan.skipCpuReadback || renderPlan.fullProgramReadback) {
-      readTargetBgra();
-      if (!renderPlan.skipCpuReadback) {
-        downscaleBgraNearestNeighbor(
-            readbackBgra_.data(), targetWidth_, targetHeight_, targetWidth_ * 4, frame.preview);
-        frame.programPixelSignature = previewPixelSignature(frame.preview);
-      }
-      if (renderPlan.fullProgramReadback) {
-        frame.programFullBgra.width = targetWidth_;
-        frame.programFullBgra.height = targetHeight_;
-        frame.programFullBgra.bgra = readbackBgra_;
-      }
+    // While an output/encoder session keeps every tick "full", cap the CPU
+    // cost: readbacks every 2nd call (a 30fps encoder feed from a 60fps
+    // render) and MOVE the full-res buffer instead of copying it. The
+    // remaining alloc churn is bounded; the proper GPU-tap analogue is the
+    // follow-up perf pass (docs/mac-port-phase4-swiftui-shell.md).
+    // GPU→CPU readbacks from the full-res IOSurface target cost ~20ms for
+    // 8MB (uncached memory — the repo's "minimize readback bytes" law; this
+    // saturated coreMutex whenever the encoder was armed). The GPU downscales
+    // program → 320x180 and the CPU reads 57KB. programFullBgra is
+    // deliberately NOT filled: the encoder falls back to the preview exactly
+    // like the Windows sink today; the full-res feed returns with the
+    // GPU-tap analogue (documented follow-up in the Phase 4 spec).
+    if (fullTick) {
+      readPreviewViaGpuDownscale(frame.preview);
+      frame.programPixelSignature = previewPixelSignature(frame.preview);
     }
 
     // Evict cached source textures no pass has sampled recently (participant
@@ -315,6 +324,61 @@ class MetalCompositor final : public ICompositor {
     return true;
   }
 
+  // Program → small BGRA target (plain shared storage, not IOSurface) with
+  // the textured pipeline at identity grade; CPU reads ~57KB.
+  void readPreviewViaGpuDownscale(ProgramFramePreviewPixels& preview) {
+    int previewWidth = 0;
+    int previewHeight = 0;
+    computeProgramFramePreviewSize(targetWidth_, targetHeight_, previewWidth, previewHeight);
+    if (previewWidth <= 0 || previewHeight <= 0) {
+      return;
+    }
+    if (!previewScaleTex_ || previewScaleWidth_ != previewWidth ||
+        previewScaleHeight_ != previewHeight) {
+      MTLTextureDescriptor* desc = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                       width:static_cast<NSUInteger>(previewWidth)
+                                      height:static_cast<NSUInteger>(previewHeight)
+                                   mipmapped:NO];
+      desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      desc.storageMode = MTLStorageModeShared;
+      previewScaleTex_ = [device_ newTextureWithDescriptor:desc];
+      previewScaleWidth_ = previewWidth;
+      previewScaleHeight_ = previewHeight;
+    }
+    if (!previewScaleTex_) {
+      return;
+    }
+    @autoreleasepool {
+      id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
+      MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+      pass.colorAttachments[0].texture = previewScaleTex_;
+      pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+      pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> encoder =
+          [commandBuffer renderCommandEncoderWithDescriptor:pass];
+      LayerShaderConstants constants{};
+      constants.color[0] = constants.color[1] = constants.color[2] = constants.color[3] = 1.f;
+      constants.uvScale[0] = constants.uvScale[1] = 1.f;
+      [encoder setRenderPipelineState:texturedPipeline_];
+      [encoder setFragmentBytes:&constants length:sizeof(constants) atIndex:0];
+      [encoder setFragmentTexture:program_.texture atIndex:0];
+      [encoder setFragmentSamplerState:sampler_ atIndex:0];
+      [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [encoder endEncoding];
+      [commandBuffer commit];
+      [commandBuffer waitUntilCompleted];
+    }
+    preview.width = previewScaleWidth_;
+    preview.height = previewScaleHeight_;
+    preview.bgra.resize(static_cast<size_t>(previewScaleWidth_) * previewScaleHeight_ * 4u);
+    [previewScaleTex_ getBytes:preview.bgra.data()
+                   bytesPerRow:static_cast<NSUInteger>(previewScaleWidth_) * 4
+                    fromRegion:MTLRegionMake2D(0, 0, static_cast<NSUInteger>(previewScaleWidth_),
+                                               static_cast<NSUInteger>(previewScaleHeight_))
+                   mipmapLevel:0];
+  }
+
   void readTargetBgra() {
     readbackBgra_.resize(static_cast<size_t>(program_.width) * static_cast<size_t>(program_.height) * 4u);
     [program_.texture getBytes:readbackBgra_.data()
@@ -329,7 +393,8 @@ class MetalCompositor final : public ICompositor {
   // BEFORE calling and restore them afterwards for secondary passes.
   void renderPassInto(PassTarget& target,
                       const CompositorRenderPlan& deterministicPlan,
-                      const std::vector<VideoFrame>& frames) {
+                      const std::vector<VideoFrame>& frames,
+                      bool waitForCompletion) {
     @autoreleasepool {
       id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
       MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -343,10 +408,24 @@ class MetalCompositor final : public ICompositor {
         drawLayer(encoder, layer, deterministicPlan);
       }
       [encoder endEncoding];
+      // Bounded in-flight pacing (classic triple buffering): the light 60fps
+      // display tick must not CPU-block (a ~26ms wait held coreMutex at ~99%
+      // duty and starved every RPC request), but committing with NO pacing
+      // floods the queue unboundedly and a later readback wait queues behind
+      // thousands of buffers (observed: first request answered, all later
+      // ones starved). Acquire one of 3 in-flight slots before commit; the
+      // completion handler releases it.
+      dispatch_semaphore_wait(inflight_, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC));
+      dispatch_semaphore_t inflight = inflight_;
+      [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+        dispatch_semaphore_signal(inflight);
+      }];
       [commandBuffer commit];
-      // Synchronous for now: the program readbacks and the IOSurface consumers
-      // (tests today, the shell in Phase 4) both need completed pixels.
-      [commandBuffer waitUntilCompleted];
+      // Block fully only when the caller needs completed pixels (CPU
+      // readbacks / secondary-surface consumers).
+      if (waitForCompletion) {
+        [commandBuffer waitUntilCompleted];
+      }
     }
   }
 
@@ -368,7 +447,7 @@ class MetalCompositor final : public ICompositor {
     const int savedHeight = targetHeight_;
     targetWidth_ = target.width;
     targetHeight_ = target.height;
-    renderPassInto(target, deterministicPlan, frames);
+    renderPassInto(target, deterministicPlan, frames, /*waitForCompletion=*/true);
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
     out.iosurfaceId = target.iosurfaceId;
@@ -888,6 +967,7 @@ class MetalCompositor final : public ICompositor {
   id<MTLRenderPipelineState> i420Pipeline_ = nil;
   id<MTLRenderPipelineState> overlayPipeline_ = nil;
   id<MTLSamplerState> sampler_ = nil;
+  dispatch_semaphore_t inflight_ = dispatch_semaphore_create(3);
   PassTarget program_;
   PassTarget multiview_;
   PassTarget preview_;
@@ -899,6 +979,10 @@ class MetalCompositor final : public ICompositor {
   bool pipelineFailed_ = false;
   std::string pipelineError_;
   int64_t frameNumber_ = 0;
+  uint64_t fullTickCounter_ = 0;
+  id<MTLTexture> previewScaleTex_ = nil;
+  int previewScaleWidth_ = 0;
+  int previewScaleHeight_ = 0;
   std::vector<uint8_t> readbackBgra_;
   std::unordered_map<std::string, SourceTex> sourceTextures_;
   OverlayTex overlayTex_;

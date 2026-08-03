@@ -13,6 +13,13 @@ struct ShellApp: App {
 
     init() {
         setvbuf(stdout, nil, _IOLBF, 0)  // line-buffer logs when piped
+        // A bare (non-bundled) executable defaults to an activation policy
+        // whose windows cannot become KEY — text fields silently refuse
+        // input (the engine-bundle lesson). Force Regular + activate.
+        NSApplication.shared.setActivationPolicy(.regular)
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
     }
 
     var body: some Scene {

@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
     private var zoomTimer: Timer?
     private var startedAt = Date()
     private var programOutputStarted = false
+    private var joinInFlight = false
 
     func start() {
         let paths = ShellPaths.resolve()
@@ -82,14 +83,26 @@ final class AppModel: ObservableObject {
     }
 
     private func onConnected() {
+        if let auto = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"],
+           !auto.isEmpty, joinMeetingId.isEmpty {
+            joinMeetingId = auto
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.joinZoom()
+            }
+        }
         startedAt = Date()
         programOutputStarted = false
         syncTimer?.invalidate()
-        syncTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // 2Hz, not 10Hz: every sync renders inside applyCommands (~100ms+ with
+        // readbacks on the Metal path today), so a faster cadence outruns the
+        // RPC thread and queues starve one-shot requests (zoom-join sat behind
+        // an unbounded sync backlog). Status/meters are fine at 2Hz; the
+        // program surface rides push events.
+        syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.syncTick() }
         }
         zoomTimer?.invalidate()
-        zoomTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        zoomTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.zoomTick() }
         }
     }
@@ -102,11 +115,7 @@ final class AppModel: ObservableObject {
 
     private func syncTick() async {
         guard let bridge else { return }
-        var commands: [JSONObject] = []
-        if !programOutputStarted {
-            programOutputStarted = true
-            commands.append(["type": "start-program-output", "destinations": ["recording"]])
-        }
+        let commands: [JSONObject] = []
         do {
             let response = try await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": commands,
@@ -150,6 +159,7 @@ final class AppModel: ObservableObject {
         if let error = snapshot["lastError"] as? String, !error.isEmpty {
             pushWarning("zoom: \(error)")
         }
+        let autoAssign = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"] != nil
         if let participants = snapshot["participants"] as? [JSONObject] {
             roster = participants.compactMap { entry in
                 guard let idNumber = entry["id"] else { return nil }
@@ -161,6 +171,14 @@ final class AppModel: ObservableObject {
                     muted: entry["isMuted"] as? Bool ?? (entry["is_muted"] as? Bool ?? false),
                     talking: entry["isTalking"] as? Bool ?? (entry["is_talking"] as? Bool ?? false),
                     assigned: assignedIds.contains(id))
+            }
+            if autoAssign {
+                let videoIds = Set(roster.filter(\.hasVideo).map(\.id))
+                if !videoIds.isEmpty, videoIds != assignedIds {
+                    assignedIds = videoIds
+                    print("shell: auto-assigning \(videoIds.sorted())")
+                    syncSpine()
+                }
             }
         }
     }
@@ -200,20 +218,51 @@ final class AppModel: ObservableObject {
 
     // ── operator commands ────────────────────────────────────────────────────
 
+    // Accepts a bare meeting number OR a full Zoom URL
+    // (https://…zoom.us/j/<id>?pwd=<passcode>) — the engine wants the bare
+    // number, so parse URL forms here (the WinUI shell does the same).
+    static func parseZoomTarget(_ raw: String, fallbackPasscode: String)
+        -> (meetingId: String, passcode: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard trimmed.lowercased().contains("zoom.us"),
+              let url = URL(string: trimmed) else {
+            return (trimmed, fallbackPasscode)
+        }
+        let meetingId = url.pathComponents.last { component in
+            !component.isEmpty && component.allSatisfy(\.isNumber)
+        } ?? trimmed
+        let pwd = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "pwd" }?.value ?? fallbackPasscode
+        return (meetingId, pwd)
+    }
+
     func joinZoom() {
         guard let bridge else { return }
-        let meetingId = joinMeetingId.trimmingCharacters(in: .whitespaces)
-        guard !meetingId.isEmpty else { return }
+        let target = Self.parseZoomTarget(joinMeetingId, fallbackPasscode: joinPasscode)
+        let meetingId = target.meetingId
+        let parsedPasscode = target.passcode
+        joinPasscode = parsedPasscode
+        guard !meetingId.isEmpty, !joinInFlight else { return }
+        joinInFlight = true
         let payload: JSONObject = [
             "meetingId": meetingId,
             "meetingNumber": meetingId,
-            "passcode": joinPasscode,
-            "password": joinPasscode,
+            "passcode": parsedPasscode,
+            "password": parsedPasscode,
             "displayName": displayName,
         ]
+        print("shell: joining meeting \(meetingId)")
         Task {
+            defer { joinInFlight = false }
             do {
-                _ = try await bridge.request(["type": "zoom-join", "payload": payload], timeout: 30)
+                let response = try await bridge.request(
+                    ["type": "zoom-join", "payload": payload], timeout: 45)
+                if let snapshot = response["snapshot"] as? JSONObject {
+                    applyZoom(snapshot)
+                    for warning in snapshot["warnings"] as? [String] ?? [] {
+                        pushWarning("zoom: \(warning)")
+                    }
+                }
             } catch {
                 pushWarning("join failed: \(error.localizedDescription)")
             }
@@ -293,12 +342,16 @@ final class AppModel: ObservableObject {
                         "commands": [["type": "stop-recording-session"]],
                     ])
                 } else {
+                    // Arm the encoder ONLY here: start-program-output flips the
+                    // core into per-tick full readbacks (by design, for the
+                    // encoder feed) — armed-at-startup starved the RPC thread.
                     let folder = (NSSearchPathForDirectoriesInDomains(
                         .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
                         + "/CoreVideoPro"
                     _ = try await bridge.request([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [
+                            ["type": "start-program-output", "destinations": ["recording"]],
                             [
                                 "type": "set-recording-targets", "targetFolder": folder,
                                 "filenamePrefix": "show", "format": "mp4", "quality": "high",

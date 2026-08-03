@@ -92,3 +92,39 @@ contentsGravity. The SAME view serves multiview/preview surfaces later.
    in the warnings pane (auth path exercised end to end).
 
 Owner test: real meeting join + admit, assign participants, record, monitor.
+
+
+## M1 integration findings (2026-08-03 afternoon — the five-bug chain)
+
+Driving the shell like an operator surfaced five real defects the morning
+smoke missed; each is fixed and encoded in code comments at the fix site:
+
+1. Torn stdin writes — concurrent tasks interleaved JSON lines; the core
+   answered id "unknown" and requests timed out. Fix: one serial write queue
+   (MediaCoreBridge).
+2. Data-index framing bug — Swift `Data` slice indices do not rebase after
+   removeSubrange; multi-line chunks (constant, at 30fps events) corrupted
+   framing and silently ate RESPONSE lines. Fix: byte-array line splitter.
+3. Unbounded GPU submission — removing the per-tick waitUntilCompleted with
+   no pacing let command buffers pile up; a later readback queued behind
+   thousands. Fix: 3-deep in-flight semaphore (classic triple buffering).
+4. Synthetic-tile upload storm — the stub zoom source's animated 1080p
+   placeholder tiles uploaded ~16MB/frame under coreMutex (26ms/tick,
+   measured by the lock-hold guardrail). Fix: with a real engine configured,
+   stub zoom frames are skipped (real content arrives via the roster merge).
+5. Uncached IOSurface readback — getBytes on the 8MB full-res IOSurface
+   render target costs ~20ms (uncached memory); with the encoder armed,
+   EVERY tick became a full tick and coreMutex saturated (requests starved
+   indefinitely — sampled root cause). Fix: the GPU downscales program to
+   320x180 and the CPU reads 57KB, matching the Windows sink's economics;
+   programFullBgra is not filled until the GPU-tap analogue lands (the
+   full-res encoder feed moves to that follow-up).
+
+Also: the shell arms the encoder only when recording starts (not at
+startup), and macOS TCC re-prompts on every rebuild because ad-hoc signing
+mints a new code identity — resolved for real only by Developer ID signing.
+
+Verified post-fix (headless, autonomous): 11/11 interleaved requests
+answered during an armed AND recording session; MP4 written; join pipeline
+end-to-end (engine spawn -> auth_ok -> honest MEETING_FAIL for a bogus id);
+guardrail warnings reduced to 4 startup transients; 511/511 native suite.

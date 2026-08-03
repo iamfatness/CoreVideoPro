@@ -4331,7 +4331,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     }
   }
 
-  auto videoFrames = modules_.zoom->pollVideoFrames();
+  // With a REAL Zoom engine configured, the stub zoom source'''s synthetic
+  // participant tiles are pure cost: they upload ~16MB/frame of animated
+  // placeholder pixels under coreMutex (measured 26ms/tick on the Metal
+  // path — the lock-guardrail'''s top offender) and real content arrives via
+  // the engine roster merge below anyway. Idle-with-engine = clean program.
+  auto videoFrames = (zoomEngineRuntime_ && zoomEngineRuntime_->configured())
+                         ? std::vector<modules::VideoFrame>{}
+                         : modules_.zoom->pollVideoFrames();
   auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
   // Browser-source frames ride the capture stream (keyed "capture:browser:<n>"),
   // so scenes/multiview/routing treat them exactly like any capture device. Same
