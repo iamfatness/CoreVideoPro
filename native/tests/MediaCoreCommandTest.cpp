@@ -1226,6 +1226,10 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #if COREVIDEO_WITH_MF_ENCODER
   EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
+#elif COREVIDEO_WITH_AVF_ENCODER
+  EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
+  // Honest until the AVF sink's ISO increment lands.
+  EXPECT_FALSE(jsonArrayContains(capabilities, "iso-recording"));
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
 #endif
@@ -1719,6 +1723,9 @@ TEST(MediaCoreCommand, ReportsEncoderMetadataInHealthAndSession) {
   const auto health = mediaCore.health();
 #if COREVIDEO_WITH_MF_ENCODER
   EXPECT_EQ(health.getString("encoder"), "media-foundation");
+  EXPECT_TRUE(health.get("hardwareEncoder")->asBool());
+#elif COREVIDEO_WITH_AVF_ENCODER
+  EXPECT_EQ(health.getString("encoder"), "videotoolbox");
   EXPECT_TRUE(health.get("hardwareEncoder")->asBool());
 #else
   EXPECT_EQ(health.getString("encoder"), "software-counting");

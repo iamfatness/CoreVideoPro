@@ -644,6 +644,14 @@ class ICompositor {
   // Upload accounting for the per-source texture cache. Defaulted to zeros so
   // the software/stub compositor stays valid; only the GPU adapter tracks it.
   [[nodiscard]] virtual CompositorSourceTexStats sourceTexStats() const { return {}; }
+  // True when the encoder should receive the FULL-resolution program
+  // (ProgramFrame::programFullBgra) while recording. Default false: on
+  // Windows the D3D11 path serves recording from the vcam tap economics and
+  // setting fullProgramReadback would spin that tap for nothing. The Metal
+  // adapter returns true — on Apple-silicon shared memory the full readback
+  // is a cheap getBytes, and it is what lets the recording encoder mux
+  // native-resolution program instead of the 320x180 preview.
+  [[nodiscard]] virtual bool wantsFullProgramReadbackForRecording() const { return false; }
 };
 
 class IMediaFrameSource {
@@ -842,6 +850,8 @@ std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();
 std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource();
 std::unique_ptr<IAudioCaptureSource> createWasapiAudioCaptureSource();
 std::unique_ptr<IEncoderSink> createStubRecordingEncoderSink();
+// The macOS AVFoundation/VideoToolbox twin; nullptr unless COREVIDEO_WITH_AVF_ENCODER.
+std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();
 std::unique_ptr<IOutputSender> createSrtOutputSender();

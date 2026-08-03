@@ -127,6 +127,8 @@ class MetalCompositor final : public ICompositor {
 
   CompositorSourceTexStats sourceTexStats() const override { return stats_; }
 
+  bool wantsFullProgramReadbackForRecording() const override { return true; }
+
   // Second compositor pass: the whole multiview grid into its own
   // IOSurface-backed texture (the OBS/broadcast-multiviewer model). Mirrors
   // the D3D11 renderMultiview: saves/restores the program pass's canvas dims
