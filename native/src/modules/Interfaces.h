@@ -846,6 +846,9 @@ std::unique_ptr<ICompositor> createD3D11Compositor();
 std::unique_ptr<ICompositor> createMetalCompositor();
 std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
+// macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
+std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();
+std::unique_ptr<IAudioCaptureSource> createCoreAudioCaptureSource();
 std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();
 std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource();
 std::unique_ptr<IAudioCaptureSource> createWasapiAudioCaptureSource();

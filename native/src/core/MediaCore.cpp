@@ -130,11 +130,11 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("smart-framing");
   }
 
-#if COREVIDEO_WITH_WASAPI_CAPTURE
+#if COREVIDEO_WITH_WASAPI_CAPTURE || COREVIDEO_WITH_COREAUDIO
   result.emplace_back("local-audio-capture");
 #endif
 
-#if COREVIDEO_WITH_WASAPI_MONITOR
+#if COREVIDEO_WITH_WASAPI_MONITOR || COREVIDEO_WITH_COREAUDIO
   result.emplace_back("audio-monitor-output");
 #endif
 
