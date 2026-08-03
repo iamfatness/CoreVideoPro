@@ -1,0 +1,57 @@
+# Daily smoke test of the deployed staging Cloudflare services (beta spec
+# docs/beta-engineering-spec.md §S5). Beta makes the OAuth broker + the
+# licensing / telemetry / caption workers hard runtime dependencies, so we
+# exercise them once a day and fail LOUD if any is unhealthy.
+#
+# This workflow NEVER runs on push/PR — it is scheduled + manual only, because
+# it hits live deployed endpoints and needs real API keys.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   COREVIDEO_LICENSE_API_KEY        licensing-api bearer key
+#   COREVIDEO_CAPTION_BROKER_API_KEY caption-broker bearer key
+#   COREVIDEO_TELEMETRY_API_KEY      telemetry-ingest bearer key (required since S0)
+# The staging endpoint URLs are baked into scripts/load-staging-env.ps1.
+name: Smoke staging services
+
+on:
+  schedule:
+    # 13:00 UTC daily (~06:00 US Pacific). Cron is UTC.
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}
+
+# Never allow two smoke runs to overlap.
+concurrency:
+  group: smoke-staging
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write staging secrets file from repo secrets
+        shell: pwsh
+        env:
+          COREVIDEO_LICENSE_API_KEY: ${{ secrets.COREVIDEO_LICENSE_API_KEY }}
+          COREVIDEO_CAPTION_BROKER_API_KEY: ${{ secrets.COREVIDEO_CAPTION_BROKER_API_KEY }}
+          COREVIDEO_TELEMETRY_API_KEY: ${{ secrets.COREVIDEO_TELEMETRY_API_KEY }}
+        run: |
+          if (-not $env:COREVIDEO_LICENSE_API_KEY -or -not $env:COREVIDEO_TELEMETRY_API_KEY -or -not $env:COREVIDEO_CAPTION_BROKER_API_KEY) {
+            Write-Error "Missing one or more required staging secrets (COREVIDEO_LICENSE_API_KEY / COREVIDEO_CAPTION_BROKER_API_KEY / COREVIDEO_TELEMETRY_API_KEY). Configure them in repo Actions secrets."
+            exit 1
+          }
+          @(
+            "COREVIDEO_LICENSE_API_KEY=$($env:COREVIDEO_LICENSE_API_KEY)"
+            "COREVIDEO_CAPTION_BROKER_API_KEY=$($env:COREVIDEO_CAPTION_BROKER_API_KEY)"
+            "COREVIDEO_TELEMETRY_API_KEY=$($env:COREVIDEO_TELEMETRY_API_KEY)"
+          ) | Out-File -FilePath scripts/.staging-secrets.local -Encoding utf8
+
+      - name: Smoke staging services
+        shell: pwsh
+        run: pwsh -File scripts/smoke-staging-services.ps1
+
+      - name: Clean up secrets file
+        if: always()
+        shell: pwsh
+        run: Remove-Item -Force scripts/.staging-secrets.local -ErrorAction SilentlyContinue
