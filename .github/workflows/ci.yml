@@ -83,6 +83,26 @@ jobs:
       - name: Native stub tests
         run: ctest --test-dir native/build --output-on-failure
 
+  # macOS twin of native-stub: keeps the portable core buildable + green on
+  # Apple Silicon for the macOS port (AppleClang has no std parallel
+  # algorithms and caps POSIX shm names at 31 chars — both are covered by
+  # dedicated fixes/tests that only exercise on this runner).
+  native-stub-macos:
+    runs-on: macos-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install ninja
+      - name: Configure stub build
+        run: cmake -S native -B native/build -DCOREVIDEO_STUB=ON -G Ninja
+      - name: Build
+        run: cmake --build native/build
+      - name: Contract parity (protocol drift gate)
+        run: ./native/build/corevideo-native-tests --gtest_filter=ContractParity.*
+      - name: Native stub tests
+        run: ctest --test-dir native/build --output-on-failure
+
   # ThreadSanitizer over the stub build: the Phase 2 audio/output worker decouple
   # relies on a strict coreMutex/audioOutputMutex_ two-lock discipline, and a single
   # missed guard is a data race (docs/phase2-threading-plan.md §5.2/§6). Any TSan
