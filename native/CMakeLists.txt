@@ -142,7 +142,8 @@ if(COREVIDEO_WITH_METAL)
   if(NOT APPLE)
     message(FATAL_ERROR "COREVIDEO_WITH_METAL supports the macOS Metal adapter only.")
   endif()
-  target_link_libraries(corevideo_native PUBLIC "-framework Metal" "-framework Foundation")
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework Metal" "-framework Foundation" "-framework IOSurface")
 endif()
 
 # winmm provides timeBeginPeriod() — raise the system timer resolution to 1ms so the

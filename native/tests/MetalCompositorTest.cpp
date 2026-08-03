@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <IOSurface/IOSurface.h>
+
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -288,6 +290,157 @@ TEST(MetalCompositor, SourceTexCacheUploadsOncePerFrameId) {
   (void)compositor->render(plan, {frame});
   const auto afterAdvance = compositor->sourceTexStats();
   EXPECT_EQ(afterAdvance.cachedUploads, 2u);
+}
+
+// Reads one pixel {b,g,r,a} out of an IOSurface by its global ID — the same
+// resolve path a Phase 4 shell will use (IOSurfaceLookup + lock + read).
+std::array<int, 4> iosurfacePixel(uint32_t iosurfaceId, float fx, float fy, bool& ok) {
+  ok = false;
+  IOSurfaceRef surface = IOSurfaceLookup(iosurfaceId);
+  if (!surface) {
+    return {0, 0, 0, 0};
+  }
+  IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr);
+  const int width = static_cast<int>(IOSurfaceGetWidth(surface));
+  const int height = static_cast<int>(IOSurfaceGetHeight(surface));
+  const size_t stride = IOSurfaceGetBytesPerRow(surface);
+  const auto* base = static_cast<const uint8_t*>(IOSurfaceGetBaseAddress(surface));
+  std::array<int, 4> pixel{0, 0, 0, 0};
+  if (base && width > 0 && height > 0) {
+    const int x = std::min(width - 1, static_cast<int>(fx * width));
+    const int y = std::min(height - 1, static_cast<int>(fy * height));
+    const uint8_t* p = base + static_cast<size_t>(y) * stride + static_cast<size_t>(x) * 4u;
+    pixel = {p[0], p[1], p[2], p[3]};
+    ok = true;
+  }
+  IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
+  CFRelease(surface);
+  return pixel;
+}
+
+TEST(MetalCompositor, ProgramSharedTextureCarriesStableIOSurfaceId) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-iosurface";
+  plan.layers.push_back(solidLayer("io", 0.0f, 0.0f, 1.0f, 1.0f));
+
+  const auto first = compositor->render(plan, {});
+  const auto second = compositor->render(plan, {});
+  ASSERT_NE(first.sharedTexture.iosurfaceId, 0u);
+  EXPECT_EQ(first.sharedTexture.iosurfaceId, second.sharedTexture.iosurfaceId);
+  EXPECT_EQ(first.sharedTexture.width, plan.width);
+  EXPECT_EQ(first.sharedTexture.height, plan.height);
+  EXPECT_TRUE(first.sharedTexture.sharedHandleHex.empty());
+
+  // The program pixels must be readable THROUGH the IOSurface by global ID.
+  bool ok = false;
+  const auto viaSurface = iosurfacePixel(first.sharedTexture.iosurfaceId, 0.5f, 0.5f, ok);
+  ASSERT_TRUE(ok);
+  const auto viaPreview = previewAt(second.preview, 0.5f, 0.5f);
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(viaSurface[channel], viaPreview[channel], 2);
+  }
+}
+
+TEST(MetalCompositor, MultiviewPassRendersIntoItsOwnSurface) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  // Program renders one participant; the multiview plan shows two cells with
+  // distinct colors. The two passes must not bleed into each other.
+  CompositorRenderPlan programPlan;
+  programPlan.renderPlanId = "plan-program";
+  programPlan.layers.push_back(solidLayer("solo", 0.0f, 0.0f, 1.0f, 1.0f));
+  (void)compositor->render(programPlan, {});
+
+  CompositorRenderPlan multiviewPlan;
+  multiviewPlan.renderPlanId = "plan-multiview";
+  multiviewPlan.layers.push_back(solidLayer("cell-a", 0.0f, 0.0f, 0.5f, 0.5f));
+  multiviewPlan.layers.push_back(solidLayer("cell-b", 0.5f, 0.0f, 0.5f, 0.5f));
+
+  const auto texture = compositor->renderMultiview(multiviewPlan, {});
+  ASSERT_NE(texture.iosurfaceId, 0u);
+  EXPECT_EQ(texture.width, multiviewPlan.width);
+  EXPECT_EQ(texture.height, multiviewPlan.height);
+
+  bool okA = false;
+  bool okB = false;
+  const auto cellA = iosurfacePixel(texture.iosurfaceId, 0.25f, 0.25f, okA);
+  const auto cellB = iosurfacePixel(texture.iosurfaceId, 0.75f, 0.25f, okB);
+  ASSERT_TRUE(okA);
+  ASSERT_TRUE(okB);
+  EXPECT_NE(cellA, cellB);
+
+  // The program pass afterwards is unaffected by the secondary pass (dims
+  // restored, its own surface untouched).
+  const auto after = compositor->render(programPlan, {});
+  EXPECT_EQ(after.sharedTexture.width, programPlan.width);
+  EXPECT_NE(after.sharedTexture.iosurfaceId, texture.iosurfaceId);
+}
+
+TEST(MetalCompositor, MultiviewBordersRenderInMultiviewOnly) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  // The owner rule: borders exist in the MULTIVIEW pass; the plan builder
+  // forces them off for program. At compositor level: a multiview layer with
+  // an explicit border style renders visible border pixels along its edge.
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-mv-borders";
+  auto cell = solidLayer("speaker", 0.1f, 0.1f, 0.5f, 0.5f);
+  cell.borderStyle = "program";
+  cell.borderColor = "#f5a623";
+  cell.borderThickness = 6.f;
+  plan.layers.push_back(cell);
+
+  const auto texture = compositor->renderMultiview(plan, {});
+  ASSERT_NE(texture.iosurfaceId, 0u);
+  bool ok = false;
+  // Sample just inside the cell's top edge, where the border stroke lands.
+  const auto edge = iosurfacePixel(texture.iosurfaceId, 0.35f, 0.105f, ok);
+  ASSERT_TRUE(ok);
+  // #f5a623 in BGRA: strong red+green, low blue.
+  EXPECT_GT(edge[2], 180);
+  EXPECT_GT(edge[1], 120);
+  EXPECT_LT(edge[0], 90);
+}
+
+TEST(MetalCompositor, PreviewPassIsIndependentOfProgramAndMultiview) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan previewPlan;
+  previewPlan.renderPlanId = "plan-preview-bus";
+  previewPlan.layers.push_back(solidLayer("preview-only", 0.0f, 0.0f, 1.0f, 1.0f));
+
+  const auto texture = compositor->renderPreview(previewPlan, {});
+  ASSERT_NE(texture.iosurfaceId, 0u);
+  bool ok = false;
+  const auto pixel = iosurfacePixel(texture.iosurfaceId, 0.5f, 0.5f, ok);
+  ASSERT_TRUE(ok);
+  // The deterministic participant color, not the clear color.
+  const uint32_t expected = ::corevideo::compositor::colorFromParticipantId("preview-only");
+  EXPECT_NEAR(pixel[2], static_cast<int>((expected >> 16) & 0xff), 2);
+  EXPECT_NEAR(pixel[1], static_cast<int>((expected >> 8) & 0xff), 2);
+  EXPECT_NEAR(pixel[0], static_cast<int>(expected & 0xff), 2);
+
+  // All three passes own DISTINCT surfaces.
+  CompositorRenderPlan programPlan;
+  programPlan.renderPlanId = "plan-any";
+  const auto program = compositor->render(programPlan, {});
+  const auto multiview = compositor->renderMultiview(previewPlan, {});
+  EXPECT_NE(texture.iosurfaceId, program.sharedTexture.iosurfaceId);
+  EXPECT_NE(texture.iosurfaceId, multiview.iosurfaceId);
+  EXPECT_NE(program.sharedTexture.iosurfaceId, multiview.iosurfaceId);
+}
+
+TEST(MetalCompositor, SharedTextureJsonCarriesIOSurfaceId) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-json";
+  plan.layers.push_back(solidLayer("json", 0.0f, 0.0f, 1.0f, 1.0f));
+  const auto frame = compositor->render(plan, {});
+
+  const auto json = programSharedTextureJson(frame);
+  ASSERT_FALSE(json.isNull());
+  ASSERT_NE(json.get("iosurfaceId"), nullptr);
+  EXPECT_EQ(static_cast<uint32_t>(json.get("iosurfaceId")->asNumber()),
+            frame.sharedTexture.iosurfaceId);
+  EXPECT_EQ(json.getString("format"), "B8G8R8A8_UNORM");
 }
 
 TEST(MetalCompositor, LayerOpacityBlendsTowardBackground) {

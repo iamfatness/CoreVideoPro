@@ -22,6 +22,7 @@
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL
 
+#import <IOSurface/IOSurface.h>
 #import <Metal/Metal.h>
 
 #include <algorithm>
@@ -58,6 +59,12 @@ uint32_t previewPixelSignature(const ProgramFramePreviewPixels& preview) {
 
 class MetalCompositor final : public ICompositor {
  public:
+  ~MetalCompositor() override {
+    program_.release();
+    multiview_.release();
+    preview_.release();
+  }
+
   std::string rendererName() const override { return "metal"; }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
@@ -80,31 +87,19 @@ class MetalCompositor final : public ICompositor {
       frame.warnings.push_back("Metal compositor unavailable: " + pipelineError_);
       return frame;
     }
-    if (!ensureRenderTarget(deterministicPlan.width, deterministicPlan.height)) {
+    if (!ensureTarget(program_, deterministicPlan.width, deterministicPlan.height)) {
       frame.health = "degraded";
       return frame;
     }
-
-    @autoreleasepool {
-      id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
-      MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-      pass.colorAttachments[0].texture = target_;
-      pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-      pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-      pass.colorAttachments[0].clearColor = MTLClearColorMake(0.047, 0.067, 0.094, 1.0);
-      id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
-
-      const auto layers = resolveLayers(deterministicPlan, frames);
-      for (const auto& layer : layers) {
-        drawLayer(encoder, layer, deterministicPlan);
-      }
-
-      [encoder endEncoding];
-      [commandBuffer commit];
-      [commandBuffer waitUntilCompleted];
-    }
+    targetWidth_ = program_.width;
+    targetHeight_ = program_.height;
+    renderPassInto(program_, deterministicPlan, frames);
 
     frame.gpuComposed = true;
+    frame.sharedTexture.iosurfaceId = program_.iosurfaceId;
+    frame.sharedTexture.width = program_.width;
+    frame.sharedTexture.height = program_.height;
+    frame.sharedTexture.frameNumber = frame.frameNumber;
     if (!renderPlan.skipCpuReadback || renderPlan.fullProgramReadback) {
       readTargetBgra();
       if (!renderPlan.skipCpuReadback) {
@@ -132,6 +127,22 @@ class MetalCompositor final : public ICompositor {
 
   CompositorSourceTexStats sourceTexStats() const override { return stats_; }
 
+  // Second compositor pass: the whole multiview grid into its own
+  // IOSurface-backed texture (the OBS/broadcast-multiviewer model). Mirrors
+  // the D3D11 renderMultiview: saves/restores the program pass's canvas dims
+  // so the draw helpers and the next render() are unaffected.
+  ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan,
+                                            const std::vector<VideoFrame>& frames) override {
+    return renderSecondaryPass(multiview_, renderPlan, frames);
+  }
+
+  // Third compositor pass: the PREVIEW scene into its own IOSurface-backed
+  // texture, identical machinery to renderMultiview.
+  ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan,
+                                          const std::vector<VideoFrame>& frames) override {
+    return renderSecondaryPass(preview_, renderPlan, frames);
+  }
+
  private:
   struct ResolvedLayer {
     CompositorRenderPlanLayer plan;
@@ -156,6 +167,30 @@ class MetalCompositor final : public ICompositor {
     uint64_t signature = 0;
     int width = 0;
     int height = 0;
+  };
+
+  // A render pass target backed by an IOSurface, so the composited result is
+  // shareable cross-process by global ID (the macOS sibling of the keyed-mutex
+  // DXGI shared texture; the shell resolves it with IOSurfaceLookup). The
+  // IOSurfaceRef is a CF object ARC does not manage — released explicitly on
+  // recreate and in the destructor.
+  struct PassTarget {
+    id<MTLTexture> texture;
+    IOSurfaceRef iosurface = nullptr;
+    uint32_t iosurfaceId = 0;
+    int width = 0;
+    int height = 0;
+
+    void release() {
+      texture = nil;
+      if (iosurface) {
+        CFRelease(iosurface);
+        iosurface = nullptr;
+      }
+      iosurfaceId = 0;
+      width = 0;
+      height = 0;
+    }
   };
 
   // ── pipeline ───────────────────────────────────────────────────────────────
@@ -239,11 +274,22 @@ class MetalCompositor final : public ICompositor {
     return state;
   }
 
-  bool ensureRenderTarget(int width, int height) {
+  bool ensureTarget(PassTarget& target, int width, int height) {
     width = std::max(16, width);
     height = std::max(16, height);
-    if (target_ && targetWidth_ == width && targetHeight_ == height) {
+    if (target.texture && target.width == width && target.height == height) {
       return true;
+    }
+    target.release();
+    NSDictionary* properties = @{
+      (__bridge NSString*)kIOSurfaceWidth : @(width),
+      (__bridge NSString*)kIOSurfaceHeight : @(height),
+      (__bridge NSString*)kIOSurfaceBytesPerElement : @4,
+      (__bridge NSString*)kIOSurfacePixelFormat : @((uint32_t)'BGRA'),
+    };
+    target.iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+    if (!target.iosurface) {
+      return false;
     }
     MTLTextureDescriptor* desc =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -251,25 +297,83 @@ class MetalCompositor final : public ICompositor {
                                                           height:static_cast<NSUInteger>(height)
                                                        mipmapped:NO];
     desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-    // Unified memory: shared storage keeps getBytes readbacks cheap and legal
-    // for a render target on Apple GPUs.
+    // IOSurface-backed textures live in unified/shared memory: getBytes
+    // readbacks stay cheap, and the surface is shareable by global ID.
     desc.storageMode = MTLStorageModeShared;
-    target_ = [device_ newTextureWithDescriptor:desc];
-    if (!target_) {
+    target.texture = [device_ newTextureWithDescriptor:desc
+                                             iosurface:target.iosurface
+                                                 plane:0];
+    if (!target.texture) {
+      target.release();
       return false;
     }
-    targetWidth_ = width;
-    targetHeight_ = height;
-    readbackBgra_.assign(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0);
+    target.iosurfaceId = IOSurfaceGetID(target.iosurface);
+    target.width = width;
+    target.height = height;
     return true;
   }
 
   void readTargetBgra() {
-    [target_ getBytes:readbackBgra_.data()
-          bytesPerRow:static_cast<NSUInteger>(targetWidth_) * 4
-           fromRegion:MTLRegionMake2D(0, 0, static_cast<NSUInteger>(targetWidth_),
-                                      static_cast<NSUInteger>(targetHeight_))
-          mipmapLevel:0];
+    readbackBgra_.resize(static_cast<size_t>(program_.width) * static_cast<size_t>(program_.height) * 4u);
+    [program_.texture getBytes:readbackBgra_.data()
+                   bytesPerRow:static_cast<NSUInteger>(program_.width) * 4
+                    fromRegion:MTLRegionMake2D(0, 0, static_cast<NSUInteger>(program_.width),
+                                               static_cast<NSUInteger>(program_.height))
+                   mipmapLevel:0];
+  }
+
+  // Shared pass body: clear + resolve + draw every layer into the target.
+  // Callers set targetWidth_/targetHeight_ (the draw helpers' canvas dims)
+  // BEFORE calling and restore them afterwards for secondary passes.
+  void renderPassInto(PassTarget& target,
+                      const CompositorRenderPlan& deterministicPlan,
+                      const std::vector<VideoFrame>& frames) {
+    @autoreleasepool {
+      id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
+      MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+      pass.colorAttachments[0].texture = target.texture;
+      pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+      pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+      pass.colorAttachments[0].clearColor = MTLClearColorMake(0.047, 0.067, 0.094, 1.0);
+      id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+      const auto layers = resolveLayers(deterministicPlan, frames);
+      for (const auto& layer : layers) {
+        drawLayer(encoder, layer, deterministicPlan);
+      }
+      [encoder endEncoding];
+      [commandBuffer commit];
+      // Synchronous for now: the program readbacks and the IOSurface consumers
+      // (tests today, the shell in Phase 4) both need completed pixels.
+      [commandBuffer waitUntilCompleted];
+    }
+  }
+
+  ProgramFrameSharedTexture renderSecondaryPass(PassTarget& target,
+                                                const CompositorRenderPlan& renderPlan,
+                                                const std::vector<VideoFrame>& frames) {
+    ProgramFrameSharedTexture out;
+    if (!ensurePipeline()) {
+      return out;
+    }
+    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
+    if (deterministicPlan.width <= 0 || deterministicPlan.height <= 0) {
+      return out;
+    }
+    if (!ensureTarget(target, deterministicPlan.width, deterministicPlan.height)) {
+      return out;
+    }
+    const int savedWidth = targetWidth_;
+    const int savedHeight = targetHeight_;
+    targetWidth_ = target.width;
+    targetHeight_ = target.height;
+    renderPassInto(target, deterministicPlan, frames);
+    targetWidth_ = savedWidth;
+    targetHeight_ = savedHeight;
+    out.iosurfaceId = target.iosurfaceId;
+    out.width = target.width;
+    out.height = target.height;
+    out.frameNumber = frameNumber_;
+    return out;
   }
 
   // ── layer resolution (mirrors D3D11CompositorAdapter::resolveLayers) ───────
@@ -782,7 +886,11 @@ class MetalCompositor final : public ICompositor {
   id<MTLRenderPipelineState> i420Pipeline_ = nil;
   id<MTLRenderPipelineState> overlayPipeline_ = nil;
   id<MTLSamplerState> sampler_ = nil;
-  id<MTLTexture> target_ = nil;
+  PassTarget program_;
+  PassTarget multiview_;
+  PassTarget preview_;
+  // Canvas dims the draw helpers are currently pointed at (the program pass's
+  // dims except inside a secondary pass, which saves/restores them).
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   bool pipelineReady_ = false;

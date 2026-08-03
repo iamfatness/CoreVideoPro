@@ -1,7 +1,14 @@
 # macOS port Phase 3 — Metal compositor
 
-Status: M1 in progress (2026-08-03). Prior phases: native core green on
-Apple Silicon (#334), macOS Zoom engine live-verified (#335/#336).
+Status: M1 merged (#337); M2 merged WITH the IOSurface export originally
+scoped as M3 — `renderMultiview`/`renderPreview` return a shared texture, so
+landing them without a real cross-process identifier would have returned a
+lie; IOSurface-backed targets made the honest version barely more work. The
+wire contract gained `ProgramFrameSharedTexture::iosurfaceId` (platform-
+exclusive sibling of `sharedHandleHex`, emitted in the shared-texture JSON
+when nonzero; Windows shapes unchanged). Remaining: M4 (full-res encoder
+handoff → VideoToolbox spec). Prior phases: native core green on Apple
+Silicon (#334), macOS Zoom engine live-verified (#335/#336).
 
 ## Scope and non-goals
 
