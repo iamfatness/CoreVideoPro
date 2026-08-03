@@ -1234,7 +1234,7 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
 #endif
-#if COREVIDEO_WITH_UVC
+#if COREVIDEO_WITH_UVC || COREVIDEO_WITH_AVF_CAPTURE
   EXPECT_TRUE(jsonArrayContains(capabilities, "uvc-capture"));
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "uvc-capture"));

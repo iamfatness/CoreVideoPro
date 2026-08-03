@@ -121,6 +121,7 @@ jobs:
           -DCOREVIDEO_WITH_METAL=ON
           -DCOREVIDEO_WITH_AVF_ENCODER=ON
           -DCOREVIDEO_WITH_COREAUDIO=ON
+          -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON
       - name: Build
         run: cmake --build native/build-metal
       - name: Metal compositor tests
@@ -129,6 +130,8 @@ jobs:
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='AvfEncoderRecording.*'
       - name: CoreAudio adapter tests
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='CoreAudioAdapters.*'
+      - name: macOS capture tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='MacCapture*'
       - name: Full native tests (Metal configuration)
         run: ctest --test-dir native/build-metal --output-on-failure
 

@@ -172,7 +172,9 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("aja-capture");
 #endif
 
-#if COREVIDEO_WITH_UVC
+#if COREVIDEO_WITH_UVC || COREVIDEO_WITH_AVF_CAPTURE
+  // Shared across the Windows MF adapter and the macOS AVFoundation twin —
+  // the string means "native camera capture available" (CoreAudio precedent).
   result.emplace_back("uvc-capture");
 #endif
 
