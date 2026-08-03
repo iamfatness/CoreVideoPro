@@ -2,6 +2,7 @@
 #include <string>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cerrno>
 
 // ── IPC command / event tokens ────────────────────────────────────────────────
@@ -202,11 +203,51 @@ inline std::string ipc_token_from_args(int argc, char **argv)
        r.owner = false;
    }
 
+   // macOS caps POSIX shm names at PSHMNAMLEN (31 chars incl. the leading '/');
+   // our logical names ("ZoomObsPlugin_source_<ns>_<n>[_audio]") run ~37-43 and
+   // fail with ENAMETOOLONG. On Apple, collapse the logical name to "/ZOP" + 16
+   // hex digits of its FNV-1a 64 hash (20 chars). The mapping is applied inside
+   // shm_region_create/shm_region_open_read, so the plugin and the engine derive
+   // byte-identical names from the same logical name without either side knowing
+   // -- a call site cannot forget to apply it, and the two cannot drift apart.
+   // Linux (NAME_MAX 255) and Windows keep their existing names untouched, so
+   // their wire behavior is unchanged.
+   inline std::string shm_platform_name(const std::string &logical)
+   {
+#  if defined(__APPLE__)
+       uint64_t hash = 1469598103934665603ULL;   // FNV-1a 64 offset basis
+       for (unsigned char c : logical) {
+           hash ^= static_cast<uint64_t>(c);
+           hash *= 1099511628211ULL;             // FNV-1a 64 prime
+       }
+       char buf[24];
+       std::snprintf(buf, sizeof(buf), "/ZOP%016llx",
+                     static_cast<unsigned long long>(hash));
+       return std::string(buf);
+#  else
+       return "/" + logical;                     // shm_open requires a leading '/'
+#  endif
+   }
+
    inline bool shm_region_create(ShmRegion &r, const std::string &name, size_t size)
    {
        shm_region_destroy(r);
-       r.name = "/" + name; // shm_open requires a leading '/'
+       r.name = shm_platform_name(name);
        r.owner = true;
+
+       // A POSIX shm object can be sized exactly once: ftruncate on an object
+       // that already exists fails with EINVAL on macOS (verified empirically --
+       // fresh object ftruncate succeeds, reopening the same object and
+       // ftruncating to a new size does not, and unlinking first makes it work
+       // again). So an object left behind by a previous run -- an engine that
+       // crashed or was killed before shm_region_destroy could unlink it -- can
+       // never be resized, and every create against that name fails until
+       // something removes it. Unlink first so the create is against a fresh
+       // object every time. Harmless on Linux (which allows repeated ftruncate);
+       // the read side is unaffected -- an existing mapping stays valid against
+       // the old object until the shm_gen bump tells the client to remap.
+       shm_unlink(r.name.c_str());
+
        r.fd   = shm_open(r.name.c_str(), O_CREAT | O_RDWR, 0600);
        if (r.fd < 0) return false;
        if (ftruncate(r.fd, static_cast<off_t>(size)) < 0) { shm_region_destroy(r); return false; }
@@ -219,7 +260,7 @@ inline std::string ipc_token_from_args(int argc, char **argv)
    inline bool shm_region_open_read(ShmRegion &r, const std::string &name, size_t size)
    {
        shm_region_destroy(r);
-       r.name = "/" + name;
+       r.name = shm_platform_name(name);
        r.owner = false;
        r.fd = shm_open(r.name.c_str(), O_RDONLY, 0600);
        if (r.fd < 0) return false;

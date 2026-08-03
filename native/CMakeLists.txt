@@ -458,6 +458,7 @@ if(BUILD_TESTING)
     tests/ContractParityTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
+    tests/EngineIpcShmNameTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp

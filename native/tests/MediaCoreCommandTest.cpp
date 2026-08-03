@@ -932,7 +932,7 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
   corevideo::core::MediaCore mediaCore;
   // Enable a lower-third overlay; the first tick captures the building-in
   // animation (low alpha), later ticks settle it on-air.
-  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+  const auto earlyState = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "set-overlay-asset"},
           {"overlayId", "key:lower-third"},
@@ -972,19 +972,22 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
     return colors.size();
   };
 
+  // Preview EVENTS are wall-clock throttled (~30fps), so WHICH animation tick
+  // lands in the event queue depends on host speed — on a fast machine the
+  // whole settle loop below can complete inside one throttle window. Keep the
+  // events as an emission smoke check only, and probe pixels through the
+  // per-call state, which embeds the same preview unthrottled: tick 1 vs tick
+  // 13 is deterministic on every host.
   const auto earlyPreviews = mediaCore.drainProgramFramePreviewEvents();
   ASSERT_FALSE(earlyPreviews.empty());
-  const size_t earlyColors = bandDistinctColors(earlyPreviews.back());
+  const size_t earlyColors = bandDistinctColors(earlyState);
 
   // Advance several ticks so the building-in animation settles on-air.
   corevideo::rpc::Json settledState = nullptr;
   for (int i = 0; i < 12; ++i) {
     settledState = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
   }
-  const auto settledPreviews = mediaCore.drainProgramFramePreviewEvents();
-  const size_t settledColors = settledPreviews.empty()
-                                   ? bandDistinctColors(settledState)
-                                   : bandDistinctColors(settledPreviews.back());
+  const size_t settledColors = bandDistinctColors(settledState);
 
   // Settled overlay rasters real text/brand pixels (non-uniform band) and is
   // more opaque/legible than the first building-in frame.
