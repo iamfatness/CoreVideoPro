@@ -71,19 +71,98 @@ public static class NativeUvcCapturePolicy
                 continue;
             }
 
-            if (device.Id.Equals(stableDeviceId, StringComparison.Ordinal))
-            {
-                return device;
-            }
-
-            if (!string.IsNullOrEmpty(nativeDeviceId) &&
-                !string.IsNullOrEmpty(device.NativeDeviceId) &&
-                device.NativeDeviceId.Equals(nativeDeviceId, StringComparison.OrdinalIgnoreCase))
+            if (Matches(device, stableDeviceId, nativeDeviceId))
             {
                 return device;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Finds the core's status for this shell device REGARDLESS of connection
+    /// state — used by the first-frame confirmation loop to observe a device
+    /// transition from "connected" (waiting) to "error" (the native no-first-
+    /// frame watchdog fired) or to signalPresent=true (a real frame arrived).
+    /// </summary>
+    public static NativeCaptureDeviceStatus? FindDevice(
+        IReadOnlyList<NativeCaptureDeviceStatus> devices,
+        string stableDeviceId,
+        string? nativeDeviceId)
+    {
+        foreach (var device in devices)
+        {
+            if (Matches(device, stableDeviceId, nativeDeviceId))
+            {
+                return device;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool Matches(NativeCaptureDeviceStatus device, string stableDeviceId, string? nativeDeviceId)
+    {
+        if (device.Id.Equals(stableDeviceId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrEmpty(nativeDeviceId) &&
+            !string.IsNullOrEmpty(device.NativeDeviceId) &&
+            device.NativeDeviceId.Equals(nativeDeviceId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The window the shell waits for a native-connected camera to deliver its
+    /// FIRST frame (signalPresent) before giving up and falling back to the
+    /// WinUI MediaCapture bridge. Longer than the core's no-first-frame watchdog
+    /// (kUvcNoFirstFrameTimeoutMs) so the core marks the device "error" (and
+    /// releases it) first, which the shell then observes as FallBack.
+    /// </summary>
+    public const int FirstFrameTimeoutMs = 6000;
+
+    public enum FirstFrameOutcome
+    {
+        /// <summary>Still connected, no frame yet, within the timeout — keep polling.</summary>
+        Waiting,
+
+        /// <summary>A real frame arrived (signalPresent) — commit to the native path.</summary>
+        Confirmed,
+
+        /// <summary>
+        /// The device errored, disappeared, or the timeout elapsed with no
+        /// frame — release native and fall back to the managed bridge.
+        /// </summary>
+        FallBack,
+    }
+
+    /// <summary>
+    /// Pure decision for the shell's first-frame confirmation loop. The device
+    /// is CONFIRMED once the core reports a real frame (signalPresent); it FALLS
+    /// BACK when the device is gone from the core's list, has gone to a non-
+    /// connected state (the native watchdog fired / open failed), or the wait
+    /// window has elapsed without a frame. Otherwise keep waiting.
+    /// </summary>
+    public static FirstFrameOutcome EvaluateFirstFrame(
+        NativeCaptureDeviceStatus? device,
+        int elapsedMs,
+        int timeoutMs = FirstFrameTimeoutMs)
+    {
+        if (device is not null && device.SignalPresent)
+        {
+            return FirstFrameOutcome.Confirmed;
+        }
+
+        if (device is null ||
+            !device.ConnectionState.Equals("connected", StringComparison.Ordinal))
+        {
+            // Dropped from the list, or the core downgraded it out of "connected"
+            // (error / detected) — the native reader is not going to deliver.
+            return FirstFrameOutcome.FallBack;
+        }
+
+        return elapsedMs >= timeoutMs ? FirstFrameOutcome.FallBack : FirstFrameOutcome.Waiting;
     }
 }

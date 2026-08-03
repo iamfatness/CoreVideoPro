@@ -400,6 +400,35 @@ fail-fast on a long show). The counter resets the instant a real frame lands. Se
 when native UVC (`COREVIDEO_NATIVE_UVC=1`) claims a device, the shell now stops any managed
 bridge reader for that same device so the two never run concurrently.
 
+**Native-UVC no-first-frame watchdog + confirm-before-commit fallback (2026-07-23).**
+The native MF adapter's `connect()` flips a device to `connectionState:"connected"` the
+instant the reader thread STARTS — before any frame. A single-consumer capture card
+(Elgato Game Capture / HD60 S+) that another app (Zoom, Camera Hub, OBS) holds, or an HDMI
+input with no signal, OPENS and NEGOTIATES fine, then delivers zero samples: open+negotiate
+succeeded so no stall policy fired, and it sat forever on a placeholder tile (the compositor
+logging `capture:<id> has NO matching frame` every 5s). Two-part fix, mirroring the
+`CaptureReaderStallPolicy` shape: (1) **core watchdog** — `UvcCaptureSession::readLoop`
+gives a negotiated device `kUvcNoFirstFrameTimeoutMs` (4s) to produce its first frame; past
+that it fails LOUD (`uvcNoFirstFrameWarning` names the device + likely cause), ends the read
+loop and RELEASES the MF device (frees the single-consumer card). The check is lock-free off
+the `loggedFirstFrame` flag and fires whenever `ReadSample` returns (stream tick / gap — the
+shape a no-signal card presents); `frameId>0` is never a stall. The adapter also gained a
+real `disconnect()` override (was a no-op) that resets the session. (2) **shell confirm-
+before-commit** — `TryConnectNativeUvcCaptureAsync` no longer commits (stops the bridge) on
+the connect response alone; it polls `ListNativeCaptureDevicesAsync` for up to
+`NativeUvcCapturePolicy.FirstFrameTimeoutMs` (6s > the 4s core watchdog so the core marks it
+"error" first) until `signalPresent` (→ commit native) or the device errors/vanishes/times
+out (→ `DisconnectNativeCaptureDeviceAsync` + return false → the existing WinUI MediaCapture
+bridge fallback, the robust default per this file). Pure decisions: `uvcNoFirstFrameTimedOut`
+(core, `UvcCaptureSupportTest`) and `NativeUvcCapturePolicy.EvaluateFirstFrame`/`FindDevice`
+(shell, `NativeUvcCapturePolicyTests`). Net: a camera native UVC can't pull frames from now
+FAILS LOUD and FALLS BACK, never a silent placeholder forever. Honest caveat: the watchdog
+relies on `ReadSample` returning periodically (the common no-signal case); a driver that
+blocks `ReadSample` forever with no return can't be interrupted from a synchronous reader
+(async callback = the WgcSession free-threaded-callback crash class we forbid). NOT a
+regression from the ISO merge (#316/#318/#320) — the reader path was untouched (last change
+#275); the failure is device contention/starvation.
+
 **Bridge capture allocation churn (the "video slow down").** The managed MediaCapture
 bridge used to allocate a fresh ~8MB BGRA `byte[]` **per frame** in
 `CaptureDeviceFrameReaderService.CopyBgraBytes`. Across two 60fps cameras that is ~0.7GB/s

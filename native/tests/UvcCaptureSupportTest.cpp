@@ -10,9 +10,12 @@ namespace {
 
 using corevideo::modules::uvc::UvcFormatCandidate;
 using corevideo::modules::uvc::deriveYuvColorHints;
+using corevideo::modules::uvc::kUvcNoFirstFrameTimeoutMs;
 using corevideo::modules::uvc::nv12ToI420;
 using corevideo::modules::uvc::pickBestUvcFormat;
 using corevideo::modules::uvc::stableCaptureDeviceIdFromSymbolicLink;
+using corevideo::modules::uvc::uvcNoFirstFrameTimedOut;
+using corevideo::modules::uvc::uvcNoFirstFrameWarning;
 using corevideo::modules::uvc::uvcSubtypeRank;
 using corevideo::modules::uvc::yuy2ToI420;
 
@@ -231,4 +234,38 @@ TEST(UvcCaptureDeviceFactory, GatedByBuildFlag) {
 #else
   EXPECT_EQ(corevideo::modules::createUvcCaptureDevice(), nullptr);
 #endif
+}
+
+TEST(UvcNoFirstFrameWatchdog, NeverStallsWhenAFrameHasArrived) {
+  // frameId > 0 means the first frame landed — the device is healthy no matter
+  // how much wall time has elapsed (a slow camera is still a working camera).
+  EXPECT_FALSE(uvcNoFirstFrameTimedOut(/*frameId=*/1, /*elapsedMs=*/1'000'000, 4000));
+  EXPECT_FALSE(uvcNoFirstFrameTimedOut(/*frameId=*/42, /*elapsedMs=*/4001, 4000));
+}
+
+TEST(UvcNoFirstFrameWatchdog, StallsOnlyPastTheTimeoutWithNoFrame) {
+  EXPECT_FALSE(uvcNoFirstFrameTimedOut(/*frameId=*/0, /*elapsedMs=*/0, 4000));
+  EXPECT_FALSE(uvcNoFirstFrameTimedOut(/*frameId=*/0, /*elapsedMs=*/3999, 4000));
+  EXPECT_TRUE(uvcNoFirstFrameTimedOut(/*frameId=*/0, /*elapsedMs=*/4000, 4000));
+  EXPECT_TRUE(uvcNoFirstFrameTimedOut(/*frameId=*/0, /*elapsedMs=*/9000, 4000));
+}
+
+TEST(UvcNoFirstFrameWatchdog, DefaultTimeoutIsFourSeconds) {
+  EXPECT_EQ(kUvcNoFirstFrameTimeoutMs, 4000);
+  // The default arg matches the constant.
+  EXPECT_TRUE(uvcNoFirstFrameTimedOut(0, 4000));
+  EXPECT_FALSE(uvcNoFirstFrameTimedOut(0, 3999));
+}
+
+TEST(UvcNoFirstFrameWatchdog, WarningNamesTheDeviceAndTheLikelyCause) {
+  const std::string warning = uvcNoFirstFrameWarning("Game Capture HD60 S+", 4000);
+  EXPECT_NE(warning.find("Game Capture HD60 S+"), std::string::npos);
+  EXPECT_NE(warning.find("no frames"), std::string::npos);
+  EXPECT_NE(warning.find("in use by another app"), std::string::npos);
+  EXPECT_NE(warning.find("4s"), std::string::npos);
+}
+
+TEST(UvcNoFirstFrameWatchdog, WarningFallsBackToGenericNameWhenEmpty) {
+  const std::string warning = uvcNoFirstFrameWarning("", 4000);
+  EXPECT_NE(warning.find("Camera connected but delivered no frames"), std::string::npos);
 }
