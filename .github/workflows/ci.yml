@@ -103,6 +103,29 @@ jobs:
       - name: Native stub tests
         run: ctest --test-dir native/build --output-on-failure
 
+  # Metal GPU compositor build: the real (non-stub) macOS configuration with
+  # the Metal adapter enabled. GitHub macOS runners expose an Apple
+  # paravirtual Metal device, so the MetalCompositor tests actually render;
+  # on a GPU-less runner they self-skip (loudly) instead of failing.
+  native-metal-macos:
+    runs-on: macos-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install ninja
+      - name: Configure Metal build
+        run: >
+          cmake -S native -B native/build-metal -G Ninja
+          -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON
+          -DCOREVIDEO_WITH_METAL=ON
+      - name: Build
+        run: cmake --build native/build-metal
+      - name: Metal compositor tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='MetalCompositor.*'
+      - name: Full native tests (Metal configuration)
+        run: ctest --test-dir native/build-metal --output-on-failure
+
   # ThreadSanitizer over the stub build: the Phase 2 audio/output worker decouple
   # relies on a strict coreMutex/audioOutputMutex_ two-lock discipline, and a single
   # missed guard is a data race (docs/phase2-threading-plan.md §5.2/§6). Any TSan

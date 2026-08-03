@@ -1190,6 +1190,9 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #if COREVIDEO_WITH_D3D11
   EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core");
   EXPECT_EQ(profile.getString("renderer"), "d3d11");
+#elif COREVIDEO_WITH_METAL
+  EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core");
+  EXPECT_EQ(profile.getString("renderer"), "metal");
 #else
   EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core Stub");
   EXPECT_EQ(profile.getString("renderer"), "software");
@@ -1207,7 +1210,7 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   const bool hasWasapiMonitor = corevideo::modules::createWasapiMonitorOutput() != nullptr;
   EXPECT_EQ(jsonArrayContains(capabilities, "local-audio-capture"), hasWasapiCapture);
   EXPECT_EQ(jsonArrayContains(capabilities, "audio-monitor-output"), hasWasapiMonitor);
-#if COREVIDEO_WITH_D3D11
+#if COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL
   EXPECT_TRUE(jsonArrayContains(capabilities, "gpu-compositor"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "chroma-key"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "smart-framing"));
@@ -1259,6 +1262,8 @@ TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
   const auto health = mediaCore.health();
 #if COREVIDEO_WITH_D3D11
   EXPECT_EQ(health.getString("renderer"), "d3d11");
+#elif COREVIDEO_WITH_METAL
+  EXPECT_EQ(health.getString("renderer"), "metal");
 #else
   EXPECT_EQ(health.getString("renderer"), "software");
 #endif

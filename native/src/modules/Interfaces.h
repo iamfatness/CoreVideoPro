@@ -827,6 +827,9 @@ ModuleSet createStubModules();
 // createDefaultModules directly and keep the synchronous encoder.
 ModuleSet createLiveServerModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
+// The macOS Metal twin; returns nullptr unless COREVIDEO_WITH_METAL (mirrors
+// the D3D11 null factory — each is non-null on at most one platform).
+std::unique_ptr<ICompositor> createMetalCompositor();
 std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();

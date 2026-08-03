@@ -943,10 +943,21 @@ std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource() {
   return std::make_unique<StubAudioCaptureSource>();
 }
 
+#if !defined(__APPLE__)
+// The Metal factory's translation unit (MetalCompositorAdapter.mm) is only
+// compiled on Apple toolchains; every other platform links this null factory
+// (the same pattern as the D3D11 null factory on non-Windows).
+std::unique_ptr<ICompositor> createMetalCompositor() {
+  return nullptr;
+}
+#endif
+
 ModuleSet createDefaultModules() {
   auto modules = createStubModules();
   if (auto compositor = createD3D11Compositor()) {
     modules.compositor = std::move(compositor);
+  } else if (auto metalCompositor = createMetalCompositor()) {
+    modules.compositor = std::move(metalCompositor);
   }
   if (auto mediaFrames = createMediaFoundationMediaFrameSource()) {
     modules.mediaFrames = std::move(mediaFrames);
