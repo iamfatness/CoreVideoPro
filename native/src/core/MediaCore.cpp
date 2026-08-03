@@ -145,14 +145,7 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
 
   if (encoderSession.hardwareAccelerated) {
     result.emplace_back("program-recording");
-    // ISO recording is implemented by the Media Foundation sink only; the
-    // AVFoundation sink records program A+V but grows ISO writers in its
-    // increment 2 (docs/mac-port-phase3-avf-encoder.md) — advertising the
-    // capability before then would let a shell arm ISO selections that
-    // silently record nothing.
-    if (encoderSession.encoderName != "videotoolbox") {
-      result.emplace_back("iso-recording");
-    }
+    result.emplace_back("iso-recording");
   }
 
 #if COREVIDEO_WITH_RTMP_OUTPUT

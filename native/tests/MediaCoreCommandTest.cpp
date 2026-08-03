@@ -1228,8 +1228,7 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
 #elif COREVIDEO_WITH_AVF_ENCODER
   EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
-  // Honest until the AVF sink's ISO increment lands.
-  EXPECT_FALSE(jsonArrayContains(capabilities, "iso-recording"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
 #endif
