@@ -1206,10 +1206,12 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_TRUE(jsonArrayContains(capabilities, "audio-mixer"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "scene-graph-rendering"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "dynamic-overlays"));
-  const bool hasWasapiCapture = corevideo::modules::createWasapiAudioCaptureSource() != nullptr;
-  const bool hasWasapiMonitor = corevideo::modules::createWasapiMonitorOutput() != nullptr;
-  EXPECT_EQ(jsonArrayContains(capabilities, "local-audio-capture"), hasWasapiCapture);
-  EXPECT_EQ(jsonArrayContains(capabilities, "audio-monitor-output"), hasWasapiMonitor);
+  const bool hasAudioCapture = corevideo::modules::createWasapiAudioCaptureSource() != nullptr ||
+                               corevideo::modules::createCoreAudioCaptureSource() != nullptr;
+  const bool hasAudioMonitor = corevideo::modules::createWasapiMonitorOutput() != nullptr ||
+                               corevideo::modules::createCoreAudioMonitorOutput() != nullptr;
+  EXPECT_EQ(jsonArrayContains(capabilities, "local-audio-capture"), hasAudioCapture);
+  EXPECT_EQ(jsonArrayContains(capabilities, "audio-monitor-output"), hasAudioMonitor);
 #if COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL
   EXPECT_TRUE(jsonArrayContains(capabilities, "gpu-compositor"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "chroma-key"));

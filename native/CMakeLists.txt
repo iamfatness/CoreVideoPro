@@ -8,6 +8,7 @@ option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires
 option(COREVIDEO_WITH_D3D11 "Build the Windows D3D11 GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_METAL "Build the macOS Metal GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_AVF_ENCODER "Build the macOS AVFoundation/VideoToolbox recording encoder. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_COREAUDIO "Build the macOS CoreAudio monitor-output and capture-audio adapters. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_MF_ENCODER "Build the Windows Media Foundation hardware encoder adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WASAPI_MONITOR "Build the Windows WASAPI audio monitor output adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WASAPI_CAPTURE "Build the Windows WASAPI audio capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
@@ -72,6 +73,8 @@ add_library(corevideo_native
   src/modules/VirtualCameraPublisher.cpp
   src/modules/UvcCaptureSupport.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
+  src/modules/CoreAudioCaptureSourceAdapter.cpp
+  src/modules/CoreAudioMonitorOutputAdapter.cpp
   src/modules/WasapiMonitorOutputAdapter.cpp
   src/modules/WinUiCaptureDeviceAdapter.cpp
   src/modules/ZoomEngineClient.cpp
@@ -109,6 +112,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
     COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
     COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
     COREVIDEO_WITH_MF_ENCODER=$<BOOL:${COREVIDEO_WITH_MF_ENCODER}>
     COREVIDEO_WITH_WASAPI_MONITOR=$<BOOL:${COREVIDEO_WITH_WASAPI_MONITOR}>
     COREVIDEO_WITH_WASAPI_CAPTURE=$<BOOL:${COREVIDEO_WITH_WASAPI_CAPTURE}>
@@ -161,6 +165,17 @@ if(COREVIDEO_WITH_AVF_ENCODER)
   endif()
   target_link_libraries(corevideo_native PUBLIC
     "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+endif()
+
+if(COREVIDEO_WITH_COREAUDIO)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_COREAUDIO requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_COREAUDIO supports the macOS adapters only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework CoreAudio" "-framework AudioUnit" "-framework AudioToolbox" "-framework CoreFoundation")
 endif()
 
 # winmm provides timeBeginPeriod() — raise the system timer resolution to 1ms so the
@@ -538,6 +553,7 @@ if(BUILD_TESTING)
     tests/EngineIpcShmNameTest.cpp
     tests/MetalCompositorTest.cpp
     tests/AvfEncoderRecordingTest.cpp
+    tests/CoreAudioAdapterTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
@@ -567,6 +583,7 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
     COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
     COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
     COREVIDEO_WITH_MF_ENCODER=$<BOOL:${COREVIDEO_WITH_MF_ENCODER}>
     COREVIDEO_WITH_WASAPI_MONITOR=$<BOOL:${COREVIDEO_WITH_WASAPI_MONITOR}>
     COREVIDEO_WITH_WASAPI_CAPTURE=$<BOOL:${COREVIDEO_WITH_WASAPI_CAPTURE}>

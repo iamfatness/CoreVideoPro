@@ -967,9 +967,13 @@ ModuleSet createDefaultModules() {
   }
   if (auto monitorOutput = createWasapiMonitorOutput()) {
     modules.monitorOutput = std::move(monitorOutput);
+  } else if (auto coreAudioMonitor = createCoreAudioMonitorOutput()) {
+    modules.monitorOutput = std::move(coreAudioMonitor);
   }
   if (auto audioCapture = createWasapiAudioCaptureSource()) {
     modules.audioCapture = std::move(audioCapture);
+  } else if (auto coreAudioCapture = createCoreAudioCaptureSource()) {
+    modules.audioCapture = std::move(coreAudioCapture);
   }
   if (auto avfEncoder = createAVFoundationEncoderSink()) {
     modules.encoder = std::move(avfEncoder);
