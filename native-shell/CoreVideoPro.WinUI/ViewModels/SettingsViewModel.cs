@@ -73,6 +73,19 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _supportBundleStatus = string.Empty;
 
+    // S3 opt-in telemetry. Consent lives in a standalone flag file (default OFF);
+    // the service owns the session clock + daily heartbeat and only ever sends
+    // when the toggle is ON and the ingest endpoint/key are configured.
+    private readonly TelemetryConsentStore _telemetryConsentStore;
+    private readonly TelemetryEventService _telemetry;
+    private bool _suppressTelemetryPersist;
+
+    [ObservableProperty]
+    private bool _telemetryEnabled;
+
+    [ObservableProperty]
+    private string _telemetryPreviewJson = string.Empty;
+
     public ObservableCollection<RecentZoomMeeting> RecentMeetings { get; } = [];
 
     public SettingsViewModel(
@@ -95,6 +108,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         _zoomStatusChanged = zoomStatusChanged;
         _onMeetingJoined = onMeetingJoined;
         _recentMeetingStore = recentMeetingStore ?? new FileRecentZoomMeetingStore(FileRecentZoomMeetingStore.DefaultStorePath());
+
+        _telemetryConsentStore = new TelemetryConsentStore(TelemetryConsentStore.DefaultPath());
+        _telemetry = new TelemetryEventService(() => _bridge.LastSnapshot, _telemetryConsentStore);
+        // Load persisted consent WITHOUT re-persisting it (default OFF on a fresh profile).
+        _suppressTelemetryPersist = true;
+        TelemetryEnabled = _telemetryConsentStore.Load().Enabled;
+        _suppressTelemetryPersist = false;
+        _telemetry.Start();
+
         _ = RefreshOAuthStatusAsync();
         _ = LoadRecentMeetingsAsync();
         RefreshSdkReadiness();
@@ -107,6 +129,72 @@ public sealed partial class SettingsViewModel : ObservableObject
     /// </summary>
     public void ConfigureOutputDestinations(Func<IReadOnlyList<SupportBundleOutputDestination>>? factory) =>
         _outputDestinationsFactory = factory;
+
+    // ---- S3 opt-in telemetry (spec §S3) ------------------------------------
+
+    /// <summary>Exactly what a telemetry event contains — the settings copy line.</summary>
+    public string TelemetryConsentCopy =>
+        "Send anonymous health data on app close and once a day: app version, session length, " +
+        "output counts (recording / streaming / virtual camera on-off, ISO / capture / participant counts), " +
+        "crashes since the last send, and a hardware class (CPU cores, RAM band, GPU tier). " +
+        "No names, meeting IDs, stream keys, URLs, or file paths are ever included.";
+
+    /// <summary>True when the ingest endpoint + key are configured (beta config); the toggle still gates sending.</summary>
+    public bool TelemetryConfigured => _telemetry.IsConfigured;
+
+    /// <summary>Note shown when telemetry is unconfigured so the toggle isn't a silent no-op.</summary>
+    public string TelemetryConfigStatus => TelemetryConfigured
+        ? "Telemetry endpoint configured."
+        : "No telemetry endpoint is configured in this build — nothing is sent even when enabled.";
+
+    public bool ShowTelemetryPreview => !string.IsNullOrWhiteSpace(TelemetryPreviewJson);
+
+    partial void OnTelemetryPreviewJsonChanged(string value) =>
+        OnPropertyChanged(nameof(ShowTelemetryPreview));
+
+    /// <summary>Persist the opt-in on change (unless we're loading the stored value at startup).</summary>
+    partial void OnTelemetryEnabledChanged(bool value)
+    {
+        if (_suppressTelemetryPersist)
+        {
+            return;
+        }
+
+        try
+        {
+            _telemetryConsentStore.SetEnabled(value);
+            LaunchLog.Write($"telemetry: consent {(value ? "ENABLED" : "disabled")} by operator");
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"telemetry: could not persist consent ({ex.Message})");
+        }
+    }
+
+    /// <summary>
+    /// Builds and shows the EXACT payload that would be sent (spec §7 —
+    /// inspectable before egress). Works whether or not telemetry is enabled, so
+    /// the operator can audit the egress before opting in.
+    /// </summary>
+    [RelayCommand]
+    private void PreviewTelemetry()
+    {
+        try
+        {
+            TelemetryPreviewJson = _telemetry.BuildPreviewJson();
+        }
+        catch (Exception ex)
+        {
+            TelemetryPreviewJson = $"(could not build preview: {ex.Message})";
+        }
+    }
+
+    /// <summary>
+    /// Fire-and-forget session-end telemetry for the app-shutdown path. Gated on
+    /// consent + config, bounded by a tight timeout — MUST NOT be awaited on the
+    /// shutdown critical path (spec §S3.4: never block or delay close).
+    /// </summary>
+    public void FlushTelemetrySessionEnd() => _telemetry.FireSessionEnd();
 
     public IReadOnlyList<ZoomEngineEvidenceItem> DiagnosticsReadout => _diagnosticsReadout;
 
