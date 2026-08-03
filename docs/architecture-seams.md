@@ -63,15 +63,28 @@ commands**, not ViewModel pixel work:
 extraction** (strangler pattern; new behavior goes in focused `MagicScene*` / `Transport*`
 types, never new methods on the god file — `FOCUS_PLAN.md` §9):
 
-> **PR1** (this change) extracted **MagicScene** automation (`MagicSceneCoordinator` +
-> `IMagicSceneHost`) and the **Transport status formatters** (`TransportStatusFormatter`).
-> **PR2** = Transport orchestration (record/stream/engine/Take async bodies) behind an
-> `IMediaCoreBridge` DI seam — gated because `StudioViewModel` is not constructible in tests
-> today. **PR3** = ShowInputs. **PR4+** = the C++ hot core (MediaCore / compositor /
+> **PR1** extracted **MagicScene** automation (`MagicSceneCoordinator` + `IMagicSceneHost`) and
+> the **Transport status formatters** (`TransportStatusFormatter`).
+> **PR2** (this change) introduced the **`IMediaCoreBridge`** DI seam and extracted **Transport
+> orchestration** — the Engine on/off, Take, Record, and Stream async command bodies + their
+> in-flight guards, #286-class rollback, backpressure-retry, and sender-proof helpers — into
+> `TransportCoordinator` behind `ITransportHost` + `ITransportDispatcher`. The coordinator is
+> independently constructible (fake `IMediaCoreBridge` + fake host), so transport orchestration
+> now carries its first-ever characterization tests (`TransportCoordinatorTests`). Move-only:
+> StudioViewModel keeps the generated `[RelayCommand]` objects as thin forwarders so XAML x:Bind
+> and the ~15 external `NotifyCanExecuteChanged` pokes are unchanged; the bound transport state
+> (Recording/Streaming/OutputStatus/…) stays `[ObservableProperty]` on the god file and the
+> coordinator writes it through `ITransportHost`. Deferred to a follow-up (kept on the façade to
+> bound the host surface + honor no-XAML-churn): the readout-projection `RefreshTransportState`/
+> `ApplyConfiguredOutputReadouts`, the bound `TakeTransitionMode`, and the vcam enable/mirror/name
+> handlers. **PR3** = ShowInputs. **PR4+** = the C++ hot core (MediaCore / compositor /
 > JsonRpcServer).
 
-**StudioViewModel LOC:** `StudioViewModel.cs` **15,028 → 14,176** (the monolithic file), with
-~950 lines of behavior relocated into independently-testable types
-(`TransportStatusFormatter.cs` 586, `MagicSceneCoordinator.cs` 363, `IMagicSceneHost.cs` 80)
-plus a 203-line façade partial (`StudioViewModel.MagicScene.cs`) that keeps XAML x:Bind paths
-unchanged. `[ObservableProperty]` 147 → 134, `[RelayCommand]` 72 → 69.
+**StudioViewModel LOC:** `StudioViewModel.cs` (the monolithic file) **14,423 → 13,817** after
+PR2; the four transport command bodies + their five async helpers + eight now-dead static
+wrappers + the two in-flight fields relocated into `TransportCoordinator.cs` (651, incl. docs) /
+`ITransportHost.cs` (126) / a 165-line façade partial (`StudioViewModel.Transport.cs`) that keeps
+XAML x:Bind unchanged, plus the assembly-level `IMediaCoreBridge.cs` (95) seam.
+`[ObservableProperty]` 136 and `[RelayCommand]` 72 are UNCHANGED (forwarders preserve every bound
+member). (PR1 took the file 15,028 → 14,176 for MagicScene; the 14,423 baseline here includes the
+intervening ISO-1..4 work, #316/#318/#320.)
