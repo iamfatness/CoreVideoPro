@@ -48,6 +48,9 @@ TEST(JsonRpcServer, EmitsHandshakeBeforeReadingInput) {
 #if COREVIDEO_WITH_D3D11
   EXPECT_EQ(line->get("profile")->getString("name"), "CoreVideo Pro Native Media Core");
   EXPECT_EQ(line->get("profile")->getString("renderer"), "d3d11");
+#elif COREVIDEO_WITH_METAL
+  EXPECT_EQ(line->get("profile")->getString("name"), "CoreVideo Pro Native Media Core");
+  EXPECT_EQ(line->get("profile")->getString("renderer"), "metal");
 #else
   EXPECT_EQ(line->get("profile")->getString("name"), "CoreVideo Pro Native Media Core Stub");
 #endif
