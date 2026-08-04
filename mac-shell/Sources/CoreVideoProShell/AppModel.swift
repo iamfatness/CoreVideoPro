@@ -7,6 +7,23 @@
 import Foundation
 import SwiftUI
 
+enum StudioTab: String, CaseIterable {
+    case zoom = "Zoom"
+    case sources = "Sources"
+    case audio = "Audio"
+    case diagnose = "Diagnose"
+}
+
+struct CaptureDeviceRow: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let kind: String
+    let vendor: String
+    var connectionState: String
+    var signalPresent: Bool
+    var warning: String
+}
+
 struct RosterParticipant: Identifiable, Equatable {
     let id: String
     let name: String
@@ -33,6 +50,11 @@ final class AppModel: ObservableObject {
     @Published var warnings: [String] = []
     @Published var programSurfaceId: UInt32 = 0
     @Published var programFrameNumber: Int64 = 0
+    @Published var previewSurfaceId: UInt32 = 0
+    @Published var multiviewSurfaceId: UInt32 = 0
+    @Published var captureDevices: [CaptureDeviceRow] = []
+    @Published var clockText = ""
+    @Published var selectedTab: StudioTab = .zoom
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
     @Published var displayName = "CoreVideo Pro (mac)"
@@ -63,7 +85,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.status = status
                 if case .connected(let renderer) = status {
-                    print("shell: core connected renderer=\(renderer)")
+                    ShellLog.write("core connected renderer=\(renderer)")
                     self?.onConnected()
                 }
                 if case .exited(let code) = status {
@@ -121,20 +143,42 @@ final class AppModel: ObservableObject {
                 "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": commands,
             ])
             applySnapshot(response["snapshot"] as? JSONObject ?? [:])
+            statusDetail = ""  // a recovered core clears the transient error
         } catch {
             statusDetail = error.localizedDescription
         }
     }
+
+    private var loggedZoomSnapshot = false
 
     private func zoomTick() async {
         guard let bridge else { return }
         guard let response = try? await bridge.request(["type": "zoom-snapshot"]),
               let snapshot = response["snapshot"] as? JSONObject
         else { return }
+        if !loggedZoomSnapshot, meetingState != "idle" {
+            loggedZoomSnapshot = true
+            ShellLog.write("zoom-snapshot keys: \(snapshot.keys.sorted()) participants=\(String(describing: snapshot["participants"]).prefix(400))")
+        }
         applyZoom(snapshot)
     }
 
     private func applySnapshot(_ snapshot: JSONObject) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        clockText = formatter.string(from: Date())
+        if let devices = snapshot["captureDevices"] as? [JSONObject] {
+            captureDevices = devices.map { entry in
+                CaptureDeviceRow(
+                    id: entry["id"] as? String ?? "",
+                    name: entry["name"] as? String ?? "",
+                    kind: entry["kind"] as? String ?? "video",
+                    vendor: entry["vendor"] as? String ?? "",
+                    connectionState: entry["connectionState"] as? String ?? "detected",
+                    signalPresent: entry["signalPresent"] as? Bool ?? false,
+                    warning: entry["warning"] as? String ?? "")
+            }
+        }
         if let recording = snapshot["recording"] as? JSONObject {
             recordingStatus = recording["status"] as? String ?? "idle"
             recordingArtifactPath = recording["artifactPath"] as? String ?? recordingArtifactPath
@@ -161,15 +205,17 @@ final class AppModel: ObservableObject {
         }
         let autoAssign = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"] != nil
         if let participants = snapshot["participants"] as? [JSONObject] {
+            // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
+            // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
             roster = participants.compactMap { entry in
-                guard let idNumber = entry["id"] else { return nil }
-                let id = "\(idNumber)"
+                guard let idValue = entry["userId"] ?? entry["id"] else { return nil }
+                let id = "\(idValue)"
                 return RosterParticipant(
                     id: id,
-                    name: entry["name"] as? String ?? id,
-                    hasVideo: entry["hasVideo"] as? Bool ?? (entry["has_video"] as? Bool ?? false),
-                    muted: entry["isMuted"] as? Bool ?? (entry["is_muted"] as? Bool ?? false),
-                    talking: entry["isTalking"] as? Bool ?? (entry["is_talking"] as? Bool ?? false),
+                    name: entry["displayName"] as? String ?? (entry["name"] as? String ?? id),
+                    hasVideo: entry["videoOn"] as? Bool ?? (entry["hasVideo"] as? Bool ?? false),
+                    muted: entry["muted"] as? Bool ?? (entry["isMuted"] as? Bool ?? false),
+                    talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
                     assigned: assignedIds.contains(id))
             }
             if autoAssign {
@@ -191,6 +237,15 @@ final class AppModel: ObservableObject {
             if let texture = event["sharedTexture"] as? JSONObject {
                 applySharedTexture(texture)
             }
+        case "multiview-shared-texture":
+            if let texture = event["texture"] as? JSONObject,
+               let id = texture["iosurfaceId"] as? NSNumber {
+                multiviewSurfaceId = id.uint32Value
+            }
+        case "preview-shared-texture":
+            if let id = event["iosurfaceId"] as? NSNumber {
+                previewSurfaceId = id.uint32Value
+            }
         default:
             break
         }
@@ -209,7 +264,7 @@ final class AppModel: ObservableObject {
     }
 
     func pushWarning(_ message: String) {
-        print("shell: warning: \(message)")
+        ShellLog.write("warning: \(message)")
         warnings.insert(message, at: 0)
         if warnings.count > 20 {
             warnings.removeLast()
@@ -308,7 +363,21 @@ final class AppModel: ObservableObject {
                 "priority": index,
             ]
         }
+        let multiviewSources: [JSONObject] = roster
+            .filter { assignedIds.contains($0.id) }
+            .map { participant in
+                [
+                    "sourceId": "zoom:" + participant.id,
+                    "kind": "participant-video",
+                    "participantId": participant.id,
+                    "label": participant.name,
+                ]
+            }
         let payload: JSONObject = [
+            "multiview": [
+                "canvasWidth": 1920, "canvasHeight": 1080,
+                "sources": multiviewSources,
+            ],
             "readiness": [
                 "status": "ready", "platform": "darwin", "sdkVersion": "",
                 "checks": [], "blockers": [], "warnings": [], "summary": "mac shell",
@@ -383,6 +452,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func connectCaptureDevice(_ device: CaptureDeviceRow) {
+        guard let bridge else { return }
+        Task {
+            do {
+                if device.connectionState == "connected" {
+                    _ = try await bridge.request(
+                        ["type": "disconnect-capture-device", "deviceId": device.id])
+                } else {
+                    _ = try await bridge.request([
+                        "type": "connect-capture-device", "deviceId": device.id,
+                        "outputSourceId": device.id,
+                    ])
+                }
+            } catch {
+                pushWarning("capture: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func stopCapture() {
         guard let bridge else { return }
         Task { _ = try? await bridge.request(["type": "zoom-stop-capture"]) }
@@ -421,5 +509,24 @@ enum ShellPaths {
             return override
         }
         return NSHomeDirectory() + "/Developer/CoreVideoPro"
+    }
+}
+
+
+// Always-on file log (~/Library/Logs/CoreVideoPro-shell.log): LaunchServices
+// launches have no attached stdout, which made GUI sessions undiagnosable.
+enum ShellLog {
+    static let path = NSHomeDirectory() + "/Library/Logs/CoreVideoPro-shell.log"
+
+    static func write(_ message: String) {
+        let line = "\(Date()) \(message)\n"
+        print("shell: \(message)")
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? line.write(toFile: path, atomically: true, encoding: .utf8)
+        }
     }
 }
