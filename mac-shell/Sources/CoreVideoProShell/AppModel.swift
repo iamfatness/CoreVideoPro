@@ -173,6 +173,8 @@ final class AppModel: ObservableObject {
         prefs.lowerThirdPosition = lowerThirdPosition
         prefs.logoBugAssetId = logoBug?.id ?? ""
         prefs.streamUrl = streamUrl
+        prefs.recentMeetings = recentMeetings
+        prefs.webinar = webinar
         return prefs
     }
 
@@ -194,13 +196,23 @@ final class AppModel: ObservableObject {
             logoBug = mediaAssets.first { $0.id == prefs.logoBugAssetId }
         }
         streamUrl = prefs.streamUrl
+        recentMeetings = prefs.recentMeetings
+        webinar = prefs.webinar
         streamKey = StreamKeychain.load()
         lastSavedPrefs = prefs
     }
 
     func start() {
         refreshMediaBin()
-        restorePrefs()  // after the bin so the logo bug can re-resolve
+        restorePrefs()
+        refreshZoomSignedIn()
+        // Screenshot/verification harness: open on a named tab.
+        if let tabName = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB"],
+           let tab = StudioTab.allCases.first(where: {
+               $0.rawValue.lowercased() == tabName.lowercased()
+           }) {
+            selectedTab = tab
+        }  // after the bin so the logo bug can re-resolve
         Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -533,6 +545,55 @@ final class AppModel: ObservableObject {
         return (meetingId, pwd)
     }
 
+    // Zoom sign-in surface (broker OAuth). userZak on the join payload gives
+    // the join the signed-in account's privileges (host: no waiting room, no
+    // record-permission dance) — the product's designed flow.
+    @Published var zoomSignedIn = false
+    @Published var zoomOAuthStatus = ""
+    @Published var webinar = false
+    @Published var recentMeetings: [String] = []
+
+    func signInWithZoom() {
+        zoomOAuthStatus = "Waiting for the browser…"
+        Task { await ZoomOAuth.shared.beginSignIn() }
+    }
+
+    func signOutZoom() {
+        Task {
+            await ZoomOAuth.shared.signOut()
+            zoomSignedIn = false
+            zoomOAuthStatus = ""
+        }
+    }
+
+    func handleOAuthCallback(_ url: URL) {
+        Task {
+            let error = await ZoomOAuth.shared.handleCallback(url)
+            zoomOAuthStatus = error
+            zoomSignedIn = await ZoomOAuth.shared.signedIn
+            if error.isEmpty {
+                ShellLog.write("zoom sign-in complete")
+            } else {
+                pushWarning("zoom sign-in: \(error)")
+            }
+        }
+    }
+
+    func refreshZoomSignedIn() {
+        Task { zoomSignedIn = await ZoomOAuth.shared.signedIn }
+    }
+
+    func openInZoomApp() {
+        let trimmed = joinMeetingId.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let url = trimmed.lowercased().hasPrefix("http")
+            ? trimmed
+            : "https://zoom.us/j/" + trimmed
+        if let parsed = URL(string: url) {
+            NSWorkspace.shared.open(parsed)
+        }
+    }
+
     func joinZoom() {
         guard let bridge else { return }
         let target = Self.parseZoomTarget(joinMeetingId, fallbackPasscode: joinPasscode)
@@ -541,17 +602,27 @@ final class AppModel: ObservableObject {
         joinPasscode = parsedPasscode
         guard !meetingId.isEmpty, !joinInFlight else { return }
         joinInFlight = true
-        let payload: JSONObject = [
+        recentMeetings.removeAll { $0 == joinMeetingId }
+        recentMeetings.insert(joinMeetingId, at: 0)
+        recentMeetings = Array(recentMeetings.prefix(5))
+        var payload: JSONObject = [
             "meetingId": meetingId,
             "meetingNumber": meetingId,
             "passcode": parsedPasscode,
             "password": parsedPasscode,
             "displayName": displayName,
+            "webinar": webinar,
         ]
-        print("shell: joining meeting \(meetingId)")
+        ShellLog.write("joining meeting \(meetingId)")
         Task {
             defer { joinInFlight = false }
             do {
+                // Credentials BEFORE the request timer (the Windows shape):
+                // a fresh ZAK per join, never cached, never logged.
+                if let credentials = await ZoomOAuth.shared.ensureJoinCredentials(),
+                   let zak = credentials.userZak {
+                    payload["userZak"] = zak
+                }
                 let response = try await bridge.request(
                     ["type": "zoom-join", "payload": payload], timeout: 45)
                 if let snapshot = response["snapshot"] as? JSONObject {

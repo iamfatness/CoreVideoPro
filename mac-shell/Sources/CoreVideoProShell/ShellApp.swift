@@ -66,6 +66,7 @@ struct ShellApp: App {
             RootView()
                 .environmentObject(model)
                 .onAppear { model.start() }
+                .onOpenURL { url in model.handleOAuthCallback(url) }
                 .frame(minWidth: 1360, minHeight: 860)
                 .font(.grotesk(12))
                 .foregroundStyle(Studio.textPrimary)
@@ -990,76 +991,143 @@ struct OutputColumn: View {
 
 // ── Panes (tab pages) ────────────────────────────────────────────────────────
 
+// Zoom tab — composition per docs/design-reference/02-zoom.png: the
+// "Zoom connection" card (URL field · role name · Webinar), status lines,
+// Recent meetings, the Zoom-account sign-in block, Join Zoom / Open in Zoom
+// app, then the bordered "Zoom status" card. Status text is engine-reported
+// truth, never optimism.
 struct ZoomPane: View {
     @EnvironmentObject var model: AppModel
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Zoom").font(.headline)
-            TextField("Meeting ID or URL", text: $model.joinMeetingId)
-                .textFieldStyle(StudioFieldStyle())
-            HStack {
-                TextField("Passcode", text: $model.joinPasscode)
-                    .textFieldStyle(StudioFieldStyle())
-                Button("Join") { model.joinZoom() }
-                    .disabled(model.joinMeetingId.isEmpty)
-                Button("Leave") { model.leaveZoom() }
-            }
-            HStack {
-                Text("meeting: \(model.meetingState)")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Studio.secondary)
-                Spacer()
-                Text(model.rawMediaActive ? "raw media LIVE" : "raw media off")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(model.rawMediaActive ? Studio.accent : Studio.secondary)
-            }
-            Divider()
-            Text("PARTICIPANTS")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(Studio.secondary)
-            if model.roster.isEmpty {
-                Text("No participants yet.").font(.caption).foregroundStyle(Studio.secondary)
-            }
-            ForEach(model.roster) { participant in
-                HStack {
-                    Circle()
-                        .fill(participant.talking ? Studio.accent
-                                                  : Studio.secondary.opacity(0.4))
-                        .frame(width: 8, height: 8)
-                    Text(participant.name).font(.system(size: 12)).lineLimit(1)
-                    if participant.hasVideo {
-                        Image(systemName: "video.fill").font(.system(size: 9))
-                            .foregroundStyle(Studio.secondary)
-                    }
-                    if participant.muted {
-                        Image(systemName: "mic.slash.fill").font(.system(size: 9))
-                            .foregroundStyle(Studio.secondary)
-                    }
-                    Spacer()
-                    if model.isoRecordingEnabled,
-                       model.assignedIds.contains(participant.id) {
-                        Toggle("ISO", isOn: Binding(
-                            get: {
-                                model.isoSelectedSourceIds
-                                    .contains("zoom:" + participant.id)
-                            },
-                            set: { _ in
-                                model.toggleIsoSource("zoom:" + participant.id)
-                            }))
-                            .toggleStyle(.checkbox)
-                            .font(.system(size: 10))
-                    }
-                    Button(model.assignedIds.contains(participant.id)
-                           ? "Unassign" : "Assign") {
-                        model.toggleAssigned(participant)
-                    }
-                    .font(.caption)
-                }
-                .padding(.vertical, 2)
-            }
+    var inMeeting: Bool { model.meetingState == "in_meeting" }
+
+    var statusHeadline: String {
+        switch model.meetingState {
+        case "in_meeting": return "In meeting"
+        case "joining": return "Joining…"
+        case "error": return "Join failed"
+        default: return "Ready"
         }
-        .modifier(StudioPanel())
+    }
+
+    var statusDetail: String {
+        if inMeeting {
+            return model.rawMediaActive
+                ? "Connected — raw media live"
+                : "Connected — capture is off"
+        }
+        return model.meetingState == "error" ? "See Diagnose for the engine warning"
+                                             : "Not connected"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Zoom connection").font(.grotesk(14, .semibold))
+                HStack(spacing: 8) {
+                    TextField("https://zoom.us/j/123456789", text: $model.joinMeetingId)
+                        .textFieldStyle(StudioFieldStyle())
+                        .frame(width: 220)
+                    TextField("CoreVideo Producer", text: $model.displayName)
+                        .textFieldStyle(StudioFieldStyle())
+                        .frame(width: 170)
+                    Toggle("Webinar", isOn: $model.webinar)
+                        .toggleStyle(.checkbox)
+                        .font(.grotesk(12))
+                }
+                TextField("Passcode (from the link when present)",
+                          text: $model.joinPasscode)
+                    .textFieldStyle(StudioFieldStyle())
+                    .frame(width: 220)
+                Text(statusHeadline)
+                    .font(.grotesk(12, .medium))
+                    .foregroundStyle(inMeeting || model.meetingState == "joining"
+                                     ? Studio.accent
+                                     : model.meetingState == "error" ? Studio.red
+                                                                     : Studio.accent)
+                Text(statusDetail).font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                Text("Recent meetings").font(.grotesk(13, .semibold))
+                Menu {
+                    if model.recentMeetings.isEmpty {
+                        Button("No recent meetings") {}.disabled(true)
+                    }
+                    ForEach(model.recentMeetings, id: \.self) { recent in
+                        Button(recent) { model.joinMeetingId = recent }
+                    }
+                } label: {
+                    Text(model.recentMeetings.first ?? "Select a recent meeting")
+                        .font(.grotesk(12))
+                        .lineLimit(1)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 220)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(Studio.border, lineWidth: 1))
+                Text("Zoom account").font(.grotesk(13, .semibold))
+                Text("Sign in once, then join meetings directly from CoreVideo.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                if model.zoomSignedIn {
+                    HStack(spacing: 8) {
+                        Text("Signed in").font(.grotesk(12, .medium))
+                            .foregroundStyle(Studio.accent)
+                        Button("Sign out") { model.signOutZoom() }
+                            .buttonStyle(GhostButtonStyle())
+                    }
+                } else {
+                    Button("Sign in with Zoom") { model.signInWithZoom() }
+                        .buttonStyle(AccentButtonStyle())
+                    if !model.zoomOAuthStatus.isEmpty {
+                        Text(model.zoomOAuthStatus).font(.grotesk(11))
+                            .foregroundStyle(Studio.secondary)
+                    }
+                }
+                HStack(spacing: 8) {
+                    if inMeeting {
+                        Button("Leave meeting") { model.leaveZoom() }
+                            .buttonStyle(GhostButtonStyle(tint: Studio.red))
+                    } else {
+                        Button("Join Zoom") { model.joinZoom() }
+                            .buttonStyle(AccentButtonStyle())
+                            .disabled(model.joinMeetingId.isEmpty)
+                    }
+                    Button("Open in Zoom app") { model.openInZoomApp() }
+                        .buttonStyle(GhostButtonStyle())
+                        .disabled(model.joinMeetingId.isEmpty)
+                }
+                if !model.zoomSignedIn {
+                    Text("Sign in with Zoom to join as your account — "
+                         + "guest joins wait in the waiting room.")
+                        .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                }
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Zoom status").font(.grotesk(14, .semibold))
+                Text(inMeeting ? "In the meeting — \(model.roster.count) in room"
+                               : "Ready to join Zoom")
+                    .font(.grotesk(12, .medium))
+                    .foregroundStyle(inMeeting ? Studio.accent : Studio.textPrimary)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Studio.accent.opacity(0.6), lineWidth: 1))
+                Text(inMeeting
+                     ? "Assign participants from the Studio room rail; "
+                     + "press Capture to start raw media."
+                     : "Enter a meeting link or ID above when you are ready to connect.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+        }
+        .frame(maxWidth: 520, alignment: .leading)
     }
 }
 
