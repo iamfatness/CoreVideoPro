@@ -29,7 +29,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -60,6 +63,13 @@ uint32_t previewPixelSignature(const ProgramFramePreviewPixels& preview) {
 class MetalCompositor final : public ICompositor {
  public:
   ~MetalCompositor() override {
+    tapStop_.store(true, std::memory_order_release);
+    if (tapWake_) {
+      dispatch_semaphore_signal(tapWake_);
+    }
+    if (tapThread_.joinable()) {
+      tapThread_.join();
+    }
     program_.release();
     multiview_.release();
     preview_.release();
@@ -121,6 +131,9 @@ class MetalCompositor final : public ICompositor {
     if (fullTick) {
       readPreviewViaGpuDownscale(frame.preview);
       frame.programPixelSignature = previewPixelSignature(frame.preview);
+      if (renderPlan.fullProgramReadback) {
+        harvestAndKickFullResTap(frame);
+      }
     }
 
     // Evict cached source textures no pass has sampled recently (participant
@@ -377,6 +390,84 @@ class MetalCompositor final : public ICompositor {
                     fromRegion:MTLRegionMake2D(0, 0, static_cast<NSUInteger>(previewScaleWidth_),
                                                static_cast<NSUInteger>(previewScaleHeight_))
                    mipmapLevel:0];
+  }
+
+  // The GPU-tap analogue (Windows vcamTapLoop economics, Metal-shaped):
+  // the render tick ONLY kicks a GPU blit program->tap texture; a dedicated
+  // tap THREAD does the CPU readback off every core lock and publishes the
+  // finished buffer; the next full tick SWAPS it into programFullBgra
+  // (vector swap — zero copies under coreMutex). One frame of latency,
+  // no stalls. (First attempt did getBytes inline under coreMutex and
+  // starved requests again — 8MB CPU reads never belong on the core lock.)
+  void harvestAndKickFullResTap(ProgramFrame& frame) {
+    if (!tapTex_ || tapWidth_ != targetWidth_ || tapHeight_ != targetHeight_) {
+      MTLTextureDescriptor* desc = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                       width:static_cast<NSUInteger>(targetWidth_)
+                                      height:static_cast<NSUInteger>(targetHeight_)
+                                   mipmapped:NO];
+      desc.usage = MTLTextureUsageShaderRead;
+      desc.storageMode = MTLStorageModeShared;
+      tapTex_ = [device_ newTextureWithDescriptor:desc];
+      tapWidth_ = targetWidth_;
+      tapHeight_ = targetHeight_;
+    }
+    if (!tapTex_) {
+      return;
+    }
+    ensureTapThread();
+    {
+      std::lock_guard<std::mutex> lock(tapMutex_);
+      if (tapPublishedGeneration_ != tapConsumedGeneration_ && !tapPublished_.empty()) {
+        frame.programFullBgra.width = tapWidth_;
+        frame.programFullBgra.height = tapHeight_;
+        frame.programFullBgra.bgra.swap(tapPublished_);
+        tapConsumedGeneration_ = tapPublishedGeneration_;
+      }
+    }
+    @autoreleasepool {
+      id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
+      id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+      [blit copyFromTexture:program_.texture toTexture:tapTex_];
+      [blit endEncoding];
+      __block dispatch_semaphore_t wake = tapWake_;
+      [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+        dispatch_semaphore_signal(wake);
+      }];
+      [commandBuffer commit];
+    }
+  }
+
+  void ensureTapThread() {
+    if (tapThread_.joinable()) {
+      return;
+    }
+    tapWake_ = dispatch_semaphore_create(0);
+    tapStop_ = false;
+    tapThread_ = std::thread([this] {
+      std::vector<uint8_t> scratch;
+      while (!tapStop_.load(std::memory_order_acquire)) {
+        dispatch_semaphore_wait(tapWake_, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4));
+        if (tapStop_.load(std::memory_order_acquire)) {
+          break;
+        }
+        id<MTLTexture> texture = tapTex_;
+        const int width = tapWidth_;
+        const int height = tapHeight_;
+        if (!texture || width <= 0 || height <= 0) {
+          continue;
+        }
+        scratch.resize(static_cast<size_t>(width) * height * 4u);
+        [texture getBytes:scratch.data()
+              bytesPerRow:static_cast<NSUInteger>(width) * 4
+               fromRegion:MTLRegionMake2D(0, 0, static_cast<NSUInteger>(width),
+                                          static_cast<NSUInteger>(height))
+              mipmapLevel:0];
+        std::lock_guard<std::mutex> lock(tapMutex_);
+        tapPublished_.swap(scratch);
+        ++tapPublishedGeneration_;
+      }
+    });
   }
 
   void readTargetBgra() {
@@ -983,6 +1074,16 @@ class MetalCompositor final : public ICompositor {
   id<MTLTexture> previewScaleTex_ = nil;
   int previewScaleWidth_ = 0;
   int previewScaleHeight_ = 0;
+  id<MTLTexture> tapTex_ = nil;
+  int tapWidth_ = 0;
+  int tapHeight_ = 0;
+  std::thread tapThread_;
+  std::atomic<bool> tapStop_{false};
+  dispatch_semaphore_t tapWake_ = nil;
+  std::mutex tapMutex_;
+  std::vector<uint8_t> tapPublished_;
+  uint64_t tapPublishedGeneration_ = 0;
+  uint64_t tapConsumedGeneration_ = 0;
   std::vector<uint8_t> readbackBgra_;
   std::unordered_map<std::string, SourceTex> sourceTextures_;
   OverlayTex overlayTex_;
