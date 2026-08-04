@@ -148,8 +148,59 @@ final class AppModel: ObservableObject {
     private var programOutputStarted = false
     private var joinInFlight = false
 
+    private var lastSavedPrefs = ShellPrefs()
+
+    private func currentPrefs() -> ShellPrefs {
+        var prefs = ShellPrefs()
+        prefs.joinMeetingId = joinMeetingId
+        prefs.displayName = displayName
+        prefs.monitorEnabled = monitorEnabled
+        prefs.monitorVolume = monitorVolume
+        prefs.isoRecordingEnabled = isoRecordingEnabled
+        prefs.isoSelectedSourceIds = isoSelectedSourceIds.sorted()
+        prefs.autoTakeEnabled = autoTakeEnabled
+        prefs.autoConfidenceThreshold = autoConfidenceThreshold
+        prefs.autoHoldSeconds = autoHoldSeconds
+        prefs.lowerThirdName = lowerThirdName
+        prefs.lowerThirdTitle = lowerThirdTitle
+        prefs.lowerThirdPosition = lowerThirdPosition
+        prefs.logoBugAssetId = logoBug?.id ?? ""
+        return prefs
+    }
+
+    private func restorePrefs() {
+        let prefs = ShellPrefs.load()
+        joinMeetingId = prefs.joinMeetingId
+        displayName = prefs.displayName
+        monitorEnabled = prefs.monitorEnabled
+        monitorVolume = prefs.monitorVolume
+        isoRecordingEnabled = prefs.isoRecordingEnabled
+        isoSelectedSourceIds = Set(prefs.isoSelectedSourceIds)
+        autoTakeEnabled = prefs.autoTakeEnabled
+        autoConfidenceThreshold = prefs.autoConfidenceThreshold
+        autoHoldSeconds = prefs.autoHoldSeconds
+        lowerThirdName = prefs.lowerThirdName
+        lowerThirdTitle = prefs.lowerThirdTitle
+        lowerThirdPosition = prefs.lowerThirdPosition
+        if !prefs.logoBugAssetId.isEmpty {
+            logoBug = mediaAssets.first { $0.id == prefs.logoBugAssetId }
+        }
+        lastSavedPrefs = prefs
+    }
+
     func start() {
         refreshMediaBin()
+        restorePrefs()  // after the bin so the logo bug can re-resolve
+        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let prefs = self.currentPrefs()
+                if prefs != self.lastSavedPrefs {
+                    prefs.save()
+                    self.lastSavedPrefs = prefs
+                }
+            }
+        }
         let paths = ShellPaths.resolve()
         guard let corePath = paths.corePath else {
             status = .failed("corevideo-native not found — run scripts/run-mac-shell.sh")
