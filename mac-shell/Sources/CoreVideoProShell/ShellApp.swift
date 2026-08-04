@@ -61,6 +61,8 @@ struct RootView: View {
         VStack(spacing: 8) {
             HeaderBar()
             HStack(alignment: .top, spacing: 8) {
+                SceneRail()
+                    .frame(width: 200)
                 VStack(spacing: 8) {
                     DirectorRow()
                     MultiviewRow()
@@ -80,7 +82,7 @@ struct RootView: View {
 // The WinUI nav order. Tabs without a mac pane yet render disabled — same
 // rail, honest about what's ported.
 private let navRail: [(title: String, tab: StudioTab?)] = [
-    ("Zoom", .zoom), ("Sources", .sources), ("Scenes", nil), ("Routing", nil),
+    ("Zoom", .zoom), ("Sources", .sources), ("Scenes", .scenes), ("Routing", nil),
     ("Overlays", nil), ("Audio", .audio), ("Media", nil), ("Automation", nil),
     ("Diagnose", .diagnose),
 ]
@@ -163,6 +165,67 @@ struct ConnectionDot: View {
 
     var body: some View {
         Circle().fill(color).frame(width: 10, height: 10).help(help)
+    }
+}
+
+// ── Scene rail (mirrors the WinUI Studio-tab left rail) ──────────────────────
+
+struct SceneRail: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Scenes").font(.headline)
+            ForEach(model.scenes) { scene in
+                Button {
+                    model.selectPreviewScene(scene.id)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(scene.name).font(.system(size: 12, weight: .medium))
+                            Text(scene.layout)
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(Studio.secondary)
+                        }
+                        Spacer()
+                        if scene.id == model.programSceneId {
+                            SceneChip(label: "PGM", color: Color(red: 0.94, green: 0.66, blue: 0.36))
+                        } else if scene.id == model.previewSceneId {
+                            SceneChip(label: "PVW", color: Studio.accent)
+                        }
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 6)
+                        .fill(scene.id == model.previewSceneId
+                              ? Studio.accent.opacity(0.10) : Color.white.opacity(0.03)))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(
+                        scene.id == model.programSceneId
+                            ? Color(red: 0.94, green: 0.66, blue: 0.36).opacity(0.6)
+                            : scene.id == model.previewSceneId
+                                ? Studio.accent.opacity(0.5) : Studio.stroke,
+                        lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+            Text("Tap arms PVW — Take puts it on air")
+                .font(.system(size: 9))
+                .foregroundStyle(Studio.secondary.opacity(0.7))
+            Spacer()
+        }
+        .modifier(StudioPanel())
+    }
+}
+
+struct SceneChip: View {
+    let label: String
+    let color: Color
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.22)))
+            .foregroundStyle(color)
     }
 }
 
@@ -300,11 +363,15 @@ struct TransportBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ForEach(["Take", "Cut", "Fade"], id: \.self) { name in
-                Button(name) {}
-                    .disabled(true)
-                    .help("Scene transitions arrive with the Scenes tab")
-            }
+            // Take/Cut both hard-cut (the core has no transition engine —
+            // the Windows fade/dip/wipe labels are cosmetic too).
+            Button("Take") { model.take() }
+                .fontWeight(.semibold)
+                .disabled(model.previewSceneId.isEmpty
+                          || model.previewSceneId == model.programSceneId)
+            Button("Cut") { model.take() }
+                .disabled(model.previewSceneId.isEmpty
+                          || model.previewSceneId == model.programSceneId)
             Divider().frame(height: 22)
             Text("OUTPUTS")
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -345,6 +412,7 @@ struct RightRail: View {
             switch model.selectedTab {
             case .zoom: ZoomPane()
             case .sources: SourcesPane()
+            case .scenes: ScenesPane()
             case .audio: AudioPane()
             case .diagnose: DiagnosePane()
             }
@@ -466,18 +534,73 @@ struct SourcesPane: View {
     }
 }
 
+struct ScenesPane: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Scenes").font(.headline)
+            Text("Scene slots fill from assigned participants in roster order; "
+                 + "empty slots follow the active speaker.")
+                .font(.caption2).foregroundStyle(Studio.secondary)
+            let assigned = model.roster.filter { model.assignedIds.contains($0.id) }
+            Text("ASSIGNED (\(assigned.count))")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            if assigned.isEmpty {
+                Text("Assign participants on the Zoom tab to fill scene slots.")
+                    .font(.caption).foregroundStyle(Studio.secondary)
+            }
+            ForEach(Array(assigned.enumerated()), id: \.element.id) { index, participant in
+                HStack {
+                    Text("slot \(index + 1)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Studio.secondary)
+                    Text(participant.name).font(.system(size: 12)).lineLimit(1)
+                    Spacer()
+                }
+            }
+            Divider()
+            HStack {
+                Text("PGM: \(model.programSceneId.isEmpty ? "—" : model.programSceneId)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Color(red: 0.94, green: 0.66, blue: 0.36))
+                Text("PVW: \(model.previewSceneId.isEmpty ? "—" : model.previewSceneId)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Studio.accent)
+                Spacer()
+                Button("Take") { model.take() }
+                    .disabled(model.previewSceneId.isEmpty
+                              || model.previewSceneId == model.programSceneId)
+            }
+        }
+        .modifier(StudioPanel())
+    }
+}
+
 struct AudioPane: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Audio").font(.headline)
-            HStack {
-                Text("MASTER")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Studio.secondary)
-                MeterBar(level: model.masterLevel)
+            if model.monitorFeedbackRisk {
+                Text("⚠ Monitor output matches the loopback device — feedback risk")
+                    .font(.caption).foregroundStyle(.orange)
             }
+            if model.strips.isEmpty {
+                Text("No mix channels yet — audio strips appear once sources carry PCM.")
+                    .font(.caption).foregroundStyle(Studio.secondary)
+            }
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(model.strips) { strip in
+                        ChannelStrip(strip: strip)
+                    }
+                    MasterRail()
+                }
+            }
+            Divider()
             Toggle("Monitor (system default output)", isOn: Binding(
                 get: { model.monitorEnabled },
                 set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
@@ -487,10 +610,122 @@ struct AudioPane: View {
                     get: { model.monitorVolume },
                     set: { model.setMonitor(enabled: model.monitorEnabled, volume: $0) }),
                     in: 0...1)
+                if !model.monitorStatus.isEmpty {
+                    Text(model.monitorStatus)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(Studio.secondary)
+                }
             }
             .disabled(!model.monitorEnabled)
         }
         .modifier(StudioPanel())
+    }
+}
+
+struct ChannelStrip: View {
+    @EnvironmentObject var model: AppModel
+    let strip: AudioStrip
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(strip.id == "zoom-mix" ? "ZOOM MIX" : strip.id)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .lineLimit(1).truncationMode(.middle)
+                .frame(width: 84)
+            HStack(spacing: 4) {
+                Button("M") {
+                    model.editStrip(strip.id) { $0.muted.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .bold))
+                .frame(width: 22, height: 18)
+                .background(RoundedRectangle(cornerRadius: 3)
+                    .fill(strip.muted ? Color(red: 0.78, green: 0.21, blue: 0.18)
+                                      : Color.white.opacity(0.06)))
+                Button("S") {
+                    model.editStrip(strip.id) { $0.solo.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .bold))
+                .frame(width: 22, height: 18)
+                .background(RoundedRectangle(cornerRadius: 3)
+                    .fill(strip.solo ? Color(red: 0.78, green: 0.60, blue: 0.18)
+                                     : Color.white.opacity(0.06)))
+            }
+            HStack(spacing: 4) {
+                // Vertical fader (-24…+24 dB) beside the live meter.
+                Slider(value: Binding(
+                    get: { strip.manualGainDb },
+                    set: { value in model.editStrip(strip.id) { $0.manualGainDb = value } }),
+                    in: -24...24)
+                    .frame(width: 110)
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 28, height: 110)
+                VerticalMeter(level: strip.muted ? 0 : strip.outputLevel)
+                    .frame(width: 10, height: 110)
+            }
+            Text(String(format: "%+.1f dB", strip.manualGainDb))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            Text(strip.status)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(Studio.secondary.opacity(0.7))
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.03)))
+    }
+}
+
+struct MasterRail: View {
+    @EnvironmentObject var model: AppModel
+
+    var lufsLabel: String {
+        model.shortTermLufs <= -119 ? "—" : String(format: "%.1f", model.shortTermLufs)
+    }
+
+    var truePeakLabel: String {
+        model.truePeakDbfs <= -119 ? "—" : String(format: "TP %.1f dBFS", model.truePeakDbfs)
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text("MASTER")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            Text(lufsLabel)
+                .font(.system(size: 20, weight: .semibold, design: .monospaced))
+            Text("LUFS · \(truePeakLabel)")
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            VerticalMeter(level: model.masterLevel)
+                .frame(width: 14, height: 96)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(model.limiterActive ? Color.red : Studio.secondary.opacity(0.3))
+                    .frame(width: 7, height: 7)
+                Text("LIM").font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(Studio.secondary)
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
+    }
+}
+
+struct VerticalMeter: View {
+    let level: Int  // 0..100
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.5))
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(level > 90 ? Color.red : level > 70 ? .yellow : Studio.accent)
+                    .frame(height: geometry.size.height
+                        * CGFloat(min(100, max(0, level))) / 100.0)
+            }
+        }
+        .animation(.linear(duration: 0.08), value: level)
     }
 }
 
