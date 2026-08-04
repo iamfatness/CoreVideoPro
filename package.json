@@ -19,7 +19,7 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --config vite.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:gate": "npm run typecheck && npm run test && npm run test:native-core && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke",
+    "test:gate": "npm run typecheck && npm run test && npm run test:native-core && npm run test:show-engine && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke",
     "test:native-core": "npm run test --workspace native-core",
     "test:show-engine": "npm run test --workspace show-engine",
     "test:native-media-core": "powershell -ExecutionPolicy Bypass -File scripts/test-native.ps1",

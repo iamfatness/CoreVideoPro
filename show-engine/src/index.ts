@@ -31,5 +31,10 @@ export {
 } from "./mukanaClient.js";
 export { OverrideDb, type OverrideRecord } from "./overrideDb.js";
 export { buildPanelistDb } from "./panelistDb.js";
-export { LiveSlots, type LiveSlotsOptions, type LiveSlotsState } from "./liveSlots.js";
+export {
+  LiveSlots,
+  LiveSlotsRestoreError,
+  type LiveSlotsOptions,
+  type LiveSlotsState
+} from "./liveSlots.js";
 export { StateStore, type ShowState, type StateFs } from "./persistence.js";

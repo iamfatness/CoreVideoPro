@@ -4,8 +4,14 @@
  * during a live show, so saves are atomic: write a temp file, then rename over
  * the target. A crash mid-save leaves the previous good state intact.
  *
- * Loads are forgiving by design — a missing or unreadable state file yields
- * null so the engine starts clean, rather than refusing to boot before a show.
+ * Loads are forgiving by design — a missing, unreadable, or malformed state
+ * file yields null so the engine starts clean, rather than refusing to boot
+ * before a show. `load()` only validates that the document is shaped like a
+ * `ShowState` (an object with a numeric `slots.capacity`, an array
+ * `slots.seats`, and an object `overrides`); it does not look inside
+ * individual seat or panelist records. Deeper roster coherence is
+ * `LiveSlots.fromJSON`'s job — see its doc comment and
+ * `LiveSlotsRestoreError`.
  */
 
 import type { LiveSlotsState } from "./liveSlots.js";
@@ -52,7 +58,15 @@ export class StateStore {
     await this.fs.rename(tempPath, this.path);
   }
 
-  /** Read persisted state, or null when it is absent, corrupt, or a foreign version. */
+  /**
+   * Read persisted state, or null when it is absent, corrupt, a foreign
+   * version, or not shaped like a `ShowState`. This is a shallow structural
+   * check only — `slots` must be an object with a numeric `capacity` and an
+   * array `seats`, and `overrides` must be an object. It deliberately does
+   * not look inside individual seat or panelist records; that coherence
+   * check belongs to `LiveSlots.fromJSON`, which throws a catchable
+   * `LiveSlotsRestoreError` on a broken roster rather than returning null.
+   */
   async load(): Promise<ShowState | null> {
     let content: string;
     try {
@@ -71,7 +85,12 @@ export class StateStore {
     if (typeof parsed !== "object" || parsed === null) return null;
     const candidate = parsed as Partial<ShowState>;
     if (candidate.version !== STATE_VERSION) return null;
+
     if (typeof candidate.slots !== "object" || candidate.slots === null) return null;
+    const slots = candidate.slots as Partial<LiveSlotsState>;
+    if (typeof slots.capacity !== "number") return null;
+    if (!Array.isArray(slots.seats)) return null;
+
     if (typeof candidate.overrides !== "object" || candidate.overrides === null) return null;
 
     return candidate as ShowState;

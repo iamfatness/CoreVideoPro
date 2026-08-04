@@ -175,4 +175,30 @@ describe("StateStore", () => {
     });
     expect(await store.load()).toBeNull();
   });
+
+  it("returns null when slots.seats is not an array", async () => {
+    const store = new StateStore("/show/state.json", {
+      fs: fakeFs({
+        "/show/state.json": JSON.stringify({
+          version: 1,
+          slots: { version: 1, capacity: 2, seats: "garbage" },
+          overrides: {}
+        })
+      })
+    });
+    expect(await store.load()).toBeNull();
+  });
+
+  it("returns null when slots.capacity is not a number", async () => {
+    const store = new StateStore("/show/state.json", {
+      fs: fakeFs({
+        "/show/state.json": JSON.stringify({
+          version: 1,
+          slots: { version: 1, capacity: "2", seats: [null, null] },
+          overrides: {}
+        })
+      })
+    });
+    expect(await store.load()).toBeNull();
+  });
 });

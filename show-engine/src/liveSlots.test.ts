@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LiveSlots } from "./liveSlots.js";
+import { LiveSlots, LiveSlotsRestoreError, type LiveSlotsState } from "./liveSlots.js";
 import type { Panelist } from "./contracts.js";
 
 function panelist(participantId: string, overrides: Partial<Panelist> = {}): Panelist {
@@ -222,6 +222,23 @@ describe("LiveSlots rebuild and refresh", () => {
     expect(slots.slotOf("new")).toBe(1);
   });
 
+  it("returns the panelists that did not fit instead of silently dropping them", () => {
+    const slots = makeSlots(2);
+    const overflow = slots.rebuild([
+      panelist("a"),
+      panelist("b"),
+      panelist("c"),
+      panelist("d")
+    ]);
+    expect(overflow.map((p) => p.participantId)).toEqual(["c", "d"]);
+    expect(slots.occupiedCount()).toBe(2);
+  });
+
+  it("returns an empty array when the whole roster fits", () => {
+    const slots = makeSlots(4);
+    expect(slots.rebuild([panelist("a"), panelist("b")])).toEqual([]);
+  });
+
   it("refreshes seated panelists in place without moving them", () => {
     const slots = makeSlots(4);
     slots.add(panelist("a"));
@@ -260,6 +277,25 @@ describe("LiveSlots rebuild and refresh", () => {
     const roles = slots.slots().map((entry) => entry.panelist?.role);
     expect(roles.filter((role) => role === "host")).toHaveLength(1);
   });
+
+  it("refresh resolves a duplicate host to the lowest slot, unlike add which favours the newest", () => {
+    const slots = makeSlots(2);
+    slots.add(panelist("a", { role: "host" }));
+    slots.add(panelist("b", { role: "host" }));
+    // add/replace: newest-wins — the just-seated slot 2 keeps the role.
+    expect(slots.slots()[0]?.panelist?.role).toBe("panelist");
+    expect(slots.slots()[1]?.panelist?.role).toBe("host");
+
+    slots.refresh(
+      new Map([
+        ["a", panelist("a", { role: "host" })],
+        ["b", panelist("b", { role: "host" })]
+      ])
+    );
+    // refresh: lowest-slot-wins — slot 1 keeps the role, slot 2 is demoted.
+    expect(slots.slots()[0]?.panelist?.role).toBe("host");
+    expect(slots.slots()[1]?.panelist?.role).toBe("panelist");
+  });
 });
 
 describe("LiveSlots persistence", () => {
@@ -281,6 +317,50 @@ describe("LiveSlots persistence", () => {
     const slots = makeSlots(4);
     expect(() =>
       LiveSlots.fromJSON(slots.toJSON(), { capacity: 8, utilityPinBase: 9000 })
-    ).toThrow(/capacity/);
+    ).toThrow(LiveSlotsRestoreError);
+  });
+
+  it("rejects a state whose seats length disagrees with its own capacity", () => {
+    const state: LiveSlotsState = {
+      version: 1,
+      capacity: 2,
+      seats: [null, null, null, null]
+    };
+    expect(() => LiveSlots.fromJSON(state, { capacity: 2, utilityPinBase: 9000 })).toThrow(
+      LiveSlotsRestoreError
+    );
+  });
+
+  it("rejects a seat whose slot field disagrees with its array index", () => {
+    const state: LiveSlotsState = {
+      version: 1,
+      capacity: 2,
+      seats: [null, { slot: 1, panelist: panelist("a") }]
+    };
+    expect(() => LiveSlots.fromJSON(state, { capacity: 2, utilityPinBase: 9000 })).toThrow(
+      LiveSlotsRestoreError
+    );
+  });
+
+  it("rejects a seat entry that is missing its panelist", () => {
+    const state = {
+      version: 1,
+      capacity: 2,
+      seats: [{ slot: 1 }, null]
+    } as unknown as LiveSlotsState;
+    expect(() => LiveSlots.fromJSON(state, { capacity: 2, utilityPinBase: 9000 })).toThrow(
+      LiveSlotsRestoreError
+    );
+  });
+
+  it("rejects a foreign LiveSlotsState version", () => {
+    const state = {
+      version: 2,
+      capacity: 2,
+      seats: [null, null]
+    } as unknown as LiveSlotsState;
+    expect(() => LiveSlots.fromJSON(state, { capacity: 2, utilityPinBase: 9000 })).toThrow(
+      LiveSlotsRestoreError
+    );
   });
 });
