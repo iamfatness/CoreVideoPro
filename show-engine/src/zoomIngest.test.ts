@@ -103,4 +103,51 @@ describe("ZoomIngest", () => {
     ingest.apply({ kind: "video", participantId: "a", on: true });
     expect(ingest.dirty).toBe(false);
   });
+
+  it("isolates published snapshot from internal mutations", () => {
+    const ingest = new ZoomIngest();
+    ingest.apply({ kind: "joined", participant: participant({ participantId: "a", videoOn: false }) });
+    ingest.commit();
+    const snapshot1 = ingest.snapshot();
+    // Mutate the snapshot object
+    snapshot1[0].videoOn = true;
+    snapshot1[0].rawName = "Hacked";
+    // The next snapshot should be unaffected
+    expect(ingest.snapshot()[0]).toMatchObject({ videoOn: false, rawName: "Guest" });
+  });
+
+  it("does not mark dirty when a duplicate joined event has identical data", () => {
+    const ingest = new ZoomIngest();
+    const p = participant({ participantId: "a", videoOn: true, audioOn: true });
+    ingest.apply({ kind: "joined", participant: p });
+    ingest.commit();
+    ingest.apply({ kind: "joined", participant: p });
+    expect(ingest.dirty).toBe(false);
+    expect(ingest.commit()).toBe(false);
+  });
+
+  it("does not mark dirty when a duplicate roster event has identical participants", () => {
+    const ingest = new ZoomIngest();
+    const roster = [participant({ participantId: "a" }), participant({ participantId: "b" })];
+    ingest.apply({ kind: "roster", participants: roster });
+    ingest.commit();
+    ingest.apply({ kind: "roster", participants: roster });
+    expect(ingest.dirty).toBe(false);
+    expect(ingest.commit()).toBe(false);
+  });
+
+  it("marks dirty when a roster event has genuine changes", () => {
+    const ingest = new ZoomIngest();
+    ingest.apply({
+      kind: "roster",
+      participants: [participant({ participantId: "a", videoOn: false })]
+    });
+    ingest.commit();
+    ingest.apply({
+      kind: "roster",
+      participants: [participant({ participantId: "a", videoOn: true })]
+    });
+    expect(ingest.dirty).toBe(true);
+    expect(ingest.commit()).toBe(true);
+  });
 });
