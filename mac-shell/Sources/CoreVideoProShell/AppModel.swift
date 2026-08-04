@@ -220,6 +220,23 @@ final class AppModel: ObservableObject {
     func start() {
         refreshMediaBin()
         restorePrefs()
+        // Self-snapshot harness: render our own window to PNG (no TCC, no
+        // focus games — AX/screen-recording automation proved unreliable) and
+        // exit. Pairs with COREVIDEO_SHELL_TAB for per-tab proof shots.
+        if let snapshotPath =
+            ProcessInfo.processInfo.environment["COREVIDEO_SHELL_SNAPSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                if let window = NSApplication.shared.windows.first,
+                   let view = window.contentView,
+                   let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    if let data = bitmap.representation(using: .png, properties: [:]) {
+                        try? data.write(to: URL(fileURLWithPath: snapshotPath))
+                    }
+                }
+                NSApplication.shared.terminate(nil)
+            }
+        }
         // Screenshot/verification harness: open on a named tab. Harness runs
         // skip the Keychain read — every ad-hoc rebuild is a new signing
         // identity and the access prompt would nag the operator.
