@@ -20,6 +20,17 @@ jobs:
       - name: Version sources agree with package.json
         run: node scripts/stamp-version.mjs --check
 
+  # Design-token gate for the macOS shell (docs/design-handoff-macos.md).
+  # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /
+  # SF Mono and raw system colors despite a faithful DesignSystem.swift —
+  # this keeps the brand fonts/tokens from silently regressing.
+  mac-shell-design-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Design-token lint (mac-shell)
+        run: bash scripts/lint-mac-design.sh
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

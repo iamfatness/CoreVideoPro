@@ -113,3 +113,52 @@ Reference screenshots of the running Windows app live in `docs/design-reference/
 
 Do not claim a screen matches without the side-by-side. If a reference screenshot
 for a screen is missing, ask for it rather than guessing.
+
+**Screenshots are now part of the deliverable:** commit the Mac build's own
+screenshots to `docs/design-reference/mac/` (same numbering: `01-studio.png` …)
+in every PR that touches the shell UI. The owner and the Windows-side session
+review fidelity from those — work without them is not reviewable and will be
+treated as unverified.
+
+## Audit addendum — 2026-08-04 (Windows-side review of the current Mac shell)
+
+`DesignSystem.swift` is faithful. Adoption is not: at audit time `ShellApp.swift`
+had **89 `.system(size:)` call sites (SF Pro), 38 `design: .monospaced` (SF Mono),
+and only 13 brand-font call sites**, plus raw `.yellow`/`.red`/`.white` and
+ad-hoc `Color.white.opacity(...)` fills, and a translucent `Studio.card =
+surface.opacity(0.6)` token that violates the opaque-surfaces rule. This is the
+single biggest reason the build "almost matches but feels wrong" — the fonts ARE
+the design language. CI now enforces this: `scripts/lint-mac-design.sh` (job
+`mac-shell-design-lint`) fails on those patterns; genuinely-fine lines (SF Symbol
+icon sizing only) may carry `// design-lint: allow`.
+
+## Owner punch list — 2026-08-04 (functional gaps, in priority order)
+
+Direct feedback from the owner running the current Mac build. Each item names
+its Windows ground truth — read the spec AND the reference screenshot first.
+
+1. **P0 — Multiviewer / program / preview renders a black box.** Pixels are the
+   product; nothing else matters until the multiview shows live video. Debug the
+   IOSurface path end-to-end (core `renderMultiview` publish → `SurfaceView`
+   present). Definition of done: a committed screenshot of the Mac build with
+   real moving-source pixels in the multiview canvas (fake engine or a capture
+   device both fine).
+2. **P1 — Zoom join / sign-in flow "isn't good".** Mirror the Windows flow
+   exactly (`02-zoom.png`, `Views/*` Zoom setup): URL/ID field with placeholder,
+   role label, Webinar checkbox, Recent meetings dropdown, "Sign in with Zoom"
+   accent button, "Join Zoom" + "Open in Zoom app", and the bordered
+   "Ready to join Zoom" status card. Status text must reflect engine-reported
+   truth, never optimism.
+3. **P1 — Routing tab is missing** (currently a disabled pill). Port it per
+   `docs/routing-ux-spec.md` + `04-routing.png`.
+4. **P1 — Sources tab lacks the multiview routing controls.** Ground truth:
+   `docs/sources-redesign-spec.md` + `03-sources.png` — show-input assignment
+   and routing are what make the Sources tab the operator's patch bay.
+5. **P1 — Audio tab "is not good".** Ground truth: `docs/audio-tab-redesign.md`,
+   `docs/audio-overhaul-spec.md`, `06-audio.png`: SHOW/ROUTING/SETUP pills,
+   channel strip with GATE/COMP/EQ response curves, pan + MUTE/S + fader strips,
+   MASTER LUFS meter panel with Monitor toggle. Match the reference screenshot
+   composition, not a generic mixer.
+6. **P2 — Design-token sweep**: make `mac-shell-design-lint` green (see the
+   audit addendum above), replace `Studio.card` with an opaque token, and adopt
+   `MonoLabel`/`MonoChip` consistently for every uppercase label.
