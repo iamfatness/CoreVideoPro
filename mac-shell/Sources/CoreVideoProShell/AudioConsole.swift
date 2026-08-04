@@ -43,13 +43,10 @@ struct AudioPane: View {
             }
             switch surface {
             case "ROUTING":
-                Text("Audio routing matrix arrives with the bus editor — "
-                     + "sends currently follow the default topology "
-                     + "(sources → master/pgm/stream/mon).")
-                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
-                    .padding(20)
+                AudioRoutingSurface()
             case "SETUP":
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 12) {
+                    MasteringRack()
                     Text("Monitor output").font(.grotesk(13, .semibold))
                     Toggle("Monitor (system default output)", isOn: Binding(
                         get: { model.monitorEnabled },
@@ -419,6 +416,215 @@ struct SegmentedMeter: View {
                 context.fill(Path(rect),
                              with: .color(lit ? color : Studio.surfaceRaised))
             }
+        }
+    }
+}
+
+
+// Audio routing: a gain crosspoint matrix (routing-ux-spec §2b — every cell
+// carries on/off AND a level). Hydrated from the CORE's sends, never from
+// client defaults; select-never-destroys with an explicit Remove.
+struct AudioRoutingSurface: View {
+    @EnvironmentObject var model: AppModel
+
+    var sources: [(id: String, label: String)] {
+        model.strips.map { strip in
+            (strip.id, strip.id == "zoom-mix" ? "Zoom mix"
+                : strip.id == "local-machine-audio" ? "Local machine audio" : strip.id)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Every crosspoint carries a level. Click to route or select; "
+                 + "gain edits apply to the selected send.")
+                .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            if sources.isEmpty {
+                Text("Sources appear here once channels carry PCM.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.textDim)
+            }
+            Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                GridRow {
+                    Color.clear.frame(width: 150, height: 14)
+                    ForEach(AppModel.routingBuses, id: \.self) { bus in
+                        MonoLabel(bus).frame(width: 62)
+                    }
+                }
+                ForEach(sources, id: \.id) { source in
+                    GridRow {
+                        Text(source.label).font(.grotesk(12)).lineLimit(1)
+                            .frame(width: 150, alignment: .leading)
+                            .padding(.vertical, 4).padding(.leading, 6)
+                            .background(Rectangle().fill(Studio.surface))
+                        ForEach(AppModel.routingBuses, id: \.self) { bus in
+                            let gain = model.sendGain(source: source.id, bus: bus)
+                            let selected = model.selectedSend?.source == source.id
+                                && model.selectedSend?.bus == bus
+                            Button {
+                                model.selectOrRouteSend(source: source.id, bus: bus)
+                            } label: {
+                                Text(gain.map { String(format: "%.1f", $0) } ?? "·")
+                                    .font(.plexMono(9, gain != nil ? .semibold : .regular))
+                                    .foregroundStyle(gain != nil ? Studio.accent
+                                                                 : Studio.secondary)
+                                    .frame(maxWidth: .infinity).frame(height: 24)
+                                    .background(Rectangle().fill(
+                                        gain != nil ? Studio.accent.opacity(0.16)
+                                                    : Studio.field))
+                                    .overlay(Rectangle().stroke(
+                                        selected ? Studio.textPrimary
+                                            : gain != nil ? Studio.accent.opacity(0.7)
+                                                          : Studio.border,
+                                        lineWidth: selected ? 2 : 1))
+                            }
+                            .buttonStyle(.plain)
+                            .frame(width: 62)
+                        }
+                    }
+                }
+            }
+            if let selected = model.selectedSend,
+               let gain = model.sendGain(source: selected.source, bus: selected.bus) {
+                HStack(spacing: 8) {
+                    Text("\(selected.source) → \(selected.bus)")
+                        .font(.grotesk(12, .medium))
+                    Slider(value: Binding(
+                        get: { gain },
+                        set: { value in
+                            model.setSendGain(source: selected.source,
+                                              bus: selected.bus, gainDb: value)
+                        }), in: -60...10)
+                        .frame(width: 220)
+                    Text(String(format: "%.1f dB", gain))
+                        .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                    Button("Remove route") {
+                        model.removeSend(source: selected.source, bus: selected.bus)
+                    }
+                    .buttonStyle(GhostButtonStyle(tint: Studio.red))
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(Studio.border, lineWidth: 1))
+            }
+        }
+    }
+}
+
+// Master-bus mastering rack. Stages render in DSP order; the engage opacity
+// mirrors the exact neutral-bypass condition (honesty rule: dim == a no-op).
+struct MasteringRack: View {
+    @EnvironmentObject var model: AppModel
+
+    var params: MasteringParams { model.mastering }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Master rack").font(.grotesk(13, .semibold))
+                Toggle("", isOn: Binding(
+                    get: { params.enabled },
+                    set: { value in model.editMastering { $0.enabled = value } }))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+                Text(params.enabled ? "MASTER IN" : "BYPASS")
+                    .font(.plexMono(9, .semibold))
+                    .foregroundStyle(params.enabled ? Studio.accent : Studio.textDim)
+                Spacer()
+                if params.enabled, abs(model.masteringRideDb) > 0.05 {
+                    Text(String(format: "ride %+.1f dB", model.masteringRideDb))
+                        .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                }
+            }
+            HStack(alignment: .top, spacing: 8) {
+                stage("INPUT", engaged: abs(params.inputGainDb) > 0.05) {
+                    knob("Gain", value: Binding(
+                        get: { params.inputGainDb },
+                        set: { v in model.editMastering { $0.inputGainDb = v } }),
+                        in: -12...12, unit: "dB")
+                }
+                stage("FILTERS", engaged: params.highPassHz > 20) {
+                    knob("Low cut", value: Binding(
+                        get: { params.highPassHz },
+                        set: { v in model.editMastering { $0.highPassHz = v } }),
+                        in: 0...200, unit: "Hz")
+                }
+                stage("TONE", engaged: abs(params.lowShelfDb) > 0.05
+                      || abs(params.presenceDb) > 0.05 || abs(params.highShelfDb) > 0.05) {
+                    knob("Low", value: Binding(
+                        get: { params.lowShelfDb },
+                        set: { v in model.editMastering { $0.lowShelfDb = v } }),
+                        in: -6...6, unit: "dB")
+                    knob("Presence", value: Binding(
+                        get: { params.presenceDb },
+                        set: { v in model.editMastering { $0.presenceDb = v } }),
+                        in: -6...6, unit: "dB")
+                    knob("Air", value: Binding(
+                        get: { params.highShelfDb },
+                        set: { v in model.editMastering { $0.highShelfDb = v } }),
+                        in: -6...6, unit: "dB")
+                }
+                stage("RIDE", engaged: params.maxRideDb > 0.05) {
+                    knob("Target", value: Binding(
+                        get: { params.targetLufs },
+                        set: { v in model.editMastering { $0.targetLufs = v } }),
+                        in: -24...(-9), unit: "LUFS")
+                    knob("Max ride", value: Binding(
+                        get: { params.maxRideDb },
+                        set: { v in model.editMastering { $0.maxRideDb = v } }),
+                        in: 0...12, unit: "dB")
+                }
+                stage("GLUE", engaged: params.glueAmount > 0.005) {
+                    knob("Amount", value: Binding(
+                        get: { params.glueAmount },
+                        set: { v in model.editMastering { $0.glueAmount = v } }),
+                        in: 0...1, unit: "")
+                }
+                stage("WIDTH", engaged: abs(params.stereoWidth - 1) > 0.005) {
+                    knob("Width", value: Binding(
+                        get: { params.stereoWidth },
+                        set: { v in model.editMastering { $0.stereoWidth = v } }),
+                        in: 0...2, unit: "×")
+                }
+                stage("CEILING", engaged: true) {
+                    knob("True peak", value: Binding(
+                        get: { params.ceilingDbfs },
+                        set: { v in model.editMastering { $0.ceilingDbfs = v } }),
+                        in: -6...(-0.1), unit: "dBFS")
+                }
+            }
+            .opacity(params.enabled ? 1 : 0.5)
+            .disabled(!params.enabled)
+        }
+    }
+
+    func stage(_ title: String, engaged: Bool,
+               @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            MonoLabel(title, dim: !engaged)
+            content()
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(engaged ? Studio.accent.opacity(0.35) : Studio.border, lineWidth: 1))
+        .opacity(engaged ? 1 : 0.65)
+    }
+
+    func knob(_ label: String, value: Binding<Double>,
+              in range: ClosedRange<Double>, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 3) {
+                Text(label).font(.plexMono(9)).foregroundStyle(Studio.secondary)
+                Spacer()
+                Text(unit.isEmpty
+                     ? String(format: "%.2f", value.wrappedValue)
+                     : String(format: "%.1f %@", value.wrappedValue, unit))
+                    .font(.plexMono(9)).foregroundStyle(Studio.textPrimary)
+            }
+            Slider(value: value, in: range)
         }
     }
 }
