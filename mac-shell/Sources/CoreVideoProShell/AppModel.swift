@@ -47,11 +47,27 @@ struct SceneRoute {
 }
 
 // Built-in layouts with rects lifted from SceneCanvasLayoutService (single /
-// two-up grid with 0.02 gap / pip full-frame + 0.28 inset).
+// two-up grid with 0.02 gap / pip full-frame + 0.28 inset). `layers` is the
+// operator's edited canvas: empty = derive from the layout preset + slots
+// (the previous behavior), non-empty = the canvas editor owns this scene.
 struct SceneDef: Identifiable {
     let id: String
     let name: String
     let layout: String
+    var layers: [SceneLayer] = []
+}
+
+// One canvas layer: a slot binding plus its normalized rect/fit/opacity —
+// the SceneCanvasLayerViewModel fields the core actually parses.
+struct SceneLayer: Identifiable, Equatable {
+    let id: String
+    var slotId: Int?          // nil = follow the active speaker
+    var x = 0.0
+    var y = 0.0
+    var width = 1.0
+    var height = 1.0
+    var fitMode = "fill"      // fit | fill | stretch
+    var opacity = 1.0         // [0, 1]
 }
 
 struct CaptureDeviceRow: Identifiable, Equatable {
@@ -931,10 +947,49 @@ final class AppModel: ObservableObject {
     private func buildRoutes(for sceneId: String) -> [JSONObject] {
         guard let scene = scenes.first(where: { $0.id == sceneId }),
               let rects = Self.layoutRects[scene.layout] else { return [] }
-        // Scene slots fill from the show-input slots in slot order (zoom AND
-        // capture); empty slots follow the active speaker so a scene is never
-        // a black hole.
         let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow }
+        // An edited canvas OWNS its scene: layers carry their own rects, fit
+        // and opacity, and bind to a slot (nil = active speaker).
+        if !scene.layers.isEmpty {
+            var edited: [JSONObject] = scene.layers.enumerated().map { index, layer in
+                var route = SceneRoute(
+                    routeId: "\(sceneId)-layer-\(index)", mode: "active-speaker",
+                    participantId: nil, captureDeviceId: nil,
+                    rect: (layer.x, layer.y, layer.width, layer.height), zIndex: index)
+                if let slotId = layer.slotId,
+                   let slot = slots.first(where: { $0.id == slotId }),
+                   slot.kind != "unassigned" {
+                    if slot.kind == "zoom" {
+                        route.mode = "fixed"
+                        route.participantId = slot.sourceId
+                    } else {
+                        route.mode = "capture-input"
+                        route.captureDeviceId = slot.sourceId
+                    }
+                }
+                var json = route.json
+                json["fitMode"] = layer.fitMode
+                json["opacity"] = max(0, min(1, layer.opacity))
+                return json
+            }
+            if let bug = logoBug {
+                let rect = MediaBin.bugRect(naturalWidth: bug.naturalWidth,
+                                            naturalHeight: bug.naturalHeight)
+                edited.append([
+                    "routeId": "\(sceneId)-bug", "mode": "fixed", "audioRole": "mix",
+                    "fitMode": "fit", "opacity": 1.0, "zIndex": edited.count,
+                    "mediaAssetId": bug.id, "mediaAssetName": bug.name,
+                    "mediaAssetKind": bug.kind, "mediaAssetPath": bug.filePath,
+                    "mediaPlaybackKey": "", "mediaAssetPlaying": false,
+                    "rect": ["x": rect.x, "y": rect.y,
+                             "width": rect.w, "height": rect.h],
+                ])
+            }
+            return edited
+        }
+        // Otherwise slots fill the layout preset in slot order (zoom AND
+        // capture); empty cells follow the active speaker so a scene is never
+        // a black hole.
         var routes: [JSONObject] = rects.enumerated().map { index, rect in
             var route = SceneRoute(
                 routeId: "\(sceneId)-\(index)", mode: "active-speaker",
@@ -968,6 +1023,64 @@ final class AppModel: ObservableObject {
             ])
         }
         return routes
+    }
+
+    // ── scene canvas editing ─────────────────────────────────────────────────
+
+    // Seed the editable layer list from the layout preset the scene already
+    // shows, so opening the editor never changes what is on screen.
+    func ensureLayers(for sceneId: String) {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }),
+              scenes[index].layers.isEmpty,
+              let rects = Self.layoutRects[scenes[index].layout] else { return }
+        let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow }
+        scenes[index].layers = rects.enumerated().map { slot, rect in
+            SceneLayer(id: "\(sceneId)-layer-\(slot)",
+                       slotId: slot < inShow.count ? inShow[slot].id : nil,
+                       x: rect.0, y: rect.1, width: rect.2, height: rect.3)
+        }
+    }
+
+    func updateLayer(sceneId: String, layerId: String,
+                     _ apply: (inout SceneLayer) -> Void) {
+        guard let sceneIndex = scenes.firstIndex(where: { $0.id == sceneId }),
+              let layerIndex = scenes[sceneIndex].layers
+                  .firstIndex(where: { $0.id == layerId }) else { return }
+        apply(&scenes[sceneIndex].layers[layerIndex])
+        syncScenes()
+    }
+
+    func addLayer(to sceneId: String) {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+        ensureLayers(for: sceneId)
+        let count = scenes[index].layers.count
+        scenes[index].layers.append(SceneLayer(
+            id: "\(sceneId)-layer-\(count)-\(Int(Date().timeIntervalSince1970))",
+            slotId: nil, x: 0.55, y: 0.55, width: 0.4, height: 0.4))
+        syncScenes()
+    }
+
+    func removeLayer(sceneId: String, layerId: String) {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+        scenes[index].layers.removeAll { $0.id == layerId }
+        syncScenes()
+    }
+
+    func moveLayer(sceneId: String, layerId: String, forward: Bool) {
+        guard let sceneIndex = scenes.firstIndex(where: { $0.id == sceneId }),
+              let from = scenes[sceneIndex].layers
+                  .firstIndex(where: { $0.id == layerId }) else { return }
+        let to = forward ? from + 1 : from - 1
+        guard scenes[sceneIndex].layers.indices.contains(to) else { return }
+        scenes[sceneIndex].layers.swapAt(from, to)
+        syncScenes()
+    }
+
+    // Back to the layout preset (drops the edited canvas).
+    func resetLayers(for sceneId: String) {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+        scenes[index].layers = []
+        syncScenes()
     }
 
     func selectPreviewScene(_ sceneId: String) {
