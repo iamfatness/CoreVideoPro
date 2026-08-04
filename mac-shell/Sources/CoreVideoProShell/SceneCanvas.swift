@@ -34,13 +34,41 @@ struct ScenesPane: View {
                 Button("Reset to preset") { model.resetLayers(for: sceneId) }
                     .buttonStyle(GhostButtonStyle())
                     .disabled(scene?.layers.isEmpty ?? true)
+                Button("Save") { model.saveScenes() }
+                    .buttonStyle(GhostButtonStyle(tint: Studio.accent))
+                Menu("Scene") {
+                    Button("New — fullscreen") { model.newScene(layout: "single") }
+                    Button("New — side by side") { model.newScene(layout: "two-up") }
+                    Button("New — picture in picture") { model.newScene(layout: "pip") }
+                    Divider()
+                    Button("Duplicate") { model.duplicateScene(sceneId) }
+                        .disabled(sceneId.isEmpty)
+                    Button("Delete") { model.deleteScene(sceneId) }
+                        .disabled(model.scenes.count <= 1)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
                 Button("Take") { model.take() }
                     .buttonStyle(AccentButtonStyle())
                     .disabled(model.previewSceneId.isEmpty
                               || model.previewSceneId == model.programSceneId)
             }
+            HStack(spacing: 8) {
+                Text("Name").font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                TextField("Scene name", text: Binding(
+                    get: { scene?.name ?? "" },
+                    set: { model.renameScene(sceneId, to: $0) }))
+                    .textFieldStyle(StudioFieldStyle())
+                    .frame(width: 220)
+                if !model.sceneSaveStatus.isEmpty {
+                    Text(model.sceneSaveStatus).font(.plexMono(10))
+                        .foregroundStyle(Studio.accent)
+                }
+                Spacer()
+            }
             Text("Editing the PREVIEW scene — program is untouched until Take. "
-                 + "Drag to move, drag the corner to resize.")
+                 + "Drag to move, drag the corner to resize. Scenes persist across "
+                 + "relaunches.")
                 .font(.grotesk(12)).foregroundStyle(Studio.secondary)
             HStack(alignment: .top, spacing: 10) {
                 CanvasEditor(sceneId: sceneId, selectedLayerId: $selectedLayerId)
@@ -61,6 +89,7 @@ struct CanvasEditor: View {
     let sceneId: String
     @Binding var selectedLayerId: String?
     @State private var dragOrigin: SceneLayer?
+    @State private var resizing = false
 
     var layers: [SceneLayer] {
         model.scenes.first { $0.id == sceneId }?.layers ?? []
@@ -102,18 +131,26 @@ struct CanvasEditor: View {
                             .frame(width: 12, height: 12)
                             .gesture(DragGesture()
                                 .onChanged { value in
-                                    if dragOrigin == nil { dragOrigin = layer }
+                                    if dragOrigin == nil {
+                                        dragOrigin = layer
+                                        resizing = true
+                                    }
                                     guard let origin = dragOrigin else { return }
                                     let width = max(0.08, min(1 - origin.x,
                                         origin.width + value.translation.width / size.width))
                                     let height = max(0.08, min(1 - origin.y,
                                         origin.height + value.translation.height / size.height))
-                                    model.updateLayer(sceneId: sceneId, layerId: layer.id) {
+                                    model.updateLayer(sceneId: sceneId, layerId: layer.id,
+                                                      sync: false) {
                                         $0.width = width
                                         $0.height = height
                                     }
                                 }
-                                .onEnded { _ in dragOrigin = nil })
+                                .onEnded { _ in
+                                    dragOrigin = nil
+                                    resizing = false
+                                    model.syncScenes()
+                                })
                     }
                     .frame(width: max(8, layer.width * size.width),
                            height: max(8, layer.height * size.height))
@@ -122,21 +159,29 @@ struct CanvasEditor: View {
                     .onTapGesture { selectedLayerId = layer.id }
                     .gesture(DragGesture()
                         .onChanged { value in
+                            // The resize grip owns its own drag; without this
+                            // guard the parent moved the layer at the same time.
+                            guard !resizing else { return }
                             if dragOrigin == nil {
                                 dragOrigin = layer
                                 selectedLayerId = layer.id
                             }
                             guard let origin = dragOrigin else { return }
                             let x = min(max(0, origin.x + value.translation.width / size.width),
-                                        1 - layer.width)
+                                        max(0, 1 - origin.width))
                             let y = min(max(0, origin.y + value.translation.height / size.height),
-                                        1 - layer.height)
-                            model.updateLayer(sceneId: sceneId, layerId: layer.id) {
+                                        max(0, 1 - origin.height))
+                            model.updateLayer(sceneId: sceneId, layerId: layer.id,
+                                              sync: false) {
                                 $0.x = x
                                 $0.y = y
                             }
                         }
-                        .onEnded { _ in dragOrigin = nil })
+                        .onEnded { _ in
+                            guard !resizing else { return }
+                            dragOrigin = nil
+                            model.syncScenes()
+                        })
                 }
                 if layers.isEmpty {
                     Text("This scene follows its layout preset. "

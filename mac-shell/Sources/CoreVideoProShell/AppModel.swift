@@ -17,6 +17,7 @@ enum StudioTab: String, CaseIterable {
     case audio = "Audio"
     case media = "Media"
     case automation = "Automation"
+    case settings = "Settings"
     case diagnose = "Diagnose"
 }
 
@@ -303,6 +304,16 @@ final class AppModel: ObservableObject {
         prefs.streamUrl = streamUrl
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
+        prefs.scenes = scenes.map { scene in
+            PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
+                           layers: scene.layers.map { layer in
+                               PersistedLayer(id: layer.id, slotId: layer.slotId,
+                                              x: layer.x, y: layer.y,
+                                              width: layer.width, height: layer.height,
+                                              fitMode: layer.fitMode,
+                                              opacity: layer.opacity)
+                           })
+        }
         return prefs
     }
 
@@ -326,6 +337,17 @@ final class AppModel: ObservableObject {
         streamUrl = prefs.streamUrl
         recentMeetings = prefs.recentMeetings
         webinar = prefs.webinar
+        if !prefs.scenes.isEmpty {
+            scenes = prefs.scenes.map { saved in
+                SceneDef(id: saved.id, name: saved.name, layout: saved.layout,
+                         layers: saved.layers.map { layer in
+                             SceneLayer(id: layer.id, slotId: layer.slotId,
+                                        x: layer.x, y: layer.y,
+                                        width: layer.width, height: layer.height,
+                                        fitMode: layer.fitMode, opacity: layer.opacity)
+                         })
+            }
+        }
         streamKey = StreamKeychain.load()
         lastSavedPrefs = prefs
     }
@@ -432,6 +454,12 @@ final class AppModel: ObservableObject {
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
             programSceneId = scenes[0].id
+        }
+        // Arm PREVIEW too (Windows parity — 01-studio shows both PGM and PVW
+        // populated at rest). Without a preview scene the core's hasPreviewScene
+        // gate is false and the multiviewer's PVW cell renders empty.
+        if previewSceneId.isEmpty {
+            previewSceneId = programSceneId
         }
         syncScenes()
         if let auto = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"],
@@ -899,6 +927,15 @@ final class AppModel: ObservableObject {
     // for every assigned participant; the compositor's fallback grid composes
     // whatever frames arrive.
     private func syncSpine() {
+        spineSyncTask?.cancel()
+        spineSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.pushSpine()
+        }
+    }
+
+    private func pushSpine() async {
         guard let bridge else { return }
         let participants: [JSONObject] = roster.map { participant in
             [
@@ -956,15 +993,13 @@ final class AppModel: ObservableObject {
             "warnings": [],
             "summary": "mac shell spine sync",
         ]
-        Task {
-            do {
-                _ = try await bridge.request([
-                    "type": "zoom-media-spine-sync", "spinePayload": payload,
-                    "elapsedMs": elapsedMs(),
-                ])
-            } catch {
-                pushWarning("assign failed: \(error.localizedDescription)")
-            }
+        do {
+            _ = try await bridge.request([
+                "type": "zoom-media-spine-sync", "spinePayload": payload,
+                "elapsedMs": elapsedMs(),
+            ])
+        } catch {
+            pushWarning("assign failed: \(error.localizedDescription)")
         }
     }
 
@@ -1075,13 +1110,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func updateLayer(sceneId: String, layerId: String,
+    // `sync: false` for live drag deltas — the gesture's onEnded syncs once.
+    func updateLayer(sceneId: String, layerId: String, sync: Bool = true,
                      _ apply: (inout SceneLayer) -> Void) {
         guard let sceneIndex = scenes.firstIndex(where: { $0.id == sceneId }),
               let layerIndex = scenes[sceneIndex].layers
                   .firstIndex(where: { $0.id == layerId }) else { return }
         apply(&scenes[sceneIndex].layers[layerIndex])
-        syncScenes()
+        if sync { syncScenes() }
     }
 
     func addLayer(to sceneId: String) {
@@ -1110,6 +1146,75 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
+    // Explicit save (prefs also autosave on the 5s change tick — this is the
+    // operator action, and it reports back).
+    @Published var sceneSaveStatus = ""
+
+    func saveScenes() {
+        let prefs = currentPrefs()
+        prefs.save()
+        lastSavedPrefs = prefs
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        sceneSaveStatus = "Saved \(formatter.string(from: Date()))"
+    }
+
+    func renameScene(_ sceneId: String, to name: String) {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+        scenes[index] = SceneDef(id: scenes[index].id, name: name,
+                                 layout: scenes[index].layout,
+                                 layers: scenes[index].layers)
+    }
+
+    func duplicateScene(_ sceneId: String) {
+        guard let source = scenes.first(where: { $0.id == sceneId }) else { return }
+        var name = source.name + " copy"
+        var suffix = 2
+        while scenes.contains(where: { $0.name == name }) {
+            name = source.name + " copy \(suffix)"
+            suffix += 1
+        }
+        let newId = source.id + "-copy-\(Int(Date().timeIntervalSince1970))"
+        scenes.append(SceneDef(id: newId, name: name, layout: source.layout,
+                               layers: source.layers.map { layer in
+                                   SceneLayer(id: newId + "-" + layer.id,
+                                              slotId: layer.slotId,
+                                              x: layer.x, y: layer.y,
+                                              width: layer.width, height: layer.height,
+                                              fitMode: layer.fitMode,
+                                              opacity: layer.opacity)
+                               }))
+        previewSceneId = newId
+        syncScenes()
+        saveScenes()
+    }
+
+    func newScene(layout: String) {
+        let newId = "scene-\(Int(Date().timeIntervalSince1970))"
+        var suffix = scenes.count + 1
+        var name = "Scene \(suffix)"
+        while scenes.contains(where: { $0.name == name }) {
+            suffix += 1
+            name = "Scene \(suffix)"
+        }
+        scenes.append(SceneDef(id: newId, name: name, layout: layout))
+        previewSceneId = newId
+        ensureLayers(for: newId)
+        syncScenes()
+        saveScenes()
+    }
+
+    func deleteScene(_ sceneId: String) {
+        guard scenes.count > 1 else { return }
+        scenes.removeAll { $0.id == sceneId }
+        if previewSceneId == sceneId { previewSceneId = "" }
+        if programSceneId == sceneId, let first = scenes.first {
+            programSceneId = first.id
+        }
+        syncScenes()
+        saveScenes()
+    }
+
     // Back to the layout preset (drops the edited canvas).
     func resetLayers(for sceneId: String) {
         guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
@@ -1134,7 +1239,23 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
+    private var sceneSyncTask: Task<Void, Never>?
+    private var spineSyncTask: Task<Void, Never>?
+
+    // Coalesced: UI gestures (canvas drags, slot edits) can fire per frame,
+    // and one full scene-graph request per delta starves the core's RPC queue
+    // until every command times out — the owner hit exactly that. Callers stay
+    // naive; the debounce is here.
     func syncScenes() {
+        sceneSyncTask?.cancel()
+        sceneSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.pushScenes()
+        }
+    }
+
+    private func pushScenes() async {
         guard let bridge else { return }
         var commands: [JSONObject] = []
         if !programSceneId.isEmpty {
@@ -1150,15 +1271,13 @@ final class AppModel: ObservableObject {
             ])
         }
         guard !commands.isEmpty else { return }
-        Task {
-            do {
-                _ = try await bridge.request([
-                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                    "commands": commands,
-                ])
-            } catch {
-                pushWarning("scene sync failed: \(error.localizedDescription)")
-            }
+        do {
+            _ = try await bridge.request([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": commands,
+            ])
+        } catch {
+            pushWarning("scene sync failed: \(error.localizedDescription)")
         }
     }
 

@@ -91,8 +91,11 @@ struct HeaderBar: View {
             TabPill(tab: .studio)
             GroupLabel("Setup")
             ForEach([StudioTab.zoom, .sources, .scenes, .routing], id: \.self) { TabPill(tab: $0) }
-            ForEach([StudioTab.overlays, .audio, .media, .automation, .diagnose],
-                    id: \.self) { TabPill(tab: $0) }
+            ForEach([StudioTab.overlays, .audio, .media, .automation], id: \.self) {
+                TabPill(tab: $0)
+            }
+            GroupLabel("Diagnose")
+            ForEach([StudioTab.diagnose, .settings], id: \.self) { TabPill(tab: $0) }
             Spacer()
             CapturePill()
             if model.meetingState == "in_meeting" {
@@ -698,6 +701,7 @@ struct TabPage: View {
                     case .audio: AudioPane()
                     case .media: MediaPane()
                     case .automation: AutomationPane()
+                    case .settings: SettingsPane()
                     case .diagnose: DiagnosePane()
                     }
                 }

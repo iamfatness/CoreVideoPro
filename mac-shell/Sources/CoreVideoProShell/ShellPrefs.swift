@@ -6,6 +6,25 @@
 
 import Foundation
 
+// A saved scene: identity + layout preset + the edited canvas layers.
+struct PersistedScene: Codable, Equatable {
+    var id = ""
+    var name = ""
+    var layout = "single"
+    var layers: [PersistedLayer] = []
+}
+
+struct PersistedLayer: Codable, Equatable {
+    var id = ""
+    var slotId: Int?
+    var x = 0.0
+    var y = 0.0
+    var width = 1.0
+    var height = 1.0
+    var fitMode = "fill"
+    var opacity = 1.0
+}
+
 struct ShellPrefs: Codable, Equatable {
     var version = 1
     var joinMeetingId = ""
@@ -23,6 +42,7 @@ struct ShellPrefs: Codable, Equatable {
     var logoBugAssetId = ""
     var streamUrl = "rtmp://a.rtmp.youtube.com/live2"  // key lives in the Keychain
     var recentMeetings: [String] = []  // most-recent first, capped at 5
+    var scenes: [PersistedScene] = []  // custom scenes survive relaunches
     var webinar = false
 
     static let path = NSHomeDirectory()
