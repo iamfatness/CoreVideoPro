@@ -116,4 +116,63 @@ describe("StateStore", () => {
     });
     await expect(store.save(state)).rejects.toThrow(/ENOSPC/);
   });
+
+  it("extracts parent directory for a bare filename", async () => {
+    const made: string[] = [];
+    const fs = fakeFs();
+    const store = new StateStore("state.json", {
+      fs: {
+        ...fs,
+        async mkdir(path) {
+          made.push(path);
+        }
+      }
+    });
+    await store.save(state);
+    expect(made).toEqual(["."]);
+  });
+
+  it("extracts parent directory for a root-level POSIX path", async () => {
+    const made: string[] = [];
+    const fs = fakeFs();
+    const store = new StateStore("/state.json", {
+      fs: {
+        ...fs,
+        async mkdir(path) {
+          made.push(path);
+        }
+      }
+    });
+    await store.save(state);
+    expect(made).toEqual(["/"]);
+  });
+
+  it("extracts parent directory correctly for a Windows-style path", async () => {
+    const made: string[] = [];
+    const fs = fakeFs();
+    const store = new StateStore("C:\\show\\state.json", {
+      fs: {
+        ...fs,
+        async mkdir(path) {
+          made.push(path);
+        }
+      }
+    });
+    await store.save(state);
+    expect(made).toEqual(["C:\\show"]);
+  });
+
+  it("returns null when slots is explicitly null", async () => {
+    const store = new StateStore("/show/state.json", {
+      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 1, slots: null, overrides: {} }) })
+    });
+    expect(await store.load()).toBeNull();
+  });
+
+  it("returns null when overrides is explicitly null", async () => {
+    const store = new StateStore("/show/state.json", {
+      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 1, slots: state.slots, overrides: null }) })
+    });
+    expect(await store.load()).toBeNull();
+  });
 });

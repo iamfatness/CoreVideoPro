@@ -27,8 +27,13 @@ export type StateFs = {
 const STATE_VERSION = 1;
 
 function parentDirectory(path: string): string {
-  const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return index <= 0 ? path : path.slice(0, index);
+  const slashIndex = path.lastIndexOf("/");
+  const backslashIndex = path.lastIndexOf("\\");
+  const index = Math.max(slashIndex, backslashIndex);
+
+  if (index < 0) return ".";
+  if (index === 0) return path[0]; // Return "/" or "\" (root-level path)
+  return path.slice(0, index);
 }
 
 export class StateStore {
@@ -66,7 +71,8 @@ export class StateStore {
     if (typeof parsed !== "object" || parsed === null) return null;
     const candidate = parsed as Partial<ShowState>;
     if (candidate.version !== STATE_VERSION) return null;
-    if (candidate.slots === undefined || candidate.overrides === undefined) return null;
+    if (typeof candidate.slots !== "object" || candidate.slots === null) return null;
+    if (typeof candidate.overrides !== "object" || candidate.overrides === null) return null;
 
     return candidate as ShowState;
   }
