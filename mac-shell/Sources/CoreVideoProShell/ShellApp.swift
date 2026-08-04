@@ -831,6 +831,14 @@ struct TransportBar: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
+            // Preview / DSK chips (the reference transport). Preview mirrors
+            // whether a scene is armed; DSK reflects the lower-third key.
+            TransportChip(title: "Preview",
+                          detail: model.previewSceneId.isEmpty ? "Off" : "Armed",
+                          lit: !model.previewSceneId.isEmpty)
+            TransportChip(title: "DSK",
+                          detail: model.lowerThirdPhase == "hidden" ? "Off" : "In",
+                          lit: model.lowerThirdPhase != "hidden")
             Spacer()
             Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
             // Take — amber, the director's commit button.
@@ -880,6 +888,7 @@ struct TransportBar: View {
                 .font(.grotesk(10))
                 .disabled(recording)
             StreamControl()
+            VirtualCamChip()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -890,6 +899,43 @@ struct TransportBar: View {
 }
 
 // ── Stream control (blue, transport) ─────────────────────────────────────────
+
+struct TransportChip: View {
+    let title: String
+    let detail: String
+    let lit: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title).font(.grotesk(11, .semibold))
+            Text(detail).font(.grotesk(9))
+                .foregroundStyle(lit ? Studio.accent : Studio.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(lit ? Studio.accent.opacity(0.5) : Studio.border, lineWidth: 1))
+    }
+}
+
+// Virtual camera: the CoreMediaIO system extension needs a Developer ID
+// (an owner-blocked item), so the control states that plainly instead of
+// pretending to be available.
+struct VirtualCamChip: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Virtual Cam").font(.grotesk(11, .semibold))
+            Text("Needs Developer ID").font(.grotesk(9))
+                .foregroundStyle(Studio.textDim)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+        .opacity(0.6)
+        .help("The CoreMediaIO camera extension requires a signed, notarized "
+              + "build — blocked on the Apple Developer ID.")
+    }
+}
 
 struct StreamControl: View {
     @EnvironmentObject var model: AppModel

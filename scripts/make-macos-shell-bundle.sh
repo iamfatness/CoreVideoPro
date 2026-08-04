@@ -20,6 +20,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>ATSApplicationFontsPath</key><string>Fonts</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleURLTypes</key>
     <array><dict>
       <key>CFBundleURLName</key><string>us.iamfatness.corevideopro.oauth</string>
@@ -38,6 +39,8 @@ mkdir -p "$APP/Contents/Resources"
 # Brand fonts (design handoff non-negotiable: Space Grotesk + IBM Plex Mono)
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp mac-shell/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
+# App icon (regenerate with scripts/make-app-icon.swift + iconutil)
+cp mac-shell/Resources/AppIcon.icns "$APP/Contents/Resources/" 2>/dev/null || true
 if [ -x native/build-metal/corevideo-native ]; then
   cp native/build-metal/corevideo-native "$APP/Contents/Resources/"
 fi
