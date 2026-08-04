@@ -1,15 +1,14 @@
-// CoreVideo Pro — macOS shell (Phase 4 M1). Entry point + all M1 views.
-// The load-bearing component is ProgramMonitorView: a CALayer whose contents
-// is the compositor's live IOSurface, resolved by global ID from the
-// snapshot — zero-copy presentation of the Metal-composited program.
+// CoreVideo Pro — macOS shell. The workspace mirrors the WinUI product's
+// geometry (Views/StudioWorkspace.xaml): header with the nav tab rail +
+// CAPTURE/ZOOM/SHOW chips and clock, the PGM/PVW director row, the
+// MULTIVIEWER row, the transport bar (Take/Cut/Fade + OUTPUTS + MASTER
+// meter), and the right-rail tab panes. Palette from App.xaml: #0A0B0C
+// chrome, #101315 panels, #22C86E studio green, #8B949B secondary.
 
 import AppKit
 import IOSurface
 import SwiftUI
 
-// The WinUI studio palette (App.xaml/StudioWorkspace.xaml): near-black app
-// chrome, graphite panels, studio-green accent, muted secondary text. Same
-// vibe, macOS-native controls.
 enum Studio {
     static let background = Color(red: 0x0A / 255.0, green: 0x0B / 255.0, blue: 0x0C / 255.0)
     static let panel = Color(red: 0x10 / 255.0, green: 0x13 / 255.0, blue: 0x15 / 255.0)
@@ -47,7 +46,7 @@ struct ShellApp: App {
             RootView()
                 .environmentObject(model)
                 .onAppear { model.start() }
-                .frame(minWidth: 1080, minHeight: 640)
+                .frame(minWidth: 1280, minHeight: 800)
                 .background(Studio.background)
                 .tint(Studio.accent)
                 .preferredColorScheme(.dark)
@@ -59,89 +58,204 @@ struct RootView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            StatusBar()
-            HSplitView {
+        VStack(spacing: 8) {
+            HeaderBar()
+            HStack(alignment: .top, spacing: 8) {
                 VStack(spacing: 8) {
-                    ProgramMonitorView(surfaceId: model.programSurfaceId,
-                                       frameNumber: model.programFrameNumber)
-                        .frame(minHeight: 320)
-                        .layoutPriority(1)
-                    TransportPane()
+                    DirectorRow()
+                    MultiviewRow()
+                    TransportBar()
                 }
-                .padding(8)
-                .frame(minWidth: 560)
-                VStack(spacing: 12) {
-                    ZoomPane()
-                    AudioPane()
-                    WarningsPane()
-                }
-                .padding(8)
-                .frame(minWidth: 340, maxWidth: 460)
+                RightRail()
+                    .frame(width: 360)
             }
+            .padding([.horizontal, .bottom], 8)
         }
+        .background(Studio.background)
     }
 }
 
-struct StatusBar: View {
+// ── Header: brand + nav tab rail + status chips + clock ──────────────────────
+
+// The WinUI nav order. Tabs without a mac pane yet render disabled — same
+// rail, honest about what's ported.
+private let navRail: [(title: String, tab: StudioTab?)] = [
+    ("Zoom", .zoom), ("Sources", .sources), ("Scenes", nil), ("Routing", nil),
+    ("Overlays", nil), ("Audio", .audio), ("Media", nil), ("Automation", nil),
+    ("Diagnose", .diagnose),
+]
+
+struct HeaderBar: View {
     @EnvironmentObject var model: AppModel
 
-    var statusText: String {
-        switch model.status {
-        case .launching: return "core: launching…"
-        case .connected(let renderer): return "core: connected (\(renderer))"
-        case .exited(let code): return "core: exited (\(code)) — relaunching"
-        case .failed(let why): return "core: \(why)"
-        }
-    }
-
     var body: some View {
-        HStack {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 10, height: 10)
-            Text(statusText).font(.system(.caption, design: .monospaced))
-            if !model.statusDetail.isEmpty {
-                Text(model.statusDetail).font(.caption2).foregroundStyle(.secondary)
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("CoreVideo Pro").font(.system(size: 15, weight: .semibold))
+                Text("Live production").font(.caption2).foregroundStyle(Studio.secondary)
+            }
+            Divider().frame(height: 26)
+            ForEach(navRail, id: \.title) { entry in
+                if let tab = entry.tab {
+                    Button(entry.title) { model.selectedTab = tab }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12,
+                                      weight: model.selectedTab == tab ? .semibold : .regular))
+                        .foregroundStyle(model.selectedTab == tab ? Studio.accent
+                                                                  : Studio.secondary)
+                } else {
+                    Text(entry.title).font(.system(size: 12))
+                        .foregroundStyle(Studio.secondary.opacity(0.35))
+                        .help("Coming to the macOS shell")
+                }
             }
             Spacer()
-            Text("meeting: \(model.meetingState)")
+            StatusChip(label: "CAPTURE", active: model.rawMediaActive)
+            StatusChip(label: "ZOOM", active: model.meetingState == "in_meeting")
+            StatusChip(label: "SHOW", active: model.recordingStatus == "recording")
+            Text(model.clockText)
                 .font(.system(.caption, design: .monospaced))
-            Text(model.rawMediaActive ? "raw media: LIVE" : "raw media: off")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(model.rawMediaActive ? Studio.accent : Studio.secondary)
+                .foregroundStyle(Studio.secondary)
+            ConnectionDot()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .background(Studio.panel)
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke), alignment: .bottom)
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke),
+                 alignment: .bottom)
     }
+}
 
-    var statusColor: Color {
+struct StatusChip: View {
+    let label: String
+    let active: Bool
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 4)
+                .fill(active ? Studio.accent.opacity(0.22) : Color.white.opacity(0.05)))
+            .foregroundStyle(active ? Studio.accent : Studio.secondary)
+    }
+}
+
+struct ConnectionDot: View {
+    @EnvironmentObject var model: AppModel
+
+    var color: Color {
         switch model.status {
         case .connected: return Studio.accent
         case .launching: return .yellow
         case .exited, .failed: return .red
         }
     }
-}
 
-// ── Program monitor (IOSurface presenter) ────────────────────────────────────
-
-struct ProgramMonitorView: NSViewRepresentable {
-    let surfaceId: UInt32
-    let frameNumber: Int64
-
-    func makeNSView(context: Context) -> ProgramMonitorNSView {
-        ProgramMonitorNSView()
+    var help: String {
+        switch model.status {
+        case .connected(let renderer): return "media core connected (\(renderer))"
+        case .launching: return "media core launching…"
+        case .exited(let code): return "media core exited (\(code)) — relaunching"
+        case .failed(let why): return why
+        }
     }
 
-    func updateNSView(_ view: ProgramMonitorNSView, context: Context) {
+    var body: some View {
+        Circle().fill(color).frame(width: 10, height: 10).help(help)
+    }
+}
+
+// ── Director row: PGM + PVW monitors ─────────────────────────────────────────
+
+struct DirectorRow: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            MonitorTile(title: "PGM", tally: .red,
+                        surfaceId: model.programSurfaceId, emptyHint: "Program output")
+            MonitorTile(title: "PVW", tally: Studio.accent,
+                        surfaceId: model.previewSurfaceId, emptyHint: "No preview scene")
+        }
+    }
+}
+
+struct MonitorTile: View {
+    let title: String
+    let tally: Color
+    let surfaceId: UInt32
+    let emptyHint: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(tally)
+                Spacer()
+            }
+            ZStack {
+                Rectangle().fill(Color.black)
+                if surfaceId == 0 {
+                    Text(emptyHint).font(.caption).foregroundStyle(Studio.secondary)
+                } else {
+                    SurfaceView(surfaceId: surfaceId)
+                }
+            }
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay(Rectangle().stroke(
+                surfaceId == 0 ? Studio.stroke : tally.opacity(0.6), lineWidth: 1))
+        }
+        .modifier(StudioPanel())
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// ── Multiview row ────────────────────────────────────────────────────────────
+
+struct MultiviewRow: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text("MULTIVIEWER")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Studio.secondary)
+                Spacer()
+                Text("\(model.assignedIds.count) assigned")
+                    .font(.caption2).foregroundStyle(Studio.secondary.opacity(0.6))
+            }
+            ZStack {
+                Rectangle().fill(Color.black)
+                if model.multiviewSurfaceId == 0 {
+                    Text("Assign participants or connect sources to populate the multiviewer")
+                        .font(.caption).foregroundStyle(Studio.secondary)
+                } else {
+                    SurfaceView(surfaceId: model.multiviewSurfaceId)
+                }
+            }
+            .frame(minHeight: 160, maxHeight: 220)
+            .overlay(Rectangle().stroke(Studio.stroke, lineWidth: 1))
+        }
+        .modifier(StudioPanel())
+    }
+}
+
+// ── IOSurface presenter (PGM / PVW / multiview share it) ─────────────────────
+
+struct SurfaceView: NSViewRepresentable {
+    let surfaceId: UInt32
+
+    func makeNSView(context: Context) -> SurfaceNSView { SurfaceNSView() }
+
+    func updateNSView(_ view: SurfaceNSView, context: Context) {
         view.present(surfaceId: surfaceId)
     }
 }
 
-final class ProgramMonitorNSView: NSView {
+final class SurfaceNSView: NSView {
     private var currentSurfaceId: UInt32 = 0
     private var surface: IOSurfaceRef?
     private var refreshTimer: Timer?
@@ -164,9 +278,7 @@ final class ProgramMonitorNSView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit {
-        refreshTimer?.invalidate()
-    }
+    deinit { refreshTimer?.invalidate() }
 
     func present(surfaceId: UInt32) {
         guard surfaceId != 0, surfaceId != currentSurfaceId else { return }
@@ -177,9 +289,9 @@ final class ProgramMonitorNSView: NSView {
     }
 }
 
-// ── Panes ────────────────────────────────────────────────────────────────────
+// ── Transport bar ────────────────────────────────────────────────────────────
 
-struct TransportPane: View {
+struct TransportBar: View {
     @EnvironmentObject var model: AppModel
 
     var recording: Bool {
@@ -187,22 +299,57 @@ struct TransportPane: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button(recording ? "Stop Recording" : "Record") { model.toggleRecording() }
-                .tint(recording ? .red : nil)
-            Text("recording: \(model.recordingStatus)")
+        HStack(spacing: 10) {
+            ForEach(["Take", "Cut", "Fade"], id: \.self) { name in
+                Button(name) {}
+                    .disabled(true)
+                    .help("Scene transitions arrive with the Scenes tab")
+            }
+            Divider().frame(height: 22)
+            Text("OUTPUTS")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            Button(recording ? "STOP" : "RECORD") { model.toggleRecording() }
+                .tint(.red)
+                .fontWeight(.semibold)
+            if recording {
+                StatusChip(label: "LIVE", active: true)
+            }
+            Text(model.recordingStatus)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(recording ? .red : .secondary)
+                .foregroundStyle(recording ? .red : Studio.secondary)
             if !model.recordingArtifactPath.isEmpty {
-                Text(model.recordingArtifactPath)
-                    .font(.caption2).foregroundStyle(.secondary)
+                Text((model.recordingArtifactPath as NSString).lastPathComponent)
+                    .font(.caption2).foregroundStyle(Studio.secondary)
                     .lineLimit(1).truncationMode(.head)
             }
             Spacer()
             Button("Stop Capture") { model.stopCapture() }
                 .disabled(!model.rawMediaActive)
+            Text("MASTER")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            MeterBar(level: model.masterLevel).frame(width: 140)
         }
         .modifier(StudioPanel())
+    }
+}
+
+// ── Right rail: tab panes ────────────────────────────────────────────────────
+
+struct RightRail: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 8) {
+            switch model.selectedTab {
+            case .zoom: ZoomPane()
+            case .sources: SourcesPane()
+            case .audio: AudioPane()
+            case .diagnose: DiagnosePane()
+            }
+            Spacer(minLength: 0)
+        }
     }
 }
 
@@ -212,21 +359,28 @@ struct ZoomPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Zoom").font(.headline)
+            TextField("Meeting ID or URL", text: $model.joinMeetingId)
+                .textFieldStyle(.roundedBorder)
             HStack {
-                TextField("Meeting ID or URL", text: $model.joinMeetingId)
-                    .textFieldStyle(.roundedBorder)
                 TextField("Passcode", text: $model.joinPasscode)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 110)
-            }
-            HStack {
                 Button("Join") { model.joinZoom() }
                     .disabled(model.joinMeetingId.isEmpty)
                 Button("Leave") { model.leaveZoom() }
+            }
+            HStack {
+                Text("meeting: \(model.meetingState)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Studio.secondary)
                 Spacer()
+                Text(model.rawMediaActive ? "raw media LIVE" : "raw media off")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(model.rawMediaActive ? Studio.accent : Studio.secondary)
             }
             Divider()
-            Text("Roster — assign to program").font(.subheadline)
+            Text("PARTICIPANTS")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
             if model.roster.isEmpty {
                 Text("No participants yet.").font(.caption).foregroundStyle(Studio.secondary)
             }
@@ -235,15 +389,17 @@ struct ZoomPane: View {
                     ForEach(model.roster) { participant in
                         HStack {
                             Circle()
-                                .fill(participant.talking ? Studio.accent : Studio.secondary.opacity(0.4))
+                                .fill(participant.talking ? Studio.accent
+                                                          : Studio.secondary.opacity(0.4))
                                 .frame(width: 8, height: 8)
-                            Text(participant.name).lineLimit(1)
+                            Text(participant.name).font(.system(size: 12)).lineLimit(1)
                             if participant.hasVideo {
-                                Image(systemName: "video.fill").font(.caption2)
+                                Image(systemName: "video.fill").font(.system(size: 9))
+                                    .foregroundStyle(Studio.secondary)
                             }
                             if participant.muted {
-                                Image(systemName: "mic.slash.fill").font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                Image(systemName: "mic.slash.fill").font(.system(size: 9))
+                                    .foregroundStyle(Studio.secondary)
                             }
                             Spacer()
                             Button(model.assignedIds.contains(participant.id)
@@ -256,7 +412,55 @@ struct ZoomPane: View {
                     }
                 }
             }
-            .frame(maxHeight: 180)
+            .frame(maxHeight: 260)
+        }
+        .modifier(StudioPanel())
+    }
+}
+
+struct SourcesPane: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sources").font(.headline)
+            Text("Cameras, screens and windows (AVFoundation / ScreenCaptureKit)")
+                .font(.caption2).foregroundStyle(Studio.secondary)
+            if model.captureDevices.isEmpty {
+                Text("No capture sources detected yet.")
+                    .font(.caption).foregroundStyle(Studio.secondary)
+            }
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(model.captureDevices) { device in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Circle()
+                                    .fill(device.signalPresent ? Studio.accent
+                                          : device.connectionState == "error"
+                                              ? Color.red : Studio.secondary.opacity(0.4))
+                                    .frame(width: 8, height: 8)
+                                Text(device.name).font(.system(size: 12)).lineLimit(1)
+                                Spacer()
+                                Button(device.connectionState == "connected"
+                                       ? "Disconnect" : "Connect") {
+                                    model.connectCaptureDevice(device)
+                                }
+                                .font(.caption)
+                            }
+                            Text("\(device.kind) · \(device.vendor) · \(device.connectionState)")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(Studio.secondary)
+                            if !device.warning.isEmpty {
+                                Text(device.warning).font(.system(size: 9))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .frame(maxHeight: 420)
         }
         .modifier(StudioPanel())
     }
@@ -269,14 +473,16 @@ struct AudioPane: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Audio").font(.headline)
             HStack {
-                Text("Master")
+                Text("MASTER")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Studio.secondary)
                 MeterBar(level: model.masterLevel)
             }
             Toggle("Monitor (system default output)", isOn: Binding(
                 get: { model.monitorEnabled },
                 set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
             HStack {
-                Text("Vol")
+                Text("Vol").font(.caption)
                 Slider(value: Binding(
                     get: { model.monitorVolume },
                     set: { model.setMonitor(enabled: model.monitorEnabled, volume: $0) }),
@@ -288,29 +494,23 @@ struct AudioPane: View {
     }
 }
 
-struct MeterBar: View {
-    let level: Int  // 0..100
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.4))
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(level > 90 ? Color.red : level > 70 ? .yellow : Studio.accent)
-                    .frame(width: geometry.size.width * CGFloat(min(100, max(0, level))) / 100.0)
-            }
-        }
-        .frame(height: 10)
-        .animation(.linear(duration: 0.08), value: level)
-    }
-}
-
-struct WarningsPane: View {
+struct DiagnosePane: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Warnings").font(.headline)
+            Text("Diagnose").font(.headline)
+            HStack {
+                ConnectionDot()
+                Text(model.statusDetail.isEmpty ? "core healthy" : model.statusDetail)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Studio.secondary)
+                    .lineLimit(2)
+            }
+            Divider()
+            Text("WARNINGS")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
             if model.warnings.isEmpty {
                 Text("None.").font(.caption).foregroundStyle(Studio.secondary)
             }
@@ -318,15 +518,32 @@ struct WarningsPane: View {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(model.warnings.enumerated()), id: \.offset) { _, warning in
                         Text(warning)
-                            .font(.system(.caption2, design: .monospaced))
+                            .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.orange)
                             .textSelection(.enabled)
                     }
                 }
             }
-            .frame(maxHeight: 140)
+            .frame(maxHeight: 360)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .modifier(StudioPanel())
+    }
+}
+
+struct MeterBar: View {
+    let level: Int  // 0..100
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.5))
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(level > 90 ? Color.red : level > 70 ? .yellow : Studio.accent)
+                    .frame(width: geometry.size.width * CGFloat(min(100, max(0, level))) / 100.0)
+            }
+        }
+        .frame(height: 10)
+        .animation(.linear(duration: 0.08), value: level)
     }
 }
