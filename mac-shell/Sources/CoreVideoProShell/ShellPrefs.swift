@@ -21,6 +21,7 @@ struct ShellPrefs: Codable, Equatable {
     var lowerThirdTitle = ""
     var lowerThirdPosition = "lower-left"
     var logoBugAssetId = ""
+    var streamUrl = "rtmp://a.rtmp.youtube.com/live2"  // key lives in the Keychain
 
     static let path = NSHomeDirectory()
         + "/Library/Application Support/CoreVideoPro/shell-preferences.json"

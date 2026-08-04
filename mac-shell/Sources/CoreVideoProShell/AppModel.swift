@@ -8,6 +8,7 @@ import Foundation
 import SwiftUI
 
 enum StudioTab: String, CaseIterable {
+    case studio = "Studio"
     case zoom = "Zoom"
     case sources = "Sources"
     case scenes = "Scenes"
@@ -90,6 +91,7 @@ final class AppModel: ObservableObject {
     @Published var roster: [RosterParticipant] = []
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
+    @Published var recordingStartedAt: Date?
     @Published var recordingArtifactPath = ""
     @Published var recordingWarning = ""
     @Published var masterLevel = 0
@@ -108,7 +110,7 @@ final class AppModel: ObservableObject {
     @Published var multiviewSurfaceId: UInt32 = 0
     @Published var captureDevices: [CaptureDeviceRow] = []
     @Published var clockText = ""
-    @Published var selectedTab: StudioTab = .zoom
+    @Published var selectedTab: StudioTab = .studio
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
     @Published var displayName = "CoreVideo Pro (mac)"
@@ -140,6 +142,11 @@ final class AppModel: ObservableObject {
     @Published var autoStatus = "Manual mode"
     @Published var isoRecordingEnabled = false
     @Published var isoSelectedSourceIds: Set<String> = []
+    @Published var streamUrl = "rtmp://a.rtmp.youtube.com/live2"
+    @Published var streamKey = ""
+    @Published var streamingDesired = false
+    @Published var streamStatus = ""       // sender status from outputSenderSession
+    @Published var streamDetail = ""       // lastResultCode / warning
 
     private var bridge: MediaCoreBridge?
     private var syncTimer: Timer?
@@ -165,6 +172,7 @@ final class AppModel: ObservableObject {
         prefs.lowerThirdTitle = lowerThirdTitle
         prefs.lowerThirdPosition = lowerThirdPosition
         prefs.logoBugAssetId = logoBug?.id ?? ""
+        prefs.streamUrl = streamUrl
         return prefs
     }
 
@@ -185,6 +193,8 @@ final class AppModel: ObservableObject {
         if !prefs.logoBugAssetId.isEmpty {
             logoBug = mediaAssets.first { $0.id == prefs.logoBugAssetId }
         }
+        streamUrl = prefs.streamUrl
+        streamKey = StreamKeychain.load()
         lastSavedPrefs = prefs
     }
 
@@ -314,7 +324,11 @@ final class AppModel: ObservableObject {
             }
         }
         if let recording = snapshot["recording"] as? JSONObject {
-            recordingStatus = recording["status"] as? String ?? "idle"
+            let nextStatus = recording["status"] as? String ?? "idle"
+            if nextStatus == "recording", recordingStatus != "recording" {
+                recordingStartedAt = Date()
+            }
+            recordingStatus = nextStatus
             recordingArtifactPath = recording["artifactPath"] as? String ?? recordingArtifactPath
             let warning = recording["warning"] as? String ?? ""
             if !warning.isEmpty, warning != recordingWarning {
@@ -338,6 +352,18 @@ final class AppModel: ObservableObject {
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
             applySharedTexture(texture)
+        }
+        if let session = snapshot["outputSenderSession"] as? JSONObject {
+            let senders = session["senders"] as? [JSONObject] ?? []
+            if let rtmp = senders.first(where: { $0["destination"] as? String == "rtmp" }) {
+                streamStatus = rtmp["status"] as? String ?? ""
+                let code = rtmp["lastResultCode"] as? String ?? ""
+                let warning = rtmp["warning"] as? String ?? ""
+                streamDetail = warning.isEmpty ? code : warning
+            } else if !streamingDesired {
+                streamStatus = ""
+                streamDetail = ""
+            }
         }
         if let auto = snapshot["autoProduction"] as? JSONObject {
             autoRuleId = auto["ruleId"] as? String ?? ""
@@ -739,6 +765,84 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // ── streaming (RTMP via the core's ffmpeg sender) ────────────────────────
+
+    private func streamDestinationSettings() -> [JSONObject] {
+        [[
+            "id": "rtmp", "label": "Stream", "protocol": "rtmp",
+            "url": streamUrl, "streamKey": streamKey,
+            "fps": 30, "targetBitrateMbps": 6.0, "audioBitrateKbps": 160,
+            "videoCodec": "h264", "encoderMode": "auto",
+            "keyframeIntervalSeconds": 2.0, "rateControl": "cbr",
+            "h264Profile": "high", "bFrames": 2, "allowEnhancedRtmp": false,
+        ]]
+    }
+
+    // start-program-output is FULL-STATE for the destination set, so record
+    // and stream always resend the union of what should be live.
+    private func startProgramOutput(recording: Bool, streaming: Bool) -> JSONObject {
+        var destinations: [String] = []
+        if recording { destinations.append("recording") }
+        if streaming { destinations.append("rtmp") }
+        let isoIds = resolvedIsoSourceIds()
+        var command: JSONObject = [
+            "type": "start-program-output", "destinations": destinations,
+            "isoSourceIds": isoIds,
+            "isoParticipantIds": isoIds.filter { $0.hasPrefix("zoom:") }
+                .map { String($0.dropFirst(5)) },
+        ]
+        if streaming {
+            command["streamOutputProfile"] = [
+                "width": 1920, "height": 1080, "fps": 30,
+                "targetBitrateMbps": 6.0, "videoCodec": "h264",
+            ]
+            command["destinationSettings"] = streamDestinationSettings()
+        }
+        return command
+    }
+
+    private var isRecordingActive: Bool {
+        recordingStatus == "recording" || recordingStatus == "warning"
+    }
+
+    func toggleStreaming() {
+        guard let bridge else { return }
+        if streamingDesired {
+            streamingDesired = false
+            let commands: [JSONObject] = isRecordingActive
+                ? [startProgramOutput(recording: true, streaming: false)]
+                : [["type": "stop-encoder-session",
+                    "reason": "Streaming stopped by operator."]]
+            Task {
+                _ = try? await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": commands,
+                ])
+            }
+            streamStatus = ""
+            streamDetail = ""
+            return
+        }
+        guard !streamKey.isEmpty, !streamUrl.isEmpty else {
+            pushWarning("stream: URL and key are required")
+            return
+        }
+        StreamKeychain.save(streamKey)
+        streamingDesired = true
+        Task {
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": [startProgramOutput(recording: isRecordingActive,
+                                                    streaming: true)],
+                ])
+            } catch {
+                streamingDesired = false
+                pushWarning("stream start failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // ── media bin + logo bug ─────────────────────────────────────────────────
 
     func refreshMediaBin() {
@@ -911,8 +1015,7 @@ final class AppModel: ObservableObject {
                     _ = try await bridge.request([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [
-                            ["type": "start-program-output", "destinations": ["recording"],
-                             "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy],
+                            startProgramOutput(recording: true, streaming: streamingDesired),
                             [
                                 "type": "set-recording-targets", "targetFolder": folder,
                                 "filenamePrefix": "show", "format": "mp4", "quality": "high",

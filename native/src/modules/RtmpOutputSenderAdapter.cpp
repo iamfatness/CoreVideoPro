@@ -125,7 +125,8 @@ std::string normalizeVideoCodec(std::string value) {
 
 std::string normalizeEncoderMode(std::string value) {
   value = lowercaseAscii(std::move(value));
-  if (value == "nvenc" || value == "qsv" || value == "amf" || value == "cpu") {
+  if (value == "nvenc" || value == "qsv" || value == "amf" || value == "cpu" ||
+      value == "videotoolbox") {
     return value;
   }
   return "auto";
@@ -416,6 +417,9 @@ std::string ffmpegVideoEncoderFor(const std::string& codec, const std::string& e
     }
     return "h264_amf";
   }
+  if (normalizedMode == "videotoolbox") {
+    return normalizedCodec == "h265" ? "hevc_videotoolbox" : "h264_videotoolbox";
+  }
   if (normalizedCodec == "h265") {
     return "libx265";
   }
@@ -435,6 +439,11 @@ std::string encoderSpecificArguments(const std::string& encoderName, const std::
   }
   if (encoderName.find("_amf") != std::string::npos) {
     return " -quality speed -rc " + rc;
+  }
+  if (encoderName.find("_videotoolbox") != std::string::npos) {
+    // VideoToolbox rejects libx264 preset/tune flags; realtime keeps the
+    // hardware encoder in its low-latency path and prioritize_speed matches.
+    return " -realtime 1 -prio_speed 1";
   }
   if (encoderName == "libsvtav1") {
     return " -preset 8";
@@ -515,6 +524,12 @@ std::string selectFfmpegVideoEncoder(
       // MF initialized successfully but stopped consuming the YouTube RTMP
       // stream after its initial burst on the affected workstation.
       candidates = {"h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libopenh264"};
+    }
+#elif defined(__APPLE__)
+    if (normalizedMode == "auto") {
+      // Apple Silicon: the VideoToolbox hardware encoder first (sustained
+      // 1080p60 without CPU cost), then the software fallbacks.
+      candidates = {"h264_videotoolbox", "libx264", "libopenh264"};
     }
 #endif
     if (std::find(candidates.begin(), candidates.end(), "libopenh264") == candidates.end()) {
@@ -667,7 +682,7 @@ class RtmpOutputSender final : public IOutputSender {
       appendSendProof(frame, "waiting-for-frame");
       return snapshot();
     }
-    if (!hasProgramNv12(*frame) &&
+    if (!hasProgramNv12(*frame) && !hasProgramFullBgra(*frame) &&
         (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty())) {
       sender_.status = "warning";
       sender_.warning = "RTMP sender is waiting for composed BGRA program pixels.";
@@ -799,16 +814,41 @@ class RtmpOutputSender final : public IOutputSender {
     return frame.programNv12.size() >= required;
   }
 
+  // Full-res BGRA tap (the Metal GPU tap on macOS; fills whenever output is
+  // active). Preferred over `preview` — streaming the 320x180 UI thumbnail
+  // was the silent-quality failure this ordering exists to prevent.
+  static bool hasProgramFullBgra(const ProgramFrame& frame) {
+    if (frame.programFullBgra.width <= 0 || frame.programFullBgra.height <= 0) {
+      return false;
+    }
+    const auto required = static_cast<size_t>(frame.programFullBgra.width) *
+                          static_cast<size_t>(frame.programFullBgra.height) * 4;
+    return frame.programFullBgra.bgra.size() >= required;
+  }
+
   static int videoWidth(const ProgramFrame& frame) {
-    return hasProgramNv12(frame) ? frame.programNv12Width : frame.preview.width;
+    if (hasProgramNv12(frame)) {
+      return frame.programNv12Width;
+    }
+    return hasProgramFullBgra(frame) ? frame.programFullBgra.width : frame.preview.width;
   }
 
   static int videoHeight(const ProgramFrame& frame) {
-    return hasProgramNv12(frame) ? frame.programNv12Height : frame.preview.height;
+    if (hasProgramNv12(frame)) {
+      return frame.programNv12Height;
+    }
+    return hasProgramFullBgra(frame) ? frame.programFullBgra.height : frame.preview.height;
   }
 
   static std::string videoPixelFormat(const ProgramFrame& frame) {
     return hasProgramNv12(frame) ? "nv12" : "bgra";
+  }
+
+  static const std::vector<uint8_t>& videoFrameBytes(const ProgramFrame& frame) {
+    if (hasProgramNv12(frame)) {
+      return frame.programNv12;
+    }
+    return hasProgramFullBgra(frame) ? frame.programFullBgra.bgra : frame.preview.bgra;
   }
 
   void ensureSender(double elapsedMs) {
@@ -1132,10 +1172,25 @@ class RtmpOutputSender final : public IOutputSender {
 
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
-    // Video read end -> child stdin (fd 0); /dev/null -> stdout/stderr.
+    // Video read end -> child stdin (fd 0); /dev/null -> stdout. stderr goes
+    // to a temp log (published in the start event, Windows parity) — without
+    // it an ingest rejection and a blocked pipe are indistinguishable.
     posix_spawn_file_actions_adddup2(&actions, videoPipe[0], 0);
     posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
-    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+    ffmpegStderrPath_.clear();
+    {
+      const char* tempDir = ::getenv("TMPDIR");
+      std::string logPath = std::string(tempDir ? tempDir : "/tmp");
+      if (!logPath.empty() && logPath.back() != '/') {
+        logPath += '/';
+      }
+      logPath += "corevideo-rtmp-ffmpeg-" + std::to_string(::getpid()) + "-" +
+                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                 ".log";
+      ffmpegStderrPath_ = logPath;
+    }
+    posix_spawn_file_actions_addopen(&actions, 2, ffmpegStderrPath_.c_str(),
+                                     O_WRONLY | O_CREAT | O_TRUNC, 0644);
     std::string audioInputArg = "pipe:0";
     if (activeAudioPresent_) {
       // Audio read end -> child fd 3 (referenced as pipe:3).
@@ -1195,7 +1250,8 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"audioChannels\":" + std::to_string(activeAudioPresent_ ? activeAudioChannels_ : 0) +
               ",\"audioSampleRate\":" + std::to_string(activeAudioPresent_ ? activeAudioSampleRate_ : 0) +
               ",\"videoInputPixelFormat\":" + jsonString(videoInputPixelFormat) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) + "}");
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) +
+              ",\"ffmpegStderrPath\":" + jsonString(ffmpegStderrPath_.string()) + "}");
     return true;
 #endif
   }
@@ -1219,7 +1275,7 @@ class RtmpOutputSender final : public IOutputSender {
     // Audio is written on every output-worker tick before video pacing is
     // evaluated in sync(). A failed video write stops the process.
     DWORD written = 0;
-    const auto& videoBytes = hasProgramNv12(frame) ? frame.programNv12 : frame.preview.bgra;
+    const auto& videoBytes = videoFrameBytes(frame);
     const auto* data = videoBytes.data();
     size_t remaining = videoBytes.size();
     while (remaining > 0) {
@@ -1251,7 +1307,7 @@ class RtmpOutputSender final : public IOutputSender {
         return false;  // FFmpeg exited
       }
     }
-    const auto& videoBytes = hasProgramNv12(frame) ? frame.programNv12 : frame.preview.bgra;
+    const auto& videoBytes = videoFrameBytes(frame);
     const auto* data = reinterpret_cast<const char*>(videoBytes.data());
     size_t remaining = videoBytes.size();
     while (remaining > 0) {
