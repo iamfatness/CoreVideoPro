@@ -128,3 +128,28 @@ Verified post-fix (headless, autonomous): 11/11 interleaved requests
 answered during an armed AND recording session; MP4 written; join pipeline
 end-to-end (engine spawn -> auth_ok -> honest MEETING_FAIL for a bogus id);
 guardrail warnings reduced to 4 startup transients; 511/511 native suite.
+
+## RTMP streaming — end-to-end verification (2026-08-04)
+
+Verified against a LOCAL RTMP listener (`ffmpeg -listen 1`), so no external
+service or account is involved:
+
+- The sender connects and the session reports `status: live`,
+  `lastResultCode: ok`, with `framesSent`/`bytesSent` climbing monotonically
+  and no warnings.
+- The encoder selected is **`h264_videotoolbox`** (Apple hardware) — the
+  auto-candidate list added for macOS resolves correctly.
+- The listener received a well-formed FLV: 20.0 s duration, AAC audio muxed,
+  video stream declared h264 / 30 fps / 6000 kb/s.
+- The POSIX ffmpeg **stderr capture earns its keep**: a first run failed with
+  exit 195 and the captured log named the cause immediately
+  (`Connection refused` — the test listener had exited), which is exactly the
+  class of failure that was invisible when stderr went to `/dev/null`.
+
+**Open measurement (not a claimed defect):** in this *headless, source-less*
+configuration the sender sustained ~4 fps of the requested 30. It is not the
+encoder (ffmpeg does BGRA 1080p30 at 3.5x realtime on this Mac), not the
+render loop (36 fps with the readback active), and not sender write blocking
+(no `[outputSender] sync >=20ms` line ever printed). A run with real sources
+through the shell is the meaningful measurement; treat this number as an
+artifact of an empty pipeline until then.
