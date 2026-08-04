@@ -7,6 +7,32 @@ import AppKit
 import CoreText
 import SwiftUI
 
+// Color tokens — exact hexes from docs/design-handoff-macos.md (dark only,
+// opaque, status colors load-bearing and never adjusted).
+enum Studio {
+    static let background = Color(hex: 0x0A0B0C)
+    static let panel = Color(hex: 0x101315)
+    static let surface = Color(hex: 0x16191B)
+    static let surfaceRaised = Color(hex: 0x1B1F22)
+    static let field = Color(hex: 0x0E1112)
+    static let border = Color.white.opacity(0.09)
+    static let line2 = Color.white.opacity(0.05)
+    static let textPrimary = Color(hex: 0xE9EDEF)
+    static let secondary = Color(hex: 0x8B949B)
+    static let textDim = Color(hex: 0x5C656B)
+    static let accent = Color(hex: 0x22C86E)
+    static let onAccent = Color(hex: 0x06170D)
+    static let amber = Color(hex: 0xE8A41F)
+    static let red = Color(hex: 0xE5433F)
+    // The one documented inconsistency: sliders/toggles render the stock
+    // accent on Windows too — match the reference, don't unify on green.
+    static let blue = Color(red: 0.29, green: 0.62, blue: 0.85)
+    // Back-compat aliases for pre-handoff call sites. card is OPAQUE
+    // (the audit flagged the translucent variant as a spec violation).
+    static let stroke = border
+    static let card = surface
+}
+
 enum DesignFonts {
     // Registers the bundled TTFs for this process. The .app carries them in
     // Resources/Fonts (ATSApplicationFontsPath); dev runs from the repo tree

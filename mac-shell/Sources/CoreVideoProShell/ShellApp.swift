@@ -11,31 +11,6 @@ import AppKit
 import IOSurface
 import SwiftUI
 
-// Color tokens — exact hexes from docs/design-handoff-macos.md (dark only,
-// opaque, status colors load-bearing and never adjusted).
-enum Studio {
-    static let background = Color(hex: 0x0A0B0C)
-    static let panel = Color(hex: 0x101315)
-    static let surface = Color(hex: 0x16191B)
-    static let surfaceRaised = Color(hex: 0x1B1F22)
-    static let field = Color(hex: 0x0E1112)
-    static let border = Color.white.opacity(0.09)
-    static let line2 = Color.white.opacity(0.05)
-    static let textPrimary = Color(hex: 0xE9EDEF)
-    static let secondary = Color(hex: 0x8B949B)
-    static let textDim = Color(hex: 0x5C656B)
-    static let accent = Color(hex: 0x22C86E)
-    static let onAccent = Color(hex: 0x06170D)
-    static let amber = Color(hex: 0xE8A41F)
-    static let red = Color(hex: 0xE5433F)
-    // The one documented inconsistency: sliders/toggles render the stock
-    // accent on Windows too — match the reference, don't unify on green.
-    static let blue = Color(red: 0.29, green: 0.62, blue: 0.85)
-    // Back-compat aliases for pre-handoff call sites.
-    static let stroke = border
-    static let card = surface.opacity(0.6)
-}
-
 struct StudioPanel: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -66,6 +41,7 @@ struct ShellApp: App {
             RootView()
                 .environmentObject(model)
                 .onAppear { model.start() }
+                .onOpenURL { url in model.handleOAuthCallback(url) }
                 .frame(minWidth: 1360, minHeight: 860)
                 .font(.grotesk(12))
                 .foregroundStyle(Studio.textPrimary)
@@ -114,8 +90,7 @@ struct HeaderBar: View {
             GroupLabel("Produce")
             TabPill(tab: .studio)
             GroupLabel("Setup")
-            ForEach([StudioTab.zoom, .sources, .scenes], id: \.self) { TabPill(tab: $0) }
-            DisabledPill("Routing")
+            ForEach([StudioTab.zoom, .sources, .scenes, .routing], id: \.self) { TabPill(tab: $0) }
             ForEach([StudioTab.overlays, .audio, .media, .automation, .diagnose],
                     id: \.self) { TabPill(tab: $0) }
             Spacer()
@@ -139,7 +114,7 @@ struct GroupLabel: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 9, weight: .semibold))
+            .font(.grotesk(9, .semibold))
             .foregroundStyle(Studio.secondary.opacity(0.7))
             .padding(.leading, 6)
     }
@@ -166,13 +141,106 @@ struct TabPill: View {
     }
 }
 
+// Routing tab — composition per docs/design-reference/04-routing.png: the
+// video crosspoint matrix (rows = sources, columns = ISO 1-8 / MULTIVIEW /
+// AUX). ISO columns are exclusive and fold into the recording payload's
+// isoSourceIds; MULTIVIEW is show membership; AUX is present-but-inert
+// (Windows parity). Audio routing lives on the Audio tab.
+struct RoutingPane: View {
+    @EnvironmentObject var model: AppModel
+
+    let isoColumns = Array(1...8)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 12))  // design-lint: allow
+                    .foregroundStyle(Studio.accent)
+                Text("Video Routing").font(.grotesk(15, .semibold))
+            }
+            Text("Click a cell to send a source to ISO record, multiview, or aux. "
+                 + "Audio routing is available on the Audio tab.")
+                .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                GridRow {
+                    Color.clear.frame(width: 170, height: 16)
+                    ForEach(isoColumns, id: \.self) { column in
+                        MonoLabel("ISO \(column)").frame(width: 48)
+                    }
+                    MonoLabel("Multiview").frame(width: 72)
+                    MonoLabel("Aux", dim: true).frame(width: 48)
+                }
+                ForEach(model.routingRows) { row in
+                    GridRow {
+                        Text(row.label)
+                            .font(.grotesk(12))
+                            .lineLimit(1).truncationMode(.tail)
+                            .frame(width: 170, alignment: .leading)
+                            .padding(.vertical, 4)
+                            .padding(.leading, 6)
+                            .background(Rectangle().fill(Studio.surface))
+                        ForEach(isoColumns, id: \.self) { column in
+                            CrosspointCell(
+                                routed: model.isoColumn(of: row.id) == column,
+                                enabled: row.id.hasPrefix("zoom:")
+                                    || row.id.hasPrefix("capture:")) {
+                                model.toggleIsoCell(column: column, sourceId: row.id)
+                            }
+                            .frame(width: 48)
+                        }
+                        CrosspointCell(routed: row.inMultiview,
+                                       enabled: row.multiviewToggleable) {
+                            model.toggleMultiviewCell(sourceId: row.id)
+                        }
+                        .frame(width: 72)
+                        CrosspointCell(routed: false, enabled: false) {}
+                            .frame(width: 48)
+                    }
+                }
+            }
+            if model.routingRows.count <= 3 {
+                Text("Sources appear here as participants join and captures connect.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.textDim)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+struct CrosspointCell: View {
+    let routed: Bool
+    let enabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(routed ? "●" : "·")
+                .font(.plexMono(10, .semibold))
+                .foregroundStyle(routed ? Studio.accent
+                                 : enabled ? Studio.secondary : Studio.textDim)
+                .frame(maxWidth: .infinity)
+                .frame(height: 24)
+                .background(Rectangle().fill(
+                    routed ? Studio.accent.opacity(0.16) : Studio.field))
+                .overlay(Rectangle().stroke(
+                    routed ? Studio.accent.opacity(0.7) : Studio.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+}
+
 struct DisabledPill: View {
     let label: String
     init(_ label: String) { self.label = label }
 
     var body: some View {
         Text(label)
-            .font(.system(size: 12))
+            .font(.grotesk(12))
             .foregroundStyle(Studio.secondary.opacity(0.4))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -194,7 +262,7 @@ struct CapturePill: View {
             model.setCapture(enabled: !wanted)
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "power").font(.system(size: 10, weight: .bold))
+                Image(systemName: "power").font(.system(size: 10, weight: .bold))  // design-lint: allow
                 Text(live ? "Capture On" : wanted ? "Capture starting…" : "Capture Off")
                     .font(.grotesk(12, .medium))
             }
@@ -219,7 +287,7 @@ struct LivePill: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle().fill(Studio.accent).frame(width: 6, height: 6)
-            Text(label).font(.system(size: 12, weight: .medium))
+            Text(label).font(.grotesk(12, .medium))
         }
         .foregroundStyle(Studio.accent)
         .padding(.horizontal, 12)
@@ -235,8 +303,8 @@ struct ConnectionDot: View {
     var color: Color {
         switch model.status {
         case .connected: return Studio.accent
-        case .launching: return .yellow
-        case .exited, .failed: return .red
+        case .launching: return Studio.amber
+        case .exited, .failed: return Studio.red
         }
     }
 
@@ -276,21 +344,21 @@ struct ReadinessStrip: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: ready ? "checkmark.circle.fill" : "hourglass")
-                .font(.system(size: 11))
+                .font(.system(size: 11))  // design-lint: allow
                 .foregroundStyle(ready ? Studio.accent : .yellow)
-            Text("Show readiness").font(.system(size: 11, weight: .semibold))
+            Text("Show readiness").font(.grotesk(11, .semibold))
                 .foregroundStyle(ready ? Studio.accent : Studio.secondary)
-            Text(message).font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+            Text(message).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
             Spacer()
             Text("\(model.assignedIds.count) assigned · "
                  + "\(model.roster.filter(\.hasVideo).count) Zoom feeds · "
                  + "\(model.captureDevices.filter { $0.connectionState == "connected" }.count)"
                  + " capture")
-                .font(.system(size: 11)).foregroundStyle(Studio.secondary)
+                .font(.grotesk(11)).foregroundStyle(Studio.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
-        .background(Color.white.opacity(0.02))
+        .background(Studio.line2)
         .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke),
                  alignment: .bottom)
     }
@@ -334,7 +402,7 @@ struct MultiviewerCanvas: View {
                     Button("Grid") { model.configureMultiviewer(mode: "grid") }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "rectangle.split.2x2").font(.system(size: 9))
+                        Image(systemName: "rectangle.split.2x2").font(.system(size: 9))  // design-lint: allow
                         Text("Edit layout").font(.grotesk(11, .semibold))
                     }
                 }
@@ -428,9 +496,9 @@ struct SceneRail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Scenes").font(.system(size: 13, weight: .semibold))
+            Text("Scenes").font(.grotesk(13, .semibold))
             Text("\(model.scenes.count) scenes · 1920x1080 · 60 fps")
-                .font(.system(size: 10)).foregroundStyle(Studio.secondary)
+                .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             HStack(spacing: 6) {
                 SceneChip(label: "PGM \(programName)", color: Studio.amber)
                 SceneChip(label: "PVW \(previewName)", color: Studio.accent)
@@ -439,13 +507,13 @@ struct SceneRail: View {
                 SceneRow(index: index + 1, scene: scene)
             }
             Text("Tap a scene to queue on preview · Take swaps PVW and PGM")
-                .font(.system(size: 9)).foregroundStyle(Studio.secondary.opacity(0.8))
+                .font(.grotesk(9)).foregroundStyle(Studio.secondary.opacity(0.8))
             Button {
                 model.selectedTab = .scenes
             } label: {
                 HStack {
-                    Image(systemName: "square.grid.2x2").font(.system(size: 10))
-                    Text("Open Scene builder").font(.system(size: 11, weight: .medium))
+                    Image(systemName: "square.grid.2x2").font(.system(size: 10))  // design-lint: allow
+                    Text("Open Scene builder").font(.system(size: 11, weight: .medium))  // design-lint: allow
                 }
                 .foregroundStyle(Studio.accent)
                 .frame(maxWidth: .infinity)
@@ -476,15 +544,15 @@ struct SceneRow: View {
         } label: {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(onProgram ? Studio.amber : Color.white.opacity(0.08))
+                    .fill(onProgram ? Studio.amber : Studio.surfaceRaised)
                     .frame(width: 24, height: 24)
                     .overlay(Text("\(index)")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.grotesk(11, .bold))
                         .foregroundStyle(onProgram ? .black : .white))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(scene.name).font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
-                    Text(scene.layout).font(.system(size: 9))
+                    Text(scene.name).font(.grotesk(12, .medium))
+                        .foregroundStyle(Studio.textPrimary)
+                    Text(scene.layout).font(.grotesk(9))
                         .foregroundStyle(Studio.secondary)
                 }
                 Spacer()
@@ -493,7 +561,7 @@ struct SceneRow: View {
                 } else if onPreview {
                     SceneChip(label: "PVW", color: Studio.accent)
                 } else {
-                    Text("IDLE").font(.system(size: 8, weight: .bold, design: .monospaced))
+                    Text("IDLE").font(.plexMono(8, .bold))
                         .foregroundStyle(Studio.secondary.opacity(0.6))
                 }
             }
@@ -516,7 +584,7 @@ struct SceneChip: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .font(.plexMono(9, .bold))
             .lineLimit(1)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(0.16)))
@@ -534,9 +602,9 @@ struct VideoRoomRail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Video in room (\(model.roster.count))")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.grotesk(13, .semibold))
             Text(model.meetingState == "in_meeting" ? "Main room" : "Not in a meeting")
-                .font(.system(size: 10)).foregroundStyle(Studio.secondary)
+                .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             ScrollView {
                 VStack(spacing: 6) {
                     ForEach(model.roster) { participant in
@@ -549,7 +617,7 @@ struct VideoRoomRail: View {
                 model.selectedTab = .zoom
             } label: {
                 Text(model.meetingState == "in_meeting" ? "Manage meeting" : "Join meeting")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.grotesk(11, .medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Studio.card))
@@ -571,22 +639,22 @@ struct ParticipantCard: View {
     var body: some View {
         HStack(spacing: 8) {
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.white.opacity(0.08))
+                .fill(Studio.surfaceRaised)
                 .frame(width: 30, height: 30)
                 .overlay(Text(String(participant.name.prefix(1)).lowercased())
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white))
+                    .font(.grotesk(13, .semibold))
+                    .foregroundStyle(Studio.textPrimary))
             VStack(alignment: .leading, spacing: 1) {
-                Text(participant.name).font(.system(size: 11, weight: .medium))
+                Text(participant.name).font(.grotesk(11, .medium))
                     .lineLimit(1)
                 HStack(spacing: 4) {
-                    Text("Guest").font(.system(size: 9)).foregroundStyle(Studio.secondary)
+                    Text("Guest").font(.grotesk(9)).foregroundStyle(Studio.secondary)
                     if participant.talking {
-                        Text("Talking").font(.system(size: 9))
+                        Text("Talking").font(.grotesk(9))
                             .foregroundStyle(Studio.accent)
                     }
                     if participant.muted {
-                        Image(systemName: "mic.slash.fill").font(.system(size: 8))
+                        Image(systemName: "mic.slash.fill").font(.system(size: 8))  // design-lint: allow
                             .foregroundStyle(Studio.secondary)
                     }
                 }
@@ -594,7 +662,7 @@ struct ParticipantCard: View {
             Spacer()
             Button(assigned ? "−" : "+") { model.toggleAssigned(participant) }
                 .buttonStyle(.plain)
-                .font(.system(size: 13, weight: .bold))
+                .font(.grotesk(13, .bold))
                 .foregroundStyle(assigned ? Studio.amber : Studio.accent)
                 .frame(width: 22, height: 22)
                 .background(RoundedRectangle(cornerRadius: 5).fill(Studio.card))
@@ -625,6 +693,7 @@ struct TabPage: View {
                     case .zoom: ZoomPane()
                     case .sources: SourcesPane()
                     case .scenes: ScenesPane()
+                    case .routing: RoutingPane()
                     case .overlays: OverlaysPane()
                     case .audio: AudioPane()
                     case .media: MediaPane()
@@ -722,10 +791,10 @@ struct TransportBar: View {
                 model.setAutoDirect(enabled: !model.autoDirectEnabled)
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "sparkles").font(.system(size: 10))
+                    Image(systemName: "sparkles").font(.system(size: 10))  // design-lint: allow
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("Magic Scene").font(.system(size: 11, weight: .semibold))
-                        Text("AI auto-direct").font(.system(size: 8))
+                        Text("Magic Scene").font(.grotesk(11, .semibold))
+                        Text("AI auto-direct").font(.grotesk(8))
                     }
                 }
                 .foregroundStyle(model.autoDirectEnabled ? .black : Studio.accent)
@@ -739,9 +808,9 @@ struct TransportBar: View {
             .buttonStyle(.plain)
             HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Set & Forget").font(.system(size: 10, weight: .medium))
+                    Text("Set & Forget").font(.grotesk(10, .medium))
                     Text("Automation \(model.autoDirectEnabled ? "On" : "Off")")
-                        .font(.system(size: 8)).foregroundStyle(Studio.secondary)
+                        .font(.grotesk(8)).foregroundStyle(Studio.secondary)
                 }
                 Toggle("", isOn: Binding(
                     get: { model.autoDirectEnabled },
@@ -754,26 +823,26 @@ struct TransportBar: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
             HStack(spacing: 4) {
                 Text("LT")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.grotesk(10, .bold))
                 Text(model.lowerThirdPhase == "hidden" ? "Ready" : model.lowerThirdPhase)
-                    .font(.system(size: 9))
+                    .font(.grotesk(9))
                     .foregroundStyle(model.lowerThirdPhase == "hidden"
                                      ? Studio.secondary : Studio.accent)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
             Spacer()
-            Text(outputsLabel).font(.system(size: 10)).foregroundStyle(Studio.secondary)
+            Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
             // Take — amber, the director's commit button.
             Button {
                 model.take()
             } label: {
                 HStack(spacing: 4) {
-                    Text("Take").font(.system(size: 12, weight: .bold))
-                    Text("Cut").font(.system(size: 9))
-                        .foregroundStyle(.black.opacity(0.6))
+                    Text("Take").font(.grotesk(12, .bold))
+                    Text("Cut").font(.grotesk(9))
+                        .foregroundStyle(Studio.onAccent.opacity(0.7))
                 }
-                .foregroundStyle(.black)
+                .foregroundStyle(Studio.onAccent)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 8).fill(
                     model.previewSceneId.isEmpty
@@ -789,13 +858,13 @@ struct TransportBar: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: recording ? "stop.fill" : "record.circle")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10))  // design-lint: allow
                     VStack(alignment: .leading, spacing: 0) {
                         Text(recording ? "Stop Rec" : "Record")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.grotesk(11, .semibold))
                         Text(model.isoRecordingEnabled
                              ? "MP4 + \(model.resolvedIsoSourceIds().count) ISOs" : "MP4")
-                            .font(.system(size: 8)).foregroundStyle(Studio.secondary)
+                            .font(.grotesk(8)).foregroundStyle(Studio.secondary)
                     }
                 }
                 .foregroundStyle(recording ? .white : Studio.red)
@@ -808,7 +877,7 @@ struct TransportBar: View {
             .buttonStyle(.plain)
             Toggle("ISOs", isOn: $model.isoRecordingEnabled)
                 .toggleStyle(.checkbox)
-                .font(.system(size: 10))
+                .font(.grotesk(10))
                 .disabled(recording)
             StreamControl()
         }
@@ -841,14 +910,14 @@ struct StreamControl: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10))  // design-lint: allow
                     VStack(alignment: .leading, spacing: 0) {
                         Text(live ? "Stop Stream" : "Stream")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.grotesk(11, .semibold))
                         Text(live ? (model.streamDetail.isEmpty ? "starting…"
                                      : model.streamDetail)
                              : "RTMP 6 Mbps")
-                            .font(.system(size: 8)).foregroundStyle(
+                            .font(.grotesk(8)).foregroundStyle(
                                 live ? Studio.blue : Studio.secondary)
                             .lineLimit(1)
                     }
@@ -864,14 +933,14 @@ struct StreamControl: View {
             Button {
                 showSettings = true
             } label: {
-                Image(systemName: "gearshape").font(.system(size: 10))
+                Image(systemName: "gearshape").font(.system(size: 10))  // design-lint: allow
             }
             .buttonStyle(.plain)
             .foregroundStyle(Studio.secondary)
         }
         .popover(isPresented: $showSettings) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Stream settings").font(.headline)
+                Text("Stream settings").font(.grotesk(14, .semibold))
                 TextField("RTMP URL", text: $model.streamUrl)
                     .textFieldStyle(StudioFieldStyle())
                 SecureField("Stream key (stored in Keychain)", text: $model.streamKey)
@@ -885,7 +954,7 @@ struct StreamControl: View {
                     .disabled(!live && (model.streamKey.isEmpty || model.streamUrl.isEmpty))
                 }
                 Text("1080p30 H.264 (VideoToolbox via ffmpeg) · 6 Mbps CBR · AAC 160 kbps")
-                    .font(.caption2).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             }
             .padding(14)
             .frame(width: 380)
@@ -914,7 +983,7 @@ struct OutputsStatusRow: View {
         HStack(spacing: 14) {
             HStack(spacing: 4) {
                 Circle().fill(Studio.accent).frame(width: 6, height: 6)
-                Text("OUTPUTS").font(.system(size: 9, weight: .bold, design: .monospaced))
+                Text("OUTPUTS").font(.plexMono(9, .bold))
                     .foregroundStyle(Studio.accent)
             }
             OutputColumn(title: "PROGRAM", value: "1080p60",
@@ -939,25 +1008,24 @@ struct OutputsStatusRow: View {
             Toggle(isOn: Binding(
                 get: { model.monitorEnabled },
                 set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) })) {
-                Text("Monitor").font(.system(size: 11, weight: .medium))
+                Text("Monitor").font(.grotesk(11, .medium))
             }
             .toggleStyle(.button)
             .tint(Studio.blue)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text("MASTER")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.plexMono(9, .bold))
                         .foregroundStyle(Studio.secondary)
-                    Text(lufsLabel).font(.system(size: 11, weight: .semibold,
-                                                 design: .monospaced))
+                    Text(lufsLabel).font(.plexMono(11, .semibold))
                 }
                 MeterBar(level: model.masterLevel).frame(width: 170)
             }
             if !peakLabel.isEmpty {
-                Text(peakLabel).font(.system(size: 9, design: .monospaced))
+                Text(peakLabel).font(.plexMono(9))
                     .foregroundStyle(Studio.secondary)
             }
-            Text(model.clockText).font(.system(size: 10, design: .monospaced))
+            Text(model.clockText).font(.plexMono(10))
                 .foregroundStyle(Studio.secondary)
         }
         .padding(.horizontal, 12)
@@ -978,11 +1046,11 @@ struct OutputColumn: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title).font(.system(size: 8, weight: .bold, design: .monospaced))
+            Text(title).font(.plexMono(8, .bold))
                 .foregroundStyle(Studio.secondary)
-            Text(value).font(.system(size: 10, weight: .semibold))
+            Text(value).font(.grotesk(10, .semibold))
             if !detail.isEmpty {
-                Text(detail).font(.system(size: 8)).foregroundStyle(Studio.secondary)
+                Text(detail).font(.grotesk(8)).foregroundStyle(Studio.secondary)
             }
         }
     }
@@ -990,119 +1058,358 @@ struct OutputColumn: View {
 
 // ── Panes (tab pages) ────────────────────────────────────────────────────────
 
+// Zoom tab — composition per docs/design-reference/02-zoom.png: the
+// "Zoom connection" card (URL field · role name · Webinar), status lines,
+// Recent meetings, the Zoom-account sign-in block, Join Zoom / Open in Zoom
+// app, then the bordered "Zoom status" card. Status text is engine-reported
+// truth, never optimism.
 struct ZoomPane: View {
     @EnvironmentObject var model: AppModel
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Zoom").font(.headline)
-            TextField("Meeting ID or URL", text: $model.joinMeetingId)
-                .textFieldStyle(StudioFieldStyle())
-            HStack {
-                TextField("Passcode", text: $model.joinPasscode)
-                    .textFieldStyle(StudioFieldStyle())
-                Button("Join") { model.joinZoom() }
-                    .disabled(model.joinMeetingId.isEmpty)
-                Button("Leave") { model.leaveZoom() }
-            }
-            HStack {
-                Text("meeting: \(model.meetingState)")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Studio.secondary)
-                Spacer()
-                Text(model.rawMediaActive ? "raw media LIVE" : "raw media off")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(model.rawMediaActive ? Studio.accent : Studio.secondary)
-            }
-            Divider()
-            Text("PARTICIPANTS")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(Studio.secondary)
-            if model.roster.isEmpty {
-                Text("No participants yet.").font(.caption).foregroundStyle(Studio.secondary)
-            }
-            ForEach(model.roster) { participant in
-                HStack {
-                    Circle()
-                        .fill(participant.talking ? Studio.accent
-                                                  : Studio.secondary.opacity(0.4))
-                        .frame(width: 8, height: 8)
-                    Text(participant.name).font(.system(size: 12)).lineLimit(1)
-                    if participant.hasVideo {
-                        Image(systemName: "video.fill").font(.system(size: 9))
-                            .foregroundStyle(Studio.secondary)
-                    }
-                    if participant.muted {
-                        Image(systemName: "mic.slash.fill").font(.system(size: 9))
-                            .foregroundStyle(Studio.secondary)
-                    }
-                    Spacer()
-                    if model.isoRecordingEnabled,
-                       model.assignedIds.contains(participant.id) {
-                        Toggle("ISO", isOn: Binding(
-                            get: {
-                                model.isoSelectedSourceIds
-                                    .contains("zoom:" + participant.id)
-                            },
-                            set: { _ in
-                                model.toggleIsoSource("zoom:" + participant.id)
-                            }))
-                            .toggleStyle(.checkbox)
-                            .font(.system(size: 10))
-                    }
-                    Button(model.assignedIds.contains(participant.id)
-                           ? "Unassign" : "Assign") {
-                        model.toggleAssigned(participant)
-                    }
-                    .font(.caption)
-                }
-                .padding(.vertical, 2)
-            }
+    var inMeeting: Bool { model.meetingState == "in_meeting" }
+
+    var statusHeadline: String {
+        switch model.meetingState {
+        case "in_meeting": return "In meeting"
+        case "joining": return "Joining…"
+        case "error": return "Join failed"
+        default: return "Ready"
         }
-        .modifier(StudioPanel())
+    }
+
+    var statusDetail: String {
+        if inMeeting {
+            return model.rawMediaActive
+                ? "Connected — raw media live"
+                : "Connected — capture is off"
+        }
+        return model.meetingState == "error" ? "See Diagnose for the engine warning"
+                                             : "Not connected"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Zoom connection").font(.grotesk(14, .semibold))
+                HStack(spacing: 8) {
+                    TextField("https://zoom.us/j/123456789", text: $model.joinMeetingId)
+                        .textFieldStyle(StudioFieldStyle())
+                        .frame(width: 220)
+                    TextField("CoreVideo Producer", text: $model.displayName)
+                        .textFieldStyle(StudioFieldStyle())
+                        .frame(width: 170)
+                    Toggle("Webinar", isOn: $model.webinar)
+                        .toggleStyle(.checkbox)
+                        .font(.grotesk(12))
+                }
+                TextField("Passcode (from the link when present)",
+                          text: $model.joinPasscode)
+                    .textFieldStyle(StudioFieldStyle())
+                    .frame(width: 220)
+                Text(statusHeadline)
+                    .font(.grotesk(12, .medium))
+                    .foregroundStyle(inMeeting || model.meetingState == "joining"
+                                     ? Studio.accent
+                                     : model.meetingState == "error" ? Studio.red
+                                                                     : Studio.accent)
+                Text(statusDetail).font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                Text("Recent meetings").font(.grotesk(13, .semibold))
+                Menu {
+                    if model.recentMeetings.isEmpty {
+                        Button("No recent meetings") {}.disabled(true)
+                    }
+                    ForEach(model.recentMeetings, id: \.self) { recent in
+                        Button(recent) { model.joinMeetingId = recent }
+                    }
+                } label: {
+                    Text(model.recentMeetings.first ?? "Select a recent meeting")
+                        .font(.grotesk(12))
+                        .lineLimit(1)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 220)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(Studio.border, lineWidth: 1))
+                Text("Zoom account").font(.grotesk(13, .semibold))
+                Text("Sign in once, then join meetings directly from CoreVideo.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                if model.zoomSignedIn {
+                    HStack(spacing: 8) {
+                        Text("Signed in").font(.grotesk(12, .medium))
+                            .foregroundStyle(Studio.accent)
+                        Button("Sign out") { model.signOutZoom() }
+                            .buttonStyle(GhostButtonStyle())
+                    }
+                } else {
+                    Button("Sign in with Zoom") { model.signInWithZoom() }
+                        .buttonStyle(AccentButtonStyle())
+                    if !model.zoomOAuthStatus.isEmpty {
+                        Text(model.zoomOAuthStatus).font(.grotesk(11))
+                            .foregroundStyle(Studio.secondary)
+                    }
+                }
+                HStack(spacing: 8) {
+                    if inMeeting {
+                        Button("Leave meeting") { model.leaveZoom() }
+                            .buttonStyle(GhostButtonStyle(tint: Studio.red))
+                    } else {
+                        Button("Join Zoom") { model.joinZoom() }
+                            .buttonStyle(AccentButtonStyle())
+                            .disabled(model.joinMeetingId.isEmpty)
+                    }
+                    Button("Open in Zoom app") { model.openInZoomApp() }
+                        .buttonStyle(GhostButtonStyle())
+                        .disabled(model.joinMeetingId.isEmpty)
+                }
+                if !model.zoomSignedIn {
+                    Text("Sign in with Zoom to join as your account — "
+                         + "guest joins wait in the waiting room.")
+                        .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                }
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Zoom status").font(.grotesk(14, .semibold))
+                Text(inMeeting ? "In the meeting — \(model.roster.count) in room"
+                               : "Ready to join Zoom")
+                    .font(.grotesk(12, .medium))
+                    .foregroundStyle(inMeeting ? Studio.accent : Studio.textPrimary)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Studio.accent.opacity(0.6), lineWidth: 1))
+                Text(inMeeting
+                     ? "Assign participants from the Studio room rail; "
+                     + "press Capture to start raw media."
+                     : "Enter a meeting link or ID above when you are ready to connect.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+        }
+        .frame(maxWidth: 520, alignment: .leading)
     }
 }
 
+// Sources tab — the inputs-1–10 patch bay (03-sources.png + routing-ux-spec
+// tab 1): "Show inputs (multiview)" slot table with in-show checkbox, source
+// menu, editable name, ISO checkbox and Unassign, over the Zoom-feed-health
+// and capture-devices reference cards.
 struct SourcesPane: View {
     @EnvironmentObject var model: AppModel
 
+    var inShowCount: Int { model.slots.filter(\.inShow).count }
+    var assignedCount: Int { model.slots.filter { $0.kind != "unassigned" }.count }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Sources").font(.headline)
-            Text("Cameras, screens and windows (AVFoundation / ScreenCaptureKit)")
-                .font(.caption2).foregroundStyle(Studio.secondary)
-            if model.captureDevices.isEmpty {
-                Text("No capture sources detected yet.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Show inputs (multiview)").font(.grotesk(15, .semibold))
+                Text("Assign up to 10 sources below. Toggle In show to put them "
+                     + "on the Studio multiview strip.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                Text("\(inShowCount) in show · \(assignedCount) assigned")
+                    .font(.grotesk(12, .medium)).foregroundStyle(Studio.accent)
+                HStack(spacing: 8) {
+                    StepCard(number: "1", title: "Assign inputs",
+                             detail: "Bind Zoom guests, media, or cameras to stable slots.",
+                             active: true)
+                    StepCard(number: "2", title: "Route outputs",
+                             detail: "Use Routing for ISO video and program audio.",
+                             active: false)
+                    StepCard(number: "3", title: "Compose scenes",
+                             detail: "Add Inputs to the 16:9 canvas and Take to Program.",
+                             active: false)
+                }
+                ForEach(model.slots) { slot in
+                    SlotRow(slot: slot)
+                }
             }
-            ForEach(model.captureDevices) { device in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Circle()
-                            .fill(device.signalPresent ? Studio.accent
-                                  : device.connectionState == "error"
-                                      ? Color.red : Studio.secondary.opacity(0.4))
-                            .frame(width: 8, height: 8)
-                        Text(device.name).font(.system(size: 12)).lineLimit(1)
-                        Spacer()
-                        Button(device.connectionState == "connected"
-                               ? "Disconnect" : "Connect") {
-                            model.connectCaptureDevice(device)
-                        }
-                        .font(.caption)
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Zoom feed health").font(.grotesk(14, .semibold))
+                    if model.roster.isEmpty {
+                        Text("No Zoom feeds — join a meeting")
+                            .font(.grotesk(12)).foregroundStyle(Studio.secondary)
                     }
-                    Text("\(device.kind) · \(device.vendor) · \(device.connectionState)")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(Studio.secondary)
-                    if !device.warning.isEmpty {
-                        Text(device.warning).font(.system(size: 9))
-                            .foregroundStyle(.orange)
+                    ForEach(model.roster) { participant in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(participant.hasVideo ? Studio.accent
+                                                           : Studio.secondary.opacity(0.4))
+                                .frame(width: 7, height: 7)
+                            Text(participant.name).font(.grotesk(12)).lineLimit(1)
+                            Text(participant.hasVideo ? "video" : "no video")
+                                .font(.plexMono(10))
+                                .foregroundStyle(Studio.secondary)
+                        }
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(Studio.border, lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Capture devices").font(.grotesk(14, .semibold))
+                    Text("\(model.captureDevices.filter { $0.connectionState == "connected" }.count)"
+                         + " connected · \(model.captureDevices.count) detected")
+                        .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                    ForEach(model.captureDevices.prefix(8)) { device in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(device.signalPresent ? Studio.accent
+                                      : device.connectionState == "error"
+                                          ? Studio.red : Studio.secondary.opacity(0.4))
+                                .frame(width: 7, height: 7)
+                            Text(device.name).font(.grotesk(12)).lineLimit(1)
+                            Spacer()
+                            Button(device.connectionState == "connected"
+                                   ? "Disconnect" : "Connect") {
+                                model.connectCaptureDevice(device)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.grotesk(11, .semibold))
+                            .foregroundStyle(Studio.accent)
+                        }
+                    }
+                    if model.captureDevices.count > 8 {
+                        Text("+ \(model.captureDevices.count - 8) more")
+                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(Studio.border, lineWidth: 1))
             }
         }
-        .modifier(StudioPanel())
+        .frame(maxWidth: 900)
+    }
+}
+
+struct StepCard: View {
+    let number: String
+    let title: String
+    let detail: String
+    let active: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
+                Text(number).font(.grotesk(12, .semibold))
+                Text(title).font(.grotesk(12, .semibold))
+            }
+            Text(detail).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(active ? Studio.accent.opacity(0.08) : Studio.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(active ? Studio.accent.opacity(0.6) : Studio.border, lineWidth: 1))
+    }
+}
+
+struct SlotRow: View {
+    @EnvironmentObject var model: AppModel
+    let slot: ShowInputSlot
+
+    var assigned: Bool { slot.kind != "unassigned" }
+
+    var sourceLabel: String {
+        guard assigned else { return "Select a source" }
+        if slot.offline { return "Source offline — choose or reconnect" }
+        return (slot.kind == "zoom" ? "Zoom · " : "Camera · ") + slot.name
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(slot.id)")
+                .font(.plexMono(11, .medium))
+                .foregroundStyle(Studio.secondary)
+                .frame(width: 22, alignment: .trailing)
+            Toggle("", isOn: Binding(
+                get: { slot.inShow },
+                set: { _ in model.toggleSlotInShow(slot.id) }))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .disabled(!assigned)
+            Menu {
+                Section("Zoom participants") {
+                    ForEach(model.roster) { participant in
+                        Button(participant.name) {
+                            model.assignSlot(slot.id, kind: "zoom",
+                                             sourceId: participant.id,
+                                             name: participant.name)
+                        }
+                    }
+                }
+                Section("Capture devices") {
+                    ForEach(model.captureDevices) { device in
+                        Button(device.name) {
+                            model.assignSlot(slot.id, kind: "capture",
+                                             sourceId: device.id, name: device.name)
+                            if device.connectionState != "connected" {
+                                model.connectCaptureDevice(device)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(sourceLabel)
+                        .font(.grotesk(12))
+                        .foregroundStyle(assigned ? Studio.textPrimary : Studio.secondary)
+                        .lineLimit(1)
+                    if slot.offline {
+                        Text("OFFLINE")
+                            .font(.plexMono(9, .semibold))
+                            .foregroundStyle(Studio.amber)
+                    }
+                    Spacer()
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 300)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(slot.offline ? Studio.amber.opacity(0.6) : Studio.border,
+                        lineWidth: 1))
+            if assigned {
+                TextField("Name", text: Binding(
+                    get: { slot.name },
+                    set: { value in
+                        if let index = model.slots.firstIndex(where: { $0.id == slot.id }) {
+                            model.slots[index].name = value
+                        }
+                    }))
+                    .textFieldStyle(StudioFieldStyle())
+                    .frame(width: 150)
+                Toggle("ISO", isOn: Binding(
+                    get: { slot.iso },
+                    set: { _ in model.toggleSlotIso(slot.id) }))
+                    .toggleStyle(.checkbox)
+                    .font(.grotesk(11))
+                Button("Unassign") { model.unassignSlot(slot.id) }
+                    .buttonStyle(GhostButtonStyle())
+            }
+            Spacer()
+        }
     }
 }
 
@@ -1111,34 +1418,34 @@ struct ScenesPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Scenes").font(.headline)
+            Text("Scenes").font(.grotesk(14, .semibold))
             Text("Scene slots fill from assigned participants in roster order; "
                  + "empty slots follow the active speaker.")
-                .font(.caption2).foregroundStyle(Studio.secondary)
+                .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             let assigned = model.roster.filter { model.assignedIds.contains($0.id) }
             Text("ASSIGNED (\(assigned.count))")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if assigned.isEmpty {
                 Text("Assign participants on the Zoom tab to fill scene slots.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
             ForEach(Array(assigned.enumerated()), id: \.element.id) { index, participant in
                 HStack {
                     Text("slot \(index + 1)")
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.plexMono(10))
                         .foregroundStyle(Studio.secondary)
-                    Text(participant.name).font(.system(size: 12)).lineLimit(1)
+                    Text(participant.name).font(.grotesk(12)).lineLimit(1)
                     Spacer()
                 }
             }
             Divider()
             HStack {
                 Text("PGM: \(model.programSceneId.isEmpty ? "—" : model.programSceneId)")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.amber)
                 Text("PVW: \(model.previewSceneId.isEmpty ? "—" : model.previewSceneId)")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.accent)
                 Spacer()
                 Button("Take") { model.take() }
@@ -1159,9 +1466,9 @@ struct OverlaysPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Overlays").font(.headline)
+            Text("Overlays").font(.grotesk(14, .semibold))
             Text("LOWER THIRD")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             TextField("Name", text: $model.lowerThirdName)
                 .textFieldStyle(StudioFieldStyle())
@@ -1180,162 +1487,29 @@ struct OverlaysPane: View {
                 .disabled(model.lowerThirdName.isEmpty && !onAir)
                 .tint(onAir ? .red : Studio.accent)
                 Text(model.lowerThirdPhase)
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(onAir ? Studio.accent : Studio.secondary)
                 Spacer()
                 Text("\(model.overlaysOnAir) on air")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.secondary)
             }
             Divider()
             Text("LOGO BUG")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if let bug = model.logoBug {
                 HStack {
-                    Text(bug.name).font(.system(size: 12))
+                    Text(bug.name).font(.grotesk(12))
                     Spacer()
-                    Button("Remove") { model.toggleLogoBug(bug) }.font(.caption)
+                    Button("Remove") { model.toggleLogoBug(bug) }.font(.grotesk(11))
                 }
             } else {
                 Text("Pick a still on the Media tab and tap “Bug” to key it top-right.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
         }
         .modifier(StudioPanel())
-    }
-}
-
-struct AudioPane: View {
-    @EnvironmentObject var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Audio").font(.headline)
-            if model.monitorFeedbackRisk {
-                Text("⚠ Monitor output matches the loopback device — feedback risk")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            if model.strips.isEmpty {
-                Text("No mix channels yet — audio strips appear once sources carry PCM.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
-            }
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 8) {
-                    ForEach(model.strips) { strip in
-                        ChannelStrip(strip: strip)
-                    }
-                    MasterRail()
-                }
-            }
-            Divider()
-            Toggle("Monitor (system default output)", isOn: Binding(
-                get: { model.monitorEnabled },
-                set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
-            HStack {
-                Text("Vol").font(.caption)
-                Slider(value: Binding(
-                    get: { model.monitorVolume },
-                    set: { model.setMonitor(enabled: model.monitorEnabled, volume: $0) }),
-                    in: 0...1)
-                if !model.monitorStatus.isEmpty {
-                    Text(model.monitorStatus)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(Studio.secondary)
-                }
-            }
-            .disabled(!model.monitorEnabled)
-        }
-        .modifier(StudioPanel())
-    }
-}
-
-struct ChannelStrip: View {
-    @EnvironmentObject var model: AppModel
-    let strip: AudioStrip
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(strip.id == "zoom-mix" ? "ZOOM MIX" : strip.id)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .lineLimit(1).truncationMode(.middle)
-                .frame(width: 84)
-            HStack(spacing: 4) {
-                Button("M") {
-                    model.editStrip(strip.id) { $0.muted.toggle() }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, weight: .bold))
-                .frame(width: 22, height: 18)
-                .background(RoundedRectangle(cornerRadius: 3)
-                    .fill(strip.muted ? Studio.red : Color.white.opacity(0.06)))
-                Button("S") {
-                    model.editStrip(strip.id) { $0.solo.toggle() }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, weight: .bold))
-                .frame(width: 22, height: 18)
-                .background(RoundedRectangle(cornerRadius: 3)
-                    .fill(strip.solo ? Color(red: 0.78, green: 0.60, blue: 0.18)
-                                     : Color.white.opacity(0.06)))
-            }
-            HStack(spacing: 4) {
-                // Vertical fader (-24…+24 dB) beside the live meter.
-                Slider(value: Binding(
-                    get: { strip.manualGainDb },
-                    set: { value in model.editStrip(strip.id) { $0.manualGainDb = value } }),
-                    in: -24...24)
-                    .frame(width: 110)
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 28, height: 110)
-                VerticalMeter(level: strip.muted ? 0 : strip.outputLevel)
-                    .frame(width: 10, height: 110)
-            }
-            Text(String(format: "%+.1f dB", strip.manualGainDb))
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(Studio.secondary)
-            Text(strip.status)
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(Studio.secondary.opacity(0.7))
-        }
-        .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.03)))
-    }
-}
-
-struct MasterRail: View {
-    @EnvironmentObject var model: AppModel
-
-    var lufsLabel: String {
-        model.shortTermLufs <= -119 ? "—" : String(format: "%.1f", model.shortTermLufs)
-    }
-
-    var truePeakLabel: String {
-        model.truePeakDbfs <= -119 ? "—" : String(format: "TP %.1f dBFS", model.truePeakDbfs)
-    }
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text("MASTER")
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundStyle(Studio.secondary)
-            Text(lufsLabel)
-                .font(.system(size: 20, weight: .semibold, design: .monospaced))
-            Text("LUFS · \(truePeakLabel)")
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(Studio.secondary)
-            VerticalMeter(level: model.masterLevel)
-                .frame(width: 14, height: 96)
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(model.limiterActive ? Color.red : Studio.secondary.opacity(0.3))
-                    .frame(width: 7, height: 7)
-                Text("LIM").font(.system(size: 8, design: .monospaced))
-                    .foregroundStyle(Studio.secondary)
-            }
-        }
-        .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
     }
 }
 
@@ -1345,7 +1519,7 @@ struct MediaPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Media").font(.headline)
+                Text("Media").font(.grotesk(14, .semibold))
                 Spacer()
                 Button("Import…") {
                     let panel = NSOpenPanel()
@@ -1358,22 +1532,22 @@ struct MediaPane: View {
                 Button("Refresh") { model.refreshMediaBin() }
             }
             Text(MediaBin.root)
-                .font(.system(size: 8, design: .monospaced))
+                .font(.plexMono(8))
                 .foregroundStyle(Studio.secondary.opacity(0.6))
                 .lineLimit(1).truncationMode(.head)
             if model.mediaAssets.isEmpty {
                 Text("Bin is empty — import stills, stingers or audio beds.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
             ForEach(model.mediaAssets) { asset in
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(asset.name).font(.system(size: 12)).lineLimit(1)
+                        Text(asset.name).font(.grotesk(12)).lineLimit(1)
                         Text("\(asset.kind)"
                              + (asset.naturalWidth > 0
                                 ? " · \(asset.naturalWidth)×\(asset.naturalHeight)"
                                 : ""))
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.plexMono(9))
                             .foregroundStyle(Studio.secondary)
                     }
                     Spacer()
@@ -1381,7 +1555,7 @@ struct MediaPane: View {
                         Button(model.logoBug?.id == asset.id ? "Unbug" : "Bug") {
                             model.toggleLogoBug(asset)
                         }
-                        .font(.caption)
+                        .font(.grotesk(11))
                     }
                 }
                 .padding(.vertical, 2)
@@ -1396,7 +1570,7 @@ struct AutomationPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Automation").font(.headline)
+            Text("Automation").font(.grotesk(14, .semibold))
             Toggle("Set & Forget (auto-direct)", isOn: Binding(
                 get: { model.autoDirectEnabled },
                 set: { model.setAutoDirect(enabled: $0) }))
@@ -1404,38 +1578,38 @@ struct AutomationPane: View {
                 .disabled(!model.autoDirectEnabled)
             HStack {
                 Text("Confidence ≥ \(Int(model.autoConfidenceThreshold))")
-                    .font(.caption)
+                    .font(.grotesk(11))
                 Slider(value: $model.autoConfidenceThreshold, in: 0...100, step: 5)
             }
             HStack {
-                Text(String(format: "Hold %.0fs", model.autoHoldSeconds)).font(.caption)
+                Text(String(format: "Hold %.0fs", model.autoHoldSeconds)).font(.grotesk(11))
                 Slider(value: $model.autoHoldSeconds, in: 0...30, step: 1)
             }
             Text(model.autoStatus)
-                .font(.system(.caption, design: .monospaced))
+                .font(.plexMono(11))
                 .foregroundStyle(model.autoDirectEnabled ? Studio.accent : Studio.secondary)
             Divider()
             Text("SCENE INTELLIGENCE")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if model.autoSceneId.isEmpty {
                 Text("Director idle — recommendations appear once the meeting has participants.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             } else {
                 HStack {
                     Text(model.autoSceneId)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.grotesk(13, .semibold))
                     Text("\(model.autoConfidence)%")
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.plexMono(11))
                         .foregroundStyle(model.autoConfidence >= Int(model.autoConfidenceThreshold)
                                          ? Studio.accent : Studio.secondary)
                     Spacer()
                     Text(model.autoRuleId)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.plexMono(9))
                         .foregroundStyle(Studio.secondary)
                 }
                 Text(model.autoRationale)
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
         }
         .modifier(StudioPanel())
@@ -1447,32 +1621,32 @@ struct DiagnosePane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Diagnose").font(.headline)
+            Text("Diagnose").font(.grotesk(14, .semibold))
             HStack {
                 ConnectionDot()
                 Text(model.statusDetail.isEmpty ? "core healthy" : model.statusDetail)
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.secondary)
                     .lineLimit(2)
             }
             if !model.recordingArtifactPath.isEmpty {
                 Text("last artifact: \(model.recordingArtifactPath)")
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.plexMono(9))
                     .foregroundStyle(Studio.secondary)
                     .lineLimit(1).truncationMode(.head)
                     .textSelection(.enabled)
             }
             Divider()
             Text("WARNINGS")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if model.warnings.isEmpty {
-                Text("None.").font(.caption).foregroundStyle(Studio.secondary)
+                Text("None.").font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
             ForEach(Array(model.warnings.enumerated()), id: \.offset) { _, warning in
                 Text(warning)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.orange)
+                    .font(.plexMono(10))
+                    .foregroundStyle(Studio.amber)
                     .textSelection(.enabled)
             }
         }

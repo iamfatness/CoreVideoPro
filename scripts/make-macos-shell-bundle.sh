@@ -20,6 +20,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>ATSApplicationFontsPath</key><string>Fonts</string>
+    <key>CFBundleURLTypes</key>
+    <array><dict>
+      <key>CFBundleURLName</key><string>us.iamfatness.corevideopro.oauth</string>
+      <key>CFBundleURLSchemes</key><array><string>corevideo</string><string>corevideopro</string></array>
+    </dict></array>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSCameraUsageDescription</key><string>CoreVideo Pro captures cameras as production sources.</string>
