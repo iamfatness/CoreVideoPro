@@ -88,6 +88,72 @@ struct ShowInputSlot: Identifiable, Equatable {
     var offline = false         // source vanished from the roster/devices
 }
 
+// Per-channel built-in inserts. Names and keys are the CORE's contract
+// (AudioDsp.h applyChannelInserts): inserts match by lowercase SUBSTRING —
+// "gate"/"noise", "eq"/"voice", "compressor", "limiter" — and each reads its
+// own keys, clamped core-side to the ranges mirrored below. An unknown key is
+// silently ignored, so these names/keys must stay exact.
+struct ChannelInserts: Equatable {
+    var gateEnabled = false
+    var gateThresholdDb = -48.0   // [-80, -12]
+    var gateRangeDb = -60.0       // [-80, -6]
+    var gateAttackMs = 5.0        // [0.5, 50]
+    var gateHoldMs = 50.0         // [0, 500]
+    var gateReleaseMs = 120.0     // [20, 500]
+
+    var compEnabled = false
+    var compThresholdDb = -18.0   // [-40, -6]
+    var compRatio = 4.0           // [1, 20]
+    var compAttackMs = 10.0       // [0.1, 100]
+    var compReleaseMs = 120.0     // [10, 1000]
+    var compKneeDb = 6.0          // [0, 24]
+    var compMakeupDb = 0.0        // [0, 24]
+
+    var eqEnabled = false
+    var eqHighpassHz = 90.0       // [20, 400]
+    var eqBandsDb = [Double](repeating: 0, count: 8)  // band1Db…band8Db, [-12, 12]
+
+    // The Windows shell's built-in insert names (StudioViewModel
+    // BuiltInInsertNames) — they satisfy the core's substring matcher.
+    static let gateName = "Noise Gate"
+    static let eqName = "Built-in EQ"
+    static let compName = "Compressor"
+
+    var activeNames: [String] {
+        var names: [String] = []
+        if gateEnabled { names.append(Self.gateName) }
+        if eqEnabled { names.append(Self.eqName) }
+        if compEnabled { names.append(Self.compName) }
+        return names
+    }
+
+    var settingsJson: JSONObject {
+        var settings: JSONObject = [:]
+        if gateEnabled {
+            settings[Self.gateName] = [
+                "thresholdDb": gateThresholdDb, "rangeDb": gateRangeDb,
+                "attackMs": gateAttackMs, "holdMs": gateHoldMs,
+                "releaseMs": gateReleaseMs,
+            ]
+        }
+        if eqEnabled {
+            var eq: JSONObject = ["highpassHz": eqHighpassHz]
+            for (index, gain) in eqBandsDb.enumerated() {
+                eq["band\(index + 1)Db"] = gain
+            }
+            settings[Self.eqName] = eq
+        }
+        if compEnabled {
+            settings[Self.compName] = [
+                "thresholdDb": compThresholdDb, "ratio": compRatio,
+                "attackMs": compAttackMs, "releaseMs": compReleaseMs,
+                "kneeDb": compKneeDb, "makeupDb": compMakeupDb,
+            ]
+        }
+        return settings
+    }
+}
+
 struct RosterParticipant: Identifiable, Equatable {
     let id: String
     let name: String
@@ -111,6 +177,7 @@ final class AppModel: ObservableObject {
     @Published var recordingWarning = ""
     @Published var masterLevel = 0
     @Published var strips: [AudioStrip] = []
+    @Published var channelInserts: [String: ChannelInserts] = [:]
     @Published var shortTermLufs = -120.0
     @Published var truePeakDbfs = -120.0
     @Published var limiterActive = false
@@ -1277,6 +1344,14 @@ final class AppModel: ObservableObject {
         strips = next
     }
 
+    func editInserts(_ id: String, _ apply: (inout ChannelInserts) -> Void) {
+        var inserts = channelInserts[id] ?? ChannelInserts()
+        apply(&inserts)
+        channelInserts[id] = inserts
+        stripEditTimes[id] = Date()
+        scheduleMixSync()
+    }
+
     func editStrip(_ id: String, _ apply: (inout AudioStrip) -> Void) {
         guard let index = strips.firstIndex(where: { $0.id == id }) else { return }
         apply(&strips[index])
@@ -1298,15 +1373,16 @@ final class AppModel: ObservableObject {
     private func syncAudioMix() async {
         guard let bridge, !strips.isEmpty else { return }
         let channels: [JSONObject] = strips.map { strip in
-            [
+            let inserts = channelInserts[strip.id] ?? ChannelInserts()
+            return [
                 "participantId": strip.id,
                 "muted": strip.muted,
                 "manualGainDb": max(-24, min(24, strip.manualGainDb)),
                 "pan": max(-1, min(1, strip.pan)),
                 "solo": strip.solo,
                 "noiseSuppression": false,
-                "pluginInserts": [] as [String],
-                "insertSettings": [:] as JSONObject,
+                "pluginInserts": inserts.activeNames,
+                "insertSettings": inserts.settingsJson,
             ]
         }
         do {
