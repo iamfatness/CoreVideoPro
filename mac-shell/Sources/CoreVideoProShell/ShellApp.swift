@@ -666,9 +666,16 @@ final class SurfaceNSView: NSView {
         // layer contents at display cadence picks up new frames zero-copy.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) {
             [weak self] _ in
-            guard let self, let layer = self.layer, self.surface != nil else { return }
-            layer.setNeedsDisplay()
-            layer.contents = layer.contents  // re-latch the surface contents
+            guard let self, let layer = self.layer, let surface = self.surface else { return }
+            // Re-assigning the SAME contents object is a Core Animation no-op
+            // (the first latch displayed forever — black). Detach + re-attach
+            // inside a no-action transaction forces CA to re-texture from the
+            // live IOSurface each display tick; still zero-copy.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.contents = nil
+            layer.contents = surface
+            CATransaction.commit()
         }
     }
 
@@ -679,7 +686,12 @@ final class SurfaceNSView: NSView {
 
     func present(surfaceId: UInt32) {
         guard surfaceId != 0, surfaceId != currentSurfaceId else { return }
-        guard let looked = IOSurfaceLookup(surfaceId) else { return }
+        guard let looked = IOSurfaceLookup(surfaceId) else {
+            // A failed lookup means the core exported a non-global surface —
+            // the exact silent-black failure this log line exists to catch.
+            ShellLog.write("IOSurfaceLookup FAILED for id \(surfaceId)")
+            return
+        }
         currentSurfaceId = surfaceId
         surface = looked
         layer?.contents = looked

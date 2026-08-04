@@ -479,12 +479,19 @@ class MetalCompositor final : public ICompositor {
       return true;
     }
     target.release();
+    // kIOSurfaceIsGlobal is deprecated but REQUIRED for the shell's
+    // IOSurfaceLookup-by-ID: without it the lookup fails cross-process and
+    // every monitor renders black while the core composites perfectly.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSDictionary* properties = @{
       (__bridge NSString*)kIOSurfaceWidth : @(width),
       (__bridge NSString*)kIOSurfaceHeight : @(height),
       (__bridge NSString*)kIOSurfaceBytesPerElement : @4,
       (__bridge NSString*)kIOSurfacePixelFormat : @((uint32_t)'BGRA'),
+      (__bridge NSString*)kIOSurfaceIsGlobal : @YES,
     };
+#pragma clang diagnostic pop
     target.iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
     if (!target.iosurface) {
       return false;

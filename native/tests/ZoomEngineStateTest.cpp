@@ -55,7 +55,11 @@ TEST(ZoomEngineRuntimeState, TracksFrameAudioAndErrorEvidence) {
   state.apply(eventFrom(R"({"cmd":"error","msg":"raw_data_unavailable"})"));
 
   const auto snapshot = state.snapshot();
-  EXPECT_EQ(snapshot.meetingState, "error");
+  // A mid-meeting engine error is EVIDENCE (a warning), not a state change:
+  // demoting to "error" made the shell read "not in a meeting" while live
+  // (owner-hit: raw_media_start_failed while the record privilege was
+  // pending). Pre-join errors still move the state to "error".
+  EXPECT_EQ(snapshot.meetingState, "in-meeting");
   ASSERT_TRUE(snapshot.subscriptions.size() == 2u);
   EXPECT_EQ(snapshot.subscriptions[0].participantId, "42");
   EXPECT_EQ(snapshot.subscriptions[0].kind, "participant-video");
