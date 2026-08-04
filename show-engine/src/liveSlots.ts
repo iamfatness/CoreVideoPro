@@ -6,11 +6,17 @@
  * screen is a deliberate editorial choice.
  */
 
-import type { Panelist, Slot } from "./contracts.js";
+import { EXCLUSIVE_ROLES, type Panelist, type Slot } from "./contracts.js";
 
 export type LiveSlotsOptions = {
   capacity: number;
   utilityPinBase: number;
+};
+
+export type LiveSlotsState = {
+  version: 1;
+  capacity: number;
+  seats: ({ slot: number; panelist: Panelist } | null)[];
 };
 
 export class LiveSlots {
@@ -52,6 +58,7 @@ export class LiveSlots {
     if (slot === null) return null;
 
     this.seats[slot - 1] = { ...panelist };
+    this.enforceExclusiveRole(slot);
     return slot;
   }
 
@@ -67,14 +74,92 @@ export class LiveSlots {
       this.seats[previous - 1] = null;
     }
     this.seats[slot - 1] = { ...panelist };
+    this.enforceExclusiveRole(slot);
+  }
+
+  /** Clear every seat and re-seat the given roster in order. */
+  rebuild(panelists: readonly Panelist[]): void {
+    this.seats.fill(null);
+    for (const panelist of panelists) {
+      this.add(panelist);
+    }
   }
 
   /**
-   * Choose a slot for a newcomer. Task 10 extends this with the utility-PIN
-   * tail rule; the base behavior is the first empty slot.
+   * Re-pull every seated panelist from the master database. Seats never move.
+   * A participant who has vanished from the database keeps their seat but is
+   * marked offline — visibly gone rather than silently dropped.
    */
-  protected placementFor(_panelist: Panelist): number | null {
+  refresh(db: Map<string, Panelist>): void {
+    this.seats.forEach((seat, index) => {
+      if (seat === null) return;
+      const fresh = db.get(seat.participantId);
+      this.seats[index] =
+        fresh === undefined ? { ...seat, online: false, videoOn: false } : { ...fresh };
+    });
+
+    this.seats.forEach((seat, index) => {
+      if (seat !== null && isExclusive(seat.role)) this.enforceExclusiveRole(index + 1);
+    });
+  }
+
+  toJSON(): LiveSlotsState {
+    return {
+      version: 1,
+      capacity: this.capacity,
+      seats: this.seats.map((panelist, index) =>
+        panelist === null ? null : { slot: index + 1, panelist: { ...panelist } }
+      )
+    };
+  }
+
+  static fromJSON(state: LiveSlotsState, options: LiveSlotsOptions): LiveSlots {
+    if (state.capacity !== options.capacity) {
+      throw new Error(
+        `persisted capacity ${state.capacity} does not match configured capacity ${options.capacity}`
+      );
+    }
+    const restored = new LiveSlots(options);
+    state.seats.forEach((seat, index) => {
+      if (seat !== null) restored.seats[index] = { ...seat.panelist };
+    });
+    return restored;
+  }
+
+  /**
+   * Utility participants (graphics bots, playback machines) carry a PIN at or
+   * above `utilityPinBase` and seat from the end, keeping the low slots free
+   * for people. `pin - utilityPinBase` is the offset from the last slot.
+   */
+  protected placementFor(panelist: Panelist): number | null {
+    const utilitySlot = this.utilitySlotFor(panelist);
+    if (utilitySlot !== null) return utilitySlot;
     return this.firstEmptySlot();
+  }
+
+  private utilitySlotFor(panelist: Panelist): number | null {
+    if (panelist.pin === null) return null;
+    const pin = Number(panelist.pin);
+    if (!Number.isInteger(pin) || pin < this.utilityPinBase) return null;
+
+    const target = this.capacity - (pin - this.utilityPinBase);
+    for (let slot = Math.min(target, this.capacity); slot >= 1; slot -= 1) {
+      if (this.seats[slot - 1] === null) return slot;
+    }
+    return null;
+  }
+
+  /** Demote every other seated holder of this seat's exclusive role. */
+  private enforceExclusiveRole(slot: number): void {
+    const seated = this.seats[slot - 1];
+    if (seated === undefined || seated === null || !isExclusive(seated.role)) return;
+
+    this.seats.forEach((other, index) => {
+      if (other === null || index === slot - 1) return;
+      if (other.role === seated.role) {
+        this.seats[index] = { ...other, role: "panelist" };
+      }
+    });
   }
 
   protected firstEmptySlot(): number | null {
@@ -87,4 +172,8 @@ export class LiveSlots {
       throw new Error(`slot ${slot} is out of range 1..${this.capacity}`);
     }
   }
+}
+
+function isExclusive(role: Panelist["role"]): boolean {
+  return (EXCLUSIVE_ROLES as readonly string[]).includes(role);
 }
