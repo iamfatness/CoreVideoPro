@@ -10,8 +10,43 @@ import SwiftUI
 enum StudioTab: String, CaseIterable {
     case zoom = "Zoom"
     case sources = "Sources"
+    case scenes = "Scenes"
     case audio = "Audio"
     case diagnose = "Diagnose"
+}
+
+// A scene route mirrors ONLY what the core parses (loadSceneGraph): modes are
+// fixed | active-speaker | screen-share | capture-input; a nil rect lets the
+// core auto-grid; sourceId is DERIVED core-side (zoom:/capture:/media:).
+struct SceneRoute {
+    var routeId: String
+    var mode: String
+    var audioRole = "mix"
+    var participantId: String?
+    var captureDeviceId: String?
+    var rect: (x: Double, y: Double, w: Double, h: Double)?
+    var zIndex: Int
+
+    var json: JSONObject {
+        var object: JSONObject = [
+            "routeId": routeId, "mode": mode, "audioRole": audioRole,
+            "fitMode": "fill", "opacity": 1.0, "zIndex": zIndex,
+        ]
+        if let participantId { object["participantId"] = participantId }
+        if let captureDeviceId { object["captureDeviceId"] = captureDeviceId }
+        if let rect {
+            object["rect"] = ["x": rect.x, "y": rect.y, "width": rect.w, "height": rect.h]
+        }
+        return object
+    }
+}
+
+// Built-in layouts with rects lifted from SceneCanvasLayoutService (single /
+// two-up grid with 0.02 gap / pip full-frame + 0.28 inset).
+struct SceneDef: Identifiable {
+    let id: String
+    let name: String
+    let layout: String
 }
 
 struct CaptureDeviceRow: Identifiable, Equatable {
@@ -22,6 +57,16 @@ struct CaptureDeviceRow: Identifiable, Equatable {
     var connectionState: String
     var signalPresent: Bool
     var warning: String
+}
+
+struct AudioStrip: Identifiable, Equatable {
+    let id: String  // participantId == routing source id (zoom-mix, capture:<id>, …)
+    var outputLevel: Int
+    var manualGainDb: Double
+    var muted: Bool
+    var solo: Bool
+    var pan: Double
+    var status: String
 }
 
 struct RosterParticipant: Identifiable, Equatable {
@@ -45,6 +90,12 @@ final class AppModel: ObservableObject {
     @Published var recordingArtifactPath = ""
     @Published var recordingWarning = ""
     @Published var masterLevel = 0
+    @Published var strips: [AudioStrip] = []
+    @Published var shortTermLufs = -120.0
+    @Published var truePeakDbfs = -120.0
+    @Published var limiterActive = false
+    @Published var monitorStatus = ""
+    @Published var monitorFeedbackRisk = false
     @Published var monitorEnabled = false
     @Published var monitorVolume = 0.7
     @Published var warnings: [String] = []
@@ -58,6 +109,13 @@ final class AppModel: ObservableObject {
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
     @Published var displayName = "CoreVideo Pro (mac)"
+    @Published var scenes: [SceneDef] = [
+        SceneDef(id: "fullscreen", name: "Fullscreen", layout: "single"),
+        SceneDef(id: "two-up", name: "Side by side", layout: "two-up"),
+        SceneDef(id: "pip", name: "Picture in picture", layout: "pip"),
+    ]
+    @Published var programSceneId = ""
+    @Published var previewSceneId = ""
 
     private var bridge: MediaCoreBridge?
     private var syncTimer: Timer?
@@ -190,6 +248,16 @@ final class AppModel: ObservableObject {
         }
         if let mix = snapshot["audioMixSession"] as? JSONObject {
             masterLevel = mix["masterLevel"] as? Int ?? masterLevel
+            limiterActive = mix["limiterActive"] as? Bool ?? limiterActive
+            monitorStatus = mix["monitorStatus"] as? String ?? monitorStatus
+            monitorFeedbackRisk = mix["monitorFeedbackRisk"] as? Bool ?? monitorFeedbackRisk
+            if let meter = mix["masterMeter"] as? JSONObject {
+                shortTermLufs = (meter["shortTermLufs"] as? NSNumber)?.doubleValue ?? shortTermLufs
+                truePeakDbfs = (meter["truePeakDbfs"] as? NSNumber)?.doubleValue ?? truePeakDbfs
+            }
+            if let participants = mix["participants"] as? [JSONObject] {
+                applyMixParticipants(participants)
+            }
         }
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
@@ -337,6 +405,7 @@ final class AppModel: ObservableObject {
             assignedIds.insert(participant.id)
         }
         syncSpine()
+        syncScenes()  // scene slots fill from the assigned set
     }
 
     // The assign path: mirrors buildZoomMediaSpineSyncPayload (spec section in
@@ -397,6 +466,157 @@ final class AppModel: ObservableObject {
             } catch {
                 pushWarning("assign failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    // ── scenes + Take ────────────────────────────────────────────────────────
+
+    // Rects lifted from SceneCanvasLayoutService: single, two-up (0.02 gap),
+    // pip (full frame + 0.28 corner inset).
+    private static let layoutRects: [String: [(Double, Double, Double, Double)]] = [
+        "single": [(0, 0, 1, 1)],
+        "two-up": [(0, 0, 0.49, 1), (0.51, 0, 0.49, 1)],
+        "pip": [(0, 0, 1, 1), (0.68, 0.68, 0.28, 0.28)],
+    ]
+
+    private func buildRoutes(for sceneId: String) -> [SceneRoute] {
+        guard let scene = scenes.first(where: { $0.id == sceneId }),
+              let rects = Self.layoutRects[scene.layout] else { return [] }
+        // Slots fill from the assigned participants in roster order; empty
+        // slots follow the active speaker so a scene is never a black hole.
+        let assigned = roster.filter { assignedIds.contains($0.id) }
+        return rects.enumerated().map { index, rect in
+            var route = SceneRoute(
+                routeId: "\(sceneId)-\(index)", mode: "active-speaker",
+                participantId: nil, captureDeviceId: nil,
+                rect: (rect.0, rect.1, rect.2, rect.3), zIndex: index)
+            if index < assigned.count {
+                route.mode = "fixed"
+                route.participantId = assigned[index].id
+            }
+            return route
+        }
+    }
+
+    func selectPreviewScene(_ sceneId: String) {
+        // Mirrors StudioViewModel.SelectScene: selection ONLY arms preview —
+        // program changes exclusively on Take.
+        previewSceneId = sceneId
+        syncScenes()
+    }
+
+    func take() {
+        // There is no `take` wire command: Take = swap the two scene ids and
+        // resend both scene graphs in one batch (TransportCoordinator shape).
+        guard !previewSceneId.isEmpty, previewSceneId != programSceneId else { return }
+        let taken = previewSceneId
+        previewSceneId = programSceneId
+        programSceneId = taken
+        syncScenes()
+    }
+
+    func syncScenes() {
+        guard let bridge else { return }
+        var commands: [JSONObject] = []
+        if !programSceneId.isEmpty {
+            commands.append([
+                "type": "load-scene-graph", "sceneId": programSceneId,
+                "routes": buildRoutes(for: programSceneId).map(\.json),
+            ])
+        }
+        if !previewSceneId.isEmpty {
+            commands.append([
+                "type": "set-preview-scene", "sceneId": previewSceneId,
+                "routes": buildRoutes(for: previewSceneId).map(\.json),
+            ])
+        }
+        guard !commands.isEmpty else { return }
+        Task {
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": commands,
+                ])
+            } catch {
+                pushWarning("scene sync failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // ── audio console ────────────────────────────────────────────────────────
+
+    // Local edits win over the in-flight snapshot for 2s (the WinUI shell's
+    // quiet period) — without it every fader drag visibly snaps back.
+    private var stripEditTimes: [String: Date] = [:]
+    private var mixSyncTask: Task<Void, Never>?
+
+    private func applyMixParticipants(_ participants: [JSONObject]) {
+        var next: [AudioStrip] = []
+        for entry in participants {
+            guard let id = entry["participantId"] as? String, !id.isEmpty else { continue }
+            let editing = stripEditTimes[id].map { Date().timeIntervalSince($0) < 2 } ?? false
+            let existing = strips.first { $0.id == id }
+            if editing, var held = existing {
+                held.outputLevel = entry["outputLevel"] as? Int ?? held.outputLevel
+                held.status = entry["status"] as? String ?? held.status
+                next.append(held)
+                continue
+            }
+            next.append(AudioStrip(
+                id: id,
+                outputLevel: entry["outputLevel"] as? Int ?? 0,
+                manualGainDb: (entry["manualGainDb"] as? NSNumber)?.doubleValue
+                    ?? existing?.manualGainDb ?? 0,
+                muted: entry["muted"] as? Bool ?? false,
+                solo: entry["solo"] as? Bool ?? false,
+                pan: (entry["pan"] as? NSNumber)?.doubleValue ?? 0,
+                status: entry["status"] as? String ?? ""))
+        }
+        strips = next
+    }
+
+    func editStrip(_ id: String, _ apply: (inout AudioStrip) -> Void) {
+        guard let index = strips.firstIndex(where: { $0.id == id }) else { return }
+        apply(&strips[index])
+        stripEditTimes[id] = Date()
+        scheduleMixSync()
+    }
+
+    // Debounced FULL-channel emit: sync-participant-audio-mix is full-state
+    // with a 25-sync hold-last guard core-side; never send a partial list.
+    private func scheduleMixSync() {
+        mixSyncTask?.cancel()
+        mixSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.syncAudioMix()
+        }
+    }
+
+    private func syncAudioMix() async {
+        guard let bridge, !strips.isEmpty else { return }
+        let channels: [JSONObject] = strips.map { strip in
+            [
+                "participantId": strip.id,
+                "muted": strip.muted,
+                "manualGainDb": max(-24, min(24, strip.manualGainDb)),
+                "pan": max(-1, min(1, strip.pan)),
+                "solo": strip.solo,
+                "noiseSuppression": false,
+                "pluginInserts": [] as [String],
+                "insertSettings": [:] as JSONObject,
+            ]
+        }
+        do {
+            _ = try await bridge.request([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [
+                    ["type": "sync-participant-audio-mix", "limiterEnabled": true,
+                     "channels": channels]
+                ],
+            ])
+        } catch {
+            pushWarning("audio mix sync failed: \(error.localizedDescription)")
         }
     }
 
