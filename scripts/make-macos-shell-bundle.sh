@@ -26,5 +26,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Self-contained: core + engine ride in Resources so the .app runs anywhere
+# on this machine without the repo checkout (ShellPaths prefers Resources).
+mkdir -p "$APP/Contents/Resources"
+if [ -x native/build-metal/corevideo-native ]; then
+  cp native/build-metal/corevideo-native "$APP/Contents/Resources/"
+fi
+if [ -d native/build-engine/corevideo-zoom-engine.app ]; then
+  rm -rf "$APP/Contents/Resources/corevideo-zoom-engine.app"
+  cp -R native/build-engine/corevideo-zoom-engine.app "$APP/Contents/Resources/" 2>/dev/null || true
+fi
 codesign --force --sign - "$APP"
 echo "$APP"

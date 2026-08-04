@@ -7,6 +7,26 @@ import AppKit
 import IOSurface
 import SwiftUI
 
+// The WinUI studio palette (App.xaml/StudioWorkspace.xaml): near-black app
+// chrome, graphite panels, studio-green accent, muted secondary text. Same
+// vibe, macOS-native controls.
+enum Studio {
+    static let background = Color(red: 0x0A / 255.0, green: 0x0B / 255.0, blue: 0x0C / 255.0)
+    static let panel = Color(red: 0x10 / 255.0, green: 0x13 / 255.0, blue: 0x15 / 255.0)
+    static let accent = Color(red: 0x22 / 255.0, green: 0xC8 / 255.0, blue: 0x6E / 255.0)
+    static let secondary = Color(red: 0x8B / 255.0, green: 0x94 / 255.0, blue: 0x9B / 255.0)
+    static let stroke = Color.white.opacity(0x17 / 255.0)
+}
+
+struct StudioPanel: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.stroke, lineWidth: 1))
+    }
+}
+
 @main
 struct ShellApp: App {
     @StateObject private var model = AppModel()
@@ -28,6 +48,9 @@ struct ShellApp: App {
                 .environmentObject(model)
                 .onAppear { model.start() }
                 .frame(minWidth: 1080, minHeight: 640)
+                .background(Studio.background)
+                .tint(Studio.accent)
+                .preferredColorScheme(.dark)
         }
     }
 }
@@ -86,16 +109,17 @@ struct StatusBar: View {
                 .font(.system(.caption, design: .monospaced))
             Text(model.rawMediaActive ? "raw media: LIVE" : "raw media: off")
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(model.rawMediaActive ? .green : .secondary)
+                .foregroundStyle(model.rawMediaActive ? Studio.accent : Studio.secondary)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.black.opacity(0.25))
+        .background(Studio.panel)
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke), alignment: .bottom)
     }
 
     var statusColor: Color {
         switch model.status {
-        case .connected: return .green
+        case .connected: return Studio.accent
         case .launching: return .yellow
         case .exited, .failed: return .red
         }
@@ -178,8 +202,7 @@ struct TransportPane: View {
             Button("Stop Capture") { model.stopCapture() }
                 .disabled(!model.rawMediaActive)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.2)))
+        .modifier(StudioPanel())
     }
 }
 
@@ -205,14 +228,14 @@ struct ZoomPane: View {
             Divider()
             Text("Roster — assign to program").font(.subheadline)
             if model.roster.isEmpty {
-                Text("No participants yet.").font(.caption).foregroundStyle(.secondary)
+                Text("No participants yet.").font(.caption).foregroundStyle(Studio.secondary)
             }
             ScrollView {
                 VStack(spacing: 4) {
                     ForEach(model.roster) { participant in
                         HStack {
                             Circle()
-                                .fill(participant.talking ? Color.green : .secondary.opacity(0.4))
+                                .fill(participant.talking ? Studio.accent : Studio.secondary.opacity(0.4))
                                 .frame(width: 8, height: 8)
                             Text(participant.name).lineLimit(1)
                             if participant.hasVideo {
@@ -235,8 +258,7 @@ struct ZoomPane: View {
             }
             .frame(maxHeight: 180)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.2)))
+        .modifier(StudioPanel())
     }
 }
 
@@ -262,8 +284,7 @@ struct AudioPane: View {
             }
             .disabled(!model.monitorEnabled)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.2)))
+        .modifier(StudioPanel())
     }
 }
 
@@ -275,7 +296,7 @@ struct MeterBar: View {
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.4))
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(level > 90 ? Color.red : level > 70 ? .yellow : .green)
+                    .fill(level > 90 ? Color.red : level > 70 ? .yellow : Studio.accent)
                     .frame(width: geometry.size.width * CGFloat(min(100, max(0, level))) / 100.0)
             }
         }
@@ -291,7 +312,7 @@ struct WarningsPane: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Warnings").font(.headline)
             if model.warnings.isEmpty {
-                Text("None.").font(.caption).foregroundStyle(.secondary)
+                Text("None.").font(.caption).foregroundStyle(Studio.secondary)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 3) {
@@ -306,7 +327,6 @@ struct WarningsPane: View {
             .frame(maxHeight: 140)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.2)))
+        .modifier(StudioPanel())
     }
 }
