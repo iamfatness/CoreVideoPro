@@ -5,11 +5,12 @@
 // keep the stock blue accent — the Windows build has the same documented
 // inconsistency and the handoff says match the reference, don't unify.
 //
-// Wiring honesty: gain/pan/mute/solo ride sync-participant-audio-mix today.
-// The GATE/COMP/EQ cells are the SHOW-surface composition with local state;
-// their insertSettings wiring lands when the chain's parameter names are
-// verified against the core (C5b pass-through accepts arbitrary numeric
-// keys, so a wrong guess would be silently ignored — worse than absent).
+// Wiring: gain/pan/mute/solo AND the GATE/COMP/EQ inserts all ride
+// sync-participant-audio-mix. The insert names and parameter keys are the
+// core's exact contract (AudioDsp.h applyChannelInserts + the Windows
+// BuiltInInsertNames) — an insert only processes when its name is in
+// pluginInserts, and unknown keys are silently ignored, so both must match.
+// Each cell's IN badge is the enable toggle.
 
 import SwiftUI
 
@@ -111,7 +112,7 @@ struct AudioPane: View {
                 }
             }
             if let strip = selected {
-                ProcessingWorkspace(stripName: stripLabel(strip))
+                ProcessingWorkspace(stripId: strip.id, stripName: stripLabel(strip))
             }
             HStack(alignment: .top, spacing: 10) {
                 ForEach(model.strips) { strip in
@@ -135,14 +136,19 @@ struct AudioPane: View {
 // reference; parameter state is local until the chain's key names are
 // verified — see the header note).
 struct ProcessingWorkspace: View {
+    @EnvironmentObject var model: AppModel
+    let stripId: String
     let stripName: String
-    @State private var gateThreshold = -48.0
-    @State private var gateRange = 24.0
-    @State private var compThreshold = -18.0
-    @State private var compRatio = 3.0
-    @State private var eqBands: [Double] = Array(repeating: 0, count: 8)
 
     let bandLabels = ["63", "125", "250", "500", "1k", "2k", "4k", "8k"]
+
+    var inserts: ChannelInserts { model.channelInserts[stripId] ?? ChannelInserts() }
+
+    func bind(_ keyPath: WritableKeyPath<ChannelInserts, Double>) -> Binding<Double> {
+        Binding(
+            get: { inserts[keyPath: keyPath] },
+            set: { value in model.editInserts(stripId) { $0[keyPath: keyPath] = value } })
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -156,39 +162,58 @@ struct ProcessingWorkspace: View {
                     .help("VST inserts arrive with the plugin host port")
             }
             .frame(width: 150, alignment: .leading)
-            cell("GATE") {
+            cell("GATE", on: inserts.gateEnabled,
+                 toggle: { model.editInserts(stripId) { $0.gateEnabled.toggle() } }) {
                 CurveCanvas { size in
                     var path = Path()
-                    let knee = (gateThreshold + 60) / 60 * size.width * 0.7
+                    let knee = (inserts.gateThresholdDb + 80) / 68 * size.width * 0.8
                     path.move(to: CGPoint(x: 0, y: size.height * 0.95))
                     path.addLine(to: CGPoint(x: knee, y: size.height * 0.95))
                     path.addLine(to: CGPoint(x: knee + 14, y: size.height * 0.35))
                     path.addLine(to: CGPoint(x: size.width, y: 0))
                     return path
                 }
-                labeledSlider("Threshold (dB)", $gateThreshold, in: -80...0)
-                labeledSlider("Range (dB)", $gateRange, in: 0...60)
+                HStack(spacing: 6) {
+                    labeledSlider("Threshold (dB)", bind(\.gateThresholdDb), in: -80...(-12))
+                    labeledSlider("Range (dB)", bind(\.gateRangeDb), in: -80...(-6))
+                }
+                HStack(spacing: 6) {
+                    labeledSlider("Attack", bind(\.gateAttackMs), in: 0.5...50)
+                    labeledSlider("Hold", bind(\.gateHoldMs), in: 0...500)
+                    labeledSlider("Release", bind(\.gateReleaseMs), in: 20...500)
+                }
             }
-            cell("COMP") {
+            cell("COMP", on: inserts.compEnabled,
+                 toggle: { model.editInserts(stripId) { $0.compEnabled.toggle() } }) {
                 CurveCanvas { size in
                     var path = Path()
-                    let knee = (compThreshold + 60) / 60 * size.width
+                    let knee = (inserts.compThresholdDb + 40) / 34 * size.width
                     path.move(to: CGPoint(x: 0, y: size.height))
                     path.addLine(to: CGPoint(x: knee, y: size.height - knee))
                     let over = size.width - knee
                     path.addLine(to: CGPoint(
                         x: size.width,
-                        y: size.height - knee - over / max(1, compRatio)))
+                        y: size.height - knee - over / max(1, inserts.compRatio)))
                     return path
                 }
-                labeledSlider("Threshold (dB)", $compThreshold, in: -60...0)
-                labeledSlider("Ratio", $compRatio, in: 1...20)
+                HStack(spacing: 6) {
+                    labeledSlider("Threshold (dB)", bind(\.compThresholdDb), in: -40...(-6))
+                    labeledSlider("Ratio", bind(\.compRatio), in: 1...20)
+                }
+                HStack(spacing: 6) {
+                    labeledSlider("Attack", bind(\.compAttackMs), in: 0.1...100)
+                    labeledSlider("Release", bind(\.compReleaseMs), in: 10...1000)
+                    labeledSlider("Knee", bind(\.compKneeDb), in: 0...24)
+                    labeledSlider("Makeup", bind(\.compMakeupDb), in: 0...24)
+                }
             }
-            cell("EQ") {
+            cell("EQ", on: inserts.eqEnabled,
+                 toggle: { model.editInserts(stripId) { $0.eqEnabled.toggle() } }) {
                 CurveCanvas { size in
                     var path = Path()
-                    let step = size.width / CGFloat(eqBands.count - 1)
-                    for (index, band) in eqBands.enumerated() {
+                    let bands = inserts.eqBandsDb
+                    let step = size.width / CGFloat(max(1, bands.count - 1))
+                    for (index, band) in bands.enumerated() {
                         let point = CGPoint(
                             x: CGFloat(index) * step,
                             y: size.height / 2 - CGFloat(band / 12) * size.height / 2)
@@ -196,13 +221,23 @@ struct ProcessingWorkspace: View {
                     }
                     return path
                 }
-                HStack(spacing: 6) {
-                    ForEach(eqBands.indices, id: \.self) { index in
+                HStack(alignment: .bottom, spacing: 6) {
+                    VStack(spacing: 1) {
+                        MonoLabel("Low cut", dim: true)
+                        Slider(value: bind(\.eqHighpassHz), in: 20...400).frame(width: 74)
+                        Text("\(Int(inserts.eqHighpassHz)) Hz")
+                            .font(.plexMono(8)).foregroundStyle(Studio.textDim)
+                    }
+                    ForEach(0..<8, id: \.self) { index in
                         VStack(spacing: 2) {
-                            Slider(value: $eqBands[index], in: -12...12)
-                                .frame(width: 64)
+                            Slider(value: Binding(
+                                get: { inserts.eqBandsDb[index] },
+                                set: { value in
+                                    model.editInserts(stripId) { $0.eqBandsDb[index] = value }
+                                }), in: -12...12)
+                                .frame(width: 60)
                                 .rotationEffect(.degrees(-90))
-                                .frame(width: 20, height: 64)
+                                .frame(width: 18, height: 60)
                             Text(bandLabels[index]).font(.plexMono(8))
                                 .foregroundStyle(Studio.textDim)
                         }
@@ -210,25 +245,31 @@ struct ProcessingWorkspace: View {
                 }
             }
         }
-        .frame(height: 210)
+        .frame(height: 220)
     }
 
-    func cell(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+    func cell(_ title: String, on: Bool, toggle: @escaping () -> Void,
+              @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 MonoLabel(title)
                 Spacer()
-                Text("IN").font(.plexMono(9, .semibold))
+                Button("IN", action: toggle)
+                    .buttonStyle(.plain)
+                    .font(.plexMono(9, .semibold))
                     .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 3).fill(Studio.surface))
-                    .foregroundStyle(Studio.textDim)
+                    .background(RoundedRectangle(cornerRadius: 3)
+                        .fill(on ? Studio.accent.opacity(0.22) : Studio.surface))
+                    .foregroundStyle(on ? Studio.accent : Studio.textDim)
             }
             content()
         }
         .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(on ? Studio.accent.opacity(0.4) : Studio.border, lineWidth: 1))
+        .opacity(on ? 1 : 0.55)
     }
 
     func labeledSlider(_ label: String, _ value: Binding<Double>,
