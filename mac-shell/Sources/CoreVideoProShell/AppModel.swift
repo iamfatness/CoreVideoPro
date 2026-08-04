@@ -170,6 +170,35 @@ struct ChannelInserts: Equatable {
     }
 }
 
+// Master-bus mastering chain (MediaCore mastering parse / AudioMastering.h).
+// Every field is optional core-side and absent keys keep struct defaults that
+// are bit-identical to the pre-B1 fixed values — so an untouched rack is a
+// true no-op, and `enabled` alone gates the whole chain.
+struct MasteringParams: Equatable {
+    var enabled = false
+    var targetLufs = -16.0
+    var ceilingDbfs = -1.0
+    var glueAmount = 0.3
+    var maxRideDb = 6.0
+    var inputGainDb = 0.0
+    var highPassHz = 0.0
+    var lowShelfDb = 0.0
+    var presenceDb = 0.0
+    var highShelfDb = 0.0
+    var stereoWidth = 1.0
+
+    var json: JSONObject {
+        [
+            "enabled": enabled, "targetLufs": targetLufs,
+            "ceilingDbfs": ceilingDbfs, "glueAmount": glueAmount,
+            "maxRideDb": maxRideDb, "inputGainDb": inputGainDb,
+            "highPassHz": highPassHz, "lowShelfDb": lowShelfDb,
+            "presenceDb": presenceDb, "highShelfDb": highShelfDb,
+            "stereoWidth": stereoWidth,
+        ]
+    }
+}
+
 struct RosterParticipant: Identifiable, Equatable {
     let id: String
     let name: String
@@ -197,6 +226,7 @@ final class AppModel: ObservableObject {
     @Published var shortTermLufs = -120.0
     @Published var truePeakDbfs = -120.0
     @Published var limiterActive = false
+    @Published var masteringRideDb = 0.0
     @Published var monitorStatus = ""
     @Published var monitorFeedbackRisk = false
     @Published var monitorEnabled = false
@@ -504,6 +534,10 @@ final class AppModel: ObservableObject {
             if let participants = mix["participants"] as? [JSONObject] {
                 applyMixParticipants(participants)
             }
+            masteringRideDb = (mix["masteringRideDb"] as? NSNumber)?.doubleValue ?? 0
+        }
+        if let matrix = snapshot["audioRoutingMatrix"] as? JSONObject {
+            applyRoutingSnapshot(matrix)
         }
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
@@ -1355,6 +1389,117 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // ── audio routing matrix + mastering rack ────────────────────────────────
+
+    // The core's valid bus ids (MediaCore::isAudioRoutingBus). Rows are
+    // sources, columns are buses; the command is FULL-STATE with a 25-sync
+    // hold-last guard, so a partial send is worse than none.
+    static let routingBuses = ["master", "pgm-l", "pgm-r", "stream", "mon", "iso-1"]
+
+    @Published var audioSends: [String: [String: Double]] = [:]  // source → bus → dB
+    @Published var selectedSend: (source: String, bus: String)?
+    @Published var mastering = MasteringParams()
+
+    func sendGain(source: String, bus: String) -> Double? {
+        audioSends[source]?[bus]
+    }
+
+    // Select-never-destroys (the B1 contract): tapping a routed cell selects
+    // it for gain editing; removal is the explicit action.
+    func selectOrRouteSend(source: String, bus: String) {
+        if audioSends[source]?[bus] != nil {
+            selectedSend = (source, bus)
+            return
+        }
+        var busesForSource = audioSends[source] ?? [:]
+        // ISO columns are exclusive: one source per ISO bus.
+        if bus.hasPrefix("iso-") {
+            for (otherSource, _) in audioSends where audioSends[otherSource]?[bus] != nil {
+                audioSends[otherSource]?[bus] = nil
+            }
+        }
+        busesForSource[bus] = 0
+        audioSends[source] = busesForSource
+        selectedSend = (source, bus)
+        syncAudioRouting()
+    }
+
+    func removeSend(source: String, bus: String) {
+        audioSends[source]?[bus] = nil
+        if selectedSend?.source == source, selectedSend?.bus == bus { selectedSend = nil }
+        syncAudioRouting()
+    }
+
+    func setSendGain(source: String, bus: String, gainDb: Double) {
+        guard audioSends[source]?[bus] != nil else { return }
+        audioSends[source]?[bus] = max(-60, min(10, gainDb))
+        syncAudioRouting()
+    }
+
+    private var routingSyncTask: Task<Void, Never>?
+
+    func syncAudioRouting() {
+        routingSyncTask?.cancel()
+        routingSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.pushAudioRouting()
+        }
+    }
+
+    private func pushAudioRouting() async {
+        guard let bridge else { return }
+        var sends: [JSONObject] = []
+        for (source, buses) in audioSends {
+            for (bus, gainDb) in buses {
+                sends.append([
+                    "sourceId": source, "busId": bus,
+                    "gainDb": max(-60, min(10, gainDb)),
+                    "busPluginInserts": [] as [String],
+                ])
+            }
+        }
+        // Never send an empty list: the core holds-last for 25 syncs and an
+        // empty matrix during a UI rebuild would read as "unroute everything".
+        guard !sends.isEmpty else { return }
+        do {
+            _ = try await bridge.request([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [[
+                    "type": "sync-audio-routing-matrix", "sends": sends,
+                    "busSends": [] as [JSONObject], "monitorBusId": "",
+                ]],
+            ])
+        } catch {
+            pushWarning("audio routing sync failed: \(error.localizedDescription)")
+        }
+    }
+
+    // Hydrate the grid from the CORE's sends (never from client defaults —
+    // the ghost-model lesson in docs/audio-tab-redesign.md).
+    private func applyRoutingSnapshot(_ matrix: JSONObject) {
+        guard let sends = matrix["sends"] as? [JSONObject], !sends.isEmpty else { return }
+        var next: [String: [String: Double]] = [:]
+        for entry in sends {
+            guard let source = entry["sourceId"] as? String,
+                  let bus = entry["busId"] as? String else { continue }
+            // Don't fight the operator mid-edit.
+            if selectedSend?.source == source, selectedSend?.bus == bus,
+               let existing = audioSends[source]?[bus] {
+                next[source, default: [:]][bus] = existing
+                continue
+            }
+            next[source, default: [:]][bus] =
+                (entry["gainDb"] as? NSNumber)?.doubleValue ?? 0
+        }
+        audioSends = next
+    }
+
+    func editMastering(_ apply: (inout MasteringParams) -> Void) {
+        apply(&mastering)
+        scheduleMixSync()
+    }
+
     // ── media bin + logo bug ─────────────────────────────────────────────────
 
     func refreshMediaBin() {
@@ -1503,7 +1648,7 @@ final class AppModel: ObservableObject {
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
                 "commands": [
                     ["type": "sync-participant-audio-mix", "limiterEnabled": true,
-                     "channels": channels]
+                     "mastering": mastering.json, "channels": channels]
                 ],
             ])
         } catch {
