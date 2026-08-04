@@ -83,8 +83,8 @@ struct RootView: View {
 // rail, honest about what's ported.
 private let navRail: [(title: String, tab: StudioTab?)] = [
     ("Zoom", .zoom), ("Sources", .sources), ("Scenes", .scenes), ("Routing", nil),
-    ("Overlays", .overlays), ("Audio", .audio), ("Media", .media), ("Automation", nil),
-    ("Diagnose", .diagnose),
+    ("Overlays", .overlays), ("Audio", .audio), ("Media", .media),
+    ("Automation", .automation), ("Diagnose", .diagnose),
 ]
 
 struct HeaderBar: View {
@@ -379,6 +379,13 @@ struct TransportBar: View {
             Button(recording ? "STOP" : "RECORD") { model.toggleRecording() }
                 .tint(.red)
                 .fontWeight(.semibold)
+            Toggle("ISOs", isOn: $model.isoRecordingEnabled)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 10))
+                .disabled(recording)
+                .help(model.isoRecordingEnabled
+                      ? "Program + \(model.resolvedIsoSourceIds().count) ISOs"
+                      : "Program only")
             if recording {
                 StatusChip(label: "LIVE", active: true)
             }
@@ -416,6 +423,7 @@ struct RightRail: View {
             case .overlays: OverlaysPane()
             case .audio: AudioPane()
             case .media: MediaPane()
+            case .automation: AutomationPane()
             case .diagnose: DiagnosePane()
             }
             Spacer(minLength: 0)
@@ -472,6 +480,19 @@ struct ZoomPane: View {
                                     .foregroundStyle(Studio.secondary)
                             }
                             Spacer()
+                            if model.isoRecordingEnabled,
+                               model.assignedIds.contains(participant.id) {
+                                Toggle("ISO", isOn: Binding(
+                                    get: {
+                                        model.isoSelectedSourceIds
+                                            .contains("zoom:" + participant.id)
+                                    },
+                                    set: { _ in
+                                        model.toggleIsoSource("zoom:" + participant.id)
+                                    }))
+                                    .toggleStyle(.checkbox)
+                                    .font(.system(size: 10))
+                            }
                             Button(model.assignedIds.contains(participant.id)
                                    ? "Unassign" : "Assign") {
                                 model.toggleAssigned(participant)
@@ -876,6 +897,57 @@ struct MediaPane: View {
                 }
             }
             .frame(maxHeight: 380)
+        }
+        .modifier(StudioPanel())
+    }
+}
+
+struct AutomationPane: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Automation").font(.headline)
+            Toggle("Set & Forget (auto-direct)", isOn: Binding(
+                get: { model.autoDirectEnabled },
+                set: { model.setAutoDirect(enabled: $0) }))
+            Toggle("Auto-take (off = queue on preview)", isOn: $model.autoTakeEnabled)
+                .disabled(!model.autoDirectEnabled)
+            HStack {
+                Text("Confidence ≥ \(Int(model.autoConfidenceThreshold))")
+                    .font(.caption)
+                Slider(value: $model.autoConfidenceThreshold, in: 0...100, step: 5)
+            }
+            HStack {
+                Text(String(format: "Hold %.0fs", model.autoHoldSeconds)).font(.caption)
+                Slider(value: $model.autoHoldSeconds, in: 0...30, step: 1)
+            }
+            Text(model.autoStatus)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(model.autoDirectEnabled ? Studio.accent : Studio.secondary)
+            Divider()
+            Text("SCENE INTELLIGENCE")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            if model.autoSceneId.isEmpty {
+                Text("Director idle — recommendations appear once the meeting has participants.")
+                    .font(.caption).foregroundStyle(Studio.secondary)
+            } else {
+                HStack {
+                    Text(model.autoSceneId)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("\(model.autoConfidence)%")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(model.autoConfidence >= Int(model.autoConfidenceThreshold)
+                                         ? Studio.accent : Studio.secondary)
+                    Spacer()
+                    Text(model.autoRuleId)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(Studio.secondary)
+                }
+                Text(model.autoRationale)
+                    .font(.caption).foregroundStyle(Studio.secondary)
+            }
         }
         .modifier(StudioPanel())
     }
