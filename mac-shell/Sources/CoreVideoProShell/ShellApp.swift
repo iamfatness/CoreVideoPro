@@ -1399,6 +1399,21 @@ struct SourcesPane: View {
                             .font(.grotesk(11, .semibold))
                             .foregroundStyle(Studio.accent)
                         }
+                        // A device that connects but never delivers a frame
+                        // (idle virtual camera, camera held by another app,
+                        // permission not granted) says so here — silence was
+                        // indistinguishable from a working source.
+                        if !device.warning.isEmpty {
+                            Text(device.warning)
+                                .font(.grotesk(10))
+                                .foregroundStyle(device.connectionState == "error"
+                                                 ? Studio.red : Studio.amber)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if device.connectionState == "connected",
+                                  !device.signalPresent {
+                            Text("Connected — waiting for the first frame")
+                                .font(.grotesk(10)).foregroundStyle(Studio.amber)
+                        }
                     }
                     if model.captureDevices.count > 8 {
                         Text("+ \(model.captureDevices.count - 8) more")
@@ -1505,6 +1520,12 @@ struct SlotRow: View {
             .overlay(RoundedRectangle(cornerRadius: 8)
                 .stroke(slot.offline ? Studio.amber.opacity(0.6) : Studio.border,
                         lineWidth: 1))
+            if assigned, slot.kind == "capture",
+               let device = model.captureDevices.first(where: { $0.id == slot.sourceId }),
+               device.connectionState == "connected", !device.signalPresent {
+                Text("no signal").font(.plexMono(9, .semibold))
+                    .foregroundStyle(Studio.amber)
+            }
             if assigned {
                 TextField("Name", text: Binding(
                     get: { slot.name },

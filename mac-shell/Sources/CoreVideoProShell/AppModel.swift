@@ -472,11 +472,12 @@ final class AppModel: ObservableObject {
         if programSceneId.isEmpty {
             programSceneId = scenes[0].id
         }
-        // Arm PREVIEW too (Windows parity — 01-studio shows both PGM and PVW
-        // populated at rest). Without a preview scene the core's hasPreviewScene
-        // gate is false and the multiviewer's PVW cell renders empty.
+        // Arm PREVIEW on a DIFFERENT scene than program: mirroring program
+        // made the two monitors show the same picture and left Take disabled
+        // (it no-ops when preview == program). Cue the next scene instead, so
+        // the buses differ and Take is live from the first click.
         if previewSceneId.isEmpty {
-            previewSceneId = programSceneId
+            previewSceneId = scenes.first { $0.id != programSceneId }?.id ?? programSceneId
         }
         syncScenes()
         if let auto = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"],

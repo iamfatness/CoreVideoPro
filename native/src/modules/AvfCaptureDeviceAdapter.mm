@@ -360,6 +360,40 @@ class AvfCaptureDevice final : public ICaptureDevice {
   }
 
   void startSessionLocked(AvfDeviceEntry& entry) {
+    // TCC consent is REQUIRED before a session will deliver frames. Without
+    // this the session starts, reports "connected", and then silently never
+    // produces a sample — which is exactly how "web cams aren't working"
+    // presented: connected rows, no pixels, no error anywhere. Ask, and make
+    // every outcome a truthful row instead of silence.
+    const AVAuthorizationStatus camAuth =
+        [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+    if (camAuth == AVAuthorizationStatusDenied ||
+        camAuth == AVAuthorizationStatusRestricted) {
+      entry.info.connectionState = "error";
+      entry.info.warning =
+          "Camera access is denied for CoreVideo Pro. Grant it in System "
+          "Settings > Privacy & Security > Camera, then reconnect.";
+      std::fprintf(stderr, "[avf-capture] camera permission DENIED for '%s'\n",
+                   entry.info.name.c_str());
+      return;
+    }
+    if (camAuth == AVAuthorizationStatusNotDetermined) {
+      // Prompt once, without blocking the caller (this runs under the core
+      // lock; a modal wait here froze the render thread for seconds).
+      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
+                               completionHandler:^(BOOL granted) {
+        std::fprintf(stderr, "[avf-capture] camera permission %s\n",
+                     granted ? "granted" : "denied");
+      }];
+      entry.info.connectionState = "error";
+      entry.info.warning =
+          "Waiting for camera permission — approve the macOS prompt, then "
+          "reconnect this source.";
+      std::fprintf(stderr, "[avf-capture] camera permission requested for '%s'\n",
+                   entry.info.name.c_str());
+      return;
+    }
+
     NSString* uniqueId = [NSString stringWithUTF8String:entry.info.nativeDeviceId.c_str()];
     AVCaptureDevice* device = [AVCaptureDevice deviceWithUniqueID:uniqueId];
     if (!device) {
