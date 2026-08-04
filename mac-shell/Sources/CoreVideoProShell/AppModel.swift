@@ -200,6 +200,22 @@ struct MasteringParams: Equatable {
     }
 }
 
+// One multiview tile's chrome, from multiviewSharedTexture.tiles. The core
+// composites PIXELS into the texture; labels and tally borders are the
+// SHELL's overlay (the WinUI ShowMultiviewHost pattern) — without them a PGM
+// or PVW cell with no source is an invisible black rectangle.
+struct MultiviewTile: Identifiable, Equatable {
+    let id: String
+    var label: String
+    var role: String      // pgm | pvw | source
+    var tally: String     // program | preview | none
+    var activeSpeaker: Bool
+    var x: Double
+    var y: Double
+    var w: Double
+    var h: Double
+}
+
 struct RosterParticipant: Identifiable, Equatable {
     let id: String
     let name: String
@@ -237,6 +253,7 @@ final class AppModel: ObservableObject {
     @Published var programFrameNumber: Int64 = 0
     @Published var previewSurfaceId: UInt32 = 0
     @Published var multiviewSurfaceId: UInt32 = 0
+    @Published var multiviewTiles: [MultiviewTile] = []
     @Published var captureDevices: [CaptureDeviceRow] = []
     @Published var clockText = ""
     @Published var selectedTab: StudioTab = .studio
@@ -577,10 +594,12 @@ final class AppModel: ObservableObject {
         if let program = snapshot["programSharedTexture"] as? JSONObject {
             applySharedTexture(program)
         }
-        if let multiview = snapshot["multiviewSharedTexture"] as? JSONObject,
-           let texture = multiview["texture"] as? JSONObject,
-           let id = texture["iosurfaceId"] as? NSNumber {
-            multiviewSurfaceId = id.uint32Value
+        if let multiview = snapshot["multiviewSharedTexture"] as? JSONObject {
+            if let texture = multiview["texture"] as? JSONObject,
+               let id = texture["iosurfaceId"] as? NSNumber {
+                multiviewSurfaceId = id.uint32Value
+            }
+            applyMultiviewTiles(multiview["tiles"] as? [JSONObject])
         }
         if let session = snapshot["outputSenderSession"] as? JSONObject {
             let senders = session["senders"] as? [JSONObject] ?? []
@@ -764,12 +783,72 @@ final class AppModel: ObservableObject {
                let id = texture["iosurfaceId"] as? NSNumber {
                 multiviewSurfaceId = id.uint32Value
             }
+            applyMultiviewTiles(event["tiles"] as? [JSONObject])
         case "preview-shared-texture":
             if let id = event["iosurfaceId"] as? NSNumber {
                 previewSurfaceId = id.uint32Value
             }
         default:
             break
+        }
+    }
+
+    private func applyMultiviewTiles(_ tiles: [JSONObject]?) {
+        guard let tiles else { return }
+        multiviewTiles = tiles.enumerated().map { index, entry in
+            let role = entry["role"] as? String ?? "source"
+            let sourceId = entry["sourceId"] as? String ?? ""
+            return MultiviewTile(
+                id: sourceId.isEmpty ? "\(role)-\(index)" : sourceId,
+                label: entry["label"] as? String ?? "",
+                role: role,
+                tally: entry["tally"] as? String ?? "none",
+                activeSpeaker: entry["activeSpeaker"] as? Bool ?? false,
+                x: (entry["x"] as? NSNumber)?.doubleValue ?? 0,
+                y: (entry["y"] as? NSNumber)?.doubleValue ?? 0,
+                w: (entry["w"] as? NSNumber)?.doubleValue ?? 0,
+                h: (entry["h"] as? NSNumber)?.doubleValue ?? 0)
+        }
+    }
+
+    // ── canvas / output profile ──────────────────────────────────────────────
+
+    @Published var canvasWidth = 1920
+    @Published var canvasHeight = 1080
+    @Published var canvasFps = 60
+    @Published var streamBitrateMbps = 6.0
+    @Published var streamCodec = "h264"
+    @Published var recordFormat = "mp4"
+    @Published var recordPrefix = "show"
+    @Published var multiviewTileCount = 8
+
+    func applyOutputProfile() {
+        guard let bridge else { return }
+        Task {
+            _ = try? await bridge.request([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [[
+                    "type": "set-output-profile",
+                    "width": canvasWidth, "height": canvasHeight, "fps": canvasFps,
+                    "targetBitrateMbps": streamBitrateMbps, "codec": streamCodec,
+                    "resolution": "\(canvasWidth)x\(canvasHeight)",
+                ]],
+            ])
+        }
+        syncScenes()
+    }
+
+    func applyMultiviewConfig() {
+        guard let bridge else { return }
+        Task {
+            _ = try? await bridge.request([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [[
+                    "type": "configure-multiviewer",
+                    "layoutMode": multiviewLayoutMode,
+                    "tileCount": multiviewTileCount,
+                ]],
+            ])
         }
     }
 
@@ -1806,7 +1885,8 @@ final class AppModel: ObservableObject {
                             startProgramOutput(recording: true, streaming: streamingDesired),
                             [
                                 "type": "set-recording-targets", "targetFolder": folder,
-                                "filenamePrefix": "show", "format": "mp4", "quality": "high",
+                                "filenamePrefix": recordPrefix.isEmpty ? "show" : recordPrefix,
+                                "format": recordFormat, "quality": "high",
                                 "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy,
                             ],
                             ["type": "start-recording-session", "sessionId": UUID().uuidString,

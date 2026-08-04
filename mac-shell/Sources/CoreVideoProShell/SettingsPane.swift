@@ -45,7 +45,97 @@ struct SettingsPane: View {
                 }
             }
 
+            // CANVAS — the render size everything downstream inherits
+            // (ProductionSettingsWindow "Canvas" group: Canvas size, Canvas FPS).
+            card("Canvas") {
+                labeled("Canvas size") {
+                    Picker("", selection: Binding(
+                        get: { "\(model.canvasWidth)x\(model.canvasHeight)" },
+                        set: { value in
+                            let parts = value.split(separator: "x").compactMap { Int($0) }
+                            if parts.count == 2 {
+                                model.canvasWidth = parts[0]
+                                model.canvasHeight = parts[1]
+                                model.applyOutputProfile()
+                            }
+                        })) {
+                        Text("3840×2160 (4K)").tag("3840x2160")
+                        Text("2560×1440").tag("2560x1440")
+                        Text("1920×1080").tag("1920x1080")
+                        Text("1280×720").tag("1280x720")
+                    }
+                    .labelsHidden().frame(width: 180)
+                }
+                labeled("Canvas FPS") {
+                    Picker("", selection: Binding(
+                        get: { model.canvasFps },
+                        set: { model.canvasFps = $0; model.applyOutputProfile() })) {
+                        Text("60").tag(60)
+                        Text("30").tag(30)
+                        Text("24").tag(24)
+                    }
+                    .labelsHidden().frame(width: 100)
+                }
+                Text("The compositor renders at this size; stream and recording "
+                     + "inherit it unless overridden.")
+                    .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+            }
+
+            // MULTIVIEW — layout mode + tile count (the reference's Layout group).
+            card("Multiview") {
+                labeled("Layout mode") {
+                    Picker("", selection: Binding(
+                        get: { model.multiviewLayoutMode },
+                        set: { model.configureMultiviewer(mode: $0) })) {
+                        Text("P/P top").tag("pgmPvwTop")
+                        Text("P/P large").tag("pgmPvwLarge")
+                        Text("P/P side").tag("pgmPvwSide")
+                        Text("Grid").tag("grid")
+                    }
+                    .labelsHidden().frame(width: 160)
+                }
+                labeled("Tile count") {
+                    Stepper(value: Binding(
+                        get: { model.multiviewTileCount },
+                        set: { model.multiviewTileCount = $0; model.applyMultiviewConfig() }),
+                        in: 1...16) {
+                        Text("\(model.multiviewTileCount)").font(.plexMono(11))
+                    }
+                    .frame(width: 120)
+                }
+            }
+
             card("Outputs") {
+                labeled("Stream bitrate") {
+                    HStack(spacing: 6) {
+                        Slider(value: Binding(
+                            get: { model.streamBitrateMbps },
+                            set: { model.streamBitrateMbps = $0 }),
+                            in: 1...20, step: 0.5)
+                            .frame(width: 180)
+                        Text(String(format: "%.1f Mbps", model.streamBitrateMbps))
+                            .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                    }
+                }
+                labeled("Stream codec") {
+                    Picker("", selection: $model.streamCodec) {
+                        Text("H.264").tag("h264")
+                        Text("H.265 / HEVC").tag("h265")
+                    }
+                    .labelsHidden().frame(width: 160)
+                }
+                labeled("Recording format") {
+                    Picker("", selection: $model.recordFormat) {
+                        Text("MP4").tag("mp4")
+                        Text("MOV").tag("mov")
+                    }
+                    .labelsHidden().frame(width: 120)
+                }
+                labeled("Filename prefix") {
+                    TextField("show", text: $model.recordPrefix)
+                        .textFieldStyle(StudioFieldStyle())
+                        .frame(width: 160)
+                }
                 labeled("Recording folder") {
                     HStack(spacing: 6) {
                         Text(recordingFolder).font(.plexMono(10))

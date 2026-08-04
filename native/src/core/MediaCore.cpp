@@ -4489,7 +4489,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
   // stays on the light videoOnly tick (no CPU readback).
-  if (!multiviewSources_.empty()) {
+  // Render whenever there are sources OR the layout has PGM/PVW cells: an
+  // operator with nothing assigned yet must still see the program and preview
+  // buses (every hardware multiviewer shows them from power-on). Gating the
+  // whole pass on sources left the mac shell with a black box and no P/P.
+  const bool multiviewHasProgramPreview = multiviewLayoutMode_ != "grid";
+  if (!multiviewSources_.empty() || multiviewHasProgramPreview) {
     auto multiviewPlan = buildMultiviewRenderPlan(videoFrames);
     multiviewPlan.skipCpuReadback = true;
     lastProgramFrame_.multiviewSharedTexture = modules_.compositor->renderMultiview(multiviewPlan, videoFrames);

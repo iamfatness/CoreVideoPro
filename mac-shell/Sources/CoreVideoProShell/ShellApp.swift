@@ -427,7 +427,24 @@ struct MultiviewerCanvas: View {
             }
             ZStack {
                 Rectangle().fill(Color.black)
-                if model.multiviewSurfaceId == 0 {
+                if model.multiviewSurfaceId != 0 {
+                    SurfaceView(surfaceId: model.multiviewSurfaceId)
+                }
+                // Tile chrome is the SHELL's job (the WinUI multiview-host
+                // pattern): the core composites pixels, we draw the labels and
+                // tally borders from tiles[]. Without this a PGM/PVW cell with
+                // no source is an invisible black rectangle — which is exactly
+                // how "program and preview are missing" presented.
+                GeometryReader { geometry in
+                    ForEach(model.multiviewTiles) { tile in
+                        MultiviewTileChrome(tile: tile)
+                            .frame(width: max(1, tile.w * geometry.size.width),
+                                   height: max(1, tile.h * geometry.size.height))
+                            .offset(x: tile.x * geometry.size.width,
+                                    y: tile.y * geometry.size.height)
+                    }
+                }
+                if model.multiviewTiles.isEmpty {
                     VStack(spacing: 6) {
                         Text("Multiviewer")
                             .font(.grotesk(14, .semibold))
@@ -436,14 +453,62 @@ struct MultiviewerCanvas: View {
                              + "pick a scene — preview and program composite here.")
                             .font(.grotesk(12)).foregroundStyle(Studio.textDim)
                     }
-                } else {
-                    SurfaceView(surfaceId: model.multiviewSurfaceId)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(Rectangle().stroke(Studio.border, lineWidth: 1))
         }
         .modifier(StudioPanel())
+    }
+}
+
+// PGM = amber/red tally, PVW = green, sources = neutral (active speaker
+// lights green). Label bar sits at the bottom of the cell like the reference.
+struct MultiviewTileChrome: View {
+    let tile: MultiviewTile
+
+    var accent: Color {
+        switch tile.role {
+        case "pgm": return Studio.red
+        case "pvw": return Studio.accent
+        default:
+            if tile.tally == "program" { return Studio.red }
+            if tile.tally == "preview" { return Studio.accent }
+            return tile.activeSpeaker ? Studio.accent : Studio.border
+        }
+    }
+
+    var title: String {
+        switch tile.role {
+        case "pgm": return "PROGRAM"
+        case "pvw": return "PREVIEW"
+        default: return tile.label.isEmpty ? "Source" : tile.label
+        }
+    }
+
+    var isBus: Bool { tile.role == "pgm" || tile.role == "pvw" }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Rectangle().fill(Color.clear)
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.grotesk(11, isBus ? .semibold : .regular))
+                    .foregroundStyle(isBus ? Studio.onAccent : Studio.textPrimary)
+                    .lineLimit(1)
+                if !isBus, !tile.label.isEmpty, tile.activeSpeaker {
+                    Text("LIVE").font(.plexMono(8, .semibold))
+                        .foregroundStyle(Studio.onAccent)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Rectangle().fill(
+                isBus ? accent : Color.black.opacity(0.55)))
+        }
+        .overlay(Rectangle().stroke(accent, lineWidth: isBus ? 3 : 2))
+        .allowsHitTesting(false)
     }
 }
 
