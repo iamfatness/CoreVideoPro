@@ -1413,50 +1413,6 @@ struct SlotRow: View {
     }
 }
 
-struct ScenesPane: View {
-    @EnvironmentObject var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Scenes").font(.grotesk(14, .semibold))
-            Text("Scene slots fill from assigned participants in roster order; "
-                 + "empty slots follow the active speaker.")
-                .font(.grotesk(10)).foregroundStyle(Studio.secondary)
-            let assigned = model.roster.filter { model.assignedIds.contains($0.id) }
-            Text("ASSIGNED (\(assigned.count))")
-                .font(.plexMono(10, .bold))
-                .foregroundStyle(Studio.secondary)
-            if assigned.isEmpty {
-                Text("Assign participants on the Zoom tab to fill scene slots.")
-                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
-            }
-            ForEach(Array(assigned.enumerated()), id: \.element.id) { index, participant in
-                HStack {
-                    Text("slot \(index + 1)")
-                        .font(.plexMono(10))
-                        .foregroundStyle(Studio.secondary)
-                    Text(participant.name).font(.grotesk(12)).lineLimit(1)
-                    Spacer()
-                }
-            }
-            Divider()
-            HStack {
-                Text("PGM: \(model.programSceneId.isEmpty ? "—" : model.programSceneId)")
-                    .font(.plexMono(10))
-                    .foregroundStyle(Studio.amber)
-                Text("PVW: \(model.previewSceneId.isEmpty ? "—" : model.previewSceneId)")
-                    .font(.plexMono(10))
-                    .foregroundStyle(Studio.accent)
-                Spacer()
-                Button("Take") { model.take() }
-                    .disabled(model.previewSceneId.isEmpty
-                              || model.previewSceneId == model.programSceneId)
-            }
-        }
-        .modifier(StudioPanel())
-    }
-}
-
 struct OverlaysPane: View {
     @EnvironmentObject var model: AppModel
 
