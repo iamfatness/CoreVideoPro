@@ -184,19 +184,32 @@ struct DisabledPill: View {
 struct CapturePill: View {
     @EnvironmentObject var model: AppModel
 
-    var on: Bool { model.rawMediaActive }
+    // Truthful two-state readout: label shows the ENGINE-reported raw-media
+    // state; the button toggles operator intent.
+    var live: Bool { model.rawMediaActive }
+    var wanted: Bool { model.captureEnabled }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "power").font(.system(size: 10, weight: .bold))
-            Text(on ? "Capture On" : "Capture Off").font(.system(size: 12, weight: .medium))
+        Button {
+            model.setCapture(enabled: !wanted)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "power").font(.system(size: 10, weight: .bold))
+                Text(live ? "Capture On" : wanted ? "Capture starting…" : "Capture Off")
+                    .font(.grotesk(12, .medium))
+            }
+            .foregroundStyle(live ? Studio.accent : wanted ? Studio.amber : Studio.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Studio.card))
+            .overlay(Capsule().stroke(
+                live ? Studio.accent.opacity(0.7)
+                     : wanted ? Studio.amber.opacity(0.7) : Studio.stroke,
+                lineWidth: 1))
         }
-        .foregroundStyle(on ? Studio.accent : Studio.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Capsule().fill(Studio.card))
-        .overlay(Capsule().stroke(on ? Studio.accent.opacity(0.7) : Studio.stroke,
-                                  lineWidth: 1))
+        .buttonStyle(.plain)
+        .help(live ? "Raw media is live — click to stop capture"
+                   : "Start capture (requests Zoom recording permission)")
     }
 }
 

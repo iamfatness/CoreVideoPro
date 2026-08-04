@@ -456,6 +456,21 @@ final class AppModel: ObservableObject {
 
     private var manuallyUnassigned: Set<String> = []
 
+    // The Capture button (Windows "Engine On"): ON → spine startCapture arms
+    // raw media (this is when Zoom's record-privilege request fires); OFF →
+    // zoom-stop-capture stops raw media in the ENGINE (clears the recording
+    // indicator for participants) plus the spine flag drops.
+    @Published var captureEnabled = false
+
+    func setCapture(enabled: Bool) {
+        captureEnabled = enabled
+        syncSpine()
+        if !enabled {
+            guard let bridge else { return }
+            Task { _ = try? await bridge.request(["type": "zoom-stop-capture"]) }
+        }
+    }
+
     private func handleEvent(_ event: JSONObject) {
         switch event["type"] as? String {
         case "program-shared-texture":
@@ -614,6 +629,11 @@ final class AppModel: ObservableObject {
             ])
         }
         let payload: JSONObject = [
+            // startCapture is what arms raw media (engine start_media →
+            // start_raw_media): without it every video subscription stays
+            // "deferred" and no frames ever flow. Operator-driven via the
+            // Capture button (the Windows "Engine On" toggle), never automatic.
+            "startCapture": captureEnabled,
             "multiview": [
                 "canvasWidth": 1920, "canvasHeight": 1080,
                 "sources": multiviewSources,
