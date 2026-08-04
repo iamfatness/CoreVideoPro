@@ -19,6 +19,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>CoreVideo Pro</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>ATSApplicationFontsPath</key><string>Fonts</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSCameraUsageDescription</key><string>CoreVideo Pro captures cameras as production sources.</string>
@@ -29,6 +30,9 @@ PLIST
 # Self-contained: core + engine ride in Resources so the .app runs anywhere
 # on this machine without the repo checkout (ShellPaths prefers Resources).
 mkdir -p "$APP/Contents/Resources"
+# Brand fonts (design handoff non-negotiable: Space Grotesk + IBM Plex Mono)
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp mac-shell/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
 if [ -x native/build-metal/corevideo-native ]; then
   cp native/build-metal/corevideo-native "$APP/Contents/Resources/"
 fi

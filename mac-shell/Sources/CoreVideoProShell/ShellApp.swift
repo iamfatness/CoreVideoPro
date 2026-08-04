@@ -11,16 +11,29 @@ import AppKit
 import IOSurface
 import SwiftUI
 
+// Color tokens — exact hexes from docs/design-handoff-macos.md (dark only,
+// opaque, status colors load-bearing and never adjusted).
 enum Studio {
-    static let background = Color(red: 0x0A / 255.0, green: 0x0B / 255.0, blue: 0x0C / 255.0)
-    static let panel = Color(red: 0x10 / 255.0, green: 0x13 / 255.0, blue: 0x15 / 255.0)
-    static let accent = Color(red: 0x22 / 255.0, green: 0xC8 / 255.0, blue: 0x6E / 255.0)
-    static let secondary = Color(red: 0x8B / 255.0, green: 0x94 / 255.0, blue: 0x9B / 255.0)
-    static let stroke = Color.white.opacity(0x17 / 255.0)
-    static let amber = Color(red: 0.94, green: 0.66, blue: 0.36)
-    static let red = Color(red: 0.78, green: 0.21, blue: 0.18)
+    static let background = Color(hex: 0x0A0B0C)
+    static let panel = Color(hex: 0x101315)
+    static let surface = Color(hex: 0x16191B)
+    static let surfaceRaised = Color(hex: 0x1B1F22)
+    static let field = Color(hex: 0x0E1112)
+    static let border = Color.white.opacity(0.09)
+    static let line2 = Color.white.opacity(0.05)
+    static let textPrimary = Color(hex: 0xE9EDEF)
+    static let secondary = Color(hex: 0x8B949B)
+    static let textDim = Color(hex: 0x5C656B)
+    static let accent = Color(hex: 0x22C86E)
+    static let onAccent = Color(hex: 0x06170D)
+    static let amber = Color(hex: 0xE8A41F)
+    static let red = Color(hex: 0xE5433F)
+    // The one documented inconsistency: sliders/toggles render the stock
+    // accent on Windows too — match the reference, don't unify on green.
     static let blue = Color(red: 0.29, green: 0.62, blue: 0.85)
-    static let card = Color.white.opacity(0.035)
+    // Back-compat aliases for pre-handoff call sites.
+    static let stroke = border
+    static let card = surface.opacity(0.6)
 }
 
 struct StudioPanel: ViewModifier {
@@ -38,6 +51,7 @@ struct ShellApp: App {
 
     init() {
         setvbuf(stdout, nil, _IOLBF, 0)
+        DesignFonts.register()
         // A bare (non-bundled) executable defaults to an activation policy
         // whose windows cannot become KEY — text fields silently refuse
         // input (the engine-bundle lesson). Force Regular + activate.
@@ -53,6 +67,8 @@ struct ShellApp: App {
                 .environmentObject(model)
                 .onAppear { model.start() }
                 .frame(minWidth: 1360, minHeight: 860)
+                .font(.grotesk(12))
+                .foregroundStyle(Studio.textPrimary)
                 .background(Studio.background)
                 .tint(Studio.accent)
                 .preferredColorScheme(.dark)
@@ -89,14 +105,10 @@ struct HeaderBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Studio.accent.opacity(0.18))
-                .frame(width: 34, height: 34)
-                .overlay(Text("CV").font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Studio.accent))
+            BrandBadge()
             VStack(alignment: .leading, spacing: 0) {
-                Text("CoreVideo Pro").font(.system(size: 14, weight: .semibold))
-                Text("Zoom-native production").font(.system(size: 10))
+                Text("CoreVideo Pro").font(.grotesk(14, .semibold))
+                Text("Live production").font(.grotesk(11))
                     .foregroundStyle(Studio.secondary)
             }
             GroupLabel("Produce")
@@ -140,16 +152,17 @@ struct TabPill: View {
     var active: Bool { model.selectedTab == tab }
 
     var body: some View {
+        // Nav button spec: ghost, 12px SemiBold, padding 12x8, 10px radius.
         Button(tab.rawValue) { model.selectedTab = tab }
             .buttonStyle(.plain)
-            .font(.system(size: 12, weight: active ? .semibold : .regular))
-            .foregroundStyle(active ? Studio.accent : .white.opacity(0.85))
+            .font(.grotesk(12, .semibold))
+            .foregroundStyle(active ? Studio.accent : Studio.textPrimary)
             .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 15)
-                .fill(active ? Studio.accent.opacity(0.14) : Studio.card))
-            .overlay(RoundedRectangle(cornerRadius: 15)
-                .stroke(active ? Studio.accent.opacity(0.7) : Studio.stroke, lineWidth: 1))
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(active ? Studio.accent.opacity(0.12) : Studio.surface))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(active ? Studio.accent.opacity(0.7) : Studio.border, lineWidth: 1))
     }
 }
 
@@ -851,9 +864,9 @@ struct StreamControl: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Stream settings").font(.headline)
                 TextField("RTMP URL", text: $model.streamUrl)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(StudioFieldStyle())
                 SecureField("Stream key (stored in Keychain)", text: $model.streamKey)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(StudioFieldStyle())
                 HStack {
                     Spacer()
                     Button(live ? "Stop streaming" : "Start streaming") {
@@ -975,10 +988,10 @@ struct ZoomPane: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Zoom").font(.headline)
             TextField("Meeting ID or URL", text: $model.joinMeetingId)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(StudioFieldStyle())
             HStack {
                 TextField("Passcode", text: $model.joinPasscode)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(StudioFieldStyle())
                 Button("Join") { model.joinZoom() }
                     .disabled(model.joinMeetingId.isEmpty)
                 Button("Leave") { model.leaveZoom() }
@@ -1142,9 +1155,9 @@ struct OverlaysPane: View {
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundStyle(Studio.secondary)
             TextField("Name", text: $model.lowerThirdName)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(StudioFieldStyle())
             TextField("Title", text: $model.lowerThirdTitle)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(StudioFieldStyle())
             Picker("Position", selection: $model.lowerThirdPosition) {
                 Text("Lower left").tag("lower-left")
                 Text("Lower right").tag("lower-right")
