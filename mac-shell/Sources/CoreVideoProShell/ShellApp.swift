@@ -291,13 +291,112 @@ struct StudioWorkspaceView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             SceneRail().frame(width: 205)
-            VStack(spacing: 8) {
-                ProgramPreviewPanel()
-                ShowInputsRow()
-            }
+            MultiviewerCanvas()
             VideoRoomRail().frame(width: 200)
         }
         .padding(8)
+    }
+}
+
+// The Studio center: ONE multiview canvas (reference 01-studio). The core
+// composites PREVIEW + PROGRAM + live input tiles into the multiview texture
+// in the pgmPvw layout modes — the shell just presents it.
+struct MultiviewerCanvas: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text("MULTIVIEWER").font(.grotesk(12, .semibold))
+                MonoChip("1080p60")
+                Text("\(model.assignedIds.count) live inputs")
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                Spacer()
+                Text(model.clockText)
+                    .font(.plexMono(12, .medium)).foregroundStyle(Studio.textPrimary)
+                Menu {
+                    Button("P/P top") { model.configureMultiviewer(mode: "pgmPvwTop") }
+                    Button("P/P large") { model.configureMultiviewer(mode: "pgmPvwLarge") }
+                    Button("P/P side") { model.configureMultiviewer(mode: "pgmPvwSide") }
+                    Button("Grid") { model.configureMultiviewer(mode: "grid") }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "rectangle.split.2x2").font(.system(size: 9))
+                        Text("Edit layout").font(.grotesk(11, .semibold))
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .foregroundStyle(Studio.textPrimary)
+                ActionChip("Scene builder", accent: true) { model.selectedTab = .scenes }
+                HStack(spacing: 4) {
+                    Text("LT \(model.lowerThirdPhase == "hidden" ? "out" : "in")")
+                        .font(.plexMono(10, .semibold))
+                        .foregroundStyle(model.lowerThirdPhase == "hidden"
+                                         ? Studio.secondary : Studio.accent)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Studio.surface))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(Studio.border, lineWidth: 1))
+                ActionChip("Room") { model.selectedTab = .zoom }
+            }
+            ZStack {
+                Rectangle().fill(Color.black)
+                if model.multiviewSurfaceId == 0 {
+                    VStack(spacing: 6) {
+                        Text("Multiviewer")
+                            .font(.grotesk(14, .semibold))
+                            .foregroundStyle(Studio.secondary)
+                        Text("Join Zoom or connect sources, assign inputs, "
+                             + "pick a scene — preview and program composite here.")
+                            .font(.grotesk(12)).foregroundStyle(Studio.textDim)
+                    }
+                } else {
+                    SurfaceView(surfaceId: model.multiviewSurfaceId)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(Rectangle().stroke(Studio.border, lineWidth: 1))
+        }
+        .modifier(StudioPanel())
+    }
+}
+
+struct MonoChip: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(.plexMono(10, .semibold))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Studio.surface))
+            .foregroundStyle(Studio.secondary)
+    }
+}
+
+struct ActionChip: View {
+    let label: String
+    var accent = false
+    let action: () -> Void
+
+    init(_ label: String, accent: Bool = false, action: @escaping () -> Void) {
+        self.label = label
+        self.accent = accent
+        self.action = action
+    }
+
+    var body: some View {
+        Button(label, action: action)
+            .buttonStyle(.plain)
+            .font(.grotesk(11, .semibold))
+            .foregroundStyle(accent ? Studio.accent : Studio.textPrimary)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(accent ? Studio.accent.opacity(0.12) : Studio.surface))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(accent ? Studio.accent.opacity(0.6) : Studio.border, lineWidth: 1))
     }
 }
 
@@ -411,121 +510,6 @@ struct SceneChip: View {
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.7),
                                                               lineWidth: 1))
             .foregroundStyle(color)
-    }
-}
-
-// ── PROGRAM + PREVIEW ────────────────────────────────────────────────────────
-
-struct ProgramPreviewPanel: View {
-    @EnvironmentObject var model: AppModel
-
-    var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                Text("PROGRAM + PREVIEW")
-                    .font(.system(size: 11, weight: .bold))
-                Text("1080p60").font(.system(size: 10, design: .monospaced))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Studio.card))
-                    .foregroundStyle(Studio.secondary)
-                Text("16:9 monitors").font(.system(size: 10, design: .monospaced))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Studio.card))
-                    .foregroundStyle(Studio.secondary)
-                Text("LT \(model.lowerThirdPhase == "hidden" ? "out" : "in")")
-                    .font(.system(size: 10, design: .monospaced))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Studio.card))
-                    .foregroundStyle(model.lowerThirdPhase == "hidden"
-                                     ? Studio.secondary : Studio.accent)
-                Spacer()
-            }
-            HStack(spacing: 8) {
-                // Preview LEFT of program, matching the Windows director layout.
-                MonitorTile(title: "PREVIEW",
-                            subtitle: model.scenes.first {
-                                $0.id == model.previewSceneId
-                            }?.name ?? "",
-                            titleColor: Studio.accent,
-                            surfaceId: model.previewSurfaceId,
-                            emptyHint: "Tap a scene to arm preview")
-                MonitorTile(title: "PROGRAM",
-                            subtitle: model.scenes.first {
-                                $0.id == model.programSceneId
-                            }?.name ?? "",
-                            titleColor: Studio.amber,
-                            surfaceId: model.programSurfaceId,
-                            emptyHint: "Take a scene to program")
-            }
-        }
-        .modifier(StudioPanel())
-    }
-}
-
-struct MonitorTile: View {
-    let title: String
-    let subtitle: String
-    let titleColor: Color
-    let surfaceId: UInt32
-    let emptyHint: String
-
-    var body: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 6) {
-                Text(title).font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(titleColor)
-                if !subtitle.isEmpty {
-                    Text(subtitle).font(.system(size: 10))
-                        .foregroundStyle(Studio.secondary)
-                }
-                Spacer()
-            }
-            ZStack {
-                Rectangle().fill(Color.black)
-                if surfaceId == 0 {
-                    Text(emptyHint).font(.caption).foregroundStyle(Studio.secondary)
-                } else {
-                    SurfaceView(surfaceId: surfaceId)
-                }
-            }
-            .aspectRatio(16.0 / 9.0, contentMode: .fit)
-            .overlay(Rectangle().stroke(
-                surfaceId == 0 ? Studio.stroke : titleColor.opacity(0.65), lineWidth: 1.5))
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-// ── Show inputs strip ────────────────────────────────────────────────────────
-
-struct ShowInputsRow: View {
-    @EnvironmentObject var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Show inputs · \(model.assignedIds.count) assigned")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("assign on the Zoom tab · connect on Sources")
-                    .font(.system(size: 10)).foregroundStyle(Studio.secondary)
-                Spacer()
-                Text("UP TO 10 LIVE")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Studio.secondary.opacity(0.6))
-            }
-            ZStack {
-                Rectangle().fill(Color.black)
-                if model.multiviewSurfaceId == 0 {
-                    Text("Assign participants or connect sources to populate the multiviewer")
-                        .font(.caption).foregroundStyle(Studio.secondary)
-                } else {
-                    SurfaceView(surfaceId: model.multiviewSurfaceId)
-                }
-            }
-            .frame(minHeight: 120, maxHeight: 170)
-            .overlay(Rectangle().stroke(Studio.stroke, lineWidth: 1))
-        }
-        .modifier(StudioPanel())
     }
 }
 

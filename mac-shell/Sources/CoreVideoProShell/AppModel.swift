@@ -248,7 +248,24 @@ final class AppModel: ObservableObject {
         bridge.start()
     }
 
+    // The Studio center is ONE multiview canvas (reference 01-studio): the
+    // core composites PREVIEW + PROGRAM tiles INSIDE the multiview texture in
+    // the pgmPvw layout modes, plus the live input tiles below.
+    @Published var multiviewLayoutMode = "pgmPvwTop"
+
+    func configureMultiviewer(mode: String) {
+        multiviewLayoutMode = mode
+        guard let bridge else { return }
+        Task {
+            _ = try? await bridge.request([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [["type": "configure-multiviewer", "layoutMode": mode]],
+            ])
+        }
+    }
+
     private func onConnected() {
+        configureMultiviewer(mode: multiviewLayoutMode)
         if let auto = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"],
            !auto.isEmpty, joinMeetingId.isEmpty {
             joinMeetingId = auto
@@ -551,7 +568,7 @@ final class AppModel: ObservableObject {
                 "priority": index,
             ]
         }
-        let multiviewSources: [JSONObject] = roster
+        var multiviewSources: [JSONObject] = roster
             .filter { assignedIds.contains($0.id) }
             .map { participant in
                 [
@@ -561,6 +578,16 @@ final class AppModel: ObservableObject {
                     "label": participant.name,
                 ]
             }
+        // Connected capture devices light the multiviewer too (the reference
+        // rig shows Elgato tiles with no meeting at all).
+        for device in captureDevices where device.connectionState == "connected" {
+            multiviewSources.append([
+                "sourceId": "capture:" + device.id,
+                "kind": "capture-input",
+                "captureDeviceId": device.id,
+                "label": device.name,
+            ])
+        }
         let payload: JSONObject = [
             "multiview": [
                 "canvasWidth": 1920, "canvasHeight": 1080,
@@ -1062,6 +1089,7 @@ final class AppModel: ObservableObject {
                         "outputSourceId": device.id,
                     ])
                 }
+                syncSpine()  // multiview sources include connected capture devices
             } catch {
                 pushWarning("capture: \(error.localizedDescription)")
             }
