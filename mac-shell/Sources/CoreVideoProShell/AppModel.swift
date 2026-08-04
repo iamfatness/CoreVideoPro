@@ -14,6 +14,7 @@ enum StudioTab: String, CaseIterable {
     case overlays = "Overlays"
     case audio = "Audio"
     case media = "Media"
+    case automation = "Automation"
     case diagnose = "Diagnose"
 }
 
@@ -126,6 +127,19 @@ final class AppModel: ObservableObject {
     @Published var lowerThirdPosition = "lower-left"
     @Published var lowerThirdPhase = "hidden"  // truthful phase from overlayState
     @Published var overlaysOnAir = 0
+    // Director recommendation (core-computed, shell-actuated — the core NEVER
+    // switches scenes itself; recommend-auto-production is a documented no-op).
+    @Published var autoRuleId = ""
+    @Published var autoSceneId = ""
+    @Published var autoConfidence = 0
+    @Published var autoRationale = ""
+    @Published var autoDirectEnabled = false
+    @Published var autoTakeEnabled = true
+    @Published var autoConfidenceThreshold = 70.0
+    @Published var autoHoldSeconds = 4.0
+    @Published var autoStatus = "Manual mode"
+    @Published var isoRecordingEnabled = false
+    @Published var isoSelectedSourceIds: Set<String> = []
 
     private var bridge: MediaCoreBridge?
     private var syncTimer: Timer?
@@ -273,6 +287,12 @@ final class AppModel: ObservableObject {
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
             applySharedTexture(texture)
+        }
+        if let auto = snapshot["autoProduction"] as? JSONObject {
+            autoRuleId = auto["ruleId"] as? String ?? ""
+            autoSceneId = auto["recommendedSceneId"] as? String ?? ""
+            autoConfidence = (auto["confidence"] as? NSNumber)?.intValue ?? 0
+            autoRationale = auto["rationale"] as? String ?? ""
         }
         if let overlay = snapshot["overlayState"] as? JSONObject {
             overlaysOnAir = overlay["onAirCount"] as? Int ?? overlaysOnAir
@@ -581,6 +601,93 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // ── auto-direct (the MagicScene policy ladder, reduced) ──────────────────
+
+    // The core's director speaks its own scene ids; the shell owns the map to
+    // its catalog (the core doesn't care which sceneId gets loaded).
+    private static let directorSceneMap = [
+        "intro": "fullscreen", "interview": "two-up",
+        "speaker-slides": "pip", "panel": "two-up",
+    ]
+
+    private var autoTimer: Timer?
+    private var pendingAutoSceneId = ""
+    private var pendingAutoSince = Date.distantPast
+
+    func setAutoDirect(enabled: Bool) {
+        autoDirectEnabled = enabled
+        pendingAutoSceneId = ""
+        autoTimer?.invalidate()
+        autoTimer = nil
+        guard enabled else {
+            autoStatus = "Manual mode"
+            return
+        }
+        autoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.evaluateAutoDirect() }
+        }
+    }
+
+    private func evaluateAutoDirect() {
+        guard autoDirectEnabled else { return }
+        guard roster.contains(where: \.hasVideo) else {
+            autoStatus = "Waiting for meeting participants"
+            return
+        }
+        guard autoConfidence >= Int(autoConfidenceThreshold) else {
+            autoStatus = "Holding — confidence \(autoConfidence) below threshold"
+            return
+        }
+        guard let target = Self.directorSceneMap[autoSceneId], !target.isEmpty else {
+            autoStatus = "Director idle"
+            return
+        }
+        if target == programSceneId {
+            autoStatus = "On recommended scene (\(target))"
+            pendingAutoSceneId = ""
+            return
+        }
+        if target != pendingAutoSceneId {
+            pendingAutoSceneId = target
+            pendingAutoSince = Date()
+        }
+        let held = Date().timeIntervalSince(pendingAutoSince)
+        guard held >= autoHoldSeconds else {
+            autoStatus = String(format: "Switching to %@ in %.0fs…", target,
+                                autoHoldSeconds - held)
+            return
+        }
+        previewSceneId = target
+        syncScenes()
+        if autoTakeEnabled {
+            take()
+            autoStatus = "Took \(target) (\(autoRuleId))"
+        } else {
+            autoStatus = "Queued \(target) on preview"
+        }
+        pendingAutoSceneId = ""
+    }
+
+    // ── ISO selection (IsoSourceSelectionResolver port) ──────────────────────
+
+    // OFF → empty (program byte-identical to pre-ISO); drop departed sources;
+    // cap 8. Zoom → zoom:<pid>, capture → capture:<id> (already scheme-qualified).
+    func resolvedIsoSourceIds() -> [String] {
+        guard isoRecordingEnabled else { return [] }
+        let present = Set(roster.map { "zoom:" + $0.id })
+            .union(captureDevices.filter { $0.connectionState == "connected" }
+                .map { "capture:" + $0.id })
+        return isoSelectedSourceIds.sorted().filter(present.contains).prefix(8).map { $0 }
+    }
+
+    func toggleIsoSource(_ sourceId: String) {
+        if isoSelectedSourceIds.contains(sourceId) {
+            isoSelectedSourceIds.remove(sourceId)
+        } else {
+            isoSelectedSourceIds.insert(sourceId)
+        }
+    }
+
     // ── media bin + logo bug ─────────────────────────────────────────────────
 
     func refreshMediaBin() {
@@ -745,15 +852,23 @@ final class AppModel: ObservableObject {
                     let folder = (NSSearchPathForDirectoriesInDomains(
                         .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
                         + "/CoreVideoPro"
+                    // Always send the iso keys (empty array = disarm): omitting
+                    // them PRESERVES the previous selection core-side.
+                    let isoIds = resolvedIsoSourceIds()
+                    let isoLegacy = isoIds.filter { $0.hasPrefix("zoom:") }
+                        .map { String($0.dropFirst(5)) }
                     _ = try await bridge.request([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [
-                            ["type": "start-program-output", "destinations": ["recording"]],
+                            ["type": "start-program-output", "destinations": ["recording"],
+                             "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy],
                             [
                                 "type": "set-recording-targets", "targetFolder": folder,
                                 "filenamePrefix": "show", "format": "mp4", "quality": "high",
+                                "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy,
                             ],
-                            ["type": "start-recording-session", "sessionId": UUID().uuidString],
+                            ["type": "start-recording-session", "sessionId": UUID().uuidString,
+                             "isoSourceIds": isoIds, "isoParticipantIds": isoLegacy],
                         ],
                     ])
                 }
