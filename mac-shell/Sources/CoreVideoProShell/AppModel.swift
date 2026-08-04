@@ -241,9 +241,11 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.handleEvent(event) }
         }
         bridge.onStderrLine = { line in
-            // Core stderr is the diagnostic firehose; keep it on OUR stderr so
-            // `log stream`/Console users see it, without flooding the UI.
+            // Core stderr is the diagnostic firehose. LaunchServices launches
+            // have NO stderr, so it also lands in a file — the only way to
+            // diagnose engine/join failures from a Finder-launched session.
             FileHandle.standardError.write(Data((line + "\n").utf8))
+            CoreLog.write(line)
         }
         bridge.start()
     }
@@ -266,6 +268,12 @@ final class AppModel: ObservableObject {
 
     private func onConnected() {
         configureMultiviewer(mode: multiviewLayoutMode)
+        // A scene always sits on PROGRAM (the Windows shell starts on its
+        // first scene) — the PGM tile composites from the first frame.
+        if programSceneId.isEmpty {
+            programSceneId = scenes[0].id
+        }
+        syncScenes()
         if let auto = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"],
            !auto.isEmpty, joinMeetingId.isEmpty {
             joinMeetingId = auto
@@ -370,6 +378,17 @@ final class AppModel: ObservableObject {
            let texture = preview["sharedTexture"] as? JSONObject {
             applySharedTexture(texture)
         }
+        // Cold-start surfaces: the shared-texture EVENTS are structural-change
+        // gated, so a shell that (re)connects after the last structural change
+        // never hears them — the snapshot carries the current ids.
+        if let program = snapshot["programSharedTexture"] as? JSONObject {
+            applySharedTexture(program)
+        }
+        if let multiview = snapshot["multiviewSharedTexture"] as? JSONObject,
+           let texture = multiview["texture"] as? JSONObject,
+           let id = texture["iosurfaceId"] as? NSNumber {
+            multiviewSurfaceId = id.uint32Value
+        }
         if let session = snapshot["outputSenderSession"] as? JSONObject {
             let senders = session["senders"] as? [JSONObject] ?? []
             if let rtmp = senders.first(where: { $0["destination"] as? String == "rtmp" }) {
@@ -407,7 +426,6 @@ final class AppModel: ObservableObject {
         if let error = snapshot["lastError"] as? String, !error.isEmpty {
             pushWarning("zoom: \(error)")
         }
-        let autoAssign = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_AUTOJOIN"] != nil
         if let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
@@ -422,16 +440,21 @@ final class AppModel: ObservableObject {
                     talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
                     assigned: assignedIds.contains(id))
             }
-            if autoAssign {
-                let videoIds = Set(roster.filter(\.hasVideo).map(\.id))
-                if !videoIds.isEmpty, videoIds != assignedIds {
-                    assignedIds = videoIds
-                    print("shell: auto-assigning \(videoIds.sorted())")
-                    syncSpine()
-                }
+            // Auto-assign video participants by default (the Windows
+            // AutomationAutoAssignInputsEnabled default) — join → tiles with
+            // zero clicks. Manual unassigns are respected via the tombstones.
+            let videoIds = Set(roster.filter(\.hasVideo).map(\.id))
+                .subtracting(manuallyUnassigned)
+            if !videoIds.subtracting(assignedIds).isEmpty {
+                assignedIds.formUnion(videoIds)
+                ShellLog.write("auto-assigning \(videoIds.sorted())")
+                syncSpine()
+                syncScenes()
             }
         }
     }
+
+    private var manuallyUnassigned: Set<String> = []
 
     private func handleEvent(_ event: JSONObject) {
         switch event["type"] as? String {
@@ -537,8 +560,10 @@ final class AppModel: ObservableObject {
     func toggleAssigned(_ participant: RosterParticipant) {
         if assignedIds.contains(participant.id) {
             assignedIds.remove(participant.id)
+            manuallyUnassigned.insert(participant.id)  // don't auto re-add
         } else {
             assignedIds.insert(participant.id)
+            manuallyUnassigned.remove(participant.id)
         }
         syncSpine()
         syncScenes()  // scene slots fill from the assigned set
@@ -1034,6 +1059,9 @@ final class AppModel: ObservableObject {
                     let folder = (NSSearchPathForDirectoriesInDomains(
                         .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
                         + "/CoreVideoPro"
+                    // The core refuses (loudly) rather than mkdir -p'ing.
+                    try? FileManager.default.createDirectory(
+                        atPath: folder, withIntermediateDirectories: true)
                     // Always send the iso keys (empty array = disarm): omitting
                     // them PRESERVES the previous selection core-side.
                     let isoIds = resolvedIsoSourceIds()
@@ -1080,13 +1108,16 @@ final class AppModel: ObservableObject {
         guard let bridge else { return }
         Task {
             do {
+                // Both commands take a `payload` wrapper (JsonRpcServer).
                 if device.connectionState == "connected" {
-                    _ = try await bridge.request(
-                        ["type": "disconnect-capture-device", "deviceId": device.id])
+                    _ = try await bridge.request([
+                        "type": "disconnect-capture-device",
+                        "payload": ["deviceId": device.id],
+                    ])
                 } else {
                     _ = try await bridge.request([
-                        "type": "connect-capture-device", "deviceId": device.id,
-                        "outputSourceId": device.id,
+                        "type": "connect-capture-device",
+                        "payload": ["deviceId": device.id, "outputSourceId": device.id],
                     ])
                 }
                 syncSpine()  // multiview sources include connected capture devices
@@ -1137,6 +1168,23 @@ enum ShellPaths {
     }
 }
 
+
+// Core stderr mirror (~/Library/Logs/CoreVideoPro-core.log), size-capped by
+// truncation on launch. Serial queue keeps line writes ordered off-main.
+enum CoreLog {
+    static let path = NSHomeDirectory() + "/Library/Logs/CoreVideoPro-core.log"
+    private static let queue = DispatchQueue(label: "us.iamfatness.corevideopro.corelog")
+    private static let handle: FileHandle? = {
+        FileManager.default.createFile(atPath: path, contents: nil)
+        return FileHandle(forWritingAtPath: path)
+    }()
+
+    static func write(_ line: String) {
+        queue.async {
+            handle?.write(Data((line + "\n").utf8))
+        }
+    }
+}
 
 // Always-on file log (~/Library/Logs/CoreVideoPro-shell.log): LaunchServices
 // launches have no attached stdout, which made GUI sessions undiagnosable.
