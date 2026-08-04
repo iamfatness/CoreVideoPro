@@ -83,7 +83,7 @@ struct RootView: View {
 // rail, honest about what's ported.
 private let navRail: [(title: String, tab: StudioTab?)] = [
     ("Zoom", .zoom), ("Sources", .sources), ("Scenes", .scenes), ("Routing", nil),
-    ("Overlays", nil), ("Audio", .audio), ("Media", nil), ("Automation", nil),
+    ("Overlays", .overlays), ("Audio", .audio), ("Media", .media), ("Automation", nil),
     ("Diagnose", .diagnose),
 ]
 
@@ -413,7 +413,9 @@ struct RightRail: View {
             case .zoom: ZoomPane()
             case .sources: SourcesPane()
             case .scenes: ScenesPane()
+            case .overlays: OverlaysPane()
             case .audio: AudioPane()
+            case .media: MediaPane()
             case .diagnose: DiagnosePane()
             }
             Spacer(minLength: 0)
@@ -762,6 +764,119 @@ struct DiagnosePane: View {
             .frame(maxHeight: 360)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(StudioPanel())
+    }
+}
+
+struct OverlaysPane: View {
+    @EnvironmentObject var model: AppModel
+
+    var onAir: Bool {
+        model.lowerThirdPhase == "on-air" || model.lowerThirdPhase == "building-in"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Overlays").font(.headline)
+            Text("LOWER THIRD")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            TextField("Name", text: $model.lowerThirdName)
+                .textFieldStyle(.roundedBorder)
+            TextField("Title", text: $model.lowerThirdTitle)
+                .textFieldStyle(.roundedBorder)
+            Picker("Position", selection: $model.lowerThirdPosition) {
+                Text("Lower left").tag("lower-left")
+                Text("Lower right").tag("lower-right")
+                Text("Center").tag("lower-center")
+            }
+            .pickerStyle(.segmented)
+            HStack {
+                Button(onAir ? "Hide" : "Show") {
+                    onAir ? model.hideLowerThird() : model.showLowerThird()
+                }
+                .disabled(model.lowerThirdName.isEmpty && !onAir)
+                .tint(onAir ? .red : Studio.accent)
+                Text(model.lowerThirdPhase)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(onAir ? Studio.accent : Studio.secondary)
+                Spacer()
+                Text("\(model.overlaysOnAir) on air")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Studio.secondary)
+            }
+            Divider()
+            Text("LOGO BUG")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(Studio.secondary)
+            if let bug = model.logoBug {
+                HStack {
+                    Text(bug.name).font(.system(size: 12))
+                    Spacer()
+                    Button("Remove") { model.toggleLogoBug(bug) }.font(.caption)
+                }
+            } else {
+                Text("Pick a still on the Media tab and tap “Bug” to key it top-right.")
+                    .font(.caption).foregroundStyle(Studio.secondary)
+            }
+        }
+        .modifier(StudioPanel())
+    }
+}
+
+struct MediaPane: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Media").font(.headline)
+                Spacer()
+                Button("Import…") {
+                    let panel = NSOpenPanel()
+                    panel.allowsMultipleSelection = true
+                    panel.canChooseDirectories = false
+                    if panel.runModal() == .OK {
+                        model.importMedia(urls: panel.urls)
+                    }
+                }
+                Button("Refresh") { model.refreshMediaBin() }
+            }
+            Text(MediaBin.root)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(Studio.secondary.opacity(0.6))
+                .lineLimit(1).truncationMode(.head)
+            if model.mediaAssets.isEmpty {
+                Text("Bin is empty — import stills, stingers or audio beds.")
+                    .font(.caption).foregroundStyle(Studio.secondary)
+            }
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(model.mediaAssets) { asset in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(asset.name).font(.system(size: 12)).lineLimit(1)
+                                Text("\(asset.kind)"
+                                     + (asset.naturalWidth > 0
+                                        ? " · \(asset.naturalWidth)×\(asset.naturalHeight)"
+                                        : ""))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(Studio.secondary)
+                            }
+                            Spacer()
+                            if asset.isStillImage {
+                                Button(model.logoBug?.id == asset.id ? "Unbug" : "Bug") {
+                                    model.toggleLogoBug(asset)
+                                }
+                                .font(.caption)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .frame(maxHeight: 380)
+        }
         .modifier(StudioPanel())
     }
 }

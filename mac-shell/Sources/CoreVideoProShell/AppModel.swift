@@ -11,7 +11,9 @@ enum StudioTab: String, CaseIterable {
     case zoom = "Zoom"
     case sources = "Sources"
     case scenes = "Scenes"
+    case overlays = "Overlays"
     case audio = "Audio"
+    case media = "Media"
     case diagnose = "Diagnose"
 }
 
@@ -116,6 +118,14 @@ final class AppModel: ObservableObject {
     ]
     @Published var programSceneId = ""
     @Published var previewSceneId = ""
+    @Published var mediaAssets: [MediaAsset] = []
+    @Published var selectedAssetId = ""
+    @Published var logoBug: MediaAsset?  // rides every scene as a top-right route
+    @Published var lowerThirdName = ""
+    @Published var lowerThirdTitle = ""
+    @Published var lowerThirdPosition = "lower-left"
+    @Published var lowerThirdPhase = "hidden"  // truthful phase from overlayState
+    @Published var overlaysOnAir = 0
 
     private var bridge: MediaCoreBridge?
     private var syncTimer: Timer?
@@ -125,6 +135,7 @@ final class AppModel: ObservableObject {
     private var joinInFlight = false
 
     func start() {
+        refreshMediaBin()
         let paths = ShellPaths.resolve()
         guard let corePath = paths.corePath else {
             status = .failed("corevideo-native not found — run scripts/run-mac-shell.sh")
@@ -262,6 +273,17 @@ final class AppModel: ObservableObject {
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
             applySharedTexture(texture)
+        }
+        if let overlay = snapshot["overlayState"] as? JSONObject {
+            overlaysOnAir = overlay["onAirCount"] as? Int ?? overlaysOnAir
+            if let overlays = overlay["overlays"] as? [JSONObject],
+               let key = overlays.first(where: {
+                   $0["overlayId"] as? String == "key:lower-third"
+               }) {
+                lowerThirdPhase = key["keyPhase"] as? String ?? lowerThirdPhase
+            } else {
+                lowerThirdPhase = "hidden"
+            }
         }
     }
 
@@ -479,13 +501,13 @@ final class AppModel: ObservableObject {
         "pip": [(0, 0, 1, 1), (0.68, 0.68, 0.28, 0.28)],
     ]
 
-    private func buildRoutes(for sceneId: String) -> [SceneRoute] {
+    private func buildRoutes(for sceneId: String) -> [JSONObject] {
         guard let scene = scenes.first(where: { $0.id == sceneId }),
               let rects = Self.layoutRects[scene.layout] else { return [] }
         // Slots fill from the assigned participants in roster order; empty
         // slots follow the active speaker so a scene is never a black hole.
         let assigned = roster.filter { assignedIds.contains($0.id) }
-        return rects.enumerated().map { index, rect in
+        var routes: [JSONObject] = rects.enumerated().map { index, rect in
             var route = SceneRoute(
                 routeId: "\(sceneId)-\(index)", mode: "active-speaker",
                 participantId: nil, captureDeviceId: nil,
@@ -494,8 +516,24 @@ final class AppModel: ObservableObject {
                 route.mode = "fixed"
                 route.participantId = assigned[index].id
             }
-            return route
+            return route.json
         }
+        // The logo bug rides every scene topmost — the mediaAsset* fields ARE
+        // the media identity on the wire (no sourceId; the core derives
+        // media:<assetId> and the StillMediaFrameCache decodes the path).
+        if let bug = logoBug {
+            let rect = MediaBin.bugRect(naturalWidth: bug.naturalWidth,
+                                        naturalHeight: bug.naturalHeight)
+            routes.append([
+                "routeId": "\(sceneId)-bug", "mode": "fixed", "audioRole": "mix",
+                "fitMode": "fit", "opacity": 1.0, "zIndex": routes.count,
+                "mediaAssetId": bug.id, "mediaAssetName": bug.name,
+                "mediaAssetKind": bug.kind, "mediaAssetPath": bug.filePath,
+                "mediaPlaybackKey": "", "mediaAssetPlaying": false,
+                "rect": ["x": rect.x, "y": rect.y, "width": rect.w, "height": rect.h],
+            ])
+        }
+        return routes
     }
 
     func selectPreviewScene(_ sceneId: String) {
@@ -521,13 +559,13 @@ final class AppModel: ObservableObject {
         if !programSceneId.isEmpty {
             commands.append([
                 "type": "load-scene-graph", "sceneId": programSceneId,
-                "routes": buildRoutes(for: programSceneId).map(\.json),
+                "routes": buildRoutes(for: programSceneId),
             ])
         }
         if !previewSceneId.isEmpty {
             commands.append([
                 "type": "set-preview-scene", "sceneId": previewSceneId,
-                "routes": buildRoutes(for: previewSceneId).map(\.json),
+                "routes": buildRoutes(for: previewSceneId),
             ])
         }
         guard !commands.isEmpty else { return }
@@ -539,6 +577,76 @@ final class AppModel: ObservableObject {
                 ])
             } catch {
                 pushWarning("scene sync failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // ── media bin + logo bug ─────────────────────────────────────────────────
+
+    func refreshMediaBin() {
+        mediaAssets = MediaBin.loadAssets()
+    }
+
+    func importMedia(urls: [URL]) {
+        let imported = MediaBin.importFiles(urls)
+        refreshMediaBin()
+        if let first = imported.first { selectedAssetId = first.id }
+    }
+
+    func toggleLogoBug(_ asset: MediaAsset) {
+        logoBug = logoBug?.id == asset.id ? nil : asset
+        if programSceneId.isEmpty { programSceneId = scenes[0].id }
+        syncScenes()
+    }
+
+    // ── lower third ──────────────────────────────────────────────────────────
+
+    func showLowerThird() {
+        guard !lowerThirdName.isEmpty else { return }
+        // building-in only — the core auto-advances to on-air itself.
+        sendOverlay([
+            "type": "set-overlay-asset", "overlayId": "key:lower-third",
+            "text": lowerThirdName, "position": "lower-third", "enabled": true,
+            "sourceId": "mac:manual", "sourceName": lowerThirdName,
+            "title": lowerThirdTitle, "org": "",
+            "keyPosition": lowerThirdPosition, "keyPhase": "building-in",
+            "buildInMs": 250, "buildOutMs": 200, "keyer": "downstream",
+        ])
+    }
+
+    func hideLowerThird() {
+        // Two-step retire: shell-timed build-out, then the hidden ack (an
+        // enabled:false WITHOUT keyPhase:"hidden" would start a second native
+        // build-out — the WinUI RunLowerThirdKeyOutAsync shape).
+        sendOverlay([
+            "type": "set-overlay-asset", "overlayId": "key:lower-third",
+            "text": lowerThirdName, "position": "lower-third", "enabled": true,
+            "sourceId": "mac:manual", "sourceName": lowerThirdName,
+            "title": lowerThirdTitle, "org": "",
+            "keyPosition": lowerThirdPosition, "keyPhase": "building-out",
+            "buildInMs": 250, "buildOutMs": 200, "keyer": "downstream",
+        ])
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            self?.sendOverlay([
+                "type": "set-overlay-asset", "overlayId": "key:lower-third",
+                "text": "", "position": "lower-third", "enabled": false,
+                "keyPhase": "hidden", "buildInMs": 250, "buildOutMs": 200,
+                "keyer": "downstream",
+            ])
+        }
+    }
+
+    private func sendOverlay(_ command: JSONObject) {
+        guard let bridge else { return }
+        Task {
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": [command],
+                ])
+            } catch {
+                pushWarning("overlay command failed: \(error.localizedDescription)")
             }
         }
     }
