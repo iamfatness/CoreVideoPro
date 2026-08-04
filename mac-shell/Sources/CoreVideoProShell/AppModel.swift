@@ -12,6 +12,7 @@ enum StudioTab: String, CaseIterable {
     case zoom = "Zoom"
     case sources = "Sources"
     case scenes = "Scenes"
+    case routing = "Routing"
     case overlays = "Overlays"
     case audio = "Audio"
     case media = "Media"
@@ -205,13 +206,16 @@ final class AppModel: ObservableObject {
     func start() {
         refreshMediaBin()
         restorePrefs()
-        refreshZoomSignedIn()
-        // Screenshot/verification harness: open on a named tab.
+        // Screenshot/verification harness: open on a named tab. Harness runs
+        // skip the Keychain read — every ad-hoc rebuild is a new signing
+        // identity and the access prompt would nag the operator.
         if let tabName = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB"],
            let tab = StudioTab.allCases.first(where: {
                $0.rawValue.lowercased() == tabName.lowercased()
            }) {
             selectedTab = tab
+        } else {
+            refreshZoomSignedIn()
         }  // after the bin so the logo bug can re-resolve
         Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -886,6 +890,68 @@ final class AppModel: ObservableObject {
             autoStatus = "Queued \(target) on preview"
         }
         pendingAutoSceneId = ""
+    }
+
+    // ── routing matrix (video: ISO columns exclusive, multiview membership) ──
+
+    // One source per ISO column (the Windows exclusive-destination rule).
+    @Published var isoColumnAssignments: [Int: String] = [:]  // 1...8 → sourceId
+
+    struct RoutingRow: Identifiable {
+        let id: String       // routing sourceId (zoom:<pid> / capture:<id> / synthetic)
+        let label: String
+        let inMultiview: Bool
+        let multiviewToggleable: Bool
+    }
+
+    var routingRows: [RoutingRow] {
+        var rows: [RoutingRow] = []
+        for participant in roster {
+            rows.append(RoutingRow(
+                id: "zoom:" + participant.id, label: participant.name,
+                inMultiview: assignedIds.contains(participant.id),
+                multiviewToggleable: true))
+        }
+        for device in captureDevices {
+            rows.append(RoutingRow(
+                id: "capture:" + device.id, label: device.name,
+                inMultiview: device.connectionState == "connected",
+                multiviewToggleable: false))
+        }
+        rows.append(RoutingRow(id: "active-speaker", label: "Active Speaker",
+                               inMultiview: false, multiviewToggleable: false))
+        rows.append(RoutingRow(id: "screen-share", label: "Screen Share",
+                               inMultiview: false, multiviewToggleable: false))
+        rows.append(RoutingRow(id: "media", label: "Media",
+                               inMultiview: false, multiviewToggleable: false))
+        return rows
+    }
+
+    func isoColumn(of sourceId: String) -> Int? {
+        isoColumnAssignments.first { $0.value == sourceId }?.key
+    }
+
+    func toggleIsoCell(column: Int, sourceId: String) {
+        if isoColumnAssignments[column] == sourceId {
+            isoColumnAssignments[column] = nil
+        } else {
+            // Exclusive per column AND one column per source.
+            if let previous = isoColumn(of: sourceId) {
+                isoColumnAssignments[previous] = nil
+            }
+            isoColumnAssignments[column] = sourceId
+        }
+        // The recording payload reads the flat selection; matrix is authority.
+        isoSelectedSourceIds = Set(isoColumnAssignments.values)
+        isoRecordingEnabled = !isoColumnAssignments.isEmpty
+    }
+
+    func toggleMultiviewCell(sourceId: String) {
+        guard sourceId.hasPrefix("zoom:") else { return }
+        let participantId = String(sourceId.dropFirst(5))
+        if let participant = roster.first(where: { $0.id == participantId }) {
+            toggleAssigned(participant)
+        }
     }
 
     // ── ISO selection (IsoSourceSelectionResolver port) ──────────────────────

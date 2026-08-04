@@ -115,8 +115,7 @@ struct HeaderBar: View {
             GroupLabel("Produce")
             TabPill(tab: .studio)
             GroupLabel("Setup")
-            ForEach([StudioTab.zoom, .sources, .scenes], id: \.self) { TabPill(tab: $0) }
-            DisabledPill("Routing")
+            ForEach([StudioTab.zoom, .sources, .scenes, .routing], id: \.self) { TabPill(tab: $0) }
             ForEach([StudioTab.overlays, .audio, .media, .automation, .diagnose],
                     id: \.self) { TabPill(tab: $0) }
             Spacer()
@@ -164,6 +163,99 @@ struct TabPill: View {
                 .fill(active ? Studio.accent.opacity(0.12) : Studio.surface))
             .overlay(RoundedRectangle(cornerRadius: 10)
                 .stroke(active ? Studio.accent.opacity(0.7) : Studio.border, lineWidth: 1))
+    }
+}
+
+// Routing tab — composition per docs/design-reference/04-routing.png: the
+// video crosspoint matrix (rows = sources, columns = ISO 1-8 / MULTIVIEW /
+// AUX). ISO columns are exclusive and fold into the recording payload's
+// isoSourceIds; MULTIVIEW is show membership; AUX is present-but-inert
+// (Windows parity). Audio routing lives on the Audio tab.
+struct RoutingPane: View {
+    @EnvironmentObject var model: AppModel
+
+    let isoColumns = Array(1...8)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 12))  // design-lint: allow
+                    .foregroundStyle(Studio.accent)
+                Text("Video Routing").font(.grotesk(15, .semibold))
+            }
+            Text("Click a cell to send a source to ISO record, multiview, or aux. "
+                 + "Audio routing is available on the Audio tab.")
+                .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                GridRow {
+                    Color.clear.frame(width: 170, height: 16)
+                    ForEach(isoColumns, id: \.self) { column in
+                        MonoLabel("ISO \(column)").frame(width: 48)
+                    }
+                    MonoLabel("Multiview").frame(width: 72)
+                    MonoLabel("Aux", dim: true).frame(width: 48)
+                }
+                ForEach(model.routingRows) { row in
+                    GridRow {
+                        Text(row.label)
+                            .font(.grotesk(12))
+                            .lineLimit(1).truncationMode(.tail)
+                            .frame(width: 170, alignment: .leading)
+                            .padding(.vertical, 4)
+                            .padding(.leading, 6)
+                            .background(Rectangle().fill(Studio.surface))
+                        ForEach(isoColumns, id: \.self) { column in
+                            CrosspointCell(
+                                routed: model.isoColumn(of: row.id) == column,
+                                enabled: row.id.hasPrefix("zoom:")
+                                    || row.id.hasPrefix("capture:")) {
+                                model.toggleIsoCell(column: column, sourceId: row.id)
+                            }
+                            .frame(width: 48)
+                        }
+                        CrosspointCell(routed: row.inMultiview,
+                                       enabled: row.multiviewToggleable) {
+                            model.toggleMultiviewCell(sourceId: row.id)
+                        }
+                        .frame(width: 72)
+                        CrosspointCell(routed: false, enabled: false) {}
+                            .frame(width: 48)
+                    }
+                }
+            }
+            if model.routingRows.count <= 3 {
+                Text("Sources appear here as participants join and captures connect.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.textDim)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+struct CrosspointCell: View {
+    let routed: Bool
+    let enabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(routed ? "●" : "·")
+                .font(.plexMono(10, .semibold))
+                .foregroundStyle(routed ? Studio.accent
+                                 : enabled ? Studio.secondary : Studio.textDim)
+                .frame(maxWidth: .infinity)
+                .frame(height: 24)
+                .background(Rectangle().fill(
+                    routed ? Studio.accent.opacity(0.16) : Studio.field))
+                .overlay(Rectangle().stroke(
+                    routed ? Studio.accent.opacity(0.7) : Studio.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 }
 
@@ -626,6 +718,7 @@ struct TabPage: View {
                     case .zoom: ZoomPane()
                     case .sources: SourcesPane()
                     case .scenes: ScenesPane()
+                    case .routing: RoutingPane()
                     case .overlays: OverlaysPane()
                     case .audio: AudioPane()
                     case .media: MediaPane()
