@@ -52,6 +52,8 @@ export class OverrideDb {
    * prior holders that existed only as overrides have their row removed.
    */
   assignExclusiveRole(pin: string, role: "host" | "reader", mukana: MukanaDb): void {
+    const priorRecord = this.entriesByPin.get(pin);
+
     for (const record of Object.values(mukana)) {
       if (record.role !== role) continue;
       if (this.entriesByPin.has(record.pin)) continue;
@@ -75,8 +77,8 @@ export class OverrideDb {
     const mukanaRecord = mukana[pin];
     this.entriesByPin.set(pin, {
       pin,
-      displayName: mukanaRecord?.displayName ?? "",
-      location: mukanaRecord?.location ?? "",
+      displayName: mukanaRecord?.displayName ?? priorRecord?.displayName ?? "",
+      location: mukanaRecord?.location ?? priorRecord?.location ?? "",
       role
     });
   }

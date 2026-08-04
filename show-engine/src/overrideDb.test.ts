@@ -120,4 +120,28 @@ describe("OverrideDb", () => {
     db.clear();
     expect(db.entries()).toEqual({});
   });
+
+  it("preserves an operator-entered identity for a non-Mukana PIN through exclusive assignment", () => {
+    const db = new OverrideDb();
+    db.set({ pin: "7777", displayName: "Guest Speaker", location: "Remote", role: "panelist" });
+    db.assignExclusiveRole("7777", "host", mukana);
+    expect(db.entries()["7777"]).toEqual({
+      pin: "7777",
+      displayName: "Guest Speaker",
+      location: "Remote",
+      role: "host"
+    });
+  });
+
+  it("still prefers the Mukana identity over a stale prior override row", () => {
+    const db = new OverrideDb();
+    db.set({ pin: "5555", displayName: "Old Name", location: "Old Location", role: "panelist" });
+    db.assignExclusiveRole("5555", "host", mukana);
+    expect(db.entries()["5555"]).toEqual({
+      pin: "5555",
+      displayName: "Bo Diaz",
+      location: "Lima, PE",
+      role: "host"
+    });
+  });
 });
