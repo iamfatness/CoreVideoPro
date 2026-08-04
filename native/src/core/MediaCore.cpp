@@ -4331,12 +4331,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     }
   }
 
-  // With a REAL Zoom engine configured, the stub zoom source'''s synthetic
-  // participant tiles are pure cost: they upload ~16MB/frame of animated
-  // placeholder pixels under coreMutex (measured 26ms/tick on the Metal
-  // path — the lock-guardrail'''s top offender) and real content arrives via
-  // the engine roster merge below anyway. Idle-with-engine = clean program.
-  auto videoFrames = (zoomEngineRuntime_ && zoomEngineRuntime_->configured())
+  // With a REAL Zoom engine configured, suppress only the SYNTHETIC FALLBACK
+  // tiles (RealZoomCaptureSource falls back to the wrapped synthetic source
+  // when it holds no real frames): the animated placeholders upload
+  // ~16MB/frame under coreMutex (measured 26ms/tick on the Metal path). The
+  // earlier all-or-nothing gate here also discarded the REAL decoded engine
+  // frames ingested just above — live meetings rendered blank on macOS.
+  const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
+  auto videoFrames = (engineLive && (!realZoom || realZoom->participantCount() == 0))
                          ? std::vector<modules::VideoFrame>{}
                          : modules_.zoom->pollVideoFrames();
   auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
