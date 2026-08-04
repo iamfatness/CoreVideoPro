@@ -1224,46 +1224,218 @@ struct ZoomPane: View {
     }
 }
 
+// Sources tab — the inputs-1–10 patch bay (03-sources.png + routing-ux-spec
+// tab 1): "Show inputs (multiview)" slot table with in-show checkbox, source
+// menu, editable name, ISO checkbox and Unassign, over the Zoom-feed-health
+// and capture-devices reference cards.
 struct SourcesPane: View {
     @EnvironmentObject var model: AppModel
 
+    var inShowCount: Int { model.slots.filter(\.inShow).count }
+    var assignedCount: Int { model.slots.filter { $0.kind != "unassigned" }.count }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Sources").font(.headline)
-            Text("Cameras, screens and windows (AVFoundation / ScreenCaptureKit)")
-                .font(.caption2).foregroundStyle(Studio.secondary)
-            if model.captureDevices.isEmpty {
-                Text("No capture sources detected yet.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Show inputs (multiview)").font(.grotesk(15, .semibold))
+                Text("Assign up to 10 sources below. Toggle In show to put them "
+                     + "on the Studio multiview strip.")
+                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                Text("\(inShowCount) in show · \(assignedCount) assigned")
+                    .font(.grotesk(12, .medium)).foregroundStyle(Studio.accent)
+                HStack(spacing: 8) {
+                    StepCard(number: "1", title: "Assign inputs",
+                             detail: "Bind Zoom guests, media, or cameras to stable slots.",
+                             active: true)
+                    StepCard(number: "2", title: "Route outputs",
+                             detail: "Use Routing for ISO video and program audio.",
+                             active: false)
+                    StepCard(number: "3", title: "Compose scenes",
+                             detail: "Add Inputs to the 16:9 canvas and Take to Program.",
+                             active: false)
+                }
+                ForEach(model.slots) { slot in
+                    SlotRow(slot: slot)
+                }
             }
-            ForEach(model.captureDevices) { device in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Circle()
-                            .fill(device.signalPresent ? Studio.accent
-                                  : device.connectionState == "error"
-                                      ? Color.red : Studio.secondary.opacity(0.4))
-                            .frame(width: 8, height: 8)
-                        Text(device.name).font(.system(size: 12)).lineLimit(1)
-                        Spacer()
-                        Button(device.connectionState == "connected"
-                               ? "Disconnect" : "Connect") {
-                            model.connectCaptureDevice(device)
-                        }
-                        .font(.caption)
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Zoom feed health").font(.grotesk(14, .semibold))
+                    if model.roster.isEmpty {
+                        Text("No Zoom feeds — join a meeting")
+                            .font(.grotesk(12)).foregroundStyle(Studio.secondary)
                     }
-                    Text("\(device.kind) · \(device.vendor) · \(device.connectionState)")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(Studio.secondary)
-                    if !device.warning.isEmpty {
-                        Text(device.warning).font(.system(size: 9))
-                            .foregroundStyle(.orange)
+                    ForEach(model.roster) { participant in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(participant.hasVideo ? Studio.accent
+                                                           : Studio.secondary.opacity(0.4))
+                                .frame(width: 7, height: 7)
+                            Text(participant.name).font(.grotesk(12)).lineLimit(1)
+                            Text(participant.hasVideo ? "video" : "no video")
+                                .font(.plexMono(10))
+                                .foregroundStyle(Studio.secondary)
+                        }
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(Studio.border, lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Capture devices").font(.grotesk(14, .semibold))
+                    Text("\(model.captureDevices.filter { $0.connectionState == "connected" }.count)"
+                         + " connected · \(model.captureDevices.count) detected")
+                        .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                    ForEach(model.captureDevices.prefix(8)) { device in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(device.signalPresent ? Studio.accent
+                                      : device.connectionState == "error"
+                                          ? Studio.red : Studio.secondary.opacity(0.4))
+                                .frame(width: 7, height: 7)
+                            Text(device.name).font(.grotesk(12)).lineLimit(1)
+                            Spacer()
+                            Button(device.connectionState == "connected"
+                                   ? "Disconnect" : "Connect") {
+                                model.connectCaptureDevice(device)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.grotesk(11, .semibold))
+                            .foregroundStyle(Studio.accent)
+                        }
+                    }
+                    if model.captureDevices.count > 8 {
+                        Text("+ \(model.captureDevices.count - 8) more")
+                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(Studio.border, lineWidth: 1))
             }
         }
-        .modifier(StudioPanel())
+        .frame(maxWidth: 900)
+    }
+}
+
+struct StepCard: View {
+    let number: String
+    let title: String
+    let detail: String
+    let active: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
+                Text(number).font(.grotesk(12, .semibold))
+                Text(title).font(.grotesk(12, .semibold))
+            }
+            Text(detail).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(active ? Studio.accent.opacity(0.08) : Studio.surface))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(active ? Studio.accent.opacity(0.6) : Studio.border, lineWidth: 1))
+    }
+}
+
+struct SlotRow: View {
+    @EnvironmentObject var model: AppModel
+    let slot: ShowInputSlot
+
+    var assigned: Bool { slot.kind != "unassigned" }
+
+    var sourceLabel: String {
+        guard assigned else { return "Select a source" }
+        if slot.offline { return "Source offline — choose or reconnect" }
+        return (slot.kind == "zoom" ? "Zoom · " : "Camera · ") + slot.name
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(slot.id)")
+                .font(.plexMono(11, .medium))
+                .foregroundStyle(Studio.secondary)
+                .frame(width: 22, alignment: .trailing)
+            Toggle("", isOn: Binding(
+                get: { slot.inShow },
+                set: { _ in model.toggleSlotInShow(slot.id) }))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .disabled(!assigned)
+            Menu {
+                Section("Zoom participants") {
+                    ForEach(model.roster) { participant in
+                        Button(participant.name) {
+                            model.assignSlot(slot.id, kind: "zoom",
+                                             sourceId: participant.id,
+                                             name: participant.name)
+                        }
+                    }
+                }
+                Section("Capture devices") {
+                    ForEach(model.captureDevices) { device in
+                        Button(device.name) {
+                            model.assignSlot(slot.id, kind: "capture",
+                                             sourceId: device.id, name: device.name)
+                            if device.connectionState != "connected" {
+                                model.connectCaptureDevice(device)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(sourceLabel)
+                        .font(.grotesk(12))
+                        .foregroundStyle(assigned ? Studio.textPrimary : Studio.secondary)
+                        .lineLimit(1)
+                    if slot.offline {
+                        Text("OFFLINE")
+                            .font(.plexMono(9, .semibold))
+                            .foregroundStyle(Studio.amber)
+                    }
+                    Spacer()
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 300)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(slot.offline ? Studio.amber.opacity(0.6) : Studio.border,
+                        lineWidth: 1))
+            if assigned {
+                TextField("Name", text: Binding(
+                    get: { slot.name },
+                    set: { value in
+                        if let index = model.slots.firstIndex(where: { $0.id == slot.id }) {
+                            model.slots[index].name = value
+                        }
+                    }))
+                    .textFieldStyle(StudioFieldStyle())
+                    .frame(width: 150)
+                Toggle("ISO", isOn: Binding(
+                    get: { slot.iso },
+                    set: { _ in model.toggleSlotIso(slot.id) }))
+                    .toggleStyle(.checkbox)
+                    .font(.grotesk(11))
+                Button("Unassign") { model.unassignSlot(slot.id) }
+                    .buttonStyle(GhostButtonStyle())
+            }
+            Spacer()
+        }
     }
 }
 

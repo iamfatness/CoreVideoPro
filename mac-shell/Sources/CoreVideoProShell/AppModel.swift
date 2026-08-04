@@ -74,6 +74,20 @@ struct AudioStrip: Identifiable, Equatable {
     var status: String
 }
 
+// Show-input slot (inputs 1–10): the operator's stable mapping from "what's
+// plugged in" to production slots — the ShowInputSlot model from the Windows
+// shell (docs/routing-ux-spec.md tab 1). Slots are the AUTHORITY for show
+// membership; assignedIds/multiview/scenes derive from them.
+struct ShowInputSlot: Identifiable, Equatable {
+    let id: Int                 // 1...10
+    var kind = "unassigned"     // unassigned | zoom | capture
+    var sourceId = ""           // participant id or capture device id
+    var name = ""               // editable display name
+    var inShow = false
+    var iso = false
+    var offline = false         // source vanished from the roster/devices
+}
+
 struct RosterParticipant: Identifiable, Equatable {
     let id: String
     let name: String
@@ -363,6 +377,7 @@ final class AppModel: ObservableObject {
                     signalPresent: entry["signalPresent"] as? Bool ?? false,
                     warning: entry["warning"] as? String ?? "")
             }
+            refreshSlotHealth()
         }
         if let recording = snapshot["recording"] as? JSONObject {
             let nextStatus = recording["status"] as? String ?? "idle"
@@ -456,21 +471,108 @@ final class AppModel: ObservableObject {
                     talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
                     assigned: assignedIds.contains(id))
             }
-            // Auto-assign video participants by default (the Windows
+            // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
             // zero clicks. Manual unassigns are respected via the tombstones.
-            let videoIds = Set(roster.filter(\.hasVideo).map(\.id))
-                .subtracting(manuallyUnassigned)
-            if !videoIds.subtracting(assignedIds).isEmpty {
-                assignedIds.formUnion(videoIds)
-                ShellLog.write("auto-assigning \(videoIds.sorted())")
-                syncSpine()
-                syncScenes()
+            let slotted = Set(slots.filter { $0.kind == "zoom" }.map(\.sourceId))
+            var assignedAny = false
+            for participant in roster where participant.hasVideo
+                && !slotted.contains(participant.id)
+                && !manuallyUnassigned.contains(participant.id) {
+                guard let empty = firstEmptySlotIndex() else { break }
+                slots[empty].kind = "zoom"
+                slots[empty].sourceId = participant.id
+                slots[empty].name = participant.name
+                slots[empty].inShow = true
+                assignedAny = true
+            }
+            refreshSlotHealth()
+            if assignedAny {
+                ShellLog.write("auto-assigned into slots")
+                recomputeFromSlots()
             }
         }
     }
 
     private var manuallyUnassigned: Set<String> = []
+
+    // ── show-input slots (inputs 1–10, the Sources patch bay) ────────────────
+
+    @Published var slots: [ShowInputSlot] = (1...10).map { ShowInputSlot(id: $0) }
+
+    // assignedIds stays the wire-facing derivation (spine/scenes/multiview all
+    // read it) — recomputed whenever slots change.
+    private func recomputeFromSlots() {
+        assignedIds = Set(slots.filter { $0.kind == "zoom" && $0.inShow }
+            .map(\.sourceId))
+        isoSelectedSourceIds = Set(slots.filter(\.iso).compactMap { slot in
+            slot.kind == "zoom" ? "zoom:" + slot.sourceId
+                : slot.kind == "capture" ? "capture:" + slot.sourceId : nil
+        })
+        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+        syncSpine()
+        syncScenes()
+    }
+
+    func assignSlot(_ slotId: Int, kind: String, sourceId: String, name: String) {
+        guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        slots[index].kind = kind
+        slots[index].sourceId = sourceId
+        if slots[index].name.isEmpty { slots[index].name = name }
+        slots[index].inShow = true
+        slots[index].offline = false
+        manuallyUnassigned.remove(sourceId)
+        recomputeFromSlots()
+    }
+
+    func unassignSlot(_ slotId: Int) {
+        guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        if slots[index].kind == "zoom" {
+            manuallyUnassigned.insert(slots[index].sourceId)  // no auto re-add
+        }
+        slots[index] = ShowInputSlot(id: slotId)
+        recomputeFromSlots()
+    }
+
+    func toggleSlotInShow(_ slotId: Int) {
+        guard let index = slots.firstIndex(where: { $0.id == slotId }),
+              slots[index].kind != "unassigned" else { return }
+        slots[index].inShow.toggle()
+        if slots[index].kind == "zoom" {
+            if slots[index].inShow {
+                manuallyUnassigned.remove(slots[index].sourceId)
+            } else {
+                manuallyUnassigned.insert(slots[index].sourceId)
+            }
+        }
+        recomputeFromSlots()
+    }
+
+    func toggleSlotIso(_ slotId: Int) {
+        guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        slots[index].iso.toggle()
+        recomputeFromSlots()
+    }
+
+    // Keep slot health truthful as rosters/devices churn.
+    private func refreshSlotHealth() {
+        for index in slots.indices {
+            switch slots[index].kind {
+            case "zoom":
+                slots[index].offline = !roster.contains { $0.id == slots[index].sourceId }
+            case "capture":
+                slots[index].offline = !captureDevices.contains {
+                    $0.id == slots[index].sourceId && $0.connectionState == "connected"
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    private func firstEmptySlotIndex() -> Int? {
+        slots.firstIndex { $0.kind == "unassigned" }
+    }
 
     // The Capture button (Windows "Engine On"): ON → spine startCapture arms
     // raw media (this is when Zoom's record-privilege request fires); OFF →
@@ -648,15 +750,14 @@ final class AppModel: ObservableObject {
     }
 
     func toggleAssigned(_ participant: RosterParticipant) {
-        if assignedIds.contains(participant.id) {
-            assignedIds.remove(participant.id)
-            manuallyUnassigned.insert(participant.id)  // don't auto re-add
-        } else {
-            assignedIds.insert(participant.id)
-            manuallyUnassigned.remove(participant.id)
+        if let index = slots.firstIndex(where: {
+            $0.kind == "zoom" && $0.sourceId == participant.id
+        }) {
+            unassignSlot(slots[index].id)
+        } else if let empty = firstEmptySlotIndex() {
+            assignSlot(slots[empty].id, kind: "zoom",
+                       sourceId: participant.id, name: participant.name)
         }
-        syncSpine()
-        syncScenes()  // scene slots fill from the assigned set
     }
 
     // The assign path: mirrors buildZoomMediaSpineSyncPayload (spec section in
@@ -683,26 +784,24 @@ final class AppModel: ObservableObject {
                 "priority": index,
             ]
         }
-        var multiviewSources: [JSONObject] = roster
-            .filter { assignedIds.contains($0.id) }
-            .map { participant in
-                [
-                    "sourceId": "zoom:" + participant.id,
-                    "kind": "participant-video",
-                    "participantId": participant.id,
-                    "label": participant.name,
-                ]
+        // Multiview sources = the in-show slots, in slot order.
+        let multiviewSources: [JSONObject] = slots
+            .filter { $0.kind != "unassigned" && $0.inShow }
+            .map { slot in
+                slot.kind == "zoom"
+                    ? [
+                        "sourceId": "zoom:" + slot.sourceId,
+                        "kind": "participant-video",
+                        "participantId": slot.sourceId,
+                        "label": slot.name,
+                    ]
+                    : [
+                        "sourceId": "capture:" + slot.sourceId,
+                        "kind": "capture-input",
+                        "captureDeviceId": slot.sourceId,
+                        "label": slot.name,
+                    ]
             }
-        // Connected capture devices light the multiviewer too (the reference
-        // rig shows Elgato tiles with no meeting at all).
-        for device in captureDevices where device.connectionState == "connected" {
-            multiviewSources.append([
-                "sourceId": "capture:" + device.id,
-                "kind": "capture-input",
-                "captureDeviceId": device.id,
-                "label": device.name,
-            ])
-        }
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →
             // start_raw_media): without it every video subscription stays
@@ -748,17 +847,24 @@ final class AppModel: ObservableObject {
     private func buildRoutes(for sceneId: String) -> [JSONObject] {
         guard let scene = scenes.first(where: { $0.id == sceneId }),
               let rects = Self.layoutRects[scene.layout] else { return [] }
-        // Slots fill from the assigned participants in roster order; empty
-        // slots follow the active speaker so a scene is never a black hole.
-        let assigned = roster.filter { assignedIds.contains($0.id) }
+        // Scene slots fill from the show-input slots in slot order (zoom AND
+        // capture); empty slots follow the active speaker so a scene is never
+        // a black hole.
+        let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow }
         var routes: [JSONObject] = rects.enumerated().map { index, rect in
             var route = SceneRoute(
                 routeId: "\(sceneId)-\(index)", mode: "active-speaker",
                 participantId: nil, captureDeviceId: nil,
                 rect: (rect.0, rect.1, rect.2, rect.3), zIndex: index)
-            if index < assigned.count {
-                route.mode = "fixed"
-                route.participantId = assigned[index].id
+            if index < inShow.count {
+                let slot = inShow[index]
+                if slot.kind == "zoom" {
+                    route.mode = "fixed"
+                    route.participantId = slot.sourceId
+                } else {
+                    route.mode = "capture-input"
+                    route.captureDeviceId = slot.sourceId
+                }
             }
             return route.json
         }
@@ -906,17 +1012,12 @@ final class AppModel: ObservableObject {
 
     var routingRows: [RoutingRow] {
         var rows: [RoutingRow] = []
-        for participant in roster {
+        for slot in slots where slot.kind != "unassigned" {
             rows.append(RoutingRow(
-                id: "zoom:" + participant.id, label: participant.name,
-                inMultiview: assignedIds.contains(participant.id),
+                id: (slot.kind == "zoom" ? "zoom:" : "capture:") + slot.sourceId,
+                label: "Input \(String(format: "%02d", slot.id)) · \(slot.name)",
+                inMultiview: slot.inShow,
                 multiviewToggleable: true))
-        }
-        for device in captureDevices {
-            rows.append(RoutingRow(
-                id: "capture:" + device.id, label: device.name,
-                inMultiview: device.connectionState == "connected",
-                multiviewToggleable: false))
         }
         rows.append(RoutingRow(id: "active-speaker", label: "Active Speaker",
                                inMultiview: false, multiviewToggleable: false))
@@ -944,13 +1045,18 @@ final class AppModel: ObservableObject {
         // The recording payload reads the flat selection; matrix is authority.
         isoSelectedSourceIds = Set(isoColumnAssignments.values)
         isoRecordingEnabled = !isoColumnAssignments.isEmpty
+        for index in slots.indices where slots[index].kind != "unassigned" {
+            let sid = (slots[index].kind == "zoom" ? "zoom:" : "capture:")
+                + slots[index].sourceId
+            slots[index].iso = isoSelectedSourceIds.contains(sid)
+        }
     }
 
     func toggleMultiviewCell(sourceId: String) {
-        guard sourceId.hasPrefix("zoom:") else { return }
-        let participantId = String(sourceId.dropFirst(5))
-        if let participant = roster.first(where: { $0.id == participantId }) {
-            toggleAssigned(participant)
+        let bare = sourceId.contains(":")
+            ? String(sourceId.drop(while: { $0 != ":" }).dropFirst()) : sourceId
+        if let slot = slots.first(where: { $0.sourceId == bare }) {
+            toggleSlotInShow(slot.id)
         }
     }
 
