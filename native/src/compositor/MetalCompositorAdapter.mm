@@ -44,8 +44,182 @@
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 
+#include <CoreText/CoreText.h>
+#include <ImageIO/ImageIO.h>
+
 namespace corevideo::modules {
 namespace {
+
+// ── Core Text overlay raster (the DirectWrite analogue) ──────────────────────
+//
+// Same computeOverlayTileLayout geometry as the portable 5x7 raster and the
+// Windows D2D path — only the glyph/image rasterizer differs. Output is
+// PREMULTIPLIED BGRA (CGBitmapContext native), which is exactly what the
+// overlay pipeline's (One, 1-SrcAlpha) blend expects, so no post pass.
+
+CGColorRef createColorFromArgb(uint32_t argb) {
+  const CGFloat components[4] = {
+      static_cast<CGFloat>((argb >> 16) & 0xff) / 255.0,
+      static_cast<CGFloat>((argb >> 8) & 0xff) / 255.0,
+      static_cast<CGFloat>(argb & 0xff) / 255.0,
+      static_cast<CGFloat>((argb >> 24) & 0xff) / 255.0,
+  };
+  CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+  CGColorRef color = CGColorCreate(space, components);
+  CGColorSpaceRelease(space);
+  return color;
+}
+
+// Tile pixel space is top-down; CG is bottom-up. Rects convert here so text
+// never needs a mirroring CTM (which would flip glyphs).
+CGRect bottomUpRect(const OverlayTileRect& rect, int heightPx) {
+  return CGRectMake(rect.x, static_cast<CGFloat>(heightPx) - rect.y - rect.height, rect.width,
+                    rect.height);
+}
+
+void drawOverlayImageWithImageIo(CGContextRef context, const std::string& imageUri,
+                                 const OverlayTileRect& rect, int heightPx) {
+  if (imageUri.empty() || imageUri.rfind("http", 0) == 0) {
+    return;  // remote fetches never happen on the render path
+  }
+  std::string path = imageUri;
+  constexpr const char* filePrefix = "file://";
+  if (path.rfind(filePrefix, 0) == 0) {
+    path = path.substr(std::strlen(filePrefix));
+  }
+  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+      kCFAllocatorDefault, reinterpret_cast<const UInt8*>(path.c_str()),
+      static_cast<CFIndex>(path.size()), false);
+  if (!url) {
+    return;
+  }
+  CGImageSourceRef source = CGImageSourceCreateWithURL(url, nullptr);
+  CFRelease(url);
+  if (!source) {
+    return;
+  }
+  CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, nullptr);
+  CFRelease(source);
+  if (!image) {
+    return;
+  }
+  // Aspect-fit inside the layout's image rect.
+  const CGFloat imageWidth = static_cast<CGFloat>(CGImageGetWidth(image));
+  const CGFloat imageHeight = static_cast<CGFloat>(CGImageGetHeight(image));
+  CGRect box = bottomUpRect(rect, heightPx);
+  if (imageWidth > 0 && imageHeight > 0) {
+    const CGFloat scale = std::min(box.size.width / imageWidth, box.size.height / imageHeight);
+    const CGFloat fitWidth = imageWidth * scale;
+    const CGFloat fitHeight = imageHeight * scale;
+    box = CGRectMake(box.origin.x + (box.size.width - fitWidth) / 2,
+                     box.origin.y + (box.size.height - fitHeight) / 2, fitWidth, fitHeight);
+  }
+  CGContextDrawImage(context, box, image);
+  CGImageRelease(image);
+}
+
+void drawOverlayTextLineCoreText(CGContextRef context, const OverlayTileTextLine& line,
+                                 const std::string& fontFamily, int heightPx) {
+  if (line.text.empty() || line.rect.height <= 1.f) {
+    return;
+  }
+  CFStringRef familyName = CFStringCreateWithCString(kCFAllocatorDefault, fontFamily.c_str(),
+                                                     kCFStringEncodingUTF8);
+  // CTFontCreateWithName substitutes a system face when the brand family
+  // (default "Inter") is not installed — never a missing-glyph box.
+  CTFontRef font = CTFontCreateWithName(familyName ? familyName : CFSTR("Helvetica Neue"),
+                                        line.rect.height * 0.72, nullptr);
+  if (familyName) {
+    CFRelease(familyName);
+  }
+  if (!font) {
+    return;
+  }
+  CGColorRef color = createColorFromArgb(line.colorArgb);
+  CFStringRef text = CFStringCreateWithCString(kCFAllocatorDefault, line.text.c_str(),
+                                               kCFStringEncodingUTF8);
+  if (!text) {  // non-UTF8 bytes: fall back to a lossy ASCII copy
+    std::string ascii = line.text;
+    for (auto& ch : ascii) {
+      if (static_cast<unsigned char>(ch) > 0x7f) {
+        ch = '?';
+      }
+    }
+    text = CFStringCreateWithCString(kCFAllocatorDefault, ascii.c_str(), kCFStringEncodingASCII);
+  }
+  if (text) {
+    const void* keys[] = {kCTFontAttributeName, kCTForegroundColorAttributeName};
+    const void* values[] = {font, color};
+    CFDictionaryRef attributes =
+        CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2, &kCFTypeDictionaryKeyCallBacks,
+                           &kCFTypeDictionaryValueCallBacks);
+    CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, text, attributes);
+    CTLineRef ctLine = attributed ? CTLineCreateWithAttributedString(attributed) : nullptr;
+    if (ctLine) {
+      const CGRect box = bottomUpRect(line.rect, heightPx);
+      CGContextSaveGState(context);
+      CGContextClipToRect(context, box);
+      // Baseline: bottom of the rect plus the descent, vertically centering
+      // the em box in the layout rect.
+      const CGFloat descent = CTFontGetDescent(font);
+      const CGFloat ascent = CTFontGetAscent(font);
+      const CGFloat baselineY =
+          box.origin.y + (box.size.height - (ascent + descent)) / 2 + descent;
+      CGContextSetTextPosition(context, box.origin.x, baselineY);
+      CTLineDraw(ctLine, context);
+      CGContextRestoreGState(context);
+      CFRelease(ctLine);
+    }
+    if (attributed) {
+      CFRelease(attributed);
+    }
+    if (attributes) {
+      CFRelease(attributes);
+    }
+    CFRelease(text);
+  }
+  CGColorRelease(color);
+  CFRelease(font);
+}
+
+bool rasterOverlayTileCoreText(const CompositorOverlayContent& overlay, int widthPx, int heightPx,
+                               std::vector<uint8_t>& outPremulBgra) {
+  if (widthPx <= 0 || heightPx <= 0) {
+    return false;
+  }
+  const OverlayTileLayout layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
+  const size_t stride = static_cast<size_t>(widthPx) * 4;
+  outPremulBgra.assign(stride * static_cast<size_t>(heightPx), 0);
+  CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(
+      outPremulBgra.data(), static_cast<size_t>(widthPx), static_cast<size_t>(heightPx), 8, stride,
+      space,
+      static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(space);
+  if (!context) {
+    return false;
+  }
+  // Band background (full tile, opaque per the layout contract).
+  CGColorRef background = createColorFromArgb(layout.backgroundArgb);
+  CGContextSetFillColorWithColor(context, background);
+  CGContextFillRect(context, CGRectMake(0, 0, widthPx, heightPx));
+  CGColorRelease(background);
+  // Accent bar.
+  if (layout.accentBar.width > 0 && layout.accentBar.height > 0) {
+    CGColorRef accent = createColorFromArgb(layout.accentArgb);
+    CGContextSetFillColorWithColor(context, accent);
+    CGContextFillRect(context, bottomUpRect(layout.accentBar, heightPx));
+    CGColorRelease(accent);
+  }
+  if (layout.hasImage) {
+    drawOverlayImageWithImageIo(context, overlay.imageUri, layout.imageRect, heightPx);
+  }
+  for (const auto& line : layout.textLines) {
+    drawOverlayTextLineCoreText(context, line, layout.fontFamily, heightPx);
+  }
+  CGContextRelease(context);
+  return true;
+}
 
 bool frameHasContent(const VideoFrame& frame) {
   return frame.hasPixels() || frame.hasI420();
@@ -1028,17 +1202,21 @@ class MetalCompositor final : public ICompositor {
         overlayTex_.width == widthPx && overlayTex_.height == heightPx) {
       return overlayTex_.texture;
     }
+    // Core Text raster (real type + ImageIO images — the DirectWrite analogue,
+    // premultiplied natively); the portable 5x7 raster stays as the fallback.
     std::vector<uint8_t> bgra;
-    if (!rasterizeOverlayTileBgra(overlay, widthPx, heightPx, bgra)) {
-      return nil;
-    }
-    // The raster is straight alpha; the overlay pipeline expects premultiplied
-    // content (parity with D2D's output on Windows).
-    for (size_t offset = 0; offset + 3 < bgra.size(); offset += 4) {
-      const uint32_t alpha = bgra[offset + 3];
-      bgra[offset + 0] = static_cast<uint8_t>((bgra[offset + 0] * alpha + 127) / 255);
-      bgra[offset + 1] = static_cast<uint8_t>((bgra[offset + 1] * alpha + 127) / 255);
-      bgra[offset + 2] = static_cast<uint8_t>((bgra[offset + 2] * alpha + 127) / 255);
+    if (!rasterOverlayTileCoreText(overlay, widthPx, heightPx, bgra)) {
+      if (!rasterizeOverlayTileBgra(overlay, widthPx, heightPx, bgra)) {
+        return nil;
+      }
+      // The fallback raster is straight alpha; the overlay pipeline expects
+      // premultiplied content (parity with D2D's output on Windows).
+      for (size_t offset = 0; offset + 3 < bgra.size(); offset += 4) {
+        const uint32_t alpha = bgra[offset + 3];
+        bgra[offset + 0] = static_cast<uint8_t>((bgra[offset + 0] * alpha + 127) / 255);
+        bgra[offset + 1] = static_cast<uint8_t>((bgra[offset + 1] * alpha + 127) / 255);
+        bgra[offset + 2] = static_cast<uint8_t>((bgra[offset + 2] * alpha + 127) / 255);
+      }
     }
     id<MTLTexture> texture = makeTexture(MTLPixelFormatBGRA8Unorm, widthPx, heightPx);
     if (!texture) {

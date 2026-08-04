@@ -109,7 +109,8 @@ if(APPLE)
   # StillMediaFrameCache decodes stills via ImageIO on Apple (WIC analogue);
   # it compiles on every config, so the frameworks link unconditionally here.
   target_link_libraries(corevideo_native PUBLIC
-    "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation")
+    "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation"
+    "-framework CoreText")
 endif()
 
 target_include_directories(corevideo_native PUBLIC src)
