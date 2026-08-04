@@ -181,7 +181,7 @@ class PlatformStillImageDecoder final : public IStillImageDecoder {
     // Little-endian ARGB word order == B,G,R,A byte order in memory.
     CGContextRef context = CGBitmapContextCreate(
         pixels->data(), width, height, 8, stride, colorSpace,
-        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+        static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(colorSpace);
     if (!context) {
       error = "CGBitmapContext creation failed";
