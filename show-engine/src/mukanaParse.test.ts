@@ -121,4 +121,24 @@ describe("MukanaRegistry", () => {
     delete db["1383"];
     expect(Object.keys(registry.current())).toEqual(["1383"]);
   });
+
+  it("protects against mutation of record fields from current()", () => {
+    const registry = new MukanaRegistry();
+    registry.merge({
+      "1383": { pin: "1383", displayName: "J.J.", location: "CA", role: "host", online: true }
+    });
+    const db = registry.current();
+    db["1383"]!.displayName = "MUTATED";
+    expect(registry.current()["1383"]?.displayName).toBe("J.J.");
+  });
+
+  it("protects against mutation of records passed to merge()", () => {
+    const registry = new MukanaRegistry();
+    const incoming = {
+      "1383": { pin: "1383", displayName: "J.J.", location: "CA", role: "host", online: true }
+    };
+    registry.merge(incoming);
+    incoming["1383"]!.displayName = "MUTATED";
+    expect(registry.current()["1383"]?.displayName).toBe("J.J.");
+  });
 });

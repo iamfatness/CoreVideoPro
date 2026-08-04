@@ -76,11 +76,18 @@ export class MukanaRegistry {
   private db: MukanaDb = {};
 
   merge(incoming: MukanaDb): void {
-    this.db = { ...this.db, ...incoming };
+    // Clone each incoming record to prevent external mutations
+    const cloned = Object.fromEntries(
+      Object.entries(incoming).map(([pin, record]) => [pin, { ...record }])
+    );
+    this.db = { ...this.db, ...cloned };
   }
 
   current(): MukanaDb {
-    return { ...this.db };
+    // Clone each record to prevent external mutations
+    return Object.fromEntries(
+      Object.entries(this.db).map(([pin, record]) => [pin, { ...record }])
+    );
   }
 
   purge(): void {
