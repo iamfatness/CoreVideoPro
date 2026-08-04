@@ -11,31 +11,6 @@ import AppKit
 import IOSurface
 import SwiftUI
 
-// Color tokens — exact hexes from docs/design-handoff-macos.md (dark only,
-// opaque, status colors load-bearing and never adjusted).
-enum Studio {
-    static let background = Color(hex: 0x0A0B0C)
-    static let panel = Color(hex: 0x101315)
-    static let surface = Color(hex: 0x16191B)
-    static let surfaceRaised = Color(hex: 0x1B1F22)
-    static let field = Color(hex: 0x0E1112)
-    static let border = Color.white.opacity(0.09)
-    static let line2 = Color.white.opacity(0.05)
-    static let textPrimary = Color(hex: 0xE9EDEF)
-    static let secondary = Color(hex: 0x8B949B)
-    static let textDim = Color(hex: 0x5C656B)
-    static let accent = Color(hex: 0x22C86E)
-    static let onAccent = Color(hex: 0x06170D)
-    static let amber = Color(hex: 0xE8A41F)
-    static let red = Color(hex: 0xE5433F)
-    // The one documented inconsistency: sliders/toggles render the stock
-    // accent on Windows too — match the reference, don't unify on green.
-    static let blue = Color(red: 0.29, green: 0.62, blue: 0.85)
-    // Back-compat aliases for pre-handoff call sites.
-    static let stroke = border
-    static let card = surface.opacity(0.6)
-}
-
 struct StudioPanel: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -139,7 +114,7 @@ struct GroupLabel: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 9, weight: .semibold))
+            .font(.grotesk(9, .semibold))
             .foregroundStyle(Studio.secondary.opacity(0.7))
             .padding(.leading, 6)
     }
@@ -265,7 +240,7 @@ struct DisabledPill: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 12))
+            .font(.grotesk(12))
             .foregroundStyle(Studio.secondary.opacity(0.4))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -287,7 +262,7 @@ struct CapturePill: View {
             model.setCapture(enabled: !wanted)
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "power").font(.system(size: 10, weight: .bold))
+                Image(systemName: "power").font(.system(size: 10, weight: .bold))  // design-lint: allow
                 Text(live ? "Capture On" : wanted ? "Capture starting…" : "Capture Off")
                     .font(.grotesk(12, .medium))
             }
@@ -312,7 +287,7 @@ struct LivePill: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle().fill(Studio.accent).frame(width: 6, height: 6)
-            Text(label).font(.system(size: 12, weight: .medium))
+            Text(label).font(.grotesk(12, .medium))
         }
         .foregroundStyle(Studio.accent)
         .padding(.horizontal, 12)
@@ -328,8 +303,8 @@ struct ConnectionDot: View {
     var color: Color {
         switch model.status {
         case .connected: return Studio.accent
-        case .launching: return .yellow
-        case .exited, .failed: return .red
+        case .launching: return Studio.amber
+        case .exited, .failed: return Studio.red
         }
     }
 
@@ -369,21 +344,21 @@ struct ReadinessStrip: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: ready ? "checkmark.circle.fill" : "hourglass")
-                .font(.system(size: 11))
+                .font(.system(size: 11))  // design-lint: allow
                 .foregroundStyle(ready ? Studio.accent : .yellow)
-            Text("Show readiness").font(.system(size: 11, weight: .semibold))
+            Text("Show readiness").font(.grotesk(11, .semibold))
                 .foregroundStyle(ready ? Studio.accent : Studio.secondary)
-            Text(message).font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+            Text(message).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
             Spacer()
             Text("\(model.assignedIds.count) assigned · "
                  + "\(model.roster.filter(\.hasVideo).count) Zoom feeds · "
                  + "\(model.captureDevices.filter { $0.connectionState == "connected" }.count)"
                  + " capture")
-                .font(.system(size: 11)).foregroundStyle(Studio.secondary)
+                .font(.grotesk(11)).foregroundStyle(Studio.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
-        .background(Color.white.opacity(0.02))
+        .background(Studio.line2)
         .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke),
                  alignment: .bottom)
     }
@@ -427,7 +402,7 @@ struct MultiviewerCanvas: View {
                     Button("Grid") { model.configureMultiviewer(mode: "grid") }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "rectangle.split.2x2").font(.system(size: 9))
+                        Image(systemName: "rectangle.split.2x2").font(.system(size: 9))  // design-lint: allow
                         Text("Edit layout").font(.grotesk(11, .semibold))
                     }
                 }
@@ -521,9 +496,9 @@ struct SceneRail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Scenes").font(.system(size: 13, weight: .semibold))
+            Text("Scenes").font(.grotesk(13, .semibold))
             Text("\(model.scenes.count) scenes · 1920x1080 · 60 fps")
-                .font(.system(size: 10)).foregroundStyle(Studio.secondary)
+                .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             HStack(spacing: 6) {
                 SceneChip(label: "PGM \(programName)", color: Studio.amber)
                 SceneChip(label: "PVW \(previewName)", color: Studio.accent)
@@ -532,13 +507,13 @@ struct SceneRail: View {
                 SceneRow(index: index + 1, scene: scene)
             }
             Text("Tap a scene to queue on preview · Take swaps PVW and PGM")
-                .font(.system(size: 9)).foregroundStyle(Studio.secondary.opacity(0.8))
+                .font(.grotesk(9)).foregroundStyle(Studio.secondary.opacity(0.8))
             Button {
                 model.selectedTab = .scenes
             } label: {
                 HStack {
-                    Image(systemName: "square.grid.2x2").font(.system(size: 10))
-                    Text("Open Scene builder").font(.system(size: 11, weight: .medium))
+                    Image(systemName: "square.grid.2x2").font(.system(size: 10))  // design-lint: allow
+                    Text("Open Scene builder").font(.system(size: 11, weight: .medium))  // design-lint: allow
                 }
                 .foregroundStyle(Studio.accent)
                 .frame(maxWidth: .infinity)
@@ -569,15 +544,15 @@ struct SceneRow: View {
         } label: {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(onProgram ? Studio.amber : Color.white.opacity(0.08))
+                    .fill(onProgram ? Studio.amber : Studio.surfaceRaised)
                     .frame(width: 24, height: 24)
                     .overlay(Text("\(index)")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.grotesk(11, .bold))
                         .foregroundStyle(onProgram ? .black : .white))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(scene.name).font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
-                    Text(scene.layout).font(.system(size: 9))
+                    Text(scene.name).font(.grotesk(12, .medium))
+                        .foregroundStyle(Studio.textPrimary)
+                    Text(scene.layout).font(.grotesk(9))
                         .foregroundStyle(Studio.secondary)
                 }
                 Spacer()
@@ -586,7 +561,7 @@ struct SceneRow: View {
                 } else if onPreview {
                     SceneChip(label: "PVW", color: Studio.accent)
                 } else {
-                    Text("IDLE").font(.system(size: 8, weight: .bold, design: .monospaced))
+                    Text("IDLE").font(.plexMono(8, .bold))
                         .foregroundStyle(Studio.secondary.opacity(0.6))
                 }
             }
@@ -609,7 +584,7 @@ struct SceneChip: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .font(.plexMono(9, .bold))
             .lineLimit(1)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(0.16)))
@@ -627,9 +602,9 @@ struct VideoRoomRail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Video in room (\(model.roster.count))")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.grotesk(13, .semibold))
             Text(model.meetingState == "in_meeting" ? "Main room" : "Not in a meeting")
-                .font(.system(size: 10)).foregroundStyle(Studio.secondary)
+                .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             ScrollView {
                 VStack(spacing: 6) {
                     ForEach(model.roster) { participant in
@@ -642,7 +617,7 @@ struct VideoRoomRail: View {
                 model.selectedTab = .zoom
             } label: {
                 Text(model.meetingState == "in_meeting" ? "Manage meeting" : "Join meeting")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.grotesk(11, .medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Studio.card))
@@ -664,22 +639,22 @@ struct ParticipantCard: View {
     var body: some View {
         HStack(spacing: 8) {
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.white.opacity(0.08))
+                .fill(Studio.surfaceRaised)
                 .frame(width: 30, height: 30)
                 .overlay(Text(String(participant.name.prefix(1)).lowercased())
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white))
+                    .font(.grotesk(13, .semibold))
+                    .foregroundStyle(Studio.textPrimary))
             VStack(alignment: .leading, spacing: 1) {
-                Text(participant.name).font(.system(size: 11, weight: .medium))
+                Text(participant.name).font(.grotesk(11, .medium))
                     .lineLimit(1)
                 HStack(spacing: 4) {
-                    Text("Guest").font(.system(size: 9)).foregroundStyle(Studio.secondary)
+                    Text("Guest").font(.grotesk(9)).foregroundStyle(Studio.secondary)
                     if participant.talking {
-                        Text("Talking").font(.system(size: 9))
+                        Text("Talking").font(.grotesk(9))
                             .foregroundStyle(Studio.accent)
                     }
                     if participant.muted {
-                        Image(systemName: "mic.slash.fill").font(.system(size: 8))
+                        Image(systemName: "mic.slash.fill").font(.system(size: 8))  // design-lint: allow
                             .foregroundStyle(Studio.secondary)
                     }
                 }
@@ -687,7 +662,7 @@ struct ParticipantCard: View {
             Spacer()
             Button(assigned ? "−" : "+") { model.toggleAssigned(participant) }
                 .buttonStyle(.plain)
-                .font(.system(size: 13, weight: .bold))
+                .font(.grotesk(13, .bold))
                 .foregroundStyle(assigned ? Studio.amber : Studio.accent)
                 .frame(width: 22, height: 22)
                 .background(RoundedRectangle(cornerRadius: 5).fill(Studio.card))
@@ -816,10 +791,10 @@ struct TransportBar: View {
                 model.setAutoDirect(enabled: !model.autoDirectEnabled)
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "sparkles").font(.system(size: 10))
+                    Image(systemName: "sparkles").font(.system(size: 10))  // design-lint: allow
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("Magic Scene").font(.system(size: 11, weight: .semibold))
-                        Text("AI auto-direct").font(.system(size: 8))
+                        Text("Magic Scene").font(.grotesk(11, .semibold))
+                        Text("AI auto-direct").font(.grotesk(8))
                     }
                 }
                 .foregroundStyle(model.autoDirectEnabled ? .black : Studio.accent)
@@ -833,9 +808,9 @@ struct TransportBar: View {
             .buttonStyle(.plain)
             HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Set & Forget").font(.system(size: 10, weight: .medium))
+                    Text("Set & Forget").font(.grotesk(10, .medium))
                     Text("Automation \(model.autoDirectEnabled ? "On" : "Off")")
-                        .font(.system(size: 8)).foregroundStyle(Studio.secondary)
+                        .font(.grotesk(8)).foregroundStyle(Studio.secondary)
                 }
                 Toggle("", isOn: Binding(
                     get: { model.autoDirectEnabled },
@@ -848,26 +823,26 @@ struct TransportBar: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
             HStack(spacing: 4) {
                 Text("LT")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.grotesk(10, .bold))
                 Text(model.lowerThirdPhase == "hidden" ? "Ready" : model.lowerThirdPhase)
-                    .font(.system(size: 9))
+                    .font(.grotesk(9))
                     .foregroundStyle(model.lowerThirdPhase == "hidden"
                                      ? Studio.secondary : Studio.accent)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
             Spacer()
-            Text(outputsLabel).font(.system(size: 10)).foregroundStyle(Studio.secondary)
+            Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
             // Take — amber, the director's commit button.
             Button {
                 model.take()
             } label: {
                 HStack(spacing: 4) {
-                    Text("Take").font(.system(size: 12, weight: .bold))
-                    Text("Cut").font(.system(size: 9))
-                        .foregroundStyle(.black.opacity(0.6))
+                    Text("Take").font(.grotesk(12, .bold))
+                    Text("Cut").font(.grotesk(9))
+                        .foregroundStyle(Studio.onAccent.opacity(0.7))
                 }
-                .foregroundStyle(.black)
+                .foregroundStyle(Studio.onAccent)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 8).fill(
                     model.previewSceneId.isEmpty
@@ -883,13 +858,13 @@ struct TransportBar: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: recording ? "stop.fill" : "record.circle")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10))  // design-lint: allow
                     VStack(alignment: .leading, spacing: 0) {
                         Text(recording ? "Stop Rec" : "Record")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.grotesk(11, .semibold))
                         Text(model.isoRecordingEnabled
                              ? "MP4 + \(model.resolvedIsoSourceIds().count) ISOs" : "MP4")
-                            .font(.system(size: 8)).foregroundStyle(Studio.secondary)
+                            .font(.grotesk(8)).foregroundStyle(Studio.secondary)
                     }
                 }
                 .foregroundStyle(recording ? .white : Studio.red)
@@ -902,7 +877,7 @@ struct TransportBar: View {
             .buttonStyle(.plain)
             Toggle("ISOs", isOn: $model.isoRecordingEnabled)
                 .toggleStyle(.checkbox)
-                .font(.system(size: 10))
+                .font(.grotesk(10))
                 .disabled(recording)
             StreamControl()
         }
@@ -935,14 +910,14 @@ struct StreamControl: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10))  // design-lint: allow
                     VStack(alignment: .leading, spacing: 0) {
                         Text(live ? "Stop Stream" : "Stream")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.grotesk(11, .semibold))
                         Text(live ? (model.streamDetail.isEmpty ? "starting…"
                                      : model.streamDetail)
                              : "RTMP 6 Mbps")
-                            .font(.system(size: 8)).foregroundStyle(
+                            .font(.grotesk(8)).foregroundStyle(
                                 live ? Studio.blue : Studio.secondary)
                             .lineLimit(1)
                     }
@@ -958,14 +933,14 @@ struct StreamControl: View {
             Button {
                 showSettings = true
             } label: {
-                Image(systemName: "gearshape").font(.system(size: 10))
+                Image(systemName: "gearshape").font(.system(size: 10))  // design-lint: allow
             }
             .buttonStyle(.plain)
             .foregroundStyle(Studio.secondary)
         }
         .popover(isPresented: $showSettings) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Stream settings").font(.headline)
+                Text("Stream settings").font(.grotesk(14, .semibold))
                 TextField("RTMP URL", text: $model.streamUrl)
                     .textFieldStyle(StudioFieldStyle())
                 SecureField("Stream key (stored in Keychain)", text: $model.streamKey)
@@ -979,7 +954,7 @@ struct StreamControl: View {
                     .disabled(!live && (model.streamKey.isEmpty || model.streamUrl.isEmpty))
                 }
                 Text("1080p30 H.264 (VideoToolbox via ffmpeg) · 6 Mbps CBR · AAC 160 kbps")
-                    .font(.caption2).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             }
             .padding(14)
             .frame(width: 380)
@@ -1008,7 +983,7 @@ struct OutputsStatusRow: View {
         HStack(spacing: 14) {
             HStack(spacing: 4) {
                 Circle().fill(Studio.accent).frame(width: 6, height: 6)
-                Text("OUTPUTS").font(.system(size: 9, weight: .bold, design: .monospaced))
+                Text("OUTPUTS").font(.plexMono(9, .bold))
                     .foregroundStyle(Studio.accent)
             }
             OutputColumn(title: "PROGRAM", value: "1080p60",
@@ -1033,25 +1008,24 @@ struct OutputsStatusRow: View {
             Toggle(isOn: Binding(
                 get: { model.monitorEnabled },
                 set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) })) {
-                Text("Monitor").font(.system(size: 11, weight: .medium))
+                Text("Monitor").font(.grotesk(11, .medium))
             }
             .toggleStyle(.button)
             .tint(Studio.blue)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text("MASTER")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.plexMono(9, .bold))
                         .foregroundStyle(Studio.secondary)
-                    Text(lufsLabel).font(.system(size: 11, weight: .semibold,
-                                                 design: .monospaced))
+                    Text(lufsLabel).font(.plexMono(11, .semibold))
                 }
                 MeterBar(level: model.masterLevel).frame(width: 170)
             }
             if !peakLabel.isEmpty {
-                Text(peakLabel).font(.system(size: 9, design: .monospaced))
+                Text(peakLabel).font(.plexMono(9))
                     .foregroundStyle(Studio.secondary)
             }
-            Text(model.clockText).font(.system(size: 10, design: .monospaced))
+            Text(model.clockText).font(.plexMono(10))
                 .foregroundStyle(Studio.secondary)
         }
         .padding(.horizontal, 12)
@@ -1072,11 +1046,11 @@ struct OutputColumn: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title).font(.system(size: 8, weight: .bold, design: .monospaced))
+            Text(title).font(.plexMono(8, .bold))
                 .foregroundStyle(Studio.secondary)
-            Text(value).font(.system(size: 10, weight: .semibold))
+            Text(value).font(.grotesk(10, .semibold))
             if !detail.isEmpty {
-                Text(detail).font(.system(size: 8)).foregroundStyle(Studio.secondary)
+                Text(detail).font(.grotesk(8)).foregroundStyle(Studio.secondary)
             }
         }
     }
@@ -1444,34 +1418,34 @@ struct ScenesPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Scenes").font(.headline)
+            Text("Scenes").font(.grotesk(14, .semibold))
             Text("Scene slots fill from assigned participants in roster order; "
                  + "empty slots follow the active speaker.")
-                .font(.caption2).foregroundStyle(Studio.secondary)
+                .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             let assigned = model.roster.filter { model.assignedIds.contains($0.id) }
             Text("ASSIGNED (\(assigned.count))")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if assigned.isEmpty {
                 Text("Assign participants on the Zoom tab to fill scene slots.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
             ForEach(Array(assigned.enumerated()), id: \.element.id) { index, participant in
                 HStack {
                     Text("slot \(index + 1)")
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.plexMono(10))
                         .foregroundStyle(Studio.secondary)
-                    Text(participant.name).font(.system(size: 12)).lineLimit(1)
+                    Text(participant.name).font(.grotesk(12)).lineLimit(1)
                     Spacer()
                 }
             }
             Divider()
             HStack {
                 Text("PGM: \(model.programSceneId.isEmpty ? "—" : model.programSceneId)")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.amber)
                 Text("PVW: \(model.previewSceneId.isEmpty ? "—" : model.previewSceneId)")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.accent)
                 Spacer()
                 Button("Take") { model.take() }
@@ -1492,9 +1466,9 @@ struct OverlaysPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Overlays").font(.headline)
+            Text("Overlays").font(.grotesk(14, .semibold))
             Text("LOWER THIRD")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             TextField("Name", text: $model.lowerThirdName)
                 .textFieldStyle(StudioFieldStyle())
@@ -1513,26 +1487,26 @@ struct OverlaysPane: View {
                 .disabled(model.lowerThirdName.isEmpty && !onAir)
                 .tint(onAir ? .red : Studio.accent)
                 Text(model.lowerThirdPhase)
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(onAir ? Studio.accent : Studio.secondary)
                 Spacer()
                 Text("\(model.overlaysOnAir) on air")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.secondary)
             }
             Divider()
             Text("LOGO BUG")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if let bug = model.logoBug {
                 HStack {
-                    Text(bug.name).font(.system(size: 12))
+                    Text(bug.name).font(.grotesk(12))
                     Spacer()
-                    Button("Remove") { model.toggleLogoBug(bug) }.font(.caption)
+                    Button("Remove") { model.toggleLogoBug(bug) }.font(.grotesk(11))
                 }
             } else {
                 Text("Pick a still on the Media tab and tap “Bug” to key it top-right.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
         }
         .modifier(StudioPanel())
@@ -1545,7 +1519,7 @@ struct MediaPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Media").font(.headline)
+                Text("Media").font(.grotesk(14, .semibold))
                 Spacer()
                 Button("Import…") {
                     let panel = NSOpenPanel()
@@ -1558,22 +1532,22 @@ struct MediaPane: View {
                 Button("Refresh") { model.refreshMediaBin() }
             }
             Text(MediaBin.root)
-                .font(.system(size: 8, design: .monospaced))
+                .font(.plexMono(8))
                 .foregroundStyle(Studio.secondary.opacity(0.6))
                 .lineLimit(1).truncationMode(.head)
             if model.mediaAssets.isEmpty {
                 Text("Bin is empty — import stills, stingers or audio beds.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
             ForEach(model.mediaAssets) { asset in
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(asset.name).font(.system(size: 12)).lineLimit(1)
+                        Text(asset.name).font(.grotesk(12)).lineLimit(1)
                         Text("\(asset.kind)"
                              + (asset.naturalWidth > 0
                                 ? " · \(asset.naturalWidth)×\(asset.naturalHeight)"
                                 : ""))
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.plexMono(9))
                             .foregroundStyle(Studio.secondary)
                     }
                     Spacer()
@@ -1581,7 +1555,7 @@ struct MediaPane: View {
                         Button(model.logoBug?.id == asset.id ? "Unbug" : "Bug") {
                             model.toggleLogoBug(asset)
                         }
-                        .font(.caption)
+                        .font(.grotesk(11))
                     }
                 }
                 .padding(.vertical, 2)
@@ -1596,7 +1570,7 @@ struct AutomationPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Automation").font(.headline)
+            Text("Automation").font(.grotesk(14, .semibold))
             Toggle("Set & Forget (auto-direct)", isOn: Binding(
                 get: { model.autoDirectEnabled },
                 set: { model.setAutoDirect(enabled: $0) }))
@@ -1604,38 +1578,38 @@ struct AutomationPane: View {
                 .disabled(!model.autoDirectEnabled)
             HStack {
                 Text("Confidence ≥ \(Int(model.autoConfidenceThreshold))")
-                    .font(.caption)
+                    .font(.grotesk(11))
                 Slider(value: $model.autoConfidenceThreshold, in: 0...100, step: 5)
             }
             HStack {
-                Text(String(format: "Hold %.0fs", model.autoHoldSeconds)).font(.caption)
+                Text(String(format: "Hold %.0fs", model.autoHoldSeconds)).font(.grotesk(11))
                 Slider(value: $model.autoHoldSeconds, in: 0...30, step: 1)
             }
             Text(model.autoStatus)
-                .font(.system(.caption, design: .monospaced))
+                .font(.plexMono(11))
                 .foregroundStyle(model.autoDirectEnabled ? Studio.accent : Studio.secondary)
             Divider()
             Text("SCENE INTELLIGENCE")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if model.autoSceneId.isEmpty {
                 Text("Director idle — recommendations appear once the meeting has participants.")
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             } else {
                 HStack {
                     Text(model.autoSceneId)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.grotesk(13, .semibold))
                     Text("\(model.autoConfidence)%")
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.plexMono(11))
                         .foregroundStyle(model.autoConfidence >= Int(model.autoConfidenceThreshold)
                                          ? Studio.accent : Studio.secondary)
                     Spacer()
                     Text(model.autoRuleId)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.plexMono(9))
                         .foregroundStyle(Studio.secondary)
                 }
                 Text(model.autoRationale)
-                    .font(.caption).foregroundStyle(Studio.secondary)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
         }
         .modifier(StudioPanel())
@@ -1647,32 +1621,32 @@ struct DiagnosePane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Diagnose").font(.headline)
+            Text("Diagnose").font(.grotesk(14, .semibold))
             HStack {
                 ConnectionDot()
                 Text(model.statusDetail.isEmpty ? "core healthy" : model.statusDetail)
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.plexMono(10))
                     .foregroundStyle(Studio.secondary)
                     .lineLimit(2)
             }
             if !model.recordingArtifactPath.isEmpty {
                 Text("last artifact: \(model.recordingArtifactPath)")
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.plexMono(9))
                     .foregroundStyle(Studio.secondary)
                     .lineLimit(1).truncationMode(.head)
                     .textSelection(.enabled)
             }
             Divider()
             Text("WARNINGS")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.plexMono(10, .bold))
                 .foregroundStyle(Studio.secondary)
             if model.warnings.isEmpty {
-                Text("None.").font(.caption).foregroundStyle(Studio.secondary)
+                Text("None.").font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
             ForEach(Array(model.warnings.enumerated()), id: \.offset) { _, warning in
                 Text(warning)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.orange)
+                    .font(.plexMono(10))
+                    .foregroundStyle(Studio.amber)
                     .textSelection(.enabled)
             }
         }

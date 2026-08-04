@@ -376,7 +376,7 @@ struct SegmentedMeter: View {
                 let color: Color = threshold > 90 ? Studio.red
                     : threshold > 70 ? Studio.amber : Studio.accent
                 context.fill(Path(rect),
-                             with: .color(lit ? color : Color.white.opacity(0.06)))
+                             with: .color(lit ? color : Studio.surfaceRaised))
             }
         }
     }
