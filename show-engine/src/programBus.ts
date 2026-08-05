@@ -11,6 +11,7 @@
 
 import type { ProgramSource, Role } from "./contracts.js";
 import { DEFAULT_SKIP_ROLES, programSourcesEqual } from "./contracts.js";
+import { shouldFollowSpeaker } from "./speakerGate.js";
 
 export type ProgramState = {
   program: ProgramSource;
@@ -73,7 +74,7 @@ export class ProgramBus {
   }
 
   onActiveSpeaker(participantId: string, role: Role): boolean {
-    if (this.skipRoles.includes(role)) {
+    if (!shouldFollowSpeaker(role, this.skipRoles)) {
       return false;
     }
 
