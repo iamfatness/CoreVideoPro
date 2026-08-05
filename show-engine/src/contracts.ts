@@ -71,3 +71,54 @@ export type MukanaRecord = {
 
 /** The Mukana registry, keyed by 4-digit PIN. */
 export type MukanaDb = Record<string, MukanaRecord>;
+
+/**
+ * Visual weight applied to a lower-third plate. Mirrors `PlateTone` in the
+ * app's `src/engine/lowerThird.ts` (a different package) so the host adapter
+ * maps these 1:1 onto CVP's lower-third renderer. Kept as its own copy here
+ * rather than an import across the package boundary.
+ */
+export type PlateTone = "neutral" | "accent" | "guest" | "breaking";
+
+export const PLATE_TONES: readonly PlateTone[] = ["neutral", "accent", "guest", "breaking"];
+
+export function isPlateTone(value: unknown): value is PlateTone {
+  return typeof value === "string" && (PLATE_TONES as readonly string[]).includes(value);
+}
+
+/** A named on-screen arrangement, e.g. "Host + Reader with two guests". */
+export type LookDefinition = {
+  id: string;
+  label: string;
+  scenePreset: string;
+  boxes: number;
+  includesHost: boolean;
+  includesReader: boolean;
+  plateTone: PlateTone;
+};
+
+/** One position in the on-screen gallery grid. `slot: 0` means blank. */
+export type GalleryCell = { cell: number; slot: number };
+
+/** The producer's queued speaking order. All entries are 4-digit PIN strings. */
+export type QueueState = {
+  previous: string[];
+  current: string | null;
+  upcoming: string[];
+};
+
+/** What is currently feeding program video. */
+export type ProgramSource =
+  | { kind: "look"; lookId: string }
+  | { kind: "gallery" }
+  | { kind: "slot"; slot: number }
+  | { kind: "activeSpeaker" }
+  | { kind: "black" };
+
+/** Structural equality for `ProgramSource`, comparing discriminant and payload. */
+export function programSourcesEqual(a: ProgramSource, b: ProgramSource): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "look" && b.kind === "look") return a.lookId === b.lookId;
+  if (a.kind === "slot" && b.kind === "slot") return a.slot === b.slot;
+  return true;
+}
