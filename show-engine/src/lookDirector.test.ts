@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findChairSlots, pageCountFor, resolveLook } from "./lookDirector.js";
+import { clampPage, findChairSlots, pageCountFor, resolveLook } from "./lookDirector.js";
 import type { LookDefinition, Panelist, QueueState, Role, Slot } from "./contracts.js";
 
 function panelist(pin: string | null, role: Role = "panelist"): Panelist {
@@ -235,5 +235,41 @@ describe("resolveLook", () => {
     };
     resolveLook(look, { queue: queueCopy, slots, page: 0 });
     expect(queueCopy).toEqual(queue);
+  });
+});
+
+describe("clampPage", () => {
+  it("leaves a valid page alone", () => {
+    expect(clampPage(look, queue, 0)).toBe(0);
+    expect(clampPage(look, queue, 1)).toBe(1);
+  });
+
+  it("clamps a page past the end to the last valid page", () => {
+    expect(clampPage(look, queue, 5)).toBe(1);
+  });
+
+  it("clamps a negative page to zero", () => {
+    expect(clampPage(look, queue, -3)).toBe(0);
+  });
+
+  it("clamps to zero when the queue empties", () => {
+    const empty: QueueState = { previous: [], current: null, upcoming: [] };
+    expect(clampPage(look, empty, 3)).toBe(0);
+  });
+
+  it("clamps to zero for a look with no boxes", () => {
+    expect(clampPage({ ...look, boxes: 0 }, queue, 2)).toBe(0);
+  });
+
+  it("throws on a non-integer page", () => {
+    expect(() => clampPage(look, queue, 1.5)).toThrow(/page/);
+    expect(() => clampPage(look, queue, Number.NaN)).toThrow(/page/);
+  });
+
+  it("produces a page resolveLook accepts, for any integer input", () => {
+    for (const candidate of [-10, 0, 1, 2, 99]) {
+      const page = clampPage(look, queue, candidate);
+      expect(() => resolveLook(look, { queue, slots, page })).not.toThrow();
+    }
   });
 });
