@@ -45,6 +45,10 @@
 namespace corevideo::modules {
 namespace {
 
+// A live camera advances frameId many times a second; 2s of no advance is a
+// stall, not jitter.
+constexpr int64_t kAvfStallWarnMs = 2000;
+
 int64_t avfMonotonicMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -134,6 +138,11 @@ namespace {
 struct AvfDeviceEntry {
   // Connect bailed waiting on TCC; retried when consent lands.
   bool pendingPermission = false;
+  // Stall watchdog (the post-first-frame twin of uvcNoFirstFrameTimedOut):
+  // last frameId observed and when it last ADVANCED.
+  int64_t lastSeenFrameId = 0;
+  int64_t lastFrameAdvanceMs = 0;
+  bool stallLogged = false;
   CaptureDeviceInfo info;
   std::string outputSourceId;
   AVCaptureSession* session = nil;
@@ -283,6 +292,43 @@ class AvfCaptureDevice final : public ICaptureDevice {
         continue;
       }
       if (frameId > 0) {
+        // STALL WATCHDOG. A camera that delivers and then stops (another app
+        // grabbed a single-consumer device, cable pulled, device slept) left
+        // the held frame re-emitting forever with a healthy row — a frozen
+        // picture and no warning anywhere. Hold the last frame (never black
+        // the program mid-show, the Windows CaptureReaderStallPolicy shape)
+        // but say so.
+        const int64_t nowMs = avfMonotonicMs();
+        if (frameId != entry.lastSeenFrameId) {
+          entry.lastSeenFrameId = frameId;
+          entry.lastFrameAdvanceMs = nowMs;
+        } else if (entry.lastFrameAdvanceMs > 0 &&
+                   nowMs - entry.lastFrameAdvanceMs > kAvfStallWarnMs) {
+          const int64_t stalledMs = nowMs - entry.lastFrameAdvanceMs;
+          entry.info.signalPresent = false;
+          entry.info.warning =
+              entry.info.name + " stopped delivering frames " +
+              std::to_string(stalledMs / 1000) +
+              "s ago (holding the last frame). Another app may have taken the "
+              "camera — quit it, or disconnect and reconnect this source.";
+          entry.info.width = frame.i420Width;
+          entry.info.height = frame.i420Height;
+          const std::string stalledKey =
+              entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId;
+          frame.participantId = "capture:" + stalledKey;
+          frame.naturalWidth = frame.i420Width;
+          frame.naturalHeight = frame.i420Height;
+          frame.timestampMs = timestampMs + entry.info.audioSyncOffsetMs;
+          frames.push_back(std::move(frame));
+          if (!entry.stallLogged) {
+            entry.stallLogged = true;
+            std::fprintf(stderr, "[avf-capture] '%s' STALLED (no new frame for %llds)\n",
+                         entry.info.name.c_str(),
+                         static_cast<long long>(stalledMs / 1000));
+          }
+          continue;
+        }
+        entry.stallLogged = false;
         entry.info.signalPresent = true;
         entry.info.warning.clear();
         entry.info.width = frame.i420Width;
