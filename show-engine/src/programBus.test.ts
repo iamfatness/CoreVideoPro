@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ProgramSource } from "./contracts.js";
 import { ProgramBus } from "./programBus.js";
 
 describe("ProgramBus", () => {
@@ -107,5 +108,21 @@ describe("ProgramBus", () => {
     const state = bus.state();
     state.program = { kind: "gallery" };
     expect(bus.state().program).toEqual({ kind: "black" });
+  });
+
+  it("copies the source given to setPreview, isolating it from later caller mutation", () => {
+    const bus = new ProgramBus();
+    const src: ProgramSource = { kind: "slot", slot: 3 };
+    bus.setPreview(src);
+    src.slot = 9;
+    expect(bus.state().preview).toEqual({ kind: "slot", slot: 3 });
+  });
+
+  it("copies the source given to directCut, isolating it from later caller mutation", () => {
+    const bus = new ProgramBus();
+    const src: ProgramSource = { kind: "slot", slot: 3 };
+    bus.directCut(src);
+    src.slot = 9;
+    expect(bus.state().program).toEqual({ kind: "slot", slot: 3 });
   });
 });

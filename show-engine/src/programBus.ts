@@ -10,7 +10,7 @@
  */
 
 import type { ProgramSource, Role } from "./contracts.js";
-import { programSourcesEqual } from "./contracts.js";
+import { DEFAULT_SKIP_ROLES, programSourcesEqual } from "./contracts.js";
 
 export type ProgramState = {
   program: ProgramSource;
@@ -18,8 +18,6 @@ export type ProgramState = {
   activeSpeakerFollow: boolean;
   activeSpeakerId: string | null;
 };
-
-const DEFAULT_SKIP_ROLES: readonly Role[] = ["aslinterpreter"];
 
 export class ProgramBus {
   private program: ProgramSource = { kind: "black" };
@@ -42,7 +40,7 @@ export class ProgramBus {
   }
 
   setPreview(source: ProgramSource): void {
-    this.preview = source;
+    this.preview = { ...source };
   }
 
   /**
@@ -67,7 +65,7 @@ export class ProgramBus {
 
   directCut(source: ProgramSource): void {
     this.preview = this.program;
-    this.program = source;
+    this.program = { ...source };
   }
 
   setActiveSpeakerFollow(on: boolean): void {

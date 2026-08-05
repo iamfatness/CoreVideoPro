@@ -6,6 +6,14 @@ describe("FiloAssigner", () => {
     expect(() => new FiloAssigner({ capacity: 0 })).toThrow(/capacity/);
   });
 
+  it("rejects a NaN capacity", () => {
+    expect(() => new FiloAssigner({ capacity: NaN })).toThrow(/capacity/);
+  });
+
+  it("rejects a non-integer capacity", () => {
+    expect(() => new FiloAssigner({ capacity: 2.5 })).toThrow(/capacity/);
+  });
+
   it("starts empty", () => {
     expect(new FiloAssigner({ capacity: 3 }).positions().size).toBe(0);
   });
@@ -99,6 +107,16 @@ describe("VisibleSetAssigner", () => {
     expect(() => new VisibleSetAssigner({ capacity: 4, visible: 0 })).toThrow(/visible/);
     expect(() => new VisibleSetAssigner({ capacity: 4, visible: 5 })).toThrow(/visible/);
     expect(() => new VisibleSetAssigner({ capacity: 0, visible: 1 })).toThrow(/capacity/);
+  });
+
+  it("rejects a NaN capacity or visible", () => {
+    expect(() => new VisibleSetAssigner({ capacity: NaN, visible: 1 })).toThrow(/capacity/);
+    expect(() => new VisibleSetAssigner({ capacity: 4, visible: NaN })).toThrow(/visible/);
+  });
+
+  it("rejects a non-integer capacity or visible", () => {
+    expect(() => new VisibleSetAssigner({ capacity: 2.5, visible: 1 })).toThrow(/capacity/);
+    expect(() => new VisibleSetAssigner({ capacity: 4, visible: 1.5 })).toThrow(/visible/);
   });
 
   it("seats newcomers into visible positions first", () => {

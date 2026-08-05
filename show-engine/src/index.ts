@@ -7,6 +7,7 @@
 
 export {
   coerceRole,
+  DEFAULT_SKIP_ROLES,
   EXCLUSIVE_ROLES,
   isRole,
   isPlateTone,

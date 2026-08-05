@@ -34,7 +34,7 @@ export class FiloAssigner implements PositionAssigner {
   private readonly recency: string[] = [];
 
   constructor(options: { capacity: number }) {
-    if (options.capacity < 1) {
+    if (!Number.isInteger(options.capacity) || options.capacity < 1) {
       throw new Error(`FiloAssigner capacity must be at least 1, got ${options.capacity}`);
     }
     this.capacity = options.capacity;
@@ -126,10 +126,10 @@ export class VisibleSetAssigner implements PositionAssigner {
   private readonly recency: string[] = [];
 
   constructor(options: { capacity: number; visible: number }) {
-    if (options.capacity < 1) {
+    if (!Number.isInteger(options.capacity) || options.capacity < 1) {
       throw new Error(`VisibleSetAssigner capacity must be at least 1, got ${options.capacity}`);
     }
-    if (options.visible < 1) {
+    if (!Number.isInteger(options.visible) || options.visible < 1) {
       throw new Error(`VisibleSetAssigner visible must be at least 1, got ${options.visible}`);
     }
     if (options.visible > options.capacity) {

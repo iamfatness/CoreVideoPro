@@ -5,7 +5,14 @@
  * bad config fails loudly at startup instead of mid-show.
  */
 
-import { isPlateTone, isRole, PLATE_TONES, type LookDefinition, type Role } from "./contracts.js";
+import {
+  DEFAULT_SKIP_ROLES,
+  isPlateTone,
+  isRole,
+  PLATE_TONES,
+  type LookDefinition,
+  type Role
+} from "./contracts.js";
 
 export type MukanaConfig = {
   /** Base REST endpoint, e.g. https://host/phpsdk/php-panel-rest.php */
@@ -42,7 +49,6 @@ const DEFAULT_PANELISTS_INTERVAL_MS = 5000;
 const DEFAULT_HANDS_INTERVAL_MS = 2000;
 const DEFAULT_QUESTION_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BACKOFF_MS = 60000;
-const DEFAULT_SKIP_ROLES: readonly Role[] = ["aslinterpreter"];
 const MAX_LOOK_BOXES = 4;
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {

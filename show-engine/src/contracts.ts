@@ -18,6 +18,9 @@ export const ROLES: readonly Role[] = [
 /** Roles that may be held by at most one person at a time. */
 export const EXCLUSIVE_ROLES: readonly Role[] = ["host", "reader"];
 
+/** Roles automatically excluded from on-screen selection, e.g. the ASL interpreter. */
+export const DEFAULT_SKIP_ROLES: readonly Role[] = ["aslinterpreter"];
+
 export function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
