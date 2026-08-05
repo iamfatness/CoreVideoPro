@@ -1093,7 +1093,25 @@ final class AppModel: ObservableObject {
         "pip": [(0, 0, 1, 1), (0.68, 0.68, 0.28, 0.28)],
     ]
 
-    private func buildRoutes(for sceneId: String) -> [JSONObject] {
+    // `isProgram` so only the PROGRAM bus honors a cut — preview keeps showing
+    // its cued scene, exactly like a switcher's cut bus.
+    private func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
+        if sceneId == Self.soloSceneA || sceneId == Self.soloSceneB {
+            guard let slotId = soloSlotId,
+                  let slot = slots.first(where: { $0.id == slotId }),
+                  slot.kind != "unassigned" else { return [] }
+            var route = SceneRoute(
+                routeId: sceneId + "-solo", mode: "fixed",
+                participantId: nil, captureDeviceId: nil,
+                rect: (0, 0, 1, 1), zIndex: 0)
+            if slot.kind == "zoom" {
+                route.participantId = slot.sourceId
+            } else {
+                route.mode = "capture-input"
+                route.captureDeviceId = slot.sourceId
+            }
+            return [route.json]
+        }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
               let rects = Self.layoutRects[scene.layout] else { return [] }
         let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow }
@@ -1302,6 +1320,40 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
+    // ── multiview source bus (StudioViewModel.PreviewMultiviewTile) ──────────
+    //
+    // Clicking a multiviewer source tile CUES that source solo to PREVIEW —
+    // then Take puts it on air. Windows alternates TWO reserved solo scene ids
+    // so consecutive clicks always change the scene id (re-cuing the same id
+    // would no-op and leave preview compositing the previous source); the mac
+    // port keeps that trick verbatim. Solo scenes are reserved: they never
+    // appear in the scene rail.
+    static let soloSceneA = "mv-solo-a"
+    static let soloSceneB = "mv-solo-b"
+    @Published var soloSlotId: Int?
+
+    // Reserved solo scenes never appear in the rail.
+    var railScenes: [SceneDef] {
+        scenes.filter { $0.id != Self.soloSceneA && $0.id != Self.soloSceneB }
+    }
+
+    // Tile ids are wire source ids ("zoom:<pid>" / "capture:<id>").
+    func slotForSourceId(_ sourceId: String) -> Int? {
+        let bare = sourceId.contains(":")
+            ? String(sourceId.drop(while: { $0 != ":" }).dropFirst()) : sourceId
+        return slots.first { $0.kind != "unassigned" && $0.sourceId == bare }?.id
+    }
+
+    func previewMultiviewSlot(_ slotId: Int) {
+        guard let slot = slots.first(where: { $0.id == slotId }),
+              slot.kind != "unassigned" else { return }
+        soloSlotId = slotId
+        previewSceneId = previewSceneId == Self.soloSceneA ? Self.soloSceneB
+                                                           : Self.soloSceneA
+        ShellLog.write("multiview cue → input \(slotId) (\(slot.name))")
+        syncScenes()
+    }
+
     func selectPreviewScene(_ sceneId: String) {
         // Mirrors StudioViewModel.SelectScene: selection ONLY arms preview —
         // program changes exclusively on Take.
@@ -1341,7 +1393,7 @@ final class AppModel: ObservableObject {
         if !programSceneId.isEmpty {
             commands.append([
                 "type": "load-scene-graph", "sceneId": programSceneId,
-                "routes": buildRoutes(for: programSceneId),
+                "routes": buildRoutes(for: programSceneId, isProgram: true),
             ])
         }
         if !previewSceneId.isEmpty {

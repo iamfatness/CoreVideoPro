@@ -442,6 +442,14 @@ struct MultiviewerCanvas: View {
                                    height: max(1, tile.h * geometry.size.height))
                             .offset(x: tile.x * geometry.size.width,
                                     y: tile.y * geometry.size.height)
+                            // Source tiles are the bus: click cues that source
+                            // solo to PREVIEW (StudioViewModel.PreviewMultiviewTile).
+                            .onTapGesture {
+                                guard tile.role == "source" else { return }
+                                if let slot = model.slotForSourceId(tile.id) {
+                                    model.previewMultiviewSlot(slot)
+                                }
+                            }
                     }
                 }
                 if model.multiviewTiles.isEmpty {
@@ -508,7 +516,8 @@ struct MultiviewTileChrome: View {
                 isBus ? accent : Color.black.opacity(0.55)))
         }
         .overlay(Rectangle().stroke(accent, lineWidth: isBus ? 3 : 2))
-        .allowsHitTesting(false)
+        .contentShape(Rectangle())
+        .allowsHitTesting(!isBus)
     }
 }
 
@@ -559,7 +568,17 @@ struct SceneRail: View {
     }
 
     var previewName: String {
-        model.scenes.first { $0.id == model.previewSceneId }?.name ?? "—"
+        // A solo cue shows the SOURCE, not a scene name — the rail has no row
+        // for the reserved solo scenes.
+        if model.previewSceneId == AppModel.soloSceneA
+            || model.previewSceneId == AppModel.soloSceneB {
+            if let slotId = model.soloSlotId,
+               let slot = model.slots.first(where: { $0.id == slotId }) {
+                return slot.name.isEmpty ? "Input \(slotId)" : slot.name
+            }
+            return "Solo"
+        }
+        return model.scenes.first { $0.id == model.previewSceneId }?.name ?? "—"
     }
 
     var body: some View {
@@ -571,7 +590,7 @@ struct SceneRail: View {
                 SceneChip(label: "PGM \(programName)", color: Studio.amber)
                 SceneChip(label: "PVW \(previewName)", color: Studio.accent)
             }
-            ForEach(Array(model.scenes.enumerated()), id: \.element.id) { index, scene in
+            ForEach(Array(model.railScenes.enumerated()), id: \.element.id) { index, scene in
                 SceneRow(index: index + 1, scene: scene)
             }
             Text("Tap a scene to queue on preview · Take swaps PVW and PGM")
