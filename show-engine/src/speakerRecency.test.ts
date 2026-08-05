@@ -146,6 +146,20 @@ describe("VisibleSetAssigner", () => {
     expect(set.positions().get(1)).toBe("a");
   });
 
+  it("seats an unknown speaker into a free but non-visible position, then immediately swaps them into view", () => {
+    const set = new VisibleSetAssigner({ capacity: 4, visible: 1 });
+    set.reset(["a"]);
+
+    const changes = set.onActiveSpeaker("b");
+
+    // "b" is unknown and the lowest free position (2) is off-screen, so it
+    // seats there and is then immediately swapped with the stalest visible
+    // occupant ("a" at position 1) per the not-visible rule.
+    expect(changes).toHaveLength(2);
+    expect(set.positions().get(1)).toBe("b");
+    expect(set.positions().get(2)).toBe("a");
+  });
+
   it("evicts the least recently active occupant overall when an unknown speaker arrives at a full pool, then applies the standard swap if their freed seat isn't visible", () => {
     // capacity 3, visible 1: only position 1 is on screen.
     const set = new VisibleSetAssigner({ capacity: 3, visible: 1 });
