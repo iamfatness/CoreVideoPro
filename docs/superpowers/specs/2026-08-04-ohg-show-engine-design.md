@@ -18,9 +18,10 @@ web control surface over OSC.
 
 **This project replaces that stack with CoreVideo Pro** (and, at equal priority, the
 CoreVideo OBS plugin): CVP's native Zoom engine replaces the ZoomOSC/ZoomISO bots,
-CVP's GPU compositor + scene system replaces the ATEM/SuperSource/multiview, and a new
-**show engine** — a host-agnostic TypeScript package — replaces the Isadora logic. The
-external *show data* ecosystem stays: Mukana, SPX graphics, and tally are kept in v1.
+CVP's GPU compositor + scene system replaces the ATEM/SuperSource/multiview, CVP's
+integrated lower-third/overlay engine replaces SPX, and a new **show engine** — a
+host-agnostic TypeScript package — replaces the Isadora logic. Of the external *show
+data* services, Mukana and tally are kept in v1.
 
 ### Goals
 - All Isadora show logic reimplemented as tested, host-agnostic TS modules.
@@ -32,7 +33,9 @@ external *show data* ecosystem stays: Mukana, SPX graphics, and tally are kept i
 - Safe migration: shadow mode against the live rig before any cutover.
 
 ### Non-goals (v1)
-- Replacing Mukana, SPX, or the tally service.
+- Replacing Mukana or the tally service.
+- Retaining SPX. Graphics are rendered by CVP's own overlay engine — see the graphics
+  decision in §7.
 - A `universeBridge` driving the legacy rig from the new surface (explicitly deferred;
   see §8 migration).
 - Auth beyond LAN-trust + shared token (control room network assumption, same posture
@@ -48,7 +51,7 @@ external *show data* ecosystem stays: Mukana, SPX graphics, and tally are kept i
                  │  overrideDb · panelistDb · liveSlots ·       │
                  │  speakerRecency · galleryDirector ·          │
                  │  handsQueue · lookDirector · programBus ·    │
-                 │  tallyPublisher · gfxDirector · config       │
+                 │  tallyPublisher · overlayDirector · config   │
                  │                                              │
                  │        HostAdapter interface (port)          │
                  └───────┬──────────────────────┬───────────────┘
@@ -129,9 +132,13 @@ state. All algorithms cite their source actor in the companion reference.
 11. **`tallyPublisher`** — derives on-air PIN lists from `programBus` + `lookDirector`
     + gallery state (the `MixEffect_Info_v15` derivation minus ATEM parsing — the
     engine *is* the switcher state now); publishes to oh.tally.video.
-12. **`gfxDirector`** — SPX client: six template functions with exact param encodings,
-    layouts A1–D2 → `f0..f12` field building, rundown/item control, change-detection
-    so overlays fire only on real changes.
+12. **`overlayDirector`** — derives the on-screen text from the current look and roster:
+    one nameplate per occupied position (host, reader, each guest box) carrying name and
+    location, plus the current question. Emits them through the `HostAdapter` for CVP's
+    integrated lower-third/overlay engine to render, with change-detection so overlays
+    fire only on real changes. Replaces the legacy SPX client — the A1–D2 layout
+    enumeration is gone, because it existed only to name pre-authored SPX templates;
+    with our own renderer the layout is implied by which positions are occupied.
 13. **`config`** — typed show config replacing `infraestructure-*.js`: service
     addresses, slot capacity, skip-roles, look definitions, poll intervals. JSON +
     schema; one-shot importer from the legacy files.
@@ -185,7 +192,7 @@ Companion builds actions from it dynamically. Params are positional
 3. **State.** Rich JSON on the `ohg` node of `/state` + WS push: `panelists` (master
    DB), `slots` (live array with holes), `gallery`, `queue`, `program`
    (pgm/pvw/mode/asFollow), `tally` (PIN lists + per-slot on-air), `health` (mukana /
-   spx / tally / host). Flattened OSC/Companion feedback fields join `StateFields`:
+   tally / host). Flattened OSC/Companion feedback fields join `StateFields`:
    `ohg/slot/{n}/name`, `ohg/slot/{n}/role`, `ohg/slot/{n}/tally`,
    `ohg/program/mode`, `ohg/queue/current`, `ohg/health/mukana`, etc. (the
    `input/{slot}/…` convention).
@@ -254,7 +261,7 @@ interface Look {                  // config-defined
   scenePreset: string;            // host scene/preset id
   boxes: number;                  // guest boxes
   includesReader: boolean;        // the "2-series" layouts
-  spxLayout: "A1"|"B1"|"C1"|"D1"|"A2"|"B2"|"C2"|"D2";
+  plateTone?: "neutral" | "accent" | "guest" | "breaking";  // maps to CVP PlateTone
 }
 
 interface QueueState { prev: string[]; current: string | null; next: string[] } // PINs
@@ -277,7 +284,8 @@ atomic-write JSON state file on change (debounced); restored on start (generaliz
   preset + source routes; OBS: scene switch + item visibility/transform).
 - `setPreview(source)` / `cut()` / `auto(transitionId?)`.
 - `setGallery(cells: Map<cell, slot | 0>)` — multiview/gallery composition.
-- `setOverlay(id, visible, fields?)` — host-rendered overlays only (SPX goes direct).
+- `setNameplates(plates)` / `setQuestion(text | null)` — the host renders these through
+  its integrated lower-third/overlay engine.
 
 **Capability declaration:** adapters report `hasPreviewBus`, `maxGalleryCells`,
 `transitions[]`; the engine degrades gracefully (no preview bus → direct-cut only).
@@ -292,7 +300,7 @@ CVP-Mac, and OBS semantically identical.
 | ME1 PGM/PVW, cut/auto | `programBus` → host transport |
 | ME2 active-speaker cut | AS-follow retargeting a dedicated "speaker" slot |
 | SuperSource + boxes, named states | `Look` presets with per-box routes |
-| DSK/USK | CVP overlay layers / SPX |
+| DSK/USK | CVP overlay layers |
 | Aux 10030 smart gallery | gallery scene/multiview |
 | FTB | black look preset (v1) |
 
@@ -301,10 +309,10 @@ CVP-Mac, and OBS semantically identical.
 - **`mukanaClient`** — poll intervals from config (defaults: panelists 5s,
   hands/question 2s); off-hours `"status"` body → keep last-good DB + "registry
   dormant" health, never an error; exponential backoff on network failure.
-- **`spxClient`** — six template functions with exact param encodings (normalized to
-  URI-encoded; the patch's unencoded `animateHeadlineIn` is a template-side check
-  during migration), layouts A1–D2 → `f0..f12`, rundown/item control, primary + backup
-  address failover, change-detection.
+- **Graphics are not an external integration.** Nameplates and questions are rendered by
+  CVP's integrated lower-third/overlay engine via the `HostAdapter` — there is no SPX
+  client, no template functions, and no `f0..f12` field payloads. Question *text* still
+  comes from Mukana; only its rendering is ours.
 - **`tallyClient`** — publishes derived on-air PIN lists on change.
 - **Error philosophy** (house rule: loud, never silent): every external failure is
   visible in `ohg.health` + surfaces; show logic never blocks on an external service —
@@ -319,7 +327,7 @@ CVP-Mac, and OBS semantically identical.
    ≤1 reader, PIN≥9000 in the tail block) and `speakerRecency` (never evict the
    current speaker).
 2. **Engine integration** — full pipeline against a scripted host-adapter mock +
-   mocked Mukana/SPX HTTP; golden scenario files for real show flows (pre-show fill,
+   mocked Mukana HTTP; golden scenario files for real show flows (pre-show fill,
    host handoff, question segment, ASL interpreter speaking).
 3. **E2E per host** — CVP: the fake Zoom engine drives the real app + show engine
    headlessly (the `validate-iso-record.mjs` harness pattern); OBS: adapter-level
@@ -337,7 +345,7 @@ correspondingly high, and shadow mode gets many reps quickly):**
 4. **Cutover + retirement.**
 
 Config migration: one-shot importer from `infraestructure-*.js` + `mukana-*.js`
-(Mukana URLs, SPX addresses, tally URL, capacity; the bot fleet ceases to exist).
+(Mukana URLs, tally URL, capacity, look definitions; the bot fleet and the SPX addresses cease to exist).
 
 ## 9. Per-platform work (delegable checklists)
 
@@ -359,7 +367,9 @@ Config migration: one-shot importer from `infraestructure-*.js` + `mukana-*.js`
   did) on the shared protocol; no web surface in v1 (remote = Companion/OSC; browser
   surface possible later) — jwallace, 2026-08-04. Companion rides the manifest.
 - OBS plugin is equal priority; enforced via host-agnostic engine + conformance suite.
-- Mukana, SPX, tally all kept in v1.
+- Mukana and tally kept in v1; **SPX dropped** in favour of CVP's integrated
+  lower-third/overlay engine — jwallace, 2026-08-04. The A1-D2 layout enumeration dies
+  with it: layout is derived from which positions a look occupies.
 - One control endpoint per host (engine registers actions; no second public server).
 - Shipped Isadora quirks are fixed, not ported (§3 divergences).
 - Auth stays LAN-trust + shared token in v1.
