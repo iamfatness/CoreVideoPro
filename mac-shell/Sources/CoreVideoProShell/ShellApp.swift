@@ -353,7 +353,7 @@ struct ReadinessStrip: View {
                 .foregroundStyle(ready ? Studio.accent : Studio.secondary)
             Text(message).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
             Spacer()
-            Text("\(model.assignedIds.count) assigned · "
+            Text("\(model.liveInputCount) assigned · "
                  + "\(model.roster.filter(\.hasVideo).count) Zoom feeds · "
                  + "\(model.captureDevices.filter { $0.connectionState == "connected" }.count)"
                  + " capture")
@@ -393,7 +393,7 @@ struct MultiviewerCanvas: View {
             HStack(spacing: 8) {
                 Text("MULTIVIEWER").font(.grotesk(12, .semibold))
                 MonoChip("1080p60")
-                Text("\(model.assignedIds.count) live inputs")
+                Text("\(model.liveInputCount) live inputs")
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Spacer()
                 Text(model.clockText)

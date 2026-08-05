@@ -684,6 +684,12 @@ final class AppModel: ObservableObject {
 
     // assignedIds stays the wire-facing derivation (spine/scenes/multiview all
     // read it) — recomputed whenever slots change.
+    // Every in-show slot with a live source, zoom OR capture — the readiness
+    // strip and multiviewer header report this, not just the zoom subset.
+    var liveInputCount: Int {
+        slots.filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }.count
+    }
+
     private func recomputeFromSlots() {
         assignedIds = Set(slots.filter { $0.kind == "zoom" && $0.inShow }
             .map(\.sourceId))
@@ -1035,9 +1041,11 @@ final class AppModel: ObservableObject {
                 "priority": index,
             ]
         }
-        // Multiview sources = the in-show slots, in slot order.
+        // Multiview sources = the in-show slots that still HAVE a source. An
+        // offline slot (participant left, device unplugged) kept its tile and
+        // rendered as an unlabeled gray placeholder — a dead box on the wall.
         let multiviewSources: [JSONObject] = slots
-            .filter { $0.kind != "unassigned" && $0.inShow }
+            .filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
             .map { slot in
                 slot.kind == "zoom"
                     ? [
@@ -1114,7 +1122,7 @@ final class AppModel: ObservableObject {
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
               let rects = Self.layoutRects[scene.layout] else { return [] }
-        let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow }
+        let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
         // An edited canvas OWNS its scene: layers carry their own rects, fit
         // and opacity, and bind to a slot (nil = active speaker).
         if !scene.layers.isEmpty {
@@ -1200,7 +1208,7 @@ final class AppModel: ObservableObject {
         guard let index = scenes.firstIndex(where: { $0.id == sceneId }),
               scenes[index].layers.isEmpty,
               let rects = Self.layoutRects[scenes[index].layout] else { return }
-        let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow }
+        let inShow = slots.filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
         scenes[index].layers = rects.enumerated().map { slot, rect in
             SceneLayer(id: "\(sceneId)-layer-\(slot)",
                        slotId: slot < inShow.count ? inShow[slot].id : nil,
