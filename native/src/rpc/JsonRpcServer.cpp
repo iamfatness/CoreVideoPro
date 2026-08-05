@@ -467,6 +467,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
+    // Past this per-tick render cost the loop is saturated and must yield.
+    constexpr long long kRenderYieldThresholdMs = 12;
+    constexpr long long kRenderYieldMs = 6;
     long long frames = 0;
     long long lockWaitUs = 0;
     long long renderUs = 0;
@@ -479,6 +482,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 #endif
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
+      long long tickRenderMs = 0;
       {
         std::unique_lock<std::mutex> lock(coreMutex);
         // Increment 6 guardrail: sanctioned long-hold site — the video-only GPU
@@ -514,6 +518,18 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           std::fprintf(stderr, "[render] STALL lockWait=%lldms render=%lldms\n",
                        static_cast<long long>(holdLockMs), static_cast<long long>(holdRenderMs));
         }
+        tickRenderMs = holdRenderMs;
+      }
+      // COMMAND PRIORITY. A saturated tick (a real show: several 1080p Zoom
+      // feeds plus capture sources pushed this to ~34ms) exceeds the frame
+      // budget, so the pacer below sleeps zero and this loop re-acquires
+      // coreMutex immediately — the lock is then held ~100% of wall time and
+      // NO request can ever acquire it, so every shell command times out
+      // (joins, scene syncs, assigns). Yield a fixed slice with the lock
+      // RELEASED whenever the tick overran. Dropping a frame is invisible;
+      // a timed-out command breaks the app.
+      if (tickRenderMs > kRenderYieldThresholdMs) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kRenderYieldMs));
       }
       if (++frames >= 120) {
         const auto now = std::chrono::steady_clock::now();
