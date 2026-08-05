@@ -22,16 +22,44 @@ The final whole-branch review found four contract gaps that are invisible from i
 single task and were therefore invisible to the per-task reviewers. They are not defects in
 the code as briefed — they are seams between modules that no brief owned.
 
-1. **The hands wire format does not connect.** `MukanaClient.request()` reads the response
-   body, hands it to `parseMukanaPanelists`, and discards it; `parseHandsPayload` needs the
-   raw text, and no accessor exposes it. Worse, the two disagree on shape: the actor
-   reference documents `?req=hands` as JSON (`{"q":…,"hands":{prev,curr,next}}`), while
-   `parseHandsPayload` accepts the three-line CSV form, which is the *Isadora-internal*
-   `HandsAPI` feed — plausibly from the separate hands device, not Mukana. Against the real
-   endpoint `fetchHands()` returns an empty DB with health `"ok"`: a silently always-empty
-   queue reporting green, which is the worst failure mode this package can have. Decide the
-   parser's input shape against the reference doc before writing anything that consumes a
-   queue.
+1. **The hands fetch is not wired to its parser — and misclassifies a healthy endpoint.**
+   `MukanaClient.request()` reads the response body, hands it to `parseMukanaPanelists`,
+   and discards it; `parseHandsPayload` needs the raw text, and no accessor exposes it.
+   Compounding that, running the *panelist* parser over a hands response is wrong on its
+   own terms: the body is plain text, so `JSON.parse` throws, the outcome is `invalid`,
+   and that endpoint's health goes `failing` with exponential backoff — against a
+   perfectly healthy endpoint. Fix: `fetchHands` and `fetchQuestion` must not run the
+   panelist parser. Give `request()` a per-endpoint parse strategy (or a raw-body return)
+   so hands goes to `parseHandsPayload` and question gets its own parser.
+
+   **The wire format itself is settled — do not change `parseHandsPayload`.** An earlier
+   reading of the final review claimed the endpoint returns JSON
+   (`{"q":…,"hands":{prev,curr,next}}`) and that the three-line CSV form was
+   Isadora-internal. That was investigated against the raw patch extraction on 2026-08-05
+   and is **refuted**:
+   - The patch contains a native Isadora "Get URL Text" actor named **"Get Mukana Hands"**
+     pointed at `…?event=officehours&req=hands`, whose captured `url text` output is
+     `1039,1726` / `NONE` / `NONE` — the three-line form. (It is a native actor, not a JS
+     one, which is why it is absent from the extracted `js_actors/`.)
+   - That exact text also appears as the captured sample on `SuperSourceBrain`'s `HandsAPI`
+     input pin.
+   - **No actor among the 217 extracted parses the JSON hands shape.** The JSON sample
+     occurs exactly once in the entire string dump, as a stray captured value on the
+     unrelated `MV16_Router` "Searching users" pin, never near an HTTP actor and never
+     parsed.
+   - The infrastructure entry `hands: {"address":"10.5.9.90","port":9090}` is a ZoomOSC
+     device-table row, not a feed of this queue; the only OSC hand traffic
+     (`/zoomosc/user/handRaised|handLowered`) is a per-participant boolean keyed by zoomID,
+     structurally unrelated to the ordered queue.
+
+   Also confirmed: `current` is genuinely singular. `SuperSourceBrain` never comma-splits
+   the middle line the way it splits the other two, so `QueueState.current` being a single
+   string is right. Elements are bare numeric PIN strings; the original imposes no length
+   validation, so our four-digit filter is a deliberate (already-recorded) divergence.
+
+   Residual unknown: nobody has curled the live endpoint. If it ever returns JSON, the
+   three-line parser fails loudly rather than silently — acceptable, but a live capture
+   during shadow mode would close it for good.
 
 2. **The accessibility skip-roles rule is enforced in one of four places.** Spec §3.7 says
    it lives in `speakerRecency`; it does not. All three assigners take a bare
