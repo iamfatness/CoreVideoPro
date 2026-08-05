@@ -75,6 +75,16 @@ export type MukanaRecord = {
 /** The Mukana registry, keyed by 4-digit PIN. */
 export type MukanaDb = Record<string, MukanaRecord>;
 
+/** The single audience question currently "up" on screen. */
+export type MukanaQuestion = {
+  key: string;
+  askerName: string;
+  text: string;
+  tag: string;
+  votes: number;
+  timestampMs: number;
+};
+
 /**
  * Visual weight applied to a lower-third plate. Mirrors `PlateTone` in the
  * app's `src/engine/lowerThird.ts` (a different package) so the host adapter
