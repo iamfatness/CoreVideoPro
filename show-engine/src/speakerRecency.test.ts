@@ -182,6 +182,25 @@ describe("VisibleSetAssigner", () => {
     expect(set.positions().size).toBe(3);
     expect([...set.positions().values()]).not.toContain("b");
   });
+
+  it("seats an unknown speaker directly when the freed position is already visible", () => {
+    // capacity 2, visible 2: both positions are on screen, so no swap is
+    // ever needed here — this exercises the sub-branch of seatIntoFullPool
+    // where eviction alone suffices.
+    const set = new VisibleSetAssigner({ capacity: 2, visible: 2 });
+    set.reset(["a", "b"]);
+
+    const changes = set.onActiveSpeaker("c");
+
+    // "a" is the least recently active occupant overall and holds position
+    // 1, which is already visible, so "c" seats there directly with no
+    // follow-up swap: exactly one PlacementChange, for "a"'s old position.
+    expect(changes).toEqual([{ position: 1, participantId: "c" }]);
+    expect(set.positions().get(1)).toBe("c");
+    expect(set.positions().get(2)).toBe("b");
+    expect(set.positions().size).toBe(2);
+    expect([...set.positions().values()]).not.toContain("a");
+  });
 });
 
 describe("RecencyScores", () => {
