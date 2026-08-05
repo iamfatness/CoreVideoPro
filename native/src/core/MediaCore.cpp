@@ -4494,7 +4494,15 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // buses (every hardware multiviewer shows them from power-on). Gating the
   // whole pass on sources left the mac shell with a black box and no P/P.
   const bool multiviewHasProgramPreview = multiviewLayoutMode_ != "grid";
-  if (!multiviewSources_.empty() || multiviewHasProgramPreview) {
+  // The multiviewer is a MONITOR WALL, not the program bus: compositing it on
+  // every 60fps tick (it builds the full program AND preview plans, then runs
+  // a second GPU pass) pushed coreMutex holds to 20-35ms and starved the RPC
+  // queue until commands timed out. ~20fps is indistinguishable on a wall and
+  // gives the lock back. The FIRST tick always renders so the buses appear
+  // immediately, and a structural change forces one too.
+  ++multiviewTickCounter_;
+  const bool multiviewDue = !multiviewStructureEmitted_ || (multiviewTickCounter_ % 3) == 0;
+  if ((!multiviewSources_.empty() || multiviewHasProgramPreview) && multiviewDue) {
     auto multiviewPlan = buildMultiviewRenderPlan(videoFrames);
     multiviewPlan.skipCpuReadback = true;
     lastProgramFrame_.multiviewSharedTexture = modules_.compositor->renderMultiview(multiviewPlan, videoFrames);

@@ -742,6 +742,7 @@ class MediaCore {
   // emitted only on structural change (and once at cold start).
   uint32_t lastMultiviewStructureSignature_ = 0;
   bool multiviewStructureEmitted_ = false;
+  std::uint64_t multiviewTickCounter_ = 0;
   std::vector<rpc::Json> pendingMultiviewSharedTextureEvents_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
