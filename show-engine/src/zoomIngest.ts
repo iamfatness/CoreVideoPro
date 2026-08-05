@@ -21,9 +21,14 @@ export class ZoomIngest {
   private working = new Map<string, Participant>();
   private published: readonly Participant[] = [];
   private isDirty = false;
+  private _revision = 0;
 
   get dirty(): boolean {
     return this.isDirty;
+  }
+
+  get revision(): number {
+    return this._revision;
   }
 
   apply(event: ZoomEvent): void {
@@ -79,6 +84,7 @@ export class ZoomIngest {
       .map((p) => ({ ...p }))
       .sort((a, b) => a.participantId.localeCompare(b.participantId));
     this.isDirty = false;
+    this._revision += 1;
     return true;
   }
 
