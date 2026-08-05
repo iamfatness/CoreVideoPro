@@ -6,7 +6,8 @@ const state: ShowState = {
   slots: { version: 1, capacity: 2, seats: [null, null] },
   overrides: {
     "1383": { pin: "1383", displayName: "J.J.", location: "CA", role: "host" }
-  }
+  },
+  gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] }
 };
 
 function fakeFs(seed: Record<string, string> = {}): StateFs & { files: Map<string, string> } {
@@ -197,6 +198,42 @@ describe("StateStore", () => {
           slots: { version: 1, capacity: "2", seats: [null, null] },
           overrides: {}
         })
+      })
+    });
+    expect(await store.load()).toBeNull();
+  });
+});
+
+describe("StateStore gallery node", () => {
+  const withGallery: ShowState = {
+    version: 1,
+    slots: { version: 1, capacity: 2, seats: [null, null] },
+    overrides: {},
+    gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] }
+  };
+
+  it("round-trips a state carrying a gallery", async () => {
+    const store = new StateStore("/show/state.json", { fs: fakeFs() });
+    await store.save(withGallery);
+    expect(await store.load()).toEqual(withGallery);
+  });
+
+  it("returns null for a state file with no gallery node", async () => {
+    const legacy = JSON.stringify({
+      version: 1,
+      slots: withGallery.slots,
+      overrides: {}
+    });
+    const store = new StateStore("/show/state.json", {
+      fs: fakeFs({ "/show/state.json": legacy })
+    });
+    expect(await store.load()).toBeNull();
+  });
+
+  it("returns null when the gallery node is malformed", async () => {
+    const store = new StateStore("/show/state.json", {
+      fs: fakeFs({
+        "/show/state.json": JSON.stringify({ ...withGallery, gallery: { cells: 2 } })
       })
     });
     expect(await store.load()).toBeNull();

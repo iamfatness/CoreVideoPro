@@ -171,7 +171,8 @@ describe("identity and roster pipeline", () => {
     const saved: ShowState = {
       version: 1,
       slots: slots.toJSON(),
-      overrides: overrides.entries()
+      overrides: overrides.entries(),
+      gallery: { version: 1, cells: 1, assignments: [{ cell: 1, slot: 0 }] }
     };
     await store.save(saved);
 
