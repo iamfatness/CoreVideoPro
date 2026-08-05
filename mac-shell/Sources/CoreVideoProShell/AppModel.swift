@@ -466,7 +466,7 @@ final class AppModel: ObservableObject {
     }
 
     private func onConnected() {
-        configureMultiviewer(mode: multiviewLayoutMode)
+        applyMultiviewConfig()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -821,7 +821,7 @@ final class AppModel: ObservableObject {
     @Published var streamCodec = "h264"
     @Published var recordFormat = "mp4"
     @Published var recordPrefix = "show"
-    @Published var multiviewTileCount = 8
+    @Published var multiviewTileCount = 10  // ATEM-style 10-way wall
 
     func applyOutputProfile() {
         guard let bridge else { return }

@@ -28,6 +28,7 @@
 #import <CoreVideo/CoreVideo.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <map>
@@ -131,6 +132,8 @@ namespace corevideo::modules {
 namespace {
 
 struct AvfDeviceEntry {
+  // Connect bailed waiting on TCC; retried when consent lands.
+  bool pendingPermission = false;
   CaptureDeviceInfo info;
   std::string outputSourceId;
   AVCaptureSession* session = nil;
@@ -149,6 +152,9 @@ struct AvfDevicesState {
   std::mutex mutex;
   std::map<std::string, AvfDeviceEntry> devices;
   int64_t lastRefreshKickMs = -10000;
+  // Set by the TCC completion handler (arbitrary queue) — consumed on the
+  // next poll tick under the mutex.
+  std::atomic<bool> retryAfterPermission{false};
 };
 
 class AvfCaptureDevice final : public ICaptureDevice {
@@ -220,6 +226,18 @@ class AvfCaptureDevice final : public ICaptureDevice {
 
   std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
     std::lock_guard<std::mutex> lock(shared_->mutex);
+    // Consent arrived after a connect bailed — start those sessions now.
+    if (shared_->retryAfterPermission.exchange(false)) {
+      for (auto& [retryId, retryEntry] : shared_->devices) {
+        if (retryEntry.pendingPermission) {
+          retryEntry.pendingPermission = false;
+          std::fprintf(stderr,
+                       "[avf-capture] permission granted — reconnecting '%s'\n",
+                       retryEntry.info.name.c_str());
+          startSessionLocked(retryEntry);
+        }
+      }
+    }
     std::vector<VideoFrame> frames;
     for (auto& [id, entry] : shared_->devices) {
       if (!entry.state) {
@@ -379,20 +397,28 @@ class AvfCaptureDevice final : public ICaptureDevice {
     }
     if (camAuth == AVAuthorizationStatusNotDetermined) {
       // Prompt once, without blocking the caller (this runs under the core
-      // lock; a modal wait here froze the render thread for seconds).
+      // lock; a modal wait here froze the render thread for seconds). The
+      // grant lands asynchronously AFTER this connect has already bailed, so
+      // flag it and let the poll tick retry — an operator who approves the
+      // prompt must not have to hunt for a Connect button again.
+      auto shared = shared_;
       [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
                                completionHandler:^(BOOL granted) {
         std::fprintf(stderr, "[avf-capture] camera permission %s\n",
                      granted ? "granted" : "denied");
+        if (granted) {
+          shared->retryAfterPermission.store(true);
+        }
       }];
+      entry.pendingPermission = true;
       entry.info.connectionState = "error";
       entry.info.warning =
-          "Waiting for camera permission — approve the macOS prompt, then "
-          "reconnect this source.";
+          "Waiting for camera permission — approve the macOS prompt.";
       std::fprintf(stderr, "[avf-capture] camera permission requested for '%s'\n",
                    entry.info.name.c_str());
       return;
     }
+    entry.pendingPermission = false;
 
     NSString* uniqueId = [NSString stringWithUTF8String:entry.info.nativeDeviceId.c_str()];
     AVCaptureDevice* device = [AVCaptureDevice deviceWithUniqueID:uniqueId];
