@@ -1841,6 +1841,9 @@ function seatedRoster(): LiveSlots {
   }
   ingest.commit();
 
+  // ZoomIngest publishes sorted by participantId, and buildPanelistDb preserves that
+  // order, so rebuild seats: z-ann, z-asl, z-bo, z-host, z-reader. Assertions below
+  // derive slot numbers via slotOf rather than hardcoding that order.
   const slots = new LiveSlots({ capacity: 8, utilityPinBase: 9000 });
   slots.rebuild([...buildPanelistDb(ingest.snapshot(), mukana, new OverrideDb().entries()).values()]);
   return slots;
@@ -1870,11 +1873,21 @@ describe("direction pipeline", () => {
     });
 
     const resolution = resolveLook(teatime, { queue, slots: slots.slots(), page: 0 });
-    expect(resolution.hostSlot).toBe(chairs.hostSlot);
-    expect(resolution.readerSlot).toBe(chairs.readerSlot);
+    expect(resolution.hostSlot).toBe(slots.slotOf("z-host"));
+    expect(resolution.readerSlot).toBe(slots.slotOf("z-reader"));
+    expect(chairs).toEqual({
+      hostSlot: slots.slotOf("z-host"),
+      readerSlot: slots.slotOf("z-reader")
+    });
     expect(resolution.boxes).toEqual([
-      { box: 1, slot: 3 },
-      { box: 2, slot: 4 }
+      { box: 1, slot: slots.slotOf("z-ann") },
+      { box: 2, slot: slots.slotOf("z-bo") }
+    ]);
+    expect(resolution.nameplates.map((plate) => plate.name)).toEqual([
+      "J.J. Mc Kenna",
+      "Reader Rose",
+      "Ann Lee",
+      "Bo Diaz"
     ]);
   });
 
@@ -1890,7 +1903,7 @@ describe("direction pipeline", () => {
     const boxedSlots = resolution.boxes.map((box) => box.slot);
     expect(boxedSlots).not.toContain(resolution.hostSlot);
     expect(boxedSlots).not.toContain(resolution.readerSlot);
-    expect(boxedSlots).toEqual([3, null]);
+    expect(boxedSlots).toEqual([slots.slotOf("z-ann"), null]);
   });
 
   it("never lets an ASL interpreter take program, even as the newest speaker", () => {
@@ -1927,7 +1940,7 @@ describe("direction pipeline", () => {
     gallery.applyOrder(order);
     expect(gallery.cells()[0]?.slot).toBe(slots.slotOf("z-bo"));
     expect(gallery.cells().map((cell) => cell.slot)).not.toEqual(before);
-    expect(slots.slotOf("z-bo")).toBe(4);
+    expect(order[0]).toBe(slots.slotOf("z-bo"));
   });
 
   it("keeps the most recent speakers in a limited position pool", () => {
