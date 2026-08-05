@@ -4292,6 +4292,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   static int64_t s_stageProgramUs = 0;
   static int64_t s_stageMultiviewUs = 0;
   static int64_t s_stagePreviewUs = 0;
+  static int64_t s_stageEmitUs = 0;
   static int s_stageTicks = 0;
   auto stageMark = std::chrono::steady_clock::now();
   const auto markStage = [&stageMark, videoOnly](int64_t& acc) {
@@ -4521,6 +4522,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // placed its layers into, plus the PGM/PVW cells for the pgmPvw modes.
     const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
     lastProgramFrame_.multiviewTiles = buildMultiviewTiles(activeSpeakerId);
+    // Cache for the throttled ticks below.
+    lastMultiviewTexture_ = lastProgramFrame_.multiviewSharedTexture;
+    lastMultiviewTiles_ = lastProgramFrame_.multiviewTiles;
+    lastMultiviewWidth_ = lastProgramFrame_.multiviewWidth;
+    lastMultiviewHeight_ = lastProgramFrame_.multiviewHeight;
+  } else if (lastMultiviewTexture_.iosurfaceId != 0 ||
+             !lastMultiviewTexture_.sharedHandleHex.empty()) {
+    // Throttled tick: the program frame is rebuilt every tick, so without this
+    // the multiview texture and tiles read EMPTY on 2 of every 3 ticks. A
+    // consumer sampling the snapshot then saw no wall at all (a fresh shell
+    // connecting to a running core got a permanently black multiviewer, since
+    // the EVENT only fires on structural change). The composite is throttled;
+    // its published identity must not be.
+    lastProgramFrame_.multiviewSharedTexture = lastMultiviewTexture_;
+    lastProgramFrame_.multiviewTiles = lastMultiviewTiles_;
+    lastProgramFrame_.multiviewWidth = lastMultiviewWidth_;
+    lastProgramFrame_.multiviewHeight = lastMultiviewHeight_;
   }
   markStage(s_stageMultiviewUs);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
@@ -4557,17 +4575,19 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     static modules::CompositorSourceTexStats s_lastTexStats;
     const auto texStats = modules_.compositor->sourceTexStats();
     std::fprintf(stderr,
-                 "[render] stages avg-ms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f"
+                 "[render] stages avg-ms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
                  "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
                  s_stageIngestUs / (s_stageTicks * 1000.0), s_stagePlanUs / (s_stageTicks * 1000.0),
                  s_stageProgramUs / (s_stageTicks * 1000.0), s_stageMultiviewUs / (s_stageTicks * 1000.0),
                  s_stagePreviewUs / (s_stageTicks * 1000.0),
+                 s_stageEmitUs / (s_stageTicks * 1000.0),
                  static_cast<long long>(texStats.cachedUploads - s_lastTexStats.cachedUploads),
                  static_cast<long long>(texStats.cacheHits - s_lastTexStats.cacheHits),
                  static_cast<long long>(texStats.textureCreates - s_lastTexStats.textureCreates),
                  static_cast<long long>(texStats.scratchUploads - s_lastTexStats.scratchUploads));
     s_lastTexStats = texStats;
     s_stageIngestUs = s_stagePlanUs = s_stageProgramUs = s_stageMultiviewUs = s_stagePreviewUs = 0;
+    s_stageEmitUs = 0;
     s_stageTicks = 0;
   }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
@@ -4593,6 +4613,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       enqueueProgramFramePreviewEvent();
       lastFrameEventEmit_ = nowTp;
     }
+    markStage(s_stageEmitUs);
   }
   // The audio/output half (mixer->mix, routed-bus matrix + insert chains,
   // monitorOutput->render, BS.1770 loudness, encoder->submit/submitAudio,

@@ -743,6 +743,11 @@ class MediaCore {
   uint32_t lastMultiviewStructureSignature_ = 0;
   bool multiviewStructureEmitted_ = false;
   std::uint64_t multiviewTickCounter_ = 0;
+  // Published multiview identity, held across throttled composites.
+  modules::ProgramFrameSharedTexture lastMultiviewTexture_;
+  std::vector<modules::MultiviewTileRect> lastMultiviewTiles_;
+  int lastMultiviewWidth_ = 0;
+  int lastMultiviewHeight_ = 0;
   std::vector<rpc::Json> pendingMultiviewSharedTextureEvents_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;

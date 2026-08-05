@@ -24,6 +24,25 @@ jobs:
   # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /
   # SF Mono and raw system colors despite a faithful DesignSystem.swift —
   # this keeps the brand fonts/tokens from silently regressing.
+  mac-show-drill:
+    # Headless SHOW rehearsal: drives the real core through configure -> scenes
+    # -> operator traffic -> record, and fails on request timeouts, an
+    # over-budget render tick (the class that starves every command), a wall
+    # missing its PGM/PVW cells, or a recording that writes nothing.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (metal)
+        run: |
+          cmake -S native -B native/build-metal -G Ninja \
+            -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
+            -DCOREVIDEO_WITH_METAL=ON -DCOREVIDEO_WITH_AVF_ENCODER=ON \
+            -DCOREVIDEO_WITH_COREAUDIO=ON
+      - name: Build core
+        run: cmake --build native/build-metal --target corevideo-native
+      - name: Show drill
+        run: python3 scripts/mac-show-drill.py --seconds 25
+
   mac-shell-design-lint:
     runs-on: ubuntu-latest
     steps:
