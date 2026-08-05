@@ -42,6 +42,8 @@ export type ShowEngineConfig = {
   skipRoles: Role[];
   /** Named on-screen arrangements available to this show. */
   looks: LookDefinition[];
+  /** Number of cells in the on-screen gallery grid. */
+  galleryCells: number;
 };
 
 const DEFAULT_UTILITY_PIN_BASE = 9000;
@@ -49,6 +51,7 @@ const DEFAULT_PANELISTS_INTERVAL_MS = 5000;
 const DEFAULT_HANDS_INTERVAL_MS = 2000;
 const DEFAULT_QUESTION_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BACKOFF_MS = 60000;
+const DEFAULT_GALLERY_CELLS = 16;
 const MAX_LOOK_BOXES = 4;
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {
@@ -198,6 +201,12 @@ export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
     statePath: requireString(root, "statePath", "config.statePath"),
     skipRoles: parseSkipRoles(root),
     looks: parseLooks(root),
+    galleryCells: optionalPositiveInt(
+      root,
+      "galleryCells",
+      "config.galleryCells",
+      DEFAULT_GALLERY_CELLS
+    ),
     mukana: {
       baseUrl: requireString(mukanaRaw, "baseUrl", "config.mukana.baseUrl"),
       event: requireString(mukanaRaw, "event", "config.mukana.event"),

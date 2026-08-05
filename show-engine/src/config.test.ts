@@ -102,3 +102,25 @@ describe("parseShowEngineConfig direction fields", () => {
     expect(() => parseShowEngineConfig({ ...minimal, looks: {} })).toThrow(/looks/);
   });
 });
+
+describe("parseShowEngineConfig gallery dimensions", () => {
+  it("defaults galleryCells to sixteen", () => {
+    expect(parseShowEngineConfig(minimal).galleryCells).toBe(16);
+  });
+
+  it("keeps an explicit galleryCells", () => {
+    expect(parseShowEngineConfig({ ...minimal, galleryCells: 9 }).galleryCells).toBe(9);
+  });
+
+  it("rejects a galleryCells below one", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, galleryCells: 0 })).toThrow(
+      /galleryCells/
+    );
+  });
+
+  it("rejects a non-integer galleryCells", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, galleryCells: 4.5 })).toThrow(
+      /galleryCells/
+    );
+  });
+});
