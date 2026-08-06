@@ -15,6 +15,9 @@
 import SwiftUI
 
 struct AudioPane: View {
+    @Environment(\.openWindow) private var openWindow
+    // The pop-out window hosts this same view; it just hides the pop-out button.
+    var isPopout: Bool = false
     @EnvironmentObject var model: AppModel
     @State private var surface = "SHOW"
     @State private var selectedStripId: String?
@@ -36,10 +39,13 @@ struct AudioPane: View {
                             .fill(surface == name ? Studio.blue : Studio.surface))
                 }
                 Spacer()
-                Button("Pop out mixer") {}
-                    .buttonStyle(GhostButtonStyle())
-                    .disabled(true)
-                    .help("Coming to the macOS shell")
+                // Real second-display mixer (was a disabled placeholder). Hidden
+                // inside the pop-out so it cannot spawn copies of itself.
+                if !isPopout {
+                    Button("Pop out mixer") { openWindow(id: PopoutWindow.audioMixer) }
+                        .buttonStyle(GhostButtonStyle())
+                        .help("Open the mixer on a second display")
+                }
             }
             switch surface {
             case "ROUTING":

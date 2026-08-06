@@ -41,13 +41,129 @@ struct ShellApp: App {
             RootView()
                 .environmentObject(model)
                 .onAppear { model.start() }
+                .modifier(PopoutAutoOpen())
                 .onOpenURL { url in model.handleOAuthCallback(url) }
                 .frame(minWidth: 1360, minHeight: 860)
-                .font(.grotesk(12))
-                .foregroundStyle(Studio.textPrimary)
-                .background(Studio.background)
-                .tint(Studio.accent)
-                .preferredColorScheme(.dark)
+                .studioChrome()
+        }
+
+        // POP-OUTS. A live operator runs multiple displays: the monitor wall goes
+        // on a second screen while the console stays on the laptop. The WinUI
+        // shell ships MultiviewPopoutWindow / ProgramPreviewPopoutWindow /
+        // AudioMixerWindow for exactly this; macOS had a SINGLE WindowGroup, so
+        // the multiviewer was trapped in a tab and could not be a monitor wall at
+        // all. Each pop-out shares the SAME AppModel instance, so it is a second
+        // view of live state, never a second copy of it.
+        WindowGroup("Multiviewer", id: PopoutWindow.multiview) {
+            MultiviewerCanvas(isPopout: true)
+                .environmentObject(model)
+                .padding(8)
+                .frame(minWidth: 640, minHeight: 400)
+                .studioChrome()
+        }
+
+        WindowGroup("Program / Preview", id: PopoutWindow.busMonitor) {
+            BusMonitorPopout()
+                .environmentObject(model)
+                .frame(minWidth: 720, minHeight: 260)
+                .studioChrome()
+        }
+
+        WindowGroup("Audio Mixer", id: PopoutWindow.audioMixer) {
+            AudioPane(isPopout: true)
+                .environmentObject(model)
+                .frame(minWidth: 900, minHeight: 520)
+                .studioChrome()
+        }
+    }
+}
+
+// Opens pop-outs at launch from COREVIDEO_OPEN_POPOUTS (comma-separated:
+// multiview, buses, mixer). Two uses: restoring a multi-display layout without
+// re-clicking every show, and letting a headless screenshot/UI check exercise
+// the pop-outs (they otherwise require a click, and the design protocol requires
+// screenshot proof for UI changes).
+struct PopoutAutoOpen: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            guard let raw = ProcessInfo.processInfo.environment["COREVIDEO_OPEN_POPOUTS"],
+                  !raw.isEmpty else { return }
+            let wanted = raw.split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces).lowercased()
+            }
+            // Slight delay: the main window must finish presenting before a
+            // second WindowGroup opens, or the new window can land behind it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                for name in wanted {
+                    switch name {
+                    case "multiview": openWindow(id: PopoutWindow.multiview)
+                    case "buses", "busmonitor": openWindow(id: PopoutWindow.busMonitor)
+                    case "mixer", "audio": openWindow(id: PopoutWindow.audioMixer)
+                    default: break
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum PopoutWindow {
+    static let multiview = "popout-multiview"
+    static let busMonitor = "popout-bus-monitor"
+    static let audioMixer = "popout-audio-mixer"
+}
+
+extension View {
+    // Shared studio look. Pop-out windows are operator surfaces on a second
+    // display, so they must match the console exactly — a light-mode window on a
+    // dark stage is a real problem in a control room.
+    func studioChrome() -> some View {
+        self.font(.grotesk(12))
+            .foregroundStyle(Studio.textPrimary)
+            .background(Studio.background)
+            .tint(Studio.accent)
+            .preferredColorScheme(.dark)
+    }
+}
+
+// Program + preview as a dedicated bus monitor. The multiview composite already
+// carries PGM/PVW cells, but on a second display an operator wants the two buses
+// LARGE and nothing else — the core already publishes both surfaces separately
+// (programSurfaceId / previewSurfaceId); nothing presented them until now.
+struct BusMonitorPopout: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            busPane("PREVIEW", surfaceId: model.previewSurfaceId, tally: Studio.accent)
+            busPane("PROGRAM", surfaceId: model.programSurfaceId, tally: Studio.red)
+        }
+        .padding(8)
+    }
+
+    func busPane(_ label: String, surfaceId: UInt32, tally: Color) -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Text(label).font(.grotesk(11, .semibold)).foregroundStyle(tally)
+                Spacer()
+                Text(model.clockText)
+                    .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+            }
+            ZStack {
+                Rectangle().fill(Color.black)
+                if surfaceId != 0 {
+                    SurfaceView(surfaceId: surfaceId)
+                } else {
+                    // Never a silently black rectangle — that is exactly how
+                    // "program and preview are missing" presented before.
+                    Text("waiting for \(label.lowercased()) pixels")
+                        .font(.plexMono(10)).foregroundStyle(Studio.textDim)
+                }
+            }
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay(Rectangle().stroke(tally, lineWidth: 2))
         }
     }
 }
@@ -387,6 +503,9 @@ struct StudioWorkspaceView: View {
 // in the pgmPvw layout modes — the shell just presents it.
 struct MultiviewerCanvas: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
+    // The pop-out hosts this same view; it just hides the pop-out affordances.
+    var isPopout: Bool = false
 
     var body: some View {
         VStack(spacing: 6) {
@@ -424,6 +543,12 @@ struct MultiviewerCanvas: View {
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(Studio.border, lineWidth: 1))
                 ActionChip("Room") { model.selectedTab = .zoom }
+                // Send the wall to a second display. Hidden inside the pop-out
+                // itself so it cannot spawn copies of its own window.
+                if !isPopout {
+                    ActionChip("Pop out") { openWindow(id: PopoutWindow.multiview) }
+                    ActionChip("P/P") { openWindow(id: PopoutWindow.busMonitor) }
+                }
             }
             ZStack {
                 Rectangle().fill(Color.black)
