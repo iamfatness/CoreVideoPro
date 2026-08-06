@@ -223,6 +223,10 @@ struct RosterParticipant: Identifiable, Equatable {
     var muted: Bool
     var talking: Bool
     var assigned: Bool
+    // The engine's screen-share flag (ZoomEngineRuntime.cpp:817) — the same
+    // field MediaCore::deriveDirectorSignals reads. Defaulted so the memberwise
+    // init stays source-compatible.
+    var sharingScreen = false
 }
 
 @MainActor
@@ -286,6 +290,12 @@ final class AppModel: ObservableObject {
     @Published var autoConfidenceThreshold = 70.0
     @Published var autoHoldSeconds = 4.0
     @Published var autoStatus = "Manual mode"
+    // AUTOMATION PARITY (behaviour lives in AutomationExtras.swift). Stored here
+    // only because Swift extensions cannot add stored properties.
+    @Published var autoExtras = AutomationExtrasState()
+    // Which source the AUTOMATIC lower third currently names; "" = automation
+    // does not own key:lower-third (the manual lower third may).
+    @Published var autoLowerThirdSourceId = ""
     @Published var isoRecordingEnabled = false
     @Published var isoSelectedSourceIds: Set<String> = []
     @Published var streamUrl = "rtmp://a.rtmp.youtube.com/live2"
@@ -314,6 +324,7 @@ final class AppModel: ObservableObject {
         prefs.autoTakeEnabled = autoTakeEnabled
         prefs.autoConfidenceThreshold = autoConfidenceThreshold
         prefs.autoHoldSeconds = autoHoldSeconds
+        prefs.automation = autoExtras
         prefs.lowerThirdName = lowerThirdName
         prefs.lowerThirdTitle = lowerThirdTitle
         prefs.lowerThirdPosition = lowerThirdPosition
@@ -352,6 +363,10 @@ final class AppModel: ObservableObject {
         autoTakeEnabled = prefs.autoTakeEnabled
         autoConfidenceThreshold = prefs.autoConfidenceThreshold
         autoHoldSeconds = prefs.autoHoldSeconds
+        // Optional key: a prefs file written before this shipped decodes to nil
+        // and keeps the Windows defaults (a non-optional key would throw
+        // keyNotFound and reset the operator's ENTIRE prefs file).
+        autoExtras = prefs.automation ?? AutomationExtrasState()
         lowerThirdName = prefs.lowerThirdName
         lowerThirdTitle = prefs.lowerThirdTitle
         lowerThirdPosition = prefs.lowerThirdPosition
@@ -661,7 +676,8 @@ final class AppModel: ObservableObject {
                     hasVideo: entry["videoOn"] as? Bool ?? (entry["hasVideo"] as? Bool ?? false),
                     muted: entry["muted"] as? Bool ?? (entry["isMuted"] as? Bool ?? false),
                     talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
-                    assigned: assignedIds.contains(id))
+                    assigned: assignedIds.contains(id),
+                    sharingScreen: entry["sharingScreen"] as? Bool ?? false)
             }
             // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
@@ -1482,7 +1498,9 @@ final class AppModel: ObservableObject {
 
     // The core's director speaks its own scene ids; the shell owns the map to
     // its catalog (the core doesn't care which sceneId gets loaded).
-    private static let directorSceneMap = [
+    // Internal (not private): AutomationExtras.swift resolves the recommended
+    // scene's name/layout through the same map.
+    static let directorSceneMap = [
         "intro": "fullscreen", "interview": "two-up",
         "speaker-slides": "pip", "panel": "two-up",
     ]
@@ -1498,6 +1516,7 @@ final class AppModel: ObservableObject {
         autoTimer = nil
         guard enabled else {
             autoStatus = "Manual mode"
+            evaluateAutomationLowerThird()  // retires an automation-owned key
             return
         }
         autoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -1507,6 +1526,10 @@ final class AppModel: ObservableObject {
 
     private func evaluateAutoDirect() {
         guard autoDirectEnabled else { return }
+        // Overlay policy runs BEFORE the roster/confidence guards — the
+        // MagicSceneCoordinator.EvaluateAutomationPolicy order. It is a no-op
+        // unless the resolved program source actually changed.
+        evaluateAutomationLowerThird()
         guard roster.contains(where: \.hasVideo) else {
             autoStatus = "Waiting for meeting participants"
             return
@@ -1872,7 +1895,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func sendOverlay(_ command: JSONObject) {
+    // Internal (not private): AutomationExtras.swift keys the automatic lower
+    // third through the same single-command path.
+    func sendOverlay(_ command: JSONObject) {
         guard let bridge else { return }
         Task {
             do {

@@ -36,6 +36,10 @@ struct ShellPrefs: Codable, Equatable {
     var autoTakeEnabled = true
     var autoConfidenceThreshold = 70.0
     var autoHoldSeconds = 4.0
+    // Automation-tab policy (AutomationExtras.swift). OPTIONAL on purpose: a
+    // non-optional key throws keyNotFound on every prefs file written before it
+    // existed, and load()'s `try?` would reset the whole file to defaults.
+    var automation: AutomationExtrasState?
     var lowerThirdName = ""
     var lowerThirdTitle = ""
     var lowerThirdPosition = "lower-left"
