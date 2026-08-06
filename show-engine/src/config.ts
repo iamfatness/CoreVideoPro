@@ -9,7 +9,9 @@ import {
   DEFAULT_SKIP_ROLES,
   isPlateTone,
   isRole,
+  isTallySource,
   PLATE_TONES,
+  TALLY_SOURCES,
   type LookDefinition,
   type Role
 } from "./contracts.js";
@@ -135,6 +137,21 @@ function optionalPlateTone(
   return value;
 }
 
+function optionalTallySource(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): LookDefinition["tallySource"] {
+  const value = source[key];
+  if (value === undefined) return "boxes";
+  if (!isTallySource(value)) {
+    throw new Error(
+      `show-engine ${label}: expected one of ${TALLY_SOURCES.join(", ")}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
 /** Parse `root.skipRoles`, defaulting to the ASL interpreter. Rejects, never coerces, unknown roles. */
 function parseSkipRoles(root: Record<string, unknown>): Role[] {
   const value = root.skipRoles;
@@ -163,7 +180,8 @@ function parseLook(entry: unknown, index: number): LookDefinition {
     boxes: requireIntInRange(lookRaw, "boxes", `${label}.boxes`, 0, MAX_LOOK_BOXES),
     includesHost: requireBoolean(lookRaw, "includesHost", `${label}.includesHost`),
     includesReader: requireBoolean(lookRaw, "includesReader", `${label}.includesReader`),
-    plateTone: optionalPlateTone(lookRaw, "plateTone", `${label}.plateTone`)
+    plateTone: optionalPlateTone(lookRaw, "plateTone", `${label}.plateTone`),
+    tallySource: optionalTallySource(lookRaw, "tallySource", `${label}.tallySource`)
   };
 }
 

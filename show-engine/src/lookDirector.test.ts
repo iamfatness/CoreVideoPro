@@ -30,7 +30,8 @@ const look: LookDefinition = {
   boxes: 2,
   includesHost: true,
   includesReader: true,
-  plateTone: "accent"
+  plateTone: "accent",
+  tallySource: "boxes"
 };
 
 const queue: QueueState = {

@@ -49,7 +49,8 @@ const look = {
   boxes: 2,
   includesHost: true,
   includesReader: true,
-  plateTone: "accent"
+  plateTone: "accent",
+  tallySource: "boxes"
 };
 
 describe("parseShowEngineConfig direction fields", () => {
@@ -91,6 +92,18 @@ describe("parseShowEngineConfig direction fields", () => {
     const { plateTone: _omitted, ...withoutTone } = look;
     const config = parseShowEngineConfig({ ...minimal, looks: [withoutTone] });
     expect(config.looks[0]?.plateTone).toBe("neutral");
+  });
+
+  it("rejects a look with an unknown tallySource", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...minimal, looks: [{ ...look, tallySource: "everyone" }] })
+    ).toThrow(/tallySource/);
+  });
+
+  it("defaults an omitted tallySource to boxes", () => {
+    const { tallySource: _omitted, ...withoutTallySource } = look;
+    const config = parseShowEngineConfig({ ...minimal, looks: [withoutTallySource] });
+    expect(config.looks[0]?.tallySource).toBe("boxes");
   });
 
   it("rejects duplicate look ids", () => {

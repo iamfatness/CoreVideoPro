@@ -77,7 +77,8 @@ const teatime: LookDefinition = {
   boxes: 2,
   includesHost: true,
   includesReader: true,
-  plateTone: "accent"
+  plateTone: "accent",
+  tallySource: "boxes"
 };
 
 describe("direction pipeline", () => {
