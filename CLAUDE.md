@@ -158,7 +158,24 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   gently with `ShowWindow(SW_RESTORE=9)`; do NOT aggressively maximize/move a
   SwapChainPanel window across monitors — it can kill the window (and resize can crash).
 - 60fps needs `timeBeginPeriod(1)` (Windows 15.6ms timer granularity) + a frame-budget
-  pace, both already in `JsonRpcServer.cpp`.
+  pace, both already in `JsonRpcServer.cpp`. The deadline accumulates from a FIXED
+  ANCHOR with bounded catch-up (a relative `t0 + budget` deadline can only lose time —
+  each overshoot becomes the next frame's start), and the post-timer spin tail is
+  **200µs**: the old 500µs only existed to mask that drift, and re-measured on this rig
+  it costs ~5s of core CPU per 53s wall for nothing. Never raise the guard to paper over
+  a pacing bug.
+- **The perf drill is `scripts/mac-show-drill.py` and it runs on Windows** (despite the
+  name — it gates SHARED core code, so it must run on every platform that ships it):
+  `python scripts/mac-show-drill.py --seconds 40 --load 8` drives N synthetic 1080p60
+  Zoom feeds through the real ingest path and gates sustained fps, dropped frames,
+  frame DELIVERY, ingest→render latency percentiles, and coreMutex over-budget ratio.
+  Defaults to `native/build-dev` + `.exe` here (`COREVIDEO_BUILD_DIR` /
+  `COREVIDEO_FAKE_ENGINE_PATH` override). **Mean fps is not a health metric** — an 8ms
+  ingest poll silently dropped ~22% of decoded frames while fps read a healthy 60
+  (`docs/windows-perf-handoff.md` has the full before/after). Always confirm the fake
+  engine actually delivered the rate you asked for (`COREVIDEO_FAKE_ENGINE_LOG`), and
+  run `git status` before any measurement build — a stale tree answers a different
+  question than the one you asked.
 - I420→RGB is a GPU HLSL shader in `D3D11CompositorAdapter.cpp`
   (`kCompositorYuvPixelShader`, BT.709 full-range). Zoom frames carry I420
   (`hasI420()`), NOT BGRA — any frame merge/match must check `hasI420()` too or Zoom

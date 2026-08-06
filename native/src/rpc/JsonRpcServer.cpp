@@ -597,10 +597,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           nullptr, nullptr,
           CREATE_WAITABLE_TIMER_HIGH_RESOLUTION | CREATE_WAITABLE_TIMER_MANUAL_RESET,
           TIMER_ALL_ACCESS);
-      // 500us tail: the high-res timer still wakes ~300-400us late under load; a 200us
-      // guard measured 58.7fps (frames slipping past the deadline). 500us re-locks 60
-      // while spinning 3x less than the old 1.5ms guard.
-      constexpr auto kSpinGuardUs = std::chrono::microseconds(500);
+      // 200us tail. The old 500us guard existed to mask the RELATIVE-deadline pacer:
+      // with `deadline = t0 + budget` every overshoot became the next frame's start,
+      // so a 200us guard measured 58.7fps and 500us was needed to "re-lock" 60. The
+      // deadline is now accumulated from a fixed anchor (above), which reclaims that
+      // time by construction, so the guard no longer has drift to hide. Re-measured
+      // on the owner's rig at 8x1080p60, 3 interleaved 40s drill runs each:
+      //   500us -> 59.9/60.0/60.0 fps, 0 dropped, 64.1/63.3/64.5 s core CPU
+      //   200us -> 60.0/60.0/60.0 fps, 0 dropped, 60.7/60.7/55.7 s core CPU
+      // Same delivery (90-91%) and coreMutex over-budget (1-2%) either way; the CPU
+      // ranges do not overlap. That reclaimed spin is in the exact loop implicated in
+      // glitching OTHER apps' audio during the virtual-camera work, so it is worth
+      // real money. Do not raise this without re-running the drill — and never raise
+      // it to paper over a pacing bug again.
+      constexpr auto kSpinGuardUs = std::chrono::microseconds(200);
       auto nowPace = std::chrono::steady_clock::now();
       if (pacerTimer != nullptr && nowPace + kSpinGuardUs < deadline) {
         const auto waitUs =
