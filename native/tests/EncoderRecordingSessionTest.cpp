@@ -625,6 +625,75 @@ TEST(EncoderRecordingSession, MediaFoundationProgramRecordingUsesFullResNotPrevi
   fs::remove_all(targetDir, cleanupError);
 }
 
+// WINDOWS program recording: the full-resolution program exists only as NV12
+// (compositor->takeVcamNv12 -> ProgramFrame::programNv12; programFullBgra is
+// macOS-only), so a request carrying programNv12 must open the writer with an
+// NV12 media type and mux that buffer. Before this, Windows fell through to the
+// 320x180 preview and put the whole show in a corner of a black frame.
+TEST(EncoderRecordingSession, MediaFoundationProgramRecordingMuxesNv12ProgramTap) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable
+  }
+
+  namespace fs = std::filesystem;
+  std::error_code cleanupError;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-mf-nv12-program";
+  fs::remove_all(targetDir, cleanupError);
+
+  constexpr int kW = 640;
+  constexpr int kH = 360;
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "mf-nv12-program";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "nv12";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = kW;
+  request.height = kH;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.targetBitrateMbps = 4;
+  request.programNv12 = true;  // the compositor supplies the NV12 program tap
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  // NV12 program tap only — no preview at all. The pre-fix code read `preview`,
+  // found it empty, and muxed nothing.
+  corevideo::modules::ProgramFrame frame;
+  frame.width = kW;
+  frame.height = kH;
+  frame.frameNumber = 1;
+  frame.programNv12Width = kW;
+  frame.programNv12Height = kH;
+  frame.programNv12.assign(static_cast<size_t>(kW) * kH * 3 / 2, 0x80);
+  encoder->submit(frame);
+
+  const auto afterNv12 = encoder->session();
+  EXPECT_EQ(afterNv12.recordingVideoFrameCount, 1)
+      << "NV12 program tap was not muxed; warning: " << afterNv12.recordingWarning;
+  EXPECT_TRUE(afterNv12.recordingWarning.empty()) << afterNv12.recordingWarning;
+
+  // A tick where the async tap produced nothing must be SKIPPED, never written
+  // from the thumbnail — the writer's media type is NV12 and the geometry would
+  // be wrong regardless.
+  corevideo::modules::ProgramFrame previewOnly;
+  previewOnly.width = kW;
+  previewOnly.height = kH;
+  previewOnly.frameNumber = 2;
+  previewOnly.preview.width = 320;
+  previewOnly.preview.height = 180;
+  previewOnly.preview.bgra.assign(static_cast<size_t>(320) * 180 * 4, 0x20);
+  encoder->submit(previewOnly);
+  EXPECT_EQ(encoder->session().recordingVideoFrameCount, 1)
+      << "a preview thumbnail was muxed into an NV12 program writer";
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, cleanupError);
+}
+
 namespace {
 // Build a VideoFrame carrying a synthetic I420 payload (a flat mid-gray field),
 // keyed by `sourceId`/`frameId` — the shape the ISO gather hands to the encoder.

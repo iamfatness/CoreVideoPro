@@ -761,15 +761,31 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Skip the tick instead; the PTS clock timestamps each frame at the wall
     // time it was submitted, so a skipped tick costs one frame, not sync.
     //
-    // NOT YET FIXED ON WINDOWS — `programFullBgra` is populated only by the
-    // MACOS Metal compositor (MetalCompositorAdapter.mm), which is why macOS
-    // recordings are correct and Windows ones are not. On Windows the full-res
-    // program exists only as NV12 (`ProgramFrame::programNv12`, produced by
-    // MediaCore via compositor->takeVcamNv12 and consumed by the RTMP sender),
-    // and nothing feeds it to this writer. Wiring that up means opening
-    // program_ with VideoInput::Nv12 (Mp4Writer::open already takes it — the ISO
-    // path uses it for Zoom sources) and writing programNv12 directly, which is
-    // also the faster path since MF's H.264 encoder wants NV12 natively.
+    // WINDOWS takes the NV12 branch: `programFullBgra` is populated only by the
+    // macOS Metal compositor, so on Windows the full-resolution program exists
+    // solely as NV12 (produced by MediaCore via compositor->takeVcamNv12, the
+    // same tap the virtual camera and RTMP consume). The writer was opened with
+    // a matching NV12 media type when the request asked for it.
+    if (programWritesNv12_) {
+      if (frame.programNv12.empty() || frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
+        return;  // async tap had nothing this tick — skip, never downgrade
+      }
+      const auto pts = recordingClock_.videoPts(now100ns(), frame.frameNumber);
+      if (!pts) {
+        return;  // already muxed
+      }
+      std::string nv12Error;
+      if (!program_.writeVideoNv12(frame.programNv12.data(), frame.programNv12Width,
+                                   frame.programNv12Height, *pts, nv12Error)) {
+        setRecordingFailure("Media Foundation could not write program video", nv12Error);
+        return;
+      }
+      ++session_.recordingVideoFrameCount;
+      session_.recordingDurationMs = recordingClock_.lastVideoPts100ns() / 10'000;
+      updateBytesWritten();
+      return;
+    }
+
     const bool hasFull = !frame.programFullBgra.bgra.empty() &&
                          frame.programFullBgra.width > 0 && frame.programFullBgra.height > 0;
     if (hasFull) {
@@ -1075,7 +1091,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     }
 
     std::string error;
-    if (!program_.open(programPath, width, height, fps, bitrate, codec, error)) {
+    // NV12 when the compositor supplies the full-resolution program tap (see
+    // RecordingSessionRequest::programNv12). It is both correct — the alternative
+    // is muxing the 320x180 preview — and cheaper, since MF's H.264 encoder takes
+    // NV12 natively and would otherwise convert from BGRA internally.
+    programWritesNv12_ = request_.programNv12;
+    if (!program_.open(programPath, width, height, fps, bitrate, codec, error,
+                       programWritesNv12_ ? VideoInput::Nv12 : VideoInput::Bgra)) {
       setRecordingFailure("Media Foundation could not open program MP4 writer", error);
       return;
     }
@@ -1307,6 +1329,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // change is the corner-tile defect all over again. Mirrors the RTMP sender's
   // fullResLocked_, which exists for the same asynchronous-tap reason.
   bool fullResLocked_ = false;
+  // Was the program writer opened with an NV12 media type this session? Decided
+  // at open from RecordingSessionRequest::programNv12 and fixed for the session —
+  // the writer's media type cannot change once BeginWriting has been called.
+  bool programWritesNv12_ = false;
   // A3: plugin content latency (atomic — the audio worker sets it, the writer
   // thread reads it; the PTS clock latches per session).
   std::atomic<int> audioContentLatencySamples_{0};

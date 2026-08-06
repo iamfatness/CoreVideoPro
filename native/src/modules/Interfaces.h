@@ -440,6 +440,12 @@ struct RecordingSessionRequest {
   std::string audioCodec = "aac";
   int audioBitrateKbps = 192;
   int targetBitrateMbps = 10;
+  // Mux the program from ProgramFrame::programNv12 (the full-resolution GPU tap)
+  // instead of the 320x180 `preview` thumbnail. Set by MediaCore only when the
+  // compositor actually supplies that tap AND the requested recording size
+  // matches it exactly — writing a differently-sized buffer into the writer is
+  // precisely the defect this exists to fix. See ICompositor::suppliesProgramNv12.
+  bool programNv12 = false;
 };
 
 struct OutputSender {
@@ -652,6 +658,13 @@ class ICompositor {
   // is a cheap getBytes, and it is what lets the recording encoder mux
   // native-resolution program instead of the 320x180 preview.
   [[nodiscard]] virtual bool wantsFullProgramReadbackForRecording() const { return false; }
+
+  // Does this compositor publish the full-resolution program as NV12
+  // (ProgramFrame::programNv12)? The D3D11 adapter does — that tap is what feeds
+  // the virtual camera and RTMP — while Metal publishes programFullBgra instead.
+  // Recording uses it to mux real program pixels rather than the 320x180
+  // preview; without it the whole show lands in a corner of a black frame.
+  [[nodiscard]] virtual bool suppliesProgramNv12() const { return false; }
 };
 
 class IMediaFrameSource {
