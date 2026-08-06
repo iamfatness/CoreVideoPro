@@ -104,6 +104,60 @@ function recordingState(snapshot) {
   };
 }
 
+// PIXELS, not just packets. Every recording check in this repo asserted that
+// streams EXIST and that their container start/duration line up — and none ever
+// looked at an actual pixel. That let the program recording mux the 320x180 UI
+// thumbnail into a 1920x1080 writer for months: the whole show sat in a corner of
+// a black frame while every validator stayed green (a 2026-07-13 recording:
+// 8995 frames, mean luma 4/255).
+//
+// Two cheap assertions close that hole. Decode to 8x8 gray (64 cells/frame):
+//   * the frame must not be BLACK — median cell luma above a floor;
+//   * content must not be CONFINED TO A CORNER — most cells must carry signal.
+// A thumbnail in the corner of a 1080p frame lights ~2 of 64 cells, so the
+// coverage check is what actually catches that defect; the luma floor catches a
+// wholly black recording.
+function programPixelVerdict(artifactPath, ffmpegBin) {
+  const out = spawnSync(ffmpegBin,
+    ["-v", "error", "-i", artifactPath, "-vf", "scale=8:8", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+    { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
+  if (out.status !== 0 || !out.stdout?.length) {
+    return { available: false, pass: true };  // cannot decode: skip, never fail blind
+  }
+  const cells = 64;
+  const frames = Math.floor(out.stdout.length / cells);
+  if (frames === 0) return { available: false, pass: true };
+  // Sample up to 60 frames spread across the file, skipping the first second
+  // (startup frames can legitimately be black before the first composite).
+  const first = Math.min(frames - 1, 50);
+  const step = Math.max(1, Math.floor((frames - first) / 60));
+  const frameMeans = [];
+  const coverages = [];
+  for (let f = first; f < frames; f += step) {
+    let sum = 0;
+    let lit = 0;
+    for (let i = 0; i < cells; i += 1) {
+      const v = out.stdout[f * cells + i];
+      sum += v;
+      if (v > 10) lit += 1;
+    }
+    frameMeans.push(sum / cells);
+    coverages.push(lit / cells);
+  }
+  const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const medianLuma = median(frameMeans);
+  const medianCoverage = median(coverages);
+  const MIN_LUMA = 8;        // a black program
+  const MIN_COVERAGE = 0.5;  // a program confined to part of the frame
+  return {
+    available: true,
+    medianLuma: Number(medianLuma.toFixed(1)),
+    medianCoverage: Number(medianCoverage.toFixed(2)),
+    sampled: frameMeans.length,
+    pass: medianLuma >= MIN_LUMA && medianCoverage >= MIN_COVERAGE,
+  };
+}
+
 function ffprobeVerdict(artifactPath) {
   const candidates = ["ffprobe", "C:\\ffmpeg\\bin\\ffprobe.exe"];
   for (const bin of candidates) {
@@ -224,6 +278,22 @@ try {
     const verdict = ffprobeVerdict(artifactAbsolute);
     console.log(`ffprobe       : ${JSON.stringify(verdict)}`);
     if (!verdict.pass) failures.push(`ffprobe A/V check failed: ${JSON.stringify(verdict)}`);
+
+    // Does the recording actually SHOW the program? (see programPixelVerdict)
+    const ffmpegBin = ["ffmpeg", "C:\\ffmpeg\\bin\\ffmpeg.exe"].find((bin) => {
+      const probe = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 10000 });
+      return !probe.error && probe.status === 0;
+    });
+    if (ffmpegBin) {
+      const pixels = programPixelVerdict(artifactAbsolute, ffmpegBin);
+      console.log(`pixels        : ${JSON.stringify(pixels)}`);
+      if (!pixels.pass) {
+        failures.push(
+          `recorded program is black or confined to part of the frame ` +
+          `(median luma ${pixels.medianLuma}, coverage ${pixels.medianCoverage}) — ` +
+          `the recording is not showing the composed program`);
+      }
+    }
   } else {
     failures.push("no recording artifact path in the snapshot");
   }
