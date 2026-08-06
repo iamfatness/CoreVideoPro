@@ -1,5 +1,34 @@
 # Windows handoff — perf/latency findings from the macOS port (2026-08-05)
 
+> **Windows verification status (2026-08-05, owner rig, RTX 4090).** Measured with
+> `scripts/mac-show-drill.py --load 8` (8 × 1080p60 fake engine, producer confirmed
+> at 59.7–60.3 ticks/s × 8). "Before" = main with ONLY the three shared-code fixes
+> reverted, instrumentation kept.
+>
+> | § | Finding | Windows result |
+> |---|---|---|
+> | 1 | 8 ms ingest poll loses frames | **CONFIRMED.** Worse here than on macOS: the loss is at the SHM slot, so frames were never even decoded — 373–390 of 480 f/s ingested (81%), 78% composited. With the 2 ms poll: **480/480 ingested, 90–91% composited**, render-thread fetch stall 0.41 ms → 0.06 ms. |
+> | 2 | 3.1 MB memcpy under the engine mutex | Fixed in the same build; ingest stage 1.05–1.19 ms → 0.74–0.79 ms. |
+> | 3 | Relative-deadline pacer drift | **Present but masked.** Windows held 60.0 fps even before, because the 500 µs spin guard was compensating — exactly as this brief predicted. |
+> | 3 (follow-up) | Can `kSpinGuardUs` come back down? | **CONFIRMED, applied.** 200 µs now holds 60.0 fps / 0 dropped with identical delivery and lock behaviour, and saves ~5 s of core CPU per 53 s of wall (non-overlapping ranges over 3 runs each). |
+> | 6.4 | Wire the drill into Windows CI | Not yet — blocked on the open finding below. |
+>
+> **Open finding:** post-fix delivery on Windows is **90–91%**, short of the drill's
+> `MIN_FRAME_DELIVERY = 0.95` gate (calibrated on macOS's 99%). Ingest is lossless
+> (480/480), so the remaining ~9% dies between the per-participant latest-frame slot
+> and the 16.7 ms render fetch — publish/fetch phase jitter, plus the producer running
+> ~60.3 f/s against a 60.0 f/s consumer. Needs its own investigation before the drill
+> can gate Windows CI.
+>
+> **Correction, recorded deliberately:** the first Windows answer on the §3 follow-up
+> was **wrong** — it reported 200 µs as refuted (59.6 fps, 74% delivery). That binary
+> had been built from a tree still carrying the "before" edits (`git checkout main`
+> carried the uncommitted reverts across), so it was *before + a 200 µs guard*: the
+> 74% was the 8 ms poll and the 59.6 fps was the un-anchored pacer, both misattributed
+> to the guard. Rebuilt from clean main, the result reversed. Lesson for the next
+> before/after on this rig: **`git status` immediately before every measurement build**
+> — a stale working tree silently answers a different question than the one asked.
+
 Paste-ready brief for a Claude session on the Windows machine.
 
 The macOS port went through a measurement pass that found three defects in
