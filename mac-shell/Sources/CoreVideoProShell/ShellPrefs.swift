@@ -48,6 +48,44 @@ struct ShellPrefs: Codable, Equatable {
     // means neutral; a short array is tolerated so an older prefs file loads.
     var colorGrade: [Double] = []
 
+    // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
+    // honour a property's default value — it calls decode() and THROWS
+    // keyNotFound when the key is absent. load() swallows that with `try?`, so
+    // adding one non-optional field silently reset the operator's ENTIRE
+    // preferences file: scenes, meeting id, stream URL, everything. Shipping
+    // `colorGrade` did exactly that to any prefs file written before it.
+    //
+    // Decoding field-by-field with decodeIfPresent makes the struct permanently
+    // additive-safe: an older file keeps its values and the new key takes its
+    // default. Do not replace this with the synthesized initializer.
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+        }
+        version = v(.version, 1)
+        joinMeetingId = v(.joinMeetingId, "")
+        displayName = v(.displayName, "CoreVideo Pro (mac)")
+        monitorEnabled = v(.monitorEnabled, false)
+        monitorVolume = v(.monitorVolume, 0.7)
+        isoRecordingEnabled = v(.isoRecordingEnabled, false)
+        isoSelectedSourceIds = v(.isoSelectedSourceIds, [])
+        autoTakeEnabled = v(.autoTakeEnabled, true)
+        autoConfidenceThreshold = v(.autoConfidenceThreshold, 70.0)
+        autoHoldSeconds = v(.autoHoldSeconds, 4.0)
+        lowerThirdName = v(.lowerThirdName, "")
+        lowerThirdTitle = v(.lowerThirdTitle, "")
+        lowerThirdPosition = v(.lowerThirdPosition, "lower-left")
+        logoBugAssetId = v(.logoBugAssetId, "")
+        streamUrl = v(.streamUrl, "rtmp://a.rtmp.youtube.com/live2")
+        recentMeetings = v(.recentMeetings, [])
+        scenes = v(.scenes, [])
+        webinar = v(.webinar, false)
+        colorGrade = v(.colorGrade, [])
+    }
+
     static let path = NSHomeDirectory()
         + "/Library/Application Support/CoreVideoPro/shell-preferences.json"
 
