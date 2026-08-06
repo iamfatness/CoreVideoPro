@@ -286,12 +286,15 @@ function parseLooks(root: Record<string, unknown>): LookDefinition[] {
  * Parse `root.mukana`, or `null` when the block is absent and no integration
  * needs it. An absent block with an integration enabled is an error: that
  * config asks the engine to poll an address it was never given.
+ *
+ * An explicit `null` counts as absent, so a config that survived a
+ * `JSON.stringify`/`parse` round trip parses back to what it started as.
  */
 function parseMukana(
   root: Record<string, unknown>,
   integrations: ShowIntegrationsConfig
 ): MukanaConfig | null {
-  if (root.mukana === undefined) {
+  if (root.mukana === undefined || root.mukana === null) {
     const enabled = Object.entries(integrations)
       .filter(([, on]) => on)
       .map(([name]) => name);

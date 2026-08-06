@@ -214,6 +214,12 @@ describe("parseShowEngineConfig without a mukana block", () => {
     });
   });
 
+  it("treats an explicit null as absent, so a JSON round trip is idempotent", () => {
+    const once = parseShowEngineConfig(registryLess);
+    const twice = parseShowEngineConfig(JSON.parse(JSON.stringify(once)) as unknown);
+    expect(twice).toEqual(once);
+  });
+
   it("rejects an omitted block when an integration is enabled", () => {
     expect(() =>
       parseShowEngineConfig({ ...registryLess, integrations: { handsQueue: true } })
