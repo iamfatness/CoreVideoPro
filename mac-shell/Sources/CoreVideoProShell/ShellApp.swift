@@ -26,6 +26,18 @@ struct ShellApp: App {
 
     init() {
         setvbuf(stdout, nil, _IOLBF, 0)
+        // Redaction self-check harness (there is no XCTest target in this SPM
+        // package): seeds every secret shape the product handles, exports a REAL
+        // support bundle to a temp dir and greps it. Runs before any UI.
+        //   COREVIDEO_SHELL_SELFCHECK=1 .build/release/CoreVideoProShell
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_SELFCHECK"] != nil {
+            DiagnosticsSelfCheck.runAndExit()
+        }
+        // Headless bundle export for the case the UI is what's broken.
+        if let destination =
+            ProcessInfo.processInfo.environment["COREVIDEO_SHELL_EXPORT_BUNDLE"] {
+            DiagnosticsSelfCheck.exportHeadlessAndExit(destination: destination)
+        }
         DesignFonts.register()
         // A bare (non-bundled) executable defaults to an activation policy
         // whose windows cannot become KEY — text fields silently refuse
@@ -1870,44 +1882,8 @@ struct AutomationPane: View {
     }
 }
 
-struct DiagnosePane: View {
-    @EnvironmentObject var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Diagnose").font(.grotesk(14, .semibold))
-            HStack {
-                ConnectionDot()
-                Text(model.statusDetail.isEmpty ? "core healthy" : model.statusDetail)
-                    .font(.plexMono(10))
-                    .foregroundStyle(Studio.secondary)
-                    .lineLimit(2)
-            }
-            if !model.recordingArtifactPath.isEmpty {
-                Text("last artifact: \(model.recordingArtifactPath)")
-                    .font(.plexMono(9))
-                    .foregroundStyle(Studio.secondary)
-                    .lineLimit(1).truncationMode(.head)
-                    .textSelection(.enabled)
-            }
-            Divider()
-            Text("WARNINGS")
-                .font(.plexMono(10, .bold))
-                .foregroundStyle(Studio.secondary)
-            if model.warnings.isEmpty {
-                Text("None.").font(.grotesk(11)).foregroundStyle(Studio.secondary)
-            }
-            ForEach(Array(model.warnings.enumerated()), id: \.offset) { _, warning in
-                Text(warning)
-                    .font(.plexMono(10))
-                    .foregroundStyle(Studio.amber)
-                    .textSelection(.enabled)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(StudioPanel())
-    }
-}
+// DiagnosePane now lives in Diagnostics.swift (the full DIAGNOSE surface plus
+// the redacted support-bundle export).
 
 // ── Meters ───────────────────────────────────────────────────────────────────
 
