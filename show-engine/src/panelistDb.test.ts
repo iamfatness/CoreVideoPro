@@ -103,3 +103,45 @@ describe("buildPanelistDb", () => {
     expect(buildPanelistDb([], mukana, {}).size).toBe(0);
   });
 });
+
+describe("buildPanelistDb person keys", () => {
+  it("stores a PIN-derived key when the name carries a PIN", () => {
+    const db = buildPanelistDb([participant("p1", "JJ | 1383")], mukana, {});
+    expect(db.get("p1")?.personKey).toBe("pin:1383");
+  });
+
+  it("stores a name-derived key when there is no PIN", () => {
+    const db = buildPanelistDb([participant("p2", "Guest User")], mukana, {});
+    expect(db.get("p2")?.personKey).toBe("name:guest user");
+  });
+
+  it("applies an override keyed by the person key, with no PIN present", () => {
+    const db = buildPanelistDb([participant("p2", "Guest User")], mukana, {
+      "name:guest user": {
+        personKey: "name:guest user",
+        displayName: "Guest User",
+        location: "Remote",
+        role: "host"
+      }
+    });
+    expect(db.get("p2")).toMatchObject({ role: "host", location: "Remote" });
+  });
+
+  it("applies an override keyed by PIN when one is present", () => {
+    const db = buildPanelistDb([participant("p1", "JJ | 1383")], mukana, {
+      "pin:1383": {
+        personKey: "pin:1383",
+        displayName: "",
+        location: "",
+        role: "reader"
+      }
+    });
+    expect(db.get("p1")).toMatchObject({ role: "reader", displayName: "J.J. Mc Kenna" });
+  });
+
+  it("gives a reconnecting participant the same key under a new participant id", () => {
+    const first = buildPanelistDb([participant("p1", "Guest User")], mukana, {});
+    const second = buildPanelistDb([participant("p9", "Guest User")], mukana, {});
+    expect(second.get("p9")?.personKey).toBe(first.get("p1")?.personKey);
+  });
+});

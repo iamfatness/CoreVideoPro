@@ -5,6 +5,8 @@
  * `" "` or `"####"`), and slots are keyed by plain integers.
  */
 
+import type { PersonKey } from "./personKey.js";
+
 export type Role = "panelist" | "host" | "reader" | "aslpanelist" | "aslinterpreter";
 
 export const ROLES: readonly Role[] = [
@@ -55,6 +57,8 @@ export type Panelist = Participant &
   Identity & {
     hasMukana: boolean;
     role: Role;
+    /** Stable identity key computed once by `resolvePersonKey`; never re-derive it downstream. */
+    personKey: PersonKey;
   };
 
 /** One position in the fixed-capacity live roster. `panelist === null` is an empty hole. */
