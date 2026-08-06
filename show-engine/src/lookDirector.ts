@@ -11,7 +11,7 @@
  * chairs — `OverrideDb` remains the sole authority on editorial roles.
  */
 
-import type { LookDefinition, PlateTone, QueueState, Slot } from "./contracts.js";
+import type { LookDefinition, PlateTone, QueueState, Slot, TallySource } from "./contracts.js";
 import { queueOrder } from "./handsQueue.js";
 
 export type BoxAssignment = { box: number; slot: number | null };
@@ -30,6 +30,7 @@ export type LookResolution = {
   lookId: string;
   scenePreset: string;
   plateTone: PlateTone;
+  tallySource: TallySource;
   hostSlot: number | null;
   readerSlot: number | null;
   boxes: BoxAssignment[];
@@ -194,6 +195,7 @@ export function resolveLook(
     lookId: look.id,
     scenePreset: look.scenePreset,
     plateTone: look.plateTone,
+    tallySource: look.tallySource,
     hostSlot,
     readerSlot,
     boxes,

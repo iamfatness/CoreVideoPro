@@ -4,10 +4,13 @@
  * state and mapping its source IDs back to people. This engine *is* the
  * switcher, so `deriveTally` reads it straight off state other modules
  * already own: the program source, the live roster, the gallery grid, and
- * the current look resolution. Getting this wrong is visible on air in the
- * worst way, so every slot number is checked against the roster before it
- * is reported live — a box or gallery cell pointing at an empty or
- * out-of-range slot contributes nobody.
+ * the current look resolution. A `look` source's own on-air slots depend on
+ * the resolved look's `tallySource` — ordinarily its chairs and boxes, but
+ * for the Panel Checks case (`"activeSpeaker"`) only the active speaker,
+ * because the look's boxes are not actually on air then. Getting this
+ * wrong is visible on air in the worst way, so every slot number is
+ * checked against the roster before it is reported live — a box or gallery
+ * cell pointing at an empty or out-of-range slot contributes nobody.
  */
 
 import type { GalleryCell, ProgramSource, Slot } from "./contracts.js";
@@ -63,6 +66,19 @@ function boxesSlots(look: LookResolution): number[] {
 }
 
 /**
+ * Slot numbers a look puts on air, per its `tallySource`. `"boxes"` (the
+ * default) is the look's own chairs and filled boxes. `"activeSpeaker"` is
+ * the Panel Checks case: the look's boxes are not on air, only whoever is
+ * currently speaking, shown full-frame, is.
+ */
+function lookSlots(look: LookResolution, activeSpeakerSlot: number | null): number[] {
+  if (look.tallySource === "activeSpeaker") {
+    return activeSpeakerSlot === null ? [] : [activeSpeakerSlot];
+  }
+  return boxesSlots(look);
+}
+
+/**
  * Derive who is currently on air from the program source and the state
  * other modules own. `look === null` for a `look` source means the
  * operator has selected a look the engine cannot resolve yet — mode
@@ -99,7 +115,7 @@ export function deriveTally(input: {
 
     case "look": {
       if (look === null) return buildTally("look", [], slots);
-      return buildTally("look", boxesSlots(look), slots);
+      return buildTally("look", lookSlots(look, activeSpeakerSlot), slots);
     }
   }
 }

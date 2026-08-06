@@ -39,6 +39,7 @@ const look: LookResolution = {
   lookId: "hr",
   scenePreset: "scene-hr",
   plateTone: "accent",
+  tallySource: "boxes",
   hostSlot: 1,
   readerSlot: 2,
   boxes: [
@@ -48,6 +49,11 @@ const look: LookResolution = {
   nameplates: [],
   page: 0,
   pageCount: 1
+};
+
+const panelChecksLook: LookResolution = {
+  ...look,
+  tallySource: "activeSpeaker"
 };
 
 function base(overrides: Partial<Parameters<typeof deriveTally>[0]>) {
@@ -120,6 +126,28 @@ describe("deriveTally", () => {
 
   it("reports nobody for an unresolved look", () => {
     const tally = base({ source: { kind: "look", lookId: "hr" }, look: null });
+    expect(tally.mode).toBe("look");
+    expect(tally.onAirSlots).toEqual([]);
+  });
+
+  it("follows only the active speaker for a Panel Checks look, ignoring its chairs and boxes", () => {
+    const tally = base({
+      source: { kind: "look", lookId: "hr" },
+      look: panelChecksLook,
+      activeSpeakerSlot: 3
+    });
+    expect(tally.mode).toBe("look");
+    expect(tally.onAirSlots).toEqual([3]);
+    expect(tally.onAirPins).toEqual(["4242"]);
+    expect(tally.onAirParticipantIds).toEqual(["ann"]);
+  });
+
+  it("reports nobody for a Panel Checks look with no active speaker", () => {
+    const tally = base({
+      source: { kind: "look", lookId: "hr" },
+      look: panelChecksLook,
+      activeSpeakerSlot: null
+    });
     expect(tally.mode).toBe("look");
     expect(tally.onAirSlots).toEqual([]);
   });
