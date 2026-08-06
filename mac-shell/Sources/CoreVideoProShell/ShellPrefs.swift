@@ -44,6 +44,9 @@ struct ShellPrefs: Codable, Equatable {
     var recentMeetings: [String] = []  // most-recent first, capped at 5
     var scenes: [PersistedScene] = []  // custom scenes survive relaunches
     var webinar = false
+    // Program color grade [exposure, contrast, saturation, temperature]. Empty
+    // means neutral; a short array is tolerated so an older prefs file loads.
+    var colorGrade: [Double] = []
 
     static let path = NSHomeDirectory()
         + "/Library/Application Support/CoreVideoPro/shell-preferences.json"

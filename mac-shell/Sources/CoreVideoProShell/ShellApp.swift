@@ -47,14 +47,20 @@ struct ShellApp: App {
                 .studioChrome()
         }
 
-        // POP-OUTS. A live operator runs multiple displays: the monitor wall goes
+        // POP-OUTS — `Window`, not `WindowGroup`. WindowGroup mints a NEW window
+        // on every openWindow(id:), and macOS also restores the previous
+        // session's windows, so an operator ended up with two multiviewers and
+        // no idea which was live. These are single-instance operator panels:
+        // re-invoking just brings the existing one forward.
+        //
+        // A live operator runs multiple displays: the monitor wall goes
         // on a second screen while the console stays on the laptop. The WinUI
         // shell ships MultiviewPopoutWindow / ProgramPreviewPopoutWindow /
         // AudioMixerWindow for exactly this; macOS had a SINGLE WindowGroup, so
         // the multiviewer was trapped in a tab and could not be a monitor wall at
         // all. Each pop-out shares the SAME AppModel instance, so it is a second
         // view of live state, never a second copy of it.
-        WindowGroup("Multiviewer", id: PopoutWindow.multiview) {
+        Window("Multiviewer", id: PopoutWindow.multiview) {
             MultiviewerCanvas(isPopout: true)
                 .environmentObject(model)
                 .padding(8)
@@ -62,14 +68,23 @@ struct ShellApp: App {
                 .studioChrome()
         }
 
-        WindowGroup("Program / Preview", id: PopoutWindow.busMonitor) {
+        Window("Program / Preview", id: PopoutWindow.busMonitor) {
             BusMonitorPopout()
                 .environmentObject(model)
                 .frame(minWidth: 720, minHeight: 260)
                 .studioChrome()
         }
 
-        WindowGroup("Audio Mixer", id: PopoutWindow.audioMixer) {
+        // Picture control, the macOS twin of ColorGradeEditorWindow. A window
+        // (not a tab) because grading is done while WATCHING program.
+        Window("Color Grade", id: PopoutWindow.colorGrade) {
+            ColorGradePane()
+                .environmentObject(model)
+                .frame(minWidth: 420, minHeight: 320)
+                .studioChrome()
+        }
+
+        Window("Audio Mixer", id: PopoutWindow.audioMixer) {
             AudioPane(isPopout: true)
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 520)
@@ -101,6 +116,7 @@ struct PopoutAutoOpen: ViewModifier {
                     case "multiview": openWindow(id: PopoutWindow.multiview)
                     case "buses", "busmonitor": openWindow(id: PopoutWindow.busMonitor)
                     case "mixer", "audio": openWindow(id: PopoutWindow.audioMixer)
+                    case "grade", "colorgrade": openWindow(id: PopoutWindow.colorGrade)
                     default: break
                     }
                 }
@@ -113,6 +129,7 @@ enum PopoutWindow {
     static let multiview = "popout-multiview"
     static let busMonitor = "popout-bus-monitor"
     static let audioMixer = "popout-audio-mixer"
+    static let colorGrade = "popout-color-grade"
 }
 
 extension View {
@@ -545,6 +562,7 @@ struct MultiviewerCanvas: View {
                 ActionChip("Room") { model.selectedTab = .zoom }
                 // Send the wall to a second display. Hidden inside the pop-out
                 // itself so it cannot spawn copies of its own window.
+                ActionChip("Grade") { openWindow(id: PopoutWindow.colorGrade) }
                 if !isPopout {
                     ActionChip("Pop out") { openWindow(id: PopoutWindow.multiview) }
                     ActionChip("P/P") { openWindow(id: PopoutWindow.busMonitor) }

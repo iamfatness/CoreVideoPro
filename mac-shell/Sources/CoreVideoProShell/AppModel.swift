@@ -321,6 +321,7 @@ final class AppModel: ObservableObject {
         prefs.streamUrl = streamUrl
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
+        prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            layers: scene.layers.map { layer in
@@ -336,6 +337,12 @@ final class AppModel: ObservableObject {
 
     private func restorePrefs() {
         let prefs = ShellPrefs.load()
+        if prefs.colorGrade.count == 4 {
+            gradeExposure = prefs.colorGrade[0]
+            gradeContrast = prefs.colorGrade[1]
+            gradeSaturation = prefs.colorGrade[2]
+            gradeTemperature = prefs.colorGrade[3]
+        }
         joinMeetingId = prefs.joinMeetingId
         displayName = prefs.displayName
         monitorEnabled = prefs.monitorEnabled
@@ -467,6 +474,9 @@ final class AppModel: ObservableObject {
 
     private func onConnected() {
         applyMultiviewConfig()
+        // Re-assert a restored grade: the core starts neutral every launch, so
+        // a persisted grade that is never pushed silently does nothing.
+        if !gradeIsNeutral { applyColorGrade() }
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -828,6 +838,53 @@ final class AppModel: ObservableObject {
     @Published var recordFormat = "mp4"
     @Published var recordPrefix = "show"
     @Published var multiviewTileCount = 10  // ATEM-style 10-way wall
+
+    // PROGRAM COLOR GRADE. The core has always accepted `set-color-grade`
+    // (exposure/contrast/saturation/temperature, each clamped) and the Metal
+    // shader already consumes the constants per layer — the macOS shell simply
+    // never exposed it, so a Mac operator had no picture control at all while
+    // the Windows shell ships a whole ColorGradeEditorWindow.
+    @Published var gradeExposure: Double = 0
+    @Published var gradeContrast: Double = 0
+    @Published var gradeSaturation: Double = 0
+    @Published var gradeTemperature: Double = 0
+
+    var gradeIsNeutral: Bool {
+        gradeExposure == 0 && gradeContrast == 0 && gradeSaturation == 0 && gradeTemperature == 0
+    }
+
+    private var colorGradeSyncTask: Task<Void, Never>?
+
+    // COALESCED. A slider drag emits a change per frame, and one request per
+    // delta is exactly what starved the RPC queue during canvas drags until
+    // every command timed out. Grading still feels live: 60ms is well under the
+    // threshold where an operator riding a slider notices lag.
+    func applyColorGrade() {
+        colorGradeSyncTask?.cancel()
+        colorGradeSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.pushColorGrade()
+        }
+    }
+
+    @MainActor
+    private func pushColorGrade() async {
+        guard let bridge else { return }
+        _ = try? await bridge.request([
+            "type": "media-core-sync", "elapsedMs": elapsedMs(),
+            "commands": [[
+                "type": "set-color-grade",
+                "exposure": gradeExposure, "contrast": gradeContrast,
+                "saturation": gradeSaturation, "temperature": gradeTemperature,
+            ]],
+        ])
+    }
+
+    func resetColorGrade() {
+        gradeExposure = 0; gradeContrast = 0; gradeSaturation = 0; gradeTemperature = 0
+        applyColorGrade()
+    }
 
     func applyOutputProfile() {
         guard let bridge else { return }
