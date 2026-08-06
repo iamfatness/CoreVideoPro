@@ -55,8 +55,8 @@ describe("buildPanelistDb", () => {
 
   it("lets an override win over Mukana", () => {
     const db = buildPanelistDb([participant("p1", "JJ | 1383")], mukana, {
-      "1383": {
-        pin: "1383",
+      "pin:1383": {
+        personKey: "pin:1383",
         displayName: "JJ (stand-in)",
         location: "Remote",
         role: "panelist"
@@ -72,7 +72,7 @@ describe("buildPanelistDb", () => {
 
   it("keeps Mukana identity when the override carries only a role", () => {
     const db = buildPanelistDb([participant("p1", "JJ | 1383")], mukana, {
-      "1383": { pin: "1383", displayName: "", location: "", role: "reader" }
+      "pin:1383": { personKey: "pin:1383", displayName: "", location: "", role: "reader" }
     });
     expect(db.get("p1")).toMatchObject({
       displayName: "J.J. Mc Kenna",

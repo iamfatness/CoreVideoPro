@@ -138,7 +138,7 @@ describe("identity and roster pipeline", () => {
     }
     expect(slots.slotOf("z1")).toBe(1);
 
-    overrides.assignExclusiveRole("4242", "host", registry.current());
+    overrides.assignExclusiveRole("pin:4242", "host", registry.current());
     slots.refresh(buildPanelistDb(ingest.snapshot(), registry.current(), overrides.entries()));
 
     expect(slots.slotOf("z1")).toBe(1);
