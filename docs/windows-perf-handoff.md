@@ -13,12 +13,11 @@
 > | 3 (follow-up) | Can `kSpinGuardUs` come back down? | **CONFIRMED, applied.** 200 µs now holds 60.0 fps / 0 dropped with identical delivery and lock behaviour, and saves ~5 s of core CPU per 53 s of wall (non-overlapping ranges over 3 runs each). |
 > | 6.4 | Wire the drill into Windows CI | Not yet — blocked on the open finding below. |
 >
-> **Open finding:** post-fix delivery on Windows is **90–91%**, short of the drill's
-> `MIN_FRAME_DELIVERY = 0.95` gate (calibrated on macOS's 99%). Ingest is lossless
-> (480/480), so the remaining ~9% dies between the per-participant latest-frame slot
-> and the 16.7 ms render fetch — publish/fetch phase jitter, plus the producer running
-> ~60.3 f/s against a 60.0 f/s consumer. Needs its own investigation before the drill
-> can gate Windows CI.
+> **Open finding — diagnosed, needs an owner call.** Post-fix delivery on Windows is
+> **88–92%**, short of the drill's `MIN_FRAME_DELIVERY = 0.95`. Root-caused to frame
+> pairing between free-running clocks, not a defect in the fixed code — see §8. The
+> remaining gap cannot be closed without a permanent one-frame cushion (+16.7 ms), so
+> **the drill should not gate Windows CI until that call is made.**
 >
 > **Correction, recorded deliberately:** the first Windows answer on the §3 follow-up
 > was **wrong** — it reported 200 µs as refuted (59.6 fps, 74% delivery). That binary
@@ -258,3 +257,60 @@ asked for**).
 
 Use these as a sanity reference, **not** as a Windows target — different GPU,
 timer, and SHM implementation.
+
+---
+
+## 8. The residual delivery gap, chased (Windows, 2026-08-05)
+
+**It is frame pairing between two free-running ~60 Hz clocks, not lost work.**
+
+`ZoomEngineRuntime` now counts what happens to every decoded frame at the
+ingest→render handoff and prints it per 2 s window (`[zoom-slot]`, surfaced by the
+drill):
+
+```
+[zoom-slot] published=966 fresh=894 overwritten=72 (7.5%) starved=90 over 2.02s
+[zoom-slot] published=940 fresh=869 overwritten=71 (7.6%) starved=91 over 2.00s
+[zoom-slot] published=967 fresh=879 overwritten=88 (9.1%) starved=81 over 2.00s
+```
+
+`overwritten` = a decoded frame destroyed before the compositor took it (real lost
+motion). `starved` = a render tick that re-showed a frame it already had. **They are
+equal in every window**, which is the whole diagnosis: the producer is not outrunning
+the render (59.98–60.09 f/s against 60.0 fps). Two frames land inside one render
+interval — so one dies in the latest-wins slot — and the neighbouring interval gets
+none, so that tick repeats. ~1 ms of jitter on either clock is enough, on a 16.7 ms
+period. The operator sees micro-judder (a repeat plus a skip roughly every 14 frames),
+**not** the "a third of every source's motion" that the 8 ms poll was costing.
+
+Two fixes were implemented and **both refuted by measurement**:
+
+1. **Halve the ingest poll (2 ms → 1 ms)** — theory was that poll quantization
+   dominated the jitter. Result: 6.6–7.5% overwritten vs 6.6–9.9%. No effect. Poll
+   quantization is one of three jitter sources (producer, poll, render), not the
+   dominant one. Reverted.
+2. **A one-deep catch-up buffer** (park a frame that arrives while the slot is still
+   unfetched; promote it on the next starved tick). Result: **no benefit** —
+   7.5–9.1% overwritten, unchanged. The starved tick arrives *before* the surplus
+   frame, so there is nothing in reserve at the moment it is needed. Reverted; the
+   `latestDecodedFrames_` header comment records this so it is not retried blind.
+
+   Worth knowing how that one nearly shipped: the first cut of it measured **97%
+   delivery** and looked like a clean win. It was a bug — a newly published frame
+   could bypass an occupied pending slot, stranding the parked frame until some later
+   tick surfaced it **out of order**, which the latency percentile caught as a
+   **796 ms p99**. Delivery alone said "success". Same lesson as §5, one layer up:
+   never accept a single metric's verdict on a change that can trade one axis for
+   another.
+
+**What would actually close it:** a permanent one-frame cushion — always render one
+frame behind, so a starved tick has a reserve to draw on. That is what a hardware
+frame synchronizer does, and every switcher-class input has one. Cost is a fixed
+**+16.7 ms of source→program latency**, which is a direct trade against the product's
+low-latency north star, so it is an owner decision and not a refactor to slip in.
+Note this gets *more* attractive in production than on the rig: real Zoom sources
+carry network jitter far larger than the synthetic engine's ~1 ms, so real-world
+pairing loss will be worse than 8–12%.
+
+Until that call is made, the drill legitimately fails on Windows at ~88–92%. **Do not
+lower `MIN_FRAME_DELIVERY` to make CI green** — the gate is measuring something real.

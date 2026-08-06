@@ -395,6 +395,15 @@ def main():
         print("Zoom ingest (last 3 windows):")
         for line in ingest_lines[-3:]:
             print(f"  {line}")
+    # Slot accounting closes the books on the delivery number: `overwritten` is
+    # real lost motion (a decoded frame destroyed before the compositor took it),
+    # `starved` is a render tick that re-served a frame it already had. A delivery
+    # miss is one, the other, or both — and they have different fixes.
+    slot_lines = [l for l in core.stderr if "[zoom-slot]" in l]
+    if slot_lines:
+        print("Ingest->render slot accounting (last 3 windows):")
+        for line in slot_lines[-3:]:
+            print(f"  {line}")
     if stage_lines:
         print("Stage attribution (last 3 windows):")
         for line in stage_lines[-3:]:
