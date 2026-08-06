@@ -693,6 +693,16 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
+    // Skip BEFORE ensureFfmpegProcess: that call pins FFmpeg's -s geometry from
+    // this frame, so letting a preview-sized frame through here is what
+    // restarted the encoder mid-stream.
+    if (!videoSourceUsable(*frame)) {
+      sender_.status = "live";
+      sender_.lastResultCode = "awaiting-full-res-frame";
+      appendSendProof(frame, "awaiting-full-res-frame");
+      return snapshot();
+    }
+
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
       appendSendProof(frame, "ffmpeg-start-failed");
       return snapshot();
@@ -850,6 +860,59 @@ class RtmpOutputSender final : public IOutputSender {
     }
     return hasProgramFullBgra(frame) ? frame.programFullBgra.bgra : frame.preview.bgra;
   }
+
+  // Has this sender ever seen a full-resolution program buffer? The full-res tap
+  // is ASYNCHRONOUS: it publishes a finished buffer on the ticks where its
+  // readback completed, and ProgramFrame::programFullBgra is EMPTY on the rest.
+  // The static pickers above then silently fall back to `preview` — a 320x180 UI
+  // thumbnail with completely different geometry. FFmpeg is spawned with
+  // `-s <declared>` and fed raw frames on pipe:0, so a mid-stream geometry flip
+  // makes it either restart continuously or sit stitching thumbnails into a
+  // frame that never completes: a video track is advertised and NOTHING
+  // decodable ever arrives, while the separate audio pipe keeps flowing. That is
+  // exactly the "streams audio, no picture" failure. Once full-res is available,
+  // NEVER downgrade — skip the tick instead. FFmpeg paces with -re and simply
+  // receives slightly fewer frames, which is always better than a broken stream.
+  bool fullResLocked_ = false;
+
+  // Returns false when this tick has no frame at the locked geometry and must be
+  // skipped rather than written at the wrong size.
+  bool videoSourceUsable(const ProgramFrame& frame) {
+    const bool full = hasProgramNv12(frame) || hasProgramFullBgra(frame);
+    {
+      static long long s_full = 0, s_total = 0;
+      static auto s_stamp = std::chrono::steady_clock::now();
+      ++s_total;
+      if (full) ++s_full;
+      const auto now = std::chrono::steady_clock::now();
+      // Only report when the tap actually missed — a healthy stream should be
+      // silent here, and a sudden run of misses is the signal worth seeing.
+      if (std::chrono::duration<double>(now - s_stamp).count() >= 3.0) {
+        if (s_full != s_total) {
+          std::fprintf(stderr, "[rtmp] full-res tap missed %lld of %lld ticks\n",
+                       s_total - s_full, s_total);
+        }
+        s_full = 0; s_total = 0; s_stamp = now;
+      }
+    }
+    if (full) {
+      fullResLocked_ = true;
+      return true;
+    }
+    if (fullResLocked_) {
+      return false;  // never downgrade geometry mid-stream
+    }
+    // STARTUP: the full-res tap is asynchronous, so the first tick or two after
+    // arming can arrive before it has published (measured: 1 miss in the first
+    // ~123 ticks, then 100%). Starting FFmpeg on that first preview-sized frame
+    // pins -s to 320x180 and the very next full-res frame forces a restart —
+    // dropping the connection a real ingest has already accepted. Wait briefly
+    // for the tap instead; only fall back to preview if it never appears (a
+    // build with no tap at all), so the legacy path still works.
+    constexpr int kWaitTicksForFullRes = 60;  // ~1.2s at the 50Hz output worker
+    return ++previewOnlyTicks_ > kWaitTicksForFullRes;
+  }
+  int previewOnlyTicks_ = 0;
 
   void ensureSender(double elapsedMs) {
     if (!sender_.senderId.empty()) {
@@ -1204,6 +1267,15 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     const std::string argString = buildFfmpegArguments(width, height, audioInputArg, videoInputPixelFormat);
+    // One-shot: the exact invocation, so a stream that connects but delivers no
+    // video can be reproduced by hand instead of inferred.
+    {
+      static bool s_loggedArgs = false;
+      if (!s_loggedArgs) {
+        s_loggedArgs = true;
+        std::fprintf(stderr, "[rtmp] ffmpeg %s\n", argString.c_str());
+      }
+    }
     std::vector<std::string> tokens = tokenizeArguments(argString);
     std::vector<char*> argv;
     argv.reserve(tokens.size() + 2);
@@ -1308,6 +1380,30 @@ class RtmpOutputSender final : public IOutputSender {
       }
     }
     const auto& videoBytes = videoFrameBytes(frame);
+    // BOUNDARY EVIDENCE (one-shot): ffmpeg is told `-s WxH -pix_fmt <fmt>` and
+    // then fed raw frames on pipe:0. If the byte count does not match that
+    // geometry exactly, ffmpeg blocks forever assembling a frame that never
+    // completes — no video ever reaches the endpoint while the separate audio
+    // pipe keeps flowing. That is precisely the observed symptom, so log what we
+    // declared against what we actually write.
+    {
+      static bool s_logged = false;
+      if (!s_logged) {
+        s_logged = true;
+        const int w = videoWidth(frame);
+        const int h = videoHeight(frame);
+        const auto fmt = videoPixelFormat(frame);
+        const size_t expected = static_cast<size_t>(w) * static_cast<size_t>(h) *
+                                (fmt == "nv12" ? 3u : 8u) / 2u;
+        std::fprintf(stderr,
+                     "[rtmp] first video write: declared %dx%d %s -> expected %zu bytes, "
+                     "actual %zu bytes (source=%s)%s\n",
+                     w, h, fmt.c_str(), expected, videoBytes.size(),
+                     hasProgramNv12(frame) ? "programNv12"
+                         : (hasProgramFullBgra(frame) ? "programFullBgra" : "preview"),
+                     expected == videoBytes.size() ? "" : "  *** MISMATCH ***");
+      }
+    }
     const auto* data = reinterpret_cast<const char*>(videoBytes.data());
     size_t remaining = videoBytes.size();
     while (remaining > 0) {

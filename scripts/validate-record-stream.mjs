@@ -24,7 +24,12 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const buildDir = join(repoRoot, "native", "build-dev");
+// The Windows dev build dir is the default, but the macOS core builds to
+// build-metal — without an override this harness could not be run on mac at all,
+// which is part of why the mac streaming path went so long unverified.
+const buildDir = process.env.COREVIDEO_NATIVE_BUILD_DIR
+  ? resolve(process.env.COREVIDEO_NATIVE_BUILD_DIR)
+  : join(repoRoot, "native", existsSync(join(repoRoot, "native", "build-dev")) ? "build-dev" : "build-metal");
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 
 const args = parseArgs(process.argv.slice(2));
@@ -41,6 +46,15 @@ const minProgramFrames = numberArg(args["min-program-frames"], 3);
 const sessionId = args["session-id"] ?? "record-stream-proof";
 const sceneId = args["scene-id"] ?? "record-stream-validation";
 const allowRtmpWarning = !booleanArg(args["disallow-rtmp-warning"]);
+// Point at a real listener (e.g. `ffmpeg -listen 1 -i rtmp://127.0.0.1:1935/live/test`)
+// to turn this from a presence check into a delivery proof.
+const rtmpUrl = typeof args["rtmp-url"] === "string" ? args["rtmp-url"] : "";
+const rtmpStreamKey = typeof args["rtmp-key"] === "string" ? args["rtmp-key"] : "";
+// Path to a file captured from the RTMP endpoint. Asserting a VIDEO stream in
+// what the SERVER received is the only check that would have caught the
+// audio-only regression: the sender reported "live", the FLV was valid, and the
+// stream carried perfect AAC with no picture for the entire session.
+const rtmpReceived = typeof args["rtmp-received"] === "string" ? args["rtmp-received"] : "";
 const destinations = parseDestinations(args.destinations ?? "recording,rtmp");
 const nativeCore = resolve(args["native-core"] ?? join(buildDir, `corevideo-native${exeSuffix}`));
 
@@ -200,6 +214,21 @@ function buildArmCommands() {
     {
       type: "start-program-output",
       destinations,
+      // Without destinationSettings the RTMP sender has no URL, so it stays in
+      // "needs current RTMP destination settings" and the harness only ever
+      // proved the sender was PRESENT — never that a single frame reached a
+      // server. --rtmp-url makes this an actual end-to-end streaming proof.
+      destinationSettings: rtmpUrl
+        ? [{
+            id: "rtmp",
+            label: "validate-record-stream",
+            protocol: "rtmp",
+            url: rtmpUrl,
+            streamKey: rtmpStreamKey,
+            fps: numberArg(args["stream-fps"], 60),
+            targetBitrateMbps: numberArg(args["stream-bitrate"], 6),
+          }]
+        : [],
       isoParticipantIds: [],
     },
     {
@@ -812,6 +841,52 @@ function criteriaMet() {
   return compositorOk && encoderOk && recordingOk && rtmpOk;
 }
 
+// Probe what the RTMP SERVER actually received. Everything else in this harness
+// observes the sender's own opinion of itself; only this can catch a stream that
+// reports "live", produces a valid FLV, and carries no picture.
+function probeReceivedStream() {
+  if (!rtmpReceived) {
+    return { enabled: false, status: "disabled" };
+  }
+  if (!existsSync(rtmpReceived)) {
+    return { enabled: true, status: "missing", pass: false, path: rtmpReceived };
+  }
+  const probe = spawnSync("ffprobe", [
+    "-hide_banner", "-v", "error",
+    "-show_entries", "stream=codec_type,codec_name,width,height,nb_frames",
+    "-of", "json", rtmpReceived,
+  ], { encoding: "utf8" });
+  if (probe.status !== 0) {
+    return { enabled: true, status: "unreadable", pass: false, path: rtmpReceived,
+             detail: (probe.stderr ?? "").trim().slice(0, 300) };
+  }
+  let streams = [];
+  try {
+    streams = JSON.parse(probe.stdout ?? "{}").streams ?? [];
+  } catch {
+    return { enabled: true, status: "unparsable", pass: false, path: rtmpReceived };
+  }
+  const video = streams.find((entry) => entry.codec_type === "video");
+  const audio = streams.find((entry) => entry.codec_type === "audio");
+  const videoFrames = video ? Number(video.nb_frames ?? 0) : 0;
+  const pass = Boolean(video) && videoFrames >= 1;
+  return {
+    enabled: true,
+    status: pass ? "ok" : "no-video",
+    pass,
+    path: rtmpReceived,
+    videoCodec: video?.codec_name ?? null,
+    width: video ? Number(video.width ?? 0) : 0,
+    height: video ? Number(video.height ?? 0) : 0,
+    videoFrames,
+    audioCodec: audio?.codec_name ?? null,
+    audioFrames: audio ? Number(audio.nb_frames ?? 0) : 0,
+    detail: pass ? null
+      : "The endpoint received no video stream. A sender reporting 'live' with a "
+        + "valid FLV and healthy audio can still deliver zero picture.",
+  };
+}
+
 function buildReport(status, failureReason) {
   const compositor = compositorEvidence();
   const encodedFrames = encodedFrameEvidence();
@@ -834,6 +909,12 @@ function buildReport(status, failureReason) {
   // A report-time ffprobe failure downgrades an otherwise-passing run.
   let effectiveStatus = status;
   let effectiveFailureReason = failureReason ?? null;
+  const received = probeReceivedStream();
+  if (effectiveStatus === "passed" && received.enabled && !received.pass) {
+    effectiveStatus = "failed";
+    effectiveFailureReason =
+      `RTMP endpoint received no usable video (${received.status}): ${received.detail ?? ""}`;
+  }
   if (effectiveStatus === "passed" && !ffprobeOk) {
     effectiveStatus = "failed";
     effectiveFailureReason = `ffprobe container check ${ffprobe.status}: ${ffprobe.detail ?? "video+audio streams or moov not found"}`;
@@ -853,6 +934,7 @@ function buildReport(status, failureReason) {
     recording,
     rtmp,
     ffprobe,
+    receivedStream: received,
     encoder: {
       name: latestSnapshot?.encoder ?? latestHealth?.encoder ?? null,
       codec: latestSnapshot?.codec ?? latestHealth?.codec ?? null,
