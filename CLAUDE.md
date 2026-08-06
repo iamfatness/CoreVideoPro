@@ -164,6 +164,18 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   **200µs**: the old 500µs only existed to mask that drift, and re-measured on this rig
   it costs ~5s of core CPU per 53s wall for nothing. Never raise the guard to paper over
   a pacing bug.
+- **Zoom ingest runs a FRAME SYNCHRONIZER** (`ZoomEngineRuntime::frameSync_`, owner
+  decision 2026-08-06) — the one-frame cushion every hardware switcher input has. A
+  latest-wins slot cannot absorb a ~60Hz source and a ~60Hz render free-running against
+  each other: ~1ms of jitter puts two frames in one render interval (one destroyed
+  unseen) and none in the next (a repeat) — measured 6–10% each way. The cushion is
+  built UP FRONT (prime to 2 queued, then serve 1 per fetch); a catch-up buffer that
+  fills after the fact was measured and does NOT work, because the starved tick comes
+  first. Result: 0.0% overwritten, 99% delivery, for a deliberate +16.7ms. Capped at 3
+  deep — sustained overflow drops the OLDEST so latency never accumulates.
+  `COREVIDEO_FRAME_SYNC=0` restores latest-wins and is the A/B control; keep it working.
+  Note audio now leads video by one more frame in all outputs (within the 50ms G2
+  budget; confirm on the clap test).
 - **The perf drill is `scripts/mac-show-drill.py` and it runs on Windows** (despite the
   name — it gates SHARED core code, so it must run on every platform that ships it):
   `python scripts/mac-show-drill.py --seconds 40 --load 8` drives N synthetic 1080p60
