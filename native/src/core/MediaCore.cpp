@@ -5235,9 +5235,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     }
   };
   // The NV12 tap was fetched once, before the encoder submit above, and is
-  // already attached to work.programFrame — the senders inherit it through this
-  // copy, so there is exactly one take (and one ~3MB copy) per tick.
-  auto outputProgramFrame = work.programFrame;
+  // already on work.programFrame — so the senders read that frame DIRECTLY.
+  // This used to copy the whole ProgramFrame into `outputProgramFrame` for the
+  // senders, which was already wasteful (it is never mutated) and became ~3MB
+  // more so once the NV12 tap rode along. One take, no copy, per tick.
+  const auto& outputProgramFrame = work.programFrame;
   const auto tOut0 = std::chrono::steady_clock::now();
   try {
     // RTMP pacing must follow wall time, not ProgramFrame::frameNumber. The
