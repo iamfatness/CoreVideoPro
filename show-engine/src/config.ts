@@ -5,6 +5,15 @@
  * bad config fails loudly at startup instead of mid-show.
  */
 
+import {
+  DEFAULT_SKIP_ROLES,
+  isPlateTone,
+  isRole,
+  PLATE_TONES,
+  type LookDefinition,
+  type Role
+} from "./contracts.js";
+
 export type MukanaConfig = {
   /** Base REST endpoint, e.g. https://host/phpsdk/php-panel-rest.php */
   baseUrl: string;
@@ -29,6 +38,10 @@ export type ShowEngineConfig = {
   mukana: MukanaConfig;
   /** Absolute path of the persisted show-state JSON file */
   statePath: string;
+  /** Roles automatically excluded from on-screen selection, e.g. the ASL interpreter. */
+  skipRoles: Role[];
+  /** Named on-screen arrangements available to this show. */
+  looks: LookDefinition[];
 };
 
 const DEFAULT_UTILITY_PIN_BASE = 9000;
@@ -36,6 +49,7 @@ const DEFAULT_PANELISTS_INTERVAL_MS = 5000;
 const DEFAULT_HANDS_INTERVAL_MS = 2000;
 const DEFAULT_QUESTION_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BACKOFF_MS = 60000;
+const MAX_LOOK_BOXES = 4;
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -79,6 +93,95 @@ function optionalPositiveInt(
   return value;
 }
 
+function requireBoolean(source: Record<string, unknown>, key: string, label: string): boolean {
+  const value = source[key];
+  if (typeof value !== "boolean") {
+    throw new Error(`show-engine ${label}: required boolean, got ${String(value)}`);
+  }
+  return value;
+}
+
+function requireIntInRange(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  min: number,
+  max: number
+): number {
+  const value = source[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(
+      `show-engine ${label}: expected integer in ${min}..${max}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+function optionalPlateTone(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): LookDefinition["plateTone"] {
+  const value = source[key];
+  if (value === undefined) return "neutral";
+  if (!isPlateTone(value)) {
+    throw new Error(
+      `show-engine ${label}: expected one of ${PLATE_TONES.join(", ")}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+/** Parse `root.skipRoles`, defaulting to the ASL interpreter. Rejects, never coerces, unknown roles. */
+function parseSkipRoles(root: Record<string, unknown>): Role[] {
+  const value = root.skipRoles;
+  if (value === undefined) return [...DEFAULT_SKIP_ROLES];
+  if (!Array.isArray(value)) {
+    throw new Error(`show-engine config.skipRoles: expected an array, got ${typeof value}`);
+  }
+  return value.map((entry, index) => {
+    if (!isRole(entry)) {
+      throw new Error(
+        `show-engine config.skipRoles[${index}]: unknown role ${JSON.stringify(entry)}`
+      );
+    }
+    return entry;
+  });
+}
+
+/** Parse a single look entry out of `root.looks[index]`. */
+function parseLook(entry: unknown, index: number): LookDefinition {
+  const label = `config.looks[${index}]`;
+  const lookRaw = asRecord(entry, label);
+  return {
+    id: requireString(lookRaw, "id", `${label}.id`),
+    label: requireString(lookRaw, "label", `${label}.label`),
+    scenePreset: requireString(lookRaw, "scenePreset", `${label}.scenePreset`),
+    boxes: requireIntInRange(lookRaw, "boxes", `${label}.boxes`, 0, MAX_LOOK_BOXES),
+    includesHost: requireBoolean(lookRaw, "includesHost", `${label}.includesHost`),
+    includesReader: requireBoolean(lookRaw, "includesReader", `${label}.includesReader`),
+    plateTone: optionalPlateTone(lookRaw, "plateTone", `${label}.plateTone`)
+  };
+}
+
+/** Parse `root.looks`, defaulting to empty. Rejects duplicate `id` values. */
+function parseLooks(root: Record<string, unknown>): LookDefinition[] {
+  const value = root.looks;
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`show-engine config.looks: expected an array, got ${typeof value}`);
+  }
+  const looks = value.map((entry, index) => parseLook(entry, index));
+  const seenIds = new Set<string>();
+  for (const look of looks) {
+    if (seenIds.has(look.id)) {
+      throw new Error(`show-engine config.looks: duplicate look id ${JSON.stringify(look.id)}`);
+    }
+    seenIds.add(look.id);
+  }
+  return looks;
+}
+
 /** Validate raw JSON into a ShowEngineConfig, applying defaults. Throws on any invalid field. */
 export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
   const root = asRecord(raw, "config");
@@ -93,6 +196,8 @@ export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
       DEFAULT_UTILITY_PIN_BASE
     ),
     statePath: requireString(root, "statePath", "config.statePath"),
+    skipRoles: parseSkipRoles(root),
+    looks: parseLooks(root),
     mukana: {
       baseUrl: requireString(mukanaRaw, "baseUrl", "config.mukana.baseUrl"),
       event: requireString(mukanaRaw, "event", "config.mukana.event"),

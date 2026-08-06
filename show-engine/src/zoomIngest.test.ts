@@ -151,3 +151,42 @@ describe("ZoomIngest", () => {
     expect(ingest.commit()).toBe(true);
   });
 });
+
+describe("ZoomIngest revision", () => {
+  it("starts at zero", () => {
+    expect(new ZoomIngest().revision).toBe(0);
+  });
+
+  it("increments once per publishing commit", () => {
+    const ingest = new ZoomIngest();
+    ingest.apply({ kind: "joined", participant: participant({ participantId: "a" }) });
+    ingest.commit();
+    expect(ingest.revision).toBe(1);
+
+    ingest.apply({ kind: "video", participantId: "a", on: true });
+    ingest.commit();
+    expect(ingest.revision).toBe(2);
+  });
+
+  it("does not move when a commit publishes nothing", () => {
+    const ingest = new ZoomIngest();
+    ingest.apply({ kind: "joined", participant: participant({ participantId: "a" }) });
+    ingest.commit();
+    const before = ingest.revision;
+    expect(ingest.commit()).toBe(false);
+    expect(ingest.revision).toBe(before);
+  });
+
+  it("does not move for an event that changes nothing", () => {
+    const ingest = new ZoomIngest();
+    ingest.apply({
+      kind: "joined",
+      participant: participant({ participantId: "a", videoOn: true })
+    });
+    ingest.commit();
+    const before = ingest.revision;
+    ingest.apply({ kind: "video", participantId: "a", on: true });
+    ingest.commit();
+    expect(ingest.revision).toBe(before);
+  });
+});

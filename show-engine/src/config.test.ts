@@ -41,3 +41,64 @@ describe("parseShowEngineConfig", () => {
     expect(() => parseShowEngineConfig("nope")).toThrow(/config/);
   });
 });
+
+const look = {
+  id: "hr",
+  label: "Host + Reader",
+  scenePreset: "scene-hr",
+  boxes: 2,
+  includesHost: true,
+  includesReader: true,
+  plateTone: "accent"
+};
+
+describe("parseShowEngineConfig direction fields", () => {
+  it("defaults skipRoles to the ASL interpreter and looks to empty", () => {
+    const config = parseShowEngineConfig(minimal);
+    expect(config.skipRoles).toEqual(["aslinterpreter"]);
+    expect(config.looks).toEqual([]);
+  });
+
+  it("keeps explicitly provided skipRoles", () => {
+    const config = parseShowEngineConfig({ ...minimal, skipRoles: ["aslinterpreter", "reader"] });
+    expect(config.skipRoles).toEqual(["aslinterpreter", "reader"]);
+  });
+
+  it("rejects an unknown role rather than coercing it", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, skipRoles: ["moderator"] })).toThrow(
+      /skipRoles/
+    );
+  });
+
+  it("accepts a well-formed look", () => {
+    const config = parseShowEngineConfig({ ...minimal, looks: [look] });
+    expect(config.looks).toEqual([look]);
+  });
+
+  it("rejects a look with an out-of-range box count", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, looks: [{ ...look, boxes: 5 }] })).toThrow(
+      /boxes/
+    );
+  });
+
+  it("rejects a look with an unknown plateTone", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...minimal, looks: [{ ...look, plateTone: "chartreuse" }] })
+    ).toThrow(/plateTone/);
+  });
+
+  it("defaults an omitted plateTone to neutral", () => {
+    const { plateTone: _omitted, ...withoutTone } = look;
+    const config = parseShowEngineConfig({ ...minimal, looks: [withoutTone] });
+    expect(config.looks[0]?.plateTone).toBe("neutral");
+  });
+
+  it("rejects duplicate look ids", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, looks: [look, { ...look, label: "Other" }] })
+    ).toThrow(/duplicate/i);
+  });
+
+  it("rejects a non-array looks value", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, looks: {} })).toThrow(/looks/);
+  });
+});

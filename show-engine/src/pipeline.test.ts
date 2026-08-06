@@ -171,7 +171,8 @@ describe("identity and roster pipeline", () => {
     const saved: ShowState = {
       version: 1,
       slots: slots.toJSON(),
-      overrides: overrides.entries()
+      overrides: overrides.entries(),
+      gallery: { version: 1, cells: 1, assignments: [{ cell: 1, slot: 0 }] }
     };
     await store.save(saved);
 
@@ -246,7 +247,7 @@ describe("identity and roster pipeline", () => {
     });
     const second = await client.fetchPanelists();
     expect(second.kind).toBe("dormant");
-    expect(client.health.state).toBe("dormant");
+    expect(client.healthFor("panelists").state).toBe("dormant");
 
     slots.refresh(buildPanelistDb(ingest.snapshot(), registry.current(), overrides.entries()));
 
@@ -291,8 +292,8 @@ describe("identity and roster pipeline", () => {
 
     expect(slots.slotOf("z2")).toBe(2);
     expect(slots.slots()[1]?.panelist?.displayName).toBe("Ann Lee-Martinez");
-    expect(client.health.state).toBe("ok");
-    expect(client.nextDelayMs()).toBe(config.mukana.panelistsIntervalMs);
+    expect(client.healthFor("panelists").state).toBe("ok");
+    expect(client.nextDelayMs("panelists")).toBe(config.mukana.panelistsIntervalMs);
   });
 
   it("seats a utility bot in the tail while people fill from the front", async () => {
