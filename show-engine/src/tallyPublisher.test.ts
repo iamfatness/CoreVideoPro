@@ -10,7 +10,8 @@ function panelist(id: string, pin: string | null): Panelist {
     rawName: id,
     // Mirrors the tier rule buildPanelistDb applies: a PIN wins, otherwise
     // the name (here the id) does.
-    personKey: pin === null ? resolvePersonKey({ participantId: id, rawName: id }) : personKeyForPin(pin),
+    personKey:
+      pin === null ? resolvePersonKey({ participantId: id, rawName: id }) : personKeyForPin(pin),
     online: true,
     videoOn: true,
     audioOn: false,

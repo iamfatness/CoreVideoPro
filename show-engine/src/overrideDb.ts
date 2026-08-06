@@ -12,8 +12,7 @@
  * shared helper is the only place the PIN-tier prefix is spelled.
  */
 
-import type { MukanaDb, MukanaRecord } from "./contracts.js";
-import type { Role } from "./contracts.js";
+import type { MukanaDb, MukanaRecord, Role } from "./contracts.js";
 import { personKeyForPin, type PersonKey } from "./personKey.js";
 
 export type OverrideRecord = {
