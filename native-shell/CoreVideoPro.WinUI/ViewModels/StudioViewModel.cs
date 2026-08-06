@@ -268,6 +268,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? Microsoft.UI.Xaml.Visibility.Collapsed
             : Microsoft.UI.Xaml.Visibility.Visible;
 
+    // An in-show input pointing at a source that no longer exists (a display that was
+    // unplugged, a camera that changed id). The slot is dropped from the multiview
+    // silently, so without this the operator only ever sees an unexplained placeholder
+    // tile — the owner rig sat like that for a week on "screen:3". Null when every
+    // in-show assignment resolves.
+    [ObservableProperty]
+    private string? _showInputWarning;
+
+    partial void OnShowInputWarningChanged(string? value) =>
+        OnPropertyChanged(nameof(ShowInputWarningVisibility));
+
+    public Microsoft.UI.Xaml.Visibility ShowInputWarningVisibility =>
+        string.IsNullOrWhiteSpace(ShowInputWarning)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
     /// <summary>ISO-4 (spec §6): evaluate free space on the recording target volume against
     /// the program + selected-ISO write rate. Returns false (skip — never block) when the
     /// volume can't be measured. Shell-side by design: no core protocol/snapshot field is
@@ -8456,6 +8472,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _sourceDisplayNames)
             : [];
         var multiviewGrid = ShowInputRosterService.ResolveGridShape(multiviewSources.Count);
+
+        // An in-show input whose source no longer exists is silently dropped from the
+        // multiview list — the operator just gets a placeholder tile and no reason. On
+        // the owner rig slot 3 pointed at "screen:3" after the display count changed and
+        // sat unresolved for a week. Scalar string + Visibility only (the sanctioned
+        // 0xc000027b-safe shape) — never a snapshot-rate bound collection.
+        var unresolvedInputs = ShowInputRosterService.DescribeUnresolvedAssignments(
+            ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets);
+        ShowInputWarning = unresolvedInputs.Count == 0 ? null : string.Join(" ", unresolvedInputs);
 
         return new MediaCoreProductionSyncContext
         {

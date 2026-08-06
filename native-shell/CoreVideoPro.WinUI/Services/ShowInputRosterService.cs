@@ -708,6 +708,52 @@ public static class ShowInputRosterService
         return true;
     }
 
+    /// <summary>
+    /// In-show slots whose assigned source no longer exists, described for the operator.
+    /// </summary>
+    /// <remarks>
+    /// An unresolvable assignment is silently dropped from the multiview source list, so
+    /// the operator gets a placeholder tile and no explanation — on the owner rig, slot 3
+    /// pointed at "screen:3" after the display count changed, and it rendered a placeholder
+    /// every tick from 2026-07-31 onward with nothing said. The core already warns about the
+    /// matching compositor layer, but nobody reads media-core.log mid-show.
+    ///
+    /// Zoom participants are deliberately EXCLUDED: a guest leaving is normal show traffic,
+    /// not a misconfiguration. This mirrors the compositor's own guardrail, which warns for
+    /// capture:/media: layers and stays quiet for Zoom.
+    /// </remarks>
+    public static IReadOnlyList<string> DescribeUnresolvedAssignments(
+        IReadOnlyList<ShowInputSlot> slots,
+        IReadOnlyList<Participant> participants,
+        IReadOnlyList<CaptureDevice> captureDevices,
+        IReadOnlyList<MediaAsset>? mediaAssets = null)
+    {
+        var devicesById = captureDevices.ToDictionary(device => device.Id, device => device);
+        var participantsById = participants.ToDictionary(participant => participant.Id, participant => participant);
+        var mediaAssetsById = (mediaAssets ?? [])
+            .ToDictionary(asset => asset.Id, asset => asset, StringComparer.Ordinal);
+
+        var unresolved = new List<string>();
+        foreach (var slot in slots)
+        {
+            if (!slot.InShow || !slot.IsAssigned || slot.Kind == ShowInputKind.ZoomParticipant)
+            {
+                continue;
+            }
+            if (HasResolvedSource(slot, participantsById, devicesById, mediaAssetsById))
+            {
+                continue;
+            }
+            var missing = slot.Kind == ShowInputKind.Media
+                ? slot.ParticipantId
+                : slot.CaptureDeviceId;
+            unresolved.Add(
+                $"Input {slot.SlotNumber} ({slot.Kind}) is assigned to '{missing}', which is no longer available. " +
+                $"Reassign it or take the input out of the show.");
+        }
+        return unresolved;
+    }
+
     private static bool HasResolvedSource(
         ShowInputSlot slot,
         IReadOnlyDictionary<string, Participant> participantsById,
