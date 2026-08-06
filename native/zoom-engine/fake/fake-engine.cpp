@@ -33,7 +33,9 @@
 // Env knobs:
 //   COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE  "1" (default) / "0"
 //   COREVIDEO_FAKE_ENGINE_RES            auto-target resolution: 0=360p 1=720p 2=1080p (default 2)
-//   COREVIDEO_FAKE_ENGINE_PARTICIPANTS   baseline participant count (default 3)
+//   COREVIDEO_FAKE_ENGINE_PARTICIPANTS   baseline participant count (default 3, max 16)
+//   COREVIDEO_FAKE_ENGINE_FPS            frame cadence (default 30; use 60 for
+//                                        the 1080p60 load the product targets)
 //   COREVIDEO_FAKE_ENGINE_LOG            optional path for a standalone diag log
 //
 // Windows-focused; a minimal POSIX fallback keeps the file portable so the
@@ -193,6 +195,14 @@ struct Target {
     ShmRegion shm;
     uint64_t frame_count = 0;
     bool is_auto = false;  // created by auto-subscribe vs explicit `subscribe`
+    // Precomputed luma plane. Generating the gradient per pixel per frame costs
+    // ~2M integer divides per 1080p frame, which capped the rig at ~23fps/source
+    // with 10 sources — the PRODUCER, not the core, was the bottleneck, so a
+    // 1080p60 load could not actually be delivered. The real engine memcpys an
+    // already-decoded I420 frame into SHM, so a cached plane + memcpy is both
+    // faster AND a more faithful model of the real write cost.
+    std::vector<uint8_t> luma;
+    uint32_t luma_w = 0, luma_h = 0;
 };
 
 // Z4a (zoom-audio-spec): deterministic TONE emission over the REAL audio ring
@@ -220,12 +230,19 @@ static bool                       g_autosubscribe = true;
 static uint32_t                   g_auto_res = 2;
 
 // Baseline roster: numeric ids, has_video=true, names per the mission spec.
+// The first six keep their historical names/ids so the existing validators
+// (validate-record-audio / validate-iso-record) see an unchanged roster; past
+// that the roster is generated so a drill can synthesize a FULL production wall
+// (the product targets 10 x 1080p sources, which is where the render tick's
+// per-source costs actually show up — six was never enough to reproduce it).
 static std::vector<Participant> baseline_roster(int count) {
+    static const std::string kNames[] = {"mv1", "mv2", "Producer", "mv4", "mv5", "mv6"};
     std::vector<Participant> r;
-    const char* names[] = {"mv1", "mv2", "Producer", "mv4", "mv5", "mv6"};
-    const uint32_t ids[] = {101, 102, 103, 104, 105, 106};
-    for (int i = 0; i < count && i < 6; ++i)
-        r.push_back({ids[i], names[i], true});
+    for (int i = 0; i < count; ++i) {
+        const uint32_t id = static_cast<uint32_t>(101 + i);
+        const std::string name = i < 6 ? kNames[i] : ("mv" + std::to_string(i + 1));
+        r.push_back({id, name, true});
+    }
     return r;
 }
 
@@ -315,20 +332,40 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
     const uint32_t pid = t.participant_id;
     const int base = static_cast<int>(40 + (pid * 37) % 160);
     const int phase = static_cast<int>(tick * 6);
-    // Diagonal moving gradient in luma.
-    for (uint32_t y = 0; y < h; ++y) {
-        uint8_t* row = yp + static_cast<size_t>(y) * w;
-        const int yterm = static_cast<int>((y * 255) / h);
-        for (uint32_t x = 0; x < w; ++x) {
-            int v = base + ((static_cast<int>((x * 255) / w) + yterm + phase) & 0xFF) / 2;
-            row[x] = static_cast<uint8_t>(v > 255 ? 255 : (v < 0 ? 0 : v));
+    // Build the diagonal gradient ONCE per target, then memcpy it per frame.
+    if (t.luma.size() != y_len || t.luma_w != w || t.luma_h != h) {
+        t.luma.resize(y_len);
+        for (uint32_t y = 0; y < h; ++y) {
+            uint8_t* row = t.luma.data() + static_cast<size_t>(y) * w;
+            const int yterm = static_cast<int>((y * 255) / h);
+            for (uint32_t x = 0; x < w; ++x) {
+                int v = base + ((static_cast<int>((x * 255) / w) + yterm) & 0xFF) / 2;
+                row[x] = static_cast<uint8_t>(v > 255 ? 255 : (v < 0 ? 0 : v));
+            }
         }
+        t.luma_w = w;
+        t.luma_h = h;
     }
-    // Chroma: per-participant tint, slowly drifting so it is not perfectly static.
-    const uint8_t cu = static_cast<uint8_t>(90 + (pid * 53 + tick) % 110);
-    const uint8_t cv = static_cast<uint8_t>(90 + (pid * 97 + tick / 2) % 110);
-    std::memset(up, cu, y_len / 4);
-    std::memset(vp, cv, y_len / 4);
+    // Paint the full planes ONCE; afterwards only advance a moving band.
+    //
+    // Repainting 3.1MB per frame per source made the PRODUCER the bottleneck
+    // (profiled: _platform_memmove dominant, ceiling ~690MB/s => ~22fps/source
+    // at 8-10 sources), so the rig could not deliver the 1080p60 wall it was
+    // supposed to be testing. That write cost is rig overhead, not product cost:
+    // in the real system the Zoom SDK's own decode thread fills this buffer. The
+    // CORE still snapshots the full 3.1MB every frame, which is the cost under
+    // test — so this changes what the rig can deliver, not what it measures.
+    if (t.frame_count == 0) {
+        std::memcpy(yp, t.luma.data(), y_len);
+        std::memset(up, static_cast<uint8_t>(90 + (pid * 53) % 110), y_len / 4);
+        std::memset(vp, static_cast<uint8_t>(90 + (pid * 97) % 110), y_len / 4);
+    }
+    // Motion stays observable (and every frame's bytes differ) via a moving band.
+    const uint32_t band = static_cast<uint32_t>((phase / 6) % (h ? h : 1));
+    const uint32_t prev = static_cast<uint32_t>((band + h - 1) % (h ? h : 1));
+    std::memcpy(yp + static_cast<size_t>(prev) * w,
+                t.luma.data() + static_cast<size_t>(prev) * w, w);
+    std::memset(yp + static_cast<size_t>(band) * w, 235, w);
 
     // Sequence protocol: odd while writing, even when complete (reader rejects odd).
     uint32_t seq = hdr->sequence + 1;
@@ -421,13 +458,25 @@ static void produce_audio_locked(const std::string& uuid, AudioToneTarget& targe
     }
 }
 
-// ── Producer thread: ~30 fps frame fabrication for all active targets ─────────
+// ── Producer thread: frame fabrication for all active targets ────────────────
+// Cadence is COREVIDEO_FAKE_ENGINE_FPS (default 30, back-compat with the audio
+// and ISO validators). Zoom delivers up to 1080p60, and the product's north star
+// is 8 Zoom + 2 capture @1080p60 — a 30fps rig only exercises HALF the real
+// per-frame ingest/upload rate, so perf drills must be able to ask for 60.
 static void producer_loop() {
     using clock = std::chrono::steady_clock;
+    int fps = 30;
+    if (const char* f = std::getenv("COREVIDEO_FAKE_ENGINE_FPS")) {
+        try { fps = std::stoi(f); } catch (...) {}
+        if (fps < 1) fps = 1;
+        if (fps > 120) fps = 120;
+    }
+    const auto frameInterval = std::chrono::microseconds(1000000 / fps);
+    diag("producer fps=" + std::to_string(fps));
     auto next = clock::now();
     uint64_t tick = 0;
     while (g_running.load(std::memory_order_acquire)) {
-        next += std::chrono::milliseconds(33);  // ~30 fps
+        next += frameInterval;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
             if (g_joined) {
@@ -457,6 +506,17 @@ static void producer_loop() {
             }
         }
         std::this_thread::sleep_until(next);
+        // Achieved cadence: a rig that silently under-delivers invalidates every
+        // perf number taken with it, so report what it ACTUALLY produced.
+        static auto s_rateStamp = clock::now();
+        static uint64_t s_rateTick = 0;
+        if (++s_rateTick >= 120) {
+            const double sec = std::chrono::duration<double>(clock::now() - s_rateStamp).count();
+            diag("producer achieved " + std::to_string(sec > 0 ? 120.0 / sec : 0.0) +
+                 " ticks/s across " + std::to_string(g_targets.size()) + " targets");
+            s_rateStamp = clock::now();
+            s_rateTick = 0;
+        }
         // If we fell badly behind (debugger pause etc.), resync the cadence.
         if (clock::now() - next > std::chrono::milliseconds(200)) next = clock::now();
     }
@@ -568,7 +628,8 @@ int main(int argc, char** argv) {
     if (const char* p = std::getenv("COREVIDEO_FAKE_ENGINE_PARTICIPANTS")) {
         try { baseline = std::stoi(p); } catch (...) {}
         if (baseline < 1) baseline = 1;
-        if (baseline > 6) baseline = 6;
+        // 16 covers the 10-source production wall plus headroom.
+        if (baseline > 16) baseline = 16;
     }
     diag("fake-engine start autosubscribe=" + std::to_string(g_autosubscribe) +
          " auto_res=" + std::to_string(g_auto_res) +

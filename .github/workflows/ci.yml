@@ -35,13 +35,22 @@ jobs:
       - name: Configure (metal)
         run: |
           cmake -S native -B native/build-metal -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
             -DCOREVIDEO_WITH_METAL=ON -DCOREVIDEO_WITH_AVF_ENCODER=ON \
             -DCOREVIDEO_WITH_COREAUDIO=ON
       - name: Build core
-        run: cmake --build native/build-metal --target corevideo-native
+        run: >
+          cmake --build native/build-metal
+          --target corevideo-native corevideo-zoom-engine-fake
       - name: Show drill
         run: python3 scripts/mac-show-drill.py --seconds 25
+      # Full production wall: 8 synthetic 1080p60 Zoom feeds (the owner's account
+      # max with the BO100 flag) through the real ingest path = ~1.5GB/s decoded.
+      # Gates sustained fps + coreMutex hold, which is what catches an
+      # unoptimized core (the class that made the port look slow for weeks).
+      - name: Show drill (8x1080p60 load)
+        run: python3 scripts/mac-show-drill.py --load 8 --seconds 25
 
   mac-shell-design-lint:
     runs-on: ubuntu-latest
@@ -147,6 +156,7 @@ jobs:
       - name: Configure Metal build
         run: >
           cmake -S native -B native/build-metal -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
           -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON
           -DCOREVIDEO_WITH_METAL=ON
           -DCOREVIDEO_WITH_AVF_ENCODER=ON
