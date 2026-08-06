@@ -47,6 +47,13 @@ struct ShellPrefs: Codable, Equatable {
     // Program color grade [exposure, contrast, saturation, temperature]. Empty
     // means neutral; a short array is tolerated so an older prefs file loads.
     var colorGrade: [Double] = []
+    // Per-channel VST3 insert selection ("vst:<name>" / "vst:<name>/<class>").
+    // OPTIONAL on purpose: Swift's synthesized Codable decodes a non-optional
+    // property with `decode` and THROWS on a missing key even when the property
+    // has a default — a new non-optional field would make every existing
+    // preferences file fail to decode, and load() silently falls back to
+    // defaults, wiping the operator's saved show. Optional gets decodeIfPresent.
+    var vstChannelSelections: [String: String]?
 
     static let path = NSHomeDirectory()
         + "/Library/Application Support/CoreVideoPro/shell-preferences.json"

@@ -240,6 +240,13 @@ final class AppModel: ObservableObject {
     @Published var masterLevel = 0
     @Published var strips: [AudioStrip] = []
     @Published var channelInserts: [String: ChannelInserts] = [:]
+    // VST3 plug-in inserts — all logic lives in VstInserts.swift (stored
+    // properties cannot be declared in an extension, so only the state is here).
+    @Published var vstHost = VstHostState()
+    @Published var vstPlugins: [VstPlugin] = []
+    @Published var vstChannelSelection: [String: String] = [:]  // stripId -> "vst:<name>"
+    @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
+    let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
     @Published var shortTermLufs = -120.0
     @Published var truePeakDbfs = -120.0
     @Published var limiterActive = false
@@ -294,7 +301,9 @@ final class AppModel: ObservableObject {
     @Published var streamStatus = ""       // sender status from outputSenderSession
     @Published var streamDetail = ""       // lastResultCode / warning
 
-    private var bridge: MediaCoreBridge?
+    // Readable (not settable) outside this file so the VstInserts.swift
+    // extension can issue its own RPCs; the lifecycle stays owned here.
+    private(set) var bridge: MediaCoreBridge?
     private var syncTimer: Timer?
     private var zoomTimer: Timer?
     private var startedAt = Date()
@@ -322,6 +331,7 @@ final class AppModel: ObservableObject {
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
+        prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            layers: scene.layers.map { layer in
@@ -343,6 +353,7 @@ final class AppModel: ObservableObject {
             gradeSaturation = prefs.colorGrade[2]
             gradeTemperature = prefs.colorGrade[3]
         }
+        vstChannelSelection = prefs.vstChannelSelections ?? [:]
         joinMeetingId = prefs.joinMeetingId
         displayName = prefs.displayName
         monitorEnabled = prefs.monitorEnabled
@@ -428,6 +439,18 @@ final class AppModel: ObservableObject {
         }
         if let key = UserDefaults.standard.string(forKey: "zoomPublicAppKey"), !key.isEmpty {
             env["COREVIDEO_ZOOM_PUBLIC_APP_KEY"] = key
+        }
+        // VST3 discovery. `resolvePluginHostExecutablePath` (MediaCore.cpp) only
+        // does sibling-of-the-exe lookup under _WIN32, so on macOS the core finds
+        // the host ONLY through this env var — without it pluginHost.status is
+        // permanently "absent". Likewise `scanRoots` (plugin-host.cpp) reads the
+        // Windows COMMONPROGRAMFILES vars plus this single override, so a macOS
+        // scan walks nothing unless we name a root. See VstInserts.swift.
+        if let hostPath = paths.pluginHostPath {
+            env["COREVIDEO_PLUGIN_HOST_PATH"] = hostPath
+        }
+        if ProcessInfo.processInfo.environment["COREVIDEO_VST3_SCAN_PATH"] == nil {
+            env["COREVIDEO_VST3_SCAN_PATH"] = VstScanRoots.effectiveRoot
         }
         let bridge = MediaCoreBridge(corePath: corePath, environmentExtras: env)
         self.bridge = bridge
@@ -594,6 +617,9 @@ final class AppModel: ObservableObject {
         }
         if let matrix = snapshot["audioRoutingMatrix"] as? JSONObject {
             applyRoutingSnapshot(matrix)
+        }
+        if let pluginHost = snapshot["pluginHost"] as? JSONObject {
+            applyPluginHostSnapshot(pluginHost)
         }
         if let preview = snapshot["programFramePreview"] as? JSONObject,
            let texture = preview["sharedTexture"] as? JSONObject {
@@ -1935,7 +1961,9 @@ final class AppModel: ObservableObject {
 
     // Debounced FULL-channel emit: sync-participant-audio-mix is full-state
     // with a 25-sync hold-last guard core-side; never send a partial list.
-    private func scheduleMixSync() {
+    // Internal (not private): VstInserts.swift schedules the same debounced
+    // full-channel emit when a VST insert selection changes.
+    func scheduleMixSync() {
         mixSyncTask?.cancel()
         mixSyncTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -1955,7 +1983,7 @@ final class AppModel: ObservableObject {
                 "pan": max(-1, min(1, strip.pan)),
                 "solo": strip.solo,
                 "noiseSuppression": false,
-                "pluginInserts": inserts.activeNames,
+                "pluginInserts": pluginInsertNames(for: strip.id),
                 "insertSettings": inserts.settingsJson,
             ]
         }
@@ -2070,6 +2098,7 @@ enum ShellPaths {
     struct Paths {
         var corePath: String?
         var engineBinaryPath: String?
+        var pluginHostPath: String?  // corevideo-plugin-host (VST3 scan on macOS)
     }
 
     static func resolve() -> Paths {
@@ -2086,6 +2115,13 @@ enum ShellPaths {
                 + "/native/build-engine/corevideo-zoom-engine.app/Contents/MacOS/corevideo-zoom-engine",
         ]
         paths.engineBinaryPath = engineCandidates.first {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+        let pluginHostCandidates = [
+            bundleResources + "/corevideo-plugin-host",
+            repoRoot() + "/native/build-metal/corevideo-plugin-host",
+        ]
+        paths.pluginHostPath = pluginHostCandidates.first {
             FileManager.default.isExecutableFile(atPath: $0)
         }
         return paths
