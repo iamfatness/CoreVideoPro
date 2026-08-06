@@ -7,6 +7,7 @@ import {
   resolveLook
 } from "./lookDirector.js";
 import type { Capability, LookDefinition, Panelist, QueueState, Role, Slot } from "./contracts.js";
+import { resolvePersonKey } from "./personKey.js";
 
 const available: Capability = { state: "available", detail: null };
 const unavailable: Capability = { state: "unavailable", detail: "HTTP 503" };
@@ -16,6 +17,10 @@ function panelist(pin: string | null, role: Role = "panelist"): Panelist {
   return {
     participantId: `p-${pin ?? "none"}`,
     rawName: `Name ${pin ?? ""}`,
+    personKey: resolvePersonKey({
+      participantId: `p-${pin ?? "none"}`,
+      rawName: `Name ${pin ?? ""}`
+    }),
     online: true,
     videoOn: true,
     audioOn: false,

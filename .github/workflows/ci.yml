@@ -106,6 +106,32 @@ jobs:
       - run: npm ci
       - run: npm run test:native-core
 
+  # The show-engine workspace had no CI coverage of any kind: the root
+  # typecheck's `include` is the Vite app only, and no workflow ran
+  # `test:show-engine`. Its tests ran solely when someone typed the command
+  # locally, and its test files were never typechecked at all (the package
+  # tsconfig excludes them so they stay out of dist, and vitest strips types
+  # with esbuild rather than checking them). That let seven fixtures drift out
+  # of sync with the types they construct while every test still passed.
+  # `typecheck:show-engine` runs both configs — sources and tests — so a
+  # fixture contradicting its types is a red build, which is what
+  # `index.test.ts` already claims to guarantee.
+  show-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck (sources and tests)
+        run: npm run typecheck:show-engine
+      - name: Tests
+        run: npm run test:show-engine
+      - name: Build
+        run: npm run build:show-engine
+
   native-stub:
     runs-on: ubuntu-latest
     needs: typecheck

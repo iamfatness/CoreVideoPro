@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { GalleryDirector, GalleryError } from "./galleryDirector.js";
 import type { Panelist, Slot } from "./contracts.js";
+import { resolvePersonKey } from "./personKey.js";
 
 function panelist(participantId: string): Panelist {
   return {
     participantId,
     rawName: participantId,
+    personKey: resolvePersonKey({ participantId, rawName: participantId }),
     online: true,
     videoOn: true,
     audioOn: false,

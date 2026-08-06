@@ -12,9 +12,9 @@ describe("parseShowEngineConfig", () => {
     const config = parseShowEngineConfig(minimal);
     expect(config.capacity).toBe(16);
     expect(config.utilityPinBase).toBe(9000);
-    expect(config.mukana.panelistsIntervalMs).toBe(5000);
-    expect(config.mukana.handsIntervalMs).toBe(2000);
-    expect(config.mukana.maxBackoffMs).toBe(60000);
+    expect(config.mukana?.panelistsIntervalMs).toBe(5000);
+    expect(config.mukana?.handsIntervalMs).toBe(2000);
+    expect(config.mukana?.maxBackoffMs).toBe(60000);
   });
 
   it("keeps explicitly provided values", () => {
@@ -24,7 +24,7 @@ describe("parseShowEngineConfig", () => {
       mukana: { ...minimal.mukana, panelistsIntervalMs: 1500 }
     });
     expect(config.utilityPinBase).toBe(8000);
-    expect(config.mukana.panelistsIntervalMs).toBe(1500);
+    expect(config.mukana?.panelistsIntervalMs).toBe(1500);
   });
 
   it("rejects a capacity below 1", () => {

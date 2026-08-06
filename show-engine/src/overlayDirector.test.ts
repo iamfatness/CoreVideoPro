@@ -16,7 +16,8 @@ const look: LookResolution = {
     { position: { kind: "box", box: 1 }, slot: 3, name: "Ann", location: "TX", tone: "accent" }
   ],
   page: 0,
-  pageCount: 1
+  pageCount: 1,
+  boxFill: "queue"
 };
 
 const question: MukanaQuestion = {
