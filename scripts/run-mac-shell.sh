@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/Library/Python/3.9/bin:$PATH"
 if [ "${1:-}" != "--skip-native" ]; then
   cmake -S native -B native/build-metal -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
     -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
     -DCOREVIDEO_WITH_METAL=ON -DCOREVIDEO_WITH_AVF_ENCODER=ON \
     -DCOREVIDEO_WITH_COREAUDIO=ON -DCOREVIDEO_WITH_AVF_CAPTURE=ON \

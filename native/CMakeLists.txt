@@ -2,6 +2,18 @@ cmake_minimum_required(VERSION 3.20)
 
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
+# A single-config generator (Ninja/Makefiles) with no CMAKE_BUILD_TYPE compiles
+# at -O0. This is a REAL-TIME media core: unoptimized, a 10x1080p show ran the
+# render tick at 27ms/25fps instead of 3.9ms/57fps, because things like
+# destroying a 3MB frame buffer degrade to a per-byte loop. Every macOS configure
+# site (scripts/run-mac-shell.sh, CI) omitted the flag, so the whole port was
+# measured and shipped unoptimized. Default it here so no caller can forget;
+# an explicit -DCMAKE_BUILD_TYPE=Debug still wins.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (default: Release)" FORCE)
+  message(STATUS "CMAKE_BUILD_TYPE not set — defaulting to Release (-O3).")
+endif()
+
 option(COREVIDEO_STUB "Build portable stub media-core modules" ON)
 option(COREVIDEO_ENABLE_DEV_ADAPTERS "Build SDK/GPU/hardware adapters that require a dev machine" OFF)
 option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Windows SDK root." OFF)

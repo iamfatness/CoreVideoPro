@@ -424,11 +424,35 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
 
 std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t timestampMs) {
   std::lock_guard<std::mutex> lock(mutex_);
+  // INGEST -> RENDER HANDOFF LATENCY. This is called from the render thread, so
+  // `now - observedAt` is exactly how long a decoded frame waited between the
+  // ingest thread seeing it in shared memory and the compositor picking it up.
+  // Reported as a DISTRIBUTION, not a mean: a switcher is judged on its worst
+  // frames. The unmeasured head of the path (engine SHM write -> ingest thread
+  // observing it) is bounded above by the 8ms ingest poll interval.
+  static std::vector<double> s_samples;
+  static auto s_stamp = std::chrono::steady_clock::now();
+  const auto nowTp = std::chrono::steady_clock::now();
+
   std::vector<VideoFrame> frames;
   frames.reserve(latestDecodedFrames_.size());
   for (const auto& [participantId, decoded] : latestDecodedFrames_) {
     if (!decoded.i420 || decoded.width <= 0 || decoded.height <= 0) {
       continue;
+    }
+    // Sample each frame EXACTLY ONCE, on the first fetch after it was published.
+    // latestDecodedFrames_ holds the latest frame per participant and re-serves it
+    // on ticks where nothing new arrived, so sampling every fetch measures how
+    // stale the held frame is, not how long a new frame waited — which inflates
+    // the tail with frames that were already on screen.
+    static std::map<std::string, std::int64_t> s_lastSampled;
+    if (decoded.observedAt.time_since_epoch().count() != 0) {
+      auto& lastId = s_lastSampled[participantId];
+      if (lastId != decoded.frameId) {
+        lastId = decoded.frameId;
+        s_samples.push_back(
+            std::chrono::duration<double, std::milli>(nowTp - decoded.observedAt).count());
+      }
     }
     VideoFrame frame;
     frame.participantId = participantId;
@@ -442,6 +466,23 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.i420Height = decoded.height;
     frame.frameId = decoded.frameId;
     frames.push_back(std::move(frame));
+  }
+
+  const double windowSec = std::chrono::duration<double>(nowTp - s_stamp).count();
+  if (windowSec >= 2.0 && !s_samples.empty()) {
+    std::sort(s_samples.begin(), s_samples.end());
+    const auto at = [&](double q) {
+      const auto idx = static_cast<std::size_t>(q * (s_samples.size() - 1));
+      return s_samples[idx];
+    };
+    std::fprintf(stderr,
+                 "[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
+                 "(n=%zu, +<=2ms upstream poll)\n",
+                 at(0.50), at(0.99), s_samples.back(), s_samples.size());
+    s_samples.clear();
+    s_stamp = nowTp;
+  } else if (s_samples.size() > 20000) {
+    s_samples.clear();  // never let the sample buffer grow unbounded
   }
   return frames;
 }
@@ -849,9 +890,17 @@ void ZoomEngineRuntime::ensureVideoIngestThreadLocked() {
 }
 
 void ZoomEngineRuntime::videoIngestLoop() {
+  // Poll interval is pure ADDED LATENCY: a frame written to shared memory sits
+  // unseen for up to this long before the ingest thread notices it. At 8ms that
+  // was ~4ms average of dead time on every source, on a 16.7ms frame budget.
+  // The locked peek is a 16-byte sequence read per stream and the expensive
+  // snapshot only runs when a sequence actually changed, so polling faster costs
+  // almost nothing: 2ms bounds the miss at ~1ms average (measured: no change in
+  // render cost, ingest stage stays ~0.05ms).
+  constexpr auto kVideoIngestPollMs = std::chrono::milliseconds(2);
   while (videoIngestRun_.load(std::memory_order_acquire)) {
     drainVideoStreamsThreePhase();
-    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    std::this_thread::sleep_for(kVideoIngestPollMs);
   }
 }
 
@@ -910,6 +959,8 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
   struct SnapshotResult {
     SnapshotJob job;
     std::optional<ZoomEngineRgbaFrame> frame;
+    std::shared_ptr<const std::vector<std::uint8_t>> i420Shared;
+    std::chrono::steady_clock::time_point observedAt{};
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
@@ -917,6 +968,39 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
                                                             job.participantId, 640, 360,
                                                             job.buildThumbnail)});
+    // Take ownership of the decoded I420 into its shared buffer HERE, while
+    // UNLOCKED. This used to happen in the publish phase under mutex_, where it
+    // copy-constructed the whole plane set (~3.1MB per 1080p participant). The
+    // render thread calls latestDecodedVideoFrames() while holding coreMutex, so
+    // it blocked behind that memcpy — ~7ms of a 10x1080p tick, 12ms while
+    // recording. Moving it out leaves the publish phase a pointer store, which
+    // is what "Phase 3 (locked, cheap)" always claimed to be.
+    auto& result = results.back();
+    result.observedAt = std::chrono::steady_clock::now();
+    if (result.frame && !result.frame->i420.empty()) {
+      result.i420Shared =
+          std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
+    }
+  }
+
+  // Achieved ingest rate: how many decoded frames per second actually reach the
+  // core. The compositor's upload counters are throttled (multiview composites
+  // every 3rd tick), so they CANNOT be used as an ingest proxy — this is the
+  // real number, and it is what proves whether a 1080p60 wall is being consumed.
+  {
+    static auto s_stamp = std::chrono::steady_clock::now();
+    static long long s_published = 0;
+    for (const auto& r : results) {
+      if (r.frame) ++s_published;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double sec = std::chrono::duration<double>(now - s_stamp).count();
+    if (sec >= 2.0) {
+      std::fprintf(stderr, "[zoom-ingest] %.0f frames/s decoded into the core (%.1f MB/s)\n",
+                   s_published / sec, s_published / sec * 3.11);
+      s_published = 0;
+      s_stamp = now;
+    }
   }
 
   // Phase 3 (locked, cheap): publish.
@@ -932,20 +1016,25 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       continue;
     }
     stream->second.lastSequence = result.job.sequence;
-    publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame);
+    publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
+                            std::move(result.i420Shared), result.observedAt);
   }
 }
 
-void ZoomEngineRuntime::publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
-                                                const ZoomEngineRgbaFrame& frame) {
+void ZoomEngineRuntime::publishVideoFrameLocked(
+    const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
+    std::shared_ptr<const std::vector<std::uint8_t>> i420,
+    std::chrono::steady_clock::time_point observedAt) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs());
 
   // Tap the full-resolution I420 planes for the compositor without disturbing
   // the stdout/event queue below that feeds the WinUI multiview tiles.
-  if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && !frame.i420.empty()) {
+  if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && i420 &&
+      !i420->empty()) {
     DecodedFrame& decoded = latestDecodedFrames_[frame.participantId];
-    decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(frame.i420);
+    decoded.i420 = std::move(i420);
+    decoded.observedAt = observedAt;
     decoded.width = static_cast<int>(frame.i420Width);
     decoded.height = static_cast<int>(frame.i420Height);
     decoded.frameId = static_cast<std::int64_t>(frame.frameId);

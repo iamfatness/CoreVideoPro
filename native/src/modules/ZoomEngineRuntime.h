@@ -175,6 +175,13 @@ class ZoomEngineRuntime {
     int width = 0;   // luma width
     int height = 0;  // luma height
     std::int64_t frameId = 0;
+    // When the ingest thread first OBSERVED this frame in shared memory. The
+    // render thread fetches decoded frames on its own 16.7ms cadence, so this is
+    // what makes the ingest->render handoff latency measurable. Cross-process
+    // stamping would need a wire change to ShmFrameHeader, which would break an
+    // already-built engine binary — so the unmeasured head of the path is bounded
+    // by the ingest poll interval instead (see kVideoIngestPollMs).
+    std::chrono::steady_clock::time_point observedAt{};
   };
   // Latest decoded I420 frame per participantId, tapped alongside the stdout
   // event queue so the compositor can read real pixels without draining the
@@ -237,7 +244,13 @@ class ZoomEngineRuntime {
   std::atomic<bool> videoIngestRun_{false};
   void videoIngestLoop();
   void ensureVideoIngestThreadLocked();
-  void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame);
+  // `i420` is the decoded plane set, already owned by a shared buffer built in
+  // the UNLOCKED snapshot phase — publishing must never copy pixels under mutex_
+  // (the render thread waits on it while holding coreMutex).
+  void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
+                               const ZoomEngineRgbaFrame& frame,
+                               std::shared_ptr<const std::vector<std::uint8_t>> i420,
+                               std::chrono::steady_clock::time_point observedAt);
   void closeVideoStreamsLocked();
 };
 

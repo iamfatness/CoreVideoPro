@@ -4293,6 +4293,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   static int64_t s_stageMultiviewUs = 0;
   static int64_t s_stagePreviewUs = 0;
   static int64_t s_stageEmitUs = 0;
+  // Ingest sub-attribution: at 10x1080p the ingest stage dominates the tick, and
+  // "ingest" alone doesn't say whether the cost is the engine tap, the per-source
+  // polls, or the roster merge. Each is a different fix.
+  static int64_t s_subFetchUs = 0;
+  static int64_t s_subStoreUs = 0;
+  static int64_t s_subTapUs = 0;
+  static int64_t s_subPollUs = 0;
+  static int64_t s_subMergeUs = 0;
   static int s_stageTicks = 0;
   auto stageMark = std::chrono::steady_clock::now();
   const auto markStage = [&stageMark, videoOnly](int64_t& acc) {
@@ -4309,6 +4317,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
   if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
+    markStage(s_subFetchUs);
     for (const auto& frame : decoded) {
       if (frame.hasI420()) {
         // GPU path: carry the raw I420 planes through to the compositor, which
@@ -4330,6 +4339,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
             frame.timestampMs);
       }
     }
+    // Split the per-frame store calls from the destruction of `decoded` (which
+    // releases each shared I420 buffer) so a long tap says which one it is.
+    markStage(s_subStoreUs);
   }
 
   // With a REAL Zoom engine configured, suppress only the SYNTHETIC FALLBACK
@@ -4338,6 +4350,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // ~16MB/frame under coreMutex (measured 26ms/tick on the Metal path). The
   // earlier all-or-nothing gate here also discarded the REAL decoded engine
   // frames ingested just above — live meetings rendered blank on macOS.
+  markStage(s_subTapUs);
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
   auto videoFrames = (engineLive && (!realZoom || realZoom->participantCount() == 0))
                          ? std::vector<modules::VideoFrame>{}
@@ -4352,6 +4365,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
                          std::make_move_iterator(browserFrames.begin()),
                          std::make_move_iterator(browserFrames.end()));
   }
+  markStage(s_subPollUs);
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
@@ -4385,6 +4399,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
+  markStage(s_subMergeUs);
   // Still-image media routes (logos/bugs): inject the persistent decoded frames
   // (keyed "media:<assetId>") so program, preview bus and multiview all match
   // them like any other source frame. Cheap by construction — shared_ptr copies
@@ -4502,7 +4517,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // gives the lock back. The FIRST tick always renders so the buses appear
   // immediately, and a structural change forces one too.
   ++multiviewTickCounter_;
-  const bool multiviewDue = !multiviewStructureEmitted_ || (multiviewTickCounter_ % 3) == 0;
+  // Multiview composite cadence. This was every 3rd tick (~19fps on a 57fps
+  // render) because an UNOPTIMIZED build made the second GPU pass part of a
+  // 27ms lock hold that starved the RPC queue. On the optimized build the whole
+  // tick is ~4.6ms under a full 8x1080p60 wall, so the throttle now only costs
+  // the operator a choppy monitor wall for no benefit — a production multiviewer
+  // is expected to run at full rate. Kept as a named constant so it can be
+  // raised again if a slower machine ever needs it.
+  constexpr int kMultiviewTickDivisor = 1;
+  const bool multiviewDue = !multiviewStructureEmitted_ ||
+                            (multiviewTickCounter_ % kMultiviewTickDivisor) == 0;
   if ((!multiviewSources_.empty() || multiviewHasProgramPreview) && multiviewDue) {
     auto multiviewPlan = buildMultiviewRenderPlan(videoFrames);
     multiviewPlan.skipCpuReadback = true;
@@ -4574,10 +4598,19 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // "uploads in the last ~2s window".
     static modules::CompositorSourceTexStats s_lastTexStats;
     const auto texStats = modules_.compositor->sourceTexStats();
+    // s_stageIngestUs now holds only the ingest TAIL (still-media + ISO snapshot);
+    // the tap/poll/merge sub-marks consumed the rest, so report their sum as the
+    // stage total and break it out beside it.
+    const int64_t ingestTotalUs =
+        s_stageIngestUs + s_subFetchUs + s_subStoreUs + s_subTapUs + s_subPollUs + s_subMergeUs;
     std::fprintf(stderr,
-                 "[render] stages avg-ms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
+                 "[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
+                 "plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
                  "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
-                 s_stageIngestUs / (s_stageTicks * 1000.0), s_stagePlanUs / (s_stageTicks * 1000.0),
+                 ingestTotalUs / (s_stageTicks * 1000.0),
+                 s_subFetchUs / (s_stageTicks * 1000.0), s_subStoreUs / (s_stageTicks * 1000.0),
+                 s_subTapUs / (s_stageTicks * 1000.0), s_subPollUs / (s_stageTicks * 1000.0),
+                 s_subMergeUs / (s_stageTicks * 1000.0), s_stagePlanUs / (s_stageTicks * 1000.0),
                  s_stageProgramUs / (s_stageTicks * 1000.0), s_stageMultiviewUs / (s_stageTicks * 1000.0),
                  s_stagePreviewUs / (s_stageTicks * 1000.0),
                  s_stageEmitUs / (s_stageTicks * 1000.0),
@@ -4588,6 +4621,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     s_lastTexStats = texStats;
     s_stageIngestUs = s_stagePlanUs = s_stageProgramUs = s_stageMultiviewUs = s_stagePreviewUs = 0;
     s_stageEmitUs = 0;
+    s_subFetchUs = s_subStoreUs = s_subTapUs = s_subPollUs = s_subMergeUs = 0;
     s_stageTicks = 0;
   }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a

@@ -473,7 +473,26 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     long long frames = 0;
     long long lockWaitUs = 0;
     long long renderUs = 0;
+    long long drainUs = 0;
     auto rateStamp = std::chrono::steady_clock::now();
+    // FIXED-CADENCE pacing. The deadline used to be `t0 + budget` with t0 read at
+    // the top of EVERY iteration, so each frame's overshoot silently became the
+    // next frame's start: a pure relative deadline that can only ever lose time.
+    // Measured 17.27ms/frame => 57.9fps on a tick with 10ms of headroom — the
+    // render was never the problem, the clock was. Accumulate from a fixed anchor
+    // so a late frame is followed by a SHORTER wait and the average holds 60,
+    // with bounded catch-up (same discipline as the audio worker's pacer) so a
+    // genuinely overrunning tick can't build unpayable debt.
+    constexpr long long kFrameBudgetUs = 16666;  // 60fps
+    constexpr int kMaxCatchUpFrames = 3;
+    // A 60.0 AVERAGE can still hide judder: one 33ms frame plus one 0ms frame
+    // averages perfectly and looks broken on motion. Broadcast switchers are
+    // judged on DROPPED frames, not mean fps, so count intervals that ran past
+    // 1.5x budget (a frame the operator/stream actually lost) and keep the worst.
+    long long lateFrames = 0;
+    long long worstFrameUs = 0;
+    auto lastFrameStart = std::chrono::steady_clock::now();
+    auto nextDeadline = std::chrono::steady_clock::now() + std::chrono::microseconds(kFrameBudgetUs);
 #ifdef _WIN32
     // Raise the system timer resolution to 1ms so sub-frame sleeps in this loop are
     // accurate. The Windows default (~15.6ms) rounds any sleep up to a full tick, which
@@ -482,6 +501,15 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 #endif
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
+      {
+        const auto intervalUs =
+            std::chrono::duration_cast<std::chrono::microseconds>(t0 - lastFrameStart).count();
+        if (intervalUs > kFrameBudgetUs * 3 / 2) {
+          ++lateFrames;
+        }
+        worstFrameUs = (std::max)(worstFrameUs, intervalUs);
+        lastFrameStart = t0;
+      }
       long long tickRenderMs = 0;
       {
         std::unique_lock<std::mutex> lock(coreMutex);
@@ -491,6 +519,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
                                             core::LockHoldGuardrail::kRenderTickBudgetUs);
         const auto t1 = std::chrono::steady_clock::now();
         mediaCore_.renderDisplayTick();
+        // The event drain + stringify + enqueue below runs UNDER coreMutex but
+        // outside MediaCore's own stage instrumentation, so it was invisible in
+        // the "[render] stages" line — the unaccounted remainder of a long tick.
+        // Participant texture events scale with the roster (10x1080p = 10 events
+        // per tick, each JSON-serialized here), so it must be attributed.
+        const auto tDrain = std::chrono::steady_clock::now();
         for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
           enqueueFrame(event.stringify());
         }
@@ -510,6 +544,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto t2 = std::chrono::steady_clock::now();
         lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+        drainUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - tDrain).count();
         // The 120-frame average below can hide a single multi-second stall; surface
         // any individual coreMutex acquire or render tick that blocks > 200ms.
         const auto holdLockMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -535,12 +570,17 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
         std::fprintf(stderr,
-                     "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  (avg/frame over %lld)\n",
+                     "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
+                     "dropped=%lld  worst=%.1fms  (avg/frame over %lld)\n",
                      sec > 0 ? frames / sec : 0.0, lockWaitUs / (frames * 1000.0),
-                     renderUs / (frames * 1000.0), frames);
+                     renderUs / (frames * 1000.0), drainUs / (frames * 1000.0),
+                     lateFrames, worstFrameUs / 1000.0, frames);
         frames = 0;
         lockWaitUs = 0;
         renderUs = 0;
+        drainUs = 0;
+        lateFrames = 0;
+        worstFrameUs = 0;
         rateStamp = now;
       }
       // Precise 60fps pacer. sleep_for alone overshoots ~1-2ms even at
@@ -551,8 +591,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // (Win10 1803+) gives ~0.5ms wakeup precision without burning the CPU; only a
       // ~200us yield tail remains to absorb the residual jitter. Heavy iterations
       // (work >= budget) blow past the deadline and run flat out, as before.
-      constexpr long long kFrameBudgetUs = 16666;  // 60fps
-      const auto deadline = t0 + std::chrono::microseconds(kFrameBudgetUs);
+      const auto deadline = nextDeadline;
 #ifdef _WIN32
       static thread_local HANDLE pacerTimer = ::CreateWaitableTimerExW(
           nullptr, nullptr,
@@ -585,6 +624,15 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       while (std::chrono::steady_clock::now() < deadline) {
         // Tiny tail to absorb timer overshoot; yield keeps it civil.
         std::this_thread::yield();
+      }
+      nextDeadline += std::chrono::microseconds(kFrameBudgetUs);
+      // Bounded catch-up: if the tick genuinely overran (heavy show, thermal
+      // throttle) don't try to reclaim unbounded lost frames by free-running —
+      // re-anchor and keep real-time cadence from here.
+      const auto afterPace = std::chrono::steady_clock::now();
+      if (nextDeadline + std::chrono::microseconds(kFrameBudgetUs * kMaxCatchUpFrames) <
+          afterPace) {
+        nextDeadline = afterPace + std::chrono::microseconds(kFrameBudgetUs);
       }
     }
   });
