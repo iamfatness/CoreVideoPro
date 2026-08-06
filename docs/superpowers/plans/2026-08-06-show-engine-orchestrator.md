@@ -641,6 +641,14 @@ const registryLess = parseShowEngineConfig({
       boxes: 2,
       includesHost: true,
       includesReader: false
+    },
+    {
+      id: "banter",
+      label: "Banter",
+      scenePreset: "scene-banter",
+      boxes: 1,
+      includesHost: true,
+      includesReader: true
     }
   ]
 });
@@ -821,6 +829,15 @@ clearOverride(personKey: PersonKey): void;
 tick(): Promise<ShowSnapshot>;
 ```
 
+`setOverride` writes the row with `OverrideDb.set(record)`. When `record.role`
+is in `EXCLUSIVE_ROLES` (`"host"` or `"reader"`) it then calls
+`OverrideDb.assignExclusiveRole(record.personKey, record.role, registry.current())`
+so the single-host/single-reader invariant holds — that method is the only
+thing that demotes a prior holder, and `set` alone would leave two hosts. Pass
+the live registry; for a registry-less show that is an empty object, and
+exclusivity is enforced across the override table alone, which is already the
+documented behavior.
+
 **Behavior:**
 
 `onZoomEvent` forwards to `ZoomIngest.apply` and returns immediately — it does no seating. Host events arrive at frame rate; seating happens once per tick. This is the same discipline the CVP shell learned the hard way with `RefreshSurfaceBindings` (see CLAUDE.md's 0xc000027b section): never rebuild a structure at event rate when a coalesced tick will do.
@@ -921,10 +938,19 @@ describe("ShowEngine roster tick", () => {
    */
   it("reports panelists that did not fit rather than dropping them", async () => {
     const e = engine();
-    for (let i = 1; i <= 10; i += 1) e.onZoomEvent(joined(`p${i}`, `Guest ${i}`));
+    const ids: string[] = [];
+    for (let i = 1; i <= 10; i += 1) {
+      ids.push(`p${i}`);
+      e.onZoomEvent(joined(`p${i}`, `Guest ${i}`));
+    }
     const snap = await e.tick();
-    expect(snap.slots.filter((s) => s.panelist !== null)).toHaveLength(8);
-    expect(snap.unseated.map((p) => p.participantId).sort()).toEqual(["p9"].concat(["p10"]).sort());
+    const seated = snap.slots.flatMap((s) => (s.panelist ? [s.panelist.participantId] : []));
+    expect(seated).toHaveLength(8);
+    expect(snap.unseated).toHaveLength(2);
+    // Nobody vanishes: seated ∪ unseated is the whole roster, with no overlap.
+    expect([...seated, ...snap.unseated.map((p) => p.participantId)].sort()).toEqual(
+      [...ids].sort()
+    );
   });
 
   it("debounces persistence against the injected clock", async () => {
@@ -1125,10 +1151,18 @@ function build(assigner: PositionAssigner) {
  *   - active-speaker follow both on and off, since the gate must not be
  *     accidentally implemented as a side effect of the follow flag.
  *
- * The invariant it must break on: any dispatch to a position assigner, or any
- * mutation of ProgramBus's active speaker, for a role in skipRoles. If the
- * gate is removed, reordered below the dispatch, or applied only to
- * ProgramBus, this fails for "aslinterpreter" in every combination.
+ * The invariant it must break on: any dispatch to a POSITION ASSIGNER for a
+ * role in skipRoles. If the engine's gate is removed, or reordered below the
+ * dispatch, `recorder.seen` is non-empty for "aslinterpreter" in every
+ * combination and this fails.
+ *
+ * Honest scoping of the ProgramBus assertion below: it is CONFIRMATORY, not
+ * independent. `ProgramBus.onActiveSpeaker` (programBus.ts:76-79) applies
+ * `shouldFollowSpeaker` internally before touching `activeSpeakerId`, so that
+ * half would still pass with the engine's gate entirely absent. The assigner
+ * assertions are the real proof — ProgramBus's internal gate does not protect
+ * a position assigner, which is exactly why the engine needs its own. Keep
+ * both, but do not mistake the ProgramBus half for a second guarantee.
  */
 describe("active-speaker dispatch gate", () => {
   const assigners: Array<[string, () => PositionAssigner]> = [
