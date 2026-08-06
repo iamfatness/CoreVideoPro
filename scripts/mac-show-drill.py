@@ -25,8 +25,16 @@ import threading
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_CORE = os.path.join(REPO, "native", "build-metal", "corevideo-native")
-FAKE_ENGINE = os.path.join(REPO, "native", "build-metal", "corevideo-zoom-engine-fake")
+# Cross-platform: the drill gates SHARED core code, so it must run on every
+# platform that ships it (a macOS-motivated change in MediaCore.cpp would
+# otherwise silently degrade the Windows multiview, and vice versa). Windows
+# builds into native/build-dev with .exe suffixes; macOS into native/build-metal.
+_EXE = ".exe" if os.name == "nt" else ""
+_BUILD_DIR = os.environ.get("COREVIDEO_BUILD_DIR") or os.path.join(
+    REPO, "native", "build-dev" if os.name == "nt" else "build-metal")
+DEFAULT_CORE = os.path.join(_BUILD_DIR, "corevideo-native" + _EXE)
+FAKE_ENGINE = os.environ.get("COREVIDEO_FAKE_ENGINE_PATH") or os.path.join(
+    _BUILD_DIR, "corevideo-zoom-engine-fake" + _EXE)
 
 # The core's own budget for a render tick (LockHoldGuardrail::kRenderTickBudgetUs
 # is half a frame). A show that exceeds it on most ticks starves the RPC queue.
