@@ -68,7 +68,13 @@ MAX_ENGINE_TAP_MS = 2.0
 # put these back to 16.7/33.3.
 MAX_LATENCY_P50_MS = 33.3   # 2 frames at 60p (1 of them is the frame-sync cushion)
 MAX_LATENCY_P99_MS = 50.0   # 3 frames at 60p
-# Fraction of DECODED frames that must actually reach the compositor. This is the
+# Fraction of DECODED frames that must actually reach the compositor.
+# CAVEAT, learned the hard way: this counts distinct frameIds the render thread
+# fetched, so it CANNOT see the judder the frame synchronizer exists to prevent.
+# A frame destroyed unseen because two landed in one render interval still reads
+# as delivered. Measured with COREVIDEO_FRAME_SYNC=0 this metric reports 100%
+# while 6-10% of frames are doubled or dropped. Never read a green delivery
+# number as "motion is smooth". This is the
 # sharpest regression signal in the whole drill: with an 8ms ingest poll, ~30% of
 # decoded frames were overwritten before the render thread fetched them — the
 # operator silently loses a third of every source's motion while fps still reads
@@ -389,11 +395,12 @@ def main():
                   f"({len(steady)} steady windows)")
             if worst_p50 > MAX_LATENCY_P50_MS:
                 failures.append(
-                    f"source->render p50 {worst_p50:.1f}ms exceeds one frame — "
-                    f"the internal path is no longer hardware-competitive")
+                    f"source->render p50 {worst_p50:.1f}ms exceeds two frames "
+                    f"(one is the deliberate frame-sync cushion) — the internal "
+                    f"path is no longer hardware-competitive")
             if worst_p99 > MAX_LATENCY_P99_MS:
                 failures.append(
-                    f"source->render p99 {worst_p99:.1f}ms exceeds two frames")
+                    f"source->render p99 {worst_p99:.1f}ms exceeds three frames")
             if delivery < MIN_FRAME_DELIVERY:
                 failures.append(
                     f"only {delivery:.0%} of decoded frames reached the compositor — "
