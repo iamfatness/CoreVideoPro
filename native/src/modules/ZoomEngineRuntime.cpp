@@ -60,7 +60,12 @@ constexpr double kFrameStaleAfterMs = 1000.0;
 
 }  // namespace
 
-ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {}
+ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {
+  // Frame sync is ON by default (owner decision 2026-08-06: behave like a
+  // hardware switcher input). COREVIDEO_FRAME_SYNC=0 trades the smoothness back
+  // for one frame of latency — keep it working, it is the A/B control.
+  frameSyncEnabled_ = envInt("COREVIDEO_FRAME_SYNC", 1) != 0;
+}
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
   // Stop the video-ingest thread FIRST: it takes mutex_ briefly and touches
@@ -123,6 +128,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     initialized_ = false;
     mediaStarted_ = false;
     latestDecodedFrames_.clear();
+    frameSync_.clear();
     pendingAudio_.clear();
     closeAudioStreamsLocked();
   closeVideoStreamsLocked();
@@ -243,6 +249,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   state_.reset();
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
+  frameSync_.clear();
   pendingAudio_.clear();
   closeAudioStreamsLocked();
   closeVideoStreamsLocked();
@@ -437,6 +444,30 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
   std::vector<VideoFrame> frames;
   frames.reserve(latestDecodedFrames_.size());
   for (auto& [participantId, decoded] : latestDecodedFrames_) {
+    // FRAME SYNC: draw this tick's frame from the queue, keeping kFrameSyncCushion
+    // in reserve. Priming waits for cushion+1 so the reserve exists BEFORE the
+    // first frame goes to air — that reserve is the entire point, and building it
+    // lazily would just reproduce the catch-up buffer that measured no benefit.
+    if (frameSyncEnabled_) {
+      auto& sync = frameSync_[participantId];
+      if (!sync.primed && sync.frames.size() > kFrameSyncCushion) {
+        sync.primed = true;
+      }
+      // HOLD the cushion at its target, never merely inherit it. Frames pile up
+      // before the render thread starts pulling a newly joined source, and
+      // draining one-per-tick from a deep queue would lock that startup backlog
+      // in as PERMANENT latency (measured: p50 27ms on one run, 37ms on the next,
+      // purely on join timing). A frame sync resyncs instead of falling behind,
+      // so discard the excess and keep exactly the cushion.
+      while (sync.frames.size() > kFrameSyncCushion + 1) {
+        sync.frames.pop_front();
+        ++slotOverwritten_;  // stale backlog, and it never reached the compositor
+      }
+      if (sync.primed && !sync.frames.empty()) {
+        decoded = std::move(sync.frames.front());
+        sync.frames.pop_front();
+      }
+    }
     if (!decoded.i420 || decoded.width <= 0 || decoded.height <= 0) {
       continue;
     }
@@ -1055,19 +1086,34 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
       !i420->empty()) {
     DecodedFrame& decoded = latestDecodedFrames_[frame.participantId];
     ++slotPublished_;
-    if (decoded.i420 && !decoded.fetched) {
-      // A decoded frame is destroyed before the compositor ever took it: real
-      // lost motion, not a measurement artifact. A one-deep catch-up buffer was
-      // tried here and does NOT fix it — see the frame-pairing note in
-      // docs/windows-perf-handoff.md.
-      ++slotOverwritten_;
+
+    DecodedFrame incoming;
+    incoming.i420 = std::move(i420);
+    incoming.observedAt = observedAt;
+    incoming.width = static_cast<int>(frame.i420Width);
+    incoming.height = static_cast<int>(frame.i420Height);
+    incoming.frameId = static_cast<std::int64_t>(frame.frameId);
+
+    if (frameSyncEnabled_) {
+      // Queue behind whatever is already waiting — never jump the line, or a
+      // parked frame surfaces later and OUT OF ORDER (measured once as an 800ms
+      // p99 while the delivery number happily read 97%).
+      auto& sync = frameSync_[frame.participantId];
+      sync.frames.push_back(std::move(incoming));
+      if (sync.frames.size() > kFrameSyncMaxDepth) {
+        // Sustained overflow: the source is genuinely outrunning the render.
+        // Drop the OLDEST so the wall stays current instead of drifting behind.
+        sync.frames.pop_front();
+        ++slotOverwritten_;
+      }
+    } else {
+      if (decoded.i420 && !decoded.fetched) {
+        // Latest-wins fallback (COREVIDEO_FRAME_SYNC=0): a decoded frame is
+        // destroyed before the compositor ever took it. Real lost motion.
+        ++slotOverwritten_;
+      }
+      decoded = std::move(incoming);
     }
-    decoded.fetched = false;
-    decoded.i420 = std::move(i420);
-    decoded.observedAt = observedAt;
-    decoded.width = static_cast<int>(frame.i420Width);
-    decoded.height = static_cast<int>(frame.i420Height);
-    decoded.frameId = static_cast<std::int64_t>(frame.frameId);
   }
 
   // Thumbnail-throttled frames carry only the I420 tap (above) — no event. The

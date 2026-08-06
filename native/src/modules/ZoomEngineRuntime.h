@@ -192,12 +192,35 @@ class ZoomEngineRuntime {
   // event queue so the compositor can read real pixels without draining the
   // multiview event path.
   std::map<std::string, DecodedFrame> latestDecodedFrames_;
-  // NOTE: this is deliberately a LATEST-WINS slot, not a queue. A one-deep
-  // catch-up buffer was implemented and measured here (2026-08-05) and does not
-  // help: the starved tick arrives BEFORE the surplus frame, so there is nothing
-  // in reserve when it is needed. Closing that gap needs a permanent one-frame
-  // cushion (a real frame synchronizer, +16.7ms latency) — an owner call on the
-  // latency north star. See docs/windows-perf-handoff.md.
+
+  // FRAME SYNCHRONIZER (owner decision 2026-08-06) — the input frame sync every
+  // hardware switcher has. A latest-wins slot cannot absorb a ~60Hz source and a
+  // ~60Hz render free-running against each other: ~1ms of jitter lands two frames
+  // in one render interval (one destroyed unseen) and none in the next (a repeat),
+  // measured at 6-10% of frames each way. A CATCH-UP buffer does not fix that —
+  // the starved tick arrives BEFORE the surplus frame, so nothing is in reserve
+  // when it is needed (measured, 2026-08-05).
+  //
+  // The fix is a PERMANENT one-frame cushion: prime to two queued frames before
+  // serving the first, then serve one per fetch. Net rates being equal, the queue
+  // holds steady at one, so a gap draws on the reserve instead of repeating and a
+  // double refills it instead of dropping. Costs exactly one frame (16.7ms) of
+  // source->program latency, by construction, forever.
+  //
+  // Depth is capped: on sustained overflow (a source genuinely faster than the
+  // render) the OLDEST frame is dropped, so latency can never accumulate — a
+  // switcher stays current rather than falling behind. Disable with
+  // COREVIDEO_FRAME_SYNC=0 to trade smoothness back for that frame of latency.
+  struct FrameSyncQueue {
+    std::deque<DecodedFrame> frames;
+    bool primed = false;  // false until the cushion has been built once
+  };
+  std::map<std::string, FrameSyncQueue> frameSync_;
+  bool frameSyncEnabled_ = true;
+  // Serve only once this many frames are queued, leaving kFrameSyncCushion behind.
+  static constexpr std::size_t kFrameSyncCushion = 1;
+  static constexpr std::size_t kFrameSyncMaxDepth = 3;
+
   // Slot accounting for the ingest->render handoff (all touched under mutex_).
   // published = fresh + overwritten, so the three numbers close the books on
   // every decoded frame; starved counts render ticks that found no new frame.

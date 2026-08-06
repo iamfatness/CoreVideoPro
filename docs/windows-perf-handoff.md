@@ -13,11 +13,13 @@
 > | 3 (follow-up) | Can `kSpinGuardUs` come back down? | **CONFIRMED, applied.** 200 µs now holds 60.0 fps / 0 dropped with identical delivery and lock behaviour, and saves ~5 s of core CPU per 53 s of wall (non-overlapping ranges over 3 runs each). |
 > | 6.4 | Wire the drill into Windows CI | Not yet — blocked on the open finding below. |
 >
-> **Open finding — diagnosed, needs an owner call.** Post-fix delivery on Windows is
-> **88–92%**, short of the drill's `MIN_FRAME_DELIVERY = 0.95`. Root-caused to frame
-> pairing between free-running clocks, not a defect in the fixed code — see §8. The
-> remaining gap cannot be closed without a permanent one-frame cushion (+16.7 ms), so
-> **the drill should not gate Windows CI until that call is made.**
+> **Open finding — RESOLVED 2026-08-06.** Delivery sat at 88–92%, short of the drill's
+> `MIN_FRAME_DELIVERY = 0.95`, root-caused to frame pairing between free-running clocks
+> (§8). The owner took the trade and the ingest path now runs a **frame synchronizer**
+> (permanent one-frame cushion, like a hardware switcher input): delivery **99%**,
+> frames overwritten **0.0%**, repeats ~0, for a deliberate **+16.7 ms** of
+> source→program latency. §8 has the numbers and the two refuted attempts that came
+> first.
 >
 > **Correction, recorded deliberately:** the first Windows answer on the §3 follow-up
 > was **wrong** — it reported 200 µs as refuted (59.6 fps, 74% delivery). That binary
@@ -303,14 +305,49 @@ Two fixes were implemented and **both refuted by measurement**:
    never accept a single metric's verdict on a change that can trade one axis for
    another.
 
-**What would actually close it:** a permanent one-frame cushion — always render one
-frame behind, so a starved tick has a reserve to draw on. That is what a hardware
-frame synchronizer does, and every switcher-class input has one. Cost is a fixed
-**+16.7 ms of source→program latency**, which is a direct trade against the product's
-low-latency north star, so it is an owner decision and not a refactor to slip in.
-Note this gets *more* attractive in production than on the rig: real Zoom sources
-carry network jitter far larger than the synthetic engine's ~1 ms, so real-world
-pairing loss will be worse than 8–12%.
+**What actually closed it (owner decision, 2026-08-06): a frame synchronizer.** Always
+run one frame behind, so a starved tick has a reserve to draw on. That is what a
+hardware switcher input does. It is NOT the catch-up buffer above: the cushion is
+built up front (prime to two queued frames, then serve one per fetch) so the reserve
+exists *before* it is needed. Net rates being equal, the queue holds steady at one, a
+gap draws on the reserve instead of repeating, and a double refills it instead of
+dropping. `ZoomEngineRuntime::frameSync_`, capped at 3 deep — on sustained overflow
+the OLDEST frame is dropped, so latency can never accumulate.
 
-Until that call is made, the drill legitimately fails on Windows at ~88–92%. **Do not
-lower `MIN_FRAME_DELIVERY` to make CI green** — the gate is measuring something real.
+**Hold the cushion at its target — do not merely inherit it.** Frames pile up before the
+render thread starts pulling a newly joined source, and draining one-per-tick from a
+deep queue locks that startup backlog in as *permanent* latency. The first cut did
+exactly that and measured p50 27 ms on one run and 37 ms on the next, purely on join
+timing. The fetch now discards anything beyond the cushion, so a frame sync resyncs
+instead of falling behind. This is the whole difference between "one frame, always" and
+"one to three frames, depending on when you joined."
+
+Measured at 8 × 1080p60, same rig, 30 s runs (3 runs with frame sync):
+
+| Metric | latest-wins (`COREVIDEO_FRAME_SYNC=0`) | frame sync (default) |
+|---|---|---|
+| Frames overwritten | 7.5–9.1% | **0.0–0.7%** |
+| Starved ticks / 2 s | 80–104 | **0–16** |
+| Delivery | 88–92% | **98–100%** |
+| Sustained | 59.9 fps, 0 dropped | 60.0 fps, 0 dropped |
+| ingest→render p50 / p99 | 10.9 / 20.5 ms | **17.8–26.9 / 29.9–37.0 ms** |
+| Drill verdict | FAIL (delivery) | **SHOW DRILL PASSED** |
+
+The added latency is the cushion — one frame — plus whatever sub-frame phase offset the
+run happens to start with, which is why p50 varies run to run.
+`COREVIDEO_FRAME_SYNC=0` restores the old behaviour and is the A/B control — it is kept
+working on purpose.
+
+The drill's latency budgets were raised by one frame to match (16.7/33.3 → 33.3/50 ms).
+That is a gate tracking a deliberate architecture change, **not** a red gate being
+lowered to go green: `MIN_FRAME_DELIVERY` was left at 0.95 and now passes on its own at
+99%. If frame sync is ever disabled by default, put the latency budgets back.
+
+**A/V implication to confirm on the rig.** Video content now reaches the encoder one
+frame later while audio is unchanged, so audio leads video by ~16.7 ms more than before
+in recordings and live outputs. `validate-record-audio.mjs` stays green (start delta
+1.5 ms, duration delta 104 ms) but it measures stream alignment, not content sync — it
+would not see a one-frame content shift. The real check is the owed **G2 clap test** on
+a live meeting. One frame is inside the 50 ms budget and normally imperceptible, but
+audio-lead is the more noticeable direction, so if the clap test shows it mattering the
+fix is to compensate the recording PTS by the known cushion.

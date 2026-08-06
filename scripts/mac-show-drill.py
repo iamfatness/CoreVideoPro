@@ -54,12 +54,20 @@ MAX_ENGINE_TAP_MS = 2.0
 #   * 0 dropped       = no frame ran past 1.5x the 16.67ms budget
 #   * 10ms hold       = ~60% of budget, leaving headroom for transients
 # Source->program latency. A hardware switcher (ATEM class) processes in ~1 frame;
-# software switchers are typically a few. Gate the p99 of the ingest->render
-# handoff at ONE frame so the internal path stays hardware-competitive, and fail
-# loudly if it regresses (an 8ms ingest poll put p99 at ~20ms AND silently
-# dropped ~30% of decoded frames before the compositor ever saw them).
-MAX_LATENCY_P50_MS = 16.7   # 1 frame at 60p
-MAX_LATENCY_P99_MS = 33.3   # 2 frames at 60p
+# software switchers are typically a few. Fail loudly on regressions (an 8ms
+# ingest poll put p99 at ~20ms AND silently dropped ~30% of decoded frames before
+# the compositor ever saw them).
+#
+# These budgets were RAISED by one frame on 2026-08-06 — not to make a red gate
+# green, but because the architecture deliberately changed underneath them: the
+# ingest path now runs a frame synchronizer (one-frame cushion, owner decision)
+# so a jittery source cannot drop frames or repeat them. That frame is spent on
+# purpose and shows up here by construction, so the old p50 <= 1 frame budget was
+# measuring an architecture that no longer exists. Everything ABOVE the cushion is
+# still real latency and still gated. If frame sync is ever disabled by default,
+# put these back to 16.7/33.3.
+MAX_LATENCY_P50_MS = 33.3   # 2 frames at 60p (1 of them is the frame-sync cushion)
+MAX_LATENCY_P99_MS = 50.0   # 3 frames at 60p
 # Fraction of DECODED frames that must actually reach the compositor. This is the
 # sharpest regression signal in the whole drill: with an 8ms ingest poll, ~30% of
 # decoded frames were overwritten before the render thread fetched them — the
