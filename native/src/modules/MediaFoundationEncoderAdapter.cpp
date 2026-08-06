@@ -697,6 +697,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
     closeWriters();
     session_.active = true;
+    // Fresh session: re-decide full-res vs preview from this session's frames.
+    fullResLocked_ = false;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
     session_.encodedFrameCount = 0;
@@ -745,10 +747,37 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       return;
     }
 
-    // Feed the REAL composed program pixels (F1+F3). The preview carries the
-    // tightly packed top-down BGRA the compositor produced this tick; when it is
-    // empty (metadata-only tick) we skip the frame rather than synthesize one.
-    const auto& preview = frame.preview;
+    // Feed the REAL composed program pixels — the FULL-RESOLUTION readback, not
+    // `preview`, which is a 320x180 UI thumbnail. Writing the thumbnail into a
+    // writer opened at program dimensions is what put the whole show into a
+    // small corner of an otherwise black frame (rig-verified against a July 13
+    // recording: 8995 frames at a flat luma of 4). The virtual camera and RTMP
+    // already prefer the full-res buffer; recording was the last consumer still
+    // reading the thumbnail.
+    //
+    // The full-res tap is ASYNCHRONOUS — it publishes on the ticks where its
+    // readback completed and is EMPTY on the rest — so once full-res has been
+    // seen, NEVER downgrade: a mid-file geometry flip is the same defect again.
+    // Skip the tick instead; the PTS clock timestamps each frame at the wall
+    // time it was submitted, so a skipped tick costs one frame, not sync.
+    //
+    // NOT YET FIXED ON WINDOWS — `programFullBgra` is populated only by the
+    // MACOS Metal compositor (MetalCompositorAdapter.mm), which is why macOS
+    // recordings are correct and Windows ones are not. On Windows the full-res
+    // program exists only as NV12 (`ProgramFrame::programNv12`, produced by
+    // MediaCore via compositor->takeVcamNv12 and consumed by the RTMP sender),
+    // and nothing feeds it to this writer. Wiring that up means opening
+    // program_ with VideoInput::Nv12 (Mp4Writer::open already takes it — the ISO
+    // path uses it for Zoom sources) and writing programNv12 directly, which is
+    // also the faster path since MF's H.264 encoder wants NV12 natively.
+    const bool hasFull = !frame.programFullBgra.bgra.empty() &&
+                         frame.programFullBgra.width > 0 && frame.programFullBgra.height > 0;
+    if (hasFull) {
+      fullResLocked_ = true;
+    } else if (fullResLocked_) {
+      return;
+    }
+    const auto& preview = hasFull ? frame.programFullBgra : frame.preview;
     if (preview.bgra.empty() || preview.width <= 0 || preview.height <= 0) {
       return;
     }
@@ -1273,6 +1302,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   RecordingPtsClock recordingClock_;
   std::chrono::steady_clock::time_point clockOrigin_ = std::chrono::steady_clock::now();
   bool comInitialized_ = false;
+  // Has this session ever muxed a FULL-RESOLUTION program frame? Once it has,
+  // never fall back to the 320x180 preview (see submit): a mid-file geometry
+  // change is the corner-tile defect all over again. Mirrors the RTMP sender's
+  // fullResLocked_, which exists for the same asynchronous-tap reason.
+  bool fullResLocked_ = false;
   // A3: plugin content latency (atomic — the audio worker sets it, the writer
   // thread reads it; the PTS clock latches per session).
   std::atomic<int> audioContentLatencySamples_{0};
