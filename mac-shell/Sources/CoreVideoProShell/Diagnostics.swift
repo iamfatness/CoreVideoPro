@@ -726,9 +726,15 @@ enum DiagnosticsSelfCheck {
 
     /// Entry point for the env-var harness run.
     static func runAndExit() -> Never {
-        let failures = run()
+        var failures = run()
+        // Prefs round-trip rides the same harness: a field that encodes but
+        // never decodes silently drops an operator's setting, which is the same
+        // class of quiet data loss the redaction check guards against.
+        if let prefsFailure = ShellPrefs.roundTripSelfCheck() {
+            failures.append("prefs round-trip: \(prefsFailure)")
+        }
         if failures.isEmpty {
-            print("self-check: PASS — no seeded secret survived the bundle export")
+            print("self-check: PASS — no seeded secret survived export; prefs round-trip intact")
             exit(0)
         }
         for failure in failures {

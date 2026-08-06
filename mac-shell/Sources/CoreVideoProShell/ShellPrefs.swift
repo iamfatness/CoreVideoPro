@@ -36,6 +36,10 @@ struct ShellPrefs: Codable, Equatable {
     var autoTakeEnabled = true
     var autoConfidenceThreshold = 70.0
     var autoHoldSeconds = 4.0
+    // Automation-tab policy (AutomationExtras.swift). OPTIONAL on purpose: a
+    // non-optional key throws keyNotFound on every prefs file written before it
+    // existed, and load()'s `try?` would reset the whole file to defaults.
+    var automation: AutomationExtrasState?
     var lowerThirdName = ""
     var lowerThirdTitle = ""
     var lowerThirdPosition = "lower-left"
@@ -84,6 +88,45 @@ struct ShellPrefs: Codable, Equatable {
         scenes = v(.scenes, [])
         webinar = v(.webinar, false)
         colorGrade = v(.colorGrade, [])
+        automation = ((try? c.decodeIfPresent(AutomationExtrasState.self,
+                                              forKey: .automation)) ?? nil)
+    }
+
+    // GUARD for the hazard this initializer exists to fix. A hand-written
+    // decoder trades one silent failure for another: add a field to the struct,
+    // forget a line here, and it encodes fine but NEVER restores from disk.
+    // ShellPrefs is Equatable, so a full round-trip catches exactly that — any
+    // field missing from init(from:) comes back as its default and the compare
+    // fails. Runs in the headless self-check; keep it wired to a populated
+    // instance, not a default one (a default survives a dropped field).
+    static func roundTripSelfCheck() -> String? {
+        var p = ShellPrefs()
+        p.version = 7
+        p.joinMeetingId = "8675309"
+        p.displayName = "round-trip"
+        p.monitorEnabled = true
+        p.monitorVolume = 0.42
+        p.isoRecordingEnabled = true
+        p.isoSelectedSourceIds = ["zoom:101"]
+        p.autoTakeEnabled = false
+        p.autoConfidenceThreshold = 55.5
+        p.autoHoldSeconds = 9.0
+        p.lowerThirdName = "Name"
+        p.lowerThirdTitle = "Title"
+        p.lowerThirdPosition = "lower-right"
+        p.logoBugAssetId = "asset-1"
+        p.streamUrl = "rtmp://example/live"
+        p.recentMeetings = ["1", "2"]
+        p.scenes = [PersistedScene(id: "s", name: "S", layout: "duo", layers: [])]
+        p.webinar = true
+        p.colorGrade = [1, 2, 3, 4]
+        p.automation = AutomationExtrasState()
+        guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
+        guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
+            return "decode failed"
+        }
+        return back == p ? nil
+            : "a field survives encode but NOT decode — it is missing from init(from:)"
     }
 
     static let path = NSHomeDirectory()

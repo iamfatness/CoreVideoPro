@@ -1877,6 +1877,10 @@ struct AutomationPane: View {
                 Text(model.autoRationale)
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
             }
+            // AutomationPage.xaml parity: Magic Scene, dynamic lower thirds,
+            // reset defaults, the scene-intelligence readouts, and the honest
+            // disabled block. Lives in AutomationExtras.swift.
+            AutomationExtrasSection()
         }
         .modifier(StudioPanel())
     }
