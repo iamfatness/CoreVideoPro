@@ -436,9 +436,17 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
 
   std::vector<VideoFrame> frames;
   frames.reserve(latestDecodedFrames_.size());
-  for (const auto& [participantId, decoded] : latestDecodedFrames_) {
+  for (auto& [participantId, decoded] : latestDecodedFrames_) {
     if (!decoded.i420 || decoded.width <= 0 || decoded.height <= 0) {
       continue;
+    }
+    // Slot accounting: is this a frame the compositor has not seen, or the same
+    // one re-served because nothing new arrived since the last tick?
+    if (decoded.fetched) {
+      ++slotStarved_;
+    } else {
+      ++slotFresh_;
+      decoded.fetched = true;
     }
     // Sample each frame EXACTLY ONCE, on the first fetch after it was published.
     // latestDecodedFrames_ holds the latest frame per participant and re-serves it
@@ -479,6 +487,19 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
                  "[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
                  "(n=%zu, +<=2ms upstream poll)\n",
                  at(0.50), at(0.99), s_samples.back(), s_samples.size());
+    // Where every decoded frame went. published = fresh + overwritten (+ one
+    // in-flight per source); starved = render ticks that re-served a frame the
+    // compositor already had. Overwritten is the only true motion loss.
+    std::fprintf(stderr,
+                 "[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
+                 "starved=%lld over %.2fs\n",
+                 slotPublished_, slotFresh_, slotOverwritten_,
+                 slotPublished_ > 0 ? 100.0 * slotOverwritten_ / slotPublished_ : 0.0,
+                 slotStarved_, windowSec);
+    slotPublished_ = 0;
+    slotOverwritten_ = 0;
+    slotFresh_ = 0;
+    slotStarved_ = 0;
     s_samples.clear();
     s_stamp = nowTp;
   } else if (s_samples.size() > 20000) {
@@ -1033,6 +1054,15 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
   if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && i420 &&
       !i420->empty()) {
     DecodedFrame& decoded = latestDecodedFrames_[frame.participantId];
+    ++slotPublished_;
+    if (decoded.i420 && !decoded.fetched) {
+      // A decoded frame is destroyed before the compositor ever took it: real
+      // lost motion, not a measurement artifact. A one-deep catch-up buffer was
+      // tried here and does NOT fix it — see the frame-pairing note in
+      // docs/windows-perf-handoff.md.
+      ++slotOverwritten_;
+    }
+    decoded.fetched = false;
     decoded.i420 = std::move(i420);
     decoded.observedAt = observedAt;
     decoded.width = static_cast<int>(frame.i420Width);

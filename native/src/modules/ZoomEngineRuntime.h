@@ -182,11 +182,29 @@ class ZoomEngineRuntime {
     // already-built engine binary — so the unmeasured head of the path is bounded
     // by the ingest poll interval instead (see kVideoIngestPollMs).
     std::chrono::steady_clock::time_point observedAt{};
+    // Has the render thread taken THIS frame yet? The map below is a latest-wins
+    // slot, so a publish into an unfetched slot destroys a decoded frame that
+    // never reached the compositor. That is the only place frames can be lost
+    // once ingest is keeping up, so it must be counted, not inferred.
+    bool fetched = false;
   };
   // Latest decoded I420 frame per participantId, tapped alongside the stdout
   // event queue so the compositor can read real pixels without draining the
   // multiview event path.
   std::map<std::string, DecodedFrame> latestDecodedFrames_;
+  // NOTE: this is deliberately a LATEST-WINS slot, not a queue. A one-deep
+  // catch-up buffer was implemented and measured here (2026-08-05) and does not
+  // help: the starved tick arrives BEFORE the surplus frame, so there is nothing
+  // in reserve when it is needed. Closing that gap needs a permanent one-frame
+  // cushion (a real frame synchronizer, +16.7ms latency) — an owner call on the
+  // latency north star. See docs/windows-perf-handoff.md.
+  // Slot accounting for the ingest->render handoff (all touched under mutex_).
+  // published = fresh + overwritten, so the three numbers close the books on
+  // every decoded frame; starved counts render ticks that found no new frame.
+  long long slotPublished_ = 0;
+  long long slotOverwritten_ = 0;
+  long long slotFresh_ = 0;
+  long long slotStarved_ = 0;
 
   // Pending real PCM per participantId. The reader thread appends a chunk on
   // every engine audio event (snapshot-read from the per-source audio SHM
