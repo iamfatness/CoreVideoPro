@@ -164,6 +164,23 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   **200µs**: the old 500µs only existed to mask that drift, and re-measured on this rig
   it costs ~5s of core CPU per 53s wall for nothing. Never raise the guard to paper over
   a pacing bug.
+- **Program recording muxes the NV12 program TAP, never `ProgramFrame::preview`**
+  (fixed 2026-08-06). `preview` is a **320x180 UI thumbnail**; writing it into a
+  writer opened at program dimensions put the entire show into a small corner of a
+  black frame — and shipped that way for months (a 2026-07-13 recording: 8995
+  frames, flat luma 4/255) because every validator checked stream presence and
+  container alignment and **none ever looked at a pixel**. Windows has no full-res
+  BGRA readback (that would be 8MB/frame); the full program exists only as NV12
+  from `compositor->takeVcamNv12` — the same tap the vcam and RTMP consume — so
+  MediaCore takes it ONCE per output tick, attaches it to `work.programFrame`
+  BEFORE `encoder->submit`, and the senders inherit it via their copy. Gated by
+  `RecordingSessionRequest::programNv12`, which MediaCore sets only when
+  `ICompositor::suppliesProgramNv12()` AND the recording is exactly 1080p (the tap
+  is a pinned 1080p scale-blit; feeding it to a 4K writer would letterbox — a
+  non-1080p recording still takes the old path and is still wrong). macOS is
+  unaffected: Metal publishes `programFullBgra` and AVFoundation already read it.
+  **When touching the recording path, verify PIXELS** (mean luma of the output),
+  not just that frames were written.
 - **Zoom ingest runs a FRAME SYNCHRONIZER** (`ZoomEngineRuntime::frameSync_`, owner
   decision 2026-08-06) — the one-frame cushion every hardware switcher input has. A
   latest-wins slot cannot absorb a ~60Hz source and a ~60Hz render free-running against

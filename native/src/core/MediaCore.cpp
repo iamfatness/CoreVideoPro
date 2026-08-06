@@ -1716,6 +1716,14 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.audioCodec = "aac";
   request.audioBitrateKbps = std::max(32, std::min(512, recordingAudioBitrateKbps_));
   request.targetBitrateMbps = static_cast<int>(std::max(1.0, recordingTargetBitrateMbps_));
+  // Mux the program from the full-resolution NV12 tap instead of the 320x180
+  // preview thumbnail (the corner-tile defect). The tap is a dedicated 1080p
+  // scale-blit, so require an exact size match: feeding a 1080p buffer into a
+  // 4K writer would letterbox the show into part of the frame, which is the very
+  // failure being fixed. A non-1080p recording keeps the old path and stays
+  // wrong — closing that needs a program-sized readback, not this switch.
+  request.programNv12 = modules_.compositor && modules_.compositor->suppliesProgramNv12() &&
+                        request.width == 1920 && request.height == 1080;
   modules_.encoder->configureRecording(request);
 }
 
@@ -5169,6 +5177,31 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
   }
 
+  // Fetch the compositor's full-program 1080p NV12 tap ONCE per tick and share it
+  // with the recorder, RTMP and the virtual camera. The tap owns the slow GPU
+  // work; this worker only copies the latest ~3MB frame and never maps the render
+  // device. It must be taken BEFORE the encoder submit below: the recorder muxes
+  // from this buffer (RecordingSessionRequest::programNv12), and attaching it only
+  // to the senders' copy is what left recordings muxing the 320x180 preview.
+  static std::vector<std::uint8_t> programNv12;  // output worker is single-threaded
+  static int programNv12Width = 0;
+  static int programNv12Height = 0;
+  bool hasNewProgramNv12 = false;
+  if (!work.outputDestinations.empty() || virtualCameraEnabled_ || work.recordingActive) {
+    int tapWidth = 0;
+    int tapHeight = 0;
+    hasNewProgramNv12 = modules_.compositor->takeVcamNv12(programNv12, tapWidth, tapHeight);
+    if (hasNewProgramNv12) {
+      programNv12Width = tapWidth;
+      programNv12Height = tapHeight;
+    }
+  }
+  if (!programNv12.empty() && programNv12Width > 0 && programNv12Height > 0) {
+    work.programFrame.programNv12Width = programNv12Width;
+    work.programFrame.programNv12Height = programNv12Height;
+    work.programFrame.programNv12 = programNv12;
+  }
+
   // Encoder submit (uses the program-frame snapshot), output-sender network sync,
   // recording mux. encoder->submit early-returns when the frame carries no CPU
   // pixels, so when no output is active (readback skipped) this is harmless.
@@ -5201,28 +5234,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     } catch (...) {
     }
   };
-  // Fetch the compositor's full-program 1080p NV12 tap once and share it with
-  // both RTMP and the virtual camera. The tap owns the slow GPU work; this
-  // worker only copies the latest ~3MB frame and never maps the render device.
-  static std::vector<std::uint8_t> programNv12;  // output worker is single-threaded
-  static int programNv12Width = 0;
-  static int programNv12Height = 0;
-  bool hasNewProgramNv12 = false;
-  if (!outputDestinations.empty() || virtualCameraEnabled_) {
-    int width = 0;
-    int height = 0;
-    hasNewProgramNv12 = modules_.compositor->takeVcamNv12(programNv12, width, height);
-    if (hasNewProgramNv12) {
-      programNv12Width = width;
-      programNv12Height = height;
-    }
-  }
+  // The NV12 tap was fetched once, before the encoder submit above, and is
+  // already attached to work.programFrame — the senders inherit it through this
+  // copy, so there is exactly one take (and one ~3MB copy) per tick.
   auto outputProgramFrame = work.programFrame;
-  if (!outputDestinations.empty() && !programNv12.empty() && programNv12Width > 0 && programNv12Height > 0) {
-    outputProgramFrame.programNv12Width = programNv12Width;
-    outputProgramFrame.programNv12Height = programNv12Height;
-    outputProgramFrame.programNv12 = programNv12;
-  }
   const auto tOut0 = std::chrono::steady_clock::now();
   try {
     // RTMP pacing must follow wall time, not ProgramFrame::frameNumber. The
