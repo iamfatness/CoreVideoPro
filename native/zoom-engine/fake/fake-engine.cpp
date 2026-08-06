@@ -203,6 +203,8 @@ struct Target {
     // faster AND a more faithful model of the real write cost.
     std::vector<uint8_t> luma;
     uint32_t luma_w = 0, luma_h = 0;
+    bool clapPending = false;  // flash this frame full white (A/V clap)
+    bool clapRestore = false;  // and repaint the picture on the next one
 };
 
 // Z4a (zoom-audio-spec): deterministic TONE emission over the REAL audio ring
@@ -217,7 +219,27 @@ struct AudioToneTarget {
     uint64_t samplePos = 0;
     uint64_t packetsWritten = 0;
     std::chrono::steady_clock::time_point startedAt;
+    bool clapPending = false;      // a clap instant is waiting to be placed
+    int clapSamplesRemaining = 0;  // burst continues across packet boundaries
 };
+
+// ── A/V CLAP: content-level sync measurement without a person or a meeting ───
+// The real clap test needs someone in a live meeting clapping at a camera. This
+// synthesizes the same event: at a known instant the video goes FULL WHITE for
+// exactly one frame and the audio carries a full-scale burst at the SAME instant.
+// Record it, find both events in the file, and the separation IS the pipeline's
+// content-level A/V skew — the number no stream-alignment check can see.
+//
+// The two grids do not line up (audio packets are 10ms, video frames 16.7ms), so
+// the AUDIO burst is placed sample-accurately on the intended instant and the
+// VIDEO flash lands on the first frame boundary at or after it. The engine logs
+// how far that boundary fell so the measurement can subtract the source-side
+// quantisation instead of pretending it is zero.
+//
+// COREVIDEO_FAKE_CLAP_MS=<interval ms> (0/unset = off). Claps repeat so a
+// recording started at an arbitrary moment still captures several.
+static std::chrono::steady_clock::time_point g_clapInstant{};
+static constexpr int kClapBurstSamples = 96;  // 2ms at 48k: survives AAC, still sharp
 
 static std::mutex                 g_mtx;          // guards everything below
 static std::vector<Participant>   g_roster;       // current participants
@@ -367,6 +389,24 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
                 t.luma.data() + static_cast<size_t>(prev) * w, w);
     std::memset(yp + static_cast<size_t>(band) * w, 235, w);
 
+    // A/V clap: one full-white frame. Restored on the very next frame, so the
+    // event is exactly one frame long and unambiguous to find in the recording.
+    if (t.clapRestore) {
+        std::memcpy(yp, t.luma.data(), y_len);
+        t.clapRestore = false;
+    }
+    if (t.clapPending) {
+        std::memset(yp, 235, y_len);
+        t.clapPending = false;
+        t.clapRestore = true;
+        // How far past the intended instant this frame boundary fell. The
+        // measurement subtracts it — the source-side grid mismatch is not skew.
+        const auto lateUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - g_clapInstant).count();
+        diag("clap video pid=" + std::to_string(pid) + " frame=" +
+             std::to_string(t.frame_count + 1) + " late_us=" + std::to_string(lateUs));
+    }
+
     // Sequence protocol: odd while writing, even when complete (reader rejects odd).
     uint32_t seq = hdr->sequence + 1;
     if ((seq & 1u) == 0) ++seq;
@@ -443,6 +483,38 @@ static void produce_audio_locked(const std::string& uuid, AudioToneTarget& targe
                                  static_cast<double>(target.samplePos + static_cast<uint64_t>(i)) / 48000.0;
             pcm[i] = static_cast<int16_t>(std::lround(std::sin(phase) * 0.25 * 32767.0));
         }
+
+        // A/V clap: place the burst SAMPLE-ACCURATELY on the intended instant.
+        // This packet covers [packetStart, packetStart+10ms) on the target's own
+        // timeline, so the clap's offset inside it is exact even though packets
+        // are only written when due.
+        const auto packetStart =
+            target.startedAt + std::chrono::milliseconds(10 * static_cast<long long>(target.packetsWritten));
+        if (target.clapPending) {
+            const auto intoPacketUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                          g_clapInstant - packetStart).count();
+            if (intoPacketUs < 0) {
+                target.clapPending = false;  // already past: never fire a clap late
+            } else if (intoPacketUs < 10000) {
+                const int startSample = static_cast<int>(intoPacketUs * 48 / 1000);
+                target.clapPending = false;
+                target.clapSamplesRemaining = kClapBurstSamples;
+                diag("clap audio pid=" + std::to_string(target.participant_id) +
+                     " packet=" + std::to_string(target.packetsWritten) +
+                     " sample=" + std::to_string(startSample));
+                for (int i = startSample; i < 480 && target.clapSamplesRemaining > 0; ++i) {
+                    pcm[i] = (i & 1) ? 32000 : -32000;  // full-scale, unmistakable
+                    --target.clapSamplesRemaining;
+                }
+            }
+        } else if (target.clapSamplesRemaining > 0) {
+            // Burst straddled the packet boundary — finish it here so the event
+            // keeps its full width regardless of where in the packet it landed.
+            for (int i = 0; i < 480 && target.clapSamplesRemaining > 0; ++i) {
+                pcm[i] = (i & 1) ? 32000 : -32000;
+                --target.clapSamplesRemaining;
+            }
+        }
         target.samplePos += 480;
         std::atomic_thread_fence(std::memory_order_release);
         slot->seq = 2u * w + 2u;
@@ -473,6 +545,19 @@ static void producer_loop() {
     }
     const auto frameInterval = std::chrono::microseconds(1000000 / fps);
     diag("producer fps=" + std::to_string(fps));
+    int clapIntervalMs = 0;
+    if (const char* c = std::getenv("COREVIDEO_FAKE_CLAP_MS")) {
+        try { clapIntervalMs = std::stoi(c); } catch (...) {}
+        if (clapIntervalMs < 0) clapIntervalMs = 0;
+    }
+    const uint64_t clapEveryTicks =
+        clapIntervalMs > 0
+            ? (std::max)(static_cast<uint64_t>(1),
+                         static_cast<uint64_t>(fps) * static_cast<uint64_t>(clapIntervalMs) / 1000u)
+            : 0;
+    if (clapEveryTicks > 0)
+        diag("clap interval_ms=" + std::to_string(clapIntervalMs) +
+             " every_ticks=" + std::to_string(clapEveryTicks));
     auto next = clock::now();
     uint64_t tick = 0;
     while (g_running.load(std::memory_order_acquire)) {
@@ -481,6 +566,17 @@ static void producer_loop() {
             std::lock_guard<std::mutex> lk(g_mtx);
             if (g_joined) {
                 ++tick;
+                // A/V clap: arm video and audio from ONE instant so the two are
+                // genuinely the same event. Armed ON A FRAME BOUNDARY (not a
+                // wall-clock schedule) so the flash needs no timing correction:
+                // the audio burst is then placed sample-accurately on the very
+                // instant this frame is painted. Repeats, so a recording started
+                // at an arbitrary moment still captures several.
+                if (clapEveryTicks > 0 && tick % clapEveryTicks == 0) {
+                    g_clapInstant = clock::now();
+                    for (auto& [uuid, t] : g_targets) t.clapPending = true;
+                    for (auto& [uuid, a] : g_audioTargets) a.clapPending = true;
+                }
                 // COREVIDEO_FAKE_NO_VIDEO=1: audio-only mode for the audio soak
                 // (4x video synthesis saturated the box: worker 43.6/50 ticks/s
                 // -> feed-cap drops at exactly the deficit rate, soak run 17).
