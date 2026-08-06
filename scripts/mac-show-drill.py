@@ -261,16 +261,49 @@ def main():
         {"type": "start-recording-session", "sessionId": "drill"},
     ], 60000)
     time.sleep(6)
-    stop = step("record-stop", [{"type": "stop-encoder-session",
+    # Stop the SESSION first so the writer flushes its moov box, then let the
+    # file settle before probing. Killing the core (below) is a hard kill: an
+    # unfinalised mp4 has no moov atom and is unplayable, no matter how many
+    # bytes are on disk.
+    stop = step("record-stop", [{"type": "stop-recording-session",
                                  "reason": "drill complete"}], 66000)
+    step("encoder-stop", [{"type": "stop-encoder-session",
+                           "reason": "drill complete"}], 67000)
+    time.sleep(2.5)
 
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
 
     recording = snapshot.get("recording", {})
     artifact = recording.get("artifactPath", "")
+    if not os.path.isabs(artifact or ""):
+        artifact = os.path.join(REPO, artifact) if artifact else ""
+    # BYTES ARE NOT PROOF. This drill previously passed on a file with no moov
+    # atom — megabytes on disk that no player can open. A recording assertion
+    # has to open the artifact and find a real video stream, at the resolution
+    # the show was configured for (a 320x180 preview upscaled into a 1080p
+    # container is the failure the RTMP path shipped for months).
     if artifact and os.path.exists(artifact) and os.path.getsize(artifact) > 1024:
-        print(f"PASS recording wrote {os.path.getsize(artifact)} bytes")
+        probe = subprocess.run(
+            ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,nb_frames",
+             "-of", "default=nw=1:nk=1", artifact],
+            capture_output=True, text=True)
+        fields = [line for line in probe.stdout.split() if line]
+        if probe.returncode != 0 or len(fields) < 2:
+            failures.append(
+                f"recording is UNPLAYABLE ({os.path.getsize(artifact)} bytes on "
+                f"disk, ffprobe: {(probe.stderr or '').strip()[:120]}) — an "
+                f"unfinalised mp4 has no moov atom")
+        else:
+            width, height = int(fields[0]), int(fields[1])
+            if width < 1280 or height < 720:
+                failures.append(
+                    f"recording is {width}x{height} — the program was composited "
+                    f"at a higher resolution, so this is a downscaled proxy")
+            else:
+                print(f"PASS recording playable, {width}x{height}, "
+                      f"{os.path.getsize(artifact)} bytes")
     else:
         failures.append(f"recording produced no artifact (path={artifact or 'none'})")
 
