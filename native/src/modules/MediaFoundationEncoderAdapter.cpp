@@ -699,6 +699,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.active = true;
     // Fresh session: re-decide full-res vs preview from this session's frames.
     fullResLocked_ = false;
+    nv12MismatchWarned_ = false;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
     session_.encodedFrameCount = 0;
@@ -784,6 +785,23 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       session_.recordingDurationMs = recordingClock_.lastVideoPts100ns() / 10'000;
       updateBytesWritten();
       return;
+    }
+
+    // LOUD, not silently wrong: the full-resolution NV12 tap exists on this frame,
+    // yet we are about to mux BGRA. That happens when the recording size does not
+    // match the tap (MediaCore only routes NV12 at an exact 1080p match, because
+    // the tap is a pinned 1080p scale-blit and feeding a 4K writer would letterbox
+    // the show). The result is the 320x180 preview in the corner of the frame —
+    // the very defect #372/#373 fixed for 1080p — so say so instead of shipping a
+    // silently broken file. Once per session.
+    if (!programWritesNv12_ && !frame.programNv12.empty() && !nv12MismatchWarned_) {
+      nv12MismatchWarned_ = true;
+      session_.recordingWarning =
+          "Program recording is muxing the low-resolution preview: the full-resolution program "
+          "tap is " + std::to_string(frame.programNv12Width) + "x" +
+          std::to_string(frame.programNv12Height) + " but this recording is " +
+          std::to_string(request_.width) + "x" + std::to_string(request_.height) +
+          ". Record at the tap resolution for a full-quality program.";
     }
 
     const bool hasFull = !frame.programFullBgra.bgra.empty() &&
@@ -1333,6 +1351,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // at open from RecordingSessionRequest::programNv12 and fixed for the session —
   // the writer's media type cannot change once BeginWriting has been called.
   bool programWritesNv12_ = false;
+  // One-shot: the full-res tap was present but the recording size did not match it,
+  // so this file is the low-resolution preview. Warned once per session.
+  bool nv12MismatchWarned_ = false;
   // A3: plugin content latency (atomic — the audio worker sets it, the writer
   // thread reads it; the PTS clock latches per session).
   std::atomic<int> audioContentLatencySamples_{0};
