@@ -29,7 +29,7 @@ struct AudioPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                ForEach(["SHOW", "ROUTING", "SETUP"], id: \.self) { name in
+                ForEach(["SHOW", "ROUTING", "PLUG-INS", "SETUP"], id: \.self) { name in
                     Button(name) { surface = name }
                         .buttonStyle(.plain)
                         .font(.plexMono(10, .semibold))
@@ -50,6 +50,9 @@ struct AudioPane: View {
             switch surface {
             case "ROUTING":
                 AudioRoutingSurface()
+            case "PLUG-INS":
+                VstInsertsSurface()
+                    .padding(.top, 2)
             case "SETUP":
                 VStack(alignment: .leading, spacing: 12) {
                     MasteringRack()
@@ -159,10 +162,11 @@ struct ProcessingWorkspace: View {
                 MonoLabel("Channel")
                 Text(stripName).font(.grotesk(13, .semibold)).lineLimit(2)
                 Spacer()
-                Button("+ Add processing") {}
-                    .buttonStyle(GhostButtonStyle())
-                    .disabled(true)
-                    .help("VST inserts arrive with the plugin host port")
+                // Real VST3 insert selection (was a permanently disabled
+                // placeholder). The control disables itself — with the reason —
+                // whenever the isolated host cannot actually run an insert; see
+                // VstInserts.swift for what does and does not work on macOS.
+                VstChannelInsertControl(stripId: stripId)
             }
             .frame(width: 150, alignment: .leading)
             cell("GATE", on: inserts.gateEnabled,

@@ -51,6 +51,13 @@ struct ShellPrefs: Codable, Equatable {
     // Program color grade [exposure, contrast, saturation, temperature]. Empty
     // means neutral; a short array is tolerated so an older prefs file loads.
     var colorGrade: [Double] = []
+    // Per-channel VST3 insert selection ("vst:<name>" / "vst:<name>/<class>").
+    // OPTIONAL on purpose: Swift's synthesized Codable decodes a non-optional
+    // property with `decode` and THROWS on a missing key even when the property
+    // has a default — a new non-optional field would make every existing
+    // preferences file fail to decode, and load() silently falls back to
+    // defaults, wiping the operator's saved show. Optional gets decodeIfPresent.
+    var vstChannelSelections: [String: String]?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -90,6 +97,8 @@ struct ShellPrefs: Codable, Equatable {
         colorGrade = v(.colorGrade, [])
         automation = ((try? c.decodeIfPresent(AutomationExtrasState.self,
                                               forKey: .automation)) ?? nil)
+        vstChannelSelections = ((try? c.decodeIfPresent([String: String].self,
+                                                        forKey: .vstChannelSelections)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -121,6 +130,7 @@ struct ShellPrefs: Codable, Equatable {
         p.webinar = true
         p.colorGrade = [1, 2, 3, 4]
         p.automation = AutomationExtrasState()
+        p.vstChannelSelections = ["ch1": "vst:Test"]
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"
