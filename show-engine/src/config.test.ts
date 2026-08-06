@@ -194,3 +194,49 @@ describe("parseShowEngineConfig boxFill", () => {
     ).toThrow(/boxFill/);
   });
 });
+
+describe("parseShowEngineConfig without a mukana block", () => {
+  const { mukana: _omitted, ...registryLess } = minimal;
+
+  it("accepts a show that has no Mukana at all", () => {
+    expect(parseShowEngineConfig(registryLess).mukana).toBeNull();
+  });
+
+  it("still applies every other default", () => {
+    const config = parseShowEngineConfig(registryLess);
+    expect(config.capacity).toBe(16);
+    expect(config.utilityPinBase).toBe(9000);
+    expect(config.galleryCells).toBe(16);
+    expect(config.integrations).toEqual({
+      registry: false,
+      handsQueue: false,
+      questionFeed: false
+    });
+  });
+
+  it("rejects an omitted block when an integration is enabled", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...registryLess, integrations: { handsQueue: true } })
+    ).toThrow(/config\.mukana.*handsQueue/);
+  });
+
+  it("names every enabled integration in that rejection", () => {
+    expect(() =>
+      parseShowEngineConfig({
+        ...registryLess,
+        integrations: { registry: true, questionFeed: true }
+      })
+    ).toThrow(/registry, questionFeed/);
+  });
+
+  it("still parses a present block unchanged", () => {
+    expect(parseShowEngineConfig(minimal).mukana).toEqual({
+      baseUrl: "https://hoka.example.com/php-panel-rest.php",
+      event: "officehours",
+      panelistsIntervalMs: 5000,
+      handsIntervalMs: 2000,
+      questionIntervalMs: 2000,
+      maxBackoffMs: 60000
+    });
+  });
+});

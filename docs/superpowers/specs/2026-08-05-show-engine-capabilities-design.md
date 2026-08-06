@@ -101,21 +101,29 @@ Roles become keyed by a `PersonKey`, resolved the way identity already resolves:
 pin (when present)  →  normalized display name  →  participantId
 ```
 
-Normalization lowercases, collapses whitespace, and strips any PIN token, so
-`"Ann Lee | 4242"` and `"ann lee"` resolve alike — people retype their names when they
-rejoin. A name that normalizes to the empty string is treated as absent and falls through
-to `participantId`, so a blank or PIN-only display name never produces a shared key that
-would silently merge two people's roles. The key is computed once in `panelistDb` and
-carried on the `Panelist`, so every consumer reads the same key rather than re-deriving
-it.
+The tiers are tried in that order and the first hit wins, so a name carrying a PIN never
+reaches the name tier at all: `"Ann Lee | 4242"` resolves to `pin:4242` while `"ann lee"`
+resolves to `name:ann lee`. There is no separate PIN-stripping step, because a PIN-bearing
+name has already been answered by the PIN tier. Name normalization — used only when no PIN
+is present — lowercases and collapses whitespace, so `"Ann  Lee"` and `"ann lee"` resolve
+alike; people retype their names when they rejoin. Each tier's key carries its tier as a
+prefix, which is what makes cross-tier collision impossible rather than merely unlikely. A
+name that normalizes to the empty string is treated as absent and falls through to
+`participantId`, so a blank or PIN-only display name never produces a shared key that would
+silently merge two people's roles. The key is computed once in `panelistDb` and carried on
+the `Panelist`, so every consumer reads the same key rather than re-deriving it.
 
 Accepted consequences, stated plainly:
 - Two guests genuinely sharing a display name in a registry-less show collide and share a
   role.
 - A host who renames themselves mid-show loses their role; the operator reassigns.
+- A registry-backed guest who rejoins **without** their PIN crosses tiers — `pin:4242`
+  becomes `name:ann lee` — and loses their role the same way a rename does. Same accepted
+  outcome, different trigger, and the one most likely to be hit in practice, since dropping
+  the PIN suffix is an easy thing for a guest to do when retyping their name.
 
-Both are visible and recoverable; neither is silent. In a registry-backed show PINs win and
-neither can occur.
+All three are visible and recoverable; none is silent. In a registry-backed show where
+guests keep their PINs, PINs win and none can occur.
 
 `assignExclusiveRole` continues to enforce single-host/single-reader across both the
 override table and the registry. With no registry it enforces across the override table

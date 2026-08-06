@@ -13,6 +13,7 @@ import {
   canUse,
   effectiveBoxFill,
   isBoxFill,
+  personKeyForPin,
   resolveCapabilities,
   resolvePersonKey,
   type Capability,
@@ -27,6 +28,7 @@ import {
 describe("capability layer exports", () => {
   it("exports every runtime value the capability layer needs", () => {
     expect(resolvePersonKey).toBeTypeOf("function");
+    expect(personKeyForPin).toBeTypeOf("function");
     expect(resolveCapabilities).toBeTypeOf("function");
     expect(canUse).toBeTypeOf("function");
     expect(effectiveBoxFill).toBeTypeOf("function");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolvePersonKey } from "./personKey.js";
+import { personKeyForPin, resolvePersonKey } from "./personKey.js";
 
 describe("resolvePersonKey", () => {
   it("prefers the PIN when the name carries one", () => {
@@ -46,5 +46,24 @@ describe("resolvePersonKey", () => {
     const a = resolvePersonKey({ participantId: "z1", rawName: "John Smith" });
     const b = resolvePersonKey({ participantId: "z2", rawName: "John Smith" });
     expect(a).toBe(b);
+  });
+});
+
+describe("personKeyForPin", () => {
+  /**
+   * The registry is PIN-keyed and the override table is person-keyed, so
+   * these two must agree exactly or a registry-declared host can never be
+   * demoted. Sharing the helper is what keeps them agreeing; this pins it.
+   */
+  it("produces the same key resolvePersonKey gives a participant with that PIN", () => {
+    expect(personKeyForPin("1383")).toBe(
+      resolvePersonKey({ participantId: "z1", rawName: "J.J. | 1383" })
+    );
+  });
+
+  it("stays inside the PIN tier, so it cannot collide with a name key", () => {
+    expect(personKeyForPin("4242")).not.toBe(
+      resolvePersonKey({ participantId: "z2", rawName: "Ann Lee" })
+    );
   });
 });

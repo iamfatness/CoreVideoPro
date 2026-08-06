@@ -13,6 +13,19 @@ import { identityFromName } from "./identity.js";
 /** An opaque, prefixed identity key. Never parse it — only compare it. */
 export type PersonKey = string;
 
+/**
+ * The key a participant carrying `pin` resolves to. This is the sanctioned
+ * way to reach a PIN-tier key from a PIN — the registry is PIN-keyed while
+ * roles are person-keyed, so translating between them is a real need, and
+ * it belongs here beside the convention rather than as a prefix literal
+ * spelled at each call site. It is deliberately one-way: keys stay opaque,
+ * so callers holding a `PersonKey` build the keys they want to compare
+ * against instead of parsing the one they have.
+ */
+export function personKeyForPin(pin: string): PersonKey {
+  return `pin:${pin}`;
+}
+
 /** Collapse internal whitespace runs to a single space, lowercase, trim. */
 function normalizeDisplayName(displayName: string): string {
   return displayName.replace(/\s+/g, " ").trim().toLowerCase();
@@ -30,7 +43,7 @@ export function resolvePersonKey(
   const { pin, displayName } = identityFromName(participant.rawName);
 
   if (pin !== null) {
-    return `pin:${pin}`;
+    return personKeyForPin(pin);
   }
 
   const normalized = normalizeDisplayName(displayName);

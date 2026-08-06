@@ -41,7 +41,7 @@ export {
   type Slot,
   type TallySource
 } from "./contracts.js";
-export { resolvePersonKey, type PersonKey } from "./personKey.js";
+export { personKeyForPin, resolvePersonKey, type PersonKey } from "./personKey.js";
 export { canUse, resolveCapabilities, type HealthByEndpoint } from "./capabilities.js";
 
 export { parseShowEngineConfig, type MukanaConfig, type ShowEngineConfig } from "./config.js";

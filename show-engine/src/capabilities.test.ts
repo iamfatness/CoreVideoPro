@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import { canUse, resolveCapabilities, type HealthByEndpoint } from "./capabilities.js";
 import { parseShowEngineConfig } from "./config.js";
 
+/**
+ * A show with nothing configured — and therefore no Mukana block at all.
+ * Supplying one here would quietly assert the opposite of what this suite
+ * is about: an un-integrated show must not have to name an address the
+ * engine will never call.
+ */
 const base = {
   capacity: 8,
-  statePath: "/show/state.json",
-  mukana: { baseUrl: "https://example.com/rest.php", event: "officehours" }
+  statePath: "/show/state.json"
 };
 
 function health(overrides: Partial<HealthByEndpoint> = {}): HealthByEndpoint {
@@ -15,12 +20,27 @@ function health(overrides: Partial<HealthByEndpoint> = {}): HealthByEndpoint {
 
 const allOn = parseShowEngineConfig({
   ...base,
+  mukana: { baseUrl: "https://example.com/rest.php", event: "officehours" },
   integrations: { registry: true, handsQueue: true, questionFeed: true }
 });
 
 describe("resolveCapabilities", () => {
   it("reports every capability disabled when nothing is configured", () => {
-    const caps = resolveCapabilities(parseShowEngineConfig(base), health());
+    const config = parseShowEngineConfig(base);
+    expect(config.mukana).toBeNull();
+    const caps = resolveCapabilities(config, health());
+    expect(caps.registry).toEqual({ state: "disabled", detail: null });
+    expect(caps.handsQueue).toEqual({ state: "disabled", detail: null });
+    expect(caps.questionFeed).toEqual({ state: "disabled", detail: null });
+  });
+
+  it("reports every capability disabled with no Mukana even when its endpoints are failing", () => {
+    const failing = { state: "failing" as const, consecutiveFailures: 9, detail: "HTTP 503" };
+    const caps = resolveCapabilities(parseShowEngineConfig(base), {
+      panelists: failing,
+      hands: failing,
+      question: failing
+    });
     expect(caps.registry).toEqual({ state: "disabled", detail: null });
     expect(caps.handsQueue).toEqual({ state: "disabled", detail: null });
     expect(caps.questionFeed).toEqual({ state: "disabled", detail: null });

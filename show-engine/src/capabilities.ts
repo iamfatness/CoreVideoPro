@@ -13,7 +13,7 @@
  */
 
 import type { ShowEngineConfig } from "./config.js";
-import type { Capability, CapabilityState, ShowCapabilities } from "./contracts.js";
+import type { Capability, ShowCapabilities } from "./contracts.js";
 import type { MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
 
 export type HealthByEndpoint = Record<MukanaEndpoint, MukanaHealth>;
@@ -33,9 +33,10 @@ function resolveCapability(enabled: boolean, endpointHealth: MukanaHealth): Capa
   // Both "failing" and "dormant" map to "unavailable": outside show hours the
   // backend genuinely is not there, and the show should behave as though it
   // has none until it appears — that is correct, not a compromise.
-  const state: CapabilityState = "unavailable";
-  const detail = endpointHealth.detail ?? DEFAULT_UNAVAILABLE_DETAIL;
-  return { state, detail };
+  return {
+    state: "unavailable",
+    detail: endpointHealth.detail ?? DEFAULT_UNAVAILABLE_DETAIL
+  };
 }
 
 /**

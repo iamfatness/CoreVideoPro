@@ -50,7 +50,17 @@ export type ShowEngineConfig = {
    * first free slot. `pin - utilityPinBase` is the offset from the last slot.
    */
   utilityPinBase: number;
-  mukana: MukanaConfig;
+  /**
+   * How to reach Mukana, or `null` for a show that has no Mukana at all.
+   * A show with every integration off never calls the backend, so demanding
+   * its address would make the un-integrated show — the case the capability
+   * model exists to serve — invent a URL to start. The block is therefore
+   * omissible, and omitting it is only permitted while every flag in
+   * `integrations` is off: enabling one without an address is the
+   * "silently poll a URL nobody set" mistake in its other direction, and is
+   * rejected at parse time rather than discovered mid-show.
+   */
+  mukana: MukanaConfig | null;
   /** Absolute path of the persisted show-state JSON file */
   statePath: string;
   /** Roles automatically excluded from on-screen selection, e.g. the ASL interpreter. */
@@ -272,10 +282,62 @@ function parseLooks(root: Record<string, unknown>): LookDefinition[] {
   return looks;
 }
 
+/**
+ * Parse `root.mukana`, or `null` when the block is absent and no integration
+ * needs it. An absent block with an integration enabled is an error: that
+ * config asks the engine to poll an address it was never given.
+ */
+function parseMukana(
+  root: Record<string, unknown>,
+  integrations: ShowIntegrationsConfig
+): MukanaConfig | null {
+  if (root.mukana === undefined) {
+    const enabled = Object.entries(integrations)
+      .filter(([, on]) => on)
+      .map(([name]) => name);
+    if (enabled.length > 0) {
+      throw new Error(
+        `show-engine config.mukana: required when integrations are enabled (${enabled.join(", ")})`
+      );
+    }
+    return null;
+  }
+
+  const mukanaRaw = asRecord(root.mukana, "config.mukana");
+  return {
+    baseUrl: requireString(mukanaRaw, "baseUrl", "config.mukana.baseUrl"),
+    event: requireString(mukanaRaw, "event", "config.mukana.event"),
+    panelistsIntervalMs: optionalPositiveInt(
+      mukanaRaw,
+      "panelistsIntervalMs",
+      "config.mukana.panelistsIntervalMs",
+      DEFAULT_PANELISTS_INTERVAL_MS
+    ),
+    handsIntervalMs: optionalPositiveInt(
+      mukanaRaw,
+      "handsIntervalMs",
+      "config.mukana.handsIntervalMs",
+      DEFAULT_HANDS_INTERVAL_MS
+    ),
+    questionIntervalMs: optionalPositiveInt(
+      mukanaRaw,
+      "questionIntervalMs",
+      "config.mukana.questionIntervalMs",
+      DEFAULT_QUESTION_INTERVAL_MS
+    ),
+    maxBackoffMs: optionalPositiveInt(
+      mukanaRaw,
+      "maxBackoffMs",
+      "config.mukana.maxBackoffMs",
+      DEFAULT_MAX_BACKOFF_MS
+    )
+  };
+}
+
 /** Validate raw JSON into a ShowEngineConfig, applying defaults. Throws on any invalid field. */
 export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
   const root = asRecord(raw, "config");
-  const mukanaRaw = asRecord(root.mukana, "config.mukana");
+  const integrations = parseIntegrations(root);
 
   return {
     capacity: requirePositiveInt(root, "capacity", "config.capacity"),
@@ -294,34 +356,7 @@ export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
       "config.galleryCells",
       DEFAULT_GALLERY_CELLS
     ),
-    integrations: parseIntegrations(root),
-    mukana: {
-      baseUrl: requireString(mukanaRaw, "baseUrl", "config.mukana.baseUrl"),
-      event: requireString(mukanaRaw, "event", "config.mukana.event"),
-      panelistsIntervalMs: optionalPositiveInt(
-        mukanaRaw,
-        "panelistsIntervalMs",
-        "config.mukana.panelistsIntervalMs",
-        DEFAULT_PANELISTS_INTERVAL_MS
-      ),
-      handsIntervalMs: optionalPositiveInt(
-        mukanaRaw,
-        "handsIntervalMs",
-        "config.mukana.handsIntervalMs",
-        DEFAULT_HANDS_INTERVAL_MS
-      ),
-      questionIntervalMs: optionalPositiveInt(
-        mukanaRaw,
-        "questionIntervalMs",
-        "config.mukana.questionIntervalMs",
-        DEFAULT_QUESTION_INTERVAL_MS
-      ),
-      maxBackoffMs: optionalPositiveInt(
-        mukanaRaw,
-        "maxBackoffMs",
-        "config.mukana.maxBackoffMs",
-        DEFAULT_MAX_BACKOFF_MS
-      )
-    }
+    integrations,
+    mukana: parseMukana(root, integrations)
   };
 }

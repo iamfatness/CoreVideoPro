@@ -7,12 +7,14 @@
  * a show with no Mukana registry — and therefore no PINs — can still have its
  * host or reader chair moved. The registry itself stays PIN-keyed, because it
  * is a registry, not an override table: when a registry-declared holder is
- * demoted, its row is written under `pin:<PIN>`, exactly the key
- * `resolvePersonKey` produces for a participant carrying that PIN.
+ * demoted, its row is written under `personKeyForPin(pin)`, exactly the key
+ * `resolvePersonKey` produces for a participant carrying that PIN. That
+ * shared helper is the only place the PIN-tier prefix is spelled.
  */
 
-import type { MukanaDb, Role } from "./contracts.js";
-import type { PersonKey } from "./personKey.js";
+import type { MukanaDb, MukanaRecord } from "./contracts.js";
+import type { Role } from "./contracts.js";
+import { personKeyForPin, type PersonKey } from "./personKey.js";
 
 export type OverrideRecord = {
   personKey: PersonKey;
@@ -60,13 +62,23 @@ export class OverrideDb {
    * Prior holders declared by the registry are demoted with an explicit
    * override row keyed `pin:<PIN>`; prior holders that existed only as
    * overrides have their row removed.
+   *
+   * The registry is PIN-keyed and this table is person-keyed, so the two are
+   * bridged by re-keying the registry through `personKeyForPin` once, up
+   * front. That direction is the safe one: a `PersonKey` is opaque and is
+   * never taken apart to recover a PIN, so a non-registry key can never be
+   * mistaken for a registry one.
    */
   assignExclusiveRole(personKey: PersonKey, role: "host" | "reader", registry: MukanaDb): void {
     const priorRecord = this.entriesByPersonKey.get(personKey);
 
+    const registryByPersonKey = new Map<PersonKey, MukanaRecord>();
     for (const record of Object.values(registry)) {
+      registryByPersonKey.set(personKeyForPin(record.pin), record);
+    }
+
+    for (const [registryPersonKey, record] of registryByPersonKey) {
       if (record.role !== role) continue;
-      const registryPersonKey: PersonKey = `pin:${record.pin}`;
       if (this.entriesByPersonKey.has(registryPersonKey)) continue;
       this.entriesByPersonKey.set(registryPersonKey, {
         personKey: registryPersonKey,
@@ -78,18 +90,14 @@ export class OverrideDb {
 
     for (const [existingPersonKey, record] of [...this.entriesByPersonKey.entries()]) {
       if (record.role !== role) continue;
-      const registryPin = existingPersonKey.startsWith("pin:")
-        ? existingPersonKey.slice("pin:".length)
-        : undefined;
-      if (registryPin !== undefined && registry[registryPin]?.role === role) {
+      if (registryByPersonKey.get(existingPersonKey)?.role === role) {
         this.entriesByPersonKey.set(existingPersonKey, { ...record, role: "panelist" });
       } else {
         this.entriesByPersonKey.delete(existingPersonKey);
       }
     }
 
-    const registryPin = personKey.startsWith("pin:") ? personKey.slice("pin:".length) : undefined;
-    const registryRecord = registryPin === undefined ? undefined : registry[registryPin];
+    const registryRecord = registryByPersonKey.get(personKey);
     this.entriesByPersonKey.set(personKey, {
       personKey,
       displayName: registryRecord?.displayName ?? priorRecord?.displayName ?? "",

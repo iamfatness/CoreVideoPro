@@ -81,6 +81,22 @@ describe("degradation equivalence", () => {
     );
   });
 
+  /**
+   * The two tests below cannot fail while the one above passes, and are not
+   * independent coverage. `deriveTally` and `OverlayDirector.update` receive
+   * only the resolved `LookResolution` — never a `Capability` — and both are
+   * pure, so once the two resolutions are `toEqual` their outputs are too.
+   * They are kept as executable documentation that the equivalence is meant
+   * to reach all the way to what the operator sees.
+   *
+   * The guarantee itself is structural, not tested: a `Capability` is read
+   * at exactly one site in the package (`canUse` inside `effectiveBoxFill`),
+   * so nothing downstream of `LookResolution` is even able to branch on the
+   * difference between `unavailable` and `disabled`. Widening that read past
+   * one site is what would put these two at risk — a new consumer taking a
+   * `Capability` directly needs its own equivalence test, because this one
+   * would not notice.
+   */
   it("derives tally identically whether hands are unavailable or disabled", () => {
     if (parsed.kind !== "data") throw new Error("fixture");
     const context = { queue: parsed.queue, slots: slots.slots(), page: 0, manualBoxes };
