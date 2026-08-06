@@ -11,10 +11,22 @@
  * chairs — `OverrideDb` remains the sole authority on editorial roles.
  */
 
-import type { LookDefinition, PlateTone, QueueState, Slot, TallySource } from "./contracts.js";
+import type {
+  BoxFill,
+  Capability,
+  LookDefinition,
+  PlateTone,
+  QueueState,
+  Slot,
+  TallySource
+} from "./contracts.js";
+import { canUse } from "./capabilities.js";
 import { queueOrder } from "./handsQueue.js";
 
 export type BoxAssignment = { box: number; slot: number | null };
+
+/** Manual box assignments: box number → roster slot number. */
+export type ManualBoxAssignments = Record<number, number>;
 
 export type NameplatePosition = { kind: "host" } | { kind: "reader" } | { kind: "box"; box: number };
 
@@ -37,6 +49,7 @@ export type LookResolution = {
   nameplates: Nameplate[];
   page: number;
   pageCount: number;
+  boxFill: BoxFill;
 };
 
 /**
@@ -58,6 +71,25 @@ export function findChairSlots(slots: readonly Slot[]): {
   }
   return { hostSlot, readerSlot };
 }
+
+/**
+ * The strategy actually in effect for filling `look`'s guest boxes this
+ * tick. `"queue"` only when the look declares `"queue"` and `handsQueue` is
+ * usable; every other case — a `"manual"` look, or a `"queue"` look whose
+ * hands feed is unavailable or disabled — resolves to `"manual"`. This one
+ * rule is the whole degradation story for a hands feed dying mid-show:
+ * `resolveLook` treats an omitted `handsQueue` in its context the same way,
+ * substituting an unusable capability before it ever reaches here.
+ */
+export function effectiveBoxFill(look: LookDefinition, handsQueue: Capability): BoxFill {
+  if (look.boxFill === "queue" && canUse(handsQueue)) {
+    return "queue";
+  }
+  return "manual";
+}
+
+/** Stand-in for an omitted `handsQueue` capability: never usable. */
+const NO_HANDS_QUEUE: Capability = { state: "disabled", detail: null };
 
 /** How many pages the current queue spans for `look`, minimum 1. */
 export function pageCountFor(look: LookDefinition, queue: QueueState): number {
@@ -111,39 +143,75 @@ export function clampPage(look: LookDefinition, queue: QueueState, page: number)
 
 /**
  * Resolve `look` against `context.slots` and `context.queue`, windowed to
- * `context.page`. Throws when `page` is negative or at/beyond the queue's
- * page count for this look — an operator pressing "next" past the end
- * should see an error, not silence. This is the tool for a direct
- * operator action: callers that re-resolve on every tick, where the page
- * count can shrink out from under an unchanged page, should call
- * `clampPage` first and pass its result here instead of catching this
- * throw.
+ * `context.page`. Throws when `page` is negative or at/beyond the valid
+ * page range for this look's effective fill strategy — an operator
+ * pressing "next" past the end should see an error, not silence. This is
+ * the tool for a direct operator action: callers that re-resolve on every
+ * tick, where the page count can shrink out from under an unchanged page,
+ * should call `clampPage` first and pass its result here instead of
+ * catching this throw.
+ *
+ * `context.handsQueue` decides, via `effectiveBoxFill`, whether boxes fill
+ * from the queue or from `context.manualBoxes`; an omitted `handsQueue` is
+ * treated as unusable, the same as one that is `unavailable` or
+ * `disabled`. Under manual fill a stale assignment — naming a slot that is
+ * empty or does not exist in the roster — resolves to an empty box rather
+ * than throwing, since manual assignments are expected to outlive roster
+ * churn.
  */
 export function resolveLook(
   look: LookDefinition,
-  context: { queue: QueueState; slots: readonly Slot[]; page: number }
+  context: {
+    queue: QueueState;
+    slots: readonly Slot[];
+    page: number;
+    handsQueue?: Capability;
+    manualBoxes?: ManualBoxAssignments;
+  }
 ): LookResolution {
-  const { queue, slots, page } = context;
+  const { queue, slots, page, manualBoxes } = context;
+  const boxFill = effectiveBoxFill(look, context.handsQueue ?? NO_HANDS_QUEUE);
 
   if (page < 0) {
     throw new Error(`page ${page} is invalid: page must be >= 0`);
   }
 
-  const pageCount = pageCountFor(look, queue);
-  if (page >= pageCount) {
-    throw new Error(`page ${page} is out of range: this look has ${pageCount} page(s)`);
-  }
+  let pageCount: number;
+  let boxes: BoxAssignment[];
 
-  const candidates = queueOrder(queue);
-  const windowStart = page * look.boxes;
-  const windowEnd = windowStart + look.boxes;
-  const windowPins = candidates.slice(windowStart, windowEnd);
+  if (boxFill === "queue") {
+    pageCount = pageCountFor(look, queue);
+    if (page >= pageCount) {
+      throw new Error(`page ${page} is out of range: this look has ${pageCount} page(s)`);
+    }
 
-  const boxes: BoxAssignment[] = [];
-  for (let index = 0; index < look.boxes; index += 1) {
-    const pin = windowPins[index];
-    const slot = pin === undefined ? null : findSlotByPin(slots, pin);
-    boxes.push({ box: index + 1, slot });
+    const candidates = queueOrder(queue);
+    const windowStart = page * look.boxes;
+    const windowEnd = windowStart + look.boxes;
+    const windowPins = candidates.slice(windowStart, windowEnd);
+
+    boxes = [];
+    for (let index = 0; index < look.boxes; index += 1) {
+      const pin = windowPins[index];
+      const slot = pin === undefined ? null : findSlotByPin(slots, pin);
+      boxes.push({ box: index + 1, slot });
+    }
+  } else {
+    pageCount = 1;
+    if (page !== 0) {
+      throw new Error(`page ${page} is invalid: manual box fill has a single page`);
+    }
+
+    boxes = [];
+    for (let index = 0; index < look.boxes; index += 1) {
+      const boxNumber = index + 1;
+      const assignedSlot = manualBoxes?.[boxNumber];
+      const slot =
+        assignedSlot !== undefined && findPanelistBySlot(slots, assignedSlot) !== null
+          ? assignedSlot
+          : null;
+      boxes.push({ box: boxNumber, slot });
+    }
   }
 
   const { hostSlot: seatedHostSlot, readerSlot: seatedReaderSlot } = findChairSlots(slots);
@@ -201,6 +269,7 @@ export function resolveLook(
     boxes,
     nameplates,
     page,
-    pageCount
+    pageCount,
+    boxFill
   };
 }

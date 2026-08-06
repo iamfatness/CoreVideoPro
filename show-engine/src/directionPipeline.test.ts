@@ -16,6 +16,9 @@ import {
   type MukanaDb,
   type Participant
 } from "./index.js";
+import type { Capability } from "./contracts.js";
+
+const available: Capability = { state: "available", detail: null };
 
 function participant(participantId: string, rawName: string): Participant {
   return {
@@ -95,7 +98,12 @@ describe("direction pipeline", () => {
       readerPin: "2001"
     });
 
-    const resolution = resolveLook(teatime, { queue, slots: slots.slots(), page: 0 });
+    const resolution = resolveLook(teatime, {
+      queue,
+      slots: slots.slots(),
+      page: 0,
+      handsQueue: available
+    });
     expect(resolution.hostSlot).toBe(slots.slotOf("z-host"));
     expect(resolution.readerSlot).toBe(slots.slotOf("z-reader"));
     expect(chairs).toEqual({
@@ -121,7 +129,12 @@ describe("direction pipeline", () => {
     if (parsed.kind !== "data") return;
 
     const queue = stripChairs(parsed.queue, { hostPin: "1383", readerPin: "2001" });
-    const resolution = resolveLook(teatime, { queue, slots: slots.slots(), page: 0 });
+    const resolution = resolveLook(teatime, {
+      queue,
+      slots: slots.slots(),
+      page: 0,
+      handsQueue: available
+    });
 
     const boxedSlots = resolution.boxes.map((box) => box.slot);
     expect(boxedSlots).not.toContain(resolution.hostSlot);

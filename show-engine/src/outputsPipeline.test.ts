@@ -18,6 +18,9 @@ import {
   type MukanaDb,
   type Participant
 } from "./index.js";
+import type { Capability } from "./contracts.js";
+
+const available: Capability = { state: "available", detail: null };
 
 function participant(participantId: string, rawName: string): Participant {
   return {
@@ -82,7 +85,12 @@ describe("outputs pipeline", () => {
     if (parsed.kind !== "data") return;
 
     const queue = stripChairs(parsed.queue, { hostPin: "1383", readerPin: "2001" });
-    const look = resolveLook(teatime, { queue, slots: slots.slots(), page: 0 });
+    const look = resolveLook(teatime, {
+      queue,
+      slots: slots.slots(),
+      page: 0,
+      handsQueue: available
+    });
     const tally = deriveTally({
       source: { kind: "look", lookId: "teatime" },
       slots: slots.slots(),
@@ -131,7 +139,12 @@ describe("outputs pipeline", () => {
     if (parsed.kind !== "data") return;
 
     const queue = stripChairs(parsed.queue, { hostPin: "1383", readerPin: "2001" });
-    const look = resolveLook(teatime, { queue, slots: slots.slots(), page: 0 });
+    const look = resolveLook(teatime, {
+      queue,
+      slots: slots.slots(),
+      page: 0,
+      handsQueue: available
+    });
 
     const overlay = new OverlayDirector();
     overlay.update({ look, question: null, questionVisible: false });
@@ -156,7 +169,9 @@ describe("outputs pipeline", () => {
     if (full.kind !== "data") return;
 
     const page = clampPage(teatime, full.queue, 1);
-    expect(() => resolveLook(teatime, { queue: full.queue, slots: slots.slots(), page })).not.toThrow();
+    expect(() =>
+      resolveLook(teatime, { queue: full.queue, slots: slots.slots(), page, handsQueue: available })
+    ).not.toThrow();
 
     const drained = parseHandsPayload("NONE\n4242\nNONE");
     expect(drained.kind).toBe("data");
@@ -165,7 +180,12 @@ describe("outputs pipeline", () => {
     const clamped = clampPage(teatime, drained.queue, page);
     expect(clamped).toBe(0);
     expect(() =>
-      resolveLook(teatime, { queue: drained.queue, slots: slots.slots(), page: clamped })
+      resolveLook(teatime, {
+        queue: drained.queue,
+        slots: slots.slots(),
+        page: clamped,
+        handsQueue: available
+      })
     ).not.toThrow();
   });
 
