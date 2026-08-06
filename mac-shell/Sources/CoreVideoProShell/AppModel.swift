@@ -294,6 +294,15 @@ final class AppModel: ObservableObject {
     @Published var streamStatus = ""       // sender status from outputSenderSession
     @Published var streamDetail = ""       // lastResultCode / warning
 
+    // The LAST snapshots as the core sent them. applySnapshot/applyZoom cherry-
+    // pick the slices the panes bind to; the Diagnose surface and the support
+    // bundle need the WHOLE thing (health/encoderSession/outputSenderSession/
+    // recording.proof/zoom.readiness were all on the wire and thrown away).
+    // Never render these raw — Diagnostics.swift redacts before anything is
+    // written to disk.
+    @Published var lastSnapshot: JSONObject = [:]
+    @Published var lastZoomSnapshot: JSONObject = [:]
+
     private var bridge: MediaCoreBridge?
     private var syncTimer: Timer?
     private var zoomTimer: Timer?
@@ -549,6 +558,10 @@ final class AppModel: ObservableObject {
     }
 
     private func applySnapshot(_ snapshot: JSONObject) {
+        // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
+        // the Diagnose surface (an operator reads it hardest right when the
+        // core is unhappy).
+        if !snapshot.isEmpty { lastSnapshot = snapshot }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         clockText = formatter.string(from: Date())
@@ -644,6 +657,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applyZoom(_ snapshot: JSONObject) {
+        if !snapshot.isEmpty { lastZoomSnapshot = snapshot }
         meetingState = snapshot["meetingState"] as? String ?? meetingState
         rawMediaActive = snapshot["rawMediaActive"] as? Bool ?? rawMediaActive
         if let error = snapshot["lastError"] as? String, !error.isEmpty {
@@ -2061,6 +2075,110 @@ final class AppModel: ObservableObject {
     func stopCapture() {
         guard let bridge else { return }
         Task { _ = try? await bridge.request(["type": "zoom-stop-capture"]) }
+    }
+
+    // ── support bundle input (Diagnostics.swift owns the writing) ────────────
+
+    // Gathers the shell side of a support bundle ON THE MAIN ACTOR and hands it
+    // over as plain Data + value types, so the export can run off-main without
+    // dragging live model state across the hop.
+    //
+    // SECRETS: the stream key and the meeting passcode are DELIBERATELY not put
+    // in the payload — only their presence is. They are still passed as
+    // `knownSecretLiterals` so the writer can scrub them out of the LOG TAILS
+    // by identity and then verify no copy survived anywhere in the bundle.
+    func supportBundleInput() -> SupportBundleInput {
+        let paths = ShellPaths.resolve()
+        let shellState: JSONObject = [
+            "bridgeStatus": {
+                switch status {
+                case .connected(let renderer): return "connected:\(renderer)"
+                case .launching: return "launching"
+                case .exited(let code): return "exited:\(code)"
+                case .failed(let why): return "failed:\(why)"
+                }
+            }(),
+            "statusDetail": statusDetail,
+            "selectedTab": selectedTab.rawValue,
+            "corePath": paths.corePath ?? "",
+            "enginePath": paths.engineBinaryPath ?? "",
+            "shellLogPath": ShellLog.path,
+            "coreLogPath": CoreLog.path,
+            "mediaBinRoot": MediaBin.root,
+            "meetingState": meetingState,
+            "rawMediaActive": rawMediaActive,
+            "captureEnabled": captureEnabled,
+            "zoomSignedIn": zoomSignedIn,
+            "zoomOAuthStatus": zoomOAuthStatus,
+            "webinar": webinar,
+            "joinMeetingId": joinMeetingId,
+            "joinPasscodePresent": !joinPasscode.isEmpty,
+            "displayName": displayName,
+            "rosterCount": roster.count,
+            "assignedCount": assignedIds.count,
+            "liveInputCount": liveInputCount,
+            "slots": slots.map { slot in
+                [
+                    "id": slot.id, "kind": slot.kind, "sourceId": slot.sourceId,
+                    "name": slot.name, "inShow": slot.inShow, "iso": slot.iso,
+                    "offline": slot.offline,
+                ] as JSONObject
+            },
+            "scenes": scenes.map { scene in
+                [
+                    "id": scene.id, "name": scene.name, "layout": scene.layout,
+                    "layerCount": scene.layers.count,
+                ] as JSONObject
+            },
+            "programSceneId": programSceneId,
+            "previewSceneId": previewSceneId,
+            "multiviewLayoutMode": multiviewLayoutMode,
+            "multiviewTileCount": multiviewTileCount,
+            "canvas": ["width": canvasWidth, "height": canvasHeight, "fps": canvasFps],
+            "colorGrade": [
+                "exposure": gradeExposure, "contrast": gradeContrast,
+                "saturation": gradeSaturation, "temperature": gradeTemperature,
+            ],
+            "recording": [
+                "status": recordingStatus, "artifactPath": recordingArtifactPath,
+                "warning": recordingWarning, "format": recordFormat, "prefix": recordPrefix,
+                "isoEnabled": isoRecordingEnabled,
+                "isoSelectedSourceIds": isoSelectedSourceIds.sorted(),
+            ],
+            "streaming": [
+                "desired": streamingDesired, "url": streamUrl,
+                // NEVER the value. "is a key configured at all" is the question
+                // an operator triaging a dead stream actually needs answered.
+                "streamKeyConfigured": !streamKey.isEmpty,
+                "status": streamStatus, "detail": streamDetail,
+                "bitrateMbps": streamBitrateMbps, "codec": streamCodec,
+            ],
+            "audio": [
+                "masterLevel": masterLevel, "shortTermLufs": shortTermLufs,
+                "truePeakDbfs": truePeakDbfs, "limiterActive": limiterActive,
+                "masteringRideDb": masteringRideDb, "monitorStatus": monitorStatus,
+                "monitorEnabled": monitorEnabled, "monitorFeedbackRisk": monitorFeedbackRisk,
+                "stripCount": strips.count,
+            ],
+            "overlays": [
+                "onAir": overlaysOnAir, "lowerThirdPhase": lowerThirdPhase,
+                "logoBug": logoBug?.name ?? "",
+            ],
+            "autoProduction": [
+                "enabled": autoDirectEnabled, "ruleId": autoRuleId,
+                "recommendedSceneId": autoSceneId, "confidence": autoConfidence,
+                "status": autoStatus,
+            ],
+        ]
+        var input = SupportBundleInput()
+        input.coreSnapshotJson =
+            (try? JSONSerialization.data(withJSONObject: lastSnapshot)) ?? Data()
+        input.zoomSnapshotJson =
+            (try? JSONSerialization.data(withJSONObject: lastZoomSnapshot)) ?? Data()
+        input.shellStateJson = (try? JSONSerialization.data(withJSONObject: shellState)) ?? Data()
+        input.warnings = warnings
+        input.knownSecretLiterals = [streamKey, joinPasscode].filter { !$0.isEmpty }
+        return input
     }
 }
 
