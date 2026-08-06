@@ -283,6 +283,13 @@
                                Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
                     <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
+                    <!-- An in-show input whose source no longer exists (unplugged display,
+                         changed camera id) is dropped from the multiview silently, leaving
+                         an unexplained placeholder tile. Say so. Scalar string + Visibility
+                         only — never a snapshot-rate bound collection (0xc000027b). -->
+                    <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
+                             Message="{x:Bind ViewModel.ShowInputWarning, Mode=OneWay}"
+                             Visibility="{x:Bind ViewModel.ShowInputWarningVisibility, Mode=OneWay}" />
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
