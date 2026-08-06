@@ -11,7 +11,7 @@
  * chairs — `OverrideDb` remains the sole authority on editorial roles.
  */
 
-import type { LookDefinition, PlateTone, QueueState, Slot } from "./contracts.js";
+import type { LookDefinition, PlateTone, QueueState, Slot, TallySource } from "./contracts.js";
 import { queueOrder } from "./handsQueue.js";
 
 export type BoxAssignment = { box: number; slot: number | null };
@@ -30,6 +30,7 @@ export type LookResolution = {
   lookId: string;
   scenePreset: string;
   plateTone: PlateTone;
+  tallySource: TallySource;
   hostSlot: number | null;
   readerSlot: number | null;
   boxes: BoxAssignment[];
@@ -82,10 +83,41 @@ function findPanelistBySlot(slots: readonly Slot[], slotNumber: number) {
 }
 
 /**
+ * Clamp `page` into the valid range for `look` against the current
+ * `queue`: at least 0, at most `pageCountFor(look, queue) - 1`. This is
+ * the orchestrator's tool for a re-resolve at an unchanged page — the
+ * page count shrinks as hands are lowered, so a page that was valid a
+ * moment ago can fall out of range between ticks, and the orchestrator
+ * wants the nearest still-valid page rather than a thrown error. Callers
+ * making an explicit operator move (e.g. "next guest") should call
+ * `resolveLook` directly and let its throw surface instead of clamping
+ * here — clamping would silently swallow a "next" that ran off the end,
+ * which is exactly the silence an operator control must not produce.
+ *
+ * This is the one function in this module that clamps instead of
+ * throwing on an out-of-range value — the name itself is the guardrail: a
+ * caller reaching for `clampPage` is asking for clamping explicitly. A
+ * non-integer or `NaN` page still throws, because that indicates a caller
+ * bug rather than a stale value, and rounding it would hide the mistake.
+ */
+export function clampPage(look: LookDefinition, queue: QueueState, page: number): number {
+  if (!Number.isInteger(page)) {
+    throw new Error(`page ${page} is invalid: page must be an integer`);
+  }
+
+  const pageCount = pageCountFor(look, queue);
+  return Math.min(Math.max(page, 0), pageCount - 1);
+}
+
+/**
  * Resolve `look` against `context.slots` and `context.queue`, windowed to
  * `context.page`. Throws when `page` is negative or at/beyond the queue's
  * page count for this look — an operator pressing "next" past the end
- * should see an error, not silence.
+ * should see an error, not silence. This is the tool for a direct
+ * operator action: callers that re-resolve on every tick, where the page
+ * count can shrink out from under an unchanged page, should call
+ * `clampPage` first and pass its result here instead of catching this
+ * throw.
  */
 export function resolveLook(
   look: LookDefinition,
@@ -163,6 +195,7 @@ export function resolveLook(
     lookId: look.id,
     scenePreset: look.scenePreset,
     plateTone: look.plateTone,
+    tallySource: look.tallySource,
     hostSlot,
     readerSlot,
     boxes,

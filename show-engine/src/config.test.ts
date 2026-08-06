@@ -49,7 +49,8 @@ const look = {
   boxes: 2,
   includesHost: true,
   includesReader: true,
-  plateTone: "accent"
+  plateTone: "accent",
+  tallySource: "boxes"
 };
 
 describe("parseShowEngineConfig direction fields", () => {
@@ -93,6 +94,18 @@ describe("parseShowEngineConfig direction fields", () => {
     expect(config.looks[0]?.plateTone).toBe("neutral");
   });
 
+  it("rejects a look with an unknown tallySource", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...minimal, looks: [{ ...look, tallySource: "everyone" }] })
+    ).toThrow(/tallySource/);
+  });
+
+  it("defaults an omitted tallySource to boxes", () => {
+    const { tallySource: _omitted, ...withoutTallySource } = look;
+    const config = parseShowEngineConfig({ ...minimal, looks: [withoutTallySource] });
+    expect(config.looks[0]?.tallySource).toBe("boxes");
+  });
+
   it("rejects duplicate look ids", () => {
     expect(() => parseShowEngineConfig({ ...minimal, looks: [look, { ...look, label: "Other" }] })
     ).toThrow(/duplicate/i);
@@ -100,5 +113,27 @@ describe("parseShowEngineConfig direction fields", () => {
 
   it("rejects a non-array looks value", () => {
     expect(() => parseShowEngineConfig({ ...minimal, looks: {} })).toThrow(/looks/);
+  });
+});
+
+describe("parseShowEngineConfig gallery dimensions", () => {
+  it("defaults galleryCells to sixteen", () => {
+    expect(parseShowEngineConfig(minimal).galleryCells).toBe(16);
+  });
+
+  it("keeps an explicit galleryCells", () => {
+    expect(parseShowEngineConfig({ ...minimal, galleryCells: 9 }).galleryCells).toBe(9);
+  });
+
+  it("rejects a galleryCells below one", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, galleryCells: 0 })).toThrow(
+      /galleryCells/
+    );
+  });
+
+  it("rejects a non-integer galleryCells", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, galleryCells: 4.5 })).toThrow(
+      /galleryCells/
+    );
   });
 });

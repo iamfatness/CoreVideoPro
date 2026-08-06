@@ -9,7 +9,9 @@ import {
   DEFAULT_SKIP_ROLES,
   isPlateTone,
   isRole,
+  isTallySource,
   PLATE_TONES,
+  TALLY_SOURCES,
   type LookDefinition,
   type Role
 } from "./contracts.js";
@@ -42,6 +44,8 @@ export type ShowEngineConfig = {
   skipRoles: Role[];
   /** Named on-screen arrangements available to this show. */
   looks: LookDefinition[];
+  /** Number of cells in the on-screen gallery grid. */
+  galleryCells: number;
 };
 
 const DEFAULT_UTILITY_PIN_BASE = 9000;
@@ -49,6 +53,7 @@ const DEFAULT_PANELISTS_INTERVAL_MS = 5000;
 const DEFAULT_HANDS_INTERVAL_MS = 2000;
 const DEFAULT_QUESTION_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BACKOFF_MS = 60000;
+const DEFAULT_GALLERY_CELLS = 16;
 const MAX_LOOK_BOXES = 4;
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {
@@ -132,6 +137,21 @@ function optionalPlateTone(
   return value;
 }
 
+function optionalTallySource(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): LookDefinition["tallySource"] {
+  const value = source[key];
+  if (value === undefined) return "boxes";
+  if (!isTallySource(value)) {
+    throw new Error(
+      `show-engine ${label}: expected one of ${TALLY_SOURCES.join(", ")}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
 /** Parse `root.skipRoles`, defaulting to the ASL interpreter. Rejects, never coerces, unknown roles. */
 function parseSkipRoles(root: Record<string, unknown>): Role[] {
   const value = root.skipRoles;
@@ -160,7 +180,8 @@ function parseLook(entry: unknown, index: number): LookDefinition {
     boxes: requireIntInRange(lookRaw, "boxes", `${label}.boxes`, 0, MAX_LOOK_BOXES),
     includesHost: requireBoolean(lookRaw, "includesHost", `${label}.includesHost`),
     includesReader: requireBoolean(lookRaw, "includesReader", `${label}.includesReader`),
-    plateTone: optionalPlateTone(lookRaw, "plateTone", `${label}.plateTone`)
+    plateTone: optionalPlateTone(lookRaw, "plateTone", `${label}.plateTone`),
+    tallySource: optionalTallySource(lookRaw, "tallySource", `${label}.tallySource`)
   };
 }
 
@@ -198,6 +219,12 @@ export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
     statePath: requireString(root, "statePath", "config.statePath"),
     skipRoles: parseSkipRoles(root),
     looks: parseLooks(root),
+    galleryCells: optionalPositiveInt(
+      root,
+      "galleryCells",
+      "config.galleryCells",
+      DEFAULT_GALLERY_CELLS
+    ),
     mukana: {
       baseUrl: requireString(mukanaRaw, "baseUrl", "config.mukana.baseUrl"),
       event: requireString(mukanaRaw, "event", "config.mukana.event"),

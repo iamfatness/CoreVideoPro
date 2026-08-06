@@ -26,11 +26,39 @@ describe("parseHandsPayload", () => {
     expect(outcome.queue.current).toBeNull();
   });
 
-  it("drops entries that are not four digits", () => {
+  it("rejects a list line containing entries that are not four digits", () => {
+    // Superseded assertion: this body used to parse successfully with
+    // "abcd", "12345", and "777" silently dropped, keeping only "4242" in
+    // upcoming. Under the tightened contract (fix 1) a non-conforming entry
+    // makes the whole body invalid instead of being dropped, so a malformed
+    // upstream body can no longer masquerade as a healthy, merely-smaller
+    // queue.
     const outcome = parseHandsPayload("4242,abcd,12345,777\nNONE\nNONE");
-    expect(outcome.kind).toBe("data");
-    if (outcome.kind !== "data") return;
-    expect(outcome.queue.upcoming).toEqual(["4242"]);
+    expect(outcome).toEqual({
+      kind: "invalid",
+      reason: "upcoming line is not NONE or a comma-separated list of 4-digit PINs"
+    });
+  });
+
+  it("rejects an HTML body instead of reporting a healthy empty queue", () => {
+    const outcome = parseHandsPayload("<html>\n<body>x</body>\n</html>");
+    expect(outcome.kind).toBe("invalid");
+  });
+
+  it("rejects a body whose second line is prose, not NONE or a PIN", () => {
+    const outcome = parseHandsPayload("NONE\nService temporarily unavailable\nNONE");
+    expect(outcome).toEqual({
+      kind: "invalid",
+      reason: "current line is not NONE or a comma-separated list of 4-digit PINs"
+    });
+  });
+
+  it("still parses a well-formed body exactly as before", () => {
+    const outcome = parseHandsPayload("4242,5555\n1383\n9999,8888");
+    expect(outcome).toEqual({
+      kind: "data",
+      queue: { previous: ["9999", "8888"], current: "1383", upcoming: ["4242", "5555"] }
+    });
   });
 
   it("removes duplicates, keeping the first occurrence", () => {

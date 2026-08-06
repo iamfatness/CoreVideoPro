@@ -110,12 +110,19 @@ state. All algorithms cite their source actor in the companion reference.
    PIN≥9000 utility-participants pinned to the tail block (`pin − 9000` = offset from
    end); JSON backup/restore (`Panelists_Append_Remove_Replace_v4`). The heart of the
    engine; most exhaustive tests.
-7. **`speakerRecency`** — three strategies behind one interface
-   (`onActiveSpeaker(id) → decisions`): FILO eviction (`FILO_Speaker_Router`),
-   speaking-score bucket sort (`Smart_Gallery_Brain`), visible-set swapping
-   (`MV16_Router`). The role skip-list lives here: a speaker whose role is in
-   `skipRoles` (default `["aslinterpreter"]`) never triggers a change
-   (`Active_Speaker_Search_v6`).
+7. **`speakerRecency`** — two placement strategies behind one interface
+   (`PositionAssigner.onActiveSpeaker(id) → decisions`): FILO eviction
+   (`FILO_Speaker_Router`) and visible-set swapping (`MV16_Router`). A third
+   algorithm, speaking-score bucket sort (`Smart_Gallery_Brain`), is
+   `RecencyScores`; it deliberately does not implement `PositionAssigner`
+   because it orders candidates rather than placing them into positions. The
+   role skip-list does not live in this module: it is a shared predicate,
+   `shouldFollowSpeaker`, applied at dispatch by every consumer of an
+   active-speaker event — `ProgramBus` applies it internally, and the
+   orchestrator applies it before fanning the event out to any position
+   assigner. Default `skipRoles` is `["aslinterpreter"]`, so a speaker whose
+   role is in that list (e.g. an ASL interpreter signing continuously while a
+   panelist talks) never triggers a change (`Active_Speaker_Search_v6`).
 8. **`galleryDirector`** — 16-cell gallery state (reset-from-slots, replace, remove,
    empty), smart-gallery variant, grid transposition, emits cell-routing diffs
    (`Gallery_Remove_Replace_v3`, `MV16_Routing_Generator`, `List_Transposer`).
@@ -140,7 +147,7 @@ state. All algorithms cite their source actor in the companion reference.
     enumeration is gone, because it existed only to name pre-authored SPX templates;
     with our own renderer the layout is implied by which positions are occupied.
 13. **`config`** — typed show config replacing `infraestructure-*.js`: service
-    addresses, slot capacity, skip-roles, look definitions, poll intervals. JSON +
+    addresses, slot capacity, `skipRoles`, `looks`, `galleryCells`, poll intervals. JSON +
     schema; one-shot importer from the legacy files.
 
 **Boundary**
@@ -185,8 +192,8 @@ Companion builds actions from it dynamically. Params are positional
      `ohg.gallery.remove (int cell)` · `ohg.gallery.empty ()` ·
      `ohg.gallery.smart.set (bool on)`
    - `ohg.gfx.headline.in ()` / `.out ()` / `.change (string name, string location)`
-   - `ohg.gfx.question.in ()` / `.out ()`
-   - `ohg.gfx.rundown (string op /* play|continue|stop|next|prev */)`
+   - `ohg.gfx.question.in ()` / `.out ()` — the operator's show/hide controls; maps to
+     `overlayDirector`'s `questionVisible` input
    - `ohg.mukana.sync ()` · `ohg.mukana.override.set (int pin, string name,
      string location, string role)` · `ohg.mukana.override.delete (int pin)`
 3. **State.** Rich JSON on the `ohg` node of `/state` + WS push: `panelists` (master
@@ -210,7 +217,7 @@ Companion builds actions from it dynamically. Params are positional
       pager. (Thumbnails are state-only in v1.)
    3. **Gallery panel** — 16-cell grid, tap-to-replace/remove, smart toggle,
       reset-from-slots.
-   4. **GFX & data panel** — current question, headline in/out, rundown transport,
+   4. **GFX & data panel** — current question, headline in/out, question show/hide,
       Mukana sync status, override editor.
 
    In-app panels talk to the engine through the same action/state contract (via the
@@ -256,15 +263,21 @@ interface GalleryCell {           // galleryDirector output; cell 1..16
   slot: number | 0;               // 0 = blank
 }
 
-interface Look {                  // config-defined
+type TallySource = "boxes" | "activeSpeaker";
+
+interface LookDefinition {        // config-defined
   id: string;                     // e.g. "hr-q", "banter", "teatime", "panel-checks"
+  label: string;                  // display name, e.g. "Teatime"
   scenePreset: string;            // host scene/preset id
   boxes: number;                  // guest boxes
+  includesHost: boolean;
   includesReader: boolean;        // the "2-series" layouts
-  plateTone?: "neutral" | "accent" | "guest" | "breaking";  // maps to CVP PlateTone
+  plateTone: "neutral" | "accent" | "guest" | "breaking";  // maps to CVP PlateTone
+  tallySource: TallySource;       // "boxes" (default) or "activeSpeaker" (Panel Checks:
+                                   // the look's own boxes are not on air)
 }
 
-interface QueueState { prev: string[]; current: string | null; next: string[] } // PINs
+interface QueueState { previous: string[]; current: string | null; upcoming: string[] } // PINs
 ```
 
 Persistence: `liveSlots` + `galleryDirector` + `overrideDb` snapshot to an

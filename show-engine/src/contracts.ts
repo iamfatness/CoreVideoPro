@@ -75,6 +75,16 @@ export type MukanaRecord = {
 /** The Mukana registry, keyed by 4-digit PIN. */
 export type MukanaDb = Record<string, MukanaRecord>;
 
+/** The single audience question currently "up" on screen. */
+export type MukanaQuestion = {
+  key: string;
+  askerName: string;
+  text: string;
+  tag: string;
+  votes: number;
+  timestampMs: number;
+};
+
 /**
  * Visual weight applied to a lower-third plate. Mirrors `PlateTone` in the
  * app's `src/engine/lowerThird.ts` (a different package) so the host adapter
@@ -89,6 +99,21 @@ export function isPlateTone(value: unknown): value is PlateTone {
   return typeof value === "string" && (PLATE_TONES as readonly string[]).includes(value);
 }
 
+/**
+ * Which slots a look's tally should credit as on air. `"boxes"` (the
+ * default) is the ordinary case: host, reader, and guest boxes are all
+ * live. `"activeSpeaker"` exists for looks like the legacy "Panel Checks"
+ * state, where the look's own boxes are not on air and only the active
+ * speaker, shown full-frame, is.
+ */
+export type TallySource = "boxes" | "activeSpeaker";
+
+export const TALLY_SOURCES: readonly TallySource[] = ["boxes", "activeSpeaker"];
+
+export function isTallySource(value: unknown): value is TallySource {
+  return typeof value === "string" && (TALLY_SOURCES as readonly string[]).includes(value);
+}
+
 /** A named on-screen arrangement, e.g. "Host + Reader with two guests". */
 export type LookDefinition = {
   id: string;
@@ -98,6 +123,7 @@ export type LookDefinition = {
   includesHost: boolean;
   includesReader: boolean;
   plateTone: PlateTone;
+  tallySource: TallySource;
 };
 
 /** One position in the on-screen gallery grid. `slot: 0` means blank. */

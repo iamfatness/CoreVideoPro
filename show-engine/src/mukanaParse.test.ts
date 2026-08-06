@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MukanaRegistry, parseMukanaPanelists } from "./mukanaParse.js";
+import { MukanaRegistry, parseMukanaPanelists, parseMukanaQuestion } from "./mukanaParse.js";
 
 const panelistsBody = JSON.stringify({
   "0B6FTPaUEF": {
@@ -140,5 +140,83 @@ describe("MukanaRegistry", () => {
     registry.merge(incoming);
     incoming["1383"]!.displayName = "MUTATED";
     expect(registry.current()["1383"]?.displayName).toBe("J.J.");
+  });
+});
+
+const questionBody = JSON.stringify({
+  q: {
+    key: "-Mms66PcbK_9cAj550wX",
+    n: "Douglas Carmichael",
+    q: "Do you think that adding\nslickness to an event\r\naffects community?",
+    tag: "Zoom ISO",
+    ts: 1635176445667,
+    v: -1
+  },
+  hands: { prev: [], curr: [], next: [] }
+});
+
+describe("parseMukanaQuestion", () => {
+  it("maps the question record", () => {
+    const outcome = parseMukanaQuestion(questionBody);
+    expect(outcome.kind).toBe("data");
+    if (outcome.kind !== "data") return;
+    expect(outcome.question).toEqual({
+      key: "-Mms66PcbK_9cAj550wX",
+      askerName: "Douglas Carmichael",
+      text: "Do you think that adding slickness to an event affects community?",
+      tag: "Zoom ISO",
+      votes: -1,
+      timestampMs: 1635176445667
+    });
+  });
+
+  it("collapses newlines in the question text", () => {
+    const outcome = parseMukanaQuestion(
+      JSON.stringify({ q: { q: "one\n\ntwo\r\nthree  " } })
+    );
+    expect(outcome.kind).toBe("data");
+    if (outcome.kind !== "data") return;
+    expect(outcome.question?.text).toBe("one two three");
+  });
+
+  it("returns a null question when no q node is present", () => {
+    const outcome = parseMukanaQuestion(JSON.stringify({ hands: { prev: [] } }));
+    expect(outcome).toEqual({ kind: "data", question: null });
+  });
+
+  it("returns a null question when q is not an object", () => {
+    expect(parseMukanaQuestion(JSON.stringify({ q: "nope" }))).toEqual({
+      kind: "data",
+      question: null
+    });
+  });
+
+  it("defaults missing fields", () => {
+    const outcome = parseMukanaQuestion(JSON.stringify({ q: { n: "Ann" } }));
+    expect(outcome.kind).toBe("data");
+    if (outcome.kind !== "data") return;
+    expect(outcome.question).toEqual({
+      key: "",
+      askerName: "Ann",
+      text: "",
+      tag: "",
+      votes: 0,
+      timestampMs: 0
+    });
+  });
+
+  it("treats the off-hours envelope as dormant", () => {
+    const outcome = parseMukanaQuestion(
+      JSON.stringify({ status: 200, detail: "outside show hours" })
+    );
+    expect(outcome).toEqual({ kind: "dormant", detail: "outside show hours" });
+  });
+
+  it("reports an unparseable body as invalid", () => {
+    expect(parseMukanaQuestion("<html>502</html>").kind).toBe("invalid");
+  });
+
+  it("reports a non-object body as invalid", () => {
+    expect(parseMukanaQuestion("[1,2,3]").kind).toBe("invalid");
   });
 });

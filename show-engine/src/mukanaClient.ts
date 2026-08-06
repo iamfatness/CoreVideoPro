@@ -6,11 +6,22 @@
  * exponentially; a dormant registry is not a failure and does not back off.
  * Each of the three endpoints (panelists, hands, question) keeps its own
  * independent health record and interval, so a failure on one cannot affect
- * the backoff or health of the others.
+ * the backoff or health of the others. Each endpoint also keeps its own body
+ * parser — panelists and question bodies are JSON, hands is a legacy
+ * three-line text payload — so the shared `request()` takes the parser as a
+ * parameter rather than assuming one shape for every endpoint.
  */
 
 import type { MukanaConfig } from "./config.js";
-import { parseMukanaPanelists, type MukanaOutcome } from "./mukanaParse.js";
+import {
+  detectDormantEnvelope,
+  parseMukanaPanelists,
+  parseMukanaQuestion,
+  type DormantOutcome,
+  type MukanaOutcome,
+  type QuestionOutcome
+} from "./mukanaParse.js";
+import { parseHandsPayload, type HandsOutcome } from "./handsQueue.js";
 
 export type FetchResponse = {
   ok: boolean;
@@ -29,6 +40,15 @@ export type MukanaHealth = {
 export type MukanaEndpoint = "panelists" | "hands" | "question";
 
 const ENDPOINTS: readonly MukanaEndpoint[] = ["panelists", "hands", "question"];
+
+/**
+ * The three kinds every endpoint parser's outcome can take. Each concrete
+ * parser's return type (`MukanaOutcome`, `QuestionOutcome`, `HandsOutcome`)
+ * is structurally a member of this union — `data` carries endpoint-specific
+ * payload, `invalid` always carries `reason`, and `dormant` (when present)
+ * always carries `detail`.
+ */
+type ParseResult = { kind: "data" } | DormantOutcome | { kind: "invalid"; reason: string };
 
 function initialHealth(): MukanaHealth {
   return { state: "ok", consecutiveFailures: 0, detail: null };
@@ -73,15 +93,15 @@ export class MukanaClient {
   }
 
   async fetchPanelists(): Promise<MukanaOutcome> {
-    return this.request("panelists");
+    return this.request("panelists", parseMukanaPanelists);
   }
 
-  async fetchHands(): Promise<MukanaOutcome> {
-    return this.request("hands");
+  async fetchHands(): Promise<HandsOutcome | DormantOutcome> {
+    return this.request("hands", parseHandsPayload, { detectDormant: true });
   }
 
-  async fetchQuestion(): Promise<MukanaOutcome> {
-    return this.request("question");
+  async fetchQuestion(): Promise<QuestionOutcome> {
+    return this.request("question", parseMukanaQuestion);
   }
 
   private intervalFor(endpoint: MukanaEndpoint): number {
@@ -95,41 +115,77 @@ export class MukanaClient {
     }
   }
 
-  private async request(endpoint: MukanaEndpoint): Promise<MukanaOutcome> {
+  /**
+   * Shared request path for every endpoint: builds the URL, runs the
+   * injected fetch, classifies thrown errors and non-2xx responses as
+   * `invalid`, and updates health/backoff bookkeeping. The only thing that
+   * varies per endpoint is `parse` — how to turn the raw body into that
+   * endpoint's outcome type. `options.detectDormant` lets a caller opt into
+   * recognizing the shared off-hours envelope (via `detectDormantEnvelope`,
+   * the same classifier the JSON endpoints' own parsers use) before `parse`
+   * ever sees the body, for endpoints whose own outcome type has no
+   * `dormant` arm. Either way, `applyHealth` is the only place that writes
+   * a health record, so "shared bookkeeping" is true of the code, not just
+   * the intent.
+   */
+  private async request<T extends ParseResult>(
+    endpoint: MukanaEndpoint,
+    parse: (body: string) => T,
+    options?: { detectDormant?: boolean }
+  ): Promise<T | DormantOutcome> {
     const url = `${this.config.baseUrl}?event=${encodeURIComponent(this.config.event)}&req=${endpoint}`;
 
     let body: string;
     try {
       const response = await this.fetch(url);
       if (!response.ok) {
-        return this.fail(endpoint, `HTTP ${response.status} from ${endpoint}`);
+        return this.fail<T>(endpoint, `HTTP ${response.status} from ${endpoint}`);
       }
       body = await response.text();
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      return this.fail(endpoint, detail);
+      return this.fail<T>(endpoint, detail);
     }
 
-    const outcome = parseMukanaPanelists(body);
-    if (outcome.kind === "invalid") {
-      return this.fail(endpoint, outcome.reason);
+    if (options?.detectDormant) {
+      const dormant = detectDormantEnvelope(body);
+      if (dormant) {
+        return this.applyHealth(endpoint, dormant);
+      }
     }
 
-    if (outcome.kind === "dormant") {
-      this.state[endpoint] = { state: "dormant", consecutiveFailures: 0, detail: outcome.detail };
-      return outcome;
-    }
+    return this.applyHealth(endpoint, parse(body));
+  }
 
-    this.state[endpoint] = { state: "ok", consecutiveFailures: 0, detail: null };
+  /** Classify a parsed outcome and update the endpoint's health record accordingly. */
+  private applyHealth<T extends ParseResult>(endpoint: MukanaEndpoint, outcome: T): T {
+    const result: ParseResult = outcome;
+    if (result.kind === "invalid") {
+      this.state[endpoint] = {
+        state: "failing",
+        consecutiveFailures: this.state[endpoint].consecutiveFailures + 1,
+        detail: result.reason
+      };
+    } else if (result.kind === "dormant") {
+      this.state[endpoint] = { state: "dormant", consecutiveFailures: 0, detail: result.detail };
+    } else {
+      this.state[endpoint] = { state: "ok", consecutiveFailures: 0, detail: null };
+    }
     return outcome;
   }
 
-  private fail(endpoint: MukanaEndpoint, detail: string): MukanaOutcome {
+  /**
+   * Records a transport-level failure (thrown fetch, non-2xx) and returns it
+   * as an `invalid` outcome. Every endpoint's outcome type is constrained by
+   * `ParseResult` to include this exact `{ kind: "invalid", reason }` shape,
+   * so building it generically and asserting it as `T` is safe.
+   */
+  private fail<T extends ParseResult>(endpoint: MukanaEndpoint, detail: string): T {
     this.state[endpoint] = {
       state: "failing",
       consecutiveFailures: this.state[endpoint].consecutiveFailures + 1,
       detail
     };
-    return { kind: "invalid", reason: detail };
+    return { kind: "invalid", reason: detail } as T;
   }
 }

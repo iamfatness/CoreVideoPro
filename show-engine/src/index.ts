@@ -2,7 +2,9 @@
  * Public surface of the OHG show engine.
  * Plan 1 shipped the identity and roster core; Plan 2 adds the direction
  * layer — speaker recency, gallery, looks, the hands queue, and the
- * program bus — exported from here alongside it.
+ * program bus; Plan 3 adds the outputs layer — the shared active-speaker
+ * gate, per-endpoint Mukana parsing, look paging, tally derivation, and
+ * the overlay director — exported from here alongside both.
  */
 
 export {
@@ -11,13 +13,16 @@ export {
   EXCLUSIVE_ROLES,
   isRole,
   isPlateTone,
+  isTallySource,
   PLATE_TONES,
   programSourcesEqual,
   ROLES,
+  TALLY_SOURCES,
   type GalleryCell,
   type Identity,
   type LookDefinition,
   type MukanaDb,
+  type MukanaQuestion,
   type MukanaRecord,
   type Panelist,
   type Participant,
@@ -25,13 +30,22 @@ export {
   type ProgramSource,
   type QueueState,
   type Role,
-  type Slot
+  type Slot,
+  type TallySource
 } from "./contracts.js";
 
 export { parseShowEngineConfig, type MukanaConfig, type ShowEngineConfig } from "./config.js";
 export { extractPin, identityFromName, splitDisplayName } from "./identity.js";
 export { ZoomIngest, type ZoomEvent } from "./zoomIngest.js";
-export { MukanaRegistry, parseMukanaPanelists, type MukanaOutcome } from "./mukanaParse.js";
+export {
+  detectDormantEnvelope,
+  MukanaRegistry,
+  parseMukanaPanelists,
+  parseMukanaQuestion,
+  type DormantOutcome,
+  type MukanaOutcome,
+  type QuestionOutcome
+} from "./mukanaParse.js";
 export {
   MukanaClient,
   type FetchLike,
@@ -62,6 +76,7 @@ export {
 } from "./speakerRecency.js";
 export { GalleryDirector, GalleryError, type GalleryState } from "./galleryDirector.js";
 export {
+  clampPage,
   findChairSlots,
   pageCountFor,
   resolveLook,
@@ -72,3 +87,16 @@ export {
 } from "./lookDirector.js";
 export { ProgramBus, type ProgramState } from "./programBus.js";
 export { StateStore, type ShowState, type StateFs } from "./persistence.js";
+export { shouldFollowSpeaker } from "./speakerGate.js";
+export {
+  deriveTally,
+  tallyEquals,
+  type TallyMode,
+  type TallyState
+} from "./tallyPublisher.js";
+export {
+  OverlayDirector,
+  type OverlayInput,
+  type OverlayState,
+  type QuestionOverlay
+} from "./overlayDirector.js";
