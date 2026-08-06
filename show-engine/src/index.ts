@@ -98,7 +98,7 @@ export {
   type NameplatePosition
 } from "./lookDirector.js";
 export { ProgramBus, type ProgramState } from "./programBus.js";
-export { StateStore, type ShowState, type StateFs } from "./persistence.js";
+export { StateStore, STATE_VERSION, type PersistedShowState, type StateFs } from "./persistence.js";
 export { shouldFollowSpeaker } from "./speakerGate.js";
 export {
   deriveTally,
