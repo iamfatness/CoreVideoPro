@@ -697,6 +697,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
     closeWriters();
     session_.active = true;
+    // Fresh session: re-decide full-res vs preview from this session's frames.
+    fullResLocked_ = false;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
     session_.encodedFrameCount = 0;
@@ -745,10 +747,53 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       return;
     }
 
-    // Feed the REAL composed program pixels (F1+F3). The preview carries the
-    // tightly packed top-down BGRA the compositor produced this tick; when it is
-    // empty (metadata-only tick) we skip the frame rather than synthesize one.
-    const auto& preview = frame.preview;
+    // Feed the REAL composed program pixels — the FULL-RESOLUTION readback, not
+    // `preview`, which is a 320x180 UI thumbnail. Writing the thumbnail into a
+    // writer opened at program dimensions is what put the whole show into a
+    // small corner of an otherwise black frame (rig-verified against a July 13
+    // recording: 8995 frames at a flat luma of 4). The virtual camera and RTMP
+    // already prefer the full-res buffer; recording was the last consumer still
+    // reading the thumbnail.
+    //
+    // The full-res tap is ASYNCHRONOUS — it publishes on the ticks where its
+    // readback completed and is EMPTY on the rest — so once full-res has been
+    // seen, NEVER downgrade: a mid-file geometry flip is the same defect again.
+    // Skip the tick instead; the PTS clock timestamps each frame at the wall
+    // time it was submitted, so a skipped tick costs one frame, not sync.
+    //
+    // WINDOWS takes the NV12 branch: `programFullBgra` is populated only by the
+    // macOS Metal compositor, so on Windows the full-resolution program exists
+    // solely as NV12 (produced by MediaCore via compositor->takeVcamNv12, the
+    // same tap the virtual camera and RTMP consume). The writer was opened with
+    // a matching NV12 media type when the request asked for it.
+    if (programWritesNv12_) {
+      if (frame.programNv12.empty() || frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
+        return;  // async tap had nothing this tick — skip, never downgrade
+      }
+      const auto pts = recordingClock_.videoPts(now100ns(), frame.frameNumber);
+      if (!pts) {
+        return;  // already muxed
+      }
+      std::string nv12Error;
+      if (!program_.writeVideoNv12(frame.programNv12.data(), frame.programNv12Width,
+                                   frame.programNv12Height, *pts, nv12Error)) {
+        setRecordingFailure("Media Foundation could not write program video", nv12Error);
+        return;
+      }
+      ++session_.recordingVideoFrameCount;
+      session_.recordingDurationMs = recordingClock_.lastVideoPts100ns() / 10'000;
+      updateBytesWritten();
+      return;
+    }
+
+    const bool hasFull = !frame.programFullBgra.bgra.empty() &&
+                         frame.programFullBgra.width > 0 && frame.programFullBgra.height > 0;
+    if (hasFull) {
+      fullResLocked_ = true;
+    } else if (fullResLocked_) {
+      return;
+    }
+    const auto& preview = hasFull ? frame.programFullBgra : frame.preview;
     if (preview.bgra.empty() || preview.width <= 0 || preview.height <= 0) {
       return;
     }
@@ -1046,7 +1091,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     }
 
     std::string error;
-    if (!program_.open(programPath, width, height, fps, bitrate, codec, error)) {
+    // NV12 when the compositor supplies the full-resolution program tap (see
+    // RecordingSessionRequest::programNv12). It is both correct — the alternative
+    // is muxing the 320x180 preview — and cheaper, since MF's H.264 encoder takes
+    // NV12 natively and would otherwise convert from BGRA internally.
+    programWritesNv12_ = request_.programNv12;
+    if (!program_.open(programPath, width, height, fps, bitrate, codec, error,
+                       programWritesNv12_ ? VideoInput::Nv12 : VideoInput::Bgra)) {
       setRecordingFailure("Media Foundation could not open program MP4 writer", error);
       return;
     }
@@ -1273,6 +1324,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   RecordingPtsClock recordingClock_;
   std::chrono::steady_clock::time_point clockOrigin_ = std::chrono::steady_clock::now();
   bool comInitialized_ = false;
+  // Has this session ever muxed a FULL-RESOLUTION program frame? Once it has,
+  // never fall back to the 320x180 preview (see submit): a mid-file geometry
+  // change is the corner-tile defect all over again. Mirrors the RTMP sender's
+  // fullResLocked_, which exists for the same asynchronous-tap reason.
+  bool fullResLocked_ = false;
+  // Was the program writer opened with an NV12 media type this session? Decided
+  // at open from RecordingSessionRequest::programNv12 and fixed for the session —
+  // the writer's media type cannot change once BeginWriting has been called.
+  bool programWritesNv12_ = false;
   // A3: plugin content latency (atomic — the audio worker sets it, the writer
   // thread reads it; the PTS clock latches per session).
   std::atomic<int> audioContentLatencySamples_{0};

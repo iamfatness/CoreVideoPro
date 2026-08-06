@@ -2147,6 +2147,11 @@ class D3D11Compositor final : public ICompositor {
   // a plain ~3MB CPU copy - no GPU Map, no per-pixel conversion here, so it never
   // starves the audio/output worker. Returns false when there's no new frame
   // since the last take.
+  // This adapter's full-resolution program tap is NV12 (there is no full BGRA
+  // readback on Windows — that would be an 8MB/frame GPU->CPU Map). Recording
+  // mixes from it via RecordingSessionRequest::programNv12.
+  [[nodiscard]] bool suppliesProgramNv12() const override { return true; }
+
   bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& w, int& h) override {
     std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
     if (vcamLatestNv12_.empty() || vcamLatestGen_ == vcamLastTakenGen_) {

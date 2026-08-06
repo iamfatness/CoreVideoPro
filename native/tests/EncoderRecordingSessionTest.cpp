@@ -556,6 +556,144 @@ TEST(EncoderRecordingSession, MediaFoundationRestartedSessionStillMuxesAudio) {
   fs::remove_all(targetDir, cleanupError);
 }
 
+// Program recording must mux the FULL-RESOLUTION program readback, never the
+// 320x180 `preview` thumbnail. Writing the thumbnail into a writer opened at
+// program dimensions put the entire show into a small corner of a black frame —
+// shipped that way for months (a 2026-07-13 recording: 8995 frames, flat luma 4)
+// because no validator ever looked at the pixels, only at stream presence.
+// Pinned two ways: a full-res-only frame MUST mux (the old code early-returned
+// on the empty preview and wrote nothing), and once full-res has been seen a
+// later preview-only tick must NOT be written at the wrong geometry.
+TEST(EncoderRecordingSession, MediaFoundationProgramRecordingUsesFullResNotPreview) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable
+  }
+
+  namespace fs = std::filesystem;
+  std::error_code cleanupError;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-mf-fullres-regression";
+  fs::remove_all(targetDir, cleanupError);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "mf-fullres";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "fullres";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.targetBitrateMbps = 4;
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  // FULL-RES ONLY: no preview at all. The old code read `preview`, found it
+  // empty, and returned without muxing anything.
+  corevideo::modules::ProgramFrame full;
+  full.width = 640;
+  full.height = 360;
+  full.frameNumber = 1;
+  full.programFullBgra.width = 640;
+  full.programFullBgra.height = 360;
+  full.programFullBgra.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0xC0);
+  encoder->submit(full);
+
+  const auto afterFull = encoder->session();
+  EXPECT_EQ(afterFull.recordingVideoFrameCount, 1)
+      << "full-resolution program frame was not muxed; warning: " << afterFull.recordingWarning;
+
+  // Now a preview-only tick (the async tap missed this one). Having locked to
+  // full-res, it must be SKIPPED rather than written at thumbnail geometry.
+  corevideo::modules::ProgramFrame previewOnly;
+  previewOnly.width = 640;
+  previewOnly.height = 360;
+  previewOnly.frameNumber = 2;
+  previewOnly.preview.width = 320;
+  previewOnly.preview.height = 180;
+  previewOnly.preview.bgra.assign(static_cast<size_t>(320) * 180 * 4, 0x20);
+  encoder->submit(previewOnly);
+
+  EXPECT_EQ(encoder->session().recordingVideoFrameCount, 1)
+      << "a 320x180 preview was muxed after full-res was established — that is the "
+         "mid-file geometry flip that produces the corner-tile frame";
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, cleanupError);
+}
+
+// WINDOWS program recording: the full-resolution program exists only as NV12
+// (compositor->takeVcamNv12 -> ProgramFrame::programNv12; programFullBgra is
+// macOS-only), so a request carrying programNv12 must open the writer with an
+// NV12 media type and mux that buffer. Before this, Windows fell through to the
+// 320x180 preview and put the whole show in a corner of a black frame.
+TEST(EncoderRecordingSession, MediaFoundationProgramRecordingMuxesNv12ProgramTap) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable
+  }
+
+  namespace fs = std::filesystem;
+  std::error_code cleanupError;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-mf-nv12-program";
+  fs::remove_all(targetDir, cleanupError);
+
+  constexpr int kW = 640;
+  constexpr int kH = 360;
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "mf-nv12-program";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "nv12";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = kW;
+  request.height = kH;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.targetBitrateMbps = 4;
+  request.programNv12 = true;  // the compositor supplies the NV12 program tap
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  // NV12 program tap only — no preview at all. The pre-fix code read `preview`,
+  // found it empty, and muxed nothing.
+  corevideo::modules::ProgramFrame frame;
+  frame.width = kW;
+  frame.height = kH;
+  frame.frameNumber = 1;
+  frame.programNv12Width = kW;
+  frame.programNv12Height = kH;
+  frame.programNv12.assign(static_cast<size_t>(kW) * kH * 3 / 2, 0x80);
+  encoder->submit(frame);
+
+  const auto afterNv12 = encoder->session();
+  EXPECT_EQ(afterNv12.recordingVideoFrameCount, 1)
+      << "NV12 program tap was not muxed; warning: " << afterNv12.recordingWarning;
+  EXPECT_TRUE(afterNv12.recordingWarning.empty()) << afterNv12.recordingWarning;
+
+  // A tick where the async tap produced nothing must be SKIPPED, never written
+  // from the thumbnail — the writer's media type is NV12 and the geometry would
+  // be wrong regardless.
+  corevideo::modules::ProgramFrame previewOnly;
+  previewOnly.width = kW;
+  previewOnly.height = kH;
+  previewOnly.frameNumber = 2;
+  previewOnly.preview.width = 320;
+  previewOnly.preview.height = 180;
+  previewOnly.preview.bgra.assign(static_cast<size_t>(320) * 180 * 4, 0x20);
+  encoder->submit(previewOnly);
+  EXPECT_EQ(encoder->session().recordingVideoFrameCount, 1)
+      << "a preview thumbnail was muxed into an NV12 program writer";
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, cleanupError);
+}
+
 namespace {
 // Build a VideoFrame carrying a synthetic I420 payload (a flat mid-gray field),
 // keyed by `sourceId`/`frameId` — the shape the ISO gather hands to the encoder.
