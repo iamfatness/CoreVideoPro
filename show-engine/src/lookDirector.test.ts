@@ -265,39 +265,79 @@ describe("resolveLook", () => {
 
 describe("clampPage", () => {
   it("leaves a valid page alone", () => {
-    expect(clampPage(look, queue, 0)).toBe(0);
-    expect(clampPage(look, queue, 1)).toBe(1);
+    expect(clampPage(look, queue, 0, available)).toBe(0);
+    expect(clampPage(look, queue, 1, available)).toBe(1);
   });
 
   it("clamps a page past the end to the last valid page", () => {
-    expect(clampPage(look, queue, 5)).toBe(1);
+    expect(clampPage(look, queue, 5, available)).toBe(1);
   });
 
   it("clamps a negative page to zero", () => {
-    expect(clampPage(look, queue, -3)).toBe(0);
+    expect(clampPage(look, queue, -3, available)).toBe(0);
   });
 
   it("clamps to zero when the queue empties", () => {
     const empty: QueueState = { previous: [], current: null, upcoming: [] };
-    expect(clampPage(look, empty, 3)).toBe(0);
+    expect(clampPage(look, empty, 3, available)).toBe(0);
   });
 
   it("clamps to zero for a look with no boxes", () => {
-    expect(clampPage({ ...look, boxes: 0 }, queue, 2)).toBe(0);
+    expect(clampPage({ ...look, boxes: 0 }, queue, 2, available)).toBe(0);
   });
 
   it("throws on a non-integer page", () => {
-    expect(() => clampPage(look, queue, 1.5)).toThrow(/page/);
-    expect(() => clampPage(look, queue, Number.NaN)).toThrow(/page/);
+    expect(() => clampPage(look, queue, 1.5, available)).toThrow(/page/);
+    expect(() => clampPage(look, queue, Number.NaN, available)).toThrow(/page/);
   });
 
-  it("produces a page resolveLook accepts, for any integer input", () => {
-    for (const candidate of [-10, 0, 1, 2, 99]) {
-      const page = clampPage(look, queue, candidate);
-      expect(() =>
-        resolveLook(look, { queue, slots, page, handsQueue: available })
-      ).not.toThrow();
+  it("clamps to zero when the hands feed is unusable, since manual fill has one page", () => {
+    expect(clampPage(look, queue, 1, unavailable)).toBe(0);
+    expect(clampPage(look, queue, 1, disabled)).toBe(0);
+  });
+
+  it("treats an omitted capability as unusable, exactly as resolveLook does", () => {
+    expect(clampPage(look, queue, 1)).toBe(0);
+  });
+
+  /**
+   * The load-bearing property, quantified over BOTH the page and the
+   * capability. Restricting it to `page: 0` is what let a real bug through:
+   * a hands feed dying while the operator sat on page 1 left a stale page
+   * that a capability-blind clamp passed through unchanged, and resolveLook
+   * then threw on it — a capability state blocking a tick, which the whole
+   * capability model exists to prevent.
+   */
+  it("produces a page resolveLook accepts, for any integer page and any capability", () => {
+    for (const handsQueue of [available, unavailable, disabled]) {
+      for (const candidate of [-10, 0, 1, 2, 99]) {
+        const page = clampPage(look, queue, candidate, handsQueue);
+        expect(() =>
+          resolveLook(look, { queue, slots, page, handsQueue })
+        ).not.toThrow();
+      }
     }
+  });
+
+  it("survives the hands feed dying while the operator is on a later page", () => {
+    const page = clampPage(look, queue, 1, available);
+    expect(page).toBe(1);
+
+    const degraded = clampPage(look, queue, page, unavailable);
+    const resolution = resolveLook(look, {
+      queue,
+      slots,
+      page: degraded,
+      handsQueue: unavailable,
+      manualBoxes: { 1: 3, 2: 4 }
+    });
+    expect(resolution.boxFill).toBe("manual");
+    expect(resolution.page).toBe(0);
+    expect(resolution.pageCount).toBe(1);
+    expect(resolution.boxes).toEqual([
+      { box: 1, slot: 3 },
+      { box: 2, slot: 4 }
+    ]);
   });
 });
 

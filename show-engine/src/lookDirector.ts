@@ -98,6 +98,18 @@ export function pageCountFor(look: LookDefinition, queue: QueueState): number {
   return Math.max(1, Math.ceil(candidateCount / look.boxes));
 }
 
+/**
+ * How many pages `look` actually has under the fill strategy in effect.
+ * Manual fill has exactly one page — there is no queue to window through —
+ * so paging is inert rather than fatal when the hands feed dies. Both
+ * `clampPage` and `resolveLook` derive their page range from this one
+ * function, which is what keeps the documented clamp-then-resolve sequence
+ * safe: they cannot disagree about how many pages exist.
+ */
+function pageCountForFill(look: LookDefinition, queue: QueueState, boxFill: BoxFill): number {
+  return boxFill === "queue" ? pageCountFor(look, queue) : 1;
+}
+
 /** Find the roster slot number whose panelist carries the given PIN. */
 function findSlotByPin(slots: readonly Slot[], pin: string): number | null {
   for (const entry of slots) {
@@ -116,15 +128,25 @@ function findPanelistBySlot(slots: readonly Slot[], slotNumber: number) {
 
 /**
  * Clamp `page` into the valid range for `look` against the current
- * `queue`: at least 0, at most `pageCountFor(look, queue) - 1`. This is
- * the orchestrator's tool for a re-resolve at an unchanged page — the
- * page count shrinks as hands are lowered, so a page that was valid a
- * moment ago can fall out of range between ticks, and the orchestrator
- * wants the nearest still-valid page rather than a thrown error. Callers
- * making an explicit operator move (e.g. "next guest") should call
- * `resolveLook` directly and let its throw surface instead of clamping
- * here — clamping would silently swallow a "next" that ran off the end,
- * which is exactly the silence an operator control must not produce.
+ * `queue` and the fill strategy `handsQueue` puts in effect: at least 0,
+ * at most `pageCount - 1`. This is the orchestrator's tool for a
+ * re-resolve at an unchanged page — the page count shrinks as hands are
+ * lowered, so a page that was valid a moment ago can fall out of range
+ * between ticks, and the orchestrator wants the nearest still-valid page
+ * rather than a thrown error. Callers making an explicit operator move
+ * (e.g. "next guest") should call `resolveLook` directly and let its throw
+ * surface instead of clamping here — clamping would silently swallow a
+ * "next" that ran off the end, which is exactly the silence an operator
+ * control must not produce.
+ *
+ * `handsQueue` must be the same capability the following `resolveLook`
+ * call is given, and an omitted one means unusable in both — otherwise the
+ * two disagree about the page range. That disagreement was a real bug: a
+ * hands feed dying while the operator sat on page 2 degraded the look to
+ * manual fill (one page) while a capability-blind clamp still returned 2,
+ * and the tick then threw. A capability state must never be able to throw
+ * a tick, so the clamp reads the effective fill exactly as the resolver
+ * does.
  *
  * This is the one function in this module that clamps instead of
  * throwing on an out-of-range value — the name itself is the guardrail: a
@@ -132,12 +154,18 @@ function findPanelistBySlot(slots: readonly Slot[], slotNumber: number) {
  * non-integer or `NaN` page still throws, because that indicates a caller
  * bug rather than a stale value, and rounding it would hide the mistake.
  */
-export function clampPage(look: LookDefinition, queue: QueueState, page: number): number {
+export function clampPage(
+  look: LookDefinition,
+  queue: QueueState,
+  page: number,
+  handsQueue?: Capability
+): number {
   if (!Number.isInteger(page)) {
     throw new Error(`page ${page} is invalid: page must be an integer`);
   }
 
-  const pageCount = pageCountFor(look, queue);
+  const boxFill = effectiveBoxFill(look, handsQueue ?? NO_HANDS_QUEUE);
+  const pageCount = pageCountForFill(look, queue, boxFill);
   return Math.min(Math.max(page, 0), pageCount - 1);
 }
 
@@ -149,7 +177,8 @@ export function clampPage(look: LookDefinition, queue: QueueState, page: number)
  * the tool for a direct operator action: callers that re-resolve on every
  * tick, where the page count can shrink out from under an unchanged page,
  * should call `clampPage` first and pass its result here instead of
- * catching this throw.
+ * catching this throw — handing `clampPage` the same `handsQueue` given
+ * here, so the clamp and this call agree on the page range.
  *
  * `context.handsQueue` decides, via `effectiveBoxFill`, whether boxes fill
  * from the queue or from `context.manualBoxes`; an omitted `handsQueue` is
@@ -176,11 +205,10 @@ export function resolveLook(
     throw new Error(`page ${page} is invalid: page must be >= 0`);
   }
 
-  let pageCount: number;
+  const pageCount = pageCountForFill(look, queue, boxFill);
   let boxes: BoxAssignment[];
 
   if (boxFill === "queue") {
-    pageCount = pageCountFor(look, queue);
     if (page >= pageCount) {
       throw new Error(`page ${page} is out of range: this look has ${pageCount} page(s)`);
     }
@@ -197,7 +225,6 @@ export function resolveLook(
       boxes.push({ box: index + 1, slot });
     }
   } else {
-    pageCount = 1;
     if (page !== 0) {
       throw new Error(`page ${page} is invalid: manual box fill has a single page`);
     }

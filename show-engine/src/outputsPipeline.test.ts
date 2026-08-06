@@ -168,7 +168,7 @@ describe("outputs pipeline", () => {
     expect(full.kind).toBe("data");
     if (full.kind !== "data") return;
 
-    const page = clampPage(teatime, full.queue, 1);
+    const page = clampPage(teatime, full.queue, 1, available);
     expect(() =>
       resolveLook(teatime, { queue: full.queue, slots: slots.slots(), page, handsQueue: available })
     ).not.toThrow();
@@ -177,7 +177,7 @@ describe("outputs pipeline", () => {
     expect(drained.kind).toBe("data");
     if (drained.kind !== "data") return;
 
-    const clamped = clampPage(teatime, drained.queue, page);
+    const clamped = clampPage(teatime, drained.queue, page, available);
     expect(clamped).toBe(0);
     expect(() =>
       resolveLook(teatime, {
