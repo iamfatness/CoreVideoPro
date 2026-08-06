@@ -11,14 +11,17 @@
 
 import { coerceRole, type MukanaDb, type MukanaQuestion, type MukanaRecord } from "./contracts.js";
 
+/** The shared off-hours envelope, common to every endpoint's dormant arm. */
+export type DormantOutcome = { kind: "dormant"; detail: string };
+
 export type MukanaOutcome =
   | { kind: "data"; db: MukanaDb }
-  | { kind: "dormant"; detail: string }
+  | DormantOutcome
   | { kind: "invalid"; reason: string };
 
 export type QuestionOutcome =
   | { kind: "data"; question: MukanaQuestion | null }
-  | { kind: "dormant"; detail: string }
+  | DormantOutcome
   | { kind: "invalid"; reason: string };
 
 function readString(source: Record<string, unknown>, key: string): string {
@@ -57,13 +60,30 @@ function decodeJsonObject(
 }
 
 /**
- * The off-hours status envelope, shared by both endpoints. Returns null when
+ * The off-hours status envelope, shared by every endpoint. Returns null when
  * the body carries no `status` key, i.e. it is not the dormant envelope.
  */
-function dormantGate(root: Record<string, unknown>): { kind: "dormant"; detail: string } | null {
+function dormantGate(root: Record<string, unknown>): DormantOutcome | null {
   if (!("status" in root)) return null;
   const detail = readString(root, "detail");
-  return { kind: "dormant", detail: detail.length > 0 ? detail : "registry dormant" };
+  return { kind: "dormant", detail: detail.length > 0 ? detail : "mukana endpoint dormant" };
+}
+
+/**
+ * Detect the shared off-hours envelope directly from a raw response body.
+ * This is the single place that recognizes "status" as the off-hours
+ * signal: `parseMukanaPanelists` and `parseMukanaQuestion` call `dormantGate`
+ * on the JSON object they have already decoded, and this wraps the same
+ * check with its own decode step for callers — like the hands endpoint's
+ * legacy three-line text parser — whose own outcome type has no `dormant`
+ * arm to report it through. Returns null both when the body isn't JSON and
+ * when it is JSON but not the dormant envelope; either way that just means
+ * "not dormant," not an error.
+ */
+export function detectDormantEnvelope(body: string): DormantOutcome | null {
+  const decoded = decodeJsonObject(body);
+  if (decoded.kind === "invalid") return null;
+  return dormantGate(decoded.root);
 }
 
 /** Parse a raw panelists response body into a PIN-keyed registry. */

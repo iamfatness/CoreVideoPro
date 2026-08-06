@@ -13,9 +13,11 @@ export {
   EXCLUSIVE_ROLES,
   isRole,
   isPlateTone,
+  isTallySource,
   PLATE_TONES,
   programSourcesEqual,
   ROLES,
+  TALLY_SOURCES,
   type GalleryCell,
   type Identity,
   type LookDefinition,
@@ -28,16 +30,19 @@ export {
   type ProgramSource,
   type QueueState,
   type Role,
-  type Slot
+  type Slot,
+  type TallySource
 } from "./contracts.js";
 
 export { parseShowEngineConfig, type MukanaConfig, type ShowEngineConfig } from "./config.js";
 export { extractPin, identityFromName, splitDisplayName } from "./identity.js";
 export { ZoomIngest, type ZoomEvent } from "./zoomIngest.js";
 export {
+  detectDormantEnvelope,
   MukanaRegistry,
   parseMukanaPanelists,
   parseMukanaQuestion,
+  type DormantOutcome,
   type MukanaOutcome,
   type QuestionOutcome
 } from "./mukanaParse.js";
@@ -91,6 +96,7 @@ export {
 } from "./tallyPublisher.js";
 export {
   OverlayDirector,
+  type OverlayInput,
   type OverlayState,
   type QuestionOverlay
 } from "./overlayDirector.js";

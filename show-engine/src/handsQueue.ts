@@ -17,13 +17,29 @@ export type HandsOutcome =
 
 const PIN_PATTERN = /^\d{4}$/;
 
-/** Split a comma-separated list into trimmed, valid, deduplicated PINs. */
-function parseList(raw: string, seen: Set<string>): string[] {
+/**
+ * Validate one payload line: it must be either the sentinel `NONE`
+ * (case-sensitive, checked against the whole trimmed line) or a
+ * comma-separated list whose every entry, after trimming, is exactly four
+ * digits. Anything else — an HTML error page, a captive-portal splash, a
+ * PHP warning block, a stray non-numeric token — is not a queue the engine
+ * can silently treat as empty, so it is reported as unparseable rather than
+ * dropped. Returns the validated entries (empty for `NONE`), or `null` when
+ * the line does not conform to either shape.
+ */
+function parseLine(raw: string): string[] | null {
+  if (raw.trim() === "NONE") return [];
+  const entries = raw.split(",").map((entry) => entry.trim());
+  for (const entry of entries) {
+    if (!PIN_PATTERN.test(entry)) return null;
+  }
+  return entries;
+}
+
+/** Dedup an already-validated list of PINs against PINs seen so far. */
+function dedup(entries: readonly string[], seen: Set<string>): string[] {
   const result: string[] = [];
-  for (const rawEntry of raw.split(",")) {
-    const entry = rawEntry.trim();
-    if (entry.length === 0 || entry === "NONE") continue;
-    if (!PIN_PATTERN.test(entry)) continue;
+  for (const entry of entries) {
     if (seen.has(entry)) continue;
     seen.add(entry);
     result.push(entry);
@@ -40,17 +56,44 @@ export function parseHandsPayload(body: string): HandsOutcome {
 
   const [upcomingLine, currentLine, previousLine] = lines as [string, string, string];
 
-  const seen = new Set<string>();
-
-  const currentEntry = currentLine.trim();
-  let current: string | null = null;
-  if (currentEntry.length > 0 && currentEntry !== "NONE" && PIN_PATTERN.test(currentEntry)) {
-    current = currentEntry;
-    seen.add(currentEntry);
+  const upcomingEntries = parseLine(upcomingLine);
+  if (upcomingEntries === null) {
+    return {
+      kind: "invalid",
+      reason: "upcoming line is not NONE or a comma-separated list of 4-digit PINs"
+    };
   }
 
-  const upcoming = parseList(upcomingLine, seen);
-  const previous = parseList(previousLine, seen);
+  const currentEntries = parseLine(currentLine);
+  if (currentEntries === null) {
+    return {
+      kind: "invalid",
+      reason: "current line is not NONE or a comma-separated list of 4-digit PINs"
+    };
+  }
+  if (currentEntries.length > 1) {
+    return { kind: "invalid", reason: "current line must be NONE or a single 4-digit PIN" };
+  }
+
+  const previousEntries = parseLine(previousLine);
+  if (previousEntries === null) {
+    return {
+      kind: "invalid",
+      reason: "previous line is not NONE or a comma-separated list of 4-digit PINs"
+    };
+  }
+
+  const seen = new Set<string>();
+
+  let current: string | null = null;
+  const [currentPin] = currentEntries;
+  if (currentPin !== undefined) {
+    current = currentPin;
+    seen.add(currentPin);
+  }
+
+  const upcoming = dedup(upcomingEntries, seen);
+  const previous = dedup(previousEntries, seen);
 
   return { kind: "data", queue: { previous, current, upcoming } };
 }

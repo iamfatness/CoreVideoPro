@@ -11,7 +11,6 @@ import {
   parseHandsPayload,
   parseMukanaQuestion,
   resolveLook,
-  shouldFollowSpeaker,
   stripChairs,
   tallyEquals,
   ZoomIngest,
@@ -101,19 +100,25 @@ describe("outputs pipeline", () => {
     const asl = aslSlot === null ? null : slots.slots()[aslSlot - 1]?.panelist ?? null;
     expect(asl?.role).toBe("aslinterpreter");
 
-    expect(shouldFollowSpeaker(asl?.role ?? null, ["aslinterpreter"])).toBe(false);
-
     const bus = new ProgramBus();
     bus.setActiveSpeakerFollow(true);
     bus.onActiveSpeaker("z-ann", "panelist");
     bus.onActiveSpeaker("z-asl", asl?.role ?? "panelist");
+
+    // The property that actually breaks if ProgramBus stops gating the
+    // interpreter: the bus's own active-speaker id must still be the last
+    // panelist who was allowed through, not the interpreter who just spoke.
+    expect(bus.state().activeSpeakerId).toBe("z-ann");
+
+    const activeSpeakerId = bus.state().activeSpeakerId;
+    const activeSpeakerSlot = activeSpeakerId === null ? null : slots.slotOf(activeSpeakerId);
 
     const tally = deriveTally({
       source: bus.state().program,
       slots: slots.slots(),
       gallery: [],
       look: null,
-      activeSpeakerSlot: slots.slotOf("z-ann")
+      activeSpeakerSlot
     });
     expect(tally.onAirParticipantIds).toEqual(["z-ann"]);
   });

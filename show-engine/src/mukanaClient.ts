@@ -14,8 +14,10 @@
 
 import type { MukanaConfig } from "./config.js";
 import {
+  detectDormantEnvelope,
   parseMukanaPanelists,
   parseMukanaQuestion,
+  type DormantOutcome,
   type MukanaOutcome,
   type QuestionOutcome
 } from "./mukanaParse.js";
@@ -39,9 +41,6 @@ export type MukanaEndpoint = "panelists" | "hands" | "question";
 
 const ENDPOINTS: readonly MukanaEndpoint[] = ["panelists", "hands", "question"];
 
-/** The off-hours envelope, shared shape across every endpoint's dormant arm. */
-type DormantOutcome = { kind: "dormant"; detail: string };
-
 /**
  * The three kinds every endpoint parser's outcome can take. Each concrete
  * parser's return type (`MukanaOutcome`, `QuestionOutcome`, `HandsOutcome`)
@@ -53,31 +52,6 @@ type ParseResult = { kind: "data" } | DormantOutcome | { kind: "invalid"; reason
 
 function initialHealth(): MukanaHealth {
   return { state: "ok", consecutiveFailures: 0, detail: null };
-}
-
-/**
- * Detect the shared off-hours status envelope directly from the raw body,
- * without delegating to an endpoint parser. This is a transport-level
- * condition (the server answering "not right now" instead of data), not a
- * payload concern — it exists here because `parseHandsPayload` has no
- * `dormant` arm to report it through, unlike the JSON endpoints whose own
- * parsers already recognize this envelope themselves.
- */
-function detectDormantEnvelope(body: string): DormantOutcome | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-  const root = parsed as Record<string, unknown>;
-  if (!("status" in root)) return null;
-
-  const detailValue = root.detail;
-  const detail = typeof detailValue === "string" ? detailValue.trim() : "";
-  return { kind: "dormant", detail: detail.length > 0 ? detail : "registry dormant" };
 }
 
 export class MukanaClient {
@@ -147,8 +121,12 @@ export class MukanaClient {
    * `invalid`, and updates health/backoff bookkeeping. The only thing that
    * varies per endpoint is `parse` — how to turn the raw body into that
    * endpoint's outcome type. `options.detectDormant` lets a caller opt into
-   * recognizing the shared off-hours envelope before `parse` ever sees the
-   * body, for endpoints whose own outcome type has no `dormant` arm.
+   * recognizing the shared off-hours envelope (via `detectDormantEnvelope`,
+   * the same classifier the JSON endpoints' own parsers use) before `parse`
+   * ever sees the body, for endpoints whose own outcome type has no
+   * `dormant` arm. Either way, `applyHealth` is the only place that writes
+   * a health record, so "shared bookkeeping" is true of the code, not just
+   * the intent.
    */
   private async request<T extends ParseResult>(
     endpoint: MukanaEndpoint,
@@ -172,8 +150,7 @@ export class MukanaClient {
     if (options?.detectDormant) {
       const dormant = detectDormantEnvelope(body);
       if (dormant) {
-        this.state[endpoint] = { state: "dormant", consecutiveFailures: 0, detail: dormant.detail };
-        return dormant;
+        return this.applyHealth(endpoint, dormant);
       }
     }
 
