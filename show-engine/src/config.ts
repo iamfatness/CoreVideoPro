@@ -6,7 +6,9 @@
  */
 
 import {
+  BOX_FILLS,
   DEFAULT_SKIP_ROLES,
+  isBoxFill,
   isPlateTone,
   isRole,
   isTallySource,
@@ -28,6 +30,17 @@ export type MukanaConfig = {
   maxBackoffMs: number;
 };
 
+/**
+ * Which optional external inputs this show is configured for. Each flag
+ * defaults to `false`: an un-configured integration must never silently poll
+ * a URL nobody set.
+ */
+export type ShowIntegrationsConfig = {
+  registry: boolean;
+  handsQueue: boolean;
+  questionFeed: boolean;
+};
+
 export type ShowEngineConfig = {
   /** Number of concurrent participant slots the host can deliver */
   capacity: number;
@@ -46,6 +59,8 @@ export type ShowEngineConfig = {
   looks: LookDefinition[];
   /** Number of cells in the on-screen gallery grid. */
   galleryCells: number;
+  /** Which optional external inputs this show is configured for. */
+  integrations: ShowIntegrationsConfig;
 };
 
 const DEFAULT_UTILITY_PIN_BASE = 9000;
@@ -152,6 +167,59 @@ function optionalTallySource(
   return value;
 }
 
+function optionalBoxFill(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): LookDefinition["boxFill"] {
+  const value = source[key];
+  if (value === undefined) return "queue";
+  if (!isBoxFill(value)) {
+    throw new Error(
+      `show-engine ${label}: expected one of ${BOX_FILLS.join(", ")}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+function optionalBoolean(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  fallback: boolean
+): boolean {
+  const value = source[key];
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") {
+    throw new Error(`show-engine ${label}: expected boolean, got ${String(value)}`);
+  }
+  return value;
+}
+
+/** Parse `root.integrations`, defaulting every flag to off. */
+function parseIntegrations(root: Record<string, unknown>): ShowIntegrationsConfig {
+  const value = root.integrations;
+  if (value === undefined) {
+    return { registry: false, handsQueue: false, questionFeed: false };
+  }
+  const integrationsRaw = asRecord(value, "config.integrations");
+  return {
+    registry: optionalBoolean(integrationsRaw, "registry", "config.integrations.registry", false),
+    handsQueue: optionalBoolean(
+      integrationsRaw,
+      "handsQueue",
+      "config.integrations.handsQueue",
+      false
+    ),
+    questionFeed: optionalBoolean(
+      integrationsRaw,
+      "questionFeed",
+      "config.integrations.questionFeed",
+      false
+    )
+  };
+}
+
 /** Parse `root.skipRoles`, defaulting to the ASL interpreter. Rejects, never coerces, unknown roles. */
 function parseSkipRoles(root: Record<string, unknown>): Role[] {
   const value = root.skipRoles;
@@ -181,7 +249,8 @@ function parseLook(entry: unknown, index: number): LookDefinition {
     includesHost: requireBoolean(lookRaw, "includesHost", `${label}.includesHost`),
     includesReader: requireBoolean(lookRaw, "includesReader", `${label}.includesReader`),
     plateTone: optionalPlateTone(lookRaw, "plateTone", `${label}.plateTone`),
-    tallySource: optionalTallySource(lookRaw, "tallySource", `${label}.tallySource`)
+    tallySource: optionalTallySource(lookRaw, "tallySource", `${label}.tallySource`),
+    boxFill: optionalBoxFill(lookRaw, "boxFill", `${label}.boxFill`)
   };
 }
 
@@ -225,6 +294,7 @@ export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
       "config.galleryCells",
       DEFAULT_GALLERY_CELLS
     ),
+    integrations: parseIntegrations(root),
     mukana: {
       baseUrl: requireString(mukanaRaw, "baseUrl", "config.mukana.baseUrl"),
       event: requireString(mukanaRaw, "event", "config.mukana.event"),

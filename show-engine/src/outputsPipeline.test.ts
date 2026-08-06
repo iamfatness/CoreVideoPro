@@ -70,7 +70,8 @@ const teatime: LookDefinition = {
   includesHost: true,
   includesReader: true,
   plateTone: "accent",
-  tallySource: "boxes"
+  tallySource: "boxes",
+  boxFill: "queue"
 };
 
 describe("outputs pipeline", () => {

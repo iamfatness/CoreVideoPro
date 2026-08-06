@@ -31,7 +31,8 @@ const look: LookDefinition = {
   includesHost: true,
   includesReader: true,
   plateTone: "accent",
-  tallySource: "boxes"
+  tallySource: "boxes",
+  boxFill: "queue"
 };
 
 const queue: QueueState = {

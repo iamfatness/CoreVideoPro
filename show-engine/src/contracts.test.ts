@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOX_FILLS,
   coerceRole,
+  isBoxFill,
   isPlateTone,
   isRole,
   PLATE_TONES,
@@ -72,5 +74,19 @@ describe("programSourcesEqual", () => {
     expect(
       programSourcesEqual({ kind: "look", lookId: "banter" }, { kind: "look", lookId: "teatime" })
     ).toBe(false);
+  });
+});
+
+describe("box fill strategies", () => {
+  it("lists the two strategies", () => {
+    expect(BOX_FILLS).toEqual(["queue", "manual"]);
+  });
+
+  it("recognises valid strategies and rejects others", () => {
+    expect(isBoxFill("queue")).toBe(true);
+    expect(isBoxFill("manual")).toBe(true);
+    expect(isBoxFill("auto")).toBe(false);
+    expect(isBoxFill(0)).toBe(false);
+    expect(isBoxFill(undefined)).toBe(false);
   });
 });

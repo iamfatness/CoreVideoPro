@@ -50,7 +50,8 @@ const look = {
   includesHost: true,
   includesReader: true,
   plateTone: "accent",
-  tallySource: "boxes"
+  tallySource: "boxes",
+  boxFill: "queue"
 };
 
 describe("parseShowEngineConfig direction fields", () => {
@@ -135,5 +136,61 @@ describe("parseShowEngineConfig gallery dimensions", () => {
     expect(() => parseShowEngineConfig({ ...minimal, galleryCells: 4.5 })).toThrow(
       /galleryCells/
     );
+  });
+});
+
+describe("parseShowEngineConfig integrations", () => {
+  it("defaults every integration to off", () => {
+    expect(parseShowEngineConfig(minimal).integrations).toEqual({
+      registry: false,
+      handsQueue: false,
+      questionFeed: false
+    });
+  });
+
+  it("keeps explicitly enabled integrations", () => {
+    const config = parseShowEngineConfig({
+      ...minimal,
+      integrations: { registry: true, handsQueue: true }
+    });
+    expect(config.integrations).toEqual({
+      registry: true,
+      handsQueue: true,
+      questionFeed: false
+    });
+  });
+
+  it("rejects a non-boolean integration flag", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...minimal, integrations: { registry: "yes" } })
+    ).toThrow(/integrations\.registry/);
+  });
+
+  it("rejects a non-object integrations value", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, integrations: true })).toThrow(
+      /integrations/
+    );
+  });
+});
+
+describe("parseShowEngineConfig boxFill", () => {
+  it("defaults an omitted boxFill to queue", () => {
+    const { boxFill: _omitted, ...withoutFill } = look;
+    const config = parseShowEngineConfig({ ...minimal, looks: [withoutFill] });
+    expect(config.looks[0]?.boxFill).toBe("queue");
+  });
+
+  it("keeps an explicit boxFill", () => {
+    const config = parseShowEngineConfig({
+      ...minimal,
+      looks: [{ ...look, boxFill: "manual" }]
+    });
+    expect(config.looks[0]?.boxFill).toBe("manual");
+  });
+
+  it("rejects an unknown boxFill", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...minimal, looks: [{ ...look, boxFill: "auto" }] })
+    ).toThrow(/boxFill/);
   });
 });
