@@ -609,6 +609,7 @@ if(BUILD_TESTING)
     tests/MediaCoreCommandTest.cpp
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp
+    tests/NdiPixelConvertTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
