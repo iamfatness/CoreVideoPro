@@ -556,6 +556,75 @@ TEST(EncoderRecordingSession, MediaFoundationRestartedSessionStillMuxesAudio) {
   fs::remove_all(targetDir, cleanupError);
 }
 
+// Program recording must mux the FULL-RESOLUTION program readback, never the
+// 320x180 `preview` thumbnail. Writing the thumbnail into a writer opened at
+// program dimensions put the entire show into a small corner of a black frame —
+// shipped that way for months (a 2026-07-13 recording: 8995 frames, flat luma 4)
+// because no validator ever looked at the pixels, only at stream presence.
+// Pinned two ways: a full-res-only frame MUST mux (the old code early-returned
+// on the empty preview and wrote nothing), and once full-res has been seen a
+// later preview-only tick must NOT be written at the wrong geometry.
+TEST(EncoderRecordingSession, MediaFoundationProgramRecordingUsesFullResNotPreview) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable
+  }
+
+  namespace fs = std::filesystem;
+  std::error_code cleanupError;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-mf-fullres-regression";
+  fs::remove_all(targetDir, cleanupError);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "mf-fullres";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "fullres";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.targetBitrateMbps = 4;
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  // FULL-RES ONLY: no preview at all. The old code read `preview`, found it
+  // empty, and returned without muxing anything.
+  corevideo::modules::ProgramFrame full;
+  full.width = 640;
+  full.height = 360;
+  full.frameNumber = 1;
+  full.programFullBgra.width = 640;
+  full.programFullBgra.height = 360;
+  full.programFullBgra.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0xC0);
+  encoder->submit(full);
+
+  const auto afterFull = encoder->session();
+  EXPECT_EQ(afterFull.recordingVideoFrameCount, 1)
+      << "full-resolution program frame was not muxed; warning: " << afterFull.recordingWarning;
+
+  // Now a preview-only tick (the async tap missed this one). Having locked to
+  // full-res, it must be SKIPPED rather than written at thumbnail geometry.
+  corevideo::modules::ProgramFrame previewOnly;
+  previewOnly.width = 640;
+  previewOnly.height = 360;
+  previewOnly.frameNumber = 2;
+  previewOnly.preview.width = 320;
+  previewOnly.preview.height = 180;
+  previewOnly.preview.bgra.assign(static_cast<size_t>(320) * 180 * 4, 0x20);
+  encoder->submit(previewOnly);
+
+  EXPECT_EQ(encoder->session().recordingVideoFrameCount, 1)
+      << "a 320x180 preview was muxed after full-res was established — that is the "
+         "mid-file geometry flip that produces the corner-tile frame";
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, cleanupError);
+}
+
 namespace {
 // Build a VideoFrame carrying a synthetic I420 payload (a flat mid-gray field),
 // keyed by `sourceId`/`frameId` — the shape the ISO gather hands to the encoder.
