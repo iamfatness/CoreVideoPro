@@ -5,6 +5,8 @@
  * `" "` or `"####"`), and slots are keyed by plain integers.
  */
 
+import type { PersonKey } from "./personKey.js";
+
 export type Role = "panelist" | "host" | "reader" | "aslpanelist" | "aslinterpreter";
 
 export const ROLES: readonly Role[] = [
@@ -55,6 +57,8 @@ export type Panelist = Participant &
   Identity & {
     hasMukana: boolean;
     role: Role;
+    /** Stable identity key computed once by `resolvePersonKey`; never re-derive it downstream. */
+    personKey: PersonKey;
   };
 
 /** One position in the fixed-capacity live roster. `panelist === null` is an empty hole. */
@@ -114,6 +118,20 @@ export function isTallySource(value: unknown): value is TallySource {
   return typeof value === "string" && (TALLY_SOURCES as readonly string[]).includes(value);
 }
 
+/**
+ * How a look's guest boxes get filled with panelists. `"queue"` (the
+ * default) pulls from the producer's speaking-order queue automatically;
+ * `"manual"` leaves box assignment to an operator, e.g. for looks that need
+ * specific panelists in specific boxes.
+ */
+export type BoxFill = "queue" | "manual";
+
+export const BOX_FILLS: readonly BoxFill[] = ["queue", "manual"];
+
+export function isBoxFill(value: unknown): value is BoxFill {
+  return typeof value === "string" && (BOX_FILLS as readonly string[]).includes(value);
+}
+
 /** A named on-screen arrangement, e.g. "Host + Reader with two guests". */
 export type LookDefinition = {
   id: string;
@@ -124,6 +142,7 @@ export type LookDefinition = {
   includesReader: boolean;
   plateTone: PlateTone;
   tallySource: TallySource;
+  boxFill: BoxFill;
 };
 
 /** One position in the on-screen gallery grid. `slot: 0` means blank. */
@@ -151,3 +170,21 @@ export function programSourcesEqual(a: ProgramSource, b: ProgramSource): boolean
   if (a.kind === "slot" && b.kind === "slot") return a.slot === b.slot;
   return true;
 }
+
+/**
+ * Whether an optional integration is currently usable. `"available"` means
+ * the show is configured for it and it is responding; `"unavailable"` means
+ * it is configured but not currently reachable (e.g. lost mid-broadcast);
+ * `"disabled"` means the show was never configured to use it.
+ */
+export type CapabilityState = "available" | "unavailable" | "disabled";
+
+/** The resolved status of one optional integration, with a human-readable reason. */
+export type Capability = { state: CapabilityState; detail: string | null };
+
+/** The resolved status of every optional integration this show may use. */
+export type ShowCapabilities = {
+  registry: Capability;
+  handsQueue: Capability;
+  questionFeed: Capability;
+};

@@ -4,7 +4,9 @@
  * layer — speaker recency, gallery, looks, the hands queue, and the
  * program bus; Plan 3 adds the outputs layer — the shared active-speaker
  * gate, per-endpoint Mukana parsing, look paging, tally derivation, and
- * the overlay director — exported from here alongside both.
+ * the overlay director — exported from here alongside both; this revision
+ * adds the capability layer — person-key resolution and per-integration
+ * capability state, so host adapters can name every type they need.
  */
 
 export {
@@ -12,12 +14,17 @@ export {
   DEFAULT_SKIP_ROLES,
   EXCLUSIVE_ROLES,
   isRole,
+  isBoxFill,
   isPlateTone,
   isTallySource,
+  BOX_FILLS,
   PLATE_TONES,
   programSourcesEqual,
   ROLES,
   TALLY_SOURCES,
+  type BoxFill,
+  type Capability,
+  type CapabilityState,
   type GalleryCell,
   type Identity,
   type LookDefinition,
@@ -30,9 +37,12 @@ export {
   type ProgramSource,
   type QueueState,
   type Role,
+  type ShowCapabilities,
   type Slot,
   type TallySource
 } from "./contracts.js";
+export { personKeyForPin, resolvePersonKey, type PersonKey } from "./personKey.js";
+export { canUse, resolveCapabilities, type HealthByEndpoint } from "./capabilities.js";
 
 export { parseShowEngineConfig, type MukanaConfig, type ShowEngineConfig } from "./config.js";
 export { extractPin, identityFromName, splitDisplayName } from "./identity.js";
@@ -77,11 +87,13 @@ export {
 export { GalleryDirector, GalleryError, type GalleryState } from "./galleryDirector.js";
 export {
   clampPage,
+  effectiveBoxFill,
   findChairSlots,
   pageCountFor,
   resolveLook,
   type BoxAssignment,
   type LookResolution,
+  type ManualBoxAssignments,
   type Nameplate,
   type NameplatePosition
 } from "./lookDirector.js";

@@ -1,0 +1,22 @@
+// Typecheck configuration covering the test files too.
+//
+// The build config excludes `*.test.ts` (they must not be emitted into
+// `dist`), which left every test file in this package unchecked by any
+// command anyone runs: vitest strips types with esbuild rather than
+// checking them, so a fixture could drift arbitrarily far from the types it
+// claims to construct and still pass. That is not hypothetical — it shipped
+// seven stale fixtures, including one asserting a persisted override shape
+// the engine no longer produces anywhere.
+//
+// `npm run typecheck:tests` runs this, and CI runs that. It emits nothing;
+// it exists purely so a test file that contradicts the types is a failing
+// build, which is what `index.test.ts` already promises.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

@@ -20,16 +20,29 @@
  * starts clean) rather than migrated with a default gallery: this is
  * pre-release software with no deployed state files, and a silent
  * migration path would have to be maintained forever for no benefit.
+ *
+ * `STATE_VERSION` is the guard that makes that rejection reachable when a
+ * change is invisible to the shallow shape check. Version 2 re-keyed
+ * `overrides` from PIN to `PersonKey` and re-shaped `OverrideRecord` from
+ * `pin` to `personKey`. Both changes live *inside* the override records,
+ * which `load()` deliberately does not inspect — so a version-1 file would
+ * otherwise pass every structural check and restore overrides under keys
+ * (`"1383"`) that `buildPanelistDb` never looks up (`"pin:1383"`), silently
+ * dropping every operator-assigned role at the first restart of a show.
+ * Bumping the version turns that silent loss into the same clean start the
+ * pre-gallery files get. Any future change to what lives inside `overrides`
+ * or `slots.seats` must bump it again for the same reason.
  */
 
 import type { GalleryState } from "./galleryDirector.js";
 import type { LiveSlotsState } from "./liveSlots.js";
 import type { OverrideRecord } from "./overrideDb.js";
+import type { PersonKey } from "./personKey.js";
 
 export type ShowState = {
-  version: 1;
+  version: 2;
   slots: LiveSlotsState;
-  overrides: Record<string, OverrideRecord>;
+  overrides: Record<PersonKey, OverrideRecord>;
   gallery: GalleryState;
 };
 
@@ -40,7 +53,7 @@ export type StateFs = {
   mkdir: (path: string) => Promise<void>;
 };
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 
 function parentDirectory(path: string): string {
   const slashIndex = path.lastIndexOf("/");
@@ -74,8 +87,11 @@ export class StateStore {
    * check only — `slots` must be an object with a numeric `capacity` and an
    * array `seats`, `overrides` must be an object, and `gallery` must be an
    * object with a numeric `cells` and an array `assignments`. A state file
-   * with no `gallery` key at all (written before this plan) fails this
-   * check and returns null rather than being migrated. It deliberately does
+   * with no `gallery` key at all (written before the gallery landed) fails
+   * this check and returns null rather than being migrated, and a file
+   * carrying any `version` but the current one is rejected before the shape
+   * is even looked at — that is what catches a change inside the override
+   * records, which this check cannot see. It deliberately does
    * not look inside individual seat, panelist, or gallery-cell records;
    * that coherence check belongs to `LiveSlots.fromJSON` and
    * `GalleryDirector.fromJSON`, which throw their own catchable named

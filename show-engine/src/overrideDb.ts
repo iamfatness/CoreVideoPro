@@ -3,82 +3,104 @@
  * Mukana declares each panelist's role, but the operator must be able to move
  * the host or reader chair mid-show. This table takes precedence over Mukana
  * in the panelist join, and it guarantees the exclusive roles have exactly one
- * holder across both sources.
+ * holder across both sources. Rows are keyed by person key rather than PIN, so
+ * a show with no Mukana registry — and therefore no PINs — can still have its
+ * host or reader chair moved. The registry itself stays PIN-keyed, because it
+ * is a registry, not an override table: when a registry-declared holder is
+ * demoted, its row is written under `personKeyForPin(pin)`, exactly the key
+ * `resolvePersonKey` produces for a participant carrying that PIN. That
+ * shared helper is the only place the PIN-tier prefix is spelled.
  */
 
-import type { MukanaDb, Role } from "./contracts.js";
+import type { MukanaDb, MukanaRecord, Role } from "./contracts.js";
+import { personKeyForPin, type PersonKey } from "./personKey.js";
 
 export type OverrideRecord = {
-  pin: string;
+  personKey: PersonKey;
   displayName: string;
   location: string;
   role: Role;
 };
 
 export class OverrideDb {
-  private entriesByPin = new Map<string, OverrideRecord>();
+  private entriesByPersonKey = new Map<PersonKey, OverrideRecord>();
 
   set(record: OverrideRecord): void {
-    this.entriesByPin.set(record.pin, { ...record });
+    this.entriesByPersonKey.set(record.personKey, { ...record });
   }
 
-  delete(pin: string): void {
-    this.entriesByPin.delete(pin);
+  delete(personKey: PersonKey): void {
+    this.entriesByPersonKey.delete(personKey);
   }
 
-  roleFor(pin: string): Role | undefined {
-    return this.entriesByPin.get(pin)?.role;
+  roleFor(personKey: PersonKey): Role | undefined {
+    return this.entriesByPersonKey.get(personKey)?.role;
   }
 
-  entries(): Record<string, OverrideRecord> {
+  entries(): Record<PersonKey, OverrideRecord> {
     return Object.fromEntries(
-      [...this.entriesByPin.entries()].map(([pin, record]) => [pin, { ...record }])
+      [...this.entriesByPersonKey.entries()].map(([personKey, record]) => [
+        personKey,
+        { ...record }
+      ])
     );
   }
 
   clear(): void {
-    this.entriesByPin.clear();
+    this.entriesByPersonKey.clear();
   }
 
-  restore(entries: Record<string, OverrideRecord>): void {
-    this.entriesByPin = new Map(
-      Object.entries(entries).map(([pin, record]) => [pin, { ...record }])
+  restore(entries: Record<PersonKey, OverrideRecord>): void {
+    this.entriesByPersonKey = new Map(
+      Object.entries(entries).map(([personKey, record]) => [personKey, { ...record }])
     );
   }
 
   /**
-   * Give `pin` an exclusive role, guaranteeing it is the only holder.
-   * Prior holders declared by Mukana are demoted with an explicit override row;
-   * prior holders that existed only as overrides have their row removed.
+   * Give `personKey` an exclusive role, guaranteeing it is the only holder.
+   * Prior holders declared by the registry are demoted with an explicit
+   * override row keyed `pin:<PIN>`; prior holders that existed only as
+   * overrides have their row removed.
+   *
+   * The registry is PIN-keyed and this table is person-keyed, so the two are
+   * bridged by re-keying the registry through `personKeyForPin` once, up
+   * front. That direction is the safe one: a `PersonKey` is opaque and is
+   * never taken apart to recover a PIN, so a non-registry key can never be
+   * mistaken for a registry one.
    */
-  assignExclusiveRole(pin: string, role: "host" | "reader", mukana: MukanaDb): void {
-    const priorRecord = this.entriesByPin.get(pin);
+  assignExclusiveRole(personKey: PersonKey, role: "host" | "reader", registry: MukanaDb): void {
+    const priorRecord = this.entriesByPersonKey.get(personKey);
 
-    for (const record of Object.values(mukana)) {
+    const registryByPersonKey = new Map<PersonKey, MukanaRecord>();
+    for (const record of Object.values(registry)) {
+      registryByPersonKey.set(personKeyForPin(record.pin), record);
+    }
+
+    for (const [registryPersonKey, record] of registryByPersonKey) {
       if (record.role !== role) continue;
-      if (this.entriesByPin.has(record.pin)) continue;
-      this.entriesByPin.set(record.pin, {
-        pin: record.pin,
+      if (this.entriesByPersonKey.has(registryPersonKey)) continue;
+      this.entriesByPersonKey.set(registryPersonKey, {
+        personKey: registryPersonKey,
         displayName: record.displayName,
         location: record.location,
         role: "panelist"
       });
     }
 
-    for (const [existingPin, record] of [...this.entriesByPin.entries()]) {
+    for (const [existingPersonKey, record] of [...this.entriesByPersonKey.entries()]) {
       if (record.role !== role) continue;
-      if (mukana[existingPin]?.role === role) {
-        this.entriesByPin.set(existingPin, { ...record, role: "panelist" });
+      if (registryByPersonKey.get(existingPersonKey)?.role === role) {
+        this.entriesByPersonKey.set(existingPersonKey, { ...record, role: "panelist" });
       } else {
-        this.entriesByPin.delete(existingPin);
+        this.entriesByPersonKey.delete(existingPersonKey);
       }
     }
 
-    const mukanaRecord = mukana[pin];
-    this.entriesByPin.set(pin, {
-      pin,
-      displayName: mukanaRecord?.displayName ?? priorRecord?.displayName ?? "",
-      location: mukanaRecord?.location ?? priorRecord?.location ?? "",
+    const registryRecord = registryByPersonKey.get(personKey);
+    this.entriesByPersonKey.set(personKey, {
+      personKey,
+      displayName: registryRecord?.displayName ?? priorRecord?.displayName ?? "",
+      location: registryRecord?.location ?? priorRecord?.location ?? "",
       role
     });
   }

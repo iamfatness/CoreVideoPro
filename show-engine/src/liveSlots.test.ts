@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { LiveSlots, LiveSlotsRestoreError, type LiveSlotsState } from "./liveSlots.js";
 import type { Panelist } from "./contracts.js";
+import { resolvePersonKey } from "./personKey.js";
 
 function panelist(participantId: string, overrides: Partial<Panelist> = {}): Panelist {
   return {
     participantId,
     rawName: `Name ${participantId}`,
+    personKey: resolvePersonKey({ participantId, rawName: `Name ${participantId}` }),
     online: true,
     videoOn: true,
     audioOn: false,

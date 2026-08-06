@@ -99,10 +99,14 @@ state. All algorithms cite their source actor in the companion reference.
    (`Mukana_Data_Parser`/`Merger` + health gate).
 4. **`overrideDb`** — operator role overrides with host/reader exclusivity via the
    demote-then-assign algorithm; roles `panelist | host | reader | aslpanelist |
-   aslinterpreter` (`Javascript__93`).
-5. **`panelistDb`** — joins Zoom participants against Mukana+overrides on PIN → master
-   DB keyed by zoomID; single source of truth for identity + editorial role
-   (`DataBase_Aggregator`).
+   aslinterpreter` (`Javascript__93`). Keyed by `PersonKey`, not PIN, so a show
+   with no Mukana registry, and therefore no PINs, can still move the host or
+   reader chair.
+5. **`panelistDb`** — joins Zoom participants against Mukana (by PIN) and operator
+   overrides (by `PersonKey`) → master DB keyed by zoomID; single source of truth
+   for identity + editorial role (`DataBase_Aggregator`). Computes and carries
+   `personKey` on each `Panelist`, once, so every downstream consumer — including
+   the override lookup — agrees on the same key.
 
 **Slots & direction**
 6. **`liveSlots`** — fixed slot array sized to host capacity; add-to-first-EMPTY hole;
@@ -130,7 +134,12 @@ state. All algorithms cite their source actor in the companion reference.
    guest queue with host/reader stripped; named looks (the SuperSource-state
    successors: HR/H ±Q, Banter, Teatime, Panel Checks → CVP scene presets) and the
    box-window algorithm choosing visible queued guests
-   (`SuperSourceBrain`/`Javascript__13`, `SuperSource_Search_v3`).
+   (`SuperSourceBrain`/`Javascript__13`, `SuperSource_Search_v3`). `lookDirector`
+   honors each look's `boxFill`: `"queue"` pulls from the hands queue only while
+   that capability is usable, degrading to `"manual"` — filled from the operator's
+   own box assignments — the moment it is not; `"manual"` looks always resolve
+   this way. `handsQueue` is an optional input to look resolution; an omitted
+   value is treated as unusable, identically to `unavailable` or `disabled`.
 
 **Outputs**
 10. **`programBus`** — software PGM/PVW (preview/cut/auto/direct-cut per
@@ -188,6 +197,11 @@ Companion builds actions from it dynamically. Params are positional
      `ohg.program.auto ()` · `ohg.program.directCut (string source)` ·
      `ohg.program.asFollow.set (bool on)`
    - `ohg.look.set (string name)` · `ohg.look.nextGuest ()` · `ohg.look.prevGuest ()`
+     — both refuse under manual box fill (page-through applies to the queued
+     candidate window only, and manual assignments have no such window) ·
+     `ohg.look.box.assign (int box, int slot)` · `ohg.look.box.clear (int box)`
+     — set/clear one manual box assignment; not reclaimed when an integration
+     recovers, they persist until the look changes
    - `ohg.gallery.resetFromSlots ()` · `ohg.gallery.replace (int cell, int slot)` ·
      `ohg.gallery.remove (int cell)` · `ohg.gallery.empty ()` ·
      `ohg.gallery.smart.set (bool on)`
@@ -199,7 +213,11 @@ Companion builds actions from it dynamically. Params are positional
 3. **State.** Rich JSON on the `ohg` node of `/state` + WS push: `panelists` (master
    DB), `slots` (live array with holes), `gallery`, `queue`, `program`
    (pgm/pvw/mode/asFollow), `tally` (PIN lists + per-slot on-air), `health` (mukana /
-   tally / host). Flattened OSC/Companion feedback fields join `StateFields`:
+   tally / host), `capabilities` (per-integration `available | unavailable |
+   disabled` plus operator-facing detail for the registry, hands queue, and
+   question feed — resolved once per tick; `unavailable` and `disabled` are
+   behaviorally identical everywhere downstream and differ only in this node's
+   `detail` field). Flattened OSC/Companion feedback fields join `StateFields`:
    `ohg/slot/{n}/name`, `ohg/slot/{n}/role`, `ohg/slot/{n}/tally`,
    `ohg/program/mode`, `ohg/queue/current`, `ohg/health/mukana`, etc. (the
    `input/{slot}/…` convention).
@@ -330,6 +348,13 @@ CVP-Mac, and OBS semantically identical.
 - **Error philosophy** (house rule: loud, never silent): every external failure is
   visible in `ohg.health` + surfaces; show logic never blocks on an external service —
   GFX/tally/Mukana are fire-and-observe.
+- **The Mukana registry is optional at runtime.** A show with no registry configured
+  still seats its roster from Zoom display names, and the operator can still assign
+  the host and reader chairs by person key. No integration failure — registry, hands
+  queue, or question feed — may ever block a tick: a configured-but-failing
+  integration resolves to the same `unavailable` capability state as one that was
+  never configured, so a mid-show outage degrades the show to behavior it already
+  exercises rather than becoming an incident.
 
 ## 8. Testing & migration
 

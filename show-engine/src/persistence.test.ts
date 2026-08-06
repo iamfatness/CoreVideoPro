@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { StateStore, type ShowState, type StateFs } from "./persistence.js";
 
 const state: ShowState = {
-  version: 1,
+  version: 2,
   slots: { version: 1, capacity: 2, seats: [null, null] },
   overrides: {
-    "1383": { pin: "1383", displayName: "J.J.", location: "CA", role: "host" }
+    "pin:1383": { personKey: "pin:1383", displayName: "J.J.", location: "CA", role: "host" }
   },
   gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] }
 };
@@ -90,6 +90,29 @@ describe("StateStore", () => {
     expect(await store.load()).toBeNull();
   });
 
+  /**
+   * A version-1 file is structurally indistinguishable from a current one —
+   * the change was inside the override records, which load() does not
+   * inspect. Without the version bump this file loads clean and restores
+   * overrides keyed "1383", which buildPanelistDb (looking up "pin:1383")
+   * never finds: every operator role assignment vanishes on restart, with
+   * no error anywhere. Rejecting it is this file's stated policy.
+   */
+  it("rejects a PIN-keyed version-1 state file rather than silently dropping its roles", async () => {
+    const pinKeyed = JSON.stringify({
+      version: 1,
+      slots: state.slots,
+      overrides: {
+        "1383": { pin: "1383", displayName: "J.J.", location: "CA", role: "host" }
+      },
+      gallery: state.gallery
+    });
+    const store = new StateStore("/show/state.json", {
+      fs: fakeFs({ "/show/state.json": pinKeyed })
+    });
+    expect(await store.load()).toBeNull();
+  });
+
   it("creates the parent directory before writing", async () => {
     const made: string[] = [];
     const fs = fakeFs();
@@ -165,14 +188,14 @@ describe("StateStore", () => {
 
   it("returns null when slots is explicitly null", async () => {
     const store = new StateStore("/show/state.json", {
-      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 1, slots: null, overrides: {} }) })
+      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 2, slots: null, overrides: {} }) })
     });
     expect(await store.load()).toBeNull();
   });
 
   it("returns null when overrides is explicitly null", async () => {
     const store = new StateStore("/show/state.json", {
-      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 1, slots: state.slots, overrides: null }) })
+      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 2, slots: state.slots, overrides: null }) })
     });
     expect(await store.load()).toBeNull();
   });
@@ -181,7 +204,7 @@ describe("StateStore", () => {
     const store = new StateStore("/show/state.json", {
       fs: fakeFs({
         "/show/state.json": JSON.stringify({
-          version: 1,
+          version: 2,
           slots: { version: 1, capacity: 2, seats: "garbage" },
           overrides: {}
         })
@@ -194,7 +217,7 @@ describe("StateStore", () => {
     const store = new StateStore("/show/state.json", {
       fs: fakeFs({
         "/show/state.json": JSON.stringify({
-          version: 1,
+          version: 2,
           slots: { version: 1, capacity: "2", seats: [null, null] },
           overrides: {}
         })
@@ -206,7 +229,7 @@ describe("StateStore", () => {
 
 describe("StateStore gallery node", () => {
   const withGallery: ShowState = {
-    version: 1,
+    version: 2,
     slots: { version: 1, capacity: 2, seats: [null, null] },
     overrides: {},
     gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] }
@@ -220,7 +243,7 @@ describe("StateStore gallery node", () => {
 
   it("returns null for a state file with no gallery node", async () => {
     const legacy = JSON.stringify({
-      version: 1,
+      version: 2,
       slots: withGallery.slots,
       overrides: {}
     });

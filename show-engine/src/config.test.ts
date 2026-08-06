@@ -12,9 +12,9 @@ describe("parseShowEngineConfig", () => {
     const config = parseShowEngineConfig(minimal);
     expect(config.capacity).toBe(16);
     expect(config.utilityPinBase).toBe(9000);
-    expect(config.mukana.panelistsIntervalMs).toBe(5000);
-    expect(config.mukana.handsIntervalMs).toBe(2000);
-    expect(config.mukana.maxBackoffMs).toBe(60000);
+    expect(config.mukana?.panelistsIntervalMs).toBe(5000);
+    expect(config.mukana?.handsIntervalMs).toBe(2000);
+    expect(config.mukana?.maxBackoffMs).toBe(60000);
   });
 
   it("keeps explicitly provided values", () => {
@@ -24,7 +24,7 @@ describe("parseShowEngineConfig", () => {
       mukana: { ...minimal.mukana, panelistsIntervalMs: 1500 }
     });
     expect(config.utilityPinBase).toBe(8000);
-    expect(config.mukana.panelistsIntervalMs).toBe(1500);
+    expect(config.mukana?.panelistsIntervalMs).toBe(1500);
   });
 
   it("rejects a capacity below 1", () => {
@@ -50,7 +50,8 @@ const look = {
   includesHost: true,
   includesReader: true,
   plateTone: "accent",
-  tallySource: "boxes"
+  tallySource: "boxes",
+  boxFill: "queue"
 };
 
 describe("parseShowEngineConfig direction fields", () => {
@@ -135,5 +136,113 @@ describe("parseShowEngineConfig gallery dimensions", () => {
     expect(() => parseShowEngineConfig({ ...minimal, galleryCells: 4.5 })).toThrow(
       /galleryCells/
     );
+  });
+});
+
+describe("parseShowEngineConfig integrations", () => {
+  it("defaults every integration to off", () => {
+    expect(parseShowEngineConfig(minimal).integrations).toEqual({
+      registry: false,
+      handsQueue: false,
+      questionFeed: false
+    });
+  });
+
+  it("keeps explicitly enabled integrations", () => {
+    const config = parseShowEngineConfig({
+      ...minimal,
+      integrations: { registry: true, handsQueue: true }
+    });
+    expect(config.integrations).toEqual({
+      registry: true,
+      handsQueue: true,
+      questionFeed: false
+    });
+  });
+
+  it("rejects a non-boolean integration flag", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...minimal, integrations: { registry: "yes" } })
+    ).toThrow(/integrations\.registry/);
+  });
+
+  it("rejects a non-object integrations value", () => {
+    expect(() => parseShowEngineConfig({ ...minimal, integrations: true })).toThrow(
+      /integrations/
+    );
+  });
+});
+
+describe("parseShowEngineConfig boxFill", () => {
+  it("defaults an omitted boxFill to queue", () => {
+    const { boxFill: _omitted, ...withoutFill } = look;
+    const config = parseShowEngineConfig({ ...minimal, looks: [withoutFill] });
+    expect(config.looks[0]?.boxFill).toBe("queue");
+  });
+
+  it("keeps an explicit boxFill", () => {
+    const config = parseShowEngineConfig({
+      ...minimal,
+      looks: [{ ...look, boxFill: "manual" }]
+    });
+    expect(config.looks[0]?.boxFill).toBe("manual");
+  });
+
+  it("rejects an unknown boxFill", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...minimal, looks: [{ ...look, boxFill: "auto" }] })
+    ).toThrow(/boxFill/);
+  });
+});
+
+describe("parseShowEngineConfig without a mukana block", () => {
+  const { mukana: _omitted, ...registryLess } = minimal;
+
+  it("accepts a show that has no Mukana at all", () => {
+    expect(parseShowEngineConfig(registryLess).mukana).toBeNull();
+  });
+
+  it("still applies every other default", () => {
+    const config = parseShowEngineConfig(registryLess);
+    expect(config.capacity).toBe(16);
+    expect(config.utilityPinBase).toBe(9000);
+    expect(config.galleryCells).toBe(16);
+    expect(config.integrations).toEqual({
+      registry: false,
+      handsQueue: false,
+      questionFeed: false
+    });
+  });
+
+  it("treats an explicit null as absent, so a JSON round trip is idempotent", () => {
+    const once = parseShowEngineConfig(registryLess);
+    const twice = parseShowEngineConfig(JSON.parse(JSON.stringify(once)) as unknown);
+    expect(twice).toEqual(once);
+  });
+
+  it("rejects an omitted block when an integration is enabled", () => {
+    expect(() =>
+      parseShowEngineConfig({ ...registryLess, integrations: { handsQueue: true } })
+    ).toThrow(/config\.mukana.*handsQueue/);
+  });
+
+  it("names every enabled integration in that rejection", () => {
+    expect(() =>
+      parseShowEngineConfig({
+        ...registryLess,
+        integrations: { registry: true, questionFeed: true }
+      })
+    ).toThrow(/registry, questionFeed/);
+  });
+
+  it("still parses a present block unchanged", () => {
+    expect(parseShowEngineConfig(minimal).mukana).toEqual({
+      baseUrl: "https://hoka.example.com/php-panel-rest.php",
+      event: "officehours",
+      panelistsIntervalMs: 5000,
+      handsIntervalMs: 2000,
+      questionIntervalMs: 2000,
+      maxBackoffMs: 60000
+    });
   });
 });

@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import { deriveTally, tallyEquals } from "./tallyPublisher.js";
 import type { GalleryCell, Panelist, Slot } from "./contracts.js";
 import type { LookResolution } from "./lookDirector.js";
+import { personKeyForPin, resolvePersonKey } from "./personKey.js";
 
 function panelist(id: string, pin: string | null): Panelist {
   return {
     participantId: id,
     rawName: id,
+    // Mirrors the tier rule buildPanelistDb applies: a PIN wins, otherwise
+    // the name (here the id) does.
+    personKey:
+      pin === null ? resolvePersonKey({ participantId: id, rawName: id }) : personKeyForPin(pin),
     online: true,
     videoOn: true,
     audioOn: false,
@@ -48,7 +53,8 @@ const look: LookResolution = {
   ],
   nameplates: [],
   page: 0,
-  pageCount: 1
+  pageCount: 1,
+  boxFill: "queue"
 };
 
 const panelChecksLook: LookResolution = {

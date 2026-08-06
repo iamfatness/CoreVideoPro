@@ -20,6 +20,15 @@ const config = parseShowEngineConfig({
   mukana: { baseUrl: "https://hoka.example.com/rest.php", event: "officehours" }
 });
 
+/**
+ * `config.mukana` is nullable because a show may have no Mukana at all.
+ * These tests are all about the Mukana-backed pipeline, so the block is
+ * present by construction — this narrows it once, loudly, rather than
+ * asserting it away at each use.
+ */
+const mukanaConfig = config.mukana;
+if (mukanaConfig === null) throw new Error("fixture: pipeline tests require a mukana config");
+
 const mukanaBody = JSON.stringify({
   uidHost: {
     displayName: "J.J. Mc Kenna",
@@ -87,7 +96,7 @@ describe("identity and roster pipeline", () => {
     ingest.commit();
 
     const registry = new MukanaRegistry();
-    const client = new MukanaClient(config.mukana, { fetch: fetchMukana });
+    const client = new MukanaClient(mukanaConfig, { fetch: fetchMukana });
     const outcome = await client.fetchPanelists();
     if (outcome.kind === "data") registry.merge(outcome.db);
 
@@ -120,7 +129,7 @@ describe("identity and roster pipeline", () => {
     ingest.commit();
 
     const registry = new MukanaRegistry();
-    const client = new MukanaClient(config.mukana, { fetch: fetchMukana });
+    const client = new MukanaClient(mukanaConfig, { fetch: fetchMukana });
     const outcome = await client.fetchPanelists();
     if (outcome.kind === "data") registry.merge(outcome.db);
 
@@ -138,7 +147,7 @@ describe("identity and roster pipeline", () => {
     }
     expect(slots.slotOf("z1")).toBe(1);
 
-    overrides.assignExclusiveRole("4242", "host", registry.current());
+    overrides.assignExclusiveRole("pin:4242", "host", registry.current());
     slots.refresh(buildPanelistDb(ingest.snapshot(), registry.current(), overrides.entries()));
 
     expect(slots.slotOf("z1")).toBe(1);
@@ -154,7 +163,7 @@ describe("identity and roster pipeline", () => {
     ingest.commit();
 
     const registry = new MukanaRegistry();
-    const client = new MukanaClient(config.mukana, { fetch: fetchMukana });
+    const client = new MukanaClient(mukanaConfig, { fetch: fetchMukana });
     const outcome = await client.fetchPanelists();
     if (outcome.kind === "data") registry.merge(outcome.db);
 
@@ -169,7 +178,7 @@ describe("identity and roster pipeline", () => {
 
     const store = new StateStore(config.statePath, { fs: memoryFs() });
     const saved: ShowState = {
-      version: 1,
+      version: 2,
       slots: slots.toJSON(),
       overrides: overrides.entries(),
       gallery: { version: 1, cells: 1, assignments: [{ cell: 1, slot: 0 }] }
@@ -209,7 +218,7 @@ describe("identity and roster pipeline", () => {
     });
 
     let body = mukanaBody;
-    const client = new MukanaClient(config.mukana, {
+    const client = new MukanaClient(mukanaConfig, {
       fetch: async () => ({ ok: true, status: 200, text: async () => body })
     });
 
@@ -293,7 +302,7 @@ describe("identity and roster pipeline", () => {
     expect(slots.slotOf("z2")).toBe(2);
     expect(slots.slots()[1]?.panelist?.displayName).toBe("Ann Lee-Martinez");
     expect(client.healthFor("panelists").state).toBe("ok");
-    expect(client.nextDelayMs("panelists")).toBe(config.mukana.panelistsIntervalMs);
+    expect(client.nextDelayMs("panelists")).toBe(mukanaConfig.panelistsIntervalMs);
   });
 
   it("seats a utility bot in the tail while people fill from the front", async () => {
@@ -303,7 +312,7 @@ describe("identity and roster pipeline", () => {
     ingest.commit();
 
     const registry = new MukanaRegistry();
-    const client = new MukanaClient(config.mukana, { fetch: fetchMukana });
+    const client = new MukanaClient(mukanaConfig, { fetch: fetchMukana });
     const outcome = await client.fetchPanelists();
     if (outcome.kind === "data") registry.merge(outcome.db);
 

@@ -18,6 +18,9 @@ import {
   type MukanaDb,
   type Participant
 } from "./index.js";
+import type { Capability } from "./contracts.js";
+
+const available: Capability = { state: "available", detail: null };
 
 function participant(participantId: string, rawName: string): Participant {
   return {
@@ -70,7 +73,8 @@ const teatime: LookDefinition = {
   includesHost: true,
   includesReader: true,
   plateTone: "accent",
-  tallySource: "boxes"
+  tallySource: "boxes",
+  boxFill: "queue"
 };
 
 describe("outputs pipeline", () => {
@@ -81,7 +85,12 @@ describe("outputs pipeline", () => {
     if (parsed.kind !== "data") return;
 
     const queue = stripChairs(parsed.queue, { hostPin: "1383", readerPin: "2001" });
-    const look = resolveLook(teatime, { queue, slots: slots.slots(), page: 0 });
+    const look = resolveLook(teatime, {
+      queue,
+      slots: slots.slots(),
+      page: 0,
+      handsQueue: available
+    });
     const tally = deriveTally({
       source: { kind: "look", lookId: "teatime" },
       slots: slots.slots(),
@@ -130,7 +139,12 @@ describe("outputs pipeline", () => {
     if (parsed.kind !== "data") return;
 
     const queue = stripChairs(parsed.queue, { hostPin: "1383", readerPin: "2001" });
-    const look = resolveLook(teatime, { queue, slots: slots.slots(), page: 0 });
+    const look = resolveLook(teatime, {
+      queue,
+      slots: slots.slots(),
+      page: 0,
+      handsQueue: available
+    });
 
     const overlay = new OverlayDirector();
     overlay.update({ look, question: null, questionVisible: false });
@@ -154,17 +168,24 @@ describe("outputs pipeline", () => {
     expect(full.kind).toBe("data");
     if (full.kind !== "data") return;
 
-    const page = clampPage(teatime, full.queue, 1);
-    expect(() => resolveLook(teatime, { queue: full.queue, slots: slots.slots(), page })).not.toThrow();
+    const page = clampPage(teatime, full.queue, 1, available);
+    expect(() =>
+      resolveLook(teatime, { queue: full.queue, slots: slots.slots(), page, handsQueue: available })
+    ).not.toThrow();
 
     const drained = parseHandsPayload("NONE\n4242\nNONE");
     expect(drained.kind).toBe("data");
     if (drained.kind !== "data") return;
 
-    const clamped = clampPage(teatime, drained.queue, page);
+    const clamped = clampPage(teatime, drained.queue, page, available);
     expect(clamped).toBe(0);
     expect(() =>
-      resolveLook(teatime, { queue: drained.queue, slots: slots.slots(), page: clamped })
+      resolveLook(teatime, {
+        queue: drained.queue,
+        slots: slots.slots(),
+        page: clamped,
+        handsQueue: available
+      })
     ).not.toThrow();
   });
 

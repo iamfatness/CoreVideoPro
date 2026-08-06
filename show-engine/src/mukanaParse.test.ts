@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MukanaRegistry, parseMukanaPanelists, parseMukanaQuestion } from "./mukanaParse.js";
+import type { MukanaDb } from "./contracts.js";
 
 const panelistsBody = JSON.stringify({
   "0B6FTPaUEF": {
@@ -134,7 +135,7 @@ describe("MukanaRegistry", () => {
 
   it("protects against mutation of records passed to merge()", () => {
     const registry = new MukanaRegistry();
-    const incoming = {
+    const incoming: MukanaDb = {
       "1383": { pin: "1383", displayName: "J.J.", location: "CA", role: "host", online: true }
     };
     registry.merge(incoming);
