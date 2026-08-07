@@ -1,48 +1,169 @@
 #include "modules/Interfaces.h"
+#include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
-#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_SRT_INGEST && COREVIDEO_HAS_LIBSRT
-#if __has_include(<srt/srt.h>)
-#include <srt/srt.h>
-#define COREVIDEO_SRT_INGEST_CAN_RECEIVE 1
-#elif __has_include(<srt.h>)
-#include <srt.h>
-#define COREVIDEO_SRT_INGEST_CAN_RECEIVE 1
-#else
-#define COREVIDEO_SRT_INGEST_CAN_RECEIVE 0
-#endif
-#else
-#define COREVIDEO_SRT_INGEST_CAN_RECEIVE 0
-#endif
-
-#if COREVIDEO_SRT_INGEST_CAN_RECEIVE
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
 #endif
+// windows.h defines min/max macros that break std::min/std::max below.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace corevideo::modules {
 namespace {
 
+// SRT INGEST — remote contribution feeds arriving over SRT.
+//
+// WHAT THIS REPLACED: the previous implementation opened a libsrt socket and
+// then THREW THE PACKETS AWAY — `pumpSource` read into a 1316-byte buffer and
+// only incremented counters, with a comment claiming "decode is handled by the
+// decoder stage". No decoder stage existed, and pollVideoFrames emitted frames
+// carrying width/height and NO PIXELS. Even with libsrt linked and the build
+// flags on, an SRT source would have shown nothing.
+//
+// WHY FFMPEG: receiving SRT is the easy half — the hard half is demuxing MPEG-TS
+// and decoding H.264/HEVC, which is a whole media stack. FFmpeg does all of it,
+// the staged binary is built with libsrt, and SRT DELIVERY already goes out the
+// same way, so ingest and egress share one dependency and one mental model. One
+// FFmpeg per source decodes into raw BGRA on stdout; this adapter reads fixed
+// size frames and publishes them as ordinary capture pixels.
+//
+// DECODE ACCEPTS H.264 AND HEVC deliberately, even though this product does not
+// ENCODE HEVC (see EncoderPolicy.h). Field encoders commonly send HEVC, and
+// refusing to decode it would reject real contribution feeds; decode exposure is
+// a far lighter question than distribution.
+
+constexpr int kBytesPerPixel = 4;  // BGRA
+
+#ifdef _WIN32
+// NO ORPHANS. A decoder spawned by the core must not outlive it: if the core is
+// killed rather than shut down cleanly, its destructors never run and every
+// FFmpeg child is left holding a bound SRT port forever (observed exactly that
+// while building this). A job object with KILL_ON_JOB_CLOSE makes the OS do the
+// cleanup unconditionally — the same "no orphan hosts" rule the browser-source
+// host already follows.
+HANDLE ingestJobObject() {
+  static HANDLE job = [] {
+    HANDLE created = ::CreateJobObjectW(nullptr, nullptr);
+    if (created != nullptr) {
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+      limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      ::SetInformationJobObject(created, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    }
+    return created;
+  }();
+  return job;
+}
+#endif
+
+std::string resolveFfmpegExecutable() {
+#ifdef _WIN32
+  constexpr const char* kExeName = "ffmpeg.exe";
+#else
+  constexpr const char* kExeName = "ffmpeg";
+#endif
+  // Explicit override first, then the location the app stages beside itself, then
+  // PATH. Kept deliberately small: this is the same binary the RTMP/SRT senders
+  // already depend on.
+  if (const char* dir = std::getenv("COREVIDEO_FFMPEG_DIR"); dir && dir[0] != '\0') {
+    std::filesystem::path candidate = std::filesystem::path(dir) / kExeName;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(candidate, ec)) {
+      return candidate.string();
+    }
+  }
+#ifdef _WIN32
+  for (const char* root : {"C:\\ffmpeg\\bin"}) {
+    std::filesystem::path candidate = std::filesystem::path(root) / kExeName;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(candidate, ec)) {
+      return candidate.string();
+    }
+  }
+#endif
+  return kExeName;  // rely on PATH
+}
+
+// One decoder process per source. Held by shared_ptr so the reader thread keeps
+// it alive even if the source is reconfigured out of the map mid-read.
+struct ReaderChannel {
+  SrtIngestSourceConfig config;
+  int width = 1920;
+  int height = 1080;
+  int frameRate = 60;
+
+  std::atomic_bool running{true};
+  std::mutex mutex;                                       // guards the fields below
+  std::shared_ptr<const std::vector<uint8_t>> latest;     // tightly packed BGRA
+  std::string connectionState = "connecting";
+  std::string warning;
+  int64_t framesReceived = 0;
+  int64_t droppedFrames = 0;
+
+#ifdef _WIN32
+  std::atomic<HANDLE> process{nullptr};
+  std::atomic<HANDLE> readPipe{nullptr};
+#else
+  std::atomic<int> pid{-1};
+  std::atomic<int> readFd{-1};
+#endif
+  std::thread thread;
+
+  void setStatus(const std::string& state, const std::string& note) {
+    std::lock_guard lock(mutex);
+    connectionState = state;
+    warning = note;
+  }
+};
+
+// Build the FFmpeg command that decodes one SRT source into raw BGRA on stdout.
+// Output is forced to a fixed size so the reader can consume whole frames without
+// negotiating format mid-stream; whatever resolution the contributor sends is
+// scaled to the source's configured geometry.
+std::string buildIngestCommand(const std::string& executable, const ReaderChannel& channel,
+                               const std::string& url) {
+  std::ostringstream cmd;
+  cmd << "\"" << executable << "\""
+      << " -hide_banner -loglevel error"
+      // Contribution feeds are live: do not buffer ahead of real time.
+      << " -fflags nobuffer -flags low_delay"
+      << " -i \"" << url << "\""
+      // Video only for now; embedded contribution audio is a follow-up.
+      << " -an"
+      << " -f rawvideo -pix_fmt bgra"
+      << " -s " << channel.width << "x" << channel.height
+      << " -r " << channel.frameRate
+      << " pipe:1";
+  return cmd.str();
+}
+
 class SrtIngestCaptureDevice final : public ICaptureDevice {
  public:
-  ~SrtIngestCaptureDevice() override { stopReceiver(); }
+  ~SrtIngestCaptureDevice() override { stopAll(); }
 
   std::vector<CaptureDeviceInfo> enumerate() const override {
     std::lock_guard lock(mutex_);
@@ -51,296 +172,356 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
 
   std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) override {
     std::lock_guard lock(mutex_);
-    if (auto* state = findUnlocked(deviceId); state && state->config.id == inputId) {
-      state->selectedInputId = inputId;
+    if (auto found = channels_.find(deviceId); found != channels_.end() && found->second->config.id == inputId) {
+      selectedInputs_[deviceId] = inputId;
     }
     return enumerateUnlocked();
   }
 
   std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) override {
     std::lock_guard lock(mutex_);
-    if (auto* state = findUnlocked(deviceId)) {
-      state->audioSyncOffsetMs = std::max(-500, std::min(500, offsetMs));
-    }
+    audioSyncOffsets_[deviceId] = std::max(-500, std::min(500, offsetMs));
     return enumerateUnlocked();
   }
 
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
+    std::shared_ptr<ReaderChannel> channel;
     {
       std::lock_guard lock(mutex_);
-      if (auto* state = findUnlocked(deviceId)) {
-        state->connectionState = "connecting";
-        state->warning = COREVIDEO_SRT_INGEST_CAN_RECEIVE
-                             ? "SRT receiver armed; waiting for encoded transport packets."
-                             : "SRT ingest is running in synthetic mode. Enable COREVIDEO_WITH_SRT_INGEST with libsrt for real transport.";
+      if (auto found = channels_.find(deviceId); found != channels_.end()) {
+        channel = found->second;
       }
     }
-    startReceiver();
+    if (channel) {
+      startChannel(channel);
+    }
     return enumerate();
   }
 
-  std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>& configs) override {
-    std::lock_guard lock(mutex_);
-    std::map<std::string, SourceState> next;
-    for (const auto& config : configs) {
-      if (config.deviceId.empty()) {
-        continue;
+  std::vector<CaptureDeviceInfo> configureSrtIngestSources(
+      const std::vector<SrtIngestSourceConfig>& configs) override {
+    std::map<std::string, std::shared_ptr<ReaderChannel>> next;
+    std::vector<std::shared_ptr<ReaderChannel>> retired;
+    {
+      std::lock_guard lock(mutex_);
+      for (const auto& config : configs) {
+        if (config.deviceId.empty()) {
+          continue;
+        }
+        auto prior = channels_.find(config.deviceId);
+        // Reuse a running channel only when its endpoint is unchanged; anything
+        // else has to be torn down and respawned against the new endpoint.
+        if (prior != channels_.end() && sameEndpoint(prior->second->config, config)) {
+          prior->second->config = config;
+          next.emplace(config.deviceId, prior->second);
+          channels_.erase(prior);
+          continue;
+        }
+        auto channel = std::make_shared<ReaderChannel>();
+        channel->config = config;
+        next.emplace(config.deviceId, std::move(channel));
       }
-      auto prior = sources_.find(config.deviceId);
-      SourceState state = prior == sources_.end() ? SourceState{} : std::move(prior->second);
-      state.config = config;
-      state.selectedInputId = config.id;
-      if (state.connectionState.empty()) {
-        state.connectionState = "detected";
+      // Whatever is left in channels_ is no longer configured.
+      for (auto& [_, channel] : channels_) {
+        retired.push_back(channel);
       }
-      next.emplace(config.deviceId, std::move(state));
+      channels_ = std::move(next);
     }
-    sources_ = std::move(next);
-    return enumerateUnlocked();
+    for (auto& channel : retired) {
+      stopChannel(channel);
+    }
+    return enumerate();
   }
 
   std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
-    std::lock_guard lock(mutex_);
-    std::vector<VideoFrame> frames;
-    for (auto& [deviceId, state] : sources_) {
-      if (state.connectionState != "connected" && state.connectionState != "receiving" && state.connectionState != "connecting") {
-        continue;
+    std::vector<std::shared_ptr<ReaderChannel>> channels;
+    {
+      std::lock_guard lock(mutex_);
+      channels.reserve(channels_.size());
+      for (auto& [_, channel] : channels_) {
+        channels.push_back(channel);
       }
-      state.connectionState = COREVIDEO_SRT_INGEST_CAN_RECEIVE && state.bytesReceived > 0 ? "receiving" : "connected";
-      state.signalPresent = true;
-      ++state.frameId;
+    }
+
+    std::vector<VideoFrame> frames;
+    frames.reserve(channels.size());
+    for (auto& channel : channels) {
+      std::shared_ptr<const std::vector<uint8_t>> pixels;
+      int64_t frameId = 0;
+      {
+        std::lock_guard lock(channel->mutex);
+        pixels = channel->latest;
+        frameId = channel->framesReceived;
+      }
+      if (!pixels || pixels->empty()) {
+        continue;  // nothing decoded yet: no frame rather than an empty one
+      }
       VideoFrame frame;
-      frame.participantId = "capture:" + deviceId;
-      frame.width = state.width;
-      frame.height = state.height;
-      frame.naturalWidth = state.width;
-      frame.naturalHeight = state.height;
+      frame.participantId = "capture:" + channel->config.deviceId;
+      frame.width = channel->width;
+      frame.height = channel->height;
+      frame.naturalWidth = channel->width;
+      frame.naturalHeight = channel->height;
       frame.timestampMs = timestampMs;
-      frame.frameId = state.frameId;
+      frame.pixels = std::move(pixels);
+      frame.pixelWidth = channel->width;
+      frame.pixelHeight = channel->height;
+      frame.pixelStride = channel->width * kBytesPerPixel;
+      frame.frameId = frameId;
       frames.push_back(std::move(frame));
     }
     return frames;
   }
 
  private:
-  struct SourceState {
-    SrtIngestSourceConfig config;
-    std::string selectedInputId;
-    std::string connectionState = "detected";
-    bool signalPresent = false;
-    int64_t droppedFrames = 0;
-    int audioSyncOffsetMs = 0;
-    std::string warning;
-    int64_t frameId = 0;
-    int64_t bytesReceived = 0;
-    int64_t packetsReceived = 0;
-    int width = 1920;
-    int height = 1080;
-    int frameRate = 60;
-#if COREVIDEO_SRT_INGEST_CAN_RECEIVE
-    SRTSOCKET listenSocket = SRT_INVALID_SOCK;
-    SRTSOCKET socket = SRT_INVALID_SOCK;
-#endif
-  };
-
-  SourceState* findUnlocked(const std::string& deviceId) {
-    auto found = sources_.find(deviceId);
-    return found == sources_.end() ? nullptr : &found->second;
+  static bool sameEndpoint(const SrtIngestSourceConfig& a, const SrtIngestSourceConfig& b) {
+    return a.host == b.host && a.port == b.port && a.mode == b.mode &&
+           a.passphrase == b.passphrase && a.streamId == b.streamId && a.latencyMs == b.latencyMs;
   }
 
   std::vector<CaptureDeviceInfo> enumerateUnlocked() const {
     std::vector<CaptureDeviceInfo> result;
-    result.reserve(sources_.size());
-    for (const auto& [_, state] : sources_) {
-      result.push_back(toDevice(state));
+    result.reserve(channels_.size());
+    for (const auto& [deviceId, channel] : channels_) {
+      CaptureDeviceInfo device;
+      device.id = channel->config.deviceId;
+      device.name = channel->config.name + " - " + channel->config.mode + " " +
+                    channel->config.host + ":" + std::to_string(channel->config.port);
+      device.kind = "video";
+      device.vendor = "srt";
+      device.inputIds = {channel->config.id};
+      device.inputLabels = {channel->config.name};
+      device.inputHasEmbeddedAudio = {false};  // ingest audio is a follow-up
+      const auto selected = selectedInputs_.find(deviceId);
+      device.selectedInputId = selected == selectedInputs_.end() ? channel->config.id : selected->second;
+      device.width = channel->width;
+      device.height = channel->height;
+      device.frameRate = channel->frameRate;
+      {
+        std::lock_guard lock(channel->mutex);
+        device.connectionState = channel->connectionState;
+        device.signalPresent = channel->framesReceived > 0;
+        device.droppedFrames = channel->droppedFrames;
+        device.warning = channel->warning;
+      }
+      const auto offset = audioSyncOffsets_.find(deviceId);
+      device.audioSyncOffsetMs = offset == audioSyncOffsets_.end() ? 0 : offset->second;
+      result.push_back(std::move(device));
     }
     return result;
   }
 
-  static CaptureDeviceInfo toDevice(const SourceState& state) {
-    CaptureDeviceInfo device;
-    device.id = state.config.deviceId;
-    device.name = state.config.name + " - " + state.config.mode + " " + state.config.host + ":" + std::to_string(state.config.port);
-    device.kind = "video";
-    device.vendor = "srt";
-    device.inputIds = {state.config.id};
-    device.inputLabels = {state.config.name};
-    device.inputHasEmbeddedAudio = {true};
-    device.selectedInputId = state.selectedInputId.empty() ? state.config.id : state.selectedInputId;
-    device.width = state.width;
-    device.height = state.height;
-    device.frameRate = state.frameRate;
-    device.connectionState = state.connectionState;
-    device.signalPresent = state.signalPresent;
-    device.droppedFrames = state.droppedFrames;
-    device.audioSyncOffsetMs = state.audioSyncOffsetMs;
-    device.warning = state.warning;
-    return device;
+  void startChannel(const std::shared_ptr<ReaderChannel>& channel) {
+    if (channel->thread.joinable()) {
+      return;  // already running
+    }
+    channel->running.store(true);
+    channel->thread = std::thread([channel] { readerLoop(channel); });
   }
 
-  void startReceiver() {
-#if COREVIDEO_SRT_INGEST_CAN_RECEIVE
-    bool expected = false;
-    if (!receiverRunning_.compare_exchange_strong(expected, true)) {
-      return;
+  static void stopChannel(const std::shared_ptr<ReaderChannel>& channel) {
+    channel->running.store(false);
+    // Killing the decoder is what unblocks the reader's pending read.
+    killProcess(*channel);
+    if (channel->thread.joinable()) {
+      channel->thread.join();
     }
-    receiverThread_ = std::thread([this] { receiverLoop(); });
-#endif
   }
 
-  void stopReceiver() {
-#if COREVIDEO_SRT_INGEST_CAN_RECEIVE
-    receiverRunning_.store(false);
-    if (receiverThread_.joinable()) {
-      receiverThread_.join();
-    }
-    std::lock_guard lock(mutex_);
-    for (auto& [_, state] : sources_) {
-      closeSocket(state.socket);
-      closeSocket(state.listenSocket);
-    }
-#endif
-  }
-
-#if COREVIDEO_SRT_INGEST_CAN_RECEIVE
-  void receiverLoop() {
-    srt_startup();
-    while (receiverRunning_.load()) {
-      {
-        std::lock_guard lock(mutex_);
-        for (auto& [_, state] : sources_) {
-          if (state.connectionState == "connecting" || state.connectionState == "connected" || state.connectionState == "receiving") {
-            pumpSource(state);
-          }
-        }
+  void stopAll() {
+    std::vector<std::shared_ptr<ReaderChannel>> channels;
+    {
+      std::lock_guard lock(mutex_);
+      for (auto& [_, channel] : channels_) {
+        channels.push_back(channel);
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      channels_.clear();
     }
-    srt_cleanup();
-  }
-
-  static void closeSocket(SRTSOCKET& socket) {
-    if (socket != SRT_INVALID_SOCK) {
-      srt_close(socket);
-      socket = SRT_INVALID_SOCK;
+    for (auto& channel : channels) {
+      stopChannel(channel);
     }
   }
 
-  static bool fillAddress(const SourceState& state, sockaddr_in& address) {
-    std::memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_port = htons(static_cast<uint16_t>(std::max(1, std::min(65535, state.config.port))));
-    const std::string host = state.config.host.empty() ? "0.0.0.0" : state.config.host;
-    return inet_pton(AF_INET, host.c_str(), &address.sin_addr) == 1;
-  }
-
-  static void configureSocket(SRTSOCKET socket, const SourceState& state) {
-    const int no = 0;
-    const int latencyMs = std::max(20, state.config.latencyMs);
-    (void)srt_setsockopt(socket, 0, SRTO_RCVSYN, &no, sizeof(no));
-    (void)srt_setsockopt(socket, 0, SRTO_SNDSYN, &no, sizeof(no));
-    (void)srt_setsockopt(socket, 0, SRTO_LATENCY, &latencyMs, sizeof(latencyMs));
-    if (!state.config.streamId.empty()) {
-      (void)srt_setsockopt(socket, 0, SRTO_STREAMID, state.config.streamId.c_str(), static_cast<int>(state.config.streamId.size()));
+  static void killProcess(ReaderChannel& channel) {
+#ifdef _WIN32
+    if (HANDLE process = channel.process.exchange(nullptr); process != nullptr) {
+      ::TerminateProcess(process, 0);
+      ::CloseHandle(process);
     }
-    if (!state.config.passphrase.empty()) {
-      constexpr int keyLength = 16;
-      (void)srt_setsockopt(socket, 0, SRTO_PASSPHRASE, state.config.passphrase.c_str(), static_cast<int>(state.config.passphrase.size()));
-      (void)srt_setsockopt(socket, 0, SRTO_PBKEYLEN, &keyLength, sizeof(keyLength));
+    if (HANDLE pipe = channel.readPipe.exchange(nullptr); pipe != nullptr) {
+      ::CloseHandle(pipe);
     }
-  }
-
-  static void openListener(SourceState& state) {
-    if (state.listenSocket != SRT_INVALID_SOCK || state.socket != SRT_INVALID_SOCK) {
-      return;
+#else
+    if (const int pid = channel.pid.exchange(-1); pid > 0) {
+      ::kill(pid, SIGKILL);
+      int status = 0;
+      ::waitpid(pid, &status, 0);
     }
-    sockaddr_in address;
-    if (!fillAddress(state, address)) {
-      state.connectionState = "error";
-      state.warning = "SRT listener host must be an IPv4 address for the native alpha adapter.";
-      return;
+    if (const int fd = channel.readFd.exchange(-1); fd >= 0) {
+      ::close(fd);
     }
-    state.listenSocket = srt_create_socket();
-    if (state.listenSocket == SRT_INVALID_SOCK) {
-      state.connectionState = "error";
-      state.warning = "libsrt could not create listener socket.";
-      return;
-    }
-    configureSocket(state.listenSocket, state);
-    if (srt_bind(state.listenSocket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SRT_ERROR ||
-        srt_listen(state.listenSocket, 1) == SRT_ERROR) {
-      state.connectionState = "error";
-      state.warning = "libsrt listener failed on " + state.config.host + ":" + std::to_string(state.config.port) + ".";
-      closeSocket(state.listenSocket);
-      return;
-    }
-    state.connectionState = "connected";
-    state.warning = "SRT listener ready on " + state.config.host + ":" + std::to_string(state.config.port) + ".";
-  }
-
-  static void openCaller(SourceState& state) {
-    if (state.socket != SRT_INVALID_SOCK) {
-      return;
-    }
-    sockaddr_in address;
-    if (!fillAddress(state, address)) {
-      state.connectionState = "error";
-      state.warning = "SRT caller host must be an IPv4 address for the native alpha adapter.";
-      return;
-    }
-    state.socket = srt_create_socket();
-    if (state.socket == SRT_INVALID_SOCK) {
-      state.connectionState = "error";
-      state.warning = "libsrt could not create caller socket.";
-      return;
-    }
-    configureSocket(state.socket, state);
-    (void)srt_connect(state.socket, reinterpret_cast<sockaddr*>(&address), sizeof(address));
-    state.connectionState = "connected";
-    state.warning = "SRT caller connecting to " + state.config.host + ":" + std::to_string(state.config.port) + ".";
-  }
-
-  static void acceptListener(SourceState& state) {
-    if (state.socket != SRT_INVALID_SOCK || state.listenSocket == SRT_INVALID_SOCK) {
-      return;
-    }
-    sockaddr_in remoteAddress;
-    int remoteLength = sizeof(remoteAddress);
-    const SRTSOCKET accepted = srt_accept(state.listenSocket, reinterpret_cast<sockaddr*>(&remoteAddress), &remoteLength);
-    if (accepted != SRT_INVALID_SOCK) {
-      state.socket = accepted;
-      configureSocket(state.socket, state);
-      state.connectionState = "receiving";
-      state.warning = "SRT listener accepted an ingest publisher.";
-    }
-  }
-
-  static void pumpSource(SourceState& state) {
-    if (state.config.mode == "caller") {
-      openCaller(state);
-    } else {
-      openListener(state);
-      acceptListener(state);
-    }
-    if (state.socket == SRT_INVALID_SOCK) {
-      return;
-    }
-    char packet[1316];
-    const int received = srt_recvmsg(state.socket, packet, static_cast<int>(sizeof(packet)));
-    if (received > 0) {
-      state.connectionState = "receiving";
-      state.signalPresent = true;
-      state.bytesReceived += received;
-      ++state.packetsReceived;
-      state.warning = "SRT transport receiving encoded packets. Decode is handled by the decoder stage.";
-    }
-  }
 #endif
+  }
+
+  // Spawn the decoder and stream whole BGRA frames until it dies or we stop.
+  static void readerLoop(const std::shared_ptr<ReaderChannel> channel) {
+    const std::string executable = resolveFfmpegExecutable();
+    int backoffMs = 500;
+    while (channel->running.load()) {
+      SrtEndpointConfig endpoint;
+      endpoint.host = channel->config.host.empty() ? std::string("0.0.0.0") : channel->config.host;
+      endpoint.port = channel->config.port;
+      endpoint.mode = channel->config.mode.empty() ? std::string("listener") : channel->config.mode;
+      endpoint.latencyMs = channel->config.latencyMs;
+      endpoint.passphrase = channel->config.passphrase;
+      endpoint.streamId = channel->config.streamId;
+      const auto url = buildSrtUrl(endpoint);
+      if (!url.valid) {
+        // A configuration error will not fix itself by retrying in a tight loop.
+        channel->setStatus("failed", url.error);
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        continue;
+      }
+
+      channel->setStatus("connecting",
+                         "Waiting for an SRT publisher on " + endpoint.host + ":" +
+                             std::to_string(endpoint.port) + ".");
+      if (!spawnDecoder(*channel, executable, url.url)) {
+        channel->setStatus("failed", "Could not start the FFmpeg decoder for this SRT source.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+        backoffMs = std::min(backoffMs * 2, 10000);
+        continue;
+      }
+
+      const std::size_t frameBytes = static_cast<std::size_t>(channel->width) *
+                                     static_cast<std::size_t>(channel->height) * kBytesPerPixel;
+      std::vector<uint8_t> buffer(frameBytes);
+      bool sawFrame = false;
+      while (channel->running.load()) {
+        if (!readExactly(*channel, buffer.data(), frameBytes)) {
+          break;  // decoder exited or the publisher went away
+        }
+        auto published = std::make_shared<std::vector<uint8_t>>(buffer);
+        {
+          std::lock_guard lock(channel->mutex);
+          channel->latest = std::move(published);
+          ++channel->framesReceived;
+          channel->connectionState = "receiving";
+          channel->warning.clear();
+        }
+        sawFrame = true;
+        backoffMs = 500;  // a healthy connection resets the backoff
+      }
+
+      killProcess(*channel);
+      if (!channel->running.load()) {
+        break;
+      }
+      channel->setStatus(sawFrame ? "connecting" : "connecting",
+                         sawFrame ? "SRT publisher disconnected; waiting for it to return."
+                                  : "No SRT publisher yet.");
+      std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+      backoffMs = std::min(backoffMs * 2, 10000);
+    }
+    channel->setStatus("detected", "");
+  }
+
+  // Read exactly `bytes` or fail. A partial read would desynchronise every
+  // subsequent frame, turning a healthy stream into permanent garbage.
+  static bool readExactly(ReaderChannel& channel, uint8_t* out, std::size_t bytes) {
+    std::size_t filled = 0;
+    while (filled < bytes) {
+#ifdef _WIN32
+      HANDLE pipe = channel.readPipe.load();
+      if (pipe == nullptr) {
+        return false;
+      }
+      DWORD read = 0;
+      if (!::ReadFile(pipe, out + filled, static_cast<DWORD>(bytes - filled), &read, nullptr) || read == 0) {
+        return false;
+      }
+      filled += read;
+#else
+      const int fd = channel.readFd.load();
+      if (fd < 0) {
+        return false;
+      }
+      const auto read = ::read(fd, out + filled, bytes - filled);
+      if (read <= 0) {
+        return false;
+      }
+      filled += static_cast<std::size_t>(read);
+#endif
+    }
+    return true;
+  }
+
+  static bool spawnDecoder(ReaderChannel& channel, const std::string& executable,
+                           const std::string& url) {
+    const std::string command = buildIngestCommand(executable, channel, url);
+#ifdef _WIN32
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (!::CreatePipe(&readPipe, &writePipe, &security, 1 << 20)) {
+      return false;
+    }
+    // The child must not inherit our read end, or the pipe never reports EOF.
+    ::SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = writePipe;
+    startup.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
+    startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION process{};
+    std::string mutableCommand = command;
+    const BOOL created = ::CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, TRUE,
+                                          CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+    ::CloseHandle(writePipe);  // our copy; the child holds its own
+    if (!created) {
+      ::CloseHandle(readPipe);
+      return false;
+    }
+    ::CloseHandle(process.hThread);
+    if (HANDLE job = ingestJobObject(); job != nullptr) {
+      ::AssignProcessToJobObject(job, process.hProcess);
+    }
+    channel.process.store(process.hProcess);
+    channel.readPipe.store(readPipe);
+    return true;
+#else
+    int fds[2] = {-1, -1};
+    if (::pipe(fds) != 0) {
+      return false;
+    }
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+      ::close(fds[0]);
+      ::close(fds[1]);
+      return false;
+    }
+    if (pid == 0) {
+      ::dup2(fds[1], STDOUT_FILENO);
+      ::close(fds[0]);
+      ::close(fds[1]);
+      ::execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
+      ::_exit(127);
+    }
+    ::close(fds[1]);
+    channel.pid.store(pid);
+    channel.readFd.store(fds[0]);
+    return true;
+#endif
+  }
 
   mutable std::mutex mutex_;
-  std::map<std::string, SourceState> sources_;
-  std::atomic_bool receiverRunning_{false};
-  std::thread receiverThread_;
+  std::map<std::string, std::shared_ptr<ReaderChannel>> channels_;
+  std::map<std::string, std::string> selectedInputs_;
+  std::map<std::string, int> audioSyncOffsets_;
 };
 
 }  // namespace
