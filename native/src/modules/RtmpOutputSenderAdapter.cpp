@@ -1,6 +1,7 @@
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
+#include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
 #include <atomic>
@@ -229,6 +230,51 @@ std::string redactedEndpoint(const std::string& endpoint, const std::string& str
     return endpoint;
   }
   return endpoint.substr(0, position) + "<stream-key>";
+}
+
+// This sender serves BOTH FFmpeg-transported protocols. RTMP and SRT differ only
+// in their endpoint syntax, container and validation - the process pipeline,
+// wallclock pacing, NV12 feeding, reconnect/backoff and health reporting are
+// identical, so they share one implementation rather than two 1700-line copies.
+struct FfmpegSenderProtocol {
+  std::string destination = "rtmp";  // the destination name the operator toggles
+  std::string container = "flv";     // FLV for RTMP, MPEG-TS for SRT
+  bool isSrt = false;
+};
+
+inline FfmpegSenderProtocol rtmpProtocol() { return {"rtmp", "flv", false}; }
+inline FfmpegSenderProtocol srtProtocol() { return {"srt", "mpegts", true}; }
+
+// SRT settings carry host/port/mode/latency/passphrase rather than a URL and a
+// stream key, so they get their own matcher and validator.
+const OutputDestinationSettings* findSrtSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
+  for (const auto& settings : destinationSettings) {
+    if (settings.id == "srt" || lowercaseAscii(settings.protocol) == "srt") {
+      return &settings;
+    }
+  }
+  return nullptr;
+}
+
+SrtEndpointConfig srtEndpointConfigFrom(const OutputDestinationSettings& settings) {
+  SrtEndpointConfig config;
+  // Tolerate the host arriving in either field - operators paste a full
+  // "srt://host:port" into the URL box as often as they fill host/port.
+  config.host = !settings.host.empty() ? settings.host : settings.url;
+  config.port = settings.port;
+  config.mode = settings.mode.empty() ? std::string("caller") : lowercaseAscii(settings.mode);
+  config.latencyMs = settings.latencyMs;
+  config.latencyUs = settings.latencyUs;
+  config.passphrase = settings.passphrase;
+  config.keyLength = settings.keyLength;
+  config.streamId = settings.streamId;
+  return config;
+}
+
+// Returns "" when the settings can produce a usable srt:// endpoint.
+std::string validateSrtSettings(const OutputDestinationSettings& settings) {
+  const auto result = buildSrtUrl(srtEndpointConfigFrom(settings));
+  return result.valid ? std::string() : result.error;
 }
 
 const OutputDestinationSettings* findRtmpSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
@@ -556,8 +602,11 @@ std::string selectFfmpegVideoEncoder(
 
 class RtmpOutputSender final : public IOutputSender {
  public:
-  explicit RtmpOutputSender(RuntimeProbe runtimeProbe)
-      : runtimeProbe_(std::move(runtimeProbe)), runtimeDetail_(runtimeProbe_.detail), runtimeAvailable_(runtimeProbe_.available) {}
+  RtmpOutputSender(RuntimeProbe runtimeProbe, FfmpegSenderProtocol protocol = rtmpProtocol())
+      : protocol_(std::move(protocol)),
+        runtimeProbe_(std::move(runtimeProbe)),
+        runtimeDetail_(runtimeProbe_.detail),
+        runtimeAvailable_(runtimeProbe_.available) {}
 
   ~RtmpOutputSender() override { stopFfmpegProcess(); }
 
@@ -578,7 +627,8 @@ class RtmpOutputSender final : public IOutputSender {
                            : nullptr;
     pendingAudioChannels_ = pendingAudioPcm_ ? audioChannels : 0;
     pendingAudioSampleRate_ = pendingAudioPcm_ ? audioSampleRate : 0;
-    const bool wantsRtmp = std::find(destinations.begin(), destinations.end(), "rtmp") != destinations.end();
+    const bool wantsRtmp =
+        std::find(destinations.begin(), destinations.end(), protocol_.destination) != destinations.end();
     if (!wantsRtmp) {
       stopFfmpegProcess();
       videoFramePacer_.reset();
@@ -594,7 +644,8 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     ensureSender(elapsedMs);
-    const auto* settings = findRtmpSettings(destinationSettings);
+    const auto* settings = protocol_.isSrt ? findSrtSettings(destinationSettings)
+                                           : findRtmpSettings(destinationSettings);
     if (!settings) {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
@@ -608,7 +659,8 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
-    const auto settingsError = validateRtmpSettings(*settings);
+    const auto settingsError = protocol_.isSrt ? validateSrtSettings(*settings)
+                                               : validateRtmpSettings(*settings);
     if (!settingsError.empty()) {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
@@ -623,7 +675,8 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     const bool ffmpegBinDirectoryChanged = configuredFfmpegBinDirectory_ != settings->ffmpegBinDirectory;
-    configuredEndpoint_ = buildRtmpEndpoint(*settings);
+    configuredEndpoint_ = protocol_.isSrt ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
+                                          : buildRtmpEndpoint(*settings);
     configuredStreamKey_ = settings->streamKey;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
@@ -759,7 +812,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
-    if (destination != "rtmp") {
+    if (destination != protocol_.destination) {
       return snapshot();
     }
     ensureSender(elapsedMs);
@@ -774,7 +827,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override {
-    if (destination != "rtmp") {
+    if (destination != protocol_.destination) {
       return snapshot();
     }
     stopFfmpegProcess();
@@ -796,7 +849,7 @@ class RtmpOutputSender final : public IOutputSender {
   OutputSenderSession session() const override { return snapshot(); }
 
   void interrupt(const std::string& destination) override {
-    if (destination != "rtmp") {
+    if (destination != protocol_.destination) {
       return;
     }
 #if defined(_WIN32)
@@ -918,8 +971,14 @@ class RtmpOutputSender final : public IOutputSender {
     if (!sender_.senderId.empty()) {
       return;
     }
-    sender_.senderId = "rtmp:program";
-    sender_.destination = "rtmp";
+    // Identity must follow the PROTOCOL, not the class name. The composite adds a
+    // synthetic "<dest> output sender is not available in this build" warning for
+    // any network destination with no registered sender, so an SRT instance
+    // reporting itself as "rtmp" streams perfectly while the operator is told SRT
+    // is unavailable (observed in the first end-to-end SRT proof: 6.4MB of h264
+    // delivered, snapshot said no SRT sender module).
+    sender_.senderId = protocol_.destination + ":program";
+    sender_.destination = protocol_.destination;
     sender_.status = "starting";
     sender_.startedAtMs = elapsedMs;
     sender_.latencyMs = 2100;
@@ -1010,6 +1069,13 @@ class RtmpOutputSender final : public IOutputSender {
     ffmpegRetryAfter_ = {};
   }
 
+  // Never emit a raw endpoint: RTMP carries the stream key in the path and SRT
+  // carries the passphrase in the query string.
+  std::string redactedSenderEndpoint() const {
+    return protocol_.isSrt ? redactedSrtUrl(configuredEndpoint_)
+                           : redactedEndpoint(configuredEndpoint_, configuredStreamKey_);
+  }
+
   std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
     // Resolve the requested codec to an RTMP-compatible one (H.265/AV1 fall back
     // to H.264 unless enhanced-RTMP is enabled) so the encoded stream always
@@ -1038,6 +1104,7 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
+    config.container = protocol_.container;
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -1194,7 +1261,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
     writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
-              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
@@ -1314,7 +1381,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
     writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
-              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
@@ -1653,7 +1720,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.sendArtifactPath = path.string();
     writeLine("{\"type\":\"rtmp-send-proof-start\",\"destination\":\"rtmp\",\"endpointConfigured\":" +
               std::string(configuredEndpoint_.empty() ? "false" : "true") +
-              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"endpointMode\":\"ffmpeg-process\","
               "\"testMode\":false,\"muxingMode\":\"ffmpeg-process\",\"runtimeLibrary\":\"ffmpeg\",\"runtimeAvailable\":" +
               std::string(runtimeAvailable_ ? "true" : "false") +
@@ -1705,6 +1772,7 @@ class RtmpOutputSender final : public IOutputSender {
     return session;
   }
 
+  FfmpegSenderProtocol protocol_;
   RuntimeProbe runtimeProbe_;
   std::string runtimeDetail_;
   bool runtimeAvailable_ = false;
@@ -1779,7 +1847,20 @@ std::unique_ptr<IOutputSender> createRtmpOutputSender() {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
   // REQUIRES DEV MACHINE: real RTMP packet muxing belongs behind this libavformat
   // sender. The scaffold verifies runtime availability without affecting stubs.
-  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""));
+  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), rtmpProtocol());
+#else
+  return nullptr;
+#endif
+}
+
+// SRT DELIVERY. Same FFmpeg process pipeline as RTMP - only the endpoint syntax,
+// container (MPEG-TS) and validation differ - so it is the same sender with a
+// different protocol profile rather than a second implementation. Gated on the
+// RTMP build flag because it IS the RTMP sender; the staged FFmpeg is built with
+// libsrt, verified by loopback before this was wired.
+std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender() {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
+  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), srtProtocol());
 #else
   return nullptr;
 #endif

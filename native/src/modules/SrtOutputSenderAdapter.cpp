@@ -5,14 +5,16 @@
 namespace corevideo::modules {
 
 std::unique_ptr<IOutputSender> createSrtOutputSender() {
-#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_SRT_OUTPUT
-  // REQUIRES DEV MACHINE: Haivision libsrt integration belongs behind this gate.
-  // The default alpha build continues to use SyntheticOutputSender, which already
-  // exposes isolated "srt" sender diagnostics for program-output contract testing.
-  return nullptr;
-#else
-  return nullptr;
-#endif
+  // SRT delivery rides the SHARED FFmpeg sender rather than a second libsrt
+  // integration: the staged FFmpeg is built with libsrt, and the RTMP sender
+  // already owns the hardened process/pipe pipeline (pacing, NV12 feeding,
+  // reconnect/backoff, health). This file used to return nullptr on BOTH sides
+  // of its #if, so SRT output did not exist at all.
+  //
+  // COREVIDEO_WITH_SRT_OUTPUT remains the gate for a future in-core libsrt
+  // implementation; it is deliberately NOT required here, because the FFmpeg
+  // path needs no libsrt at build time.
+  return createFfmpegSrtOutputSender();
 }
 
 }  // namespace corevideo::modules
