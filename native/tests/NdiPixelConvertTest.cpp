@@ -80,11 +80,27 @@ TEST(NdiPixelConvert, RefusesUndersizedOrDegenerateInput) {
   EXPECT_FALSE(nv12ToUyvy(nv12.data(), 0, kH, nv12.size(), uyvy));
 }
 
+// Is this build instrumented? A sanitizer instruments every memory access, which
+// costs roughly an order of magnitude — a wall-clock budget cannot mean anything
+// under it. The correctness assertions above still run there; only the timing
+// bound is skipped.
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__)
+#define COREVIDEO_INSTRUMENTED_BUILD 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer) || __has_feature(address_sanitizer) || \
+    __has_feature(memory_sanitizer)
+#define COREVIDEO_INSTRUMENTED_BUILD 1
+#endif
+#endif
+
 // This runs on the audio/output worker, which has a 20ms tick. A per-pixel colour
 // conversion here would blow that budget at 1080p; the byte shuffle must not. The
 // bound is deliberately loose (CI machines vary) — it exists to catch someone
 // reintroducing per-pixel math, not to benchmark the host.
 TEST(NdiPixelConvert, FullHdConversionStaysCheapEnoughForTheOutputWorker) {
+#ifdef COREVIDEO_INSTRUMENTED_BUILD
+  GTEST_SKIP() << "wall-clock budget is meaningless under a sanitizer";
+#else
   constexpr int kW = 1920;
   constexpr int kH = 1080;
   const auto nv12 = makeNv12(kW, kH);
@@ -101,4 +117,5 @@ TEST(NdiPixelConvert, FullHdConversionStaysCheapEnoughForTheOutputWorker) {
       kIterations;
   EXPECT_LT(perFrameMs, 10.0) << "1080p NV12->UYVY took " << perFrameMs
                               << "ms/frame — too slow for the 20ms output tick";
+#endif
 }
