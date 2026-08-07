@@ -502,8 +502,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
       {
-        const auto intervalUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(t0 - lastFrameStart).count();
+        // Explicit long long: microseconds::rep is `long` on Linux/GCC and
+        // `long long` on MSVC, so an `auto` here makes the std::max below a
+        // deduction failure that breaks the Linux build only.
+        const long long intervalUs = static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t0 - lastFrameStart).count());
         if (intervalUs > kFrameBudgetUs * 3 / 2) {
           ++lateFrames;
         }
