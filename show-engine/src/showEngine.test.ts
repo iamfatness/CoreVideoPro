@@ -6,7 +6,8 @@ import { StateStore } from "./persistence.js";
 import { parseShowEngineConfig } from "./config.js";
 import { LiveSlotsRestoreError } from "./liveSlots.js";
 import { GalleryError } from "./galleryDirector.js";
-import type { StateFs } from "./persistence.js";
+import { resolvePersonKey } from "./personKey.js";
+import type { StateFs, PersistedShowState } from "./persistence.js";
 import type { Clock } from "./clock.js";
 import type { ZoomEvent } from "./zoomIngest.js";
 import type { QueueState } from "./contracts.js";
@@ -332,15 +333,126 @@ describe("ShowEngine roster tick", () => {
     expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
   });
 
-  it("leaves a hole rather than compacting when someone leaves", async () => {
+  /**
+   * A Zoom departure does NOT vacate a seat. Owner ruling, 2026-08-06: the seat
+   * is held and flagged offline, so a connection blip does not drop a panelist
+   * off air and a reconnect returns them to the SAME slot. Clearing a seat is an
+   * explicit operator action, exactly as it was in the Isadora patch this ports.
+   *
+   * This matches the two modules underneath: `ZoomIngest` keeps a departed
+   * participant marked offline "so they can be restored on reconnect"
+   * (zoomIngest.ts:52-55), and `LiveSlots.refresh` documents that a vanished
+   * participant "keeps their seat but is marked offline — visibly gone rather
+   * than silently dropped" (liveSlots.ts:114-118).
+   *
+   * The invariant this must break on: any code that vacates a seat on an
+   * offline flag. That makes a reconnecting guest permanently unseatable,
+   * because a departure never changes the id set and `refresh` only re-pulls
+   * ALREADY-seated panelists.
+   */
+  it("holds the seat and marks it offline when someone leaves", async () => {
     const e = engine();
     e.onZoomEvent(joined("p1", "Ann"));
     e.onZoomEvent(joined("p2", "Bo"));
     await e.tick();
     e.onZoomEvent({ kind: "left", participantId: "p1" });
     const snap = await e.tick();
-    expect(snap.slots[0]?.panelist).toBeNull();
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p1");
+    expect(snap.slots[0]?.panelist?.online).toBe(false);
     expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
+  });
+
+  it("returns a reconnecting panelist to the same slot", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.onZoomEvent({ kind: "left", participantId: "p1" });
+    await e.tick();
+    e.onZoomEvent(joined("p1", "Ann"));
+    const snap = await e.tick();
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p1");
+    expect(snap.slots[0]?.panelist?.online).toBe(true);
+  });
+
+  /**
+   * The refresh-vs-rebuild branch, pinned in BOTH directions. Mutation testing
+   * showed the committed suite passed under "always rebuild" AND under "always
+   * refresh" — the second means a mid-show join is never seated and nothing
+   * fails. Every roster test staged its joins before the first tick.
+   */
+  it("seats a guest who joins after the first tick", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    await e.tick();
+    e.onZoomEvent(joined("p2", "Bo"));
+    const snap = await e.tick();
+    expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
+  });
+
+  /**
+   * The `sameIdSet` comparison must be a real set-membership check, not a
+   * size check. A full roster resync (a "roster" event, unlike "left") can
+   * swap membership while keeping the same COUNT — one person omitted, a
+   * different one added. `a.size === b.size` alone would misclassify this
+   * as "unchanged" and take the `refresh` path, which never seats the new
+   * arrival because `refresh` only re-pulls already-seated panelists.
+   */
+  it("rebuilds on a same-size membership swap, not just a size change", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.onZoomEvent({
+      kind: "roster",
+      participants: [
+        {
+          participantId: "p2",
+          rawName: "Bo",
+          online: true,
+          videoOn: true,
+          audioOn: true,
+          handRaised: false,
+          zoomRole: 0
+        },
+        {
+          participantId: "p3",
+          rawName: "Cy",
+          online: true,
+          videoOn: true,
+          audioOn: true,
+          handRaised: false,
+          zoomRole: 0
+        }
+      ]
+    });
+    const snap = await e.tick();
+    expect(snap.slots.some((s) => s.panelist?.participantId === "p3")).toBe(true);
+  });
+
+  /**
+   * `unseatedPanelists` is written only by `rebuild`'s return value — a
+   * `refresh`-path tick never touches it. Without reconciling it against
+   * this tick's fresh `panelists` map too, an overflow panelist's own
+   * property changes (video/audio/role) are invisible on the published
+   * snapshot until the next roster-changing rebuild, even though the
+   * engine already has fresher data for them in hand.
+   */
+  it("reconciles unseated panelists on a refresh-path tick, not just at the rebuild that dropped them", async () => {
+    const e = engine();
+    for (let i = 1; i <= 9; i += 1) {
+      e.onZoomEvent(joined(`p${i}`, `Guest ${i}`));
+    }
+    const first = await e.tick();
+    const overflowId = first.unseated[0]?.participantId;
+    expect(overflowId).toBeDefined();
+
+    // A property-only change on the overflow participant: the id set does
+    // not change, so this tick takes the `refresh` path.
+    e.onZoomEvent({ kind: "video", participantId: overflowId as string, on: false });
+    const snap = await e.tick();
+    expect(snap.unseated[0]?.participantId).toBe(overflowId);
+    expect(snap.unseated[0]?.videoOn).toBe(false);
   });
 
   /**
@@ -416,5 +528,106 @@ describe("ShowEngine roster tick", () => {
     expect((b as unknown as { queue: QueueState }).queue.previous).toEqual([]);
     expect(a.snapshot().queue.previous).toEqual(["mutated-on-a"]);
     expect(b.snapshot().queue.previous).toEqual([]);
+  });
+
+  /**
+   * Fix round 1, Minor: the flag-conflation bug caught pre-commit (reusing
+   * the lingering "unsaved state" flag to also decide whether the seat step
+   * runs) was fixed but unpinned — nothing in the committed suite failed
+   * when the two roles were collapsed back into one field, because refresh
+   * and rebuild are idempotent for unchanged inputs, so a spurious extra
+   * seat-step run produces no different `ShowSnapshot` content. This test
+   * reaches into the two private flags directly (the same technique as the
+   * queue-isolation test above) to pin that `otherInputsChanged` is
+   * consumed by every `tick()` regardless of whether that tick manages to
+   * save, while `pendingPersist` correctly lingers until an actual save.
+   */
+  it("keeps the debounce-lingering persist flag separate from the per-tick reseat flag", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    await e.tick(); // unthrottled first save: pendingPersist -> false
+    e.setLook("teatime"); // sets BOTH flags true
+    await e.tick(); // debounce not elapsed (fixed clock): save skipped, pendingPersist lingers
+    const internals = e as unknown as { otherInputsChanged: boolean; pendingPersist: boolean };
+    expect(internals.pendingPersist).toBe(true);
+    expect(internals.otherInputsChanged).toBe(false);
+  });
+
+  /**
+   * Fix round 1, Minor: `setOverride`'s exclusive-role demotion
+   * (`assignExclusiveRole`) had zero coverage anywhere in the package — it
+   * is the only thing preventing two simultaneous hosts.
+   */
+  it("demotes the prior host when a new host override is set", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+
+    e.setOverride({
+      personKey: resolvePersonKey({ participantId: "p1", rawName: "Ann" }),
+      displayName: "Ann",
+      location: "",
+      role: "host"
+    });
+    await e.tick();
+
+    e.setOverride({
+      personKey: resolvePersonKey({ participantId: "p2", rawName: "Bo" }),
+      displayName: "Bo",
+      location: "",
+      role: "host"
+    });
+    const snap = await e.tick();
+
+    const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+    const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+    expect(p1?.role).toBe("panelist");
+    expect(p2?.role).toBe("host");
+  });
+});
+
+describe("ShowEngine restore + non-roster input (fix round 1, Important 3)", () => {
+  /**
+   * `restore()` seeds `LiveSlots` from disk, but `ZoomIngest` starts empty
+   * regardless — the real Zoom roster has not reconnected yet. Before this
+   * guard, a non-roster input (`setLook` here) alone would run the seat
+   * step against that empty `ZoomIngest` snapshot: `rebuild([])` cleared
+   * every restored seat, and the next debounced save persisted the wipe
+   * over the good state file. Reproduced without the guard: two restored,
+   * seated panelists, then `setLook`, then one `tick()` — every seat went
+   * null and the persisted file held 8 nulls. An operator changing looks
+   * after a restart, before Zoom reconnects, must not destroy the show.
+   */
+  it("does not wipe a restored roster when a non-roster input runs the seat step before Zoom reconnects", async () => {
+    const seats = new Array(8).fill(null);
+    seats[0] = { slot: 1, panelist: { participantId: "p1", rawName: "Ann" } };
+    seats[1] = { slot: 2, panelist: { participantId: "p2", rawName: "Bo" } };
+    const fs = memoryFs({
+      "/state/show.json": JSON.stringify({
+        version: 3,
+        slots: { version: 1, capacity: 8, seats },
+        overrides: {},
+        gallery: {
+          version: 1,
+          cells: 16,
+          assignments: Array.from({ length: 16 }, (_, i) => ({ cell: i + 1, slot: 0 }))
+        },
+        manualBoxes: {},
+        lookId: null
+      })
+    });
+    const e = engine({ fs });
+    expect(await e.restore()).toBe(true);
+
+    e.setLook("teatime"); // a non-roster input, before Zoom has reconnected
+    const snap = await e.tick();
+
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p1");
+    expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
+
+    const persisted = JSON.parse(await fs.readFile("/state/show.json")) as PersistedShowState;
+    expect(persisted.slots.seats[0]?.panelist.participantId).toBe("p1");
+    expect(persisted.slots.seats[1]?.panelist.participantId).toBe("p2");
   });
 });

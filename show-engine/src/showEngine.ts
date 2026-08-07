@@ -277,6 +277,22 @@ export class ShowEngine {
     this.gallery = restoredGallery;
     this.overrideDb.restore(persisted.overrides);
 
+    // Seed the seat step's "last seated against" id set from what was just
+    // restored, so that IF Zoom's first post-restart commit reports exactly
+    // the same participant ids (a brief blip rather than a real restart of
+    // the meeting), the seat step correctly takes the `refresh` path and
+    // holds those seats in place rather than an unnecessary `rebuild` —
+    // today that happens to reproduce identical positions (deterministic
+    // sort, no manual seat-move feature yet), but this is what keeps it
+    // correct once one exists. Belt-and-suspenders with the revision-0
+    // guard in `tick()`, which is what actually stops a wipe before Zoom
+    // has said anything at all.
+    this.lastSeatedParticipantIds = new Set(
+      restoredSlots
+        .slots()
+        .flatMap((slot) => (slot.panelist === null ? [] : [slot.panelist.participantId]))
+    );
+
     // A restored assignment set belongs to whatever look was selected when
     // it was saved. Applying it under a different look would put whoever
     // the operator put in box 1 of one arrangement into box 1 of another,
@@ -304,7 +320,17 @@ export class ShowEngine {
     const rosterCommitted = this.zoomIngest.commit();
     const otherChanged = this.otherInputsChanged;
     this.otherInputsChanged = false;
-    const rosterInputsChanged = rosterCommitted || otherChanged;
+
+    // A non-roster input (setLook/setOverride/onMukanaPanelists) alone must
+    // never run the seat step while ZoomIngest has never committed real
+    // data (revision 0) — right after a fresh `restore()`, ZoomIngest is
+    // still empty because restore() does not (and cannot) repopulate it.
+    // Without this guard, `setLook` between `restore()` and Zoom
+    // reconnecting would seat/rebuild against an empty roster, clearing
+    // every restored seat and persisting the wipe on the next debounced
+    // save. A real roster commit always proceeds regardless — that IS live
+    // data arriving.
+    const rosterInputsChanged = rosterCommitted || (otherChanged && this.zoomIngest.revision > 0);
 
     if (rosterInputsChanged) {
       const participants = this.zoomIngest.snapshot();
@@ -321,15 +347,28 @@ export class ShowEngine {
       ) {
         // Same people, at most changed properties (video/audio/hand/role) —
         // hold every seat still. A guest toggling their camera must not
-        // reseat the room.
+        // reseat the room. A Zoom departure ("left") does NOT change the id
+        // set either (ZoomIngest keeps a departed participant, marked
+        // offline, "so they can be restored on reconnect" — zoomIngest.ts)
+        // and `refresh` itself keeps a since-vanished seat's panelist and
+        // marks it offline rather than clearing it (liveSlots.ts) — a
+        // connection blip must never drop a panelist off air, and a
+        // reconnect must return them to the SAME slot. Owner ruling,
+        // 2026-08-06: clearing a seat is an explicit operator action, never
+        // an automatic consequence of an offline flag.
         this.liveSlots.refresh(panelists);
       } else {
-        // The roster itself changed (a join, or the very first tick, when
-        // there is no prior arrangement to hold). Seat deterministically by
+        // The roster itself changed (a join, a departure via a full roster
+        // resync that omits someone, or the very first tick, when there is
+        // no prior arrangement to hold). Seat deterministically by
         // participant id — sorting by name would reshuffle the room
-        // whenever someone renamed themselves mid-show — and never drop
-        // whoever doesn't fit: `rebuild`'s overflow return is what the
-        // published snapshot's `unseated` reports.
+        // whenever someone renamed themselves mid-show, and this sort must
+        // stay independent of `ZoomIngest.commit()`'s own internal sort
+        // (zoomIngest.ts) rather than rely on it: the two use different
+        // collation (code-unit vs `localeCompare`), and this module must
+        // not depend on another module's undocumented internal ordering —
+        // and never drop whoever doesn't fit: `rebuild`'s overflow return
+        // is what the published snapshot's `unseated` reports.
         const sorted = [...panelists.values()].sort((a, b) =>
           a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0
         );
@@ -337,18 +376,17 @@ export class ShowEngine {
       }
       this.lastSeatedParticipantIds = currentIds;
 
-      // A participant who has gone offline (a Zoom "left", or a roster
-      // snapshot that no longer reports them present) vacates their seat
-      // instead of sitting in it forever as an offline ghost. `refresh`
-      // itself only marks a vanished-from-the-database seat offline and
-      // holds it (LiveSlots' documented behavior) — this is the layer that
-      // turns a genuine departure into the open hole an operator expects,
-      // without touching anyone else's seat.
-      for (const slot of this.liveSlots.slots()) {
-        if (slot.panelist !== null && !slot.panelist.online) {
-          this.liveSlots.removeSlot(slot.slot);
-        }
-      }
+      // Reconcile the unseated list against this tick's fresh panelist data
+      // even on a `refresh`-path tick: `rebuild` above already recomputes
+      // `unseatedPanelists` from-scratch, but a `refresh`-path tick never
+      // touches it at all, so an overflow panelist's own property changes
+      // (video/audio/role) would otherwise be invisible on the published
+      // snapshot until the next roster-changing rebuild. Safe because a
+      // `refresh`-path tick only runs when the id set is unchanged, so
+      // every previously-unseated id is still present in `panelists`.
+      this.unseatedPanelists = this.unseatedPanelists.map(
+        (panelist) => panelists.get(panelist.participantId) ?? panelist
+      );
 
       this.pendingPersist = true;
     }
