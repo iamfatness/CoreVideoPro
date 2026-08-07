@@ -738,6 +738,49 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   });
 
+  // Dedicated PROGRAM VIDEO OUT worker. Everything leaving the app used to be
+  // sampled by the audio worker above, whose 20ms period is an AUDIO constant —
+  // so a 60fps program was recorded and streamed at ~51fps. Raising that worker
+  // to 60Hz would break the 960-sample block contract (spec 4.2) that its pacer
+  // exists to hold, so video gets its own grid at the OUTPUT frame rate.
+  //
+  // Same absolute-deadline pacer as the audio worker and for the same reason: a
+  // relative sleep_for adds the Windows overshoot (~1ms even at
+  // timeBeginPeriod(1)) to every period, which can only approach the target from
+  // below. Unlike audio there is nothing to "catch up" — a late video tick has
+  // no buffered samples to shed — so a blown deadline just re-anchors.
+  mediaCore_.setVideoOutputTickRunning(true);
+  std::thread videoOutputThread([&] {
+    constexpr long long kVideoBudgetUs = 16667;  // 60Hz, the program output rate
+    long long ticks = 0;
+    long long workUs = 0;
+    auto rateStamp = std::chrono::steady_clock::now();
+    auto deadline = std::chrono::steady_clock::now();
+    while (!stopping.load()) {
+      const auto t0 = std::chrono::steady_clock::now();
+      mediaCore_.renderVideoOutputTick(coreMutex);
+      workUs += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - t0)
+                    .count();
+      if (++ticks >= 120) {
+        const auto now = std::chrono::steady_clock::now();
+        const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        std::fprintf(stderr, "[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+                     sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
+        ticks = 0;
+        workUs = 0;
+        rateStamp = now;
+      }
+      deadline += std::chrono::microseconds(kVideoBudgetUs);
+      const auto now = std::chrono::steady_clock::now();
+      if (deadline <= now) {
+        deadline = now;  // late: no samples to shed, just re-anchor the grid
+      } else {
+        std::this_thread::sleep_until(deadline);
+      }
+    }
+  });
+
   auto lastPump = std::chrono::steady_clock::now();
   long long coalescedSyncs = 0;
   for (;;) {
@@ -902,6 +945,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   if (zoomPumpThread.joinable()) {
     zoomPumpThread.join();
   }
+  if (videoOutputThread.joinable()) {
+    videoOutputThread.join();
+  }
+  mediaCore_.setVideoOutputTickRunning(false);
   if (audioOutputThread.joinable()) {
     audioOutputThread.join();
   }

@@ -5239,29 +5239,29 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // device. It must be taken BEFORE the encoder submit below: the recorder muxes
   // from this buffer (RecordingSessionRequest::programNv12), and attaching it only
   // to the senders' copy is what left recordings muxing the 320x180 preview.
-  static std::vector<std::uint8_t> programNv12;  // output worker is single-threaded
-  static int programNv12Width = 0;
-  static int programNv12Height = 0;
+  // THE TAP IS TAKEN BY THE VIDEO TICK, NOT HERE. takeVcamNv12 yields each tap
+  // generation exactly ONCE, so two callers would starve each other; the 60Hz
+  // renderVideoOutputTick owns the take and leaves the newest frame in
+  // latestProgramNv12_ (both run under audioOutputMutex_, so this is a plain
+  // read). The senders below still need it on work.programFrame.
   bool hasNewProgramNv12 = false;
-  if (!work.outputDestinations.empty() || virtualCameraEnabled_ || work.recordingActive) {
-    int tapWidth = 0;
-    int tapHeight = 0;
-    hasNewProgramNv12 = modules_.compositor->takeVcamNv12(programNv12, tapWidth, tapHeight);
-    if (hasNewProgramNv12) {
-      programNv12Width = tapWidth;
-      programNv12Height = tapHeight;
-    }
-  }
-  if (!programNv12.empty() && programNv12Width > 0 && programNv12Height > 0) {
-    work.programFrame.programNv12Width = programNv12Width;
-    work.programFrame.programNv12Height = programNv12Height;
-    work.programFrame.programNv12 = programNv12;
+  if (!latestProgramNv12_.empty() && latestProgramNv12Width_ > 0 && latestProgramNv12Height_ > 0) {
+    hasNewProgramNv12 = true;
+    work.programFrame.programNv12Width = latestProgramNv12Width_;
+    work.programFrame.programNv12Height = latestProgramNv12Height_;
+    work.programFrame.programNv12 = latestProgramNv12_;
   }
 
-  // Encoder submit (uses the program-frame snapshot), output-sender network sync,
-  // recording mux. encoder->submit early-returns when the frame carries no CPU
-  // pixels, so when no output is active (readback skipped) this is harmless.
-  modules_.encoder->submit(work.programFrame);
+  // PROGRAM VIDEO IS SUBMITTED BY THE VIDEO TICK when one is running. This
+  // worker paces on a 20ms AUDIO grid (960 samples at 48k), and submitting video
+  // here muxed the program at ~51fps while the compositor produced 60 — measured
+  // 755 frames over 14.83s in a container declaring 60. Video PTS is wall-clock
+  // (RecordingPtsClock::videoPts) and deduped by frameNumber, so submitting on a
+  // separate, faster tick cannot drift the A/V relationship; it just stops
+  // dropping ~10 frameNumbers a second. Audio still leaves from this worker.
+  if (!videoOutputTickRunning_.load(std::memory_order_acquire)) {
+    modules_.encoder->submit(work.programFrame);
+  }
   // ISO-1: each selected source's OWN video into its own MP4 (rides the same
   // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
   // drop-to-latest under back-pressure, never program A/V). Program above is
@@ -5339,7 +5339,8 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // never run alongside them or every frame is published twice.
   if (virtualCameraEnabled_ && hasNewProgramNv12 && !compositorPublishesVcam_) {
     try {
-      virtualCamera_->publishNv12(programNv12.data(), programNv12Width, programNv12Height);
+      virtualCamera_->publishNv12(latestProgramNv12_.data(), latestProgramNv12Width_,
+                                  latestProgramNv12Height_);
     } catch (...) {
     }
   }
@@ -5452,6 +5453,50 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
 // Worker entry point: gather (brief coreMutex) â†’ work (audioOutputMutex_ only) â†’
 // publish (brief coreMutex). The render thread takes ONLY coreMutex and so is never
 // blocked by the long DSP/IO span; the worker never holds both locks at once.
+// PROGRAM VIDEO OUT, on the VIDEO cadence.
+//
+// Everything that leaves this app used to be sampled by the ~50Hz audio/output
+// worker, whose 20ms period is an audio constant (960 samples at 48k, spec 4.2)
+// with a hard-won absolute-deadline pacer behind it. Gating video on it capped a
+// 60fps program at ~51fps in recordings. Raising that worker to 60Hz would break
+// the audio block contract, so video gets its own tick.
+//
+// Lock discipline is unchanged: coreMutex (brief snapshot) THEN audioOutputMutex_
+// (encoder), never both held at once, never reversed — the same order the audio
+// worker uses, so the two serialise on audioOutputMutex_ rather than deadlock.
+// That lock is held ~13% of the time by the audio worker (measured work=2.6ms per
+// 20ms tick), so contention here is rare.
+void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
+  modules::ProgramFrame frame;
+  {
+    std::lock_guard<std::mutex> lock(coreMutex);
+    ScopedLockHoldTimer holdTimer("video.gather", LockHoldGuardrail::kDefaultBudgetUs);
+    const bool wanted = !outputDestinations_.empty() || virtualCameraEnabled_ ||
+                        recordingStatus_ == "recording" || recordingStatus_ == "warning";
+    if (!wanted) {
+      return;
+    }
+    // Carries preview/dims/frameNumber/warnings, so a compositor with no NV12
+    // tap still submits exactly what the old path submitted. frameNumber comes
+    // from the render thread and advances at 60Hz — it is the encoder's dedup
+    // key, and sampling it at 50Hz is precisely what lost the frames.
+    frame = lastProgramFrame_;
+  }
+  std::lock_guard<std::mutex> lock(audioOutputMutex_);
+  int tapWidth = 0;
+  int tapHeight = 0;
+  if (modules_.compositor->takeVcamNv12(latestProgramNv12_, tapWidth, tapHeight)) {
+    latestProgramNv12Width_ = tapWidth;
+    latestProgramNv12Height_ = tapHeight;
+  }
+  if (!latestProgramNv12_.empty() && latestProgramNv12Width_ > 0 && latestProgramNv12Height_ > 0) {
+    frame.programNv12Width = latestProgramNv12Width_;
+    frame.programNv12Height = latestProgramNv12Height_;
+    frame.programNv12 = latestProgramNv12_;
+  }
+  modules_.encoder->submit(frame);
+}
+
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
   AudioOutputWorkItem work;
   {

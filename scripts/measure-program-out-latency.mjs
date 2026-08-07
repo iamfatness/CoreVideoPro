@@ -64,6 +64,7 @@ const pending = new Map();
 // published rate can be attributed to a stage rather than guessed at.
 const renderFps = [];
 const audioTicks = [];
+const videoTicks = [];
 
 child.stdout.on("data", (chunk) => {
   stdoutBuffer += chunk.toString();
@@ -89,6 +90,8 @@ child.stderr.on("data", (chunk) => {
     if (m) renderFps.push(Number(m[1]));
     m = line.match(/\[audioOut\]\s+([\d.]+)\s+ticks\/s/);
     if (m) audioTicks.push(Number(m[1]));
+    m = line.match(/\[videoOut\]\s+([\d.]+)\s+ticks\/s/);
+    if (m) videoTicks.push(Number(m[1]));
   }
 });
 
@@ -173,9 +176,11 @@ try {
   const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
   console.log(`program        : ${head?.width}x${head?.height}, DLL media type declares ${head?.declaredFps}fps`);
   console.log(`render thread  : ${avg(renderFps).toFixed(1)} fps (composites the program)`);
-  console.log(`output worker  : ${avg(audioTicks).toFixed(1)} ticks/s (samples the program tap)`);
+  console.log(`audio worker   : ${avg(audioTicks).toFixed(1)} ticks/s (audio mix + senders)`);
+  console.log(`video out tick : ${avg(videoTicks).toFixed(1)} ticks/s (program video -> encoder)`);
   console.log(`vcam PUBLISHED : ${median.toFixed(1)} fps median, ${worst.toFixed(1)} worst window`);
-  const gate = avg(audioTicks);
+  // Only meaningful when nothing else owns the program-out cadence.
+  const gate = videoTicks.length ? 0 : avg(audioTicks);
   if (gate > 0 && median <= gate * 1.05 && gate < 58) {
     console.log(
       `\nThe published rate tracks the OUTPUT WORKER (${gate.toFixed(1)}Hz), not the render\n` +
