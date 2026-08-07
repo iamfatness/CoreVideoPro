@@ -1713,6 +1713,34 @@ struct SlotRow: View {
                     }))
                     .textFieldStyle(StudioFieldStyle())
                     .frame(width: 150)
+                // Pair a microphone (capture only). A card's video and audio are
+                // separate devices; without this a capture source is silent and
+                // its ISO is video-only, because MediaCore::isoSourceHasAudio
+                // looks for exactly this pairing.
+                if slot.kind == "capture" {
+                    Menu {
+                        Button("No audio") { model.pairAudio(slotId: slot.id, device: nil) }
+                        Divider()
+                        ForEach(model.audioInputs) { device in
+                            Button(device.name) {
+                                model.pairAudio(slotId: slot.id, device: device)
+                            }
+                        }
+                    } label: {
+                        Text(slot.audioDeviceName.isEmpty
+                             ? "Pair a microphone" : slot.audioDeviceName)
+                            .font(.grotesk(11))
+                            .foregroundStyle(slot.audioDeviceName.isEmpty
+                                             ? Studio.secondary : Studio.textPrimary)
+                            .lineLimit(1)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 160)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Studio.border, lineWidth: 1))
+                }
                 Toggle("ISO", isOn: Binding(
                     get: { slot.iso },
                     set: { _ in model.toggleSlotIso(slot.id) }))

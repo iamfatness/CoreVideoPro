@@ -25,6 +25,15 @@ struct PersistedLayer: Codable, Equatable {
     var opacity = 1.0
 }
 
+/// A persisted capture->microphone pairing. Keyed by SLOT rather than device id
+/// so re-assigning a slot to a different camera does not silently inherit the
+/// previous camera's microphone.
+struct CapturePairing: Codable, Equatable {
+    var slotId = 0
+    var audioDeviceId = ""
+    var audioDeviceName = ""
+}
+
 struct ShellPrefs: Codable, Equatable {
     var version = 1
     var joinMeetingId = ""
@@ -41,6 +50,7 @@ struct ShellPrefs: Codable, Equatable {
     // existed, and load()'s `try?` would reset the whole file to defaults.
     var automation: AutomationExtrasState?
     var overlays: OverlaysState?
+    var capturePairings: [CapturePairing]?
     var lowerThirdName = ""
     var lowerThirdTitle = ""
     var lowerThirdPosition = "lower-left"
@@ -101,6 +111,8 @@ struct ShellPrefs: Codable, Equatable {
         vstChannelSelections = ((try? c.decodeIfPresent([String: String].self,
                                                         forKey: .vstChannelSelections)) ?? nil)
         overlays = ((try? c.decodeIfPresent(OverlaysState.self, forKey: .overlays)) ?? nil)
+        capturePairings = ((try? c.decodeIfPresent([CapturePairing].self,
+                                                   forKey: .capturePairings)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -133,6 +145,7 @@ struct ShellPrefs: Codable, Equatable {
         p.colorGrade = [1, 2, 3, 4]
         p.automation = AutomationExtrasState()
         p.overlays = OverlaysState()
+        p.capturePairings = [CapturePairing(slotId: 1, audioDeviceId: "d", audioDeviceName: "Mic")]
         p.vstChannelSelections = ["ch1": "vst:Test"]
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {

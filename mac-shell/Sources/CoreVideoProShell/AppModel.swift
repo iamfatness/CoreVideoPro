@@ -103,6 +103,11 @@ struct ShowInputSlot: Identifiable, Equatable {
     var inShow = false
     var iso = false
     var offline = false         // source vanished from the roster/devices
+    // A capture card's video and its audio are SEPARATE devices; this is the
+    // operator's pairing. Empty means "no audio" — which the core reads as a
+    // deliberately video-only source, not a mistake.
+    var audioDeviceId = ""
+    var audioDeviceName = ""
 }
 
 // Per-channel built-in inserts. Names and keys are the CORE's contract
@@ -375,6 +380,10 @@ final class AppModel: ObservableObject {
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
         prefs.overlays = overlays
+        prefs.capturePairings = slots
+            .filter { !$0.audioDeviceId.isEmpty }
+            .map { CapturePairing(slotId: $0.id, audioDeviceId: $0.audioDeviceId,
+                                  audioDeviceName: $0.audioDeviceName) }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
@@ -392,6 +401,12 @@ final class AppModel: ObservableObject {
     private func restorePrefs() {
         let prefs = ShellPrefs.load()
         overlays = prefs.overlays ?? OverlaysState()
+        for pairing in prefs.capturePairings ?? [] {
+            if let index = slots.firstIndex(where: { $0.id == pairing.slotId }) {
+                slots[index].audioDeviceId = pairing.audioDeviceId
+                slots[index].audioDeviceName = pairing.audioDeviceName
+            }
+        }
         if prefs.colorGrade.count == 4 {
             gradeExposure = prefs.colorGrade[0]
             gradeContrast = prefs.colorGrade[1]
@@ -549,6 +564,8 @@ final class AppModel: ObservableObject {
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
+        audioInputs = AudioInputs.available()
+        reassertCaptureAudio()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -586,7 +603,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func elapsedMs() -> Int {
+    func elapsedMs() -> Int {
         Int(Date().timeIntervalSince(startedAt) * 1000)
     }
 
@@ -905,6 +922,8 @@ final class AppModel: ObservableObject {
     @Published var canvasFps = 60
     @Published var streamBitrateMbps = 6.0
     @Published var overlays = OverlaysState()
+    @Published var audioInputs: [AudioInputDevice] = []
+    var captureAudioSyncTask: Task<Void, Never>?
     var brandSyncTask: Task<Void, Never>?
     /// How many keyed graphics are on air (the WinUI "N on air" readout).
     var lowerThirdOnAirCount: Int {
