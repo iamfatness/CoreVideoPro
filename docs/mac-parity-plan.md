@@ -106,10 +106,34 @@ macOS has nothing (`SuperSource` appears zero times).
 
 ## P3 — finish the audit
 
-8. Six tabs remain un-compared: **Zoom, Routing, Audio, Media, Automation,
-   Health**. They must be compared with sources assigned and a meeting joined,
-   or the state difference will manufacture false gaps again. Audio in
-   particular looked thin only because macOS had no PCM channels.
+### Media — compared 2026-08-07. Mostly UI-over-nothing on Windows.
+
+Windows shows four sections against macOS's one card, but three of the missing
+pieces are Windows UI for things the CORE DOES NOT IMPLEMENT:
+
+* **LUT preset** — the core has NO LUT support. A case-insensitive grep for
+  "lut" returns 27 hits which are all the middle of "reso-LUT-ion"; a
+  case-sensitive search for `LUT`/`lutPreset`/`.cube` returns nothing. Building
+  a LUT picker on macOS would be a control that cannot do anything.
+* **Chapter markers** — zero references anywhere in `native/src/`.
+* **Cue in Preview / Still image playout buttons** — no matching core concept.
+
+Genuinely worth considering: per-ASSET exposure/contrast/saturation. The core
+does support per-ROUTE `colorGrade` (`route.get("colorGrade")` →
+`layer.hasColorGrade`), so a media asset composited as a route could carry its
+own grade — but Windows stores it per asset, which is a different model. Needs a
+decision before it is built, not a port.
+
+macOS's Media bin is otherwise equivalent (import, refresh, per-asset select /
+still / remove) — it looked emptier only because the bin had no assets.
+
+### Still un-compared
+
+**Zoom, Routing, Audio, Automation, Health.** These need sources assigned and a
+meeting joined, or state differences will manufacture false gaps as they did
+three times in this audit. Automation is already covered separately by a
+per-feature source audit (core-backed vs shell-policy vs not-supported).
+Audio looked thin only because macOS had no PCM channels.
 
 ## Blocked on hardware / account
 
