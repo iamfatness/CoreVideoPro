@@ -1,6 +1,7 @@
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
+#include "modules/EncoderPolicy.h"
 #include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
@@ -433,46 +434,10 @@ std::vector<std::string> tokenizeArguments(const std::string& args) {
 }
 #endif
 
+// Encoder policy (which hardware this product ships, and why) lives in
+// EncoderPolicy.h so it is unit-testable and hard to change by accident.
 std::string ffmpegVideoEncoderFor(const std::string& codec, const std::string& encoderMode) {
-  const auto normalizedCodec = normalizeVideoCodec(codec);
-  const auto normalizedMode = normalizeEncoderMode(encoderMode);
-  if (normalizedMode == "nvenc") {
-    if (normalizedCodec == "h265") {
-      return "hevc_nvenc";
-    }
-    if (normalizedCodec == "av1") {
-      return "av1_nvenc";
-    }
-    return "h264_nvenc";
-  }
-  if (normalizedMode == "qsv") {
-    if (normalizedCodec == "h265") {
-      return "hevc_qsv";
-    }
-    if (normalizedCodec == "av1") {
-      return "av1_qsv";
-    }
-    return "h264_qsv";
-  }
-  if (normalizedMode == "amf") {
-    if (normalizedCodec == "h265") {
-      return "hevc_amf";
-    }
-    if (normalizedCodec == "av1") {
-      return "av1_amf";
-    }
-    return "h264_amf";
-  }
-  if (normalizedMode == "videotoolbox") {
-    return normalizedCodec == "h265" ? "hevc_videotoolbox" : "h264_videotoolbox";
-  }
-  if (normalizedCodec == "h265") {
-    return "libx265";
-  }
-  if (normalizedCodec == "av1") {
-    return "libsvtav1";
-  }
-  return "libx264";
+  return preferredEncoderFor(normalizeVideoCodec(codec), normalizeEncoderMode(encoderMode));
 }
 
 std::string encoderSpecificArguments(const std::string& encoderName, const std::string& rateControl) {
@@ -553,51 +518,13 @@ std::string selectFfmpegVideoEncoder(
     const std::string& encoderMode) {
   const auto normalizedCodec = normalizeVideoCodec(codec);
   const auto normalizedMode = normalizeEncoderMode(encoderMode);
-  const auto preferred = ffmpegVideoEncoderFor(normalizedCodec, normalizedMode);
-
-  // Explicit hardware choices are operator intent; let FFmpeg report a precise
-  // device/driver failure instead of silently changing the requested encoder.
-  if (normalizedMode == "nvenc" || normalizedMode == "qsv" || normalizedMode == "amf") {
-    return preferred;
-  }
-
-  std::vector<std::string> candidates{preferred};
-  if (normalizedCodec == "h264") {
-#if defined(_WIN32)
-    if (normalizedMode == "auto") {
-      // Prefer vendor hardware encoders for sustained live output. The old
-      // auto path jumped directly to Media Foundation when libx264 was absent;
-      // MF initialized successfully but stopped consuming the YouTube RTMP
-      // stream after its initial burst on the affected workstation.
-      candidates = {"h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libopenh264"};
-    }
-#elif defined(__APPLE__)
-    if (normalizedMode == "auto") {
-      // Apple Silicon: the VideoToolbox hardware encoder first (sustained
-      // 1080p60 without CPU cost), then the software fallbacks.
-      candidates = {"h264_videotoolbox", "libx264", "libopenh264"};
-    }
-#endif
-    if (std::find(candidates.begin(), candidates.end(), "libopenh264") == candidates.end()) {
-      candidates.emplace_back("libopenh264");
-    }
-  } else if (normalizedCodec == "h265") {
-#if defined(_WIN32)
-    if (normalizedMode == "auto") {
-      candidates = {"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "libkvazaar"};
-    }
-#endif
-    if (std::find(candidates.begin(), candidates.end(), "libkvazaar") == candidates.end()) {
-      candidates.emplace_back("libkvazaar");
-    }
-  }
-
+  const auto candidates = encoderCandidatesFor(normalizedCodec, normalizedMode);
   for (const auto& candidate : candidates) {
     if (ffmpegEncoderIsAvailable(executable, candidate)) {
       return candidate;
     }
   }
-  return preferred;
+  return candidates.empty() ? preferredEncoderFor(normalizedCodec, normalizedMode) : candidates.front();
 }
 
 class RtmpOutputSender final : public IOutputSender {
@@ -702,6 +629,29 @@ class RtmpOutputSender final : public IOutputSender {
     if (!codecCompatibility.warning.empty()) {
       runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + codecCompatibility.warning;
     }
+    // LOUD when the requested codec has no supported hardware encoder here.
+    // "AV1 selected, silently got H.264" is the same silent-wrong-output class as
+    // shipping a thumbnail as the program: the stream looks fine and is not what
+    // was asked for. Say which hardware is required instead.
+    unsupportedCodecWarning_.clear();
+    if (!codecHasSupportedHardwareEncoder(configuredVideoCodec_)) {
+      if (configuredVideoCodec_ == "h265") {
+        unsupportedCodecWarning_ =
+            "HEVC/H.265 encoding is not supported in this build; encoding H.264 instead.";
+      } else if (configuredVideoCodec_ == "av1") {
+        unsupportedCodecWarning_ =
+#if defined(__APPLE__)
+            "AV1 encoding needs an NVIDIA Ada (RTX 40-series) GPU; Apple Silicon has no AV1 "
+            "encoder. Encoding H.264 instead.";
+#else
+            "AV1 encoding needs an NVIDIA Ada (RTX 40-series) GPU or newer. Encoding H.264 "
+            "instead.";
+#endif
+      }
+      if (!unsupportedCodecWarning_.empty()) {
+        runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + unsupportedCodecWarning_;
+      }
+    }
     runtimeAvailable_ = runtimeProbe_.available;
     if (!runtimeProbe_.ffmpegExecutable.empty()) {
       ffmpegExecutable_ = runtimeProbe_.ffmpegExecutable;
@@ -767,7 +717,10 @@ class RtmpOutputSender final : public IOutputSender {
     writeAudioToFfmpeg();
     if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
       sender_.status = "live";
-      sender_.warning.clear();
+      // A live stream still carries the unsupported-codec notice: the operator
+      // asked for AV1/HEVC and is getting H.264, which must not go quiet just
+      // because the stream is otherwise healthy.
+      sender_.warning = unsupportedCodecWarning_;
       sender_.runtimeDetail = runtimeDetail_;
       sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
       sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
@@ -797,7 +750,10 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     sender_.status = "live";
-    sender_.warning.clear();
+    // A live stream still carries the unsupported-codec notice: the operator
+    // asked for AV1/HEVC and is getting H.264, which must not go quiet just
+    // because the stream is otherwise healthy.
+    sender_.warning = unsupportedCodecWarning_;
     sender_.runtimeDetail = runtimeDetail_;
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
@@ -1773,6 +1729,9 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   FfmpegSenderProtocol protocol_;
+  // Set when the requested codec has no supported hardware encoder here, so the
+  // operator is told rather than silently receiving a different codec.
+  std::string unsupportedCodecWarning_;
   RuntimeProbe runtimeProbe_;
   std::string runtimeDetail_;
   bool runtimeAvailable_ = false;

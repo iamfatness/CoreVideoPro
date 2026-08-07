@@ -612,6 +612,7 @@ if(BUILD_TESTING)
     tests/NdiPixelConvertTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
+    tests/EncoderPolicyTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
