@@ -340,11 +340,30 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   fullscreen-triangle identity draw — do NOT reuse the program `sharedTexture_`, WinUI
   already holds its keyed mutex and a third consumer deadlocks). A **second D3D device** on
   its own thread (`vcamTapLoop`) does AcquireSync/CopyResource→staging/Map/NV12-convert, and
-  the output worker just does a cheap NV12 copy (`takeVcamNv12`) + `publishNv12`. Net render
+  the output worker just does a cheap NV12 copy (`takeVcamNv12`). Net render
   cost ≈ 1ms. Rule: GPU→GPU `CopyResource` is microseconds; GPU→CPU-staging map+read is
   ~8–12ms and MUST live on a dedicated device/thread, never under `coreMutex` or the audio
-  worker. Current: publish ~50fps 1080p; the last ~10fps to a true 60 is the scalar
-  `convertBgraToNv12` (~15ms) — SIMD it or convert to NV12 on the GPU (half the readback).
+  worker.
+- **THE TAP THREAD PUBLISHES — never the output worker (2026-08-07).** The vcam used to be
+  published from the ~50Hz audio/output worker, whose 20ms period is an AUDIO constant
+  (960 samples at 48k). Gating video on it capped a 60fps program at **50fps** and added up
+  to 20ms of quantisation to a path whose entire budget is one 16.7ms frame — measured:
+  render 59.7fps, output worker 49.7Hz, **vcam published 50.0fps**. It publishes through
+  `ICompositor::setVcamFrameSink` on the tap thread now (**59.9fps** measured, matching the
+  DLL's declared 60). `MediaCore` must NOT also publish when
+  `compositor->publishesVcamFrames()` or every frame goes out twice, and `~MediaCore` MUST
+  clear the sink — `modules_` is declared before `virtualCamera_`, so the publisher dies
+  first while the tap thread is still running. Note the OLD claim here ("the last ~10fps is
+  the scalar `convertBgraToNv12`") was doubly stale: the GPU convert had already shipped,
+  and the real cap was the worker cadence. Verify with
+  `node scripts/measure-program-out-latency.mjs`, which reads the same seqlock header the
+  DLL reads and attributes the published rate to a stage.
+- **STILL ON THE 50Hz GATE: recording and the network senders.** `encoder->submit` runs on
+  the output worker, so program video is muxed/streamed at ~51fps while the compositor
+  produces 60 (an SRT-ingest recording measured 755 frames over 14.83s = 50.9fps in a
+  container declaring 60). Fixing it means a video-output cadence separate from the audio
+  block cadence — do NOT just raise the worker to 60Hz, that breaks the 20ms audio block
+  contract (spec 4.2).
 - **Enable it:** control API `POST http://127.0.0.1:8011/invoke
   {"action":"transport.virtualcam.set","args":[true]}` (or the transport toggle in the UI).
 - **Verify the feed:** read the 32-byte header of the ProgramData file; `frameNumber`
