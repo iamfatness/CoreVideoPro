@@ -69,12 +69,22 @@ their ISOs are video-only.
 
 ## P1 — the operator flies blind
 
-### 3. Status-strip telemetry
+### 3. Status-strip telemetry — MOSTLY A FALSE GAP (corrected 2026-08-07)
 
-Windows shows, at a glance, **FRAME DROPS `0 (0.0%)`**, a **LIVE timer**, and a
-**master L/R meter with LUFS and peak dBFS**. macOS shows none of these. The
-data exists — `recording.totalDroppedFrames` and `audioMixSession.masterMeter`
-are already on the wire and already parsed for the Diagnose surface.
+I claimed macOS showed none of FRAME DROPS, the LIVE timer, or the master meter
+with LUFS and peak. Reading the code rather than the screenshot: the status row
+**already renders** MASTER, LUFS, a meter bar, peak dBFS and a LIVE timer. They
+appeared as "—" in my capture because there was no audio and no recording — the
+THIRD time a state difference impersonated a missing feature in this audit.
+
+Genuinely missing, and now fixed: **FRAME DROPS**. `recording.totalDroppedFrames`
+was published by the core and parsed nowhere in the shell, so a recording could
+lose frames with no sign of it in the operator's view.
+
+NOT a gap: Windows draws separate **L / R** meter bars, but the core's
+`masterMeterState()` publishes only `momentaryLufs / shortTermLufs /
+integratedLufs / truePeakDbfs / windowMs` — no per-channel levels. A single
+meter on macOS is correct until the core publishes stereo.
 
 ### 4. SuperSource background
 

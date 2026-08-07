@@ -1288,6 +1288,20 @@ struct OutputsStatusRow: View {
             OutputColumn(title: "RECORD",
                          value: recording ? "MP4" : "—",
                          detail: recording ? "recording" : "Idle")
+            // Dropped frames sit next to RECORD because that is what they
+            // compromise. Amber the moment ANY frame is lost — a silent "0" is
+            // the only acceptable healthy state, so a non-zero count must draw
+            // the eye rather than blend in.
+            if recording || model.recordingDroppedFrames > 0 {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("FRAME DROPS").font(.plexMono(8, .bold))
+                        .foregroundStyle(Studio.secondary)
+                    Text(model.droppedFramesLabel)
+                        .font(.grotesk(10, .semibold))
+                        .foregroundStyle(model.recordingDroppedFrames > 0
+                                         ? Studio.amber : Studio.textPrimary)
+                }
+            }
             if recording, let started = model.recordingStartedAt {
                 TimelineView(.periodic(from: started, by: 1)) { context in
                     OutputColumn(

@@ -382,6 +382,32 @@ enum ShellTests {
                "the default codec must itself be one the build can encode")
     }
 
+
+    // ── telemetry: the silently-degraded-recording class ─────────────────────
+
+    /// The core has always published totalDroppedFrames; nothing in the shell
+    /// read it, so a recording could be losing frames with no sign anywhere in
+    /// the operator's view. The percentage is of ATTEMPTED frames so it stays
+    /// meaningful whether a show ran four minutes or four hours.
+    @MainActor
+    private static func testDroppedFrameReadout() {
+        let model = AppModel()
+        expectEqual(model.droppedFramesLabel, "0", "no frames attempted reads as a plain zero")
+
+        model.recordingFramesWritten = 1000
+        model.recordingDroppedFrames = 0
+        expectEqual(model.droppedFramesLabel, "0 (0.0%)", "a clean recording reads 0 (0.0%)")
+
+        model.recordingDroppedFrames = 10          // 10 of 1010 attempted
+        expectEqual(model.droppedFramesLabel, "10 (1.0%)",
+                    "the percentage is of ATTEMPTED frames, not written ones")
+
+        model.recordingFramesWritten = 0
+        model.recordingDroppedFrames = 5
+        expectEqual(model.droppedFramesLabel, "5 (100.0%)",
+                    "every frame dropped must not divide by zero")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -414,6 +440,7 @@ enum ShellTests {
             ("oauth/keychain-identity", testKeychainServiceIsNeverTheObsPluginItem),
             ("oauth/return-uri", testOAuthReturnUriMatchesTheBrokerAllowlist),
             ("encoder/no-unlicensed-codecs", testShellOffersOnlyEncodableCodecs),
+            ("telemetry/dropped-frames", testDroppedFrameReadout),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

@@ -270,6 +270,17 @@ final class AppModel: ObservableObject {
     @Published var recordingArtifactPath = ""
     @Published var recordingWarning = ""
     @Published var masterLevel = 0
+    @Published var recordingDroppedFrames = 0
+    @Published var recordingFramesWritten = 0
+
+    /// Windows' "0 (0.0%)" readout. Percentage of ATTEMPTED frames, so it stays
+    /// meaningful whether a show ran four minutes or four hours.
+    var droppedFramesLabel: String {
+        let attempted = recordingFramesWritten + recordingDroppedFrames
+        guard attempted > 0 else { return "0" }
+        let percent = Double(recordingDroppedFrames) / Double(attempted) * 100
+        return String(format: "%d (%.1f%%)", recordingDroppedFrames, percent)
+    }
     @Published var strips: [AudioStrip] = []
     @Published var channelInserts: [String: ChannelInserts] = [:]
     // VST3 plug-in inserts — all logic lives in VstInserts.swift (stored
@@ -665,6 +676,14 @@ final class AppModel: ObservableObject {
             }
             recordingStatus = nextStatus
             recordingArtifactPath = recording["artifactPath"] as? String ?? recordingArtifactPath
+            // FRAME DROPS. The core has always published these; nothing read
+            // them, so a recording could be losing frames with no sign of it
+            // anywhere in the operator's view. A dropped frame is a compromised
+            // master — it belongs on the status strip, not buried in Diagnose.
+            recordingDroppedFrames =
+                (recording["totalDroppedFrames"] as? NSNumber)?.intValue ?? recordingDroppedFrames
+            recordingFramesWritten =
+                (recording["totalFramesWritten"] as? NSNumber)?.intValue ?? recordingFramesWritten
             let warning = recording["warning"] as? String ?? ""
             if !warning.isEmpty, warning != recordingWarning {
                 pushWarning("recording: \(warning)")
