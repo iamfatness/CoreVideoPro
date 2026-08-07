@@ -214,6 +214,16 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   engine actually delivered the rate you asked for (`COREVIDEO_FAKE_ENGINE_LOG`), and
   run `git status` before any measurement build — a stale tree answers a different
   question than the one you asked.
+  **The drill now enforces that "did the harness source the load" check itself**
+  (2026-08-07): delivery is (frames the compositor saw)/(frames we ASKED for), so a
+  harness that under-produces reads as the CORE losing frames. It said "only 51% of
+  decoded frames reached the compositor" on a macos-14 runner that sourced ~250 of
+  480 frames/s; the same drill on a real box sources 479 f/s (1.49GB/s) and delivers
+  101%. A >10% shortfall is now named as a HARNESS failure (still a failure — the run
+  proved nothing). **The loaded step is therefore ADVISORY on CI and BLOCKING on real
+  hardware**: sizing CI down to `--load 3` scored *worse* (45.2fps vs 59.3), so shared
+  runners cannot gate perf at any load. Run `--load 8` locally before shipping perf work
+  — that is the real gate.
 - I420→RGB is a GPU HLSL shader in `D3D11CompositorAdapter.cpp`
   (`kCompositorYuvPixelShader`, BT.709 full-range). Zoom frames carry I420
   (`hasI420()`), NOT BGRA — any frame merge/match must check `hasI420()` too or Zoom
