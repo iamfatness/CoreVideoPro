@@ -4695,6 +4695,15 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
     auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
     audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
   }
+  if (modules_.captureDevice) {
+    // Audio embedded in a capture TRANSPORT. An SRT contribution feed carries its
+    // guest's audio inside the same stream, with no OS audio device to pair it
+    // with, so it arrives here rather than through the WASAPI capture-audio path.
+    // Keyed "capture:<deviceId>", so it lands in the existing routing, metering
+    // and ISO paths exactly like a paired capture input.
+    auto transportAudio = modules_.captureDevice->pollAudioFrames(frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), transportAudio.begin(), transportAudio.end());
+  }
   if (modules_.mediaFrames) {
     // Media-layer audio needs the active scene layers; rebuild the plan here (it is
     // derived from scene-route / media-playback state, not from the polled frames).

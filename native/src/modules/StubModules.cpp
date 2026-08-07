@@ -911,6 +911,15 @@ class CompositeCaptureDevice final : public ICaptureDevice {
     return result;
   }
 
+  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+    std::vector<AudioFrame> result;
+    for (const auto& device : devices_) {
+      auto frames = device->pollAudioFrames(timestampMs);
+      result.insert(result.end(), frames.begin(), frames.end());
+    }
+    return result;
+  }
+
  private:
   std::vector<std::unique_ptr<ICaptureDevice>> devices_;
 };
