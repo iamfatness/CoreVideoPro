@@ -420,12 +420,21 @@ def main():
         if steady:
             worst_p50 = max(w[0] for w in steady)
             worst_p99 = max(w[1] for w in steady)
-            delivery = min(w[2] for w in steady) / expected
+            # MEDIAN, not min. A single window can dip when the machine is busy
+            # (a concurrent build was enough to read 52% once), and a gate that
+            # fails on one hiccup gets ignored — which is worse than no gate.
+            # The systemic failure this exists to catch (the 8ms ingest poll
+            # losing ~30% of frames on EVERY window) moves the median, so this
+            # still catches it. The worst window is printed either way so a real
+            # excursion stays visible instead of being averaged away.
+            counts = sorted(w[2] for w in steady)
+            delivery = counts[len(counts) // 2] / expected
+            worst_delivery = counts[0] / expected
             ok = (worst_p50 <= MAX_LATENCY_P50_MS and worst_p99 <= MAX_LATENCY_P99_MS
                   and delivery >= MIN_FRAME_DELIVERY)
             print(f"{'PASS' if ok else 'FAIL'} source->render p50 {worst_p50:.1f}ms / "
                   f"p99 {worst_p99:.1f}ms, {delivery:.0%} of decoded frames delivered "
-                  f"({len(steady)} steady windows)")
+                  f"(worst window {worst_delivery:.0%}, {len(steady)} steady windows)")
             if worst_p50 > MAX_LATENCY_P50_MS:
                 failures.append(
                     f"source->render p50 {worst_p50:.1f}ms exceeds two frames "

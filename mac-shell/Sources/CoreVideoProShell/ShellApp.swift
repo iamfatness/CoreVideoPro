@@ -30,6 +30,9 @@ struct ShellApp: App {
         // package): seeds every secret shape the product handles, exports a REAL
         // support bundle to a temp dir and greps it. Runs before any UI.
         //   COREVIDEO_SHELL_SELFCHECK=1 .build/release/CoreVideoProShell
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TESTS"] != nil {
+            ShellTests.runAndExit()
+        }
         if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_SELFCHECK"] != nil {
             DiagnosticsSelfCheck.runAndExit()
         }

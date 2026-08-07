@@ -59,6 +59,22 @@ jobs:
       - name: Design-token lint (mac-shell)
         run: bash scripts/lint-mac-design.sh
 
+  # The shell had ZERO tests for ~9k lines, so every regression reached the
+  # owner in a live session first — including a prefs bug that silently wiped
+  # every saved setting. The suite runs IN the app binary rather than under
+  # XCTest so it also runs on a machine with Command Line Tools only (no Xcode);
+  # a suite that runs in CI but not on the developer's box finds bugs too late.
+  mac-shell-tests:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build shell
+        run: cd mac-shell && swift build -c release
+      - name: Shell test suite
+        run: COREVIDEO_SHELL_TESTS=1 mac-shell/.build/release/CoreVideoProShell
+      - name: Redaction + prefs self-check
+        run: COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

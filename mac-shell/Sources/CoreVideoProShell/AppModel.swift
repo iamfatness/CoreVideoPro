@@ -227,6 +227,29 @@ struct RosterParticipant: Identifiable, Equatable {
     // field MediaCore::deriveDirectorSignals reads. Defaulted so the memberwise
     // init stays source-compatible.
     var sharingScreen = false
+
+    // PURE, so it can be tested without a running core. This mapping is the one
+    // that shipped an empty roster in a live meeting: the shell read
+    // id/name/hasVideo while BOTH engine paths emit
+    // userId/displayName/videoOn/muted/talking
+    // (ZoomEngineRuntime::rawCaptureSnapshotLocked, the same shape the WinUI
+    // shell consumes). Both spellings are accepted and both are covered by
+    // tests, because getting this wrong looks like "nobody is in the meeting".
+    static func parse(_ entries: [JSONObject],
+                      assignedIds: Set<String> = []) -> [RosterParticipant] {
+        entries.compactMap { entry in
+            guard let idValue = entry["userId"] ?? entry["id"] else { return nil }
+            let id = "\(idValue)"
+            return RosterParticipant(
+                id: id,
+                name: entry["displayName"] as? String ?? (entry["name"] as? String ?? id),
+                hasVideo: entry["videoOn"] as? Bool ?? (entry["hasVideo"] as? Bool ?? false),
+                muted: entry["muted"] as? Bool ?? (entry["isMuted"] as? Bool ?? false),
+                talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
+                assigned: assignedIds.contains(id),
+                sharingScreen: entry["sharingScreen"] as? Bool ?? false)
+        }
+    }
 }
 
 @MainActor
@@ -707,18 +730,7 @@ final class AppModel: ObservableObject {
         if let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
-            roster = participants.compactMap { entry in
-                guard let idValue = entry["userId"] ?? entry["id"] else { return nil }
-                let id = "\(idValue)"
-                return RosterParticipant(
-                    id: id,
-                    name: entry["displayName"] as? String ?? (entry["name"] as? String ?? id),
-                    hasVideo: entry["videoOn"] as? Bool ?? (entry["hasVideo"] as? Bool ?? false),
-                    muted: entry["muted"] as? Bool ?? (entry["isMuted"] as? Bool ?? false),
-                    talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
-                    assigned: assignedIds.contains(id),
-                    sharingScreen: entry["sharingScreen"] as? Bool ?? false)
-            }
+            roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
             // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
             // zero clicks. Manual unassigns are respected via the tombstones.
