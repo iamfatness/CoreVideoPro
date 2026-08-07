@@ -78,6 +78,11 @@ struct RtmpFfmpegArgsConfig {
   // handle exposed as "pipe:3"; on POSIX it is the read end fd exposed as
   // "pipe:<fd>" or a named-pipe path.
   std::string audioInput = "pipe:3";
+  // Output container. FLV is RTMP's transport; SRT carries MPEG-TS. Everything
+  // else in this builder (raw pipes, pacing, encoder selection, AAC) is shared
+  // between the two, which is why SRT delivery rides this same path instead of
+  // linking libsrt into the core.
+  std::string container = "flv";
 };
 
 inline std::string quoteRtmpArgument(const std::string& value) {
@@ -140,7 +145,8 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
        // Keep the audio clock tied to wallclock-paced video so A/V stays in sync
        // when the PCM pipe briefly under/overruns relative to the frame pipe.
        << " -af aresample=async=1:first_pts=0"
-       << " -f flv " << quoteRtmpArgument(config.endpoint);
+       << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
+       << quoteRtmpArgument(config.endpoint);
   return args.str();
 }
 
