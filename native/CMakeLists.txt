@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
@@ -11,7 +11,7 @@ project(CoreVideoNativeMediaCore LANGUAGES CXX)
 # an explicit -DCMAKE_BUILD_TYPE=Debug still wins.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (default: Release)" FORCE)
-  message(STATUS "CMAKE_BUILD_TYPE not set — defaulting to Release (-O3).")
+  message(STATUS "CMAKE_BUILD_TYPE not set â€” defaulting to Release (-O3).")
 endif()
 
 option(COREVIDEO_STUB "Build portable stub media-core modules" ON)
@@ -225,7 +225,7 @@ if(COREVIDEO_WITH_SCK)
     "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo")
 endif()
 
-# winmm provides timeBeginPeriod() — raise the system timer resolution to 1ms so the
+# winmm provides timeBeginPeriod() â€” raise the system timer resolution to 1ms so the
 # render loop's sub-frame sleep is accurate (default ~15.6ms granularity caps fps ~40).
 # windowscodecs + ole32 back the still-media WIC decoder (StillMediaFrameCache.cpp),
 # which is _WIN32-gated rather than option-gated so stills work in every Windows build.
@@ -286,10 +286,10 @@ if(COREVIDEO_WITH_VIRTUALCAM)
 endif()
 
 # ---------------------------------------------------------------------------
-# corevideo-browser-host — one WebView2 render process per browser source (BR-1).
+# corevideo-browser-host â€” one WebView2 render process per browser source (BR-1).
 # Renders --url offscreen, WGC-self-captures its window, publishes BGRA frames
 # into the named capture SHM the core maps (src/modules/BrowserSourceShm.h).
-# Uses the VENDORED WebView2 SDK (third_party/webview2 — provenance/license in
+# Uses the VENDORED WebView2 SDK (third_party/webview2 â€” provenance/license in
 # its README.md); the WebView2 *Runtime* is probed at host startup.
 # ---------------------------------------------------------------------------
 if(COREVIDEO_WITH_BROWSER_HOST)
@@ -454,7 +454,7 @@ add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
 # ---------------------------------------------------------------------------
-# Synthetic (fake) Zoom capture engine — NO Zoom SDK dependency.
+# Synthetic (fake) Zoom capture engine â€” NO Zoom SDK dependency.
 # Speaks the exact same named-pipe + shared-memory protocol as
 # corevideo-zoom-engine, but fabricates a multi-participant meeting so the
 # multi-participant crash/freeze scenario can be reproduced and validated
@@ -512,7 +512,7 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
 
   if(APPLE)
     # The macOS Meeting SDK is a pure Objective-C framework (no C++ surface),
-    # so the engine is the self-contained ObjC++ rewrite in main-macos.mm —
+    # so the engine is the self-contained ObjC++ rewrite in main-macos.mm â€”
     # the Windows sources cannot compile against it. Re-forked from the
     # CoreVideo OBS plugin's mac port; see the header of main-macos.mm.
     add_executable(corevideo-zoom-engine zoom-engine/engine/main-macos.mm)
@@ -532,7 +532,7 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
       "-framework AppKit"
     )
     # BUILD_RPATH is required, not optional: the framework is linked through
-    # raw -F/-framework flags, so CMake infers no build-tree rpath — without
+    # raw -F/-framework flags, so CMake infers no build-tree rpath â€” without
     # this the binary has ZERO LC_RPATH entries and dyld aborts at launch.
     # INSTALL_RPATH targets the shipped bundle layout: the SDK loads its
     # runtime bundles through the MAIN bundle's Contents/Frameworks, so the
@@ -613,6 +613,7 @@ if(BUILD_TESTING)
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
+    tests/SrtFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/UvcCaptureSupportTest.cpp
