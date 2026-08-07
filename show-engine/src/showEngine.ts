@@ -43,6 +43,7 @@ import {
   clampPage,
   effectiveBoxFill,
   findChairSlots,
+  pageCountFor,
   resolveLook,
   type LookResolution,
   type ManualBoxAssignments
@@ -56,6 +57,7 @@ import {
   type ProgramSource,
   type QueueState,
   type Role,
+  type ShowCapabilities,
   type Slot
 } from "./contracts.js";
 import type { PersonKey } from "./personKey.js";
@@ -169,12 +171,33 @@ export class ShowEngine {
 
   /**
    * Why the last `nextGuest`/`prevGuest` call did not move the page, or
-   * `null` when the last paging attempt (if any) succeeded. Only
-   * `nextGuest`/`prevGuest` write this — `tick()`'s own `clampPage` step
-   * never touches it, so a refusal recorded between ticks is still visible
-   * on the snapshot the following tick publishes.
+   * `null` when the last paging attempt (if any) succeeded. Written by
+   * `nextGuest`/`prevGuest`, and cleared early by `tick()` and `setLook`
+   * for the two causes that can go stale on their own (see
+   * `pagingRefusedKind` below) — Fix round 1, Finding 4. A refusal recorded
+   * between ticks is otherwise visible on the snapshot the following tick
+   * publishes.
    */
   private pagingRefused: string | null = null;
+
+  /**
+   * WHY `pagingRefused` was set, tracked separately from the human-readable
+   * string so `tick()` can decide which refusals it's allowed to clear
+   * without parsing its own message. `"fill"` (the active look's boxes
+   * aren't currently filling from the queue) and `"no-look"` (no look was
+   * selected at all) are both facts about CURRENT state that a later tick
+   * can independently re-check and clear once no longer true — a dead
+   * hands feed recovering, or a look finally getting selected. `"range"`
+   * (the attempted move ran off the end of the current page window) is
+   * NOT auto-cleared by `tick()`: it was true about a specific attempted
+   * move, not a standing condition, and clearing it merely because the
+   * look still fills from the queue (the ONLY fill strategy under which an
+   * out-of-range move is even possible) would wipe it out on the very next
+   * tick — before an operator polling on any normal cadence could ever see
+   * it. Only a subsequent `nextGuest`/`prevGuest` (success or another
+   * refusal) or `setLook` clears a `"range"` refusal.
+   */
+  private pagingRefusedKind: "no-look" | "fill" | "range" | null = null;
 
   /**
    * Whether `overlayDirector.update()` reported a change on the most recent
@@ -275,6 +298,13 @@ export class ShowEngine {
       this.manualBoxes = {};
     }
     this.selectedLookId = lookId;
+    // A paging refusal recorded against the PREVIOUS look (or against no
+    // look at all) has nothing to say about this one — Fix round 1,
+    // Finding 4: it must not survive a look change and read as a stale,
+    // misattributed reason once the new look's own paging (or lack of it)
+    // is what's actually in effect.
+    this.pagingRefused = null;
+    this.pagingRefusedKind = null;
     this.pendingPersist = true;
     this.otherInputsChanged = true;
   }
@@ -291,6 +321,9 @@ export class ShowEngine {
    * rather than throwing.
    */
   setPage(page: number): void {
+    if (!Number.isInteger(page)) {
+      throw new Error(`ShowEngine.setPage: page ${page} is invalid: page must be an integer`);
+    }
     this.page = page;
   }
 
@@ -299,10 +332,17 @@ export class ShowEngine {
    * active look's boxes are actually filling from the hands queue this
    * tick (`effectiveBoxFill(...) === "queue"`) — under manual fill (a
    * manual look, or a queue look whose hands feed just died) there is no
-   * queue window to move through. In that case the call is inert and
-   * `pagingRefused` records why, rather than throwing or silently doing
-   * nothing (spec §4). `tick()`'s own `clampPage` step is what keeps
-   * whatever page results valid; this method only records operator intent.
+   * queue window to move through — AND only when the move stays inside the
+   * current page range: `lookDirector.ts`'s own docs are explicit that
+   * clamping a direct operator move "would silently swallow a 'next' that
+   * ran off the end, which is exactly the silence an operator control must
+   * not produce" (Fix round 1, Finding 3 — the pre-fix version let
+   * `this.page` walk past the end here and relied on `tick()`'s
+   * `clampPage` to quietly pull it back, which is precisely that silence:
+   * the operator got no signal their "next" didn't do anything new). Either
+   * refusal reason — wrong fill strategy, or off the end — is recorded in
+   * `pagingRefused` instead of throwing or silently doing nothing (spec
+   * §4). `this.page` itself is left untouched by a refused move.
    */
   nextGuest(): void {
     this.adjustPage(1);
@@ -317,6 +357,7 @@ export class ShowEngine {
     const look = this.lookById(this.selectedLookId);
     if (look === null) {
       this.pagingRefused = "paging refused: no look is selected";
+      this.pagingRefusedKind = "no-look";
       return;
     }
 
@@ -324,11 +365,24 @@ export class ShowEngine {
     const fill = effectiveBoxFill(look, caps.handsQueue);
     if (fill !== "queue") {
       this.pagingRefused = `paging refused: box fill is ${fill}, not queue-driven`;
+      this.pagingRefusedKind = "fill";
+      return;
+    }
+
+    const slots = this.liveSlots.slots();
+    const strippedQueue = this.stripQueueAgainstSeatedChairs(slots);
+    const pageCount = pageCountFor(look, strippedQueue);
+    const target = this.page + delta;
+
+    if (target < 0 || target >= pageCount) {
+      this.pagingRefused = `paging refused: page ${target} is out of range (this look has ${pageCount} page(s))`;
+      this.pagingRefusedKind = "range";
       return;
     }
 
     this.pagingRefused = null;
-    this.page += delta;
+    this.pagingRefusedKind = null;
+    this.page = target;
   }
 
   /**
@@ -336,8 +390,21 @@ export class ShowEngine {
    * manual box fill (`resolveLook` simply ignores manual assignments for a
    * look currently filling from the queue), but recorded unconditionally —
    * the operator may be setting it up in advance of a fill-strategy switch.
+   * Throws for a box number outside the ACTIVE look's `1..boxes` range —
+   * caller error, not a state-changed-under-me refusal, so it throws rather
+   * than getting a typed `pagingRefused`-style response. When no look is
+   * selected yet there is no range to validate against, so only a
+   * non-positive-integer box number is rejected.
    */
   assignBox(box: number, slot: number): void {
+    const look = this.lookById(this.selectedLookId);
+    if (!Number.isInteger(box) || box < 1 || (look !== null && box > look.boxes)) {
+      throw new Error(
+        look === null
+          ? `ShowEngine.assignBox: box ${box} is invalid: box must be a positive integer`
+          : `ShowEngine.assignBox: box ${box} is out of range for look ${JSON.stringify(look.id)} (1..${look.boxes})`
+      );
+    }
     this.manualBoxes = { ...this.manualBoxes, [box]: slot };
     this.pendingPersist = true;
   }
@@ -518,10 +585,27 @@ export class ShowEngine {
         .flatMap((slot) => (slot.panelist === null ? [] : [slot.panelist.participantId]))
     );
 
+    // Adopt the persisted look selection — but ONLY when nothing has
+    // explicitly selected one yet (`selectedLookId` is still its field-init
+    // `null`). Fix round 1, "also fix": before this line, `persisted.lookId`
+    // was write-only — nothing ever read it back — so a genuine cold
+    // restart (`restore()` with no `setLook()` first) resolved no look at
+    // all until an operator re-selected one. But a `setLook()` issued
+    // BEFORE `restore()` is a deliberate choice made after the process came
+    // back up, and must win over whatever was on disk — the same ordering
+    // contract `manualBoxes` below already depends on (see the restore
+    // tests: `setLook("teatime")` then `restore()` from a file whose
+    // `lookId` differs must still leave "teatime" selected).
+    this.selectedLookId = this.selectedLookId ?? persisted.lookId;
+
     // A restored assignment set belongs to whatever look was selected when
     // it was saved. Applying it under a different look would put whoever
     // the operator put in box 1 of one arrangement into box 1 of another,
-    // which is not the same seat — discard rather than inherit.
+    // which is not the same seat — discard rather than inherit. Compared
+    // against `this.selectedLookId` AFTER the adoption above, so a cold
+    // restart (which just adopted `persisted.lookId` verbatim) always
+    // matches and restores its own manual boxes, while an explicit
+    // pre-restore `setLook()` to a different look still discards them.
     this.manualBoxes =
       persisted.lookId === this.selectedLookId ? { ...persisted.manualBoxes } : {};
 
@@ -659,14 +743,22 @@ export class ShowEngine {
     // silently pins the operator to page 0 (no crash, no error — see the
     // file-level Plan 4 obligation this class inherited). Never introduce a
     // third call site that invokes only one of the two.
-    const caps = resolveCapabilities(this.config, this.mukanaHealth());
+    //
+    // Fix round 1, Finding 2: `health`/`caps` are captured here and carried
+    // all the way to THIS tick's own published snapshot at the bottom
+    // (`buildSnapshotFrom(caps, health)`), rather than the public
+    // `snapshot()` re-resolving from the live `mukanaClient.health` getter
+    // after `await this.store.save(...)` below. That getter can change
+    // mid-tick from an async fetch landing during the await — a poll
+    // resolving `hands` from failing to ok right then would otherwise let
+    // `capabilities.handsQueue` in the published snapshot disagree with the
+    // `look.boxFill`/`pageCount` computed earlier in this SAME tick from
+    // the pre-await value, publishing a snapshot that contradicts itself.
+    const health = this.mukanaHealth();
+    const caps = resolveCapabilities(this.config, health);
 
     const slots = this.liveSlots.slots();
-    const { hostSlot: seatedHostSlot, readerSlot: seatedReaderSlot } = findChairSlots(slots);
-    const strippedQueue = stripChairs(this.queue, {
-      hostPin: pinAtSlot(slots, seatedHostSlot),
-      readerPin: pinAtSlot(slots, seatedReaderSlot)
-    });
+    const strippedQueue = this.stripQueueAgainstSeatedChairs(slots);
 
     const look = this.lookById(this.selectedLookId);
     const previousLookId = this.currentLook?.lookId ?? null;
@@ -692,6 +784,25 @@ export class ShowEngine {
     }
     this.currentLook = resolution;
 
+    // Fix round 1, Finding 4: a "no-look"/"fill" paging refusal is only
+    // meaningful while its cause persists — the moment a look IS resolved
+    // (clearing "no-look"), or its boxes are ACTUALLY filling from the
+    // queue again (hands feed recovered, clearing "fill"), a refusal
+    // recorded while that wasn't true is stale and must not keep
+    // publishing. `nextGuest`/`prevGuest` are the only other writers of
+    // `pagingRefused`, and neither runs every tick, so nothing else would
+    // clear it otherwise. A `"range"` refusal is deliberately NOT cleared
+    // here — see `pagingRefusedKind`'s doc comment for why (it would wipe
+    // out on the very next tick, since queue fill is the only strategy an
+    // out-of-range move can even happen under).
+    const noLookRefusalResolved = this.pagingRefusedKind === "no-look" && resolution !== null;
+    const fillRefusalResolved =
+      this.pagingRefusedKind === "fill" && resolution !== null && resolution.boxFill === "queue";
+    if (noLookRefusalResolved || fillRefusalResolved) {
+      this.pagingRefused = null;
+      this.pagingRefusedKind = null;
+    }
+
     // Overlays: re-derive every tick and keep the change flag for Task 8.
     // No `ShowEngine` input sets `question` yet, so it is always `null`
     // today (see the field's own doc comment).
@@ -701,11 +812,11 @@ export class ShowEngine {
       questionVisible: this.questionVisible
     });
 
-    // Tally has no state of its own to advance here — `snapshot()` already
-    // derives it fresh from `this.currentLook` (now populated above) plus
-    // the program source and the active-speaker-to-slot translation, which
-    // only the engine can do (it is the one thing that knows both
-    // `ProgramBus` and `LiveSlots`).
+    // Tally has no state of its own to advance here — the final snapshot
+    // build below already derives it fresh from `this.currentLook` (now
+    // populated above) plus the program source and the
+    // active-speaker-to-slot translation, which only the engine can do (it
+    // is the one thing that knows both `ProgramBus` and `LiveSlots`).
 
     const now = this.clock.now();
     const debounceElapsed =
@@ -717,7 +828,7 @@ export class ShowEngine {
     }
 
     this.tickRevision += 1;
-    return this.snapshot();
+    return this.buildSnapshotFrom(caps, health);
   }
 
   /** The tick counter, starting at 0. Advanced by `tick()`. */
@@ -726,16 +837,35 @@ export class ShowEngine {
   }
 
   /**
-   * Assemble the published snapshot from current module state. Before the
-   * first tick it is fully valid: empty roster, `look: null`, `mode: "none"`
-   * tally, empty overlays, and capabilities resolved from current health.
+   * Assemble the published snapshot from current module state, resolving
+   * capabilities fresh from the live health getter. This is the right
+   * behavior for an out-of-tick caller (e.g. right after construction,
+   * before the first `tick()`), but `tick()` itself must NOT call this —
+   * it calls the private `buildSnapshotFrom` with the SAME `caps`/`health`
+   * it already resolved once at the top of that tick (Fix round 1, Finding
+   * 2). Before the first tick this is fully valid: empty roster, `look:
+   * null`, `mode: "none"` tally, empty overlays, and capabilities resolved
+   * from current health.
    */
   snapshot(): ShowSnapshot {
+    const health = this.mukanaHealth();
+    const capabilities = resolveCapabilities(this.config, health);
+    return this.buildSnapshotFrom(capabilities, health);
+  }
+
+  /**
+   * The actual snapshot assembly, parameterized on an already-resolved
+   * `capabilities`/`health` pair so a caller (`tick()`, or the public
+   * `snapshot()` above) controls whether that pair is freshly resolved or
+   * carried over from earlier work. Never resolves capabilities itself.
+   */
+  private buildSnapshotFrom(
+    capabilities: ShowCapabilities,
+    health: Record<MukanaEndpoint, MukanaHealth>
+  ): ShowSnapshot {
     const slots = this.liveSlots.slots();
     const gallery = this.gallery.cells();
     const program = this.programBus.state();
-    const health = this.mukanaHealth();
-    const capabilities = resolveCapabilities(this.config, health);
 
     const panelists = buildPanelistDb(
       this.zoomIngest.snapshot(),
@@ -794,5 +924,22 @@ export class ShowEngine {
   private lookById(lookId: string | null): LookDefinition | null {
     if (lookId === null) return null;
     return this.config.looks.find((candidate) => candidate.id === lookId) ?? null;
+  }
+
+  /**
+   * `this.queue` with the seated host's and reader's PINs removed, so the
+   * hands queue never double-books whoever already has a dedicated chair.
+   * Shared by `tick()` (feeding `clampPage`/`resolveLook`) and `adjustPage`
+   * (Fix round 1, Finding 3 — bounding a direct "next"/"prev" move needs
+   * the SAME effective queue those two would resolve against, not the raw
+   * one), so the two can never derive a different page count for the
+   * identical underlying state.
+   */
+  private stripQueueAgainstSeatedChairs(slots: readonly Slot[]): QueueState {
+    const { hostSlot, readerSlot } = findChairSlots(slots);
+    return stripChairs(this.queue, {
+      hostPin: pinAtSlot(slots, hostSlot),
+      readerPin: pinAtSlot(slots, readerSlot)
+    });
   }
 }

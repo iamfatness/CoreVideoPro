@@ -696,14 +696,27 @@ describe("ShowEngine derived layers", () => {
     expect(() => engine().setLook("nope")).toThrow(/nope/);
   });
 
+  /**
+   * Fix round 1, Minor: the original version of this test asserted only
+   * `mode === "look"` with nobody seated, so it passed whether or not the
+   * on-air slot derivation was correct at all. `assignBox` puts Ann (seated
+   * at slot 1, the only participant) into the look's box 1 — under manual
+   * fill (this engine's default: `teatime` is `boxFill: "queue"`, but the
+   * registry-less config's `handsQueue` capability is `disabled`, which
+   * `effectiveBoxFill` collapses to manual regardless) — so the derivation
+   * has a real, checkable answer: slot 1 on air, nobody else.
+   */
   it("derives tally from the program source and the resolved look", async () => {
     const e = engine();
     e.onZoomEvent(joined("p1", "Ann"));
     e.setLook("teatime");
+    e.assignBox(1, 1);
     await e.tick();
     e.directCut({ kind: "look", lookId: "teatime" });
     const snap = await e.tick();
     expect(snap.tally.mode).toBe("look");
+    expect(snap.tally.onAirSlots).toEqual([1]);
+    expect(snap.tally.onAirParticipantIds).toEqual(["p1"]);
   });
 
   it("translates the active speaker to a roster slot for tally", async () => {
@@ -845,6 +858,18 @@ function engineWithFill(fill: "queue" | "manual", state: "available" | "unavaila
  * The invariant it must break on: clampPage and resolveLook receiving
  * different capability values, or either being called without one. Any of
  * those makes some (page, capability) pair throw out of tick().
+ *
+ * Fix round 1, Finding 1: the original two assertions here
+ * (`snap.page >= 0`, `snap.page < snap.look.pageCount`) are self-referential
+ * — under a mutation that drops the shared capability from BOTH calls (or
+ * from `clampPage` alone), `snap.page` and `snap.look.pageCount` are both
+ * products of the SAME wrong computation and agree with each other anyway,
+ * so neither assertion ever reds. `engineWithFill` seeds exactly 5 PINs
+ * against a 2-box look, so the TRUE page count is externally computable —
+ * 3 when queue fill is actually engaged (`fill === "queue" &&
+ * state === "available"`; anything else collapses to manual, one page) —
+ * and comparing against that independently-known value is what makes a
+ * wrong-but-internally-consistent computation visible.
  */
 describe("clampPage and resolveLook always agree", () => {
   const states = ["available", "unavailable", "disabled"] as const;
@@ -860,8 +885,239 @@ describe("clampPage and resolveLook always agree", () => {
           const snap = e.snapshot();
           expect(snap.page).toBeGreaterThanOrEqual(0);
           expect(snap.page).toBeLessThan(snap.look?.pageCount ?? 1);
+
+          const expectedPageCount = fill === "queue" && state === "available" ? 3 : 1;
+          expect(snap.look?.pageCount).toBe(expectedPageCount);
+          expect(snap.page).toBe(Math.min(Math.max(page, 0), expectedPageCount - 1));
         });
       }
     }
   }
+});
+
+/**
+ * A `MukanaClient`-shaped fake whose `health.hands` is backed by a mutable
+ * closure variable rather than a fixed object — unlike
+ * `fakeMukanaWithHandsState` above (a frozen snapshot, right for the
+ * property test's per-case engines), this one can change ITS ANSWER
+ * mid-test, the same way a real client's health getter changes after an
+ * async fetch resolves. Starts `"failing"` (unavailable); `setHandsOk`
+ * flips it to `"ok"` (available) for every subsequent read.
+ */
+function fakeMukanaWithMutableHands(): { client: MukanaClient; setHandsOk: () => void } {
+  let handsHealth: MukanaHealth = { state: "failing", consecutiveFailures: 1, detail: "hands endpoint down" };
+  const ok: MukanaHealth = { state: "ok", consecutiveFailures: 0, detail: null };
+  const client = {
+    get health(): Record<MukanaEndpoint, MukanaHealth> {
+      return { panelists: ok, hands: handsHealth, question: ok };
+    }
+  } as unknown as MukanaClient;
+  return {
+    client,
+    setHandsOk: () => {
+      handsHealth = { state: "ok", consecutiveFailures: 0, detail: null };
+    }
+  };
+}
+
+describe("ShowEngine fix round 1 (2026-08-07)", () => {
+  /**
+   * Finding 2: `tick()` must publish the snapshot from the SAME
+   * `caps`/`health` it resolved capabilities with at the top of that tick,
+   * never re-resolving from the live health getter after `await
+   * this.store.save(...)`. This engine's `writeFile` flips the hands
+   * endpoint from failing to ok as a side effect of the FIRST save this
+   * engine performs — simulating an async Mukana poll landing during that
+   * await — so a broken implementation would publish `capabilities.handsQueue
+   * = available` (the POST-save value) alongside `look.boxFill = "manual"`,
+   * `look.pageCount = 1` (computed PRE-save, before the flip): a snapshot
+   * that contradicts itself. The fix makes both come from the one
+   * pre-save resolution.
+   */
+  it("keeps capabilities and the resolved look in agreement even when health changes during the save", async () => {
+    const { client, setHandsOk } = fakeMukanaWithMutableHands();
+    const config = parseShowEngineConfig({
+      capacity: 8,
+      statePath: "/state/show.json",
+      galleryCells: 16,
+      integrations: { handsQueue: true },
+      mukana: { baseUrl: "https://example.com/rest.php", event: "officehours" },
+      looks: [
+        {
+          id: "teatime",
+          label: "Teatime",
+          scenePreset: "scene-teatime",
+          boxes: 2,
+          includesHost: true,
+          includesReader: false
+        }
+      ]
+    });
+
+    const backingFs = memoryFs();
+    let flipped = false;
+    const flippingFs: StateFs = {
+      ...backingFs,
+      writeFile: async (p, c) => {
+        if (!flipped) {
+          flipped = true;
+          setHandsOk();
+        }
+        return backingFs.writeFile(p, c);
+      }
+    };
+
+    const e = new ShowEngine({
+      config,
+      host: new MockHost(),
+      clock: fixedClock(),
+      store: new StateStore(config.statePath, { fs: flippingFs }),
+      mukana: client
+    });
+    (e as unknown as { queue: QueueState }).queue = {
+      previous: [],
+      current: "1001",
+      upcoming: ["1002", "1003", "1004", "1005"]
+    };
+
+    e.setLook("teatime"); // pendingPersist true; first save is always unthrottled, so it runs THIS tick
+    const snap = await e.tick();
+
+    // The tick's OWN pre-save resolution: hands was failing when `caps` was
+    // resolved, so boxFill fell back to manual and pageCount to 1.
+    expect(snap.capabilities.handsQueue.state).toBe("unavailable");
+    expect(snap.look?.boxFill).toBe("manual");
+    expect(snap.look?.pageCount).toBe(1);
+
+    // The live getter now reads "ok" (the save-time flip already happened),
+    // proving this isn't passing merely because the flip never fired.
+    expect(client.health.hands.state).toBe("ok");
+  });
+
+  /**
+   * Finding 3: an out-of-range `nextGuest`/`prevGuest` must refuse and
+   * leave `this.page` untouched, not silently advance past the end and
+   * rely on `tick()`'s `clampPage` to pull it back with no signal to the
+   * operator that their move did nothing new.
+   */
+  it("refuses to page past the last page instead of relying on tick() to clamp it back silently", async () => {
+    const e = engineWithFill("queue", "available"); // pageCount 3: valid pages 0,1,2
+    e.setLook("teatime");
+    await e.tick();
+    e.nextGuest(); // 0 -> 1
+    e.nextGuest(); // 1 -> 2 (last valid page)
+    e.nextGuest(); // would be 3: refuse
+    const snap = await e.tick();
+    expect(snap.page).toBe(2);
+    expect(snap.pagingRefused).toMatch(/out of range/i);
+  });
+
+  it("refuses to page before the first page instead of silently doing nothing", async () => {
+    const e = engineWithFill("queue", "available");
+    e.setLook("teatime");
+    await e.tick(); // page 0
+    e.prevGuest(); // would be -1: refuse
+    const snap = await e.tick();
+    expect(snap.page).toBe(0);
+    expect(snap.pagingRefused).toMatch(/out of range/i);
+  });
+
+  /**
+   * Finding 4: `pagingRefused` must not outlive the condition that caused
+   * it. Once the hands feed recovers and the active look's boxes are
+   * actually filling from the queue again, a STALE refusal recorded while
+   * that wasn't true must clear itself on the very next tick — nothing
+   * else would ever clear it, since only `nextGuest`/`prevGuest` write it
+   * and neither runs every tick.
+   */
+  it("clears a stale paging refusal once the hands feed recovers", async () => {
+    const { client, setHandsOk } = fakeMukanaWithMutableHands(); // starts failing
+    const config = parseShowEngineConfig({
+      capacity: 8,
+      statePath: "/state/show.json",
+      galleryCells: 16,
+      integrations: { handsQueue: true },
+      mukana: { baseUrl: "https://example.com/rest.php", event: "officehours" },
+      looks: [
+        {
+          id: "teatime",
+          label: "Teatime",
+          scenePreset: "scene-teatime",
+          boxes: 2,
+          includesHost: true,
+          includesReader: false
+        }
+      ]
+    });
+    const e = new ShowEngine({
+      config,
+      host: new MockHost(),
+      clock: fixedClock(),
+      store: new StateStore(config.statePath, { fs: memoryFs() }),
+      mukana: client
+    });
+    (e as unknown as { queue: QueueState }).queue = {
+      previous: [],
+      current: "1001",
+      upcoming: ["1002", "1003", "1004", "1005"]
+    };
+
+    e.setLook("teatime");
+    await e.tick(); // hands failing -> manual fill
+    e.nextGuest(); // refused: manual fill
+    let snap = await e.tick();
+    expect(snap.pagingRefused).toMatch(/manual/i);
+
+    setHandsOk(); // the feed recovers between ticks, as a real poll would
+    snap = await e.tick(); // this tick's own resolution is now queue fill
+    expect(snap.look?.boxFill).toBe("queue");
+    expect(snap.pagingRefused).toBeNull();
+  });
+
+  /** Finding 4's other writer: a look change must not leave a stale refusal attributed to the look it just left. */
+  it("clears a stale paging refusal on setLook, even to a look that is also manual fill", async () => {
+    const e = engine(); // registry-less: handsQueue disabled, every look is effectively manual
+    e.setLook("teatime");
+    await e.tick();
+    e.nextGuest(); // refused: manual fill
+    expect(e.snapshot().pagingRefused).toMatch(/manual/i);
+    e.setLook("banter");
+    expect(e.snapshot().pagingRefused).toBeNull();
+  });
+
+  /** "Also fix": a cold restart (no `setLook()` before `restore()`) must resume the persisted look, not resolve none until an operator re-selects one. */
+  it("resumes the persisted look on a cold restart with no setLook() first", async () => {
+    const fs = memoryFs({
+      "/state/show.json": JSON.stringify({
+        version: 3,
+        slots: { version: 1, capacity: 8, seats: new Array(8).fill(null) },
+        overrides: {},
+        gallery: {
+          version: 1,
+          cells: 16,
+          assignments: Array.from({ length: 16 }, (_, i) => ({ cell: i + 1, slot: 0 }))
+        },
+        manualBoxes: { 1: 3 },
+        lookId: "teatime"
+      })
+    });
+    const e = engine({ fs });
+    expect(await e.restore()).toBe(true); // NO setLook() call before this, unlike the pinned manualBoxes tests
+    const snap = await e.tick();
+    expect(snap.look?.lookId).toBe("teatime");
+    expect(snap.manualBoxes).toEqual({ 1: 3 });
+  });
+
+  /** Minor: `assignBox` rejects a box number outside the active look's range instead of silently persisting garbage. */
+  it("rejects a manual box assignment outside the active look's box range", async () => {
+    const e = engine();
+    e.setLook("teatime"); // 2 boxes
+    expect(() => e.assignBox(3, 1)).toThrow(/out of range/);
+    expect(() => e.assignBox(0, 1)).toThrow();
+  });
+
+  /** Minor: `setPage` rejects a non-integer at the call site rather than letting it surface as a thrown error in a later tick. */
+  it("rejects a non-integer page from setPage", () => {
+    expect(() => engine().setPage(1.5)).toThrow(/integer/);
+  });
 });
