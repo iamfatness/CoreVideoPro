@@ -159,6 +159,138 @@ enum ShellTests {
         expect(model.gradeIsNeutral, "reset returns to neutral")
     }
 
+
+    // ── wire contract: the silently-discarded-command class ──────────────────
+
+    /// JsonRpcServer discards a payload-wrapped command that arrives without the
+    /// wrapper, answering "<type> requires a payload." connect-capture-device
+    /// shipped exactly that way: the button did nothing and the UI still showed
+    /// the device connected.
+    private static func testPayloadWrappedCommandsCarryTheWrapper() {
+        let connect = CoreCommands.connectCaptureDevice(deviceId: "cam-1",
+                                                        outputSourceId: "cam-1")
+        expectEqual(connect["type"] as? String ?? "", "connect-capture-device", "type")
+        guard let payload = connect["payload"] as? JSONObject else {
+            expect(false, "connect-capture-device MUST carry a payload wrapper")
+            return
+        }
+        expectEqual(payload["deviceId"] as? String ?? "", "cam-1", "deviceId in payload")
+        // Without outputSourceId the core keys frames by its own id and the
+        // multiview lookup misses — the "pink tiles" failure.
+        expectEqual(payload["outputSourceId"] as? String ?? "", "cam-1",
+                    "outputSourceId must be forwarded")
+
+        let disconnect = CoreCommands.disconnectCaptureDevice(deviceId: "cam-1")
+        expect(disconnect["payload"] is JSONObject,
+               "disconnect-capture-device MUST carry a payload wrapper")
+    }
+
+    /// The shell's idea of which commands need a wrapper is re-derived from the
+    /// CORE's source, so a guard added in C++ cannot drift away from Swift.
+    private static func testPayloadContractMatchesTheCoreSource() {
+        guard let fromCore = CoreCommands.payloadWrappedTypesFromCoreSource() else {
+            FileHandle.standardError.write(
+                "  SKIPPED payload-contract cross-check (core source not alongside binary)\n"
+                    .data(using: .utf8)!)
+            return
+        }
+        let missing = fromCore.subtracting(CoreCommands.payloadWrappedTypes)
+        let extra = CoreCommands.payloadWrappedTypes.subtracting(fromCore)
+        expect(missing.isEmpty,
+               "the core requires a payload for \(missing.sorted()) but the shell does not list it")
+        expect(extra.isEmpty,
+               "the shell lists \(extra.sorted()) as payload-wrapped but the core does not")
+    }
+
+    /// Root-level commands must NOT be wrapped — a payload here is just as wrong.
+    private static func testRootLevelCommandsAreNotWrapped() {
+        let grade = CoreCommands.setColorGrade(exposure: 1, contrast: -2,
+                                               saturation: 3, temperature: -4)
+        expect(grade["payload"] == nil, "set-color-grade must NOT be payload-wrapped")
+        expectEqual(grade["saturation"] as? Double ?? 0, 3, "axis at the command root")
+        let sync = CoreCommands.mediaCoreSync(elapsedMs: 12, commands: [grade])
+        expectEqual((sync["commands"] as? [JSONObject])?.count ?? 0, 1, "sync carries commands")
+    }
+
+    /// A ZAK is only sent when OAuth produced one; an empty string must never be
+    /// put on the wire in its place.
+    private static func testJoinOmitsAnAbsentZak() {
+        let guest = CoreCommands.zoomJoin(meetingId: "123", displayName: "Op",
+                                          passcode: "", webinar: false)
+        let guestPayload = guest["payload"] as? JSONObject ?? [:]
+        expect(guestPayload["userZak"] == nil, "no ZAK key when OAuth returned none")
+        let host = CoreCommands.zoomJoin(meetingId: "123", displayName: "Op",
+                                         passcode: "", webinar: false, userZak: "ZAK")
+        let hostPayload = host["payload"] as? JSONObject ?? [:]
+        expectEqual(hostPayload["userZak"] as? String ?? "", "ZAK", "ZAK forwarded when present")
+        expectEqual(hostPayload["meetingNumber"] as? String ?? "", "123",
+                    "both meeting spellings are sent")
+    }
+
+    // ── transport framing: the everything-times-out class ────────────────────
+
+    /// The core emits large snapshots, so a JSON object IS routinely split
+    /// across stdout reads. Dropping a partial tail loses responses at random
+    /// and every command looks like a timeout.
+    private static func testBridgeReassemblesSplitLines() {
+        var buffer: [UInt8] = []
+        let whole = "{\"id\":\"a\",\"ok\":true}\n"
+        let half = whole.index(whole.startIndex, offsetBy: 9)
+
+        buffer.append(contentsOf: Array(whole[whole.startIndex..<half].utf8))
+        let firstPass = MediaCoreBridge.drainCompleteLines(&buffer)
+        expectEqual(firstPass.count, 0, "a partial line yields nothing yet")
+        expect(!buffer.isEmpty, "the partial tail is retained for the next read")
+
+        buffer.append(contentsOf: Array(whole[half...].utf8))
+        let secondPass = MediaCoreBridge.drainCompleteLines(&buffer)
+        expectEqual(secondPass.count, 1, "the completed line is delivered")
+        expectEqual(secondPass.first?["id"] as? String ?? "", "a", "and parses correctly")
+        expectEqual(buffer.count, 0, "buffer drains once consumed")
+    }
+
+    /// Several objects can arrive in one read; all must be delivered in order.
+    private static func testBridgeDeliversMultipleLinesFromOneRead() {
+        var buffer = Array("{\"id\":\"1\"}\n{\"id\":\"2\"}\n{\"id\":\"3\"}\n".utf8)
+        let objects = MediaCoreBridge.drainCompleteLines(&buffer)
+        expectEqual(objects.count, 3, "all three objects delivered")
+        expectEqual(objects.map { $0["id"] as? String ?? "" }, ["1", "2", "3"], "in order")
+    }
+
+    /// One malformed event must not poison the stream — the session has to
+    /// survive a bad line, not go silent.
+    private static func testBridgeSkipsMalformedLinesWithoutStalling() {
+        var buffer = Array("{oops\n{\"id\":\"good\"}\n".utf8)
+        let objects = MediaCoreBridge.drainCompleteLines(&buffer)
+        expectEqual(objects.count, 1, "the malformed line is skipped")
+        expectEqual(objects.first?["id"] as? String ?? "", "good", "the good line still arrives")
+    }
+
+
+    // ── coalescing: the RPC-flood class ──────────────────────────────────────
+
+    /// A drag emits a change per frame. Sending one request per delta held the
+    /// core lock ~100% of wall time and every shell command timed out — joins,
+    /// scene syncs, assigns. Debouncing is not a nicety here, so assert it
+    /// rather than trusting that the pattern was copied correctly (it has now
+    /// been written three times: scenes, colour grade, lower thirds).
+    @MainActor
+    private static func testColorGradePushesAreCoalesced() {
+        let model = AppModel()
+        let before = model.colorGradePushCount
+        for step in 0..<20 {                      // a fast drag
+            model.gradeSaturation = Double(step) * 0.1
+            model.applyColorGrade()
+        }
+        expectEqual(model.colorGradePushCount, before,
+                    "nothing is sent while the gesture is still moving")
+        // Spin the main run loop past the debounce window so the surviving task
+        // can fire (Task.sleep needs the loop to turn).
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        expectEqual(model.colorGradePushCount, before + 1,
+                    "20 rapid changes collapse into exactly ONE push")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -176,6 +308,14 @@ enum ShellTests {
             ("roster/name-fallback", testRosterNameFallsBackToId),
             ("redaction/secrets", testRedactionRemovesSecretsAndKeepsDiagnostics),
             ("grade/neutral", testColorGradeNeutralDetection),
+            ("wire/payload-wrapper", testPayloadWrappedCommandsCarryTheWrapper),
+            ("wire/contract-vs-core", testPayloadContractMatchesTheCoreSource),
+            ("wire/root-level", testRootLevelCommandsAreNotWrapped),
+            ("wire/join-zak", testJoinOmitsAnAbsentZak),
+            ("bridge/split-line", testBridgeReassemblesSplitLines),
+            ("bridge/multi-line", testBridgeDeliversMultipleLinesFromOneRead),
+            ("bridge/malformed", testBridgeSkipsMalformedLinesWithoutStalling),
+            ("coalescing/color-grade", testColorGradePushesAreCoalesced),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

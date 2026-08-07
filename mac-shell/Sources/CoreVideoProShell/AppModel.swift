@@ -936,8 +936,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // Counts pushes that actually made it PAST the debounce. Exists so the
+    // coalescing can be asserted: a slider emits a change per frame, and one
+    // request per delta is what starved the command queue until every request
+    // timed out. Incremented before the bridge guard so the behaviour is
+    // observable without a running core.
+    private(set) var colorGradePushCount = 0
+
     @MainActor
     private func pushColorGrade() async {
+        colorGradePushCount += 1
         guard let bridge else { return }
         _ = try? await bridge.request([
             "type": "media-core-sync", "elapsedMs": elapsedMs(),
@@ -2120,15 +2128,12 @@ final class AppModel: ObservableObject {
             do {
                 // Both commands take a `payload` wrapper (JsonRpcServer).
                 if device.connectionState == "connected" {
-                    _ = try await bridge.request([
-                        "type": "disconnect-capture-device",
-                        "payload": ["deviceId": device.id],
-                    ])
+                    _ = try await bridge.request(
+                        CoreCommands.disconnectCaptureDevice(deviceId: device.id))
                 } else {
-                    _ = try await bridge.request([
-                        "type": "connect-capture-device",
-                        "payload": ["deviceId": device.id, "outputSourceId": device.id],
-                    ])
+                    _ = try await bridge.request(
+                        CoreCommands.connectCaptureDevice(deviceId: device.id,
+                                                          outputSourceId: device.id))
                 }
                 syncSpine()  // multiview sources include connected capture devices
             } catch {

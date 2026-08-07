@@ -110,22 +110,39 @@ final class MediaCoreBridge {
     private func consumeStdout(_ data: Data) {
         guard !data.isEmpty else { return }
         lineBuffer.append(contentsOf: data)
+        for object in Self.drainCompleteLines(&lineBuffer) {
+            dispatch(object)
+        }
+    }
+
+    /// Pulls every COMPLETE newline-terminated JSON object out of `buffer` and
+    /// leaves any partial tail behind for the next read.
+    ///
+    /// Pure and static so it can be tested without a core process. This is the
+    /// seam where a stdout read boundary lands mid-object: the core emits
+    /// megabyte snapshots, so a response IS routinely split across reads, and
+    /// getting this wrong drops responses at random — every command would look
+    /// like it timed out. A malformed line is skipped rather than poisoning the
+    /// buffer, because one bad event must not take the session down.
+    static func drainCompleteLines(_ buffer: inout [UInt8]) -> [JSONObject] {
+        var objects: [JSONObject] = []
         var start = 0
         var index = 0
-        while index < lineBuffer.count {
-            if lineBuffer[index] == 0x0A {
+        while index < buffer.count {
+            if buffer[index] == 0x0A {
                 if index > start {
-                    let lineData = Data(lineBuffer[start..<index])
+                    let lineData = Data(buffer[start..<index])
                     if let object =
                         (try? JSONSerialization.jsonObject(with: lineData)) as? JSONObject {
-                        dispatch(object)
+                        objects.append(object)
                     }
                 }
                 start = index + 1
             }
             index += 1
         }
-        lineBuffer.removeFirst(start)
+        buffer.removeFirst(start)
+        return objects
     }
 
     private func dispatch(_ object: JSONObject) {
