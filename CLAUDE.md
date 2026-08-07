@@ -71,6 +71,15 @@ dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Releas
 runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respects a
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
+**Run the binary the build just wrote.** `native/build-dev/` is a single-config
+generator — the current binaries are `native/build-dev/corevideo-native.exe` and
+`corevideo-native-tests.exe`. A `native/build-dev/Release/` directory also exists,
+left by an older VS-generator build, and **nothing updates it**: a test run from
+there reported a confident "380 tests passed" from a binary a MONTH old, which
+silently omitted every test file added since. The real suite is 529 tests. If a
+newly added test does not appear in the output, check which binary you ran before
+suspecting CMake.
+
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
 zip** to `%LOCALAPPDATA%\CoreVideoPro\support-bundles\` — the zip packs ~2MB
@@ -423,13 +432,20 @@ MPEG-TS/SRT stream at us and it becomes an ordinary capture source.
   holding the SRT port.
 - **Embedded audio is a SECOND output on the same ffmpeg** — `-map 0:a:0? -vn -f f32le
   -ar 48000 -ac 2` into a **Windows named pipe** the adapter serves
-  (`\\.\pipe\corevideo-srt-ingest-audio-<pid>-<stamp>`), drained by a reader thread into
+  (`\\.\pipe\corevideo-srt-ingest-audio-<pid>-<n>`; POSIX hands the child an inherited
+  fd and uses `pipe:3` — no FIFO file, **not verified on hardware**), drained by a reader thread into
   a ~1s cap (drop-oldest) and emitted from `pollAudioFrames` keyed
   **`capture:<deviceId>` — the same id as the video**, which is what makes it land in the
   existing routing/metering/ISO paths with no special-casing. A contribution feed carries
   its guest's audio inside the transport with no OS device to pair, so it cannot use the
   WASAPI capture-audio path.
-- **`-y` IS LOAD-BEARING.** FFmpeg sees the named pipe as an existing FILE and
+- **NO SHELL, EVER — the decoder is an argv VECTOR** (`buildSrtIngestArgv` in
+  `SrtFfmpegArgs.h`, POSIX `execvp` / Windows quoted `lpCommandLine` with
+  `lpApplicationName` pinned). `buildSrtUrl` deliberately tolerates a **pasted**
+  `srt://host:port` because pasting a remote contributor's connection string is the
+  intended way to add an ingest — so the URL is attacker-influenced by design. It must
+  stay exactly one argument; never rebuild this as a command string.
+- **`-y` IS LOAD-BEARING.** FFmpeg sees the audio pipe as an existing FILE and
   interactively prompts `Overwrite? [y/N]`, then EXITS — killing the whole decoder and
   taking **video** down with it. The symptom is "SRT ingest stopped working entirely"
   when you touch the audio output. Never drop `-y` from the ingest command.
