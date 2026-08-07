@@ -4,18 +4,20 @@
  * individually tested but never wired together; this is that wiring.
  *
  * This file covers construction, restore-from-disk, the snapshot accessor,
- * roster intake, and the seating tick (Task 5). There is no speaker gate
- * wiring (Task 6), no derived-layer recompute or host command emission
- * (Task 7/8+), and no polling loop (Task 9+) — `setLook` is implemented
- * here only far enough to select the active look id, because two restore
- * tests need it; its tick behavior (recomputing the resolved look, clamping
- * the page, clearing manual boxes on a look change) is Task 6/7's job.
+ * roster intake, the seating tick (Task 5), and the active-speaker dispatch
+ * gate (Task 6). There is no other derived-layer recompute or host command
+ * emission yet (Task 7/8+), and no polling loop (Task 9+) — `setLook` is
+ * implemented here only far enough to select the active look id, because
+ * two restore tests need it; its tick behavior (recomputing the resolved
+ * look, clamping the page, clearing manual boxes on a look change) is
+ * Task 7's job.
  */
 
 import type { Clock } from "./clock.js";
 import type { HostAdapter } from "./hostAdapter.js";
 import type { PositionAssigner } from "./speakerRecency.js";
 import { FiloAssigner } from "./speakerRecency.js";
+import { shouldFollowSpeaker } from "./speakerGate.js";
 import type { ShowEngineConfig } from "./config.js";
 import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
 import { MukanaRegistry, type MukanaOutcome } from "./mukanaParse.js";
@@ -155,6 +157,17 @@ export class ShowEngine {
   /** Wall-clock time (per the injected `Clock`) of the last actual save, or `null` before the first one. */
   private lastSaveTime: number | null = null;
 
+  /**
+   * The most recent `onActiveSpeaker` id since the last tick consumed one,
+   * or `null` if none arrived. A single slot, not a queue — several events
+   * within one tick collapse to the latest, matching how a live meeting's
+   * active-speaker signal actually behaves (it names who is CURRENTLY
+   * talking, not a history). Consumed and cleared at the top of the gate
+   * step in `tick()` every tick, whether or not it holds anything, so a
+   * pending speaker is never replayed into a later tick.
+   */
+  private pendingSpeakerId: string | null = null;
+
   constructor(deps: ShowEngineDeps) {
     if (deps.mukana !== undefined && deps.config.mukana === null) {
       throw new Error(
@@ -251,6 +264,23 @@ export class ShowEngine {
     this.overrideDb.delete(personKey);
     this.pendingPersist = true;
     this.otherInputsChanged = true;
+  }
+
+  /**
+   * Record a host active-speaker event. This does NOTHING beyond recording
+   * `participantId` as the pending speaker — no role lookup, no dispatch to
+   * the assigner or `ProgramBus`. That happens in `tick()`, after the
+   * panelist database has been rebuilt for this tick, so the gate always
+   * sees current editorial roles rather than a stale or (at startup) empty
+   * one. See the gate step in `tick()` for why this can't run here.
+   */
+  onActiveSpeaker(participantId: string): void {
+    this.pendingSpeakerId = participantId;
+  }
+
+  /** Toggle whether `ProgramBus` cuts program to the active speaker. Forwarded directly; no gating of its own. */
+  setActiveSpeakerFollow(on: boolean): void {
+    this.programBus.setActiveSpeakerFollow(on);
   }
 
   /**
@@ -391,10 +421,38 @@ export class ShowEngine {
       this.pendingPersist = true;
     }
 
-    // Derived layers (look resolution, tally recompute, overlays) land in
-    // Tasks 6–7; host command emission lands in Task 8. Nothing to do here
-    // yet — `snapshot()` already recomputes tally/capabilities live from
-    // current module state.
+    // The active-speaker dispatch gate (Task 6). Take the pending speaker
+    // id and clear it FIRST, unconditionally, so a slot that held nothing
+    // this tick can never replay into a later one. The panelist database is
+    // rebuilt fresh here (mirrors `snapshot()`'s own rebuild) so role
+    // resolution always reflects the CURRENT roster + overrides, including
+    // one the operator assigned seconds earlier — never the one-tick-stale
+    // view intake would see, and never the empty view a fresh restore would
+    // see. `shouldFollowSpeaker` runs BEFORE anything else touches the id:
+    // before the assigner, before `ProgramBus`. Only past that gate is
+    // `role ?? "panelist"` safe — an unknown speaker was already evaluated
+    // as `null` by the gate, which passes a `null` role through; coalescing
+    // to `"panelist"` any earlier would turn "unknown role" into
+    // "definitely follow" before the gate could see it.
+    const pendingSpeaker = this.pendingSpeakerId;
+    this.pendingSpeakerId = null;
+    if (pendingSpeaker !== null) {
+      const speakerPanelists = buildPanelistDb(
+        this.zoomIngest.snapshot(),
+        this.mukanaRegistry.current(),
+        this.overrideDb.entries()
+      );
+      const role = speakerPanelists.get(pendingSpeaker)?.role ?? null;
+      if (shouldFollowSpeaker(role, this.config.skipRoles)) {
+        this.assigner.onActiveSpeaker(pendingSpeaker);
+        this.programBus.onActiveSpeaker(pendingSpeaker, role ?? "panelist");
+      }
+    }
+
+    // Remaining derived layers (look resolution, tally recompute, overlays)
+    // land in Task 7; host command emission lands in Task 8. Nothing to do
+    // here yet — `snapshot()` already recomputes tally/capabilities live
+    // from current module state.
 
     const now = this.clock.now();
     const debounceElapsed =
