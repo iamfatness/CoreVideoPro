@@ -356,6 +356,32 @@ enum ShellTests {
                     "the broker allowlists exactly this return uri")
     }
 
+
+    // ── encoder policy: the legal-exposure class ─────────────────────────────
+
+    /// The shell must never offer a codec this build cannot legally or
+    /// technically encode. HEVC sits under multiple patent pools that charge
+    /// encoder royalties, and the GPL software encoders (x264/x265) cannot ship
+    /// in a proprietary product at all — so the product ships HARDWARE encoders
+    /// only (NVENC on Windows, VideoToolbox on Apple), where licensing rides
+    /// with the OS and silicon vendor. macOS therefore encodes H.264 and nothing
+    /// else (native/src/modules/EncoderPolicy.h: "HEVC encode is not shipped on
+    /// any platform"; AV1 is the non-Apple branch).
+    ///
+    /// A picker offering HEVC is not merely a dead control here — it invites the
+    /// operator to select something the product deliberately does not license.
+    @MainActor
+    private static func testShellOffersOnlyEncodableCodecs() {
+        let offered = Set(AppModel.supportedStreamCodecs.map(\.id))
+        expect(!offered.contains("h265"),
+               "HEVC must not be offered — it is royalty-encumbered and not shipped")
+        expect(!offered.contains("av1"),
+               "AV1 is the non-Apple branch of EncoderPolicy; macOS cannot encode it")
+        expectEqual(offered, ["h264"], "macOS ships H.264 via VideoToolbox only")
+        expect(offered.contains(AppModel().streamCodec),
+               "the default codec must itself be one the build can encode")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -387,6 +413,7 @@ enum ShellTests {
             ("oauth/expiry-slack", testExpiryLeavesSlackBeforeTheRealDeadline),
             ("oauth/keychain-identity", testKeychainServiceIsNeverTheObsPluginItem),
             ("oauth/return-uri", testOAuthReturnUriMatchesTheBrokerAllowlist),
+            ("encoder/no-unlicensed-codecs", testShellOffersOnlyEncodableCodecs),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

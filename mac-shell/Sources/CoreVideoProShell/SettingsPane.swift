@@ -118,11 +118,17 @@ struct SettingsPane: View {
                     }
                 }
                 labeled("Stream codec") {
+                    // Driven by what the core can actually encode rather than a
+                    // hardcoded menu: HEVC encode is not shipped on any platform
+                    // and AV1 is non-Apple, so this is H.264 here. When a codec
+                    // becomes available the list grows without touching the view.
                     Picker("", selection: $model.streamCodec) {
-                        Text("H.264").tag("h264")
-                        Text("H.265 / HEVC").tag("h265")
+                        ForEach(AppModel.supportedStreamCodecs, id: \.id) { codec in
+                            Text(codec.label).tag(codec.id)
+                        }
                     }
-                    .labelsHidden().frame(width: 160)
+                    .labelsHidden().frame(width: 200)
+                    .disabled(AppModel.supportedStreamCodecs.count < 2)
                 }
                 labeled("Recording format") {
                     Picker("", selection: $model.recordFormat) {

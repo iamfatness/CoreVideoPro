@@ -903,6 +903,15 @@ final class AppModel: ObservableObject {
     @Published var canvasFps = 60
     @Published var streamBitrateMbps = 6.0
     @Published var streamCodec = "h264"
+
+    /// Codecs this build can actually ENCODE, per the core's EncoderPolicy:
+    /// HEVC encode is not shipped on any platform, and AV1 is non-Apple only, so
+    /// macOS is H.264 via VideoToolbox and nothing else. Offering an unsupported
+    /// codec is a control that silently does nothing — the operator picks it,
+    /// the core refuses it, and the stream is not what the UI claims.
+    static let supportedStreamCodecs: [(id: String, label: String)] = [
+        ("h264", "H.264 (VideoToolbox)"),
+    ]
     @Published var recordFormat = "mp4"
     @Published var recordPrefix = "show"
     @Published var multiviewTileCount = 10  // ATEM-style 10-way wall
