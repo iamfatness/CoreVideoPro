@@ -93,6 +93,13 @@ class MediaCore {
   // `coreMutex` is the JsonRpcServer's single big lock; lock order is
   // coreMutex(outer) → audioOutputMutex_(inner). Call WITHOUT either lock held.
   void renderAudioOutputTick(std::mutex& coreMutex);
+  // Program VIDEO out on the video cadence (60Hz), so recordings/senders are not
+  // sampled through the audio worker's 20ms grid. Call setVideoOutputTickRunning
+  // before driving it, or the audio worker will submit video too.
+  void renderVideoOutputTick(std::mutex& coreMutex);
+  void setVideoOutputTickRunning(bool running) {
+    videoOutputTickRunning_.store(running, std::memory_order_release);
+  }
   // Marks that a dedicated audio/output worker thread now drives renderAudioOutputTick,
   // so the synchronous command-thread path (renderSyntheticTick(videoOnly=false) and
   // the empty-poll tick in applyCommands) stops doing the audio/output work itself.
@@ -489,6 +496,16 @@ class MediaCore {
   // The compositor pushes the tap at render cadence, so the output worker must
   // not publish it too (that would double every frame).
   bool compositorPublishesVcam_ = false;
+  // Set while a 60Hz video tick is driving program video out; the audio worker
+  // then submits audio only. Atomic: read by the audio worker, written by the
+  // server thread that owns the tick's lifetime.
+  std::atomic<bool> videoOutputTickRunning_{false};
+  // The newest program NV12 tap. WRITTEN by renderVideoOutputTick and READ by
+  // the audio worker for the network senders — both under audioOutputMutex_.
+  // takeVcamNv12 hands out each generation once, so exactly one caller may take.
+  std::vector<std::uint8_t> latestProgramNv12_;
+  int latestProgramNv12Width_ = 0;
+  int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";

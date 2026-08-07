@@ -358,12 +358,29 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   and the real cap was the worker cadence. Verify with
   `node scripts/measure-program-out-latency.mjs`, which reads the same seqlock header the
   DLL reads and attributes the published rate to a stage.
-- **STILL ON THE 50Hz GATE: recording and the network senders.** `encoder->submit` runs on
-  the output worker, so program video is muxed/streamed at ~51fps while the compositor
-  produces 60 (an SRT-ingest recording measured 755 frames over 14.83s = 50.9fps in a
-  container declaring 60). Fixing it means a video-output cadence separate from the audio
-  block cadence — do NOT just raise the worker to 60Hz, that breaks the 20ms audio block
-  contract (spec 4.2).
+- **PROGRAM VIDEO HAS ITS OWN 60Hz TICK (2026-08-07).** `encoder->submit` used to run on the
+  ~50Hz audio worker, so recordings muxed **49.9fps** of a 60fps program — measured properly
+  with ffprobe on identical 25s content: **1251 frames before, 1495 after (59.7fps)**.
+  `JsonRpcServer` now runs a `videoOutputThread` at 60Hz driving
+  `MediaCore::renderVideoOutputTick`, and the audio worker submits **audio only** (guarded by
+  `videoOutputTickRunning_`, so direct/unit-test callers keep the old synchronous path).
+  Lock order is unchanged and MUST stay so: `coreMutex` (brief snapshot of `lastProgramFrame_`)
+  → `audioOutputMutex_` (encoder), never both at once, never reversed — the two workers
+  serialise on `audioOutputMutex_`, which the audio side holds only ~13% of the time
+  (`work=2.6ms` per 20ms tick). Do NOT instead raise the audio worker to 60Hz: that breaks
+  the 960-sample block contract (spec 4.2) its pacer exists to hold.
+  **`takeVcamNv12` yields each tap generation exactly ONCE**, so only the video tick may take
+  it; it leaves the newest frame in `latestProgramNv12_` and the audio worker reads that for
+  the senders. Two callers would starve each other.
+  Measured end state: render 59.9fps, video tick 59.8/s, audio worker 50.0/s, vcam 60.0fps.
+- **Counters that count SUBMITS are not frame rates.** `recording.proof.programFrameCount`
+  counts submits, so it read ~50/s and looked like the muxed rate; it also read 911 on a
+  30fps SRT source whose file held 498 frames. When judging a recording's rate, count frames
+  in the ARTIFACT (`ffprobe -count_frames`) over its duration — same discipline as "verify
+  PIXELS, not stream presence".
+- **STILL ON THE 50Hz GATE: the network senders (RTMP/SRT out).** They stay on the audio
+  worker deliberately — the sender call needs the stream-bus PCM produced by that tick's mix,
+  so moving it needs the sender feed split into independent video/audio paths first.
 - **Enable it:** control API `POST http://127.0.0.1:8011/invoke
   {"action":"transport.virtualcam.set","args":[true]}` (or the transport toggle in the UI).
 - **Verify the feed:** read the 32-byte header of the ProgramData file; `frameNumber`
