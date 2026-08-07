@@ -328,7 +328,33 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 }  // namespace
 
 MediaCore::MediaCore(modules::ModuleSet modules)
-    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {}
+    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
+  // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
+  // output worker capped a 60fps program at 50fps everywhere. The sink runs on
+  // the compositor's tap thread; publishNv12 is internally locked and no-ops
+  // until start() has run, so no enabled-flag is read across threads here.
+  if (modules_.compositor && modules_.compositor->publishesVcamFrames()) {
+    compositorPublishesVcam_ = true;
+    auto* publisher = virtualCamera_.get();
+    modules_.compositor->setVcamFrameSink(
+        [publisher](const std::uint8_t* nv12, int width, int height) {
+          try {
+            publisher->publishNv12(nv12, width, height);
+          } catch (...) {
+          }
+        });
+  }
+}
+
+MediaCore::~MediaCore() {
+  // TEARDOWN BARRIER, not a courtesy. modules_ is declared BEFORE virtualCamera_,
+  // so the publisher is destroyed FIRST while the compositor's tap thread is
+  // still alive — a captured raw pointer would dangle. Clearing the sink blocks
+  // until any in-flight publish returns.
+  if (modules_.compositor) {
+    modules_.compositor->setVcamFrameSink(nullptr);
+  }
+}
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
@@ -5304,9 +5330,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     failOutputSenderSync("Output sender failed during sync.");
   }
   // Virtual Camera: publish the program frame to the SHM slot the OS reads.
-  // Same per-tick output cadence as the network senders (no shared-lock pixel
-  // work). No-op when the operator has not enabled the virtual camera.
-  if (virtualCameraEnabled_ && hasNewProgramNv12) {
+  //
+  // FALLBACK PATH ONLY. This worker ticks at ~50Hz — an AUDIO constant (960
+  // samples at 48k) — so publishing here capped a 60fps program at 50fps on
+  // every output and added up to 20ms of quantisation. Compositors that can push
+  // the tap at the render cadence do so through ICompositor::setVcamFrameSink
+  // (wired in the constructor); this runs only for those that cannot, and must
+  // never run alongside them or every frame is published twice.
+  if (virtualCameraEnabled_ && hasNewProgramNv12 && !compositorPublishesVcam_) {
     try {
       virtualCamera_->publishNv12(programNv12.data(), programNv12Width, programNv12Height);
     } catch (...) {

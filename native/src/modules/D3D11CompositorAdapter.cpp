@@ -2096,6 +2096,17 @@ class D3D11Compositor final : public ICompositor {
         }
       }
       if (ok) {
+        // PUSH FIRST, then store. Publishing here is what puts the virtual camera
+        // on the render cadence: the ~50Hz output worker used to poll for this
+        // frame, so a 60fps program reached the camera at 50fps. Deliberately
+        // OUTSIDE vcamNv12Mutex_ — the publish is a ~3MB memcpy, and holding the
+        // handoff lock across it would stall the output worker's takeVcamNv12.
+        {
+          std::lock_guard<std::mutex> sinkLock(vcamSinkMutex_);
+          if (vcamSink_) {
+            vcamSink_(nv12.data(), w, h);
+          }
+        }
         std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
         vcamLatestW_ = w;
         vcamLatestH_ = h;
@@ -2151,6 +2162,16 @@ class D3D11Compositor final : public ICompositor {
   // readback on Windows — that would be an 8MB/frame GPU->CPU Map). Recording
   // mixes from it via RecordingSessionRequest::programNv12.
   [[nodiscard]] bool suppliesProgramNv12() const override { return true; }
+
+  void setVcamFrameSink(VcamFrameSink sink) override {
+    // Blocks until any in-flight sink call returns, so clearing this is a safe
+    // teardown barrier for the callee (MediaCore's publisher outlives the
+    // compositor only if the sink is cleared first — see ~MediaCore).
+    std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+    vcamSink_ = std::move(sink);
+  }
+
+  [[nodiscard]] bool publishesVcamFrames() const override { return true; }
 
   bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& w, int& h) override {
     std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
@@ -2227,6 +2248,10 @@ class D3D11Compositor final : public ICompositor {
   // interleaved UV, w*h*3/2 bytes); the output worker copies it out cheaply via
   // takeVcamNv12.
   std::mutex vcamNv12Mutex_;
+  // Set once by MediaCore, called on the tap thread. Its own mutex (never nested
+  // with vcamNv12Mutex_) so a publish never blocks the polled handoff.
+  std::mutex vcamSinkMutex_;
+  VcamFrameSink vcamSink_;
   std::vector<uint8_t> vcamLatestNv12_;
   int vcamLatestW_ = 0;
   int vcamLatestH_ = 0;

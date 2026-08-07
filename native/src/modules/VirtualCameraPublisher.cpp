@@ -174,13 +174,20 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (bytes == 0 || bytes > kVirtualCameraMaxPayload) {
       return;
     }
-    nv12_.assign(nv12, nv12 + bytes);
-    if (mirror_) {
-      mirrorNv12InPlace(nv12_.data(), w, h);
-    }
     auto* payload = static_cast<std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
     header_->seq = header_->seq + 1;  // odd
-    std::memcpy(payload, nv12_.data(), bytes);
+    if (mirror_) {
+      // Mirroring needs a scratch buffer it can flip in place before publishing.
+      nv12_.assign(nv12, nv12 + bytes);
+      mirrorNv12InPlace(nv12_.data(), w, h);
+      std::memcpy(payload, nv12_.data(), bytes);
+    } else {
+      // Straight into the mapped payload: the staging copy was pure overhead.
+      // This runs per frame on the tap thread now (60Hz, not the old 50Hz poll),
+      // so the second 3MB copy was ~180MB/s of memory bandwidth for nothing.
+      // Safe inside the seqlock: readers retry while seq is odd.
+      std::memcpy(payload, nv12, bytes);
+    }
     header_->width = w;
     header_->height = h;
     header_->byteLen = static_cast<std::uint32_t>(bytes);
