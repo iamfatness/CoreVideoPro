@@ -898,6 +898,19 @@ class MetalCompositor final : public ICompositor {
     constants.uvScale[1] = uvScaleY;
     constants.uvOffset[0] = uvOffsetX;
     constants.uvOffset[1] = uvOffsetY;
+    // Chroma key is per-layer only — there is deliberately no render-plan-wide
+    // fallback, because keying every layer including backgrounds and overlays
+    // is never what an operator means.
+    if (layer.plan.hasChromaKey) {
+      const auto& key = layer.plan.chromaKey;
+      constants.chromaKeyColor[0] = key.keyR;
+      constants.chromaKeyColor[1] = key.keyG;
+      constants.chromaKeyColor[2] = key.keyB;
+      constants.chromaKeyColor[3] = 1.f;  // enable
+      constants.chromaKeyParams[0] = key.similarity;
+      constants.chromaKeyParams[1] = key.smoothness;
+      constants.chromaKeyParams[2] = key.spill;
+    }
     applyYuvParams(&constants, yuvShaderParamsForFrame(layer.frame));
     [encoder setFragmentBytes:&constants length:sizeof(constants) atIndex:0];
   }

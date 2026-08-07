@@ -1110,6 +1110,83 @@ TEST(MediaCoreCommand, PerRouteColorGradeChangesCompositorRenderPlanSignature) {
       second.get("programFrame")->get("renderPlanSignature")->asNumber());
 }
 
+// CHROMA KEY. The core advertised a "chroma-key" capability — and listed it as
+// REQUIRED in kRequiredMvpCapabilities — while implementing none of it: the only
+// command carrying a chromaKey payload discarded it (setParticipantTransform
+// takes an UNNAMED rpc::Json), the render-plan layer had no key fields, and
+// neither shader had keying math. Anything gating on that capability got a true
+// answer that meant nothing. These pin the plumbing that now backs the claim.
+TEST(MediaCoreCommand, PerRouteChromaKeyChangesCompositorRenderPlanSignature) {
+  const auto sceneWith = [](double similarity) {
+    return corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "load-scene-graph"},
+            {"sceneId", "keyed"},
+            {"routes", corevideo::rpc::Json::Array{
+                           corevideo::rpc::Json::Object{
+                               {"routeId", "a"},
+                               {"mode", "fixed"},
+                               {"audioRole", "mix"},
+                               {"participantId", "speaker-1"},
+                               {"chromaKey",
+                                corevideo::rpc::Json::Object{
+                                    {"keyR", 0.0},
+                                    {"keyG", 1.0},
+                                    {"keyB", 0.0},
+                                    {"similarity", similarity},
+                                    {"smoothness", 0.1},
+                                    {"spill", 0.2},
+                                }},
+                           },
+                       }},
+        },
+    };
+  };
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto first = mediaCore.applyCommands(sceneWith(0.4));
+  const auto second = mediaCore.applyCommands(sceneWith(0.6));
+  ASSERT_NE(first.get("programFrame"), nullptr);
+  ASSERT_NE(second.get("programFrame"), nullptr);
+  // A key parameter the operator changed MUST reach the render plan; if the
+  // payload were discarded again both signatures would be identical.
+  EXPECT_NE(first.get("programFrame")->get("renderPlanSignature")->asNumber(),
+            second.get("programFrame")->get("renderPlanSignature")->asNumber());
+}
+
+// `enabled:false` must actually disable it. A route can carry key settings the
+// operator has switched off, and keying anyway would punch holes in a live
+// program.
+TEST(MediaCoreCommand, ChromaKeyDisabledRendersIdenticallyToNoKeyAtAll) {
+  const auto scene = [](bool withKey, bool enabled) {
+    corevideo::rpc::Json::Object route{
+        {"routeId", "a"},
+        {"mode", "fixed"},
+        {"audioRole", "mix"},
+        {"participantId", "speaker-1"},
+    };
+    if (withKey) {
+      route["chromaKey"] = corevideo::rpc::Json::Object{
+          {"enabled", enabled},
+          {"keyG", 1.0},
+          {"similarity", 0.4},
+      };
+    }
+    return corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+        {"type", "load-scene-graph"},
+        {"sceneId", "keyed"},
+        {"routes", corevideo::rpc::Json::Array{route}},
+    }};
+  };
+  corevideo::core::MediaCore withoutKey(corevideo::modules::createStubModules());
+  corevideo::core::MediaCore disabledKey(corevideo::modules::createStubModules());
+  const auto plain = withoutKey.applyCommands(scene(false, false));
+  const auto off = disabledKey.applyCommands(scene(true, false));
+  ASSERT_NE(plain.get("programFrame"), nullptr);
+  ASSERT_NE(off.get("programFrame"), nullptr);
+  EXPECT_EQ(plain.get("programFrame")->get("renderPlanSignature")->asNumber(),
+            off.get("programFrame")->get("renderPlanSignature")->asNumber());
+}
+
 // Borders NEVER composite into program/preview — they exist solely to separate
 // tiles in the multiview (owner rule, 2026-07-31). Whatever borderStyle a route
 // carries on the wire (missing, "none", or an explicit "accent"), the composed

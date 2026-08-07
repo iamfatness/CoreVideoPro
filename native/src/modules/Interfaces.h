@@ -261,6 +261,27 @@ struct CompositorColorGrade {
   float temperature = 0.f;
 };
 
+// Per-layer chroma key (the green/blue screen keyer).
+//
+// The core advertised a "chroma-key" capability — and listed it as REQUIRED —
+// while implementing none of it: the only command carrying a chromaKey payload
+// discarded it (setParticipantTransform takes an UNNAMED rpc::Json), there were
+// no key fields on the render plan, and neither shader had keying math. Anything
+// gating on that capability got a true answer that meant nothing.
+//
+// `similarity` is the chroma distance at which a pixel becomes fully
+// transparent; `smoothness` widens the transition either side of it so edges do
+// not alias; `spill` pulls the key hue out of surviving pixels (green fringing
+// on hair and shoulders). All normalized 0..1.
+struct CompositorChromaKey {
+  float keyR = 0.f;
+  float keyG = 1.f;   // green screen by default
+  float keyB = 0.f;
+  float similarity = 0.4f;
+  float smoothness = 0.1f;
+  float spill = 0.2f;
+};
+
 // Overlay-raster payload for an overlay/lower-third/caption layer. These fields
 // are internal to the compositor render plan (built in MediaCore, consumed by
 // the compositor adapters) and are NOT serialized over the wire, so they do not
@@ -315,6 +336,10 @@ struct CompositorRenderPlanLayer {
   bool mediaAssetPlaying = false;
   bool hasColorGrade = false;
   CompositorColorGrade colorGrade;
+  // Keying is per-LAYER, not per-participant: the same camera can be keyed in
+  // one scene and not another, which a per-participant model cannot express.
+  bool hasChromaKey = false;
+  CompositorChromaKey chromaKey;
   // Set for overlay/lower-third/caption layers. Empty (default) for video
   // sources, which leaves overlay rendering on the prior solid-fill fallback.
   bool hasOverlayContent = false;

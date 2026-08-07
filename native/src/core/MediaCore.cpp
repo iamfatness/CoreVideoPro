@@ -53,6 +53,12 @@ int64_t monotonicMs() {
           .count());
 }
 
+// Key parameters are normalized: a value outside 0..1 is a caller bug, and
+// clamping keeps the shader's smoothstep well-formed.
+float clampUnit(double value) {
+  return static_cast<float>(value < 0.0 ? 0.0 : (value > 1.0 ? 1.0 : value));
+}
+
 float clampColorGradeAxis(double value) {
   return static_cast<float>(std::max(-100.0, std::min(100.0, value)));
 }
@@ -1378,6 +1384,19 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.sourceOffsetX = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetX", 0.0))));
       state.sourceOffsetY = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetY", 0.0))));
       state.opacity = static_cast<float>((std::max)(0.0, (std::min)(1.0, route.getNumber("opacity", 1.0))));
+      if (const rpc::Json* chromaKey = route.get("chromaKey"); chromaKey && chromaKey->isObject()) {
+        // Enabled must be EXPLICIT: a route carrying key settings the operator
+        // has switched off must not key. Absent `enabled` means on, so a caller
+        // that sends settings at all is asking for them.
+        const rpc::Json* enabled = chromaKey->get("enabled");
+        state.hasChromaKey = !enabled || enabled->asBool();
+        state.chromaKey.keyR = clampUnit(chromaKey->getNumber("keyR", 0.0));
+        state.chromaKey.keyG = clampUnit(chromaKey->getNumber("keyG", 1.0));
+        state.chromaKey.keyB = clampUnit(chromaKey->getNumber("keyB", 0.0));
+        state.chromaKey.similarity = clampUnit(chromaKey->getNumber("similarity", 0.4));
+        state.chromaKey.smoothness = clampUnit(chromaKey->getNumber("smoothness", 0.1));
+        state.chromaKey.spill = clampUnit(chromaKey->getNumber("spill", 0.2));
+      }
       if (const rpc::Json* colorGrade = route.get("colorGrade"); colorGrade && colorGrade->isObject()) {
         state.hasColorGrade = true;
         state.colorGrade = readColorGrade(*colorGrade);
@@ -4165,6 +4184,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.opacity = route.opacity;
       layer.hasColorGrade = route.hasColorGrade;
       layer.colorGrade = route.colorGrade;
+      layer.hasChromaKey = route.hasChromaKey;
+      layer.chromaKey = route.chromaKey;
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }

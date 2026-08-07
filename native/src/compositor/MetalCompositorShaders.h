@@ -32,6 +32,8 @@ struct LayerConstants {
   float2 uvOffset;
   float4 yuvTransform; // x = yScale, y = yOffset, z = chromaScale, w = unused
   float4 yuvCoeffs;    // x = rV, y = gU, z = gV, w = bU
+  float4 chromaKeyColor;  // xyz = key colour, w = 1 when keying is enabled
+  float4 chromaKeyParams; // x = similarity, y = smoothness, z = spill
 };
 
 struct VSOut {
@@ -58,6 +60,45 @@ static inline float3 applyGrade(float3 rgb, constant LayerConstants& c) {
   return saturate(rgb);
 }
 
+// CHROMA KEY. Distance is measured in the CHROMA plane (Cb/Cr), not in RGB:
+// RGB distance keys on brightness too, so a shadowed patch of the same screen
+// survives while a bright one vanishes. Comparing only chroma makes the key
+// tolerant of uneven screen lighting, which is what a real set has.
+//
+// Returns alpha 0 (fully keyed) to 1 (kept), with a smoothstep transition of
+// width `smoothness` so edges do not alias into a hard jagged matte.
+static inline float2 rgbToChroma(float3 rgb) {
+  float y = dot(rgb, float3(0.299, 0.587, 0.114));
+  return float2(rgb.b - y, rgb.r - y);  // Cb, Cr
+}
+
+static inline float chromaKeyAlpha(float3 rgb, constant LayerConstants& c) {
+  if (c.chromaKeyColor.w < 0.5) {
+    return 1.0;
+  }
+  float2 pixel = rgbToChroma(rgb);
+  float2 key = rgbToChroma(c.chromaKeyColor.rgb);
+  float distance = length(pixel - key);
+  float similarity = max(c.chromaKeyParams.x, 0.0001);
+  float smoothness = max(c.chromaKeyParams.y, 0.0001);
+  return smoothstep(similarity, similarity + smoothness, distance);
+}
+
+// Spill suppression: a keyed subject still carries the screen's hue on hair and
+// shoulders. Pull any channel that dominates toward the average of the other
+// two, scaled by how much the operator asked for.
+static inline float3 suppressSpill(float3 rgb, constant LayerConstants& c) {
+  float amount = c.chromaKeyParams.z;
+  if (c.chromaKeyColor.w < 0.5 || amount <= 0.0) {
+    return rgb;
+  }
+  float3 key = saturate(c.chromaKeyColor.rgb);
+  // Weight by how strongly this pixel leans on the key's dominant channel.
+  float keyness = dot(rgb, key) / max(dot(key, key), 0.0001);
+  float neutral = (rgb.r + rgb.g + rgb.b) / 3.0;
+  return mix(rgb, float3(neutral), saturate(keyness * amount));
+}
+
 fragment float4 compositorSolid(VSOut in [[stage_in]],
                                 constant LayerConstants& c [[buffer(0)]]) {
   return float4(applyGrade(c.color.rgb, c), c.color.a);
@@ -70,7 +111,9 @@ fragment float4 compositorTextured(VSOut in [[stage_in]],
                                    sampler layerSampler [[sampler(0)]]) {
   float2 sourceUv = c.uvOffset + in.uv * c.uvScale;
   float4 sampled = layerTexture.sample(layerSampler, sourceUv);
-  return float4(applyGrade(sampled.rgb, c), sampled.a * c.color.a);
+  float keyAlpha = chromaKeyAlpha(sampled.rgb, c);
+  float3 rgb = suppressSpill(sampled.rgb, c);
+  return float4(applyGrade(rgb, c), sampled.a * c.color.a * keyAlpha);
 }
 
 // Overlay variant: the raster texture is PREMULTIPLIED alpha; fading it means
@@ -101,7 +144,9 @@ fragment float4 compositorI420(VSOut in [[stage_in]],
   rgb.g = Y - c.yuvCoeffs.y * U - c.yuvCoeffs.z * V;
   rgb.b = Y + c.yuvCoeffs.w * U;
   rgb = saturate(rgb);
-  return float4(applyGrade(rgb, c), c.color.a);
+  float keyAlpha = chromaKeyAlpha(rgb, c);
+  rgb = suppressSpill(rgb, c);
+  return float4(applyGrade(rgb, c), c.color.a * keyAlpha);
 }
 )MSL";
 

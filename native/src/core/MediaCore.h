@@ -289,6 +289,8 @@ class MediaCore {
     float opacity = 1.f;
     bool hasColorGrade = false;
     modules::CompositorColorGrade colorGrade;
+    bool hasChromaKey = false;
+    modules::CompositorChromaKey chromaKey;
   };
 
   struct SceneBackgroundState {

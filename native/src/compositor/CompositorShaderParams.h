@@ -32,9 +32,14 @@ struct LayerShaderConstants {
   float yuvTransform[4];
   // x = rV, y = gU, z = gV, w = bU matrix coefficients (BT.709 or BT.601).
   float yuvCoeffs[4];
+  // Chroma key. xyz = key colour in linear 0..1 RGB, w = 1 when keying is on
+  // (0 disables it in-shader, so an unkeyed layer costs one compare).
+  float chromaKeyColor[4];
+  // x = similarity, y = smoothness, z = spill suppression, w = unused.
+  float chromaKeyParams[4];
 };
 
-static_assert(sizeof(LayerShaderConstants) == 80,
+static_assert(sizeof(LayerShaderConstants) == 112,
               "LayerShaderConstants layout is the GPU wire format shared by the "
               "HLSL cbuffer and the MSL constant struct — do not add padding");
 

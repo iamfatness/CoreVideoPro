@@ -88,7 +88,49 @@ cbuffer LayerConstants : register(b0) {
   float temperature;
   float2 uvScale;
   float2 uvOffset;
+  // Declared even though this shader ignores them: the key fields sit AFTER
+  // them in the shared layout, so the offsets only line up with the full struct.
+  float4 yuvTransform;
+  float4 yuvCoeffs;
+  float4 chromaKeyColor;
+  float4 chromaKeyParams;
 };
+
+// CHROMA KEY — the HLSL twin of the MSL implementation in
+// MetalCompositorShaders.h. Keep the two in step: they share one cbuffer
+// layout (LayerShaderConstants) and must produce the same matte, or a show cut
+// between platforms would change on air.
+//
+// Distance is measured in the CHROMA plane (Cb/Cr), not RGB, so an unevenly lit
+// screen keys consistently instead of surviving in shadow and vanishing in
+// highlight.
+float2 rgbToChroma(float3 rgb) {
+  float y = dot(rgb, float3(0.299, 0.587, 0.114));
+  return float2(rgb.b - y, rgb.r - y);
+}
+
+float chromaKeyAlpha(float3 rgb) {
+  if (chromaKeyColor.w < 0.5) {
+    return 1.0;
+  }
+  float2 pixel = rgbToChroma(rgb);
+  float2 key = rgbToChroma(chromaKeyColor.rgb);
+  float distance = length(pixel - key);
+  float similarity = max(chromaKeyParams.x, 0.0001);
+  float smoothness = max(chromaKeyParams.y, 0.0001);
+  return smoothstep(similarity, similarity + smoothness, distance);
+}
+
+float3 suppressSpill(float3 rgb) {
+  float amount = chromaKeyParams.z;
+  if (chromaKeyColor.w < 0.5 || amount <= 0.0) {
+    return rgb;
+  }
+  float3 key = saturate(chromaKeyColor.rgb);
+  float keyness = dot(rgb, key) / max(dot(key, key), 0.0001);
+  float neutral = (rgb.r + rgb.g + rgb.b) / 3.0;
+  return lerp(rgb, float3(neutral, neutral, neutral), saturate(keyness * amount));
+}
 
 Texture2D layerTexture : register(t0);
 SamplerState layerSampler : register(s0);
@@ -99,13 +141,15 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   // fill (cover) and zoom/pan narrow the sampled region via uvScale/uvOffset.
   float2 sourceUv = uvOffset + uv * uvScale;
   float4 sampled = layerTexture.Sample(layerSampler, sourceUv);
-  float3 rgb = sampled.rgb;
+  float keyAlpha = chromaKeyAlpha(sampled.rgb);
+  float3 keyed = suppressSpill(sampled.rgb);
+  float3 rgb = keyed;
   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return float4(saturate(rgb), sampled.a * color.a);
+  return float4(saturate(rgb), sampled.a * color.a * keyAlpha);
 }
 )";
 
@@ -152,7 +196,45 @@ cbuffer LayerConstants : register(b0) {
   float2 uvOffset;
   float4 yuvTransform; // x = yScale, y = yOffset, z = chromaScale, w = unused
   float4 yuvCoeffs;    // x = rV, y = gU, z = gV, w = bU
+  float4 chromaKeyColor;  // xyz = key colour, w = 1 when enabled
+  float4 chromaKeyParams; // x = similarity, y = smoothness, z = spill
 };
+
+// CHROMA KEY — the HLSL twin of the MSL implementation in
+// MetalCompositorShaders.h. Keep the two in step: they share one cbuffer
+// layout (LayerShaderConstants) and must produce the same matte, or a show cut
+// between platforms would change on air.
+//
+// Distance is measured in the CHROMA plane (Cb/Cr), not RGB, so an unevenly lit
+// screen keys consistently instead of surviving in shadow and vanishing in
+// highlight.
+float2 rgbToChroma(float3 rgb) {
+  float y = dot(rgb, float3(0.299, 0.587, 0.114));
+  return float2(rgb.b - y, rgb.r - y);
+}
+
+float chromaKeyAlpha(float3 rgb) {
+  if (chromaKeyColor.w < 0.5) {
+    return 1.0;
+  }
+  float2 pixel = rgbToChroma(rgb);
+  float2 key = rgbToChroma(chromaKeyColor.rgb);
+  float distance = length(pixel - key);
+  float similarity = max(chromaKeyParams.x, 0.0001);
+  float smoothness = max(chromaKeyParams.y, 0.0001);
+  return smoothstep(similarity, similarity + smoothness, distance);
+}
+
+float3 suppressSpill(float3 rgb) {
+  float amount = chromaKeyParams.z;
+  if (chromaKeyColor.w < 0.5 || amount <= 0.0) {
+    return rgb;
+  }
+  float3 key = saturate(chromaKeyColor.rgb);
+  float keyness = dot(rgb, key) / max(dot(key, key), 0.0001);
+  float neutral = (rgb.r + rgb.g + rgb.b) / 3.0;
+  return lerp(rgb, float3(neutral, neutral, neutral), saturate(keyness * amount));
+}
 
 Texture2D yTexture : register(t0);
 Texture2D uTexture : register(t1);
@@ -174,12 +256,14 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   rgb.g = Y - yuvCoeffs.y * U - yuvCoeffs.z * V;
   rgb.b = Y + yuvCoeffs.w * U;
   rgb = saturate(rgb);
+  float keyAlpha = chromaKeyAlpha(rgb);
+  rgb = suppressSpill(rgb);
   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return float4(saturate(rgb), color.a);
+  return float4(saturate(rgb), color.a * keyAlpha);
 }
 )";
 
