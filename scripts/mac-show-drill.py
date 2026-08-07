@@ -68,6 +68,9 @@ MAX_ENGINE_TAP_MS = 2.0
 # put these back to 16.7/33.3.
 # A Take rides a media-core-sync round trip. Anything the operator can feel as
 # lag between pressing Take and program changing is a defect for a switcher.
+# The muxed file must actually carry the configured rate. 0.95 allows startup
+# and finalisation edges, not a whole 10fps of missing pictures.
+MIN_RECORDED_FPS_RATIO = 0.95
 MAX_COMMAND_P99_MS = 100.0
 MAX_LATENCY_P50_MS = 33.3   # 2 frames at 60p (1 of them is the frame-sync cushion)
 MAX_LATENCY_P99_MS = 50.0   # 3 frames at 60p
@@ -323,6 +326,45 @@ def main():
             else:
                 print(f"PASS recording playable, {width}x{height}, "
                       f"{os.path.getsize(artifact)} bytes")
+                # RECORDED FRAME RATE. "Playable at 1920x1080" and "60fps
+                # sustained" are both true while the FILE runs at 50 — the
+                # compositor rate is not the muxed rate. encoder->submit is
+                # called from the ~50Hz audio/output worker, whose 20ms period
+                # is an AUDIO constant (960 samples at 48k), so program video is
+                # muxed at the AUDIO cadence. A container that DECLARES 60 while
+                # holding 50 is exactly the kind of true-but-misleading pair this
+                # drill exists to catch.
+                probe_rate = subprocess.run(
+                    ["ffprobe", "-hide_banner", "-v", "error", "-count_frames",
+                     "-select_streams", "v:0", "-show_entries",
+                     "stream=nb_read_frames,duration", "-of", "default=nw=1",
+                     artifact], capture_output=True, text=True)
+                # Parse BY NAME: ffprobe emits fields in its own order, not the
+                # order requested, so positional parsing silently reads the
+                # duration as a frame count.
+                fields = {}
+                for line in probe_rate.stdout.splitlines():
+                    if "=" in line:
+                        name, _, value = line.partition("=")
+                        fields[name.strip()] = value.strip()
+                if fields:
+                    try:
+                        frames = int(fields.get("nb_read_frames", "0"))
+                        seconds = float(fields.get("duration", "0"))
+                    except ValueError:
+                        frames, seconds = 0, 0.0
+                    if seconds > 0.5 and frames > 0:
+                        actual = frames / seconds
+                        ok_rate = actual >= TARGET_OUTPUT_FPS * MIN_RECORDED_FPS_RATIO
+                        print(f"{'PASS' if ok_rate else 'FAIL'} recorded rate "
+                              f"{actual:.1f}fps of {TARGET_OUTPUT_FPS:.0f} "
+                              f"({frames} frames / {seconds:.2f}s)")
+                        if not ok_rate:
+                            failures.append(
+                                f"recording muxed {actual:.1f}fps while the compositor "
+                                f"produced {TARGET_OUTPUT_FPS:.0f} — encoder->submit "
+                                f"rides the ~50Hz audio worker, so the file is off-spec "
+                                f"no matter what the container declares")
     else:
         failures.append(f"recording produced no artifact (path={artifact or 'none'})")
 
