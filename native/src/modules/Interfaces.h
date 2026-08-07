@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -690,6 +691,26 @@ class ICompositor {
   // Recording uses it to mux real program pixels rather than the 320x180
   // preview; without it the whole show lands in a corner of a black frame.
   [[nodiscard]] virtual bool suppliesProgramNv12() const { return false; }
+
+  // PUSH the program tap at the RENDER cadence instead of waiting to be polled.
+  //
+  // The virtual camera used to be published by the ~50Hz audio/output worker,
+  // which polls takeVcamNv12 once per tick. That worker's 20ms period is an
+  // AUDIO constant (960 samples at 48k), and gating video on it meant a 60fps
+  // program reached every output at 50fps — measured 2026-08-07: render thread
+  // 59.7fps, output worker 49.7Hz, virtual camera published 50.0fps. That is 10
+  // discarded frames a second AND up to 20ms of quantisation on a path whose
+  // whole budget is one 16.7ms frame.
+  //
+  // The sink is invoked on the tap thread the moment a new NV12 frame exists,
+  // holding NO compositor lock. The callee must be cheap and must not block on
+  // the render thread. Setting or clearing the sink waits for any in-flight
+  // call, so clear it before the callee is destroyed.
+  using VcamFrameSink = std::function<void(const std::uint8_t* nv12, int width, int height)>;
+  virtual void setVcamFrameSink(VcamFrameSink /*sink*/) {}
+  // Does this compositor push frames to that sink? When it does, MediaCore must
+  // NOT also publish from the output worker or every frame is published twice.
+  [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }
 };
 
 class IMediaFrameSource {

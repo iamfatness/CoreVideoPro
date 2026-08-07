@@ -27,6 +27,9 @@ namespace corevideo::core {
 class MediaCore {
  public:
   explicit MediaCore(modules::ModuleSet modules = modules::createDefaultModules());
+  // Clears the compositor's vcam sink before members are destroyed (see the
+  // definition — the publisher outlives nothing without it).
+  ~MediaCore();
 
   [[nodiscard]] rpc::Json profile() const;
   [[nodiscard]] rpc::Json sessionState() const;
@@ -483,6 +486,9 @@ class MediaCore {
       std::make_unique<modules::StillMediaFrameCache>();
   std::unique_ptr<modules::IVirtualCameraPublisher> virtualCamera_ = modules::createVirtualCameraPublisher();
   bool virtualCameraEnabled_ = false;
+  // The compositor pushes the tap at render cadence, so the output worker must
+  // not publish it too (that would double every frame).
+  bool compositorPublishesVcam_ = false;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
