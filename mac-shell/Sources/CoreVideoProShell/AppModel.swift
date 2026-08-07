@@ -500,9 +500,13 @@ final class AppModel: ObservableObject {
         } else {
             refreshZoomSignedIn()
         }  // after the bin so the logo bug can re-resolve
+        // Bind weak->strong BEFORE the Task, not inside it: `[weak self]` makes
+        // `self` a mutable optional in the closure body, and a Task capturing
+        // that var is "reference to captured var 'self' in concurrently-executing
+        // code" (an error under strict concurrency). The guard makes it a `let`.
         Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                guard let self else { return }
                 let prefs = self.currentPrefs()
                 if prefs != self.lastSavedPrefs {
                     prefs.save()
@@ -549,7 +553,8 @@ final class AppModel: ObservableObject {
             }
         }
         bridge.onEvent = { [weak self] event in
-            Task { @MainActor in self?.handleEvent(event) }
+            guard let self else { return }
+            Task { @MainActor in self.handleEvent(event) }
         }
         bridge.onStderrLine = { line in
             // Core stderr is the diagnostic firehose. LaunchServices launches
@@ -613,11 +618,13 @@ final class AppModel: ObservableObject {
         // an unbounded sync backlog). Status/meters are fine at 2Hz; the
         // program surface rides push events.
         syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.syncTick() }
+            guard let self else { return }
+            Task { @MainActor in await self.syncTick() }
         }
         zoomTimer?.invalidate()
         zoomTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.zoomTick() }
+            guard let self else { return }
+            Task { @MainActor in await self.zoomTick() }
         }
     }
 
@@ -1677,7 +1684,8 @@ final class AppModel: ObservableObject {
             return
         }
         autoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.evaluateAutoDirect() }
+            guard let self else { return }
+            Task { @MainActor in self.evaluateAutoDirect() }
         }
     }
 
