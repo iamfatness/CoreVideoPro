@@ -5,12 +5,15 @@
  *
  * This file covers construction, restore-from-disk, the snapshot accessor,
  * roster intake, the seating tick (Task 5), the active-speaker dispatch gate
- * (Task 6), and the derived layers (Task 7): look resolution against the
- * live roster and hands queue, paging, manual box assignment, program/
- * preview transport (with degradation for a host with no preview bus), and
- * the overlay director. Host command emission (diffing derived state into
- * `HostAdapter` calls for slots/looks/gallery/nameplates/questions) and the
- * polling loop are Task 8/9+.
+ * (Task 6), the derived layers (Task 7): look resolution against the live
+ * roster and hands queue, paging, manual box assignment, program/preview
+ * transport (with degradation for a host with no preview bus), and the
+ * overlay director; and host command emission (Task 8): diffing each tick's
+ * derived state into `HostAdapter` calls for slots/looks/gallery/nameplates/
+ * questions. The diffing itself lives in `hostCommands.ts` — this file only
+ * sequences WHEN each `emit*` call runs and WHAT this tick's already-
+ * resolved values are; it holds none of the "did this actually change"
+ * logic. The polling loop is Task 9+.
  *
  * The one rule every reviewer of this file must re-verify: `clampPage` and
  * `resolveLook` are called together, exactly once per tick, and always
@@ -34,6 +37,7 @@ import { OverrideDb, type OverrideRecord } from "./overrideDb.js";
 import { ZoomIngest, type ZoomEvent } from "./zoomIngest.js";
 import { ProgramBus } from "./programBus.js";
 import { OverlayDirector } from "./overlayDirector.js";
+import { HostCommandEmitter } from "./hostCommands.js";
 import { buildPanelistDb } from "./panelistDb.js";
 import { deriveTally } from "./tallyPublisher.js";
 import { resolveCapabilities } from "./capabilities.js";
@@ -145,6 +149,7 @@ export class ShowEngine {
   private readonly zoomIngest: ZoomIngest;
   private readonly programBus: ProgramBus;
   private readonly overlayDirector: OverlayDirector;
+  private readonly hostCommands: HostCommandEmitter;
 
   private liveSlots: LiveSlots;
   private gallery: GalleryDirector;
@@ -272,6 +277,7 @@ export class ShowEngine {
     this.zoomIngest = new ZoomIngest();
     this.programBus = new ProgramBus({ skipRoles: deps.config.skipRoles });
     this.overlayDirector = new OverlayDirector();
+    this.hostCommands = new HostCommandEmitter(deps.host);
 
     this.liveSlots = new LiveSlots({
       capacity: deps.config.capacity,
@@ -624,7 +630,9 @@ export class ShowEngine {
    * Step 1 alone (`ZoomIngest.commit()`) can say nothing changed, but the
    * tick still runs to completion — a look or capability change can alter
    * output against a static roster, and the revision always advances so a
-   * consumer polling `revision()` can tell every tick apart.
+   * consumer polling `revision()` can tell every tick apart. Host emission
+   * runs every tick too, unconditionally — `hostCommands` is what decides
+   * whether any given call is actually worth sending this time.
    */
   async tick(): Promise<ShowSnapshot> {
     const rosterCommitted = this.zoomIngest.commit();
@@ -826,6 +834,19 @@ export class ShowEngine {
       this.lastSaveTime = now;
       this.pendingPersist = false;
     }
+
+    // Host command emission (Task 8). `hostCommands` owns diffing this
+    // tick's derived state against what it last actually sent, so this is
+    // NOT a full re-send every tick — see `hostCommands.ts` for why that
+    // distinction matters on a live show. `slots`/`this.currentLook` are
+    // this SAME tick's already-resolved values (no re-derivation), and
+    // nameplates/question ride `overlaysChanged`, the change flag
+    // `overlayDirector.update` already computed above — never re-diffed
+    // here.
+    this.hostCommands.emitSlots(slots);
+    this.hostCommands.emitLook(this.currentLook);
+    this.hostCommands.emitGallery(this.gallery.cells());
+    this.hostCommands.emitOverlays(this.overlayDirector.state(), this.overlaysChanged);
 
     this.tickRevision += 1;
     return this.buildSnapshotFrom(caps, health);

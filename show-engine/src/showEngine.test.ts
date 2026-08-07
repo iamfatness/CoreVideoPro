@@ -1121,3 +1121,92 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
     expect(() => engine().setPage(1.5)).toThrow(/integer/);
   });
 });
+
+describe("ShowEngine host emission", () => {
+  it("emits the full picture on the first tick", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.setLook("teatime");
+    await e.tick();
+    expect(host.callsOfKind("assignSlot").length).toBeGreaterThan(0);
+    expect(host.callsOfKind("applyLook")).toHaveLength(1);
+  });
+
+  /**
+   * The invariant this must break on: emitting unchanged values every tick.
+   * A host adapter turns each command into real work — a source rebind, a
+   * scene swap, an overlay re-raster — and re-emitting at tick rate is the
+   * churn class that trips native fail-fasts on a long show.
+   */
+  it("emits nothing when a tick changes nothing", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.setLook("teatime");
+    await e.tick();
+    host.clear();
+    await e.tick();
+    await e.tick();
+    expect(host.calls()).toEqual([]);
+  });
+
+  it("emits only the slot that actually changed", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    host.clear();
+    e.onZoomEvent({ kind: "left", participantId: "p2" });
+    await e.tick();
+    expect(host.callsOfKind("assignSlot")).toEqual([
+      { kind: "assignSlot", slot: 2, participantId: null }
+    ]);
+  });
+
+  it("does not re-emit nameplates when the overlay is unchanged", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.setLook("teatime");
+    await e.tick();
+    host.clear();
+    e.onZoomEvent({ kind: "audio", participantId: "p1", on: false });
+    await e.tick();
+    expect(host.callsOfKind("setNameplates")).toEqual([]);
+  });
+
+  /**
+   * Fixture note: "teatime" (`includesHost: true`) only puts anyone in a
+   * nameplate at all if a role is actually resolved for them — a lone
+   * joined participant defaults to role "panelist" (no Mukana, no
+   * override), which fills neither the host chair nor a manual guest box
+   * (this look's `boxFill` resolves to "manual" with no hands-queue
+   * capability, and no box was ever assigned). Without the host-role
+   * override below, `resolution.nameplates` is `[]` before AND after the
+   * rename, so the rename could never be observed to change anything — a
+   * scenario, not an implementation bug. The override's `displayName`/
+   * `location` are left blank on purpose (`OverrideDb`'s "" = "no
+   * override for this field" convention, `panelistDb.ts`'s `pick`) so the
+   * plate's name keeps coming from the identity parse of `rawName`, which
+   * is the thing this test actually renames.
+   */
+  it("re-emits nameplates when a display name changes", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.setOverride({
+      personKey: resolvePersonKey({ participantId: "p1", rawName: "Ann" }),
+      displayName: "",
+      location: "",
+      role: "host"
+    });
+    e.setLook("teatime");
+    await e.tick();
+    host.clear();
+    e.onZoomEvent({ kind: "renamed", participantId: "p1", rawName: "Annette | Oslo" });
+    await e.tick();
+    expect(host.callsOfKind("setNameplates")).toHaveLength(1);
+  });
+});
