@@ -60,6 +60,37 @@ TEST(SrtIngestArgv, GeometryIsCarriedAsItsOwnArgument) {
   EXPECT_EQ(*(rate + 1), "30");
 }
 
+// -y IS LOAD-BEARING, not tidiness. The audio sink is a pipe that already exists
+// when ffmpeg opens it, so without -y ffmpeg treats it as a file to confirm,
+// prompts "Overwrite? [y/N]", gets no answer and EXITS — killing the decoder and
+// taking VIDEO down with it. The symptom is "adding audio broke ingest entirely".
+TEST(SrtIngestArgv, EmbeddedAudioSinkForcesOverwriteAndStaysOneArgument) {
+  const std::string sink = "\\\\.\\pipe\\corevideo-srt-ingest-audio-1234-0";
+  const auto argv = buildSrtIngestArgv("ffmpeg", "srt://h:9000", 1920, 1080, 60, sink);
+
+  EXPECT_NE(std::find(argv.begin(), argv.end(), "-y"), argv.end())
+      << "without -y the decoder prompts to overwrite the pipe and exits";
+  const auto found = std::find(argv.begin(), argv.end(), sink);
+  ASSERT_NE(found, argv.end()) << "the sink path must survive verbatim as one argv element";
+  EXPECT_EQ(found + 1, argv.end()) << "the sink is the second output's target, so it comes last";
+
+  // The audio mapping must be OPTIONAL: a video-only contributor still decodes.
+  const auto map = std::find(argv.begin(), argv.end(), "0:a:0?");
+  ASSERT_NE(map, argv.end());
+  EXPECT_EQ(*(map - 1), "-map");
+  EXPECT_NE(std::find(argv.begin(), argv.end(), "f32le"), argv.end());
+}
+
+// A source with no audio sink must produce the SAME command as before audio
+// existed — no -y, no second output — so the proven video path cannot regress.
+TEST(SrtIngestArgv, VideoOnlyIngestIsUnchangedWhenNoAudioSinkIsRequested) {
+  const auto argv = buildSrtIngestArgv("ffmpeg", "srt://h:9000", 1920, 1080, 60);
+  EXPECT_EQ(argv.back(), "pipe:1");
+  EXPECT_EQ(std::find(argv.begin(), argv.end(), "-y"), argv.end());
+  EXPECT_EQ(std::find(argv.begin(), argv.end(), "f32le"), argv.end());
+  EXPECT_EQ(std::find(argv.begin(), argv.end(), "-map"), argv.end());
+}
+
 }  // namespace
 
 TEST(SrtFfmpegArgs, BuildsCallerUrlWithLiveTranstypeAndDefaultLatency) {

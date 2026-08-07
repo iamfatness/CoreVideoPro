@@ -60,6 +60,15 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   // the inner device produces (e.g. dev test patterns for hardware adapters).
   std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override;
 
+  // MUST forward: the shell bridge carries no audio, but the devices this wraps do
+  // (SRT ingest carries its guest's audio embedded in the transport). The
+  // ICaptureDevice default returns {} — inheriting it silently swallowed every
+  // ingested audio frame while video flowed fine, the same shape as the 1-arg
+  // connect() bug above. Any new ICaptureDevice method must be forwarded here.
+  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+    return inner_->pollAudioFrames(timestampMs);
+  }
+
   // Map (or re-map on size change) a WinUI capture buffer for a device.
   void registerCaptureBuffer(const std::string& deviceId, const std::string& shmName, int width, int height);
   // Release a device's buffer (device disconnected / capture stopped).

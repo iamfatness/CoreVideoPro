@@ -82,7 +82,14 @@ child.stdout.on("data", (chunk) => {
     }
   }
 });
-child.stderr.on("data", () => {});
+child.stderr.on("data", (chunk) => {
+  // Surface only the ingest adapter's own lines; the core is chatty otherwise.
+  for (const line of chunk.toString().split("\n")) {
+    if (line.includes("[srt-ingest]") || line.includes("[recording]") || line.includes("[encoder]")) {
+      console.log(`core          : ${line.trim()}`);
+    }
+  }
+});
 
 function send(type, payload = {}) {
   const id = `ingest-${nextId++}`;
@@ -119,11 +126,15 @@ try {
   await send("connect-capture-device", { payload: { deviceId, outputSourceId: deviceId } });
   await sleep(2000);
 
-  // Push a known pattern in over real SRT.
+  // Push a known pattern AND tone in over real SRT. A contribution feed carries
+  // the guest's audio embedded in the same stream, so proving only video would
+  // prove half a feed.
   publisher = spawn(ffmpeg,
     ["-hide_banner", "-loglevel", "error", "-re",
      "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30",
+     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
      "-t", String(seconds + 6), "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+     "-c:a", "aac", "-ac", "2",
      "-f", "mpegts", `srt://127.0.0.1:${port}?mode=caller&transtype=live`],
     { stdio: ["ignore", "ignore", "pipe"] });
   let publisherErr = "";
@@ -140,6 +151,12 @@ try {
         type: "load-scene-graph",
         sceneId: "srt-ingest",
         routes: [{ routeId: "program", mode: "capture-input", audioRole: "mix", captureDeviceId: deviceId }],
+      },
+      {
+        // Route the ingested guest audio to the buses so it reaches the recording.
+        type: "sync-audio-routing-matrix",
+        sends: [{ sourceId: `capture:${deviceId}`, busId: "master", gainDb: 0 },
+                { sourceId: `capture:${deviceId}`, busId: "stream", gainDb: 0 }],
       },
       { type: "sync-virtual-camera", on: true, mirror: false, deviceName: "srt-ingest-proof" },
       { type: "start-program-output", destinations: ["recording"], isoParticipantIds: [] },
@@ -170,6 +187,10 @@ try {
       console.log(`source        : state=${device.connectionState} signal=${device.signalPresent} ` +
                   `warning=${device.warning || "none"}`);
     }
+    // Master true-peak splits "the recording is silent" from "the bus is silent"
+    // without re-deriving it from the artifact.
+    const master = sync.snapshot?.audioMixSession?.masterMeter ?? null;
+    if (master) console.log(`master bus    : truePeak ${master.truePeakDbfs} dBFS`);
   }
 
   if (!device) failures.push("the SRT ingest device never appeared in captureDevices");
@@ -183,15 +204,31 @@ try {
     elapsedMs: Date.now() - startedAt,
     commands: [{ type: "stop-recording-session", reason: "srt ingest proof complete" }],
   });
+  // The core's own muxer proof, asserted BEFORE the file is opened: it separates
+  // "the feed never reached the encoder" from "the artifact was read too early".
+  const proof = stop.snapshot?.recording?.proof ?? {};
+  console.log(`muxer proof   : video ${proof.programFrameCount ?? 0} frames, ` +
+              `audio ${proof.audioSampleCount ?? 0} samples (present=${proof.audioPresent ?? false})`);
+  if (!(proof.programFrameCount > 0)) failures.push("the encoder muxed no program video");
+  if (!(proof.audioSampleCount > 0)) failures.push("the encoder muxed no program audio");
+
   const path = stop.snapshot?.recording?.artifactPath ?? null;
   if (path) {
     artifact = resolve(buildDir, path);
-    for (let i = 0; i < 40; i += 1) {
-      await sleep(250);
-      let size = 0;
-      try { size = statSync(artifact).size; } catch { continue; }
-      if (size > 1024) break;
+    // Wait for the MP4 to FINALIZE, with the core still alive. The stop response
+    // returns before the async encoder sink writes the moov atom, and an MP4 read
+    // before its moov decodes as ZERO frames — indistinguishable from a dead feed
+    // (this cost a full debugging round). File size stabilises well before the moov
+    // lands, so size is not the signal: ask ffprobe whether the file is readable yet.
+    let finalized = false;
+    for (let i = 0; i < 30 && !finalized; i += 1) {
+      await sleep(500);
+      const probe = spawnSync(ffprobe,
+        ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", artifact],
+        { encoding: "utf8", timeout: 15000 });
+      finalized = probe.status === 0 && Number.parseFloat(probe.stdout ?? "") > 0;
     }
+    if (!finalized) failures.push("the recording never finalized (no moov atom) — the writer did not close");
   }
 } catch (error) {
   failures.push(error.message);
@@ -219,6 +256,22 @@ if (artifact && existsSync(artifact)) {
   console.log(`program luma  : peak ${best.toFixed(1)} over ${frames} frames`);
   if (frames === 0) failures.push("program recording produced no frames");
   else if (best < 12) failures.push(`program stayed black (peak luma ${best.toFixed(1)}) â€” the ingested SRT feed never became pixels`);
+  // AUDIO: the guest's embedded tone must reach the mixer, not just the video.
+  const pcm = spawnSync(ffmpeg,
+    ["-v", "error", "-i", artifact, "-f", "s16le", "-ac", "1", "-ar", "48000", "-"],
+    { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
+  let peakAudio = 0;
+  const samples = (pcm.stdout?.length ?? 0) >> 1;
+  for (let i = 0; i < samples; i += 1) {
+    peakAudio = Math.max(peakAudio, Math.abs(pcm.stdout.readInt16LE(i * 2)));
+  }
+  console.log(`program audio : peak ${peakAudio} over ${samples} samples`);
+  if (samples === 0) {
+    failures.push("program recording carries no audio track");
+  } else if (peakAudio < 500) {
+    failures.push(`program audio is silent (peak ${peakAudio}) - the ingested feed's embedded audio never reached the mixer`);
+  }
+
   if (!keep) { try { rmSync(artifact); } catch {} }
 } else if (failures.length === 0) {
   failures.push("no program recording artifact to inspect");

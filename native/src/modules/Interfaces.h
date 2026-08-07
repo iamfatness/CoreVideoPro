@@ -831,6 +831,13 @@ class ICaptureDevice {
   virtual std::vector<CaptureDeviceInfo> disconnect(const std::string&) { return enumerate(); }
   virtual std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>&) { return enumerate(); }
   virtual std::vector<VideoFrame> pollVideoFrames(int64_t) { return {}; }
+  // Audio EMBEDDED in the capture transport itself, keyed "capture:<deviceId>"
+  // like every other capture source. Local cameras and cards pair a separate
+  // WASAPI input instead (CaptureAudioSourceConfig), but an SRT contribution feed
+  // carries its guest's audio inside the same stream and there is no OS audio
+  // device to pair with it. Defaults to empty, so only transports that actually
+  // carry audio implement it.
+  virtual std::vector<AudioFrame> pollAudioFrames(int64_t) { return {}; }
 };
 
 struct ModuleSet {

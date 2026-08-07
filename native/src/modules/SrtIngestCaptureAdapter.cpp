@@ -123,15 +123,23 @@ struct ReaderChannel {
   std::string warning;
   int64_t framesReceived = 0;
   int64_t droppedFrames = 0;
+  // Embedded contribution audio, drained by pollAudioFrames each tick. Interleaved
+  // 48k stereo float, guarded by `mutex` above.
+  std::vector<float> audioPending;
+  int64_t audioSamplesReceived = 0;
 
 #ifdef _WIN32
   std::atomic<HANDLE> process{nullptr};
   std::atomic<HANDLE> readPipe{nullptr};
+  std::atomic<HANDLE> audioPipe{nullptr};
 #else
   std::atomic<int> pid{-1};
   std::atomic<int> readFd{-1};
+  std::atomic<int> audioFd{-1};
+  std::string audioFifoPath;
 #endif
   std::thread thread;
+  std::thread audioThread;
 
   void setStatus(const std::string& state, const std::string& note) {
     std::lock_guard lock(mutex);
@@ -247,6 +255,48 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     return enumerate();
   }
 
+  // The feed's embedded audio, keyed "capture:<deviceId>" — the SAME id as its
+  // video — so it lands in the existing routing, metering and ISO paths with no
+  // special-casing, exactly like a paired capture input.
+  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+    std::vector<std::shared_ptr<ReaderChannel>> channels;
+    {
+      std::lock_guard lock(mutex_);
+      channels.reserve(channels_.size());
+      for (auto& [_, channel] : channels_) {
+        channels.push_back(channel);
+      }
+    }
+
+    std::vector<AudioFrame> frames;
+    for (auto& channel : channels) {
+      std::vector<float> pcm;
+      {
+        std::lock_guard lock(channel->mutex);
+        if (channel->audioPending.empty()) {
+          continue;
+        }
+        pcm.swap(channel->audioPending);
+      }
+      // Whole stereo pairs only: a trailing half-pair would swap left and right
+      // for the rest of the stream.
+      const std::size_t frameCount = pcm.size() / 2;
+      if (frameCount == 0) {
+        continue;
+      }
+      pcm.resize(frameCount * 2);
+      AudioFrame frame;
+      frame.participantId = "capture:" + channel->config.deviceId;
+      frame.sampleRate = 48000;
+      frame.channels = 2;
+      frame.timestampMs = timestampMs;
+      frame.sampleCount = static_cast<int>(frameCount);
+      frame.pcm = std::move(pcm);
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
+
   std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
     std::vector<std::shared_ptr<ReaderChannel>> channels;
     {
@@ -305,7 +355,9 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       device.vendor = "srt";
       device.inputIds = {channel->config.id};
       device.inputLabels = {channel->config.name};
-      device.inputHasEmbeddedAudio = {false};  // ingest audio is a follow-up
+      // The transport carries the guest's audio inline; it is decoded and emitted
+      // keyed "capture:<deviceId>" by pollAudioFrames.
+      device.inputHasEmbeddedAudio = {true};
       const auto selected = selectedInputs_.find(deviceId);
       device.selectedInputId = selected == selectedInputs_.end() ? channel->config.id : selected->second;
       device.width = channel->width;
@@ -365,6 +417,13 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     if (HANDLE pipe = channel.readPipe.exchange(nullptr); pipe != nullptr) {
       ::CloseHandle(pipe);
     }
+    if (HANDLE pipe = channel.audioPipe.exchange(nullptr); pipe != nullptr) {
+      // CancelIoEx first: the audio thread may be parked in ConnectNamedPipe or
+      // ReadFile, and closing the handle under it is not enough to unblock.
+      ::CancelIoEx(pipe, nullptr);
+      ::DisconnectNamedPipe(pipe);
+      ::CloseHandle(pipe);
+    }
 #else
     if (const int pid = channel.pid.exchange(-1); pid > 0) {
       ::kill(pid, SIGKILL);
@@ -372,6 +431,9 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       ::waitpid(pid, &status, 0);
     }
     if (const int fd = channel.readFd.exchange(-1); fd >= 0) {
+      ::close(fd);
+    }
+    if (const int fd = channel.audioFd.exchange(-1); fd >= 0) {
       ::close(fd);
     }
 #endif
@@ -407,6 +469,14 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
         continue;
       }
 
+      // Embedded audio rides its own blocking reader: the video loop below must
+      // never stall waiting on audio (or vice versa), and the two arrive at
+      // completely different rates.
+      if (channel->audioThread.joinable()) {
+        channel->audioThread.join();  // previous generation, already unblocked
+      }
+      channel->audioThread = std::thread([channel] { audioLoop(channel); });
+
       const std::size_t frameBytes = static_cast<std::size_t>(channel->width) *
                                      static_cast<std::size_t>(channel->height) * kBytesPerPixel;
       std::vector<uint8_t> buffer(frameBytes);
@@ -427,7 +497,10 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
         backoffMs = 500;  // a healthy connection resets the backoff
       }
 
-      killProcess(*channel);
+      killProcess(*channel);  // also cancels/closes the audio pipe, unblocking it
+      if (channel->audioThread.joinable()) {
+        channel->audioThread.join();
+      }
       if (!channel->running.load()) {
         break;
       }
@@ -437,7 +510,67 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
       backoffMs = std::min(backoffMs * 2, 10000);
     }
+    if (channel->audioThread.joinable()) {
+      channel->audioThread.join();
+    }
     channel->setStatus("detected", "");
+  }
+
+  // Drain the decoder's second output: the feed's embedded audio as interleaved
+  // 48k stereo float. Blocking by design and on its own thread, so a silent or
+  // audio-less contributor never holds up video.
+  static void audioLoop(const std::shared_ptr<ReaderChannel> channel) {
+#ifdef _WIN32
+    HANDLE pipe = channel->audioPipe.load();
+    if (pipe == nullptr) {
+      return;
+    }
+    // ERROR_PIPE_CONNECTED means ffmpeg opened it before we got here — success.
+    if (::ConnectNamedPipe(pipe, nullptr) == 0 && ::GetLastError() != ERROR_PIPE_CONNECTED) {
+      return;
+    }
+    std::vector<float> buffer(4096);
+    while (channel->running.load()) {
+      DWORD read = 0;
+      if (::ReadFile(pipe, buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(float)), &read,
+                     nullptr) == 0 ||
+          read == 0) {
+        break;  // decoder exited or the pipe was torn down
+      }
+      appendAudio(*channel, buffer.data(), read / sizeof(float));
+    }
+#else
+    const int fd = channel->audioFd.load();
+    if (fd < 0) {
+      return;
+    }
+    std::vector<float> buffer(4096);
+    while (channel->running.load()) {
+      const auto read = ::read(fd, buffer.data(), buffer.size() * sizeof(float));
+      if (read <= 0) {
+        break;
+      }
+      appendAudio(*channel, buffer.data(), static_cast<std::size_t>(read) / sizeof(float));
+    }
+#endif
+  }
+
+  static void appendAudio(ReaderChannel& channel, const float* samples, std::size_t count) {
+    if (samples == nullptr || count == 0) {
+      return;
+    }
+    // ~1s of 48k stereo. A consumer that stops draining (recording stopped, core
+    // stalled) must not grow this without bound; dropping the OLDEST keeps the
+    // feed live rather than replaying stale audio when it resumes.
+    constexpr std::size_t kMaxBufferedFloats = 48000 * 2;
+    std::lock_guard lock(channel.mutex);
+    channel.audioPending.insert(channel.audioPending.end(), samples, samples + count);
+    channel.audioSamplesReceived += static_cast<int64_t>(count);
+    if (channel.audioPending.size() > kMaxBufferedFloats) {
+      const std::size_t excess = channel.audioPending.size() - kMaxBufferedFloats;
+      channel.audioPending.erase(channel.audioPending.begin(),
+                                 channel.audioPending.begin() + static_cast<long>(excess));
+    }
   }
 
   // Read exactly `bytes` or fail. A partial read would desynchronise every
@@ -472,8 +605,37 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
 
   static bool spawnDecoder(ReaderChannel& channel, const std::string& executable,
                            const std::string& url) {
+#ifdef _WIN32
+    // The audio sink must EXIST before ffmpeg opens it, so the named pipe is
+    // created here and the server end is what the reader thread accepts on.
+    // Windows ffmpeg cannot write to an inherited numeric fd the way POSIX can,
+    // so a named pipe is the portable-enough second output on this platform.
+    static std::atomic<uint64_t> audioPipeSerial{0};
+    const std::string audioSink =
+        std::string("\\\\.\\pipe\\corevideo-srt-ingest-audio-") +
+        std::to_string(::GetCurrentProcessId()) + "-" +
+        std::to_string(audioPipeSerial.fetch_add(1));
+    HANDLE audioServer = ::CreateNamedPipeA(
+        audioSink.c_str(), PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_WAIT, 1,
+        1 << 20, 1 << 20, 0, nullptr);
+    if (audioServer == INVALID_HANDLE_VALUE) {
+      audioServer = nullptr;
+    }
     const std::vector<std::string> args =
-        buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate);
+        buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate,
+                           audioServer != nullptr ? audioSink : std::string());
+#else
+    // POSIX: hand the child an inherited fd and let ffmpeg write to "pipe:3".
+    // No FIFO file to create, name, or clean up. NOT verified on hardware from
+    // here — the Windows path is the rig-proven one.
+    constexpr int kAudioChildFd = 3;
+    int audioFds[2] = {-1, -1};
+    const bool audioReady = ::pipe(audioFds) == 0;
+    const std::vector<std::string> args =
+        buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate,
+                           audioReady ? std::string("pipe:") + std::to_string(kAudioChildFd)
+                                      : std::string());
+#endif
 #ifdef _WIN32
     SECURITY_ATTRIBUTES security{};
     security.nLength = sizeof(security);
@@ -481,6 +643,9 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     HANDLE readPipe = nullptr;
     HANDLE writePipe = nullptr;
     if (!::CreatePipe(&readPipe, &writePipe, &security, 1 << 20)) {
+      if (audioServer != nullptr) {
+        ::CloseHandle(audioServer);
+      }
       return false;
     }
     // The child must not inherit our read end, or the pipe never reports EOF.
@@ -508,6 +673,9 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     ::CloseHandle(writePipe);  // our copy; the child holds its own
     if (!created) {
       ::CloseHandle(readPipe);
+      if (audioServer != nullptr) {
+        ::CloseHandle(audioServer);
+      }
       return false;
     }
     ::CloseHandle(process.hThread);
@@ -516,20 +684,37 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     }
     channel.process.store(process.hProcess);
     channel.readPipe.store(readPipe);
+    channel.audioPipe.store(audioServer);
     return true;
 #else
     int fds[2] = {-1, -1};
     if (::pipe(fds) != 0) {
+      if (audioReady) {
+        ::close(audioFds[0]);
+        ::close(audioFds[1]);
+      }
       return false;
     }
     const pid_t pid = ::fork();
     if (pid < 0) {
       ::close(fds[0]);
       ::close(fds[1]);
+      if (audioReady) {
+        ::close(audioFds[0]);
+        ::close(audioFds[1]);
+      }
       return false;
     }
     if (pid == 0) {
       ::dup2(fds[1], STDOUT_FILENO);
+      if (audioReady) {
+        // The child writes audio to fd 3; dup2 clears FD_CLOEXEC on the target.
+        ::dup2(audioFds[1], kAudioChildFd);
+        ::close(audioFds[0]);
+        if (audioFds[1] != kAudioChildFd) {
+          ::close(audioFds[1]);
+        }
+      }
       ::close(fds[0]);
       ::close(fds[1]);
       // NO SHELL. argv elements are passed verbatim, so a url containing
@@ -544,6 +729,10 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       ::_exit(127);
     }
     ::close(fds[1]);
+    if (audioReady) {
+      ::close(audioFds[1]);  // our copy of the write end; the child holds its own
+      channel.audioFd.store(audioFds[0]);
+    }
     channel.pid.store(pid);
     channel.readFd.store(fds[0]);
     return true;
