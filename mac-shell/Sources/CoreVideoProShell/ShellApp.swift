@@ -1724,6 +1724,74 @@ struct StepCard: View {
     }
 }
 
+/// Green/blue screen keying for one source. The core keys per ROUTE, but an
+/// operator reasons per SOURCE — "that camera is on a green screen" — so the
+/// setting lives on the slot and the shell attaches it to every route bound to
+/// it when the scene graph is built.
+struct ChromaKeyControl: View {
+    @EnvironmentObject var model: AppModel
+    let slot: ShowInputSlot
+
+    var index: Int? { model.slots.firstIndex(where: { $0.id == slot.id }) }
+
+    var body: some View {
+        Menu {
+            Toggle("Key this source", isOn: Binding(
+                get: { slot.keyEnabled },
+                set: { value in
+                    guard let index else { return }
+                    model.slots[index].keyEnabled = value
+                    model.syncScenes()
+                }))
+            if slot.keyEnabled {
+                Divider()
+                // Presets first: the overwhelming majority of shoots are one of
+                // these two, and typing a hex code mid-show is not a workflow.
+                Button("Green screen") { setColor("#00ff00") }
+                Button("Blue screen") { setColor("#0000ff") }
+                Divider()
+                slider("Similarity", \.keySimilarity)
+                slider("Smoothness", \.keySmoothness)
+                slider("Spill", \.keySpill)
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Circle()
+                    .fill(Color(brandHex: slot.keyColorHex) ?? Studio.accent)
+                    .frame(width: 7, height: 7)
+                    .opacity(slot.keyEnabled ? 1 : 0.25)
+                Text("Key").font(.grotesk(11))
+                    .foregroundStyle(slot.keyEnabled ? Studio.textPrimary : Studio.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(slot.keyEnabled ? "Chroma key on" : "Chroma key off")
+    }
+
+    func setColor(_ hex: String) {
+        guard let index else { return }
+        model.slots[index].keyColorHex = hex
+        model.syncScenes()
+    }
+
+    /// syncScenes is already coalesced, so dragging a key parameter cannot
+    /// flood the command queue.
+    func slider(_ label: String, _ path: WritableKeyPath<ShowInputSlot, Double>) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("\(label) \(String(format: "%.2f", slot[keyPath: path]))")
+                .font(.plexMono(10))
+            Slider(value: Binding(
+                get: { slot[keyPath: path] },
+                set: { value in
+                    guard let index else { return }
+                    model.slots[index][keyPath: path] = value
+                    model.syncScenes()
+                }), in: 0...1)
+        }
+    }
+}
+
 struct SlotRow: View {
     @EnvironmentObject var model: AppModel
     let slot: ShowInputSlot
@@ -1834,6 +1902,7 @@ struct SlotRow: View {
                     .overlay(RoundedRectangle(cornerRadius: 8)
                         .stroke(Studio.border, lineWidth: 1))
                 }
+                ChromaKeyControl(slot: slot)
                 Toggle("ISO", isOn: Binding(
                     get: { slot.iso },
                     set: { _ in model.toggleSlotIso(slot.id) }))

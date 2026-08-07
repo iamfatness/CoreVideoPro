@@ -408,6 +408,48 @@ enum ShellTests {
                     "every frame dropped must not divide by zero")
     }
 
+
+    // ── chroma key: the wrong-colour-keys-the-wrong-thing class ──────────────
+
+    /// The key node is sent ONLY when enabled. The core treats a chromaKey
+    /// object without an explicit enabled:false as "key this", so shipping
+    /// settings for a switched-off key would punch holes in a live program.
+    @MainActor
+    private static func testChromaKeyNodeOnlySentWhenEnabled() {
+        let model = AppModel()
+        var slot = ShowInputSlot(id: 1)
+        slot.kind = "capture"
+        slot.sourceId = "cam-1"
+
+        slot.keyEnabled = false
+        expect(model.chromaKeyNode(for: slot) == nil,
+               "a disabled key must send NO node at all")
+
+        slot.keyEnabled = true
+        guard let node = model.chromaKeyNode(for: slot) else {
+            expect(false, "an enabled key must produce a node")
+            return
+        }
+        expectEqual(node["enabled"] as? Bool ?? false, true, "node is explicitly enabled")
+        expectEqual(node["similarity"] as? Double ?? 0, 0.4, "default similarity")
+    }
+
+    /// A hex that fails to parse must fall back to GREEN, never to black —
+    /// keying on black would key the shadows out of every source.
+    @MainActor
+    private static func testKeyColourParsing() {
+        let green = AppModel.rgbComponents("#00ff00")
+        expectEqual(green.g, 1.0, "green channel full")
+        expectEqual(green.r, 0.0, "red channel empty")
+
+        let blue = AppModel.rgbComponents("0000ff")
+        expectEqual(blue.b, 1.0, "a hex without # still parses")
+
+        let broken = AppModel.rgbComponents("nonsense")
+        expectEqual(broken.g, 1.0, "an unparseable colour falls back to GREEN")
+        expectEqual(broken.r, 0.0, "and never to black, which would key shadows")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -441,6 +483,8 @@ enum ShellTests {
             ("oauth/return-uri", testOAuthReturnUriMatchesTheBrokerAllowlist),
             ("encoder/no-unlicensed-codecs", testShellOffersOnlyEncodableCodecs),
             ("telemetry/dropped-frames", testDroppedFrameReadout),
+            ("chromakey/enabled-only", testChromaKeyNodeOnlySentWhenEnabled),
+            ("chromakey/colour-parsing", testKeyColourParsing),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

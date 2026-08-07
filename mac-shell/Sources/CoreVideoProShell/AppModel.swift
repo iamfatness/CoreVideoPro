@@ -32,12 +32,19 @@ struct SceneRoute {
     var captureDeviceId: String?
     var rect: (x: Double, y: Double, w: Double, h: Double)?
     var zIndex: Int
+    // Chroma key node, attached from the SOURCE's settings when the route is
+    // built. The core keys per ROUTE (the same camera can be keyed in one scene
+    // and not another), but an operator reasons per SOURCE — "that camera is on
+    // a green screen" — so the setting lives on the slot and is applied to every
+    // route bound to it.
+    var chromaKey: JSONObject?
 
     var json: JSONObject {
         var object: JSONObject = [
             "routeId": routeId, "mode": mode, "audioRole": audioRole,
             "fitMode": "fill", "opacity": 1.0, "zIndex": zIndex,
         ]
+        if let chromaKey { object["chromaKey"] = chromaKey }
         if let participantId { object["participantId"] = participantId }
         if let captureDeviceId { object["captureDeviceId"] = captureDeviceId }
         if let rect {
@@ -113,6 +120,14 @@ struct ShowInputSlot: Identifiable, Equatable {
     // deliberately video-only source, not a mistake.
     var audioDeviceId = ""
     var audioDeviceName = ""
+    // Green/blue screen keying for this source. Defaults match the core's
+    // (green, 0.4 similarity, 0.1 smoothness, 0.2 spill) so an operator who
+    // just switches it on gets a sane key rather than a blank frame.
+    var keyEnabled = false
+    var keyColorHex = "#00ff00"
+    var keySimilarity = 0.4
+    var keySmoothness = 0.1
+    var keySpill = 0.2
 }
 
 // Per-channel built-in inserts. Names and keys are the CORE's contract
@@ -400,6 +415,11 @@ final class AppModel: ObservableObject {
             .filter { !$0.audioDeviceId.isEmpty }
             .map { CapturePairing(slotId: $0.id, audioDeviceId: $0.audioDeviceId,
                                   audioDeviceName: $0.audioDeviceName) }
+        prefs.chromaKeys = slots.filter(\.keyEnabled).map {
+            PersistedChromaKey(slotId: $0.id, colorHex: $0.keyColorHex,
+                               similarity: $0.keySimilarity,
+                               smoothness: $0.keySmoothness, spill: $0.keySpill)
+        }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
@@ -418,6 +438,15 @@ final class AppModel: ObservableObject {
     private func restorePrefs() {
         let prefs = ShellPrefs.load()
         overlays = prefs.overlays ?? OverlaysState()
+        for key in prefs.chromaKeys ?? [] {
+            if let index = slots.firstIndex(where: { $0.id == key.slotId }) {
+                slots[index].keyEnabled = true
+                slots[index].keyColorHex = key.colorHex
+                slots[index].keySimilarity = key.similarity
+                slots[index].keySmoothness = key.smoothness
+                slots[index].keySpill = key.spill
+            }
+        }
         for pairing in prefs.capturePairings ?? [] {
             if let index = slots.firstIndex(where: { $0.id == pairing.slotId }) {
                 slots[index].audioDeviceId = pairing.audioDeviceId
@@ -1299,6 +1328,36 @@ final class AppModel: ObservableObject {
 
     // `isProgram` so only the PROGRAM bus honors a cut — preview keeps showing
     // its cued scene, exactly like a switcher's cut bus.
+    /// The `chromaKey` node for a slot, or nil when keying is off.
+    ///
+    /// Sent ONLY when enabled: the core treats a chromaKey object without an
+    /// explicit `enabled:false` as "key this", so shipping settings for a
+    /// switched-off key would punch holes in a live program.
+    func chromaKeyNode(for slot: ShowInputSlot) -> JSONObject? {
+        guard slot.keyEnabled else { return nil }
+        let rgb = Self.rgbComponents(slot.keyColorHex)
+        return [
+            "enabled": true,
+            "keyR": rgb.r, "keyG": rgb.g, "keyB": rgb.b,
+            "similarity": slot.keySimilarity,
+            "smoothness": slot.keySmoothness,
+            "spill": slot.keySpill,
+        ]
+    }
+
+    /// "#rrggbb" to 0..1 components. Falls back to green — the common case, and
+    /// never a black key, which would key shadows out of every source.
+    static func rgbComponents(_ hex: String) -> (r: Double, g: Double, b: Double) {
+        let cleaned = hex.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "#", with: "")
+        guard cleaned.count == 6, let value = UInt32(cleaned, radix: 16) else {
+            return (0, 1, 0)
+        }
+        return (Double((value >> 16) & 0xff) / 255.0,
+                Double((value >> 8) & 0xff) / 255.0,
+                Double(value & 0xff) / 255.0)
+    }
+
     private func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
         if sceneId == Self.soloSceneA || sceneId == Self.soloSceneB {
             guard let slotId = soloSlotId,
@@ -1314,6 +1373,7 @@ final class AppModel: ObservableObject {
                 route.mode = "capture-input"
                 route.captureDeviceId = slot.sourceId
             }
+            route.chromaKey = chromaKeyNode(for: slot)
             return [route.json]
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
@@ -1337,6 +1397,7 @@ final class AppModel: ObservableObject {
                         route.mode = "capture-input"
                         route.captureDeviceId = slot.sourceId
                     }
+                    route.chromaKey = chromaKeyNode(for: slot)
                 }
                 var json = route.json
                 json["fitMode"] = layer.fitMode
@@ -1375,6 +1436,7 @@ final class AppModel: ObservableObject {
                     route.mode = "capture-input"
                     route.captureDeviceId = slot.sourceId
                 }
+                route.chromaKey = chromaKeyNode(for: slot)
             }
             return route.json
         }

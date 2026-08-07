@@ -35,6 +35,17 @@ struct CapturePairing: Codable, Equatable {
     var audioDeviceName = ""
 }
 
+/// Chroma key settings for a slot. Only ENABLED keys are persisted — a saved
+/// key that is off is indistinguishable from no key, and storing it would risk
+/// restoring a key the operator turned off.
+struct PersistedChromaKey: Codable, Equatable {
+    var slotId = 0
+    var colorHex = "#00ff00"
+    var similarity = 0.4
+    var smoothness = 0.1
+    var spill = 0.2
+}
+
 struct ShellPrefs: Codable, Equatable {
     var version = 1
     var joinMeetingId = ""
@@ -52,6 +63,7 @@ struct ShellPrefs: Codable, Equatable {
     var automation: AutomationExtrasState?
     var overlays: OverlaysState?
     var capturePairings: [CapturePairing]?
+    var chromaKeys: [PersistedChromaKey]?
     var lowerThirdName = ""
     var lowerThirdTitle = ""
     var lowerThirdPosition = "lower-left"
@@ -114,6 +126,8 @@ struct ShellPrefs: Codable, Equatable {
         overlays = ((try? c.decodeIfPresent(OverlaysState.self, forKey: .overlays)) ?? nil)
         capturePairings = ((try? c.decodeIfPresent([CapturePairing].self,
                                                    forKey: .capturePairings)) ?? nil)
+        chromaKeys = ((try? c.decodeIfPresent([PersistedChromaKey].self,
+                                              forKey: .chromaKeys)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -147,6 +161,7 @@ struct ShellPrefs: Codable, Equatable {
         p.automation = AutomationExtrasState()
         p.overlays = OverlaysState()
         p.capturePairings = [CapturePairing(slotId: 1, audioDeviceId: "d", audioDeviceName: "Mic")]
+        p.chromaKeys = [PersistedChromaKey(slotId: 1)]
         p.vstChannelSelections = ["ch1": "vst:Test"]
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
