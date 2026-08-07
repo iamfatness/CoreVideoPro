@@ -55,7 +55,18 @@ const NO_REGISTRY_HEALTH: Record<MukanaEndpoint, MukanaHealth> = {
   question: { state: "failing", consecutiveFailures: 0, detail: "no registry configured" }
 };
 
-const EMPTY_QUEUE: QueueState = { previous: [], current: null, upcoming: [] };
+/**
+ * A fresh, empty `QueueState`. Called at each field-init (and will be
+ * called again by a future `reset()`), never assigned as a shared
+ * module-level constant — `previous`/`upcoming` are arrays, and a shared
+ * reference would let an in-place mutation on one `ShowEngine` instance
+ * (a `.push` from Task 9's hands-queue wiring, say) leak into every other
+ * instance that read the same default, torn-down ones included. Mirrors
+ * `overlayDirector.ts`'s `emptyState()`.
+ */
+function emptyQueue(): QueueState {
+  return { previous: [], current: null, upcoming: [] };
+}
 
 export class ShowEngine {
   private readonly config: ShowEngineConfig;
@@ -80,7 +91,7 @@ export class ShowEngine {
   private currentLook: LookResolution | null = null;
   private page = 0;
   private manualBoxes: ManualBoxAssignments = {};
-  private queue: QueueState = EMPTY_QUEUE;
+  private queue: QueueState = emptyQueue();
 
   constructor(deps: ShowEngineDeps) {
     if (deps.mukana !== undefined && deps.config.mukana === null) {

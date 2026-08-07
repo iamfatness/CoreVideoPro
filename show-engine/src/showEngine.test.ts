@@ -4,6 +4,8 @@ import { ShowEngine } from "./showEngine.js";
 import { MockHost } from "./mockHost.js";
 import { StateStore } from "./persistence.js";
 import { parseShowEngineConfig } from "./config.js";
+import { LiveSlotsRestoreError } from "./liveSlots.js";
+import { GalleryError } from "./galleryDirector.js";
 import type { StateFs } from "./persistence.js";
 import type { Clock } from "./clock.js";
 
@@ -90,6 +92,24 @@ describe("ShowEngine construction", () => {
     expect(caps.registry.state).toBe("disabled");
     expect(caps.handsQueue.state).toBe("disabled");
     expect(caps.questionFeed.state).toBe("disabled");
+  });
+
+  /**
+   * The invariant this must break on: what the published `health` node
+   * actually says for a show with no Mukana client. `resolveCapabilities`
+   * collapses any unconfigured integration to "disabled" regardless of
+   * health content, so the capabilities test above cannot tell a correct
+   * "no registry configured" health record from a wrong one (e.g. a
+   * fabricated "ok"). `health` is host-facing — an operator surface renders
+   * it — so its content is a contract in its own right.
+   */
+  it("reports every endpoint as failing with 'no registry configured' when there is no Mukana client", () => {
+    const health = engine().snapshot().health;
+    expect(health).toEqual({
+      panelists: { state: "failing", consecutiveFailures: 0, detail: "no registry configured" },
+      hands: { state: "failing", consecutiveFailures: 0, detail: "no registry configured" },
+      question: { state: "failing", consecutiveFailures: 0, detail: "no registry configured" }
+    });
   });
 
   it("seats the roster to config capacity", () => {
@@ -193,5 +213,60 @@ describe("ShowEngine.restore", () => {
       })
     });
     expect(await engine({ fs }).restore()).toBe(false);
+  });
+
+  /**
+   * The invariant this must break on: a file that passes `StateStore`'s
+   * shallow shape check (numeric capacity, seats is an array of the right
+   * length) but is not a coherent roster underneath — here, a seat whose
+   * `slot` disagrees with its array index. `LiveSlots.fromJSON` catches that
+   * deeper corruption and throws `LiveSlotsRestoreError`; `restore()` must
+   * let it propagate rather than swallow it into a silent empty roster,
+   * which the brief calls out as strictly worse than refusing to start.
+   */
+  it("propagates a LiveSlotsRestoreError from a structurally-corrupt roster", async () => {
+    const seats = new Array(8).fill(null);
+    // index 0 must claim slot 1; claiming slot 2 is the deeper corruption
+    // the shallow StateStore check cannot see.
+    seats[0] = { slot: 2, panelist: { participantId: "p1", rawName: "Test Person" } };
+    const fs = memoryFs({
+      "/state/show.json": JSON.stringify({
+        version: 3,
+        slots: { version: 1, capacity: 8, seats },
+        overrides: {},
+        gallery: {
+          version: 1,
+          cells: 16,
+          assignments: Array.from({ length: 16 }, (_, i) => ({ cell: i + 1, slot: 0 }))
+        },
+        manualBoxes: {},
+        lookId: null
+      })
+    });
+    await expect(engine({ fs }).restore()).rejects.toThrow(LiveSlotsRestoreError);
+  });
+
+  /**
+   * The gallery-side twin of the test above: `cells` matches the configured
+   * count and `assignments` has the right length (both pass the shallow
+   * check), but an entry's `cell` field disagrees with its position —
+   * deeper corruption only `GalleryDirector.fromJSON` catches. Must
+   * propagate, not resolve to a silent empty gallery.
+   */
+  it("propagates a GalleryError from a structurally-corrupt gallery", async () => {
+    const assignments = Array.from({ length: 16 }, (_, i) => ({ cell: i + 1, slot: 0 }));
+    // index 0 must claim cell 1; claiming cell 5 is the deeper corruption.
+    assignments[0] = { cell: 5, slot: 0 };
+    const fs = memoryFs({
+      "/state/show.json": JSON.stringify({
+        version: 3,
+        slots: { version: 1, capacity: 8, seats: new Array(8).fill(null) },
+        overrides: {},
+        gallery: { version: 1, cells: 16, assignments },
+        manualBoxes: {},
+        lookId: null
+      })
+    });
+    await expect(engine({ fs }).restore()).rejects.toThrow(GalleryError);
   });
 });
