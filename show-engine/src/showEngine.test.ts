@@ -630,4 +630,53 @@ describe("ShowEngine restore + non-roster input (fix round 1, Important 3)", () 
     expect(persisted.slots.seats[0]?.panelist.participantId).toBe("p1");
     expect(persisted.slots.seats[1]?.panelist.participantId).toBe("p2");
   });
+
+  /**
+   * Fix round 2. `restore()` seeding `lastSeatedParticipantIds`
+   * (showEngine.ts:290) is itself what makes `refresh` vs `rebuild`
+   * observable, closing a second surviving mutant from round 1's report.
+   *
+   * The invariant this must break on, in two different ways:
+   *
+   * 1. `rebuild` sorts by `participantId` (p1 before p2) — if the seat step
+   *    ever took `rebuild` here instead of `refresh`, it would silently
+   *    re-sort this restored arrangement (p2 at slot 1, p1 at slot 2) back
+   *    into id order (p1 at slot 1, p2 at slot 2), discarding whatever the
+   *    operator arranged in the prior session.
+   * 2. Deleting the `:290` seeding block reintroduces exactly that: with no
+   *    prior id set to compare against, Zoom's first post-restart commit
+   *    looks like "no prior arrangement to hold" (the very-first-tick
+   *    case), so the seat step takes `rebuild` even though the reconnecting
+   *    roster is byte-for-byte the one that was just restored — the same
+   *    wipe-guard blind spot round 1 closed for an EMPTY roster, silently
+   *    reopened here for a non-empty one.
+   */
+  it("holds a restored seating order when Zoom reconnects with the same roster", async () => {
+    const seats = new Array(8).fill(null);
+    seats[0] = { slot: 1, panelist: { participantId: "p2", rawName: "Bo" } };
+    seats[1] = { slot: 2, panelist: { participantId: "p1", rawName: "Ann" } };
+    const fs = memoryFs({
+      "/state/show.json": JSON.stringify({
+        version: 3,
+        slots: { version: 1, capacity: 8, seats },
+        overrides: {},
+        gallery: {
+          version: 1,
+          cells: 16,
+          assignments: Array.from({ length: 16 }, (_, i) => ({ cell: i + 1, slot: 0 }))
+        },
+        manualBoxes: {},
+        lookId: null
+      })
+    });
+    const e = engine({ fs });
+    expect(await e.restore()).toBe(true);
+
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    const snap = await e.tick();
+
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p2");
+    expect(snap.slots[1]?.panelist?.participantId).toBe("p1");
+  });
 });
