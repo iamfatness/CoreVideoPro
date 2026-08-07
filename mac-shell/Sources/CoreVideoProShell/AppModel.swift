@@ -374,6 +374,7 @@ final class AppModel: ObservableObject {
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
+        prefs.overlays = overlays
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
@@ -390,6 +391,7 @@ final class AppModel: ObservableObject {
 
     private func restorePrefs() {
         let prefs = ShellPrefs.load()
+        overlays = prefs.overlays ?? OverlaysState()
         if prefs.colorGrade.count == 4 {
             gradeExposure = prefs.colorGrade[0]
             gradeContrast = prefs.colorGrade[1]
@@ -902,6 +904,13 @@ final class AppModel: ObservableObject {
     @Published var canvasHeight = 1080
     @Published var canvasFps = 60
     @Published var streamBitrateMbps = 6.0
+    @Published var overlays = OverlaysState()
+    var brandSyncTask: Task<Void, Never>?
+    /// How many keyed graphics are on air (the WinUI "N on air" readout).
+    var lowerThirdOnAirCount: Int {
+        (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
+    }
+
     @Published var streamCodec = "h264"
 
     /// Codecs this build can actually ENCODE, per the core's EncoderPolicy:
@@ -1937,7 +1946,8 @@ final class AppModel: ObservableObject {
             "sourceId": "mac:manual", "sourceName": lowerThirdName,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-in",
-            "buildInMs": 250, "buildOutMs": 200, "keyer": "downstream",
+            "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,
+            "keyer": "downstream",
         ])
     }
 
@@ -1951,16 +1961,31 @@ final class AppModel: ObservableObject {
             "sourceId": "mac:manual", "sourceName": lowerThirdName,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-out",
-            "buildInMs": 250, "buildOutMs": 200, "keyer": "downstream",
+            "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,
+            "keyer": "downstream",
         ])
+        // Wait the operator's OWN build-out time (plus a little) before the
+        // retire ack, or a long build-out is cut off mid-animation.
+        let settle = UInt64(max(50, overlays.buildOutMs) + 40) * 1_000_000
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 220_000_000)
+            try? await Task.sleep(nanoseconds: settle)
             self?.sendOverlay([
                 "type": "set-overlay-asset", "overlayId": "key:lower-third",
                 "text": "", "position": "lower-third", "enabled": false,
                 "keyPhase": "hidden", "buildInMs": 250, "buildOutMs": 200,
-                "keyer": "downstream",
+                "keyer": "downstream",  // retire ack: timing is irrelevant here
             ])
+        }
+    }
+
+    /// Build out then straight back in, so a style or timing change becomes
+    /// visible without the operator toggling the key twice.
+    func rebuildLowerThird() {
+        hideLowerThird()
+        let settle = UInt64(max(50, overlays.buildOutMs) + 120) * 1_000_000
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: settle)
+            await MainActor.run { self?.showLowerThird() }
         }
     }
 

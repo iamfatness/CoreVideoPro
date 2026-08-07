@@ -1,0 +1,116 @@
+# macOS parity plan (2026-08-06)
+
+Derived from a **visual** audit — the Windows reference screenshots in
+`docs/design-reference/` compared against the real macOS UI rendered through the
+`COREVIDEO_SHELL_SNAPSHOT` harness — not from matching control labels between
+XAML and Swift.
+
+## Why the earlier audit was wrong
+
+The first parity pass grepped WinUI control labels and looked for matching Swift
+symbols. It produced a plausible list that was wrong in both directions:
+
+* it reported "Live keyer" as a missing **chroma keyer**. It is the downstream
+  lower-third keyer, and the core implements no chroma keying at all.
+* it reported **SRT** and **VST3** as macOS shell gaps. Both were missing CORE
+  features — SRT's sender returned `nullptr` on every platform, and the plug-in
+  host is Windows-only past `--scan`.
+* it ranked **brand kit** as "P2 polish". Seen side by side, the entire Overlays
+  tab is a stub.
+
+A label diff cannot see depth, workflow, or information density — which is
+exactly what "it doesn't feel like the Windows app" describes.
+
+**And a visual audit has its own trap**: the two builds were not in comparable
+states (Windows had live inputs, assigned sources and a meeting; macOS had
+none). Empty rows look identical to missing controls. Two suspected gaps —
+per-source Grade/Unassign/ISO on Sources, and the half-empty multiview canvas —
+turned out to be state differences, confirmed by reading the code. **Every gap
+below was verified in source, not just in pixels.**
+
+---
+
+## P0 — the operator cannot do the job on macOS
+
+### 1. Overlays is a stub (~15% of the Windows tab)
+
+macOS has ONE card: lower-third Name, Title, Position, Show — plus a sentence
+telling the operator to use the Media tab for a logo bug. Windows has four
+sections. Missing:
+
+* **Live keyer**: LT in / Rebuild, source-behaviour explainer, lower-third
+  position, style, **build-in / build-out ms**, motion-timing preset, and
+  **Lower third / Bug / Image** graphic buttons with a configured-graphics list.
+* **Brand kit**: kit name, logo text, logo asset, default-overlay behaviour, and
+  Primary / Accent / Background colours with pickers.
+* **Browser overlays (DSK)**: graphics URL + canvas size + Add overlay.
+* **Captions**.
+
+This is shell work: the core already accepts `set-overlay-asset`
+(text/imageUri/position/title/org/keyPosition/keyer/**buildInMs**/**buildOutMs**,
+clamped 50–2000ms), `set-brand-kit`
+(name/logoText/brandColor/accentColor/backgroundColor/fontFamily/lowerThirdStyle/
+captionStyle/defaultOverlayBehavior), `push-caption-cue` and
+`set-caption-enabled`, and publishes `brandKit` in the snapshot.
+
+Exception: **Browser overlays need core work** — the browser host is a WebView2
+process, so macOS needs a WKWebView equivalent. Ship the rest without it.
+
+### 2. Per-source microphone pairing is missing
+
+Windows has a "Pair a microphone" dropdown on every assigned input row; macOS
+has none (`audioDeviceId` appears zero times in the mac shell). This is not
+cosmetic: it is how a capture card's audio is attached to its video, and
+`MediaCore::isoSourceHasAudio` uses exactly that pairing to decide whether a
+capture ISO carries an audio track. Without it, capture sources are silent and
+their ISOs are video-only.
+
+---
+
+## P1 — the operator flies blind
+
+### 3. Status-strip telemetry
+
+Windows shows, at a glance, **FRAME DROPS `0 (0.0%)`**, a **LIVE timer**, and a
+**master L/R meter with LUFS and peak dBFS**. macOS shows none of these. The
+data exists — `recording.totalDroppedFrames` and `audioMixSession.masterMeter`
+are already on the wire and already parsed for the Diagnose surface.
+
+### 4. SuperSource background
+
+Windows' Studio rail has a background picker plus "Import background media".
+macOS has nothing (`SuperSource` appears zero times).
+
+---
+
+## P2 — core work, not shell
+
+5. **Browser sources / DSK overlays** — needs a WKWebView host process.
+6. **Chroma key** — the core implements none. `setParticipantTransform` takes an
+   unnamed parameter and discards its payload; there are no key fields on the
+   render-plan layer and no shader math. The `chroma-key` capability string is
+   advertised (and listed as REQUIRED) while nothing implements it — either
+   implement it or stop claiming it.
+7. **SRT ingest** — delivery now works; ingest is a scaffold that discards
+   packets.
+
+## P3 — finish the audit
+
+8. Six tabs remain un-compared: **Zoom, Routing, Audio, Media, Automation,
+   Health**. They must be compared with sources assigned and a meeting joined,
+   or the state difference will manufacture false gaps again. Audio in
+   particular looked thin only because macOS had no PCM channels.
+
+## Blocked on hardware / account
+
+* Capture-card verification (owner's 8–10 card shows) — no cards on hand.
+* Virtual camera + notarised packaging — needs an Apple Developer ID.
+
+---
+
+## Goal 1 — bring Overlays to parity (minus browser DSK)
+
+Build the Live keyer controls, the Brand kit, and Captions against the commands
+the core already exposes. Browser overlays are explicitly out of scope until a
+macOS browser host exists, and must be shown as unavailable rather than omitted
+silently.

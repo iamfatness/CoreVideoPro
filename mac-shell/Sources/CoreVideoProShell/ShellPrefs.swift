@@ -40,6 +40,7 @@ struct ShellPrefs: Codable, Equatable {
     // non-optional key throws keyNotFound on every prefs file written before it
     // existed, and load()'s `try?` would reset the whole file to defaults.
     var automation: AutomationExtrasState?
+    var overlays: OverlaysState?
     var lowerThirdName = ""
     var lowerThirdTitle = ""
     var lowerThirdPosition = "lower-left"
@@ -99,6 +100,7 @@ struct ShellPrefs: Codable, Equatable {
                                               forKey: .automation)) ?? nil)
         vstChannelSelections = ((try? c.decodeIfPresent([String: String].self,
                                                         forKey: .vstChannelSelections)) ?? nil)
+        overlays = ((try? c.decodeIfPresent(OverlaysState.self, forKey: .overlays)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -130,6 +132,7 @@ struct ShellPrefs: Codable, Equatable {
         p.webinar = true
         p.colorGrade = [1, 2, 3, 4]
         p.automation = AutomationExtrasState()
+        p.overlays = OverlaysState()
         p.vstChannelSelections = ["ch1": "vst:Test"]
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {

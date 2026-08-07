@@ -1726,61 +1726,8 @@ struct SlotRow: View {
     }
 }
 
-struct OverlaysPane: View {
-    @EnvironmentObject var model: AppModel
-
-    var onAir: Bool {
-        model.lowerThirdPhase == "on-air" || model.lowerThirdPhase == "building-in"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Overlays").font(.grotesk(14, .semibold))
-            Text("LOWER THIRD")
-                .font(.plexMono(10, .bold))
-                .foregroundStyle(Studio.secondary)
-            TextField("Name", text: $model.lowerThirdName)
-                .textFieldStyle(StudioFieldStyle())
-            TextField("Title", text: $model.lowerThirdTitle)
-                .textFieldStyle(StudioFieldStyle())
-            Picker("Position", selection: $model.lowerThirdPosition) {
-                Text("Lower left").tag("lower-left")
-                Text("Lower right").tag("lower-right")
-                Text("Center").tag("lower-center")
-            }
-            .pickerStyle(.segmented)
-            HStack {
-                Button(onAir ? "Hide" : "Show") {
-                    onAir ? model.hideLowerThird() : model.showLowerThird()
-                }
-                .disabled(model.lowerThirdName.isEmpty && !onAir)
-                .tint(onAir ? .red : Studio.accent)
-                Text(model.lowerThirdPhase)
-                    .font(.plexMono(10))
-                    .foregroundStyle(onAir ? Studio.accent : Studio.secondary)
-                Spacer()
-                Text("\(model.overlaysOnAir) on air")
-                    .font(.plexMono(10))
-                    .foregroundStyle(Studio.secondary)
-            }
-            Divider()
-            Text("LOGO BUG")
-                .font(.plexMono(10, .bold))
-                .foregroundStyle(Studio.secondary)
-            if let bug = model.logoBug {
-                HStack {
-                    Text(bug.name).font(.grotesk(12))
-                    Spacer()
-                    Button("Remove") { model.toggleLogoBug(bug) }.font(.grotesk(11))
-                }
-            } else {
-                Text("Pick a still on the Media tab and tap “Bug” to key it top-right.")
-                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
-            }
-        }
-        .modifier(StudioPanel())
-    }
-}
+// OverlaysPane now lives in Overlays.swift (Live keyer + Brand kit +
+// Captions). The old stub here was lower-third fields and a hint line.
 
 struct MediaPane: View {
     @EnvironmentObject var model: AppModel
