@@ -56,6 +56,11 @@ struct SceneDef: Identifiable {
     let name: String
     let layout: String
     var layers: [SceneLayer] = []
+    // SuperSource background: a media asset composited full-canvas BEHIND every
+    // route (the core renders it as a "media-background" layer at order -100).
+    // Per-scene, exactly like Windows — the picker on the Studio rail describes
+    // the selected scene, not a global setting.
+    var backgroundAssetId = ""
 }
 
 // One canvas layer: a slot binding plus its normalized rect/fit/opacity —
@@ -398,6 +403,7 @@ final class AppModel: ObservableObject {
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
+                           backgroundAssetId: scene.backgroundAssetId,
                            layers: scene.layers.map { layer in
                                PersistedLayer(id: layer.id, slotId: layer.slotId,
                                               x: layer.x, y: layer.y,
@@ -455,7 +461,8 @@ final class AppModel: ObservableObject {
                                         x: layer.x, y: layer.y,
                                         width: layer.width, height: layer.height,
                                         fitMode: layer.fitMode, opacity: layer.opacity)
-                         })
+                         },
+                         backgroundAssetId: saved.backgroundAssetId)
             }
         }
         streamKey = StreamKeychain.load()
@@ -1584,20 +1591,54 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The `background` node for a scene, or nil when it has none.
+    ///
+    /// The core enables a background only when BOTH mediaAssetId and
+    /// mediaAssetPath are non-empty, and warns when an id arrives without a
+    /// path — so an asset that has vanished from the bin must send nothing
+    /// rather than a half-populated node that trips that warning every sync.
+    func backgroundPayload(for sceneId: String) -> JSONObject? {
+        guard let scene = scenes.first(where: { $0.id == sceneId }),
+              !scene.backgroundAssetId.isEmpty,
+              let asset = mediaAssets.first(where: { $0.id == scene.backgroundAssetId })
+        else { return nil }
+        return [
+            "mediaAssetId": asset.id,
+            "mediaAssetName": asset.name,
+            "mediaAssetKind": asset.kind,
+            "mediaAssetPath": asset.filePath,
+            "playing": true,
+        ]
+    }
+
+    func setSceneBackground(sceneId: String, assetId: String) {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+        scenes[index].backgroundAssetId = assetId
+        syncScenes()
+    }
+
     private func pushScenes() async {
         guard let bridge else { return }
         var commands: [JSONObject] = []
         if !programSceneId.isEmpty {
-            commands.append([
+            var graph: JSONObject = [
                 "type": "load-scene-graph", "sceneId": programSceneId,
                 "routes": buildRoutes(for: programSceneId, isProgram: true),
-            ])
+            ]
+            if let background = backgroundPayload(for: programSceneId) {
+                graph["background"] = background
+            }
+            commands.append(graph)
         }
         if !previewSceneId.isEmpty {
-            commands.append([
+            var preview: JSONObject = [
                 "type": "set-preview-scene", "sceneId": previewSceneId,
                 "routes": buildRoutes(for: previewSceneId),
-            ])
+            ]
+            if let background = backgroundPayload(for: previewSceneId) {
+                preview["background"] = background
+            }
+            commands.append(preview)
         }
         guard !commands.isEmpty else { return }
         do {

@@ -769,9 +769,88 @@ struct SceneRail: View {
                     .stroke(Studio.accent.opacity(0.6), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            SuperSourceBackgroundPicker()
             Spacer()
         }
         .modifier(StudioPanel())
+    }
+}
+
+/// SuperSource background for the PREVIEW scene — the scene the operator is
+/// building, matching where WinUI puts it on the Studio rail. The core
+/// composites it full-canvas behind every route ("media-background", order
+/// -100), and it is per-scene, so the summary always names which scene it
+/// describes rather than reading like a global setting.
+struct SuperSourceBackgroundPicker: View {
+    @EnvironmentObject var model: AppModel
+
+    var scene: SceneDef? {
+        model.scenes.first(where: { $0.id == model.previewSceneId })
+            ?? model.scenes.first(where: { $0.id == model.programSceneId })
+    }
+
+    var selected: MediaAsset? {
+        guard let id = scene?.backgroundAssetId, !id.isEmpty else { return nil }
+        return model.mediaAssets.first(where: { $0.id == id })
+    }
+
+    // Stills only: a background is composited behind every route for the whole
+    // scene, and the core enables it only with a real asset PATH.
+    var options: [MediaAsset] {
+        model.mediaAssets.filter { $0.kind == "image" || $0.kind == "background" }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SuperSource background")
+                .font(.grotesk(11, .semibold)).foregroundStyle(Studio.secondary)
+            Menu {
+                Button("No background") {
+                    if let scene { model.setSceneBackground(sceneId: scene.id, assetId: "") }
+                }
+                if !options.isEmpty { Divider() }
+                ForEach(options) { asset in
+                    Button(asset.name) {
+                        if let scene {
+                            model.setSceneBackground(sceneId: scene.id, assetId: asset.id)
+                        }
+                    }
+                }
+            } label: {
+                Text(selected?.name ?? "No background")
+                    .font(.grotesk(11))
+                    .foregroundStyle(selected == nil ? Studio.secondary : Studio.textPrimary)
+                    .lineLimit(1)
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(scene == nil)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
+
+            // Say WHICH scene this applies to, and say plainly when the bin has
+            // nothing to offer rather than presenting an empty menu.
+            Text(summary)
+                .font(.grotesk(10)).foregroundStyle(Studio.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Import background media") { model.selectedTab = .media }
+                .buttonStyle(GhostButtonStyle())
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.top, 6)
+    }
+
+    var summary: String {
+        guard let scene else { return "No scene selected." }
+        if options.isEmpty {
+            return "No still images in the media bin — import one to use as a "
+                + "background for \(scene.name)."
+        }
+        if let selected {
+            return "\(selected.name) sits behind every source in \(scene.name)."
+        }
+        return "No SuperSource background for \(scene.name)."
     }
 }
 

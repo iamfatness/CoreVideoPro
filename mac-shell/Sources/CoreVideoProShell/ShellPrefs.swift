@@ -11,6 +11,7 @@ struct PersistedScene: Codable, Equatable {
     var id = ""
     var name = ""
     var layout = "single"
+    var backgroundAssetId = ""
     var layers: [PersistedLayer] = []
 }
 
