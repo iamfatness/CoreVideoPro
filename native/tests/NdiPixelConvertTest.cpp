@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 using corevideo::modules::nv12ToUyvy;
@@ -99,7 +100,10 @@ TEST(NdiPixelConvert, RefusesUndersizedOrDegenerateInput) {
 // reintroducing per-pixel math, not to benchmark the host.
 TEST(NdiPixelConvert, FullHdConversionStaysCheapEnoughForTheOutputWorker) {
 #ifdef COREVIDEO_INSTRUMENTED_BUILD
-  GTEST_SKIP() << "wall-clock budget is meaningless under a sanitizer";
+  // Announce rather than silently pass — a skipped budget should be visible.
+  // (This harness has no GTEST_SKIP; an early return is the whole mechanism.)
+  std::printf("[  SKIPPED ] NV12->UYVY budget: meaningless under a sanitizer\n");
+  return;
 #else
   constexpr int kW = 1920;
   constexpr int kH = 1080;
