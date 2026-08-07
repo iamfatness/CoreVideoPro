@@ -292,9 +292,22 @@ endif()
 # Uses the VENDORED WebView2 SDK (third_party/webview2 â€” provenance/license in
 # its README.md); the WebView2 *Runtime* is probed at host startup.
 # ---------------------------------------------------------------------------
-if(COREVIDEO_WITH_BROWSER_HOST)
+# macOS twin of the WebView2 host: WKWebView rendered offscreen, published into
+# the SAME seqlock segment (BrowserSourceShm.h) the Windows host writes, so the
+# core's ingest seam is identical on both platforms.
+if(COREVIDEO_WITH_BROWSER_HOST AND APPLE)
+  add_executable(corevideo-browser-host browser-host/main-macos.mm)
+  target_include_directories(corevideo-browser-host PRIVATE src)
+  set_target_properties(corevideo-browser-host PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+  target_compile_options(corevideo-browser-host PRIVATE -fobjc-arc)
+  target_link_libraries(corevideo-browser-host PRIVATE
+    "-framework Cocoa" "-framework WebKit" "-framework CoreGraphics")
+endif()
+
+if(COREVIDEO_WITH_BROWSER_HOST AND NOT APPLE)
   if(NOT WIN32)
-    message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST supports Windows only.")
+    message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST supports Windows and macOS only.")
   endif()
   if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST requires an x64 build (vendored WebView2LoaderStatic.lib is x64).")

@@ -9,6 +9,14 @@
 #include <filesystem>
 #include <utility>
 
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <cstring>
+#endif
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -468,9 +476,55 @@ bool BrowserSourceHostAdapter::spawnHost(const Source& snapshot, void*& processH
   processHandle = nullptr;
   stdinWrite = nullptr;
 #ifndef _WIN32
-  (void)snapshot;
-  error = "browser sources require Windows (WebView2 host).";
-  return false;
+  // POSIX host spawn. The host is a separate process by design (page content
+  // must never run in the core), and it is handed its arguments as an ARGV
+  // VECTOR — never a shell string. The url is operator- and remote-supplied,
+  // and this repo already shipped a shell-injection hole in the SRT ingest path
+  // by interpolating a url into `/bin/sh -c`.
+  if (hostExecutablePath_.empty() || !std::filesystem::exists(hostExecutablePath_)) {
+    error = "corevideo-browser-host not found at '" + hostExecutablePath_ +
+            "' (set COREVIDEO_BROWSER_HOST_PATH).";
+    return false;
+  }
+  int controlPipe[2] = {-1, -1};
+  if (::pipe(controlPipe) != 0) {
+    error = "could not create the browser host control pipe.";
+    return false;
+  }
+  const std::string width = std::to_string(snapshot.width);
+  const std::string height = std::to_string(snapshot.height);
+  const std::string fps = std::to_string(snapshot.fps);
+  std::vector<std::string> args{
+      hostExecutablePath_, "--url", snapshot.url, "--width", width,
+      "--height", height, "--fps", fps, "--shm", snapshot.shmName,
+  };
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (auto& argument : args) {
+    argv.push_back(const_cast<char*>(argument.c_str()));
+  }
+  argv.push_back(nullptr);
+
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    ::close(controlPipe[0]);
+    ::close(controlPipe[1]);
+    error = "fork failed for the browser host.";
+    return false;
+  }
+  if (pid == 0) {
+    // Child: the read end becomes stdin so closing our write end (or dying)
+    // gives the host EOF and it exits — no orphaned hosts.
+    ::dup2(controlPipe[0], STDIN_FILENO);
+    ::close(controlPipe[0]);
+    ::close(controlPipe[1]);
+    ::execv(hostExecutablePath_.c_str(), argv.data());
+    ::_exit(127);
+  }
+  ::close(controlPipe[0]);
+  processHandle = reinterpret_cast<void*>(static_cast<intptr_t>(pid));
+  stdinWrite = reinterpret_cast<void*>(static_cast<intptr_t>(controlPipe[1]));
+  return true;
 #else
   if (hostExecutablePath_.empty() || !std::filesystem::exists(hostExecutablePath_)) {
     error = "corevideo-browser-host.exe not found at '" + hostExecutablePath_ +
@@ -567,6 +621,14 @@ void BrowserSourceHostAdapter::closeMappingLocked(Source& source) {
   if (source.mappingHandle != nullptr) {
     CloseHandle(static_cast<HANDLE>(source.mappingHandle));
   }
+#else
+  if (source.view != nullptr && source.mappedBytes > 0) {
+    ::munmap(const_cast<uint8_t*>(source.view), source.mappedBytes);
+  }
+  // mappingHandle carries the fd as an integer on POSIX. -1/0 means unset.
+  if (source.mappingHandle != nullptr) {
+    ::close(static_cast<int>(reinterpret_cast<intptr_t>(source.mappingHandle)));
+  }
 #endif
   source.view = nullptr;
   source.mappingHandle = nullptr;
@@ -600,7 +662,27 @@ void BrowserSourceHostAdapter::tryMapLocked(Source& source, int64_t nowMsValue) 
   std::fprintf(stderr, "[browser] mapped %s shm='%s' (%dx%d)\n", source.id.c_str(),
                source.shmName.c_str(), source.width, source.height);
 #else
-  (void)source;
+  // Read-only shared mapping published by the host process. Retried on the
+  // same interval as Windows: the host is still booting for the first frames,
+  // and a missing segment is normal until it publishes.
+  const int fd = ::shm_open(source.shmName.c_str(), O_RDONLY, 0);
+  if (fd < 0) {
+    return;  // host still booting; retried on the next interval
+  }
+  const std::size_t bytes = browsershm::mappingBytes(source.width, source.height);
+  void* view = ::mmap(nullptr, bytes, PROT_READ, MAP_SHARED, fd, 0);
+  if (view == MAP_FAILED) {
+    ::close(fd);
+    std::fprintf(stderr, "[browser] WARNING %s mmap('%s', %zu) failed: %s\n",
+                 source.id.c_str(), source.shmName.c_str(), bytes,
+                 std::strerror(errno));
+    return;
+  }
+  source.mappingHandle = reinterpret_cast<void*>(static_cast<intptr_t>(fd));
+  source.view = static_cast<const uint8_t*>(view);
+  source.mappedBytes = bytes;
+  std::fprintf(stderr, "[browser] mapped %s shm='%s' (%dx%d)\n", source.id.c_str(),
+               source.shmName.c_str(), source.width, source.height);
 #endif
 }
 
