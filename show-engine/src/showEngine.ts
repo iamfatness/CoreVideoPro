@@ -429,11 +429,17 @@ export class ShowEngine {
     // one the operator assigned seconds earlier — never the one-tick-stale
     // view intake would see, and never the empty view a fresh restore would
     // see. `shouldFollowSpeaker` runs BEFORE anything else touches the id:
-    // before the assigner, before `ProgramBus`. Only past that gate is
-    // `role ?? "panelist"` safe — an unknown speaker was already evaluated
-    // as `null` by the gate, which passes a `null` role through; coalescing
-    // to `"panelist"` any earlier would turn "unknown role" into
-    // "definitely follow" before the gate could see it.
+    // before the assigner, before `ProgramBus`. The real (possibly `null`)
+    // role is passed through to BOTH downstream calls — fixed in fix round
+    // 1 (was `role ?? "panelist"` on the `ProgramBus` call only). Fabricating
+    // `"panelist"` for an unrostered speaker was a lie `ProgramBus`'s own
+    // internal `shouldFollowSpeaker` could then act on: with
+    // `skipRoles: ["panelist"]`, the engine's gate correctly let a `null`
+    // role through (unconditional `true`), but the fabricated `"panelist"`
+    // handed to `ProgramBus.onActiveSpeaker` made ITS internal gate veto —
+    // the assigner moved a pool position that program never cut to. Passing
+    // the real role keeps the engine's gate and `ProgramBus`'s internal gate
+    // evaluating the identical input, so they can never disagree.
     const pendingSpeaker = this.pendingSpeakerId;
     this.pendingSpeakerId = null;
     if (pendingSpeaker !== null) {
@@ -445,7 +451,7 @@ export class ShowEngine {
       const role = speakerPanelists.get(pendingSpeaker)?.role ?? null;
       if (shouldFollowSpeaker(role, this.config.skipRoles)) {
         this.assigner.onActiveSpeaker(pendingSpeaker);
-        this.programBus.onActiveSpeaker(pendingSpeaker, role ?? "panelist");
+        this.programBus.onActiveSpeaker(pendingSpeaker, role);
       }
     }
 

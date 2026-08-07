@@ -73,7 +73,16 @@ export class ProgramBus {
     this.activeSpeakerFollow = on;
   }
 
-  onActiveSpeaker(participantId: string, role: Role): boolean {
+  /**
+   * `role` is `null` when `participantId` has no editorial role yet — an
+   * active speaker who isn't (or isn't yet) seated in the panelist
+   * database. Callers must pass the REAL resolved role, `null` included;
+   * `shouldFollowSpeaker` already treats `null` as "always follow" (see
+   * `speakerGate.ts`), so fabricating a role like `"panelist"` to satisfy a
+   * narrower signature would silently veto a dispatch this bus should have
+   * allowed the instant `skipRoles` ever contains `"panelist"`.
+   */
+  onActiveSpeaker(participantId: string, role: Role | null): boolean {
     if (!shouldFollowSpeaker(role, this.skipRoles)) {
       return false;
     }

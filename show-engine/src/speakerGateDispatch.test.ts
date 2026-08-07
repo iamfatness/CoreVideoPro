@@ -193,4 +193,58 @@ describe("active-speaker dispatch gate", () => {
     await e.tick();
     expect(recorder.seen).toEqual(["p2"]);
   });
+
+  /**
+   * FIX ROUND 1 REGRESSION. Invariant: the engine's own gate and
+   * `ProgramBus`'s internal gate (`programBus.ts:76-79`) evaluate the SAME
+   * input and so must never disagree about whether an active-speaker event
+   * should land.
+   *
+   * Before this fix they could: the engine coalesced an unrostered
+   * speaker's `null` role to a fabricated `"panelist"` before calling
+   * `ProgramBus.onActiveSpeaker`. `skipRoles: ["panelist"]` is a supported
+   * operator config — `parseSkipRoles` validates entries only against the
+   * full `ROLES` set, so it parses fine even though the default role is an
+   * unusual thing to skip. Under that config, the engine's OWN gate
+   * correctly evaluated `shouldFollowSpeaker(null, ["panelist"])` as `true`
+   * (an unseated speaker always follows, unconditionally — see
+   * `speakerGate.ts`) and dispatched to the position assigner. But the
+   * fabricated `"panelist"` handed to `ProgramBus` made ITS internal gate
+   * (`shouldFollowSpeaker("panelist", ["panelist"])` = `false`) silently
+   * veto the cut: the assigner moved a pool position that program never
+   * actually cut to. The fix passes the REAL (possibly `null`) role to
+   * `ProgramBus` too, so both gates evaluate identical input and can never
+   * diverge — proven here by asserting both halves agree.
+   */
+  it("agrees with ProgramBus on an unrostered speaker even when skipRoles targets the fabricated default role", async () => {
+    const panelistSkipConfig = parseShowEngineConfig({
+      capacity: 8,
+      statePath: "/state/show-panelist-skip.json",
+      skipRoles: ["panelist"],
+      looks: [
+        {
+          id: "teatime",
+          label: "Teatime",
+          scenePreset: "scene-teatime",
+          boxes: 2,
+          includesHost: true,
+          includesReader: false
+        }
+      ]
+    });
+    const recorder = new RecordingAssigner(new FiloAssigner({ capacity: 4 }));
+    const e = new ShowEngine({
+      config: panelistSkipConfig,
+      host: new MockHost(),
+      clock: { now: () => 1000 },
+      store: new StateStore(panelistSkipConfig.statePath, { fs: memoryFs() }),
+      assigner: recorder
+    });
+
+    e.onActiveSpeaker("ghost");
+    const snap = await e.tick();
+
+    expect(recorder.seen).toEqual(["ghost"]);
+    expect(snap.program.activeSpeakerId).toBe("ghost");
+  });
 });
