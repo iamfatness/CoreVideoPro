@@ -140,26 +140,40 @@ struct ReaderChannel {
   }
 };
 
-// Build the FFmpeg command that decodes one SRT source into raw BGRA on stdout.
-// Output is forced to a fixed size so the reader can consume whole frames without
-// negotiating format mid-stream; whatever resolution the contributor sends is
-// scaled to the source's configured geometry.
-std::string buildIngestCommand(const std::string& executable, const ReaderChannel& channel,
-                               const std::string& url) {
-  std::ostringstream cmd;
-  cmd << "\"" << executable << "\""
-      << " -hide_banner -loglevel error"
-      // Contribution feeds are live: do not buffer ahead of real time.
-      << " -fflags nobuffer -flags low_delay"
-      << " -i \"" << url << "\""
-      // Video only for now; embedded contribution audio is a follow-up.
-      << " -an"
-      << " -f rawvideo -pix_fmt bgra"
-      << " -s " << channel.width << "x" << channel.height
-      << " -r " << channel.frameRate
-      << " pipe:1";
-  return cmd.str();
+#ifdef _WIN32
+// CreateProcess does NOT use a shell, so Windows was never exposed to command
+// injection here — but it parses lpCommandLine itself, so an unquoted url
+// containing a quote could still inject extra FFMPEG arguments (an attacker-
+// chosen output file, say). Quote every argument by the documented argv rules
+// and pass lpApplicationName explicitly so the image cannot be re-targeted.
+inline std::string quoteWindowsArgument(const std::string& argument) {
+  if (!argument.empty() &&
+      argument.find_first_of(" \t\n\v\"") == std::string::npos) {
+    return argument;
+  }
+  std::string quoted = "\"";
+  for (auto it = argument.begin();; ++it) {
+    std::size_t backslashes = 0;
+    while (it != argument.end() && *it == '\\') {
+      ++it;
+      ++backslashes;
+    }
+    if (it == argument.end()) {
+      quoted.append(backslashes * 2, '\\');
+      break;
+    }
+    if (*it == '"') {
+      quoted.append(backslashes * 2 + 1, '\\');
+      quoted.push_back('"');
+    } else {
+      quoted.append(backslashes, '\\');
+      quoted.push_back(*it);
+    }
+  }
+  quoted.push_back('"');
+  return quoted;
 }
+#endif
 
 class SrtIngestCaptureDevice final : public ICaptureDevice {
  public:
@@ -458,7 +472,8 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
 
   static bool spawnDecoder(ReaderChannel& channel, const std::string& executable,
                            const std::string& url) {
-    const std::string command = buildIngestCommand(executable, channel, url);
+    const std::vector<std::string> args =
+        buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate);
 #ifdef _WIN32
     SECURITY_ATTRIBUTES security{};
     security.nLength = sizeof(security);
@@ -478,9 +493,18 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     startup.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
     startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION process{};
-    std::string mutableCommand = command;
-    const BOOL created = ::CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, TRUE,
-                                          CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+    std::string commandLine;
+    for (const auto& argument : args) {
+      if (!commandLine.empty()) {
+        commandLine.push_back(' ');
+      }
+      commandLine += quoteWindowsArgument(argument);
+    }
+    std::string mutableCommand = commandLine;
+    // lpApplicationName pinned: the image cannot be re-targeted by the url.
+    const BOOL created = ::CreateProcessA(executable.c_str(), mutableCommand.data(), nullptr,
+                                          nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
+                                          &startup, &process);
     ::CloseHandle(writePipe);  // our copy; the child holds its own
     if (!created) {
       ::CloseHandle(readPipe);
@@ -508,7 +532,15 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       ::dup2(fds[1], STDOUT_FILENO);
       ::close(fds[0]);
       ::close(fds[1]);
-      ::execl("/bin/sh", "sh", "-c", command.c_str(), nullptr);
+      // NO SHELL. argv elements are passed verbatim, so a url containing
+      // quotes, semicolons or $(...) is just a (useless) filename to ffmpeg.
+      std::vector<char*> argv;
+      argv.reserve(args.size() + 1);
+      for (const auto& argument : args) {
+        argv.push_back(const_cast<char*>(argument.c_str()));
+      }
+      argv.push_back(nullptr);
+      ::execvp(executable.c_str(), argv.data());
       ::_exit(127);
     }
     ::close(fds[1]);
