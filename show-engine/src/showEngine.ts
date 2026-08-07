@@ -3,13 +3,13 @@
  * first real composition in this package. Twenty-one modules were shipped
  * individually tested but never wired together; this is that wiring.
  *
- * This file covers construction, restore-from-disk, and the snapshot
- * accessor only. There is no tick yet (Task 5), no speaker gate wiring
- * (Task 6), no host command emission (Task 7+), and no polling loop
- * (Task 8+) — `setLook` is implemented here only far enough to select the
- * active look id, because two restore tests need it; its tick behavior
- * (recomputing the resolved look, clamping the page, clearing manual boxes
- * on a look change) is Task 6/7's job.
+ * This file covers construction, restore-from-disk, the snapshot accessor,
+ * roster intake, and the seating tick (Task 5). There is no speaker gate
+ * wiring (Task 6), no derived-layer recompute or host command emission
+ * (Task 7/8+), and no polling loop (Task 9+) — `setLook` is implemented
+ * here only far enough to select the active look id, because two restore
+ * tests need it; its tick behavior (recomputing the resolved look, clamping
+ * the page, clearing manual boxes on a look change) is Task 6/7's job.
  */
 
 import type { Clock } from "./clock.js";
@@ -18,20 +18,48 @@ import type { PositionAssigner } from "./speakerRecency.js";
 import { FiloAssigner } from "./speakerRecency.js";
 import type { ShowEngineConfig } from "./config.js";
 import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
-import { MukanaRegistry } from "./mukanaParse.js";
+import { MukanaRegistry, type MukanaOutcome } from "./mukanaParse.js";
 import { LiveSlots } from "./liveSlots.js";
 import { GalleryDirector } from "./galleryDirector.js";
-import { OverrideDb } from "./overrideDb.js";
-import { ZoomIngest } from "./zoomIngest.js";
+import { OverrideDb, type OverrideRecord } from "./overrideDb.js";
+import { ZoomIngest, type ZoomEvent } from "./zoomIngest.js";
 import { ProgramBus } from "./programBus.js";
 import { OverlayDirector } from "./overlayDirector.js";
 import { buildPanelistDb } from "./panelistDb.js";
 import { deriveTally } from "./tallyPublisher.js";
 import { resolveCapabilities } from "./capabilities.js";
 import { buildSnapshot, type ShowSnapshot } from "./showSnapshot.js";
-import { StateStore } from "./persistence.js";
+import { StateStore, STATE_VERSION, type PersistedShowState } from "./persistence.js";
 import type { LookResolution, ManualBoxAssignments } from "./lookDirector.js";
-import type { QueueState } from "./contracts.js";
+import { EXCLUSIVE_ROLES, type Panelist, type QueueState, type Role } from "./contracts.js";
+import type { PersonKey } from "./personKey.js";
+
+/**
+ * Minimum time between persisted saves, enforced against the injected
+ * `Clock` rather than a wall-clock timer — a live show never stops calling
+ * `tick()`, and writing the full state document on every single tick would
+ * mean a disk write per frame. The first save after construction (or after
+ * the previous save) is unthrottled; every one after that must wait this
+ * long since the last actual write.
+ */
+const SAVE_DEBOUNCE_MS = 1000;
+
+/** True for the two roles `OverrideDb.assignExclusiveRole` knows how to enforce. */
+function isExclusiveOverrideRole(role: Role): role is "host" | "reader" {
+  return (EXCLUSIVE_ROLES as readonly Role[]).includes(role);
+}
+
+function participantIdSet(participants: readonly { participantId: string }[]): Set<string> {
+  return new Set(participants.map((p) => p.participantId));
+}
+
+function sameIdSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) {
+    if (!b.has(id)) return false;
+  }
+  return true;
+}
 
 export type ShowEngineDeps = {
   config: ShowEngineConfig;
@@ -92,6 +120,40 @@ export class ShowEngine {
   private page = 0;
   private manualBoxes: ManualBoxAssignments = {};
   private queue: QueueState = emptyQueue();
+  private unseatedPanelists: Panelist[] = [];
+
+  /**
+   * The participant id set the roster was last seated against, so `tick()`
+   * can tell a genuine roster change (seat what's new, surface overflow)
+   * from an in-place update to someone already seated (hold seats still).
+   * `null` before the first seating ever runs, which always counts as
+   * "changed" — there is no prior arrangement to hold.
+   */
+  private lastSeatedParticipantIds: ReadonlySet<string> | null = null;
+
+  /**
+   * Set by any non-roster input that can change what gets seated
+   * (`setOverride`, `clearOverride`, a real Mukana payload) or persisted
+   * (`setLook`). Consumed at the START of every `tick()` regardless of
+   * whether that tick ends up saving — this is a "did something happen
+   * since the seat step last ran" flag, not a "there is unsaved state"
+   * flag, so it must never linger across a debounce-skipped save (that
+   * would force a spurious reseat on every later tick until a save
+   * finally lands). `pendingPersist` below is the flag that lingers.
+   */
+  private otherInputsChanged = false;
+
+  /**
+   * Set whenever an input that affects persisted state changes (roster
+   * commit, `setOverride`, `clearOverride`, `setLook`, a real Mukana
+   * payload). Cleared only when `tick()` actually writes — NOT merely when
+   * enough time has passed — so a change that arrives mid-debounce-window
+   * is never lost, just delayed to the next tick that clears the window.
+   */
+  private pendingPersist = false;
+
+  /** Wall-clock time (per the injected `Clock`) of the last actual save, or `null` before the first one. */
+  private lastSaveTime: number | null = null;
 
   constructor(deps: ShowEngineDeps) {
     if (deps.mukana !== undefined && deps.config.mukana === null) {
@@ -135,6 +197,60 @@ export class ShowEngine {
       throw new Error(`ShowEngine.setLook: unknown look id ${JSON.stringify(lookId)}`);
     }
     this.selectedLookId = lookId;
+    this.pendingPersist = true;
+    this.otherInputsChanged = true;
+  }
+
+  /**
+   * Record a host roster event. This does NO seating — it only forwards to
+   * `ZoomIngest.apply`, which buffers into a working set behind a publish
+   * gate. Host events arrive at frame rate; seating happens once per tick,
+   * the same discipline the CVP shell learned the hard way with
+   * `RefreshSurfaceBindings` (rebuilding a bound collection at event rate
+   * instead of a coalesced tick rate is what produces the CoreMessagingXP
+   * fail-fast class documented in this repo's CLAUDE.md).
+   */
+  onZoomEvent(event: ZoomEvent): void {
+    this.zoomIngest.apply(event);
+  }
+
+  /**
+   * Apply one Mukana panelists fetch outcome. Only a `"data"` outcome
+   * carries anything to merge — `dormant` (off-hours) and `invalid`
+   * (transport failure) outcomes are health information the `MukanaClient`
+   * that produced this outcome already recorded for itself; there is
+   * nothing here for the registry to apply.
+   */
+  onMukanaPanelists(outcome: MukanaOutcome): void {
+    if (outcome.kind !== "data") return;
+    this.mukanaRegistry.merge(outcome.db);
+    this.pendingPersist = true;
+    this.otherInputsChanged = true;
+  }
+
+  /**
+   * Write an operator role override. `OverrideDb.set` alone would happily
+   * leave two hosts if `record.role` names an exclusive role someone else
+   * already holds — `assignExclusiveRole` is the only thing that demotes a
+   * prior holder, so it runs right after `set` whenever the written role is
+   * exclusive. A registry-less show passes an empty registry, which is
+   * `assignExclusiveRole`'s documented "enforce across the override table
+   * alone" case.
+   */
+  setOverride(record: OverrideRecord): void {
+    this.overrideDb.set(record);
+    if (isExclusiveOverrideRole(record.role)) {
+      this.overrideDb.assignExclusiveRole(record.personKey, record.role, this.mukanaRegistry.current());
+    }
+    this.pendingPersist = true;
+    this.otherInputsChanged = true;
+  }
+
+  /** Remove an operator role override, reverting that person to whatever Mukana (or nothing) declares. */
+  clearOverride(personKey: PersonKey): void {
+    this.overrideDb.delete(personKey);
+    this.pendingPersist = true;
+    this.otherInputsChanged = true;
   }
 
   /**
@@ -171,7 +287,91 @@ export class ShowEngine {
     return true;
   }
 
-  /** The tick counter, starting at 0. Advanced by `tick()` in a later task. */
+  /**
+   * The heartbeat. Runs in a fixed order: commit the buffered roster, seat
+   * it (holding seats still for an unchanged participant set, reseating
+   * only when it actually changed), recompute the derived layers (Tasks
+   * 6–7 — a no-op today), persist if the debounce window allows it, emit
+   * host commands (Task 8 — a no-op today), then advance the revision and
+   * publish.
+   *
+   * Step 1 alone (`ZoomIngest.commit()`) can say nothing changed, but the
+   * tick still runs to completion — a look or capability change can alter
+   * output against a static roster, and the revision always advances so a
+   * consumer polling `revision()` can tell every tick apart.
+   */
+  async tick(): Promise<ShowSnapshot> {
+    const rosterCommitted = this.zoomIngest.commit();
+    const otherChanged = this.otherInputsChanged;
+    this.otherInputsChanged = false;
+    const rosterInputsChanged = rosterCommitted || otherChanged;
+
+    if (rosterInputsChanged) {
+      const participants = this.zoomIngest.snapshot();
+      const panelists = buildPanelistDb(
+        participants,
+        this.mukanaRegistry.current(),
+        this.overrideDb.entries()
+      );
+      const currentIds = participantIdSet(participants);
+
+      if (
+        this.lastSeatedParticipantIds !== null &&
+        sameIdSet(currentIds, this.lastSeatedParticipantIds)
+      ) {
+        // Same people, at most changed properties (video/audio/hand/role) —
+        // hold every seat still. A guest toggling their camera must not
+        // reseat the room.
+        this.liveSlots.refresh(panelists);
+      } else {
+        // The roster itself changed (a join, or the very first tick, when
+        // there is no prior arrangement to hold). Seat deterministically by
+        // participant id — sorting by name would reshuffle the room
+        // whenever someone renamed themselves mid-show — and never drop
+        // whoever doesn't fit: `rebuild`'s overflow return is what the
+        // published snapshot's `unseated` reports.
+        const sorted = [...panelists.values()].sort((a, b) =>
+          a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0
+        );
+        this.unseatedPanelists = this.liveSlots.rebuild(sorted);
+      }
+      this.lastSeatedParticipantIds = currentIds;
+
+      // A participant who has gone offline (a Zoom "left", or a roster
+      // snapshot that no longer reports them present) vacates their seat
+      // instead of sitting in it forever as an offline ghost. `refresh`
+      // itself only marks a vanished-from-the-database seat offline and
+      // holds it (LiveSlots' documented behavior) — this is the layer that
+      // turns a genuine departure into the open hole an operator expects,
+      // without touching anyone else's seat.
+      for (const slot of this.liveSlots.slots()) {
+        if (slot.panelist !== null && !slot.panelist.online) {
+          this.liveSlots.removeSlot(slot.slot);
+        }
+      }
+
+      this.pendingPersist = true;
+    }
+
+    // Derived layers (look resolution, tally recompute, overlays) land in
+    // Tasks 6–7; host command emission lands in Task 8. Nothing to do here
+    // yet — `snapshot()` already recomputes tally/capabilities live from
+    // current module state.
+
+    const now = this.clock.now();
+    const debounceElapsed =
+      this.lastSaveTime === null || now - this.lastSaveTime >= SAVE_DEBOUNCE_MS;
+    if (this.pendingPersist && debounceElapsed) {
+      await this.store.save(this.buildPersistedState());
+      this.lastSaveTime = now;
+      this.pendingPersist = false;
+    }
+
+    this.tickRevision += 1;
+    return this.snapshot();
+  }
+
+  /** The tick counter, starting at 0. Advanced by `tick()`. */
   revision(): number {
     return this.tickRevision;
   }
@@ -218,7 +418,20 @@ export class ShowEngine {
       tally,
       overlays: this.overlayDirector.state(),
       capabilities,
-      health
+      health,
+      unseated: this.unseatedPanelists
     });
+  }
+
+  /** Assemble the document `tick()` persists: everything `StateStore.load`/`restore()` round-trips. */
+  private buildPersistedState(): PersistedShowState {
+    return {
+      version: STATE_VERSION,
+      slots: this.liveSlots.toJSON(),
+      overrides: this.overrideDb.entries(),
+      gallery: this.gallery.toJSON(),
+      manualBoxes: this.manualBoxes,
+      lookId: this.selectedLookId
+    };
   }
 }

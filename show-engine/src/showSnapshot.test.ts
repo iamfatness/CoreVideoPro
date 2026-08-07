@@ -77,7 +77,8 @@ function input() {
       panelists: { state: "ok" as const, consecutiveFailures: 0, detail: null },
       hands: { state: "ok" as const, consecutiveFailures: 0, detail: null },
       question: { state: "ok" as const, consecutiveFailures: 0, detail: null }
-    }
+    },
+    unseated: [panelist("p9", "Cy")]
   };
 }
 
@@ -167,5 +168,19 @@ describe("buildSnapshot", () => {
     const plate = src.look.nameplates[0];
     if (plate) plate.name = "MUTATED";
     expect(snap.look?.nameplates[0]?.name).toBe("Bo");
+  });
+
+  it("publishes the unseated panelists", () => {
+    expect(buildSnapshot(input()).unseated.map((p) => p.participantId)).toEqual(["p9"]);
+  });
+
+  it("does not share the unseated array or its panelists with its caller", () => {
+    const src = input();
+    const snap = buildSnapshot(src);
+    src.unseated.push(panelist("p10", "Dee"));
+    const first = src.unseated[0];
+    if (first) first.displayName = "MUTATED";
+    expect(snap.unseated).toHaveLength(1);
+    expect(snap.unseated[0]?.displayName).toBe("Cy");
   });
 });

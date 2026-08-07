@@ -39,6 +39,8 @@ export type ShowSnapshot = {
   overlays: OverlayState;
   capabilities: ShowCapabilities;
   health: Record<MukanaEndpoint, MukanaHealth>;
+  /** Panelists the live roster did not have a seat for, e.g. capacity overflow on `rebuild`. */
+  unseated: Panelist[];
 };
 
 export type BuildSnapshotInput = {
@@ -55,6 +57,7 @@ export type BuildSnapshotInput = {
   overlays: OverlayState;
   capabilities: ShowCapabilities;
   health: Record<MukanaEndpoint, MukanaHealth>;
+  unseated: readonly Panelist[];
 };
 
 function clonePanelist(panelist: Panelist): Panelist {
@@ -170,6 +173,7 @@ export function buildSnapshot(input: BuildSnapshotInput): ShowSnapshot {
     tally: cloneTally(input.tally),
     overlays: cloneOverlays(input.overlays),
     capabilities: cloneCapabilities(input.capabilities),
-    health: cloneHealth(input.health)
+    health: cloneHealth(input.health),
+    unseated: input.unseated.map(clonePanelist)
   };
 }

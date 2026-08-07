@@ -8,6 +8,8 @@ import { LiveSlotsRestoreError } from "./liveSlots.js";
 import { GalleryError } from "./galleryDirector.js";
 import type { StateFs } from "./persistence.js";
 import type { Clock } from "./clock.js";
+import type { ZoomEvent } from "./zoomIngest.js";
+import type { QueueState } from "./contracts.js";
 
 function fixedClock(t = 1000): Clock {
   return { now: () => t };
@@ -268,5 +270,151 @@ describe("ShowEngine.restore", () => {
       })
     });
     await expect(engine({ fs }).restore()).rejects.toThrow(GalleryError);
+  });
+});
+
+function joined(id: string, name: string): ZoomEvent {
+  return {
+    kind: "joined",
+    participant: {
+      participantId: id,
+      rawName: name,
+      online: true,
+      videoOn: true,
+      audioOn: true,
+      handRaised: false,
+      zoomRole: 0
+    }
+  };
+}
+
+describe("ShowEngine roster tick", () => {
+  it("does not seat anyone until a tick runs", () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    expect(e.snapshot().slots.every((s) => s.panelist === null)).toBe(true);
+  });
+
+  it("seats the roster on tick and bumps the revision", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    const snap = await e.tick();
+    expect(snap.revision).toBe(1);
+    expect(snap.slots[0]?.panelist?.displayName).toBe("Ann");
+  });
+
+  it("seats in participant-id order regardless of arrival order", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p3", "Cy"));
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    const snap = await e.tick();
+    expect(snap.slots.slice(0, 3).map((s) => s.panelist?.participantId)).toEqual([
+      "p1",
+      "p2",
+      "p3"
+    ]);
+  });
+
+  /**
+   * The invariant this must break on: calling rebuild when only a property
+   * changed. A guest toggling their camera must not reseat the room.
+   */
+  it("holds seats still when a participant toggles video", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.onZoomEvent({ kind: "video", participantId: "p1", on: false });
+    const snap = await e.tick();
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p1");
+    expect(snap.slots[0]?.panelist?.videoOn).toBe(false);
+    expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
+  });
+
+  it("leaves a hole rather than compacting when someone leaves", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.onZoomEvent({ kind: "left", participantId: "p1" });
+    const snap = await e.tick();
+    expect(snap.slots[0]?.panelist).toBeNull();
+    expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
+  });
+
+  /**
+   * The invariant this must break on: discarding rebuild's return value.
+   * Overflow that is dropped silently means people vanish from a live show
+   * with nothing anywhere reporting it.
+   */
+  it("reports panelists that did not fit rather than dropping them", async () => {
+    const e = engine();
+    const ids: string[] = [];
+    for (let i = 1; i <= 10; i += 1) {
+      ids.push(`p${i}`);
+      e.onZoomEvent(joined(`p${i}`, `Guest ${i}`));
+    }
+    const snap = await e.tick();
+    const seated = snap.slots.flatMap((s) => (s.panelist ? [s.panelist.participantId] : []));
+    expect(seated).toHaveLength(8);
+    expect(snap.unseated).toHaveLength(2);
+    // Nobody vanishes: seated ∪ unseated is the whole roster, with no overlap.
+    expect([...seated, ...snap.unseated.map((p) => p.participantId)].sort()).toEqual(
+      [...ids].sort()
+    );
+  });
+
+  it("debounces persistence against the injected clock", async () => {
+    let t = 1000;
+    const fs = memoryFs();
+    const writes: string[] = [];
+    const counting: StateFs = {
+      ...fs,
+      writeFile: async (p, c) => {
+        writes.push(p);
+        return fs.writeFile(p, c);
+      }
+    };
+    const e = new ShowEngine({
+      config: registryLess,
+      host: new MockHost(),
+      clock: { now: () => t },
+      store: new StateStore(registryLess.statePath, { fs: counting })
+    });
+    e.onZoomEvent(joined("p1", "Ann"));
+    await e.tick();
+    const afterFirst = writes.length;
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    expect(writes.length).toBe(afterFirst);
+    t += 1001;
+    e.onZoomEvent(joined("p3", "Cy"));
+    await e.tick();
+    expect(writes.length).toBeGreaterThan(afterFirst);
+  });
+
+  /**
+   * Task 4's review found `EMPTY_QUEUE` was a module-level constant shared
+   * across every `ShowEngine` instance — an in-place `.push` on one
+   * instance's queue would have leaked into every other instance, including
+   * torn-down ones. It was fixed with an `emptyQueue()` factory
+   * (mirroring `overlayDirector.ts`'s `emptyState()`), but that fix was
+   * verified with a throwaway test that was since deleted — nothing
+   * committed pinned it. `tick()` is where the engine first touches
+   * `queue` in earnest, so this is that permanent regression test: mutate
+   * one instance's internal queue state in place and confirm a second
+   * instance is unaffected. A future "simplification" that hoists
+   * `emptyQueue()`'s return back to a shared module constant would
+   * type-check and leave every other test in this file green — only this
+   * one would catch it.
+   */
+  it("never shares queue state between ShowEngine instances", () => {
+    const a = engine();
+    const b = engine();
+    (a as unknown as { queue: QueueState }).queue.previous.push("mutated-on-a");
+    expect((b as unknown as { queue: QueueState }).queue.previous).toEqual([]);
+    expect(a.snapshot().queue.previous).toEqual(["mutated-on-a"]);
+    expect(b.snapshot().queue.previous).toEqual([]);
   });
 });
