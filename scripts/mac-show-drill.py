@@ -292,13 +292,24 @@ def main():
     # the show was configured for (a 320x180 preview upscaled into a 1080p
     # container is the failure the RTMP path shipped for months).
     if artifact and os.path.exists(artifact) and os.path.getsize(artifact) > 1024:
-        probe = subprocess.run(
-            ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,nb_frames",
-             "-of", "default=nw=1:nk=1", artifact],
-            capture_output=True, text=True)
-        fields = [line for line in probe.stdout.split() if line]
-        if probe.returncode != 0 or len(fields) < 2:
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,nb_frames",
+                 "-of", "default=nw=1:nk=1", artifact],
+                capture_output=True, text=True)
+        except FileNotFoundError:
+            # LOUD, not a traceback and NEVER a silent skip: without ffprobe the
+            # playability gate cannot run, so the drill must not report success.
+            # It failed this way on macos-14 runners, which ship no ffmpeg.
+            failures.append(
+                "ffprobe is not installed, so the recording could not be checked "
+                "for playability — install ffmpeg on this machine/runner")
+            probe = None
+        fields = [line for line in probe.stdout.split() if line] if probe else []
+        if probe is None:
+            pass  # already reported above
+        elif probe.returncode != 0 or len(fields) < 2:
             failures.append(
                 f"recording is UNPLAYABLE ({os.path.getsize(artifact)} bytes on "
                 f"disk, ffprobe: {(probe.stderr or '').strip()[:120]}) — an "
@@ -428,6 +439,24 @@ def main():
         print(f"Source->program latency ({len(lat_lines)} windows):")
         for line in lat_lines:
             print(f"  {line}")
+    # DID THE HARNESS ACTUALLY SOURCE THE LOAD IT WAS ASKED FOR? The delivery
+    # ratio below is (frames the compositor saw) / (frames we ASKED the fake
+    # engine to produce). If the engine could not produce them — a CI VM cannot
+    # decode 8x1080p60, ~1.5GB/s — the ratio collapses and reads as "the core
+    # lost your frames", which is a false accusation against the core. Measured
+    # on a macos-14 runner: ~250 of 480 frames/s sourced, reported as "51%
+    # delivered". Parse the rate the core actually received and say so.
+    ingest_rates = []
+    for line in [l for l in core.stderr if "[zoom-ingest]" in l][-3:]:
+        try:
+            ingest_rates.append(float(line.split("]")[1].strip().split()[0]))
+        except (IndexError, ValueError):
+            continue
+    sourced_fps = sorted(ingest_rates)[len(ingest_rates) // 2] if ingest_rates else None
+    requested_fps = args.load * TARGET_OUTPUT_FPS
+    harness_short = (sourced_fps is not None and requested_fps > 0
+                     and sourced_fps < requested_fps * 0.9)
+
     if args.load and lat_lines:
         # Each window covers ~2s; a partial first window (join still settling) is
         # warm-up, not steady state, so judge on windows that saw a full window's
@@ -469,9 +498,19 @@ def main():
                 failures.append(
                     f"source->render p99 {worst_p99:.1f}ms exceeds three frames")
             if delivery < MIN_FRAME_DELIVERY:
-                failures.append(
-                    f"only {delivery:.0%} of decoded frames reached the compositor — "
-                    f"sources lose motion even though fps still reads 60")
+                # Still a FAILURE either way — this run proved nothing and must
+                # not read green. Only the attribution changes.
+                if harness_short:
+                    failures.append(
+                        f"the HARNESS could not source the load: {sourced_fps:.0f} of "
+                        f"{requested_fps:.0f} frames/s reached the core "
+                        f"({sourced_fps / requested_fps:.0%}), so the {delivery:.0%} "
+                        f"delivery figure is NOT attributable to the core — re-run on "
+                        f"hardware that can sustain {args.load}x1080p60")
+                else:
+                    failures.append(
+                        f"only {delivery:.0%} of decoded frames reached the compositor — "
+                        f"sources lose motion even though fps still reads 60")
     ingest_lines = [l for l in core.stderr if "[zoom-ingest]" in l]
     if ingest_lines:
         print("Zoom ingest (last 3 windows):")
