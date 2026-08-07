@@ -39,22 +39,40 @@ The pixel fix needed NV12 -> UYVY (`NdiPixelConvert.h`), a pure byte shuffle wit
 a 4:2:0 -> 4:2:2 chroma resample. It is unit-tested for exact packing and carries
 a 1080p cost bound so nobody reintroduces per-pixel maths on the output worker.
 
-## SRT — not shipped in either direction
+## SRT — delivery now shipped; ingest still a scaffold
 
-- `createSrtOutputSender()` is an **empty stub**: it returns `nullptr` on both
-  sides of its `#if`. There is no SRT output.
-- `SrtIngestCaptureAdapter` is **real** (352 lines of libsrt) behind
-  `COREVIDEO_WITH_SRT_INGEST` + `COREVIDEO_HAS_LIBSRT`, with a synthetic
-  fallback that says so in its status text.
-- Both build flags are **OFF** in the current build, so neither is compiled.
-- Passphrase-at-rest is already done: `StreamSrtPassphrase` rides the DPAPI
-  prefs (v4).
+Owner decision, same day: **both directions are required** for a pro AV
+application, superseding FOCUS_PLAN §4's "pick one".
 
-FOCUS_PLAN §4 requires **one primary direction done well** and explicitly says
-not to half-build both. Ingest is much further along. **This needs an owner
-decision before any implementation** — it is a product call about who the
-feature serves (contribution/CDN out, versus remote cameras in), not a technical
-one.
+**Delivery: done and proven (#380, #381).** It rides the shared FFmpeg sender
+rather than a second libsrt integration — the staged FFmpeg is built with
+libsrt, and the RTMP sender already owns the hardened process pipeline (pacing,
+NV12 feeding, reconnect/backoff, health). RTMP and SRT now differ only by a
+protocol profile: destination name, container (FLV vs MPEG-TS), endpoint syntax
+and validation. Verified end to end against a real FFmpeg SRT listener on
+loopback — 5.98 MB of h264 1920x1080 received clear, 5.05 MB encrypted with a
+passphrase — by `scripts/validate-srt-output.mjs`, which fails unless decodable
+video actually lands in the receiver.
+
+**Ingest: still a scaffold, and less complete than a first read suggests.**
+`SrtIngestCaptureAdapter` is not "libsrt ingest that needs enabling":
+
+- `pumpSource` receives into a 1316-byte buffer and **discards it**, incrementing
+  byte/packet counters. A comment says "Decode is handled by the decoder stage";
+  there is no decoder stage.
+- `pollVideoFrames` therefore emits `VideoFrame`s carrying width/height and
+  **no pixel payload at all**.
+- So even with `COREVIDEO_WITH_SRT_INGEST` + `COREVIDEO_HAS_LIBSRT` enabled and
+  libsrt linked, ingest would show nothing.
+
+The design that matches the now-proven delivery path: spawn one FFmpeg per
+source reading `srt://…` and writing fixed-size raw frames to stdout
+(`-f rawvideo -pix_fmt bgra`), read them on the receiver thread, and publish
+real pixels as `capture:<id>` — the same shape as the browser-source host. That
+removes the libsrt build dependency entirely, matching delivery.
+
+Passphrase-at-rest was already done: `StreamSrtPassphrase` rides the DPAPI
+prefs (v4).
 
 ## Recording — one gap left open deliberately
 
