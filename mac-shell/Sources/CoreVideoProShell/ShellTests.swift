@@ -291,6 +291,71 @@ enum ShellTests {
                     "20 rapid changes collapse into exactly ONE push")
     }
 
+
+    // ── OAuth: the signs-you-out-of-OBS class ────────────────────────────────
+
+    /// Zoom ROTATES refresh tokens on use. A refresh response that omits
+    /// `refresh_token` means "no rotation, keep what you have" — writing an
+    /// empty string over the stored one leaves nothing to present on the next
+    /// refresh and signs the account out. The owner's OBS plugin authenticates
+    /// the SAME Zoom account, so a bad write here logs them out of a tool they
+    /// use in production.
+    private static func testRefreshWithoutRotationKeepsTheStoredToken() {
+        let merged = ZoomOAuth.mergeTokenResponse(
+            ["access_token": "new-access", "expires_in": NSNumber(value: 3600)],
+            existingRefreshToken: "STORED-REFRESH", now: 1_000_000)
+        expectEqual(merged.accessToken, "new-access", "the new access token is taken")
+        expectEqual(merged.refreshToken, "STORED-REFRESH",
+                    "a response with no rotation must PRESERVE the stored refresh token")
+    }
+
+    /// When Zoom DOES rotate, the new token must replace the old one — keeping
+    /// a stale refresh token is the same failure from the other direction.
+    private static func testRefreshWithRotationTakesTheNewToken() {
+        let merged = ZoomOAuth.mergeTokenResponse(
+            ["access_token": "a", "refresh_token": "ROTATED", "expires_in": NSNumber(value: 3600)],
+            existingRefreshToken: "STORED-REFRESH", now: 1_000_000)
+        expectEqual(merged.refreshToken, "ROTATED", "a rotated token replaces the stored one")
+    }
+
+    /// An empty response must not fabricate a token, and must still not destroy
+    /// the stored one.
+    private static func testEmptyResponseDoesNotDestroyTheStoredToken() {
+        let merged = ZoomOAuth.mergeTokenResponse([:], existingRefreshToken: "STORED",
+                                                  now: 1_000_000)
+        expectEqual(merged.refreshToken, "STORED", "an empty response preserves the refresh token")
+        expectEqual(merged.accessToken, "", "but does not invent an access token")
+    }
+
+    /// Expiry carries 60s of slack: a token that expires mid-join is a failed
+    /// show, and the default must be conservative when the broker omits it.
+    private static func testExpiryLeavesSlackBeforeTheRealDeadline() {
+        let merged = ZoomOAuth.mergeTokenResponse(
+            ["access_token": "a", "expires_in": NSNumber(value: 3600)],
+            existingRefreshToken: "r", now: 1_000_000)
+        expectEqual(merged.expiresAt, 1_000_000 + 3600 - 60, "expiry is shortened by 60s")
+        let noExpiry = ZoomOAuth.mergeTokenResponse(["access_token": "a"],
+                                                    existingRefreshToken: "r", now: 1_000_000)
+        expectEqual(noExpiry.expiresAt, 1_000_000 + 3600 - 60,
+                    "a missing expires_in falls back to one hour, still with slack")
+    }
+
+    /// HARD RULE: this app owns its own Keychain item. Reading or writing the
+    /// OBS plugin's item makes a second reader of a rotating token and signs the
+    /// plugin out.
+    private static func testKeychainServiceIsNeverTheObsPluginItem() {
+        expectEqual(ZoomOAuth.service, "us.iamfatness.corevideopro.zoom-oauth",
+                    "this app uses its OWN Keychain service")
+        expect(!ZoomOAuth.service.contains("OBS"),
+               "the OBS plugin's Keychain item must never be touched")
+    }
+
+    /// The broker pins the app return URI; changing the scheme 400s every sign-in.
+    private static func testOAuthReturnUriMatchesTheBrokerAllowlist() {
+        expectEqual(ZoomOAuth.appReturnUri, "corevideo://oauth/callback",
+                    "the broker allowlists exactly this return uri")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -316,6 +381,12 @@ enum ShellTests {
             ("bridge/multi-line", testBridgeDeliversMultipleLinesFromOneRead),
             ("bridge/malformed", testBridgeSkipsMalformedLinesWithoutStalling),
             ("coalescing/color-grade", testColorGradePushesAreCoalesced),
+            ("oauth/no-rotation-keeps-token", testRefreshWithoutRotationKeepsTheStoredToken),
+            ("oauth/rotation-replaces", testRefreshWithRotationTakesTheNewToken),
+            ("oauth/empty-response", testEmptyResponseDoesNotDestroyTheStoredToken),
+            ("oauth/expiry-slack", testExpiryLeavesSlackBeforeTheRealDeadline),
+            ("oauth/keychain-identity", testKeychainServiceIsNeverTheObsPluginItem),
+            ("oauth/return-uri", testOAuthReturnUriMatchesTheBrokerAllowlist),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

@@ -152,16 +152,35 @@ actor ZoomOAuth {
     }
 
     @discardableResult
-    private func saveTokenResponse(_ response: [String: Any]) -> Tokens {
+    /// PURE token merge, extracted so the rule that protects the owner's OBS
+    /// plugin can be tested without a network or a Keychain.
+    ///
+    /// Zoom ROTATES refresh tokens on use. If this ever writes an empty refresh
+    /// token over a stored one, the next refresh has nothing to present and the
+    /// account is signed out — and because the OBS plugin authenticates the same
+    /// Zoom account, a bad write here logs the owner out of a tool they use in
+    /// production. A response that omits `refresh_token` means "no rotation,
+    /// keep what you have", NOT "you have none".
+    static func mergeTokenResponse(_ response: [String: Any],
+                                   existingRefreshToken: String,
+                                   now: Double) -> Tokens {
         var next = Tokens()
         next.accessToken = response["access_token"] as? String ?? ""
         next.refreshToken = response["refresh_token"] as? String ?? ""
         let expiresIn = (response["expires_in"] as? NSNumber)?.doubleValue ?? 3600
-        next.expiresAt = Date().timeIntervalSince1970 + expiresIn - 60
+        // 60s of slack: a token that expires mid-join is a failed show.
+        next.expiresAt = now + expiresIn - 60
         if next.refreshToken.isEmpty {
-            // A response without a rotation must PRESERVE the stored token.
-            next.refreshToken = loadTokens()?.refreshToken ?? ""
+            next.refreshToken = existingRefreshToken
         }
+        return next
+    }
+
+    private func saveTokenResponse(_ response: [String: Any]) -> Tokens {
+        let next = Self.mergeTokenResponse(
+            response,
+            existingRefreshToken: loadTokens()?.refreshToken ?? "",
+            now: Date().timeIntervalSince1970)
         tokens = next
         keychainSave(next)
         return next
@@ -185,7 +204,9 @@ actor ZoomOAuth {
 
     // ── Keychain (this app's OWN service — never the OBS plugin's) ───────────
 
-    private static let service = "us.iamfatness.corevideopro.zoom-oauth"
+    // Internal (not private) so a test can assert this app NEVER reads or
+    // writes the OBS plugin's item ("CoreVideo OBS Plugin").
+    static let service = "us.iamfatness.corevideopro.zoom-oauth"
     private static let account = "tokens"
 
     private func loadTokens() -> Tokens? {

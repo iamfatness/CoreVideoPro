@@ -66,6 +66,9 @@ MAX_ENGINE_TAP_MS = 2.0
 # measuring an architecture that no longer exists. Everything ABOVE the cushion is
 # still real latency and still gated. If frame sync is ever disabled by default,
 # put these back to 16.7/33.3.
+# A Take rides a media-core-sync round trip. Anything the operator can feel as
+# lag between pressing Take and program changing is a defect for a switcher.
+MAX_COMMAND_P99_MS = 100.0
 MAX_LATENCY_P50_MS = 33.3   # 2 frames at 60p (1 of them is the frame-sync cushion)
 MAX_LATENCY_P99_MS = 50.0   # 3 frames at 60p
 # Fraction of DECODED frames that must actually reach the compositor.
@@ -96,6 +99,7 @@ class Core:
         self.events = []
         self.stderr = []
         self.next_id = 1
+        self.round_trips = []  # (type, seconds) per answered request
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
 
@@ -118,13 +122,17 @@ class Core:
         rid = f"drill-{self.next_id}"
         self.next_id += 1
         body = dict(body, id=rid)
+        started = time.time()
         self.proc.stdin.write(json.dumps(body, separators=(",", ":")) + "\n")
         self.proc.stdin.flush()
-        deadline = time.time() + timeout
+        deadline = started + timeout
+        # 1ms poll: this now measures OPERATOR RESPONSIVENESS (the round trip a
+        # Take rides), so a 10ms poll would be most of the number being measured.
         while time.time() < deadline:
             if rid in self.responses:
+                self.round_trips.append((body.get("type", "?"), time.time() - started))
                 return self.responses[rid]
-            time.sleep(0.01)
+            time.sleep(0.001)
         return None
 
     def sync(self, commands, elapsed_ms):
@@ -331,6 +339,23 @@ def main():
                 f"(max {MAX_OVER_BUDGET_RATIO:.0%}) — this starves the RPC queue")
     else:
         print("PASS coreMutex never exceeded its budget")
+
+    # OPERATOR RESPONSIVENESS. Every frame-path metric here measures
+    # source->program; none of them can see the command path a Take rides. A
+    # comment in the core claims media-core-sync holds the core lock 50-100ms,
+    # which would be felt as a laggy cut, so measure it rather than assume.
+    syncs = sorted(ms for name, ms in core.round_trips if name == "media-core-sync")
+    if syncs:
+        p50 = syncs[len(syncs) // 2] * 1000
+        p99 = syncs[min(len(syncs) - 1, int(len(syncs) * 0.99))] * 1000
+        worst = syncs[-1] * 1000
+        ok = p99 <= MAX_COMMAND_P99_MS
+        print(f"{'PASS' if ok else 'FAIL'} operator command round-trip p50 {p50:.1f}ms / "
+              f"p99 {p99:.1f}ms / worst {worst:.1f}ms ({len(syncs)} syncs)")
+        if not ok:
+            failures.append(
+                f"media-core-sync p99 {p99:.1f}ms exceeds {MAX_COMMAND_P99_MS:.0f}ms — "
+                f"a Take that takes this long is felt by the operator")
 
     if timeouts:
         print(f"FAIL {timeouts} request(s) timed out")
