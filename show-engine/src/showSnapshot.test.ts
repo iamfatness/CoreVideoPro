@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { buildSnapshot } from "./showSnapshot.js";
-import type { Panelist, Slot } from "./contracts.js";
-import type { ManualBoxAssignments, Nameplate } from "./lookDirector.js";
+import type { Panelist, QueueState, Slot } from "./contracts.js";
+import type { LookResolution, ManualBoxAssignments, Nameplate } from "./lookDirector.js";
+
+function sampleLook(): LookResolution {
+  return {
+    lookId: "two-box",
+    scenePreset: "two-box",
+    plateTone: "neutral",
+    tallySource: "boxes",
+    hostSlot: null,
+    readerSlot: null,
+    boxes: [{ box: 1, slot: 1 }],
+    nameplates: [{ position: { kind: "host" }, slot: 1, name: "Bo", location: "", tone: "neutral" }],
+    page: 0,
+    pageCount: 1,
+    boxFill: "queue"
+  };
+}
 
 function panelist(id: string, name: string): Panelist {
   return {
@@ -31,6 +47,7 @@ function input() {
   const manualBoxes: ManualBoxAssignments = { 1: 4 };
   const tallyOnAirSlots: number[] = [];
   const overlayNameplates: Nameplate[] = [];
+  const queue: QueueState = { previous: [], current: "4242", upcoming: ["5555"] };
   return {
     revision: 7,
     panelists: new Map([
@@ -39,14 +56,14 @@ function input() {
     ]),
     slots,
     gallery: [{ cell: 1, slot: 1 }],
-    queue: { previous: [], current: "4242", upcoming: ["5555"] },
+    queue,
     program: {
       program: { kind: "black" } as const,
       preview: { kind: "black" } as const,
       activeSpeakerFollow: false,
       activeSpeakerId: null
     },
-    look: null,
+    look: null as LookResolution | null,
     page: 0,
     manualBoxes,
     tally: { mode: "none" as const, onAirSlots: tallyOnAirSlots, onAirPins: [], onAirParticipantIds: [] },
@@ -104,7 +121,9 @@ describe("buildSnapshot", () => {
   it("does not share the queue arrays with its caller", () => {
     const src = input();
     const snap = buildSnapshot(src);
+    src.queue.previous.push("1111");
     src.queue.upcoming.push("9999");
+    expect(snap.queue.previous).toEqual([]);
     expect(snap.queue.upcoming).toEqual(["5555"]);
   });
 
@@ -130,5 +149,23 @@ describe("buildSnapshot", () => {
     expect(snap.gallery).toHaveLength(1);
     expect(snap.tally.onAirSlots).toEqual([]);
     expect(snap.overlays.nameplates).toEqual([]);
+  });
+
+  it("does not share a look's box assignment with its caller", () => {
+    const src = input();
+    src.look = sampleLook();
+    const snap = buildSnapshot(src);
+    const box = src.look.boxes[0];
+    if (box) box.slot = 99;
+    expect(snap.look?.boxes[0]?.slot).toBe(1);
+  });
+
+  it("does not share a look's nameplate with its caller", () => {
+    const src = input();
+    src.look = sampleLook();
+    const snap = buildSnapshot(src);
+    const plate = src.look.nameplates[0];
+    if (plate) plate.name = "MUTATED";
+    expect(snap.look?.nameplates[0]?.name).toBe("Bo");
   });
 });
