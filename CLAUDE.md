@@ -71,6 +71,15 @@ dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Releas
 runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respects a
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
+**Run the binary the build just wrote.** `native/build-dev/` is a single-config
+generator — the current binaries are `native/build-dev/corevideo-native.exe` and
+`corevideo-native-tests.exe`. A `native/build-dev/Release/` directory also exists,
+left by an older VS-generator build, and **nothing updates it**: a test run from
+there reported a confident "380 tests passed" from a binary a MONTH old, which
+silently omitted every test file added since. The real suite is 529 tests. If a
+newly added test does not appear in the output, check which binary you ran before
+suspecting CMake.
+
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
 zip** to `%LOCALAPPDATA%\CoreVideoPro\support-bundles\` — the zip packs ~2MB
@@ -407,6 +416,57 @@ from PR #302 once that lands.)
 - **Build gotcha honored:** the new exe is in BOTH the cmake `--target` list AND the
   staging list in `scripts/build-native-dev.ps1`. Same-change fix: that script no longer
   aborts after a FRESH zoom-SDK stage (`$LASTEXITCODE` was null → treated as failure).
+
+## SRT ingest (contribution feeds IN — video + embedded audio, 2026-08-07)
+
+SRT is required in BOTH directions for a pro AV product; delivery shipped first
+(`SrtFfmpegArgs.h`), this is the INGEST half. A remote guest/encoder pushes an
+MPEG-TS/SRT stream at us and it becomes an ordinary capture source.
+
+- **Shape:** one **ffmpeg decoder subprocess per channel**
+  (`modules/SrtIngestCaptureAdapter.cpp`), never libsrt in the core. Video comes back
+  as raw **BGRA on stdout** at the channel's configured size/rate and merges into
+  `videoFrames` keyed `capture:<deviceId>` — so scenes, multiview, ISO, recording and
+  every sender treat it exactly like a camera. Decoders run under a **job object**
+  (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) so a core crash can't orphan an ffmpeg still
+  holding the SRT port.
+- **Embedded audio is a SECOND output on the same ffmpeg** — `-map 0:a:0? -vn -f f32le
+  -ar 48000 -ac 2` into a **Windows named pipe** the adapter serves
+  (`\\.\pipe\corevideo-srt-ingest-audio-<pid>-<n>`; POSIX hands the child an inherited
+  fd and uses `pipe:3` — no FIFO file, **not verified on hardware**), drained by a reader thread into
+  a ~1s cap (drop-oldest) and emitted from `pollAudioFrames` keyed
+  **`capture:<deviceId>` — the same id as the video**, which is what makes it land in the
+  existing routing/metering/ISO paths with no special-casing. A contribution feed carries
+  its guest's audio inside the transport with no OS device to pair, so it cannot use the
+  WASAPI capture-audio path.
+- **NO SHELL, EVER — the decoder is an argv VECTOR** (`buildSrtIngestArgv` in
+  `SrtFfmpegArgs.h`, POSIX `execvp` / Windows quoted `lpCommandLine` with
+  `lpApplicationName` pinned). `buildSrtUrl` deliberately tolerates a **pasted**
+  `srt://host:port` because pasting a remote contributor's connection string is the
+  intended way to add an ingest — so the URL is attacker-influenced by design. It must
+  stay exactly one argument; never rebuild this as a command string.
+- **`-y` IS LOAD-BEARING.** FFmpeg sees the audio pipe as an existing FILE and
+  interactively prompts `Overwrite? [y/N]`, then EXITS — killing the whole decoder and
+  taking **video** down with it. The symptom is "SRT ingest stopped working entirely"
+  when you touch the audio output. Never drop `-y` from the ingest command.
+- **THE WRAPPER LAW (this bit twice now).** `WinUiCaptureDeviceAdapter` wraps the whole
+  capture composite, and `ICaptureDevice`'s defaults are permissive — inheriting the
+  default `pollAudioFrames` returned `{}` and SILENTLY swallowed every ingested audio
+  frame while video flowed perfectly. Identical shape to the old 1-arg `connect()` bug
+  that caused pink tiles. **Any new `ICaptureDevice` method must be forwarded in
+  `WinUiCaptureDeviceAdapter`** — the shell bridge carries no audio, but the devices it
+  wraps do.
+- **Proof:** `node scripts/validate-srt-ingest.mjs [--seconds N] [--port N] [--keep]`
+  publishes `testsrc` + a 440Hz `sine` over real SRT and judges **decoded pixels and
+  decoded audio in the program recording** — mean luma and audio peak — plus the core's
+  own muxer proof counts. It judges output, not status strings, because the adapter this
+  replaced counted bytes and threw the packets away: it reported "receiving" while
+  emitting frames with NO PIXELS (correction published in `docs/spine-status-2026-08-06.md`).
+- **Harness gotcha worth keeping:** `stop-recording-session` returns BEFORE the async
+  encoder sink writes the MP4 **moov atom**, and file size stabilises well before the moov
+  lands — so a size-based wait reads an unfinalized file that decodes as **zero frames**,
+  which looks exactly like a dead feed. Wait until **ffprobe** can read a duration, with
+  the core still alive, before killing it.
 
 ## Performance profiling (operator lag/stutter/crash)
 

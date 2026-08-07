@@ -165,22 +165,48 @@ inline std::string redactedSrtUrl(const std::string& url) {
 // would have run as the operator. Nothing validated metacharacters. Passing
 // argv straight to execvp removes the shell from the path entirely, so a url
 // can only ever be one ffmpeg argument no matter what it contains.
+// `audioSink`, when set, adds a SECOND output carrying the feed's embedded audio
+// as f32le 48k stereo. A contribution feed carries its guest's audio inside the
+// same transport with no OS device to pair it with, so it cannot ride the WASAPI
+// capture-audio path; the caller passes a pipe/FIFO it is already reading.
 inline std::vector<std::string> buildSrtIngestArgv(const std::string& executable,
                                                    const std::string& url,
-                                                   int width, int height, int frameRate) {
-  return {
+                                                   int width, int height, int frameRate,
+                                                   const std::string& audioSink = std::string()) {
+  std::vector<std::string> argv{
       executable,
       "-hide_banner", "-loglevel", "error",
       // Contribution feeds are live: do not buffer ahead of real time.
       "-fflags", "nobuffer", "-flags", "low_delay",
-      "-i", url,
-      // Video only for now; embedded contribution audio is a follow-up.
-      "-an",
-      "-f", "rawvideo", "-pix_fmt", "bgra",
-      "-s", std::to_string(width) + "x" + std::to_string(height),
-      "-r", std::to_string(frameRate),
-      "pipe:1",
   };
+  if (!audioSink.empty()) {
+    // -y IS LOAD-BEARING. The audio sink already exists (we create the pipe before
+    // spawning), and FFmpeg treats an existing output path as a file to confirm:
+    // it prompts "Overwrite? [y/N]" and EXITS when nothing answers — killing the
+    // decoder and taking VIDEO down with it. -nostdin keeps it off our stdin.
+    argv.push_back("-y");
+    argv.push_back("-nostdin");
+  }
+  argv.push_back("-i");
+  argv.push_back(url);
+  if (!audioSink.empty()) {
+    // With two outputs each needs its own stream mapping.
+    argv.push_back("-map");
+    argv.push_back("0:v:0");
+  }
+  argv.push_back("-an");
+  argv.insert(argv.end(), {"-f", "rawvideo", "-pix_fmt", "bgra",
+                           "-s", std::to_string(width) + "x" + std::to_string(height),
+                           "-r", std::to_string(frameRate),
+                           "pipe:1"});
+  if (!audioSink.empty()) {
+    // "0:a:0?" — the ? makes the mapping OPTIONAL, so a video-only contributor
+    // still decodes instead of failing the whole process.
+    argv.insert(argv.end(), {"-map", "0:a:0?", "-vn",
+                             "-f", "f32le", "-ar", "48000", "-ac", "2"});
+    argv.push_back(audioSink);
+  }
+  return argv;
 }
 
 
