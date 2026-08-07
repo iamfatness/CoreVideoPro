@@ -11,6 +11,7 @@ import type { StateFs, PersistedShowState } from "./persistence.js";
 import type { Clock } from "./clock.js";
 import type { ZoomEvent } from "./zoomIngest.js";
 import type { QueueState } from "./contracts.js";
+import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
 
 function fixedClock(t = 1000): Clock {
   return { now: () => t };
@@ -679,4 +680,188 @@ describe("ShowEngine restore + non-roster input (fix round 1, Important 3)", () 
     expect(snap.slots[0]?.panelist?.participantId).toBe("p2");
     expect(snap.slots[1]?.panelist?.participantId).toBe("p1");
   });
+});
+
+describe("ShowEngine derived layers", () => {
+  it("resolves the selected look and reports it on the snapshot", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.setLook("teatime");
+    const snap = await e.tick();
+    expect(snap.look?.lookId).toBe("teatime");
+    expect(snap.look?.scenePreset).toBe("scene-teatime");
+  });
+
+  it("rejects an unknown look id", () => {
+    expect(() => engine().setLook("nope")).toThrow(/nope/);
+  });
+
+  it("derives tally from the program source and the resolved look", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.setLook("teatime");
+    await e.tick();
+    e.directCut({ kind: "look", lookId: "teatime" });
+    const snap = await e.tick();
+    expect(snap.tally.mode).toBe("look");
+  });
+
+  it("translates the active speaker to a roster slot for tally", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.directCut({ kind: "activeSpeaker" });
+    e.setActiveSpeakerFollow(true);
+    e.onActiveSpeaker("p2");
+    const snap = await e.tick();
+    expect(snap.tally.mode).toBe("activeSpeaker");
+    expect(snap.tally.onAirSlots).toEqual([2]);
+  });
+
+  it("clears manual box assignments when the look changes", async () => {
+    const e = engine();
+    e.setLook("teatime");
+    e.assignBox(1, 3);
+    await e.tick();
+    expect(e.snapshot().manualBoxes).toEqual({ 1: 3 });
+    e.setLook("banter");
+    expect(e.snapshot().manualBoxes).toEqual({});
+  });
+
+  it("keeps manual box assignments when the same look is re-selected", async () => {
+    const e = engine();
+    e.setLook("teatime");
+    e.assignBox(1, 3);
+    e.setLook("teatime");
+    expect(e.snapshot().manualBoxes).toEqual({ 1: 3 });
+  });
+
+  it("refuses paging under manual fill instead of throwing", async () => {
+    const e = engine();
+    e.setLook("teatime");
+    await e.tick();
+    expect(() => e.nextGuest()).not.toThrow();
+    const snap = await e.tick();
+    expect(snap.page).toBe(0);
+    expect(snap.pagingRefused).toMatch(/manual/i);
+  });
+
+  /**
+   * Transport degradation. The invariant this must break on: emitting a
+   * preview or cut to a host that declared it has no preview bus.
+   */
+  it("routes cut to a direct cut on a host with no preview bus", async () => {
+    const host = new MockHost({ hasPreviewBus: false });
+    const e = engine({ host });
+    e.setLook("teatime");
+    await e.tick();
+    host.clear();
+    e.setPreview({ kind: "look", lookId: "teatime" });
+    e.cut();
+    await e.tick();
+    expect(host.callsOfKind("setPreview")).toEqual([]);
+    expect(host.callsOfKind("cut")).toEqual([]);
+    expect(e.snapshot().program.program).toEqual({ kind: "look", lookId: "teatime" });
+  });
+});
+
+/**
+ * Builds a `ShowEngine` for the property below: `capacity: 8`, one look
+ * ("teatime", 2 boxes) whose `boxFill` is the given fill strategy, and a
+ * Mukana setup whose `hands` endpoint resolves to the given capability
+ * state. `state: "disabled"` means the show was never configured for the
+ * hands integration at all (no `mukana` client is supplied — its health
+ * would be irrelevant, since `resolveCapability` collapses an unconfigured
+ * integration to `disabled` regardless of health content). `"available"`/
+ * `"unavailable"` configure the integration on and supply a fake
+ * `MukanaClient`-shaped `health` getter reporting `ok`/`failing` for
+ * `hands` (the other two endpoints report `ok` so only the capability under
+ * test varies). The queue is seeded directly (there is no public setter for
+ * the raw hands-queue state yet — that lands with the polling wiring) with
+ * 5 PINs, which spans exactly 3 pages against a 2-box look
+ * (`ceil(5 / 2) = 3`).
+ */
+function fakeMukanaWithHandsState(state: "ok" | "failing"): MukanaClient {
+  const ok: MukanaHealth = { state: "ok", consecutiveFailures: 0, detail: null };
+  const failing: MukanaHealth = { state: "failing", consecutiveFailures: 3, detail: "hands endpoint down" };
+  const health: Record<MukanaEndpoint, MukanaHealth> = {
+    panelists: ok,
+    hands: state === "ok" ? ok : failing,
+    question: ok
+  };
+  return { health } as unknown as MukanaClient;
+}
+
+function engineWithFill(fill: "queue" | "manual", state: "available" | "unavailable" | "disabled") {
+  const handsEnabled = state !== "disabled";
+  const config = parseShowEngineConfig({
+    capacity: 8,
+    statePath: "/state/show.json",
+    galleryCells: 16,
+    integrations: { handsQueue: handsEnabled },
+    ...(handsEnabled
+      ? { mukana: { baseUrl: "https://example.com/rest.php", event: "officehours" } }
+      : {}),
+    looks: [
+      {
+        id: "teatime",
+        label: "Teatime",
+        scenePreset: "scene-teatime",
+        boxes: 2,
+        includesHost: true,
+        includesReader: false,
+        boxFill: fill
+      }
+    ]
+  });
+
+  const e = new ShowEngine({
+    config,
+    host: new MockHost(),
+    clock: fixedClock(),
+    store: new StateStore(config.statePath, { fs: memoryFs() }),
+    mukana: handsEnabled ? fakeMukanaWithHandsState(state === "available" ? "ok" : "failing") : undefined
+  });
+
+  (e as unknown as { queue: QueueState }).queue = {
+    previous: [],
+    current: "1001",
+    upcoming: ["1002", "1003", "1004", "1005"]
+  };
+
+  return e;
+}
+
+/**
+ * THE PLAN 4 OBLIGATION, discharged as a property.
+ *
+ * Quantified over — and the quantification is the point, because Plan 4's own
+ * property held page constant at 0 and that is exactly where its bug hid:
+ *   - page over -2..pageCount+2, including both out-of-range directions;
+ *   - all three capability states for handsQueue;
+ *   - both boxFill strategies.
+ *
+ * The invariant it must break on: clampPage and resolveLook receiving
+ * different capability values, or either being called without one. Any of
+ * those makes some (page, capability) pair throw out of tick().
+ */
+describe("clampPage and resolveLook always agree", () => {
+  const states = ["available", "unavailable", "disabled"] as const;
+
+  for (const fill of ["queue", "manual"] as const) {
+    for (const state of states) {
+      for (const page of [-2, -1, 0, 1, 2, 3, 4]) {
+        it(`survives page ${page} with ${fill} fill and a ${state} hands queue`, async () => {
+          const e = engineWithFill(fill, state);
+          e.setLook("teatime");
+          e.setPage(page);
+          await expect(e.tick()).resolves.toBeDefined();
+          const snap = e.snapshot();
+          expect(snap.page).toBeGreaterThanOrEqual(0);
+          expect(snap.page).toBeLessThan(snap.look?.pageCount ?? 1);
+        });
+      }
+    }
+  }
 });

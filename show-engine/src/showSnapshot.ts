@@ -41,6 +41,13 @@ export type ShowSnapshot = {
   health: Record<MukanaEndpoint, MukanaHealth>;
   /** Panelists the live roster did not have a seat for, e.g. capacity overflow on `rebuild`. */
   unseated: Panelist[];
+  /**
+   * Why the last `nextGuest`/`prevGuest` call did not move the page, or
+   * `null` when the last paging attempt (if any) succeeded. Set only under
+   * manual box fill, where there is no queue window to move through — a
+   * typed refusal rather than a throw or a silent no-op (spec §4).
+   */
+  pagingRefused: string | null;
 };
 
 export type BuildSnapshotInput = {
@@ -58,6 +65,8 @@ export type BuildSnapshotInput = {
   capabilities: ShowCapabilities;
   health: Record<MukanaEndpoint, MukanaHealth>;
   unseated: readonly Panelist[];
+  /** Optional so existing callers building this input keep compiling; omitted means null. */
+  pagingRefused?: string | null;
 };
 
 function clonePanelist(panelist: Panelist): Panelist {
@@ -174,6 +183,7 @@ export function buildSnapshot(input: BuildSnapshotInput): ShowSnapshot {
     overlays: cloneOverlays(input.overlays),
     capabilities: cloneCapabilities(input.capabilities),
     health: cloneHealth(input.health),
-    unseated: input.unseated.map(clonePanelist)
+    unseated: input.unseated.map(clonePanelist),
+    pagingRefused: input.pagingRefused ?? null
   };
 }

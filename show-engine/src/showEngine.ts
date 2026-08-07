@@ -4,13 +4,20 @@
  * individually tested but never wired together; this is that wiring.
  *
  * This file covers construction, restore-from-disk, the snapshot accessor,
- * roster intake, the seating tick (Task 5), and the active-speaker dispatch
- * gate (Task 6). There is no other derived-layer recompute or host command
- * emission yet (Task 7/8+), and no polling loop (Task 9+) — `setLook` is
- * implemented here only far enough to select the active look id, because
- * two restore tests need it; its tick behavior (recomputing the resolved
- * look, clamping the page, clearing manual boxes on a look change) is
- * Task 7's job.
+ * roster intake, the seating tick (Task 5), the active-speaker dispatch gate
+ * (Task 6), and the derived layers (Task 7): look resolution against the
+ * live roster and hands queue, paging, manual box assignment, program/
+ * preview transport (with degradation for a host with no preview bus), and
+ * the overlay director. Host command emission (diffing derived state into
+ * `HostAdapter` calls for slots/looks/gallery/nameplates/questions) and the
+ * polling loop are Task 8/9+.
+ *
+ * The one rule every reviewer of this file must re-verify: `clampPage` and
+ * `resolveLook` are called together, exactly once per tick, and always
+ * share the SAME resolved `handsQueue` capability. Both default an omitted
+ * capability to unusable, so passing it to one and not the other produces
+ * no crash and no error — just an operator paging control that silently
+ * does nothing. See the call site inside `tick()` for the full story.
  */
 
 import type { Clock } from "./clock.js";
@@ -32,8 +39,25 @@ import { deriveTally } from "./tallyPublisher.js";
 import { resolveCapabilities } from "./capabilities.js";
 import { buildSnapshot, type ShowSnapshot } from "./showSnapshot.js";
 import { StateStore, STATE_VERSION, type PersistedShowState } from "./persistence.js";
-import type { LookResolution, ManualBoxAssignments } from "./lookDirector.js";
-import { EXCLUSIVE_ROLES, type Panelist, type QueueState, type Role } from "./contracts.js";
+import {
+  clampPage,
+  effectiveBoxFill,
+  findChairSlots,
+  resolveLook,
+  type LookResolution,
+  type ManualBoxAssignments
+} from "./lookDirector.js";
+import { stripChairs } from "./handsQueue.js";
+import {
+  EXCLUSIVE_ROLES,
+  type LookDefinition,
+  type MukanaQuestion,
+  type Panelist,
+  type ProgramSource,
+  type QueueState,
+  type Role,
+  type Slot
+} from "./contracts.js";
 import type { PersonKey } from "./personKey.js";
 
 /**
@@ -61,6 +85,13 @@ function sameIdSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
     if (!b.has(id)) return false;
   }
   return true;
+}
+
+/** The PIN of whoever is seated at `slotNumber`, or `null` for an empty/absent slot. */
+function pinAtSlot(slots: readonly Slot[], slotNumber: number | null): string | null {
+  if (slotNumber === null) return null;
+  const entry = slots.find((candidate) => candidate.slot === slotNumber);
+  return entry?.panelist?.pin ?? null;
 }
 
 export type ShowEngineDeps = {
@@ -123,6 +154,34 @@ export class ShowEngine {
   private manualBoxes: ManualBoxAssignments = {};
   private queue: QueueState = emptyQueue();
   private unseatedPanelists: Panelist[] = [];
+
+  /**
+   * The current audience question, or `null` when there is none to show.
+   * No `ShowEngine` input sets this yet — Mukana question-feed wiring is a
+   * later task — so it is always `null` today; `OverlayDirector.update`
+   * still takes it every tick so that wiring is a one-line change when it
+   * lands, not a new call shape.
+   */
+  private question: MukanaQuestion | null = null;
+
+  /** Whether the operator currently wants the audience question on screen. Set by `setQuestionVisible`. */
+  private questionVisible = false;
+
+  /**
+   * Why the last `nextGuest`/`prevGuest` call did not move the page, or
+   * `null` when the last paging attempt (if any) succeeded. Only
+   * `nextGuest`/`prevGuest` write this — `tick()`'s own `clampPage` step
+   * never touches it, so a refusal recorded between ticks is still visible
+   * on the snapshot the following tick publishes.
+   */
+  private pagingRefused: string | null = null;
+
+  /**
+   * Whether `overlayDirector.update()` reported a change on the most recent
+   * tick. Task 8's host-emission step needs this to decide whether the
+   * overlay layer is worth re-sending; Task 7 only has to preserve it.
+   */
+  private overlaysChanged = false;
 
   /**
    * The participant id set the roster was last seated against, so `tick()`
@@ -199,19 +258,155 @@ export class ShowEngine {
   }
 
   /**
-   * Select the active look by id. This is a minimal setter for now — it
-   * only records which look definition is active. Task 6 gives it its tick
-   * behavior (resolving it against the live roster, clamping the page,
-   * clearing manual boxes on a change). Throws on an unknown look id.
+   * Select the active look by id. Throws on an unknown look id. Switching
+   * to a *different* look clears `manualBoxes` entirely (spec §3.2) — box 1
+   * of one arrangement is not box 1 of another, so carrying manual
+   * assignments across a look change would put the wrong person in the
+   * wrong window. Re-selecting the SAME look is a no-op on `manualBoxes`,
+   * so an idempotent re-select never wipes the operator's work. The actual
+   * resolve-against-the-roster/clamp-the-page work happens in `tick()`.
    */
   setLook(lookId: string): void {
     const look = this.config.looks.find((candidate) => candidate.id === lookId);
     if (look === undefined) {
       throw new Error(`ShowEngine.setLook: unknown look id ${JSON.stringify(lookId)}`);
     }
+    if (this.selectedLookId !== lookId) {
+      this.manualBoxes = {};
+    }
     this.selectedLookId = lookId;
     this.pendingPersist = true;
     this.otherInputsChanged = true;
+  }
+
+  /**
+   * Test-only escape hatch: writes the pending page directly, with **no**
+   * clamping. Production code should never call this — operator paging
+   * goes through `nextGuest`/`prevGuest`, and `tick()`'s own `clampPage`
+   * step is what keeps `this.page` sane between ticks, deriving the valid
+   * range from the current capability state and queue every time. This
+   * exists so a property test can plant a page the way a *stale* one would
+   * actually arrive at the top of a tick — e.g. left over from a
+   * fill-strategy flip or a look change — and prove `tick()` survives it
+   * rather than throwing.
+   */
+  setPage(page: number): void {
+    this.page = page;
+  }
+
+  /**
+   * Move the paging window forward/back by one. Only takes effect when the
+   * active look's boxes are actually filling from the hands queue this
+   * tick (`effectiveBoxFill(...) === "queue"`) — under manual fill (a
+   * manual look, or a queue look whose hands feed just died) there is no
+   * queue window to move through. In that case the call is inert and
+   * `pagingRefused` records why, rather than throwing or silently doing
+   * nothing (spec §4). `tick()`'s own `clampPage` step is what keeps
+   * whatever page results valid; this method only records operator intent.
+   */
+  nextGuest(): void {
+    this.adjustPage(1);
+  }
+
+  /** The mirror of `nextGuest`; see its docs. */
+  prevGuest(): void {
+    this.adjustPage(-1);
+  }
+
+  private adjustPage(delta: number): void {
+    const look = this.lookById(this.selectedLookId);
+    if (look === null) {
+      this.pagingRefused = "paging refused: no look is selected";
+      return;
+    }
+
+    const caps = resolveCapabilities(this.config, this.mukanaHealth());
+    const fill = effectiveBoxFill(look, caps.handsQueue);
+    if (fill !== "queue") {
+      this.pagingRefused = `paging refused: box fill is ${fill}, not queue-driven`;
+      return;
+    }
+
+    this.pagingRefused = null;
+    this.page += delta;
+  }
+
+  /**
+   * Write or overwrite one manual box assignment. Meaningful only under
+   * manual box fill (`resolveLook` simply ignores manual assignments for a
+   * look currently filling from the queue), but recorded unconditionally —
+   * the operator may be setting it up in advance of a fill-strategy switch.
+   */
+  assignBox(box: number, slot: number): void {
+    this.manualBoxes = { ...this.manualBoxes, [box]: slot };
+    this.pendingPersist = true;
+  }
+
+  /** Remove one manual box assignment, leaving the rest untouched. */
+  clearBox(box: number): void {
+    const next = { ...this.manualBoxes };
+    delete next[box];
+    this.manualBoxes = next;
+    this.pendingPersist = true;
+  }
+
+  /** Toggle whether the audience question overlay should render. Forwarded to `OverlayDirector.update` every tick. */
+  setQuestionVisible(on: boolean): void {
+    this.questionVisible = on;
+  }
+
+  /**
+   * Stage a source in preview. Always updates `ProgramBus`'s own preview
+   * field — that is just in-memory bus state, not a host emission — but
+   * only forwards to the host when `host.capabilities().hasPreviewBus` is
+   * true. A host with no preview bus has no use for a staged-but-unseen
+   * source, and must never receive this call (transport degradation rule).
+   */
+  setPreview(source: ProgramSource): void {
+    this.programBus.setPreview(source);
+    if (this.host.capabilities().hasPreviewBus) {
+      this.host.setPreview(source);
+    }
+  }
+
+  /**
+   * `cut()` and `auto()` are host-facing twins of `ProgramBus.cut`/`auto`,
+   * modeled the same way here: identical except for which host method they
+   * call. On a host with a preview bus, both swap `ProgramBus`'s
+   * program/preview and tell the host to do the same. On a host with none,
+   * there is nothing to swap TO except whatever is currently staged in
+   * `ProgramBus`'s preview field, so both route to `directCut` with that
+   * value instead — and never call `host.cut()`/`host.auto()`, since this
+   * host declared it has no such concept.
+   */
+  cut(): void {
+    if (this.host.capabilities().hasPreviewBus) {
+      this.programBus.cut();
+      this.host.cut();
+    } else {
+      this.directCut(this.programBus.state().preview);
+    }
+  }
+
+  /** See `cut()` — identical transport-degradation shape, differing only in which host method it calls. */
+  auto(transitionId?: string): void {
+    if (this.host.capabilities().hasPreviewBus) {
+      this.programBus.auto();
+      this.host.auto(transitionId);
+    } else {
+      this.directCut(this.programBus.state().preview);
+    }
+  }
+
+  /**
+   * Cut program straight to `source`, bypassing preview. There is no
+   * `HostAdapter.directCut` — a direct cut has no host-transport
+   * equivalent of its own (Task 8's derived-state emission is what tells a
+   * connected host what is now on screen), so this only ever touches the
+   * in-process `ProgramBus`.
+   */
+  directCut(source: ProgramSource): void {
+    this.programBus.directCut(source);
   }
 
   /**
@@ -336,10 +531,11 @@ export class ShowEngine {
   /**
    * The heartbeat. Runs in a fixed order: commit the buffered roster, seat
    * it (holding seats still for an unchanged participant set, reseating
-   * only when it actually changed), recompute the derived layers (Tasks
-   * 6–7 — a no-op today), persist if the debounce window allows it, emit
-   * host commands (Task 8 — a no-op today), then advance the revision and
-   * publish.
+   * only when it actually changed), dispatch a pending active speaker
+   * (Task 6), recompute the derived layers — look resolution, paging,
+   * program staging, overlays (Task 7) — persist if the debounce window
+   * allows it, emit host commands (Task 8 — a no-op today), then advance
+   * the revision and publish.
    *
    * Step 1 alone (`ZoomIngest.commit()`) can say nothing changed, but the
    * tick still runs to completion — a look or capability change can alter
@@ -455,10 +651,61 @@ export class ShowEngine {
       }
     }
 
-    // Remaining derived layers (look resolution, tally recompute, overlays)
-    // land in Task 7; host command emission lands in Task 8. Nothing to do
-    // here yet — `snapshot()` already recomputes tally/capabilities live
-    // from current module state.
+    // The derived layers (Task 7). Resolve capabilities ONCE for this tick
+    // and thread that single value everywhere — most importantly into the
+    // `clampPage`/`resolveLook` pair immediately below, which MUST always
+    // receive the same `handsQueue` capability. Each defaults an omitted
+    // capability to unusable, so passing it to one call and not the other
+    // silently pins the operator to page 0 (no crash, no error — see the
+    // file-level Plan 4 obligation this class inherited). Never introduce a
+    // third call site that invokes only one of the two.
+    const caps = resolveCapabilities(this.config, this.mukanaHealth());
+
+    const slots = this.liveSlots.slots();
+    const { hostSlot: seatedHostSlot, readerSlot: seatedReaderSlot } = findChairSlots(slots);
+    const strippedQueue = stripChairs(this.queue, {
+      hostPin: pinAtSlot(slots, seatedHostSlot),
+      readerPin: pinAtSlot(slots, seatedReaderSlot)
+    });
+
+    const look = this.lookById(this.selectedLookId);
+    const previousLookId = this.currentLook?.lookId ?? null;
+    let resolution: LookResolution | null = null;
+
+    if (look !== null) {
+      this.page = clampPage(look, strippedQueue, this.page, caps.handsQueue);
+      resolution = resolveLook(look, {
+        queue: strippedQueue,
+        slots,
+        page: this.page,
+        handsQueue: caps.handsQueue,
+        manualBoxes: this.manualBoxes
+      });
+    }
+
+    // Program: stage a newly-active look in preview (never program — an
+    // operator selecting a look must not force it on air by itself). Goes
+    // through the engine's own `setPreview`, which already knows how to
+    // degrade for a host with no preview bus.
+    if (resolution !== null && resolution.lookId !== previousLookId) {
+      this.setPreview({ kind: "look", lookId: resolution.lookId });
+    }
+    this.currentLook = resolution;
+
+    // Overlays: re-derive every tick and keep the change flag for Task 8.
+    // No `ShowEngine` input sets `question` yet, so it is always `null`
+    // today (see the field's own doc comment).
+    this.overlaysChanged = this.overlayDirector.update({
+      look: resolution,
+      question: this.question,
+      questionVisible: this.questionVisible
+    });
+
+    // Tally has no state of its own to advance here — `snapshot()` already
+    // derives it fresh from `this.currentLook` (now populated above) plus
+    // the program source and the active-speaker-to-slot translation, which
+    // only the engine can do (it is the one thing that knows both
+    // `ProgramBus` and `LiveSlots`).
 
     const now = this.clock.now();
     const debounceElapsed =
@@ -487,7 +734,7 @@ export class ShowEngine {
     const slots = this.liveSlots.slots();
     const gallery = this.gallery.cells();
     const program = this.programBus.state();
-    const health = this.mukanaClient?.health ?? NO_REGISTRY_HEALTH;
+    const health = this.mukanaHealth();
     const capabilities = resolveCapabilities(this.config, health);
 
     const panelists = buildPanelistDb(
@@ -521,7 +768,8 @@ export class ShowEngine {
       overlays: this.overlayDirector.state(),
       capabilities,
       health,
-      unseated: this.unseatedPanelists
+      unseated: this.unseatedPanelists,
+      pagingRefused: this.pagingRefused
     });
   }
 
@@ -535,5 +783,16 @@ export class ShowEngine {
       manualBoxes: this.manualBoxes,
       lookId: this.selectedLookId
     };
+  }
+
+  /** The current Mukana health snapshot, or the all-failing stand-in when there is no client at all. */
+  private mukanaHealth(): Record<MukanaEndpoint, MukanaHealth> {
+    return this.mukanaClient?.health ?? NO_REGISTRY_HEALTH;
+  }
+
+  /** Look up a `LookDefinition` by id, or `null` for a `null` id. Never throws — `setLook` is the validating gate. */
+  private lookById(lookId: string | null): LookDefinition | null {
+    if (lookId === null) return null;
+    return this.config.looks.find((candidate) => candidate.id === lookId) ?? null;
   }
 }
