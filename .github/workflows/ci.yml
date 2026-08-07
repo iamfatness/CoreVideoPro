@@ -32,6 +32,11 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      # The drill OPENS the recording to prove it is playable at program
+      # resolution — bytes on disk are not proof. macos-14 runners ship no
+      # ffmpeg, so without this the assertion cannot run at all.
+      - name: Install ffmpeg (ffprobe for the recording assertion)
+        run: brew install ffmpeg
       - name: Configure (metal)
         run: |
           cmake -S native -B native/build-metal -G Ninja \

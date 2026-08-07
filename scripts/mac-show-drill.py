@@ -292,13 +292,24 @@ def main():
     # the show was configured for (a 320x180 preview upscaled into a 1080p
     # container is the failure the RTMP path shipped for months).
     if artifact and os.path.exists(artifact) and os.path.getsize(artifact) > 1024:
-        probe = subprocess.run(
-            ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,nb_frames",
-             "-of", "default=nw=1:nk=1", artifact],
-            capture_output=True, text=True)
-        fields = [line for line in probe.stdout.split() if line]
-        if probe.returncode != 0 or len(fields) < 2:
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,nb_frames",
+                 "-of", "default=nw=1:nk=1", artifact],
+                capture_output=True, text=True)
+        except FileNotFoundError:
+            # LOUD, not a traceback and NEVER a silent skip: without ffprobe the
+            # playability gate cannot run, so the drill must not report success.
+            # It failed this way on macos-14 runners, which ship no ffmpeg.
+            failures.append(
+                "ffprobe is not installed, so the recording could not be checked "
+                "for playability — install ffmpeg on this machine/runner")
+            probe = None
+        fields = [line for line in probe.stdout.split() if line] if probe else []
+        if probe is None:
+            pass  # already reported above
+        elif probe.returncode != 0 or len(fields) < 2:
             failures.append(
                 f"recording is UNPLAYABLE ({os.path.getsize(artifact)} bytes on "
                 f"disk, ffprobe: {(probe.stderr or '').strip()[:120]}) — an "
