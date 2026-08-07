@@ -920,14 +920,60 @@ describe("ShowEngine roster tick", () => {
     expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
   });
 
-  it("leaves a hole rather than compacting when someone leaves", async () => {
+  /**
+   * A Zoom departure does NOT vacate a seat. Owner ruling, 2026-08-06: the seat
+   * is held and flagged offline, so a connection blip does not drop a panelist
+   * off air and a reconnect returns them to the SAME slot. Clearing a seat is an
+   * explicit operator action, exactly as it was in the Isadora patch this ports.
+   *
+   * This matches the two modules underneath: `ZoomIngest` keeps a departed
+   * participant marked offline "so they can be restored on reconnect"
+   * (zoomIngest.ts:52-55), and `LiveSlots.refresh` documents that a vanished
+   * participant "keeps their seat but is marked offline — visibly gone rather
+   * than silently dropped" (liveSlots.ts:114-118).
+   *
+   * The invariant this must break on: any code that vacates a seat on an
+   * offline flag. That makes a reconnecting guest permanently unseatable,
+   * because a departure never changes the id set and `refresh` only re-pulls
+   * ALREADY-seated panelists.
+   */
+  it("holds the seat and marks it offline when someone leaves", async () => {
     const e = engine();
     e.onZoomEvent(joined("p1", "Ann"));
     e.onZoomEvent(joined("p2", "Bo"));
     await e.tick();
     e.onZoomEvent({ kind: "left", participantId: "p1" });
     const snap = await e.tick();
-    expect(snap.slots[0]?.panelist).toBeNull();
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p1");
+    expect(snap.slots[0]?.panelist?.online).toBe(false);
+    expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
+  });
+
+  it("returns a reconnecting panelist to the same slot", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.onZoomEvent({ kind: "left", participantId: "p1" });
+    await e.tick();
+    e.onZoomEvent(joined("p1", "Ann"));
+    const snap = await e.tick();
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p1");
+    expect(snap.slots[0]?.panelist?.online).toBe(true);
+  });
+
+  /**
+   * The refresh-vs-rebuild branch, pinned in BOTH directions. Mutation testing
+   * showed the committed suite passed under "always rebuild" AND under "always
+   * refresh" — the second means a mid-show join is never seated and nothing
+   * fails. Every roster test staged its joins before the first tick.
+   */
+  it("seats a guest who joins after the first tick", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    await e.tick();
+    e.onZoomEvent(joined("p2", "Bo"));
+    const snap = await e.tick();
     expect(snap.slots[1]?.panelist?.participantId).toBe("p2");
   });
 
