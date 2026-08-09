@@ -985,8 +985,19 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
         if (!shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_),
                                   zoomEngineI420FrameByteSize(ref.width, ref.height))) {
           delete opened;
-          continue;  // not created yet; retry next poll
+          // LOUD past ~2s of consecutive failures (this path polls at render
+          // rate). "Not created yet" is normal for the first few polls; a
+          // stream that has announced dimensions but stays unmappable is a
+          // frozen source, and this used to retry in complete silence.
+          if (++ref.regionOpenFailures == 120 || ref.regionOpenFailures % 600 == 0) {
+            std::fprintf(stderr,
+                         "[zoom-ingest] %s: video shm STILL unmappable after %d polls "
+                         "(%ux%u announced) — source is frozen, engine region missing or undersized\n",
+                         uuid.c_str(), ref.regionOpenFailures, ref.width, ref.height);
+          }
+          continue;  // retry next poll
         }
+        ref.regionOpenFailures = 0;
         ref.regionOpaque = std::shared_ptr<void>(opened, [](void* pointer) {
           auto* region = static_cast<ShmRegion*>(pointer);
           shm_region_destroy(*region);

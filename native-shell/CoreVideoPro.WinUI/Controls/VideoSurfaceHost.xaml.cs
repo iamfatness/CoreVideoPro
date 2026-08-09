@@ -351,7 +351,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     }
 
     private void OnPresentationPathChanged() =>
-        DispatcherQueue.TryEnqueue(RefreshPathBindings);
+        UiDispatch.Run(DispatcherQueue, RefreshPathBindings, "VideoSurfaceHost.RefreshPathBindings");
 
     private void TryPresentPendingSharedHandle()
     {
@@ -475,11 +475,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         }
 
         _sourceFramingRefreshScheduled = true;
-        _ = DispatcherQueue.TryEnqueue(() =>
+        UiDispatch.Run(DispatcherQueue, () =>
         {
             _sourceFramingRefreshScheduled = false;
             ApplySourceFraming();
-        });
+        }, "VideoSurfaceHost.ApplySourceFraming");
     }
 
     private void RefreshPathBindings()

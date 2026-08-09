@@ -1669,13 +1669,20 @@ inline AudioFrame meterAudioFrameFromPcm(const AudioFrame& frame) {
 inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame& rawFrame, const AudioDspTimingReference& timing = {}) {
   const AudioFrame frame = meterAudioFrameFromPcm(rawFrame);
   const BoundedAudioFrame bounded = boundAudioFrame(frame);
-  const std::uint32_t hash = audioDspHash(frame);
   const bool hasPcm = !frame.pcm.empty();
   const bool hasExplicitRms = frame.rmsLevel > 0.0;
   const bool hasExplicitPeak = frame.peakLevel > 0.0;
-  const double rmsLevel = frame.rmsLevel > 0.0 ? bounded.rmsLevel : deterministicRmsLevel(frame, hash);
+  // HONEST METERS ONLY (2026-08-09). This used to fall back to
+  // deterministicRmsLevel(frame, hash) — a level SYNTHESIZED from a hash — when
+  // a frame carried no PCM and no producer metadata. In a live meeting that
+  // painted every participant strip with a steady fake level: seven strips
+  // pulsing together while the ISO stems on disk proved six of them were
+  // DIGITAL SILENCE. A meter may only show measured PCM or explicit producer
+  // levels; no evidence = silence. (The synthetic path was a leftover from the
+  // pre-real-audio simulated core.)
+  const double rmsLevel = frame.rmsLevel > 0.0 ? bounded.rmsLevel : 0.0;
   const double peakLevel = frame.peakLevel > 0.0 ? clampAudioDouble(bounded.peakLevel, rmsLevel, 1.0) : rmsLevel;
-  const double noiseFloorDb = frame.noiseFloorDb < 0.0 ? bounded.noiseFloorDb : -72.0 + static_cast<double>((hash >> 16) % 22u);
+  const double noiseFloorDb = frame.noiseFloorDb < 0.0 ? bounded.noiseFloorDb : -72.0;
   const int inputLevel = frame.voiceActive ? clampAudioInt(static_cast<int>(std::lround(rmsLevel * 100.0)), 0, 100) : 0;
   const int nominalSamplesPerPacket = std::max(1, bounded.sampleRate / 50);
   const bool silenceDetected = !bounded.voiceActive ||

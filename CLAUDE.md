@@ -145,6 +145,69 @@ keep one stable swap chain per surface (program, preview, one multiview);
 present with **skip-present** (only on a new keyed-mutex frame) — smooth-present crashes
 ~31s in.
 
+## Live-meeting QA day (2026-08-09) — eight defects found in ONE real session
+
+An afternoon of the owner operating a real 7-guest meeting surfaced more product
+truth than a month of synthetic drills. Each fix carries its full story as a
+comment at the code site; this is the index.
+
+- **Zoom video froze ~2s after join — SHM regions cannot GROW on Windows**
+  (`engine-ipc.h`, `engine-video.cpp`, `engine-share.cpp`): regions were sized to
+  the FIRST ramp frame (256x144); a named section cannot grow while the core
+  holds a read handle, so the 640x360→1080p ramp failed silently forever (the
+  failure log was gated on frame_count==0). Regions are now allocated ONCE at
+  capacity (1080p video / 4K share ≈ 12.4MB, Zoom's ceiling) and both sides log
+  loudly on shm failure. NEVER size a shared mapping to the current frame.
+- **Leaving a meeting killed the entire studio** (`SettingsViewModel.LeaveZoomAsync`):
+  the leave path kill-treed the media core (engine-distrust-era sledgehammer), and
+  the supervisor treated it as deliberate → no respawn → endless deferred syncs
+  ("unstable" until app restart; core log ends the second the leave runs). A
+  meeting is one SOURCE. `_bridge.Stop()` is the app-exit path ONLY. Proof:
+  `node scripts/validate-leave-keeps-core.mjs` (join → leave → still rendering →
+  rejoin on the same core).
+- **Recording restart storm — start-recording-session is IDEMPOTENT per sessionId**
+  (`MediaCore::startRecordingSession`): the command rides the REPEATING sync
+  channel, and every delivery restarted the writer → with Magic Scene flipping
+  scenes ~1/s a live meeting produced 465 one-second shards. Same-id repeat = the
+  channel re-asserting state = no-op. The sessionId's ISO suffix is also SORTED
+  (`MediaCoreCommandBuilder`) so a roster flap reordering the same selection
+  cannot mint a "new" session mid-recording.
+- **Zoom ISO audio isolation is REAL — proven against live Zoom**: 7 stems from a
+  real meeting; only the talker carried signal, six were digital silence, zero
+  pairwise correlation. The per-guest-stems product story holds.
+- **…which convicted the meters: they FABRICATED levels** (`AudioDsp.h
+  analyzeAudioParticipantFrame`): frames with no PCM got a level synthesized from
+  a HASH (pre-real-audio leftover, untested) — seven strips pulsing identically
+  while six stems were silence on disk. Meters now show measured PCM or explicit
+  producer levels only; no evidence = silence.
+- **THE FADER LAW (owner rule): no audio source reaches any bus without a strip.**
+  Core: a routed source with no channel strip is DROPPED from the bus mix, loudly
+  (`MediaCore` routed-source build; headless callers that sync no console keep
+  unity). Shell: `zoom-mix` — the audible Zoom path — was EXPLICITLY excluded from
+  getting a strip (`IsConcreteAudioMixSourceId`), which is why muting every fader
+  left audio on master. It has a "Zoom program mix" fader now.
+- **A throwing DispatcherQueue.TryEnqueue callback fail-fasts the process with NO
+  managed log** (`UiDispatch.cs`): three live crashes decoded to ordinary NRE /
+  ArgumentOutOfRange inside queued callbacks (stowed 0x80004003 / 0x8000000b at
+  DeferInvokeCallback). ALL queued UI callbacks now route through `UiDispatch`
+  (log-with-stack + survive). A raw `TryEnqueue` with a throwing body is a
+  process-killer — never add one.
+- **Sources kept reverting: auto-assign refilled operator-removed guests every
+  sync** (`ShowInputsCoordinator`): the fill pass now only places ids it has
+  NEVER seen this meeting (real newcomers); flipping the auto-assign toggle
+  explicitly reassigns everyone. Also: `DefaultMaxVideoSubscriptions` was 6, so
+  the 7th+ camera-on guest was silently never subscribed — now 8 (the product's
+  advertised feed count; the engine's downgrade ladder handles SDK refusals
+  loudly). And `Selector.SelectedValue` must never be driven by x:Bind inside an
+  ItemsRepeater template (`SourcesInputsPage` role ComboBox crash) — apply
+  selection on Loaded, guarded.
+- **Meters clipped when not fullscreen** (`AudioLevelMeter`): fixed-size segments
+  (36×9px = 324px minimum) overflowed smaller windows, clipping the GREEN end.
+  Segments now scale (spacing → size → count) and re-fit on resize.
+- **Transport buttons had no `AutomationProperties.Name`** — screen readers and
+  UIA (including our own tooling) could not find Record/Stream/VirtualCam. Named
+  now; give every new interactive control an automation name.
+
 ## Other gotchas
 
 - **Borders are MULTIVIEW-ONLY — they NEVER composite into program/preview

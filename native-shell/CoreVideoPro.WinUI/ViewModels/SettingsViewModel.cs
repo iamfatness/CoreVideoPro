@@ -880,12 +880,19 @@ public sealed partial class SettingsViewModel : ObservableObject
                 var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
                 ApplyCaptureSnapshot(snapshot);
                 JoinStatus = "Disconnected from Zoom.";
-                // _bridge.Stop() tears down the media-core child (kill-tree +
-                // WaitForExit(1500) under the supervisor gate) - run it off the
-                // UI thread, exactly like the app-exit path (MainWindow.
-                // ShutdownAsync wraps disposal in Task.Run). Inline it here and
-                // leave-meeting freezes the operator console for ~1.5s.
-                await Task.Run(_bridge.Stop).ConfigureAwait(true);
+                // The MEDIA CORE STAYS UP. This used to _bridge.Stop() — a
+                // kill-tree of the whole core child — so leaving a Zoom meeting
+                // silently killed every capture device, the virtual camera, the
+                // program render and any recording, and the supervisor treated
+                // it as a deliberate stop so nothing respawned: the studio sat
+                // "unstable" (endless deferred syncs) until an app restart
+                // (live session, 2026-08-09: core log ends the second the leave
+                // ran; shell limped for 93 minutes). The kill was a sledgehammer
+                // from the era when the Zoom ENGINE could not be trusted to die;
+                // the engine is its own subprocess with the G4-ordered teardown
+                // now, and zoom-leave above already makes it exit cleanly. A
+                // meeting is one SOURCE — leaving it must not tear down the
+                // switcher. _bridge.Stop() remains the APP-EXIT path only.
             }
             else
             {
@@ -1370,13 +1377,9 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private void RunOnUiThread(Action action)
     {
-        if (_dispatcher.HasThreadAccess)
-        {
-            action();
-            return;
-        }
-
-        _dispatcher.TryEnqueue(() => action());
+        // See UiDispatch: a throwing TryEnqueue callback fail-fasts the process
+        // with no managed log. Route through the hardened dispatcher.
+        UiDispatch.Run(_dispatcher, action, "SettingsViewModel");
     }
 
     private void SetJoinProgress(ZoomMeetingState state, string status) =>

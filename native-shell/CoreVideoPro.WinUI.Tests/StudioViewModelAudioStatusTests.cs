@@ -32,7 +32,11 @@ public sealed class StudioViewModelAudioStatusTests
     [InlineData("local-machine-audio", true)]
     [InlineData("capture:uvc-01", true)]
     [InlineData("media", true)]
-    [InlineData("zoom-mix", false)]
+    // FADER LAW (2026-08-09): zoom-mix IS a concrete PCM source — it is the
+    // audible Zoom path (Z1 routes zoom-mix → program), and excluding it left
+    // the meeting mix with no fader: muting every strip did not silence master.
+    // Only role ALIASES (active-speaker / screen-share) stay excluded.
+    [InlineData("zoom-mix", true)]
     [InlineData("active-speaker", false)]
     [InlineData("screen-share", false)]
     public void IsConcreteAudioMixSourceId_TreatsMediaAsMixerChannelButKeepsPlaceholdersOut(

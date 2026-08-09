@@ -871,7 +871,10 @@ public sealed class MediaCoreCommandBuilderTests
         var recording = commands.Single(command => command.Type == "start-recording-session");
         Assert.Equal(["zoom:p2", "capture:cam0"], GetStringArray(recording, "isoSourceIds"));
         // Session id sanitizes the ':' in capture ids so it stays a valid id fragment.
-        Assert.Equal("corevideo-recording-zoom-p2-capture-cam0", GetString(recording, "sessionId"));
+        // Suffix ids are SORTED: session identity must be order-insensitive so a
+        // roster flap that reorders the same ISO selection cannot mint a "new"
+        // session and restart the writer mid-recording (2026-08-09 shard burst).
+        Assert.Equal("corevideo-recording-capture-cam0-zoom-p2", GetString(recording, "sessionId"));
     }
 
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)

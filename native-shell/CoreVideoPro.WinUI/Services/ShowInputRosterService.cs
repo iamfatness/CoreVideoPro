@@ -291,7 +291,8 @@ public static class ShowInputRosterService
     public static void SyncZoomParticipantSlots(
         IList<ShowInputSlot> slots,
         IReadOnlyList<string> participantIdsInRosterOrder,
-        bool autoAssign)
+        bool autoAssign,
+        IReadOnlyList<string>? autoAssignCandidates = null)
     {
         var validIds = new HashSet<string>(participantIdsInRosterOrder, StringComparer.Ordinal);
 
@@ -318,7 +319,14 @@ public static class ShowInputRosterService
                  .Select(s => s.ParticipantId!),
             StringComparer.Ordinal);
 
-        foreach (var participantId in participantIdsInRosterOrder)
+        // Fill from CANDIDATES (newly-joined participants), not the whole roster.
+        // Filling every not-currently-assigned id re-added participants the
+        // operator had deliberately unassigned or replaced, on the NEXT sync tick
+        // (~1/s) — the Sources screen "keeps reverting after I change it
+        // manually" bug. The coordinator passes only ids it has never seen in
+        // this meeting; null preserves the old fill-everyone behavior for
+        // callers that mean it (the operator flipping the auto-assign toggle).
+        foreach (var participantId in autoAssignCandidates ?? participantIdsInRosterOrder)
         {
             if (string.IsNullOrWhiteSpace(participantId) || alreadyShown.Contains(participantId))
             {

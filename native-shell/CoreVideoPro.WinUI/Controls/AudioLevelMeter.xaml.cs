@@ -52,6 +52,16 @@ public sealed partial class AudioLevelMeter : UserControl
     {
         InitializeComponent();
         Loaded += (_, _) => RenderSegments();
+        // Re-fit on ANY size change: segments scale to the available column (see
+        // RenderSegments). Without this, a window restored from fullscreen kept
+        // the fullscreen-sized stack and clipped the green end of every meter.
+        SizeChanged += (_, e) =>
+        {
+            if (e.NewSize.Height > 0 || e.NewSize.Width > 0)
+            {
+                RenderSegments();
+            }
+        };
         Unloaded += (_, _) => StopDecayTimer();
     }
 
@@ -180,12 +190,45 @@ public sealed partial class AudioLevelMeter : UserControl
             ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
             : -1;
 
+        // SCALE TO THE SPACE WE HAVE. Fixed 7px segments + 2px spacing need a
+        // 324px column at 36 segments; any smaller window CLIPPED the stack —
+        // and because the low/green segments sit at the visual bottom, exactly
+        // the audible part of the meter vanished ("meters don't work when not
+        // in full screen", 2026-08-09). Shrink spacing first, then segment
+        // size, then segment COUNT — never overflow, never render nothing.
+        var availableMain = IsVertical ? RootGrid.ActualHeight : RootGrid.ActualWidth;
+        double spacing = 2;
+        double segMain = IsVertical ? 7 : 4;
+        if (availableMain > 0)
+        {
+            if ((segMain + spacing) * count > availableMain)
+            {
+                spacing = 1;
+            }
+            var perSegment = (availableMain - spacing * (count - 1)) / count;
+            if (perSegment < segMain)
+            {
+                segMain = Math.Max(2, Math.Floor(perSegment));
+            }
+            var fits = (int)Math.Floor((availableMain + spacing) / (segMain + spacing));
+            if (fits < count && fits >= 4)
+            {
+                // Too small even at 2px segments: re-quantize onto fewer segments
+                // so the meter stays proportional instead of clipping.
+                count = fits;
+                activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
+                peakSegment = _peakLevel > 0
+                    ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
+                    : -1;
+            }
+        }
+
         var panel = new StackPanel
         {
             Orientation = IsVertical ? Orientation.Vertical : Orientation.Horizontal,
             HorizontalAlignment = IsVertical ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
-            VerticalAlignment = IsVertical ? VerticalAlignment.Stretch : VerticalAlignment.Center,
-            Spacing = 2
+            VerticalAlignment = IsVertical ? VerticalAlignment.Bottom : VerticalAlignment.Center,
+            Spacing = spacing
         };
 
         for (var visualIndex = 0; visualIndex < count; visualIndex++)
@@ -197,8 +240,8 @@ public sealed partial class AudioLevelMeter : UserControl
 
             panel.Children.Add(new Border
             {
-                Width = IsVertical ? 14 : 4,
-                Height = IsVertical ? 7 : 10,
+                Width = IsVertical ? 14 : segMain,
+                Height = IsVertical ? segMain : 10,
                 CornerRadius = new CornerRadius(1.5),
                 Background = isActive || isPeakHold ? BrushFor(normalized) : DimBrush
             });

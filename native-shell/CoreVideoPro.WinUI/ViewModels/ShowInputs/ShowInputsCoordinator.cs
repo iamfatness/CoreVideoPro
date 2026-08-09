@@ -221,15 +221,37 @@ public sealed class ShowInputsCoordinator
     }
 
     // ── auto-assign (roster → free slots) ─────────────────────────────────────────
+    // Participant ids this coordinator has already offered to auto-assign in the
+    // current meeting. Auto-assign only places ids it has NEVER seen — i.e. real
+    // newcomers. Without this memory it refilled every "not currently assigned"
+    // id on every sync tick (~1/s), so an operator's manual unassign/replace on
+    // the Sources screen was reverted within a second. Cleared when the operator
+    // explicitly re-runs auto-assign (ReapplyShowInputAutoAssign) — that request
+    // MEANS "assign everyone".
+    private readonly HashSet<string> _autoAssignSeenParticipantIds = new(StringComparer.Ordinal);
+
     public void SyncShowInputsFromMeeting(
         IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
         // Free slots whose participant left, and (when auto-assign is on) fill FREE slots
-        // with newly-joined participants without disturbing operator/capture assignments.
+        // with NEWLY-JOINED participants only — never someone the operator removed.
+        var rosterIds = participants
+            .Select(participant => participant.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToList();
+        var newcomers = rosterIds
+            .Where(id => !_autoAssignSeenParticipantIds.Contains(id))
+            .ToList();
+        // Leavers drop out of the set so a genuine leave-and-rejoin (same id,
+        // e.g. breakout return) is a newcomer again.
+        _autoAssignSeenParticipantIds.Clear();
+        _autoAssignSeenParticipantIds.UnionWith(rosterIds);
+
         ShowInputRosterService.SyncZoomParticipantSlots(
             _host.ShowInputs,
-            participants.Select(participant => participant.Id).ToList(),
-            _host.AutomationAutoAssignInputsEnabled);
+            rosterIds,
+            _host.AutomationAutoAssignInputsEnabled,
+            newcomers);
 
         RefreshShowInputEditors();
         _host.RefreshMultiviewGridTiles();
@@ -243,6 +265,10 @@ public sealed class ShowInputsCoordinator
     // assigned slot the moment the operator flips the toggle.
     public void ReapplyShowInputAutoAssign()
     {
+        // The operator flipped the toggle: that is an explicit "assign everyone
+        // now", so forget which ids were seen and fill from the whole roster
+        // (candidates omitted = every unassigned id is eligible).
+        _autoAssignSeenParticipantIds.Clear();
         ShowInputRosterService.SyncZoomParticipantSlots(
             _host.ShowInputs,
             _host.RoomParticipantsForInputs

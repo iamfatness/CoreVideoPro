@@ -8926,8 +8926,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "local-machine-audio"
             : $"capture:{source.CaptureDeviceId}";
 
+    // FADER LAW (owner rule, 2026-08-09): every PCM-bearing routed source gets a
+    // channel strip. "zoom-mix" used to be excluded here — but it is THE audible
+    // Zoom path (Z1 routes zoom-mix → program; per-participant stems are
+    // unrouted), so the operator's mixer showed nine faders that controlled
+    // nothing audible while the actual meeting audio had no fader at all.
+    // Muting every strip and still hearing audio on master was this line.
+    // "active-speaker" / "screen-share" stay excluded: they are role ALIASES
+    // that resolve to other sources, not PCM sources themselves.
     public static bool IsConcreteAudioMixSourceId(string sourceId) =>
-        !string.Equals(sourceId, "zoom-mix", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "active-speaker", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "screen-share", StringComparison.OrdinalIgnoreCase);
 
@@ -9474,13 +9481,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RunOnUiThread(Action action)
     {
-        if (_dispatcher.HasThreadAccess)
-        {
-            action();
-            return;
-        }
-
-        _dispatcher.TryEnqueue(() => action());
+        // UiDispatch catches + logs callback exceptions. A raw TryEnqueue callback
+        // that throws bypasses every managed handler and fail-fasts the process
+        // with 0xc000027b — three live-meeting crashes on 2026-08-09 decoded to
+        // exactly that (see UiDispatch).
+        UiDispatch.Run(_dispatcher, action, "StudioViewModel");
     }
 
     private void OnBridgeStatusChanged(string status) =>
@@ -9841,7 +9846,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var message = stopped
                 ? "Capture stopped — Zoom recording indicator cleared"
                 : "Capture stop sent — Zoom has not confirmed raw media stopped";
-            _dispatcher.TryEnqueue(() =>
+            UiDispatch.Run(_dispatcher, () =>
             {
                 if (ZoomCaptureSubscribed || !Settings.IsInMeeting)
                 {
@@ -9850,12 +9855,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
                 EngineStatus = message;
                 CommandStatus = message;
-            });
+            }, "zoom-stop-capture.confirm");
         }
         catch (Exception ex)
         {
             LaunchLog.Write($"zoom-stop-capture: failed {ex.GetType().Name}: {ex.Message}");
-            _dispatcher.TryEnqueue(() =>
+            UiDispatch.Run(_dispatcher, () =>
             {
                 if (ZoomCaptureSubscribed || !_bridge.Running)
                 {
@@ -9865,7 +9870,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 EngineStatus = $"{fallbackStatus} — engine stop failed: {ex.Message}";
-            });
+            }, "zoom-stop-capture.failure");
         }
     }
 
@@ -9891,7 +9896,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // thread; this was the recurring ~30-60s crash.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(() => ApplyLiveProductionPatch(patch));
+            UiDispatch.Run(_dispatcher, () => ApplyLiveProductionPatch(patch), "ApplyLiveProductionPatch");
             return;
         }
 
@@ -10705,7 +10710,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // 0xc000027b). Marshal defensively; runs inline when already on the UI thread.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(RefreshSurfaceBindings);
+            UiDispatch.Run(_dispatcher, RefreshSurfaceBindings, "RefreshSurfaceBindings");
             return;
         }
 
@@ -10827,11 +10832,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _multiviewGridRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _multiviewGridRefreshScheduled = false;
             RefreshMultiviewGridTiles();
-        });
+        }, "multiview-grid.coalesced");
     }
 
     private static IProductionOutputPreferencesStore CreateProductionOutputPreferencesStore()
@@ -11365,11 +11370,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _showInputRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _showInputRefreshScheduled = false;
             ApplyShowInputRefresh();
-        });
+        }, "show-inputs.coalesced");
     }
 
     private void ApplyShowInputRefresh()
@@ -11824,7 +11829,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // inline when already on the UI thread.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(RefreshMultiviewGridTiles);
+            UiDispatch.Run(_dispatcher, RefreshMultiviewGridTiles, "RefreshMultiviewGridTiles");
             return;
         }
 
@@ -12153,11 +12158,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _previewRoutingRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _previewRoutingRefreshScheduled = false;
             RefreshPreviewRoutingState();
-        });
+        }, "preview-routing.coalesced");
     }
 
     private void RefreshPreviewRoutingState()
