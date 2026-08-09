@@ -608,6 +608,14 @@ class CompositeOutputSender final : public IOutputSender {
     return combined;
   }
 
+  // Fan out on the AUDIO cadence. Senders that carry no audio inherit the
+  // no-op default, so this is safe for every member.
+  void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    for (const auto& sender : senders_) {
+      sender->submitAudio(pcm, channels, sampleRate);
+    }
+  }
+
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
     OutputSenderSession combined;
     for (const auto& sender : senders_) {

@@ -34,6 +34,7 @@ class AsyncOutputSender final : public IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) override;
+  void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override;
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override;
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override;
   OutputSenderSession session() const override;
@@ -43,7 +44,7 @@ class AsyncOutputSender final : public IOutputSender {
   bool drainForTest(std::chrono::milliseconds timeout);
 
  private:
-  enum class Kind { Sync, Fail, Recover };
+  enum class Kind { Sync, Fail, Recover, Audio };
   struct Item {
     Kind kind = Kind::Sync;
     uint64_t seq = 0;

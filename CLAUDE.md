@@ -424,9 +424,49 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   30fps SRT source whose file held 498 frames. When judging a recording's rate, count frames
   in the ARTIFACT (`ffprobe -count_frames`) over its duration — same discipline as "verify
   PIXELS, not stream presence".
-- **STILL ON THE 50Hz GATE: the network senders (RTMP/SRT out).** They stay on the audio
-  worker deliberately — the sender call needs the stream-bus PCM produced by that tick's mix,
-  so moving it needs the sender feed split into independent video/audio paths first.
+- **THE SENDERS ARE SPLIT TOO (2026-08-08): video on the 60Hz tick, audio on the audio
+  worker.** FFmpeg takes program video and program audio through **two separate inputs**
+  (a rawvideo pipe and a PCM pipe), so they never had to arrive in one call — but
+  `sync()` carried both, which pinned the whole stream to the ~50Hz worker. Now
+  `renderVideoOutputTick` calls `sync()` (video + destinations + settings) and the audio
+  worker calls the new `IOutputSender::submitAudio`. Measured: sender fed **50.0fps
+  before, 60.0fps after**.
+  Three things this required, each a trap on its own:
+  1. **A LAYOUT DECLARES AUDIO — the sender must NOT wait for PCM to learn it exists.**
+     This is the one that cost a full debugging round. The FFmpeg arg list bakes in the
+     audio input, so if the first `sync()` carries no PCM the process starts with
+     `anullsrc`; when audio then arrives it must RESTART — and **an SRT listener accepts
+     ONE caller**, so the reconnect is refused (`Connection to srt://... failed: I/O
+     error`) and the stream never recovers. It was intermittent because it depended on
+     whether the first PCM beat the first sync. `sync()` now latches the layout from
+     `audioChannels`/`audioSampleRate` ALONE (`haveRealAudio_`, sticky, never cleared by a
+     video-only call), and `renderVideoOutputTick` passes the layout whenever
+     `audioRoutingSends_` is non-empty. **Read FFmpeg's own stderr log
+     (`ffmpegStderrPath_`, a temp file) before theorising about the sender** — it named
+     this in one line after an hour of guessing.
+  2. **`Kind::Audio` is never dropped** in `AsyncOutputSender` — video is state (newest
+     wins), audio is a timeline. Queued audio MERGES into the newest pending audio item,
+     capped at 5s, and never clobbers the session snapshot.
+  3. **The video tick must run one tick past the last destination** (`senderSyncActive_`):
+     senders are STOPPED by a `sync()` carrying no destinations, so returning early the
+     moment outputs clear would strand a live stream running.
+  Direct/unit-test callers (no video tick) keep the original single-call path behind
+  `videoOutputTickRunning_`.
+- **Gate the sender's cadence on its BEST interval, not the median.** The defect is a
+  STRUCTURAL cap — video fed from the ~50Hz audio worker can never exceed ~50 on any
+  interval (main measures 49.8 median / 50.2 best). A busy machine makes
+  `AsyncOutputSender` coalesce and dip (46–53fps observed mid-build), which a
+  median-based gate reports as the same failure. The peak separates "capped" from
+  "loaded". `validate-srt-output.mjs` also needs a listener head start before the core
+  calls — and **never probe the port with a UDP bind to test readiness**: SRT is UDP, so
+  the probe steals the port from the listener it is waiting for and turns an intermittent
+  race into a reliable failure (tried it; it made things worse).
+- **A STREAM'S CONTAINER FPS CANNOT PROVE ITS CADENCE.** FFmpeg pads duplicates up to its
+  declared `-r`, so a sender fed at 50fps still emits a stream that ffprobe reads as
+  **59.9fps** — identical to a healthy one. The defect is only visible in the sender's OWN
+  accepted-frame counter (`framesSent`: ~250 per 5s interval at 50Hz, ~301 at 60Hz), which
+  is what `validate-srt-output.mjs` now gates. Same family as the recording counter that
+  counted submits: **measure the thing, not a proxy that survives the bug.**
 - **Enable it:** control API `POST http://127.0.0.1:8011/invoke
   {"action":"transport.virtualcam.set","args":[true]}` (or the transport toggle in the UI).
 - **Verify the feed:** read the 32-byte header of the ProgramData file; `frameNumber`

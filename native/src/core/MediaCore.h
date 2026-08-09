@@ -504,6 +504,9 @@ class MediaCore {
   // then submits audio only. Atomic: read by the audio worker, written by the
   // server thread that owns the tick's lifetime.
   std::atomic<bool> videoOutputTickRunning_{false};
+  // True while the senders have destinations. Lets the video tick run one more
+  // time after outputs clear, so the stop-carrying sync() is actually delivered.
+  std::atomic<bool> senderSyncActive_{false};
   // The newest program NV12 tap. WRITTEN by renderVideoOutputTick and READ by
   // the audio worker for the network senders — both under audioOutputMutex_.
   // takeVcamNv12 hands out each generation once, so exactly one caller may take.
@@ -511,6 +514,9 @@ class MediaCore {
   // frame it published, so a tick with nothing new costs one comparison instead
   // of a ProgramFrame copy and a duplicate submit.
   int64_t lastVideoOutFrameNumber_ = -1;
+  // Destinations the tick last synced. A change must reach the senders even on a
+  // tick with no new frame — that is how they get STOPPED.
+  std::vector<std::string> lastVideoOutDestinations_;
   // Program-frame publish signal. The render thread bumps the counter and
   // notifies; the video-out tick waits on it instead of polling, so it wakes
   // once per real frame rather than acquiring coreMutex on a timer.
