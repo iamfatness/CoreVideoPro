@@ -5303,54 +5303,65 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                               : !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
   const int outputAudioChannels =
       !streamBusAudio.empty() || !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
-  const auto failOutputSenderSync = [&](const std::string& message) {
-    const auto destination =
-        std::find(outputDestinations.begin(), outputDestinations.end(), "rtmp") != outputDestinations.end()
-            ? "rtmp"
-            : !outputDestinations.empty() ? outputDestinations.front() : std::string("stream");
+  // PROGRAM AUDIO OUT. The senders' VIDEO rides the 60Hz video tick
+  // (renderVideoOutputTick calls sync); only the PCM leaves from here, on the
+  // cadence that actually produces it. FFmpeg takes video and audio through two
+  // separate inputs, so they never had to arrive in one call — and while they
+  // did, the whole stream was paced by this 20ms audio grid.
+  if (videoOutputTickRunning_.load(std::memory_order_acquire)) {
+    if (!outputDestinations.empty() && !outputProgramAudio.empty()) {
+      try {
+        modules_.outputSender->submitAudio(outputProgramAudio, outputAudioChannels,
+                                           modules_.mixer->monitorBusSampleRate());
+      } catch (...) {
+        // Sender health is reported by the video tick's sync; never let an audio
+        // push take down the audio worker.
+      }
+    }
+  } else {
+    // No video tick (direct/unit-test callers): keep the original single-call
+    // path so applyCommands stays synchronous and self-contained.
+    const auto failOutputSenderSync = [&](const std::string& message) {
+      const auto destination =
+          std::find(outputDestinations.begin(), outputDestinations.end(), "rtmp") != outputDestinations.end()
+              ? "rtmp"
+              : !outputDestinations.empty() ? outputDestinations.front() : std::string("stream");
+      try {
+        modules_.outputSender->fail(destination, message,
+                                    static_cast<double>(work.programFrame.frameNumber * 33));
+      } catch (...) {
+      }
+    };
+    const auto& outputProgramFrame = work.programFrame;
+    const auto tOut0 = std::chrono::steady_clock::now();
     try {
-      modules_.outputSender->fail(destination, message, static_cast<double>(work.programFrame.frameNumber * 33));
+      // Wall time, never frameNumber — a frameNumber clock advanced with the
+      // tick rate and pushed a declared 30fps stream at nearly 50.
+      static const auto outputClockEpoch = std::chrono::steady_clock::now();
+      const double outputElapsedMs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - outputClockEpoch)
+              .count());
+      modules_.outputSender->sync(
+          outputDestinations,
+          &outputProgramFrame,
+          outputElapsedMs,
+          work.outputDestinationSettings,
+          outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
+          outputAudioChannels,
+          modules_.mixer->monitorBusSampleRate());
+      const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - tOut0)
+                             .count();
+      if (outMs >= 20) {
+        std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
+                     static_cast<long long>(outMs), outputDestinations.size());
+      }
+    } catch (const std::exception& ex) {
+      failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
     } catch (...) {
+      failOutputSenderSync("Output sender failed during sync.");
     }
-  };
-  // The NV12 tap was fetched once, before the encoder submit above, and is
-  // already on work.programFrame — so the senders read that frame DIRECTLY.
-  // This used to copy the whole ProgramFrame into `outputProgramFrame` for the
-  // senders, which was already wasteful (it is never mutated) and became ~3MB
-  // more so once the NV12 tap rode along. One take, no copy, per tick.
-  const auto& outputProgramFrame = work.programFrame;
-  const auto tOut0 = std::chrono::steady_clock::now();
-  try {
-    // RTMP pacing must follow wall time, not ProgramFrame::frameNumber. The
-    // audio/output worker runs at ~50 Hz, so the old frameNumber * 33 clock
-    // advanced ~1.65 seconds per real second and pushed a declared 30 fps
-    // stream at almost 50 fps. YouTube accepts the handshake, then closes that
-    // over-speed ingest after a few seconds. Capture real monotonic time before
-    // enqueueing into AsyncOutputSender so dropped work cannot accelerate it.
-    static const auto outputClockEpoch = std::chrono::steady_clock::now();
-    const double outputElapsedMs = static_cast<double>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - outputClockEpoch)
-            .count());
-    modules_.outputSender->sync(
-        outputDestinations,
-        &outputProgramFrame,
-        outputElapsedMs,
-        work.outputDestinationSettings,
-        outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
-        outputAudioChannels,
-        modules_.mixer->monitorBusSampleRate());
-    const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - tOut0)
-                           .count();
-    if (outMs >= 20) {
-      std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
-                   static_cast<long long>(outMs), outputDestinations.size());
-    }
-  } catch (const std::exception& ex) {
-    failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
-  } catch (...) {
-    failOutputSenderSync("Output sender failed during sync.");
   }
   // Virtual Camera: publish the program frame to the SHM slot the OS reads.
   //
@@ -5502,28 +5513,40 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     lastVideoOutPublishSeq_ = programPublishSeq_.load(std::memory_order_acquire);
   }
   modules::ProgramFrame frame;
+  std::vector<std::string> senderDestinations;
+  std::vector<modules::OutputDestinationSettings> senderSettings;
+  bool senderExpectsAudio = false;
   {
     std::lock_guard<std::mutex> lock(coreMutex);
     ScopedLockHoldTimer holdTimer("video.gather", LockHoldGuardrail::kDefaultBudgetUs);
     const bool wanted = !outputDestinations_.empty() || virtualCameraEnabled_ ||
                         recordingStatus_ == "recording" || recordingStatus_ == "warning";
-    if (!wanted) {
+    // Keep ticking one more time after the last destination goes away: the
+    // senders are STOPPED by a sync() carrying no destinations, so returning
+    // early the instant outputs clear would strand a live stream running.
+    if (!wanted && !senderSyncActive_.load(std::memory_order_acquire)) {
       return;
     }
-    // EDGE-TRIGGERED on a new program frameNumber, and this is what makes the
-    // tick correct rather than lucky. A 60Hz sampler reading a 60Hz producer is
-    // the same frame-pairing problem the Zoom ingest synchroniser exists to fix:
-    // ~1ms of relative jitter puts two renders inside one sampling interval (one
-    // never submitted) and none in the next. Measured that way the recording
-    // muxed 51.7fps of a 60fps program — and on a different run the same build
-    // read 59.7fps, because it depends on the phase the two threads happen to
-    // start in. That is precisely what makes it a trap rather than a wobble.
-    // Submitting only on a NEW frameNumber, from a tick sampling at 2x the frame
-    // rate, cannot alias — and costs one comparison when nothing is new.
-    if (lastProgramFrame_.frameNumber == lastVideoOutFrameNumber_) {
+    // EDGE-TRIGGERED on a new program frame, and this is what makes the tick
+    // correct rather than lucky (see the CV wait above). A 60Hz sampler reading
+    // a 60Hz producer is the frame-pairing problem the Zoom ingest synchroniser
+    // exists to fix, and it measured as a 51.7fps recording of a 60fps program.
+    //
+    // A DESTINATION CHANGE also has to get through, even with no new frame: the
+    // senders are started and STOPPED by sync(), so gating purely on frames
+    // would strand a live stream running after outputs clear.
+    const bool newFrame = lastProgramFrame_.frameNumber != lastVideoOutFrameNumber_;
+    const bool destinationsChanged = outputDestinations_ != lastVideoOutDestinations_;
+    if (!newFrame && !destinationsChanged) {
       return;
     }
     lastVideoOutFrameNumber_ = lastProgramFrame_.frameNumber;
+    lastVideoOutDestinations_ = outputDestinations_;
+    senderDestinations = outputDestinations_;
+    senderSettings = outputDestinationSettings_;
+    // Has the operator routed ANY audio? If so the senders must be configured
+    // with a real PCM input from their first frame (see the sync call below).
+    senderExpectsAudio = !audioRoutingSends_.empty();
     // Carries preview/dims/frameNumber/warnings, so a compositor with no NV12
     // tap still submits exactly what the old path submitted.
     frame = lastProgramFrame_;
@@ -5541,6 +5564,48 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     frame.programNv12 = latestProgramNv12_;
   }
   modules_.encoder->submit(frame);
+
+  // Network senders: VIDEO on this cadence. Audio is pushed separately by the
+  // audio worker (outputSender->submitAudio) because FFmpeg takes the two
+  // through separate inputs. "recording" is an encoder destination, not a sender.
+  senderDestinations.erase(
+      std::remove(senderDestinations.begin(), senderDestinations.end(), std::string("recording")),
+      senderDestinations.end());
+  senderSyncActive_.store(!senderDestinations.empty(), std::memory_order_release);
+  const auto failOutputSenderSync = [&](const std::string& message) {
+    const auto destination =
+        std::find(senderDestinations.begin(), senderDestinations.end(), "rtmp") != senderDestinations.end()
+            ? "rtmp"
+            : !senderDestinations.empty() ? senderDestinations.front() : std::string("stream");
+    try {
+      modules_.outputSender->fail(destination, message, 0.0);
+    } catch (...) {
+    }
+  };
+  try {
+    // Pacing follows WALL TIME, never ProgramFrame::frameNumber: a frameNumber
+    // clock advanced with the tick rate and pushed a declared 30fps stream at
+    // nearly 50, which YouTube accepts and then closes seconds later.
+    static const auto outputClockEpoch = std::chrono::steady_clock::now();
+    const double outputElapsedMs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - outputClockEpoch)
+            .count());
+    // Carry the audio LAYOUT (never the PCM — that rides submitAudio on the
+    // audio worker). The sender bakes its audio input into the FFmpeg argument
+    // list, so it has to know on the FIRST sync whether real audio is coming;
+    // learning it later means a restart, and a restarted SRT caller is refused
+    // by a listener that already accepted one.
+    const int declaredChannels = senderExpectsAudio ? 2 : 0;
+    const int declaredSampleRate =
+        senderExpectsAudio ? modules_.mixer->monitorBusSampleRate() : 0;
+    modules_.outputSender->sync(senderDestinations, &frame, outputElapsedMs, senderSettings,
+                                nullptr, declaredChannels, declaredSampleRate);
+  } catch (const std::exception& ex) {
+    failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
+  } catch (...) {
+    failOutputSenderSync("Output sender failed during sync.");
+  }
 }
 
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {

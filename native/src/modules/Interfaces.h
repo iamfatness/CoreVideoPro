@@ -844,6 +844,17 @@ class IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) = 0;
+  // Push program AUDIO alone, on the AUDIO cadence, decoupled from sync()'s video
+  // cadence. Video and audio reach FFmpeg through SEPARATE inputs (a raw video
+  // pipe and a PCM audio pipe), so they never needed to arrive together — but
+  // carrying audio as a sync() argument tied both to one call, and that call was
+  // the ~50Hz audio worker's. A 60fps program was therefore streamed at 50fps.
+  // The video tick now calls sync() (video), the audio worker calls this.
+  //
+  // Senders that carry audio must treat "we have real audio" as STICKY state set
+  // here, not as "this sync() call happened to carry PCM" — otherwise a video-only
+  // sync looks like audio disappearing and restarts the encoder process.
+  virtual void submitAudio(const std::vector<float>& /*pcm*/, int /*channels*/, int /*sampleRate*/) {}
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
   virtual OutputSenderSession session() const = 0;

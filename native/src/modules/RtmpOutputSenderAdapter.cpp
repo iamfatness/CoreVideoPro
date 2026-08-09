@@ -537,6 +537,21 @@ class RtmpOutputSender final : public IOutputSender {
 
   ~RtmpOutputSender() override { stopFfmpegProcess(); }
 
+  // Program audio on the AUDIO cadence. Writes straight into the same queue the
+  // per-tick path uses; the borrow ends inside writeAudioToFfmpeg (it copies into
+  // audioQueue_), so holding a caller-owned reference here is safe.
+  void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    if (pcm.empty() || channels <= 0 || sampleRate <= 0) {
+      return;
+    }
+    pendingAudioPcm_ = &pcm;
+    pendingAudioChannels_ = channels;
+    pendingAudioSampleRate_ = sampleRate;
+    haveRealAudio_ = true;
+    writeAudioToFfmpeg();  // no-op until the process is up with a PCM input
+    pendingAudioPcm_ = nullptr;
+  }
+
   OutputSenderSession sync(
       const std::vector<std::string>& destinations,
       const ProgramFrame* frame,
@@ -549,11 +564,24 @@ class RtmpOutputSender final : public IOutputSender {
     // process is configured with (and fed) the second PCM input instead of the
     // `anullsrc` silence source. We treat "audio available" as having a positive
     // channel/sample-rate and non-empty PCM.
-    pendingAudioPcm_ = (programAudioPcm && !programAudioPcm->empty() && audioChannels > 0 && audioSampleRate > 0)
-                           ? programAudioPcm
-                           : nullptr;
-    pendingAudioChannels_ = pendingAudioPcm_ ? audioChannels : 0;
-    pendingAudioSampleRate_ = pendingAudioPcm_ ? audioSampleRate : 0;
+    // Audio presence is STICKY (haveRealAudio_), not per-call. Video now arrives
+    // on its own 60Hz tick while audio arrives on the 50Hz worker via
+    // submitAudio(), so most sync() calls legitimately carry no PCM — and
+    // clearing the layout on those would look like "audio disappeared" and
+    // restart FFmpeg (the arg list bakes in the audio input) on every tick.
+    // A LAYOUT ALONE DECLARES AUDIO — PCM is not required. The FFmpeg argument
+    // list bakes in the audio input, so discovering audio only when the first
+    // PCM buffer arrives means starting with `anullsrc` and RESTARTING moments
+    // later. That restart forces a second SRT connect, and an SRT listener
+    // accepts ONE caller: the reconnect is refused ("Connection to srt://...
+    // failed: I/O error") and the stream never recovers. Declaring the layout on
+    // the first sync gets the process right the first time.
+    if (audioChannels > 0 && audioSampleRate > 0) {
+      pendingAudioChannels_ = audioChannels;
+      pendingAudioSampleRate_ = audioSampleRate;
+      haveRealAudio_ = true;
+    }
+    pendingAudioPcm_ = (programAudioPcm && !programAudioPcm->empty()) ? programAudioPcm : nullptr;
     const bool wantsRtmp =
         std::find(destinations.begin(), destinations.end(), protocol_.destination) != destinations.end();
     if (!wantsRtmp) {
@@ -964,7 +992,9 @@ class RtmpOutputSender final : public IOutputSender {
     const bool enhancedChanged = configuredAllowEnhancedRtmp_ != activeAllowEnhancedRtmp_;
     // The audio input layout is baked into the FFmpeg argument list, so a change
     // in audio presence / channel count / sample rate requires a fresh process.
-    const bool audioPresent = pendingAudioPcm_ != nullptr;
+    // Sticky: whether a real PCM input exists at all, NOT whether this
+    // particular call carried a buffer (see the note in sync()).
+    const bool audioPresent = haveRealAudio_;
     const bool audioChanged = audioPresent != activeAudioPresent_ ||
                               pendingAudioChannels_ != activeAudioChannels_ ||
                               pendingAudioSampleRate_ != activeAudioSampleRate_;
@@ -1774,6 +1804,10 @@ class RtmpOutputSender final : public IOutputSender {
   const std::vector<float>* pendingAudioPcm_ = nullptr;
   int pendingAudioChannels_ = 0;
   int pendingAudioSampleRate_ = 0;
+  // Sticky "a real PCM source exists", latched by submitAudio/sync and never
+  // cleared by a video-only sync. The FFmpeg arg list bakes in the audio input,
+  // so treating a video-only call as audio-absent would restart the encoder.
+  bool haveRealAudio_ = false;
   bool activeAudioPresent_ = false;
   int activeAudioChannels_ = 0;
   int activeAudioSampleRate_ = 0;
