@@ -2036,6 +2036,51 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void EnsureDefaultZoomAudioRoutingSends_PerGuestIsoRoutesStemsAndDropsTheMixFromProgram()
+    {
+        // Owner decision 2026-08-09: per-guest ISO mode routes each guest's
+        // isolated stem through their own strip and REMOVES zoom-mix from the
+        // program buses — summing both doubles every voice (Z1 measured the
+        // internal echo at ~110ms skew).
+        var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(
+            [
+                new MediaCoreAudioRoutingSendWire("zoom-mix", "master", 0),
+                new MediaCoreAudioRoutingSendWire("16778240", "master", -6),  // operator's custom gain
+            ],
+            ["16778240", "16785408"],
+            ZoomAudioMode.PerGuestIso);
+
+        Assert.DoesNotContain(sends, send => send.SourceId == "zoom-mix");
+        // The operator's deliberate gain survives; the missing buses complete at 0.
+        Assert.Contains(sends, send => send.SourceId == "16778240" && send.BusId == "master" && send.GainDb == -6);
+        foreach (var busId in new[] { "pgm-l", "pgm-r", "stream", "mon" })
+        {
+            Assert.Contains(sends, send => send.SourceId == "16778240" && send.BusId == busId && send.GainDb == 0);
+        }
+        foreach (var busId in new[] { "master", "pgm-l", "pgm-r", "stream", "mon" })
+        {
+            Assert.Contains(sends, send => send.SourceId == "16785408" && send.BusId == busId && send.GainDb == 0);
+        }
+    }
+
+    [Fact]
+    public void EnsureDefaultZoomAudioRoutingSends_FlippingBackToProgramMixRestoresTheZ1Shape()
+    {
+        // The seeder synthesizes per sync, so flip-back = run the ProgramMix
+        // branch over matrix-only sends: stems stop being generated, zoom-mix
+        // completes onto every program bus.
+        var matrixOnly = new List<MediaCoreAudioRoutingSendWire>();
+        var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(
+            matrixOnly, ["16778240"], ZoomAudioMode.ProgramMix);
+
+        Assert.DoesNotContain(sends, send => send.SourceId == "16778240");
+        foreach (var busId in new[] { "master", "pgm-l", "pgm-r", "stream", "mon" })
+        {
+            Assert.Contains(sends, send => send.SourceId == "zoom-mix" && send.BusId == busId);
+        }
+    }
+
+    [Fact]
     public void EnsureDefaultZoomAudioRoutingSends_NoParticipantsLeavesSendsUntouched()
     {
         var existing = new List<MediaCoreAudioRoutingSendWire> { new("media", "master", 0) };

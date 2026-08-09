@@ -131,6 +131,17 @@ public sealed class InsertSlotItem
     public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn || IsProcessing ? LiveBrush : PendingBrush;
 }
 
+/// <summary>How Zoom audio reaches the program buses (owner decision 2026-08-09,
+/// superseding Z1's fixed topology). ProgramMix = Zoom's own mixed bus (echo-cancelled,
+/// continuous) rides to master; stems stay unrouted. PerGuestIso = each guest's isolated
+/// stem routes through their own strip, so faders/mutes/EQ shape program per guest, and
+/// zoom-mix is removed from program buses (summing both doubles every voice).</summary>
+public enum ZoomAudioMode
+{
+    ProgramMix,
+    PerGuestIso,
+}
+
 public sealed class FeedHealthRow
 {
     public required string ParticipantId { get; init; }

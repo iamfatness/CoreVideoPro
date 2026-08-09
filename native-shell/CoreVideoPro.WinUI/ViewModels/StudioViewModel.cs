@@ -784,6 +784,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // True while Engine is ON but Zoom has not yet granted raw media (recording
     // permission pending) — drives the loud waiting status in ApplyMeetingFields.
     private bool _awaitingRecordingPrivilege;
+
+    // Zoom→program audio topology (owner decision 2026-08-09). Session-scoped
+    // for now (persistence = prefs schema bump, a deliberate follow-up); the
+    // default is the long-standing Z1 program-mix topology.
+    private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.ProgramMix;
+    public ZoomAudioMode ZoomAudioMode => _zoomAudioMode;
+    public bool IsPerGuestIsoAudio => _zoomAudioMode == ZoomAudioMode.PerGuestIso;
+
+    public void SetZoomAudioMode(bool perGuestIso)
+    {
+        var mode = perGuestIso ? ZoomAudioMode.PerGuestIso : ZoomAudioMode.ProgramMix;
+        if (mode == _zoomAudioMode)
+        {
+            return;
+        }
+        _zoomAudioMode = mode;
+        OnPropertyChanged(nameof(ZoomAudioMode));
+        OnPropertyChanged(nameof(IsPerGuestIsoAudio));
+        CommandStatus = perGuestIso
+            ? "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program)."
+            : "Zoom program mix: Zoom's combined, echo-cancelled mix routes to program; guest strips meter only.";
+        // The seeded sends change shape — push the new routing to the core now.
+        _ = TrySyncMediaCoreAsync();
+    }
     private bool _canvasInteractionActive;
     private bool _refreshingSceneBackgroundSelection;
     private bool _applyingDualCaptureSelection;
@@ -8433,7 +8457,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
         audioRoutingSends = EnsureDefaultZoomAudioRoutingSends(
             audioRoutingSends,
-            RoomParticipantsForInputs.Select(participant => participant.Id).ToList())
+            RoomParticipantsForInputs.Select(participant => participant.Id).ToList(),
+            _zoomAudioMode)
             .ToList();
         // Default/fallback sends are synthesized after the matrix rows above.
         // Attach each bus's insert chain here so MASTER VST processing remains
@@ -8817,9 +8842,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // summed it twice at ~110ms skew (the measured internal echo). The
     // MEETING MIX ("zoom-mix") carries the program defaults instead; ISO rows
     // stay visible in the matrix for deliberate per-speaker routing.
+    /// <summary>
+    /// Seed the Zoom→program audio routing for the selected mode (owner decision
+    /// 2026-08-09, superseding Z1's fixed "zoom-mix → program"):
+    ///
+    /// <see cref="ZoomAudioMode.ProgramMix"/> — Zoom's own mixed bus (echo-cancelled,
+    /// continuous) rides to program; per-guest stems stay unrouted (metering/ISO only).
+    /// The original Z1 topology, now one of two modes.
+    ///
+    /// <see cref="ZoomAudioMode.PerGuestIso"/> — each guest's ISOLATED stem routes to
+    /// program through their own strip, so the operator's faders/mutes/EQ genuinely
+    /// shape program audio per guest. zoom-mix sends to program buses are REMOVED in
+    /// this mode — stems + the mix summed together double every voice. Stems are
+    /// server-gated by Zoom (silence between talk bursts), which is correct for a mix.
+    /// New guests are covered automatically: this runs on every sync context build.
+    /// </summary>
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultZoomAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
-        IReadOnlyList<string> zoomParticipantIds)
+        IReadOnlyList<string> zoomParticipantIds,
+        ZoomAudioMode zoomAudioMode = ZoomAudioMode.ProgramMix)
     {
         if (zoomParticipantIds.Count == 0)
         {
@@ -8828,6 +8869,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
         var completed = sends.ToList();
+
+        if (zoomAudioMode == ZoomAudioMode.PerGuestIso)
+        {
+            // Doubling guard: the meeting mix must not sum with the stems.
+            completed.RemoveAll(send =>
+                string.Equals(send.SourceId, "zoom-mix", StringComparison.Ordinal) &&
+                requiredBusIds.Any(bus => string.Equals(send.BusId, bus, StringComparison.OrdinalIgnoreCase)));
+
+            foreach (var participantId in zoomParticipantIds)
+            {
+                if (string.IsNullOrWhiteSpace(participantId))
+                {
+                    continue;
+                }
+                foreach (var busId in requiredBusIds)
+                {
+                    if (!completed.Any(send =>
+                            string.Equals(send.SourceId, participantId, StringComparison.Ordinal) &&
+                            string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        completed.Add(new MediaCoreAudioRoutingSendWire(participantId, busId, 0));
+                    }
+                }
+            }
+
+            return completed;
+        }
+
+        // ProgramMix: complete zoom-mix onto every program bus. No stem removal
+        // needed here — this seeder SYNTHESIZES its additions per sync (they are
+        // never written back to the matrix), so ISO-mode stem sends simply stop
+        // being generated on flip-back. A stem send the OPERATOR routed in the
+        // matrix deliberately (e.g. one guest's lav alongside the mix) survives,
+        // which the RoutesTheMeetingMixNotIsoParticipants test pins.
         foreach (var busId in requiredBusIds)
         {
             if (!completed.Any(send =>
