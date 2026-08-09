@@ -270,6 +270,10 @@ class ZoomEngineRuntime {
     // shared_ptr so the UNLOCKED snapshot phase can hold the mapping alive
     // while leave/reset paths release their reference under the lock.
     std::shared_ptr<void> regionOpaque;
+    // Consecutive failed shm opens for this stream, for a rate-limited LOUD
+    // warning. A silently retrying open is how the resolution-ramp freeze
+    // stayed invisible from the core side.
+    int regionOpenFailures = 0;
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
   // Three-phase video drain (audio-starvation fix: frame copies + thumbnail

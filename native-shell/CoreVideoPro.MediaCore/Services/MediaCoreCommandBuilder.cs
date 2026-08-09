@@ -604,11 +604,21 @@ public static class MediaCoreCommandBuilder
         var isoSourceIds = (IReadOnlyList<string>)(targets.IsoSourceIds ?? []);
         // Session-id suffix: prefer the canonical ISO selection, else the legacy bare ids,
         // else "program" (program-only). Sanitized so a `capture:<id>` never breaks the id.
+        //
+        // SORTED, deliberately: the core dedups repeated start-recording-session by
+        // sessionId, and the resolver emits ids in ROSTER order — so a roster flap
+        // that merely REORDERED the same selection minted a "different" session and
+        // restarted the writer mid-recording (live meeting 2026-08-09: a burst of
+        // 1-second recording shards while the roster settled). Sorting makes the
+        // session identity order-insensitive; a genuine selection CHANGE still
+        // produces a new id and restarts (which is how ISO writers re-arm).
         var isoSuffixSource = isoSourceIds.Count > 0
             ? isoSourceIds
             : (IReadOnlyList<string>)targets.IsoParticipantIds;
         var isoSuffix = isoSuffixSource.Count > 0
-            ? string.Join("-", isoSuffixSource.Select(id => id.Replace(':', '-')))
+            ? string.Join("-", isoSuffixSource
+                .Select(id => id.Replace(':', '-'))
+                .OrderBy(id => id, StringComparer.Ordinal))
             : "program";
         var sessionId = $"{targets.FilenamePrefix}-{isoSuffix}";
 

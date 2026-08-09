@@ -45,6 +45,9 @@ private:
         IpcFd e2p_fd;
         ShmRegion shm;
         uint64_t frame_count = 0;
+        // Consecutive ensure_shm failures, for rate-limited loud logging; reset
+        // by the first successful write. See onRawDataFrameReceived.
+        uint64_t shm_fail_count = 0;
     uint32_t last_beacon_w = 0;
     uint32_t last_beacon_h = 0;
     };

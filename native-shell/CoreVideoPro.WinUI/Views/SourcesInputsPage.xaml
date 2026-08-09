@@ -53,11 +53,18 @@
                                         <TextBlock Text="{x:Bind Name}" FontSize="12" FontWeight="SemiBold" />
                                         <!-- R1: assign a production role (session-only). Role-targeted
                                              scene layers and the core director follow this. -->
+                                        <!-- SelectedValue is applied in code-behind (OnProductionRoleComboLoaded),
+                                             NOT by x:Bind. Pushing it through x:Bind's phased ProcessBindings
+                                             threw COMException 0x80004005 out of Selector.set_SelectedValue and
+                                             killed the app: these rows live in an ItemsRepeater, so a recycled
+                                             container can be re-bound while its ItemsSource binding is still
+                                             resolving, and selecting a value the ComboBox does not have yet
+                                             throws. Tag carries the whole row so the handler has both ids. -->
                                         <ComboBox ItemsSource="{Binding ViewModel.ProductionRoleAssignmentOptions, ElementName=SourcesInputsRoot}"
                                                   SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
-                                                  SelectedValue="{x:Bind ProductionRoleId}"
-                                                  Tag="{x:Bind ParticipantId}"
+                                                  Tag="{x:Bind}"
+                                                  Loaded="OnProductionRoleComboLoaded"
                                                   SelectionChanged="OnProductionRoleChanged"
                                                   FontSize="10" MinWidth="110" Padding="6,2,6,2" />
                                     </StackPanel>

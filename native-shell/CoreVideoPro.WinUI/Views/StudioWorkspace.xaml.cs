@@ -314,15 +314,15 @@ public sealed partial class StudioWorkspace : UserControl
         }
 
         _participantListRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _participantListRefreshScheduled = false;
             ParticipantListView.ItemsSource = null;
-            _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+            UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
             {
                 ParticipantListView.ItemsSource = ViewModel?.ParticipantListItems;
-            });
-        });
+            }, "StudioWorkspace.participant-list.rebind");
+        }, "StudioWorkspace.participant-list.clear");
     }
 
     // Owner: the room panel is redundant with the Sources tab. The X on the

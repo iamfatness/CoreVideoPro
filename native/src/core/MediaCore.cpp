@@ -1677,6 +1677,28 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
 }
 
 void MediaCore::startRecordingSession(const rpc::Json& command) {
+  // IDEMPOTENT per sessionId. start-recording-session rides the shell's
+  // REPEATING sync channel (BuildSyncCommands emits it on every batch while
+  // recording), and this handler used to restart the writer — new session
+  // folder, new MP4, all counters reset — on every delivery. With Magic Scene
+  // auto-direct flipping the preview scene ~1/s, a live meeting produced ONE
+  // 1-second recording shard PER SECOND (193 folders in ~3 minutes, none
+  // playable as a show). A repeated start for the session that is ALREADY
+  // recording is the sync channel re-asserting state, not an operator action:
+  // drop it. A stop (or a different sessionId) still restarts normally —
+  // matching the dedup-by-signature law every other repeated command follows.
+  const auto incomingSessionId = command.getString("sessionId", "");
+  if (recordingStatus_ == "recording" && !incomingSessionId.empty() &&
+      incomingSessionId == recordingSessionId_) {
+    static std::map<std::string, std::int64_t> s_dedupLogCount;
+    if (s_dedupLogCount[incomingSessionId]++ == 0) {
+      std::fprintf(stderr,
+                   "[recording] start-recording-session '%s' repeated while already "
+                   "recording — deduped (the writer keeps its session)\n",
+                   incomingSessionId.c_str());
+    }
+    return;
+  }
   setRecordingTargets(command);
   recordingSessionId_ = command.getString("sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_);
   recordingStartedAtMs_ = command.get("startedAtMs") ? command.get("startedAtMs")->asNumber() : recordingStartedAtMs_;
@@ -4942,8 +4964,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       source.sourceId = frame.participantId;
       source.pcm = &frame.pcm;
       source.channels = frame.channels;
+      bool hasStrip = false;
       for (const auto& channel : work.channels) {
         if (channel.participantId == frame.participantId) {
+          hasStrip = true;
           source.muted = channel.muted;
           source.solo = channel.solo;
           source.pan = channel.pan;
@@ -4976,6 +5000,24 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           }
           break;
         }
+      }
+      // THE FADER LAW (owner rule, 2026-08-09): no audio source reaches ANY bus
+      // without a fader. A routed source with no channel strip used to sum into
+      // master unmuted at unity — which is why "mute everything" did not silence
+      // the master: the audible path (the Zoom meeting mix) had no strip at all.
+      // When the operator has a console (channels synced), a strip-less source
+      // is DROPPED from the bus mix, loudly, so the leak names itself. Headless
+      // callers (validators, scripts) sync no channels and keep unity behavior.
+      if (!hasStrip && !work.channels.empty()) {
+        static std::map<std::string, std::int64_t> s_lastWarn;
+        auto& warned = s_lastWarn[frame.participantId];
+        if (warned++ % 250 == 0) {  // ~every 5s at 50Hz, first occurrence immediately
+          std::fprintf(stderr,
+                       "[audio] FADER LAW: routed source '%s' has NO channel strip — "
+                       "dropped from the bus mix (add a fader to make it audible)\n",
+                       frame.participantId.c_str());
+        }
+        continue;
       }
       // A3: sources with no channel-strip entry still need the compensating
       // delay (they sum into the same buses); give them their persistent DSP

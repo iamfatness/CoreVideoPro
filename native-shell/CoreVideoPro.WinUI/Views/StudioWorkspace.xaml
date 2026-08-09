@@ -1042,6 +1042,7 @@
                             </StackPanel>
                         </Button>
                         <Button Style="{StaticResource TakeButton}" Width="34" MinHeight="40"
+                            AutomationProperties.Name="Choose Take transition"
                                 Padding="0"
                                 CornerRadius="0,8,8,0"
                                 BorderThickness="1,1,1,1"
@@ -1067,6 +1068,7 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
                     <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                            AutomationProperties.Name="Record"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.RecordButtonBorder, Mode=OneWay}"
@@ -1090,6 +1092,7 @@
                         </StackPanel>
                     </Button>
                     <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                            AutomationProperties.Name="Recording output options"
                             ToolTipService.ToolTip="Recording output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
@@ -1209,7 +1212,7 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
                     <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
-                            FontSize="13" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
+                            FontSize="13" AutomationProperties.Name="Stream" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}"
@@ -1232,6 +1235,7 @@
                         </StackPanel>
                     </Button>
                     <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                            AutomationProperties.Name="Streaming output options"
                             ToolTipService.ToolTip="Streaming output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
@@ -1325,6 +1329,7 @@
                          system webcam Zoom/Teams/Meet can select. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
                     <ToggleButton MinHeight="44" CornerRadius="8,0,0,8" Padding="12,4"
+                                  AutomationProperties.Name="Virtual camera"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
                                   ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
@@ -1339,6 +1344,7 @@
                     </ToggleButton>
                     <!-- V5: virtual camera options (mirror). -->
                     <Button MinHeight="44" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                             AutomationProperties.Name="Virtual camera options"
                              ToolTipService.ToolTip="Virtual camera options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
