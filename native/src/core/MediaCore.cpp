@@ -700,6 +700,23 @@ rpc::Json MediaCore::sessionState() const {
                                       {"composite", hasPreviewScene()},
                                   });
   }
+  // The multiviewer config the core is ACTUALLY running — always published, even
+  // at defaults. `configure-multiviewer` is a ONE-SHOT the shell sends at app
+  // launch; when the core respawns under a live shell nothing re-sent it, so the
+  // fresh core sat on its `grid` default while the shell still believed
+  // `pgmPvwTop`. That silently dropped the PGM/PVW bus cells off the top of the
+  // wall and degraded it to a bare source grid, and the shell could not detect it
+  // because the applied mode was reported NOWHERE. Reporting it is what lets the
+  // shell reconcile a core generation it did not configure (2026-08-08).
+  state.emplace("multiviewer", rpc::Json::Object{
+                                   {"layoutMode", multiviewLayoutMode_},
+                                   {"tileCount", multiviewTileCount_},
+                                   {"sourceCount", static_cast<int>(multiviewSources_.size())},
+                                   {"showLabels", multiviewShowLabels_},
+                                   {"showTally", multiviewShowTally_},
+                                   {"showMeters", multiviewShowMeters_},
+                                   {"showClock", multiviewShowClock_},
+                               });
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);

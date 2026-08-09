@@ -131,6 +131,23 @@ try {
   const event = latestMultiviewEvent;
   if (!event) throw new Error("core never emitted a multiview-shared-texture event");
 
+  // The core must PUBLISH the layout mode it is actually running. Without this the
+  // shell cannot tell that a core it did not configure (a respawn) fell back to the
+  // "grid" default and silently dropped the PGM/PVW bus cells off the wall.
+  const applied = await send({ id: "mv-config", type: "media-core-sync", elapsedMs: 33, commands: [] });
+  const reported = applied.snapshot?.multiviewer;
+  if (!reported) {
+    throw new Error("snapshot carries no `multiviewer` node — the applied layout mode is unobservable");
+  }
+  if (reported.layoutMode !== layoutMode) {
+    throw new Error(
+      `core reports layoutMode "${reported.layoutMode}" but "${layoutMode}" was configured`,
+    );
+  }
+  console.log(
+    `[validate-multiview] core reports layoutMode=${reported.layoutMode} tileCount=${reported.tileCount} sourceCount=${reported.sourceCount}`,
+  );
+
   const tiles = event.tiles ?? [];
   const pgm = tiles.filter((t) => t.role === "pgm");
   const pvw = tiles.filter((t) => t.role === "pvw");
