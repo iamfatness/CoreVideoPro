@@ -1049,6 +1049,27 @@ public:
     {
         EngineIpc::write(R"({"cmd":"debug","stage":"record_privilege_changed","can_record":)" +
             std::string(can_rec ? "true" : "false") + "}");
+        // Zoom grants recording privilege through TWO paths: the request popup
+        // (onLocalRecordingPrivilegeRequestStatus, handled below) and a direct
+        // privilege change (host uses the participant "Allow record" menu, or a
+        // role change). This handler used to only LOG the second path — so when
+        // the host granted that way, every deferred video/audio subscription
+        // just sat there and the operator stared at black tiles until they
+        // toggled Capture off/on by hand (live meeting, 2026-08-09: 37 dark
+        // seconds ended by a manual toggle). Same recipe as the granted-request
+        // path, gated on "we want raw media and do not have it yet" so the two
+        // paths cannot double-start.
+        if (!can_rec || !m_raw_media_requested || m_raw_media_active ||
+            !m_meeting_svc || !*m_meeting_svc)
+            return;
+        auto *rec = (*m_meeting_svc)->GetMeetingRecordingController();
+        if (!rec) return;
+        const ZOOMSDK::SDKError start_raw = rec->StartRawRecording();
+        EngineIpc::write(
+            R"({"cmd":"debug","stage":"start_raw_recording_after_privilege_change","code":)" +
+            std::to_string(static_cast<int>(start_raw)) + "}");
+        if (start_raw == ZOOMSDK::SDKERR_SUCCESS)
+            resubscribe_raw_media("record_privilege_changed");
     }
     void onLocalRecordingPrivilegeRequestStatus(
         ZOOMSDK::RequestLocalRecordingStatus status) override

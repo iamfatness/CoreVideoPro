@@ -781,6 +781,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // `this` as its IShowInputsHost) before the first LoadShowInputRoster/InitializeShowInputEditors.
     private global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator _showInputsCoordinator = null!;
     private bool _multiviewGridRefreshScheduled;
+    // True while Engine is ON but Zoom has not yet granted raw media (recording
+    // permission pending) — drives the loud waiting status in ApplyMeetingFields.
+    private bool _awaitingRecordingPrivilege;
     private bool _canvasInteractionActive;
     private bool _refreshingSceneBackgroundSelection;
     private bool _applyingDualCaptureSelection;
@@ -10027,6 +10030,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var _mfb = new System.Text.StringBuilder();
             void MfT(string n) { _mfb.Append(n).Append('=').Append(_mf.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms "); _mf.Restart(); }
             ZoomStatus = "Zoom Live";
+            // WAITING STATES MUST BE LOUD. Zoom hands over raw video only after
+            // the host grants recording permission; until then every tile is
+            // black with no error anywhere — indistinguishable from broken
+            // ("No video from zoom", live meeting 2026-08-09: 37 dark seconds).
+            // Tell the operator exactly what is being waited on, and clear it
+            // the moment raw media goes live. Scalar prop, changes at state
+            // transitions only — no snapshot-rate churn (0xc000027b rules).
+            var rawMediaActive = Settings.RawMediaActive;
+            if (ZoomCaptureSubscribed && rawMediaActive != true)
+            {
+                if (!_awaitingRecordingPrivilege)
+                {
+                    _awaitingRecordingPrivilege = true;
+                    EngineStatus = "Waiting for Zoom recording permission — ask the host to allow recording.";
+                }
+            }
+            else if (_awaitingRecordingPrivilege && rawMediaActive == true)
+            {
+                _awaitingRecordingPrivilege = false;
+                EngineStatus = "Zoom capture live.";
+            }
             CurrentRoomLabel = _currentRoomName;
             ApplyCaptionAndLowerThirdPatch(patch);
             MfT("captionLT");
@@ -11396,7 +11420,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         SaveShowInputRoster();
-        CommandStatus = "Show input roster updated";
+        // HONEST WALL MATH (owner, 2026-08-09): the pgmPvwTop multiviewer has 8
+        // source cells — PGM and PVW occupy two of the 10 boxes — while Sources
+        // allows 10 inputs in-show. The 9th and 10th silently never displayed.
+        // Until a >8 layout exists (owner leans "8 is the practical wall"), say
+        // exactly what is shown instead of letting two sources vanish.
+        var inShowCount = ShowInputs.Count(slot => slot.InShow);
+        CommandStatus = inShowCount > 8
+            ? $"Show input roster updated — multiviewer shows the first 8 of {inShowCount} in-show sources (PGM + PVW use two cells)"
+            : "Show input roster updated";
     }
 
     private void QueueSelectedCaptureDevicesOnline()
