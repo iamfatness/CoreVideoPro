@@ -4552,6 +4552,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   }
   markStage(s_stagePlanUs);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
+  // Mark a new program frame for the video-out tick. Only the COUNTER moves here
+  // (atomic, free); the wakeup itself is deliberately NOT sent under coreMutex —
+  // the caller sends it via notifyProgramFramePublished() after releasing the
+  // lock, because notifying inside it wakes a thread that immediately blocks on
+  // the very lock we still hold (measured: operator command p99 51ms -> 107ms).
+  programPublishSeq_.fetch_add(1, std::memory_order_release);
   if (!videoOnly && lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
@@ -5467,6 +5473,17 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
 // That lock is held ~13% of the time by the audio worker (measured work=2.6ms per
 // 20ms tick), so contention here is rare.
 void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
+  // Block until the compositor publishes a new program frame. The bounded wait
+  // is a liveness floor, not a cadence: it lets the tick re-evaluate output
+  // state (and deliver a sender stop) when the program is idle.
+  {
+    std::unique_lock<std::mutex> wait(videoOutWaitMutex_);
+    const auto seen = lastVideoOutPublishSeq_;
+    videoOutCv_.wait_for(wait, std::chrono::milliseconds(20), [&] {
+      return programPublishSeq_.load(std::memory_order_acquire) != seen;
+    });
+    lastVideoOutPublishSeq_ = programPublishSeq_.load(std::memory_order_acquire);
+  }
   modules::ProgramFrame frame;
   {
     std::lock_guard<std::mutex> lock(coreMutex);
@@ -5476,10 +5493,22 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     if (!wanted) {
       return;
     }
+    // EDGE-TRIGGERED on a new program frameNumber, and this is what makes the
+    // tick correct rather than lucky. A 60Hz sampler reading a 60Hz producer is
+    // the same frame-pairing problem the Zoom ingest synchroniser exists to fix:
+    // ~1ms of relative jitter puts two renders inside one sampling interval (one
+    // never submitted) and none in the next. Measured that way the recording
+    // muxed 51.7fps of a 60fps program — and on a different run the same build
+    // read 59.7fps, because it depends on the phase the two threads happen to
+    // start in. That is precisely what makes it a trap rather than a wobble.
+    // Submitting only on a NEW frameNumber, from a tick sampling at 2x the frame
+    // rate, cannot alias — and costs one comparison when nothing is new.
+    if (lastProgramFrame_.frameNumber == lastVideoOutFrameNumber_) {
+      return;
+    }
+    lastVideoOutFrameNumber_ = lastProgramFrame_.frameNumber;
     // Carries preview/dims/frameNumber/warnings, so a compositor with no NV12
-    // tap still submits exactly what the old path submitted. frameNumber comes
-    // from the render thread and advances at 60Hz — it is the encoder's dedup
-    // key, and sampling it at 50Hz is precisely what lost the frames.
+    // tap still submits exactly what the old path submitted.
     frame = lastProgramFrame_;
   }
   std::lock_guard<std::mutex> lock(audioOutputMutex_);

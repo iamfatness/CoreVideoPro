@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -97,6 +98,9 @@ class MediaCore {
   // sampled through the audio worker's 20ms grid. Call setVideoOutputTickRunning
   // before driving it, or the audio worker will submit video too.
   void renderVideoOutputTick(std::mutex& coreMutex);
+  // Wake the video-out tick after a render. MUST be called with coreMutex
+  // RELEASED — notifying under it wakes a thread that instantly blocks on it.
+  void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
   void setVideoOutputTickRunning(bool running) {
     videoOutputTickRunning_.store(running, std::memory_order_release);
   }
@@ -503,6 +507,17 @@ class MediaCore {
   // The newest program NV12 tap. WRITTEN by renderVideoOutputTick and READ by
   // the audio worker for the network senders — both under audioOutputMutex_.
   // takeVcamNv12 hands out each generation once, so exactly one caller may take.
+  // Edge-trigger state for the video tick (coreMutex-guarded): the last program
+  // frame it published, so a tick with nothing new costs one comparison instead
+  // of a ProgramFrame copy and a duplicate submit.
+  int64_t lastVideoOutFrameNumber_ = -1;
+  // Program-frame publish signal. The render thread bumps the counter and
+  // notifies; the video-out tick waits on it instead of polling, so it wakes
+  // once per real frame rather than acquiring coreMutex on a timer.
+  std::atomic<uint64_t> programPublishSeq_{0};
+  std::condition_variable videoOutCv_;
+  std::mutex videoOutWaitMutex_;
+  uint64_t lastVideoOutPublishSeq_ = 0;
   std::vector<std::uint8_t> latestProgramNv12_;
   int latestProgramNv12Width_ = 0;
   int latestProgramNv12Height_ = 0;
