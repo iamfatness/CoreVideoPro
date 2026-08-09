@@ -8185,8 +8185,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshAudioMixChannels()
     {
-        var existing = _audioMixChannels
-            .Where(channel => !string.IsNullOrWhiteSpace(channel.ParticipantId))
+        // Snapshot + null-guard FIRST. A null slipped into _audioMixChannels on
+        // 2026-08-09 (7 snapshot-rate refreshes threw NREs the dispatcher
+        // hardening absorbed, then a synchronous Audio-tab click hit the same
+        // null and killed the app). The suspected planter is a cross-thread
+        // mutation racing this GroupBy over the bare List — so copy the list
+        // once, drop nulls LOUDLY, and never let this pipeline throw again.
+        var channelsSnapshot = _audioMixChannels.ToArray();
+        var nullCount = channelsSnapshot.Count(channel => channel is null);
+        if (nullCount > 0)
+        {
+            LaunchLog.Write($"audio-mix: {nullCount} NULL channel(s) in _audioMixChannels " +
+                            $"(thread={Environment.CurrentManagedThreadId}, dispatcherAccess={_dispatcher.HasThreadAccess}) — dropped; find the writer");
+        }
+        var existing = channelsSnapshot
+            .Where(channel => channel is not null && !string.IsNullOrWhiteSpace(channel.ParticipantId))
             .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var merged = ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing).ToList();
@@ -8723,7 +8736,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var sourceIds = new List<string>();
         sourceIds.AddRange(RoomVideoParticipants.Select(participant => participant.Id));
-        sourceIds.AddRange(_audioMixChannels.Select(channel => channel.ParticipantId));
+        sourceIds.AddRange(_audioMixChannels.Where(channel => channel is not null).Select(channel => channel.ParticipantId));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(PreviewSceneRoutes));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(ProgramSceneRoutes));
 
@@ -10360,6 +10373,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .GroupBy(participant => participant.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var rows = _audioMixChannels
+            .Where(channel => channel is not null)  // same null-planter guard as RefreshAudioMixChannels
             .OrderBy(channel => ResolveAudioRowSortKey(channel.ParticipantId, participantsById))
             .Select(mix =>
             {
@@ -11721,22 +11735,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void EnsureAssignedSlotsForInShow()
     {
-        var defaultParticipant = RoomVideoParticipants.FirstOrDefault()?.Id;
-        var defaultCapture = CaptureDevices.FirstOrDefault(device => device.IsConnected) ??
-            CaptureDevices.FirstOrDefault();
-
+        // NEVER INVENT A SOURCE (owner-reported, 2026-08-09: "sources 1 and 2
+        // keep flipping back to the local cameras"). This used to stuff the
+        // first participant — or the first connected capture device, i.e. the
+        // operator's webcams — into ANY in-show slot without an assignment, and
+        // it runs at the top of every roster refresh: unassigning a slot put a
+        // webcam straight back within a second. It was the second, more
+        // aggressive sibling of the auto-assign refill fixed earlier today.
+        // An in-show slot with nothing assigned has nothing to show — it leaves
+        // the show. Sources appear in slots by OPERATOR action (the picker) or
+        // by roster auto-assign of NEWCOMERS, never by this fallback.
         foreach (var slot in ShowInputs.Where(slot => slot.InShow && !slot.IsAssigned))
         {
-            if (!string.IsNullOrWhiteSpace(defaultParticipant))
-            {
-                slot.Kind = ShowInputKind.ZoomParticipant;
-                slot.ParticipantId = defaultParticipant;
-            }
-            else if (defaultCapture is not null)
-            {
-                slot.Kind = ResolveShowInputKind(defaultCapture);
-                slot.CaptureDeviceId = defaultCapture.Id;
-            }
+            slot.InShow = false;
         }
     }
 
