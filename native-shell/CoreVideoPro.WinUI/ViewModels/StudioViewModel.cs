@@ -9503,7 +9503,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
             OnPropertyChanged(nameof(NativeAudioRuntimeStatus));
             ScheduleMultiviewerConfigResend();
+            ReannounceCaptureShmToNewCore();
         });
+
+    // Second half of the same respawn class: register-capture-shm is announced ONLY
+    // when CaptureDeviceSharedMemoryWriter creates a buffer (MappingChanged). A core
+    // respawn does not touch the shell's mapping, so the registration was never
+    // re-sent — the bridge went on writing capture frames at full rate into shared
+    // memory the fresh core had no record of, and those cameras sat on the placeholder
+    // tile forever. Core-side captures (screen/WGC) recovered on their own because the
+    // new core re-enumerates them, which is why only SOME tiles stayed blank.
+    private void ReannounceCaptureShmToNewCore()
+    {
+        foreach (var mapping in CaptureDeviceSharedMemoryWriter.LiveMappings())
+        {
+            if (string.IsNullOrEmpty(mapping.ShmName))
+            {
+                continue;
+            }
+
+            // Fire-and-forget per device, mirroring OnCaptureDeviceFrameReceived: a
+            // failure here must never block the UI thread or the other devices.
+            _ = _bridge.RegisterCaptureShmAsync(
+                mapping.DeviceId, mapping.ShmName, mapping.Width, mapping.Height);
+        }
+    }
 
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
