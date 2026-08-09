@@ -373,6 +373,25 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   it; it leaves the newest frame in `latestProgramNv12_` and the audio worker reads that for
   the senders. Two callers would starve each other.
   Measured end state: render 59.9fps, video tick 59.8/s, audio worker 50.0/s, vcam 60.0fps.
+- **THE VIDEO TICK IS SIGNALLED, NOT PACED (2026-08-08) — three designs were measured and
+  only the third is correct.** It waits on `videoOutCv_` until the render thread publishes a
+  new program frame (bounded 20ms so it can still deliver a sender stop when the program is
+  idle), so the wait IS the pacing.
+  1. **60Hz pacer — WRONG, and dangerously plausible.** A 60Hz sampler against a 60Hz
+     producer is the frame-pairing problem the Zoom synchroniser exists to fix: it muxed
+     **51.7fps** of a 60fps program. The same build on another run read 59.7fps, because it
+     depends on the phase the two threads start in — so a single green measurement proves
+     nothing here.
+  2. **120Hz pacer — fixes the aliasing, breaks the show.** Sampling above Nyquist works,
+     but the extra `coreMutex` acquisitions dropped the 8x1080p60 drill to **57.4fps** with a
+     **141ms** command p99.
+  3. **Condition variable — correct.** One wakeup per real frame: 59.9fps recorded (three
+     consecutive runs), drill 60.0fps at 4.3ms hold, command p99 **47.4ms** (BETTER than the
+     51.2ms baseline).
+  **NEVER notify under `coreMutex`.** The first CV attempt signalled inside the render lock,
+  waking a thread that instantly blocked on the lock still held — command p99 51ms → 107ms.
+  `MediaCore::notifyProgramFramePublished()` is called by `JsonRpcServer` AFTER the lock
+  scope closes, and must stay there.
 - **Counters that count SUBMITS are not frame rates.** `recording.proof.programFrameCount`
   counts submits, so it read ~50/s and looked like the muxed rate; it also read 911 on a
   30fps SRT source whose file held 498 frames. When judging a recording's rate, count frames

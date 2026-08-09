@@ -558,6 +558,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         }
         tickRenderMs = holdRenderMs;
       }
+      // Wake the program-video-out worker HERE — coreMutex is released. Doing it
+      // inside the scope above woke a thread that immediately blocked on the lock
+      // we still held, and cost operator command p99 51ms -> 107ms.
+      mediaCore_.notifyProgramFramePublished();
       // COMMAND PRIORITY. A saturated tick (a real show: several 1080p Zoom
       // feeds plus capture sources pushed this to ~34ms) exceeds the frame
       // budget, so the pacer below sleeps zero and this loop re-acquires
@@ -751,32 +755,31 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // no buffered samples to shed — so a blown deadline just re-anchors.
   mediaCore_.setVideoOutputTickRunning(true);
   std::thread videoOutputThread([&] {
-    constexpr long long kVideoBudgetUs = 16667;  // 60Hz, the program output rate
+    // NO PACER. renderVideoOutputTick BLOCKS until the compositor publishes a new
+    // program frame (bounded ~20ms so it can still re-evaluate output state when
+    // the program is idle), so the wait IS the pacing. Two paced designs were
+    // measured and both were wrong: at 60Hz the sampler aliased against the 60Hz
+    // producer and muxed 51.7fps, and at 120Hz the extra coreMutex acquisitions
+    // dropped the 8x1080p60 drill to 57.4fps with a 141ms command p99.
     long long ticks = 0;
     long long workUs = 0;
     auto rateStamp = std::chrono::steady_clock::now();
-    auto deadline = std::chrono::steady_clock::now();
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
-      mediaCore_.renderVideoOutputTick(coreMutex);
+      mediaCore_.renderVideoOutputTick(coreMutex);  // blocks until a new frame
       workUs += std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - t0)
                     .count();
       if (++ticks >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        // `work` here INCLUDES the wait for the next frame, so it tracks the
+        // frame interval rather than the cost of a submit.
         std::fprintf(stderr, "[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
                      sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
         ticks = 0;
         workUs = 0;
         rateStamp = now;
-      }
-      deadline += std::chrono::microseconds(kVideoBudgetUs);
-      const auto now = std::chrono::steady_clock::now();
-      if (deadline <= now) {
-        deadline = now;  // late: no samples to shed, just re-anchor the grid
-      } else {
-        std::this_thread::sleep_until(deadline);
       }
     }
   });
