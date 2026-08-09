@@ -4027,6 +4027,48 @@ TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
   EXPECT_FALSE(snapshotMultiview->get("texture")->getString("sharedHandleHex").empty());
 }
 
+// Regression (2026-08-08, "the multiviewer is broken"): the core must PUBLISH the
+// multiviewer config it is actually running, so the shell can tell that a core it
+// did not launch is sitting on the "grid" default.
+//
+// The bug this pins: `configure-multiviewer` is a one-shot the shell sends at app
+// launch. When the CORE respawns under a live shell, nothing re-sent it, so the
+// fresh core stayed at its `grid` default while the shell still believed
+// `pgmPvwTop`. The PGM/PVW bus cells vanished off the top of the wall and it
+// degraded to a bare source grid — with no way for the shell to notice, because
+// the applied mode was not reported anywhere. Reproduced end-to-end by killing
+// corevideo-native.exe under a running shell.
+//
+// Needs no GPU: this is command/snapshot state, not a composite.
+TEST(MediaCoreMultiview, SnapshotReportsTheAppliedMultiviewerConfig) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  // A FRESH core — exactly what a respawn produces — reports the grid default.
+  // This is the hazard: it is a perfectly valid mode, so it fails silently.
+  const auto fresh = mediaCore.sessionState();
+  const auto* freshMultiviewer = fresh.get("multiviewer");
+  ASSERT_NE(freshMultiviewer, nullptr)
+      << "sessionState must always surface the applied multiviewer config";
+  EXPECT_EQ(freshMultiviewer->getString("layoutMode"), "grid")
+      << "a fresh core defaults to grid — the shell must be able to SEE that";
+
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "configure-multiviewer"},
+      {"layoutMode", "pgmPvwTop"},
+      {"tileCount", 8},
+      {"showLabels", true},
+      {"showTally", false},
+  });
+
+  const auto applied = mediaCore.sessionState();
+  const auto* multiviewer = applied.get("multiviewer");
+  ASSERT_NE(multiviewer, nullptr);
+  EXPECT_EQ(multiviewer->getString("layoutMode"), "pgmPvwTop");
+  EXPECT_EQ(multiviewer->get("tileCount")->asNumber(), 8);
+  EXPECT_TRUE(multiviewer->get("showLabels")->asBool());
+  EXPECT_FALSE(multiviewer->get("showTally")->asBool());
+}
+
 // Regression: in a pgmPvw layout with sources but NO scene cued in preview, the
 // PVW cell must NOT be pinned to an arbitrary roster source (the old "v1" fallback
 // drew multiviewSources_.front(), which never reflected the preview and never

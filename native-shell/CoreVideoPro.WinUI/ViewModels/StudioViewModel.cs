@@ -9486,11 +9486,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void OnBridgeStatusChanged(string status) =>
         RunOnUiThread(() => EngineStatus = status);
 
+    // A ProfileChanged is a NEW CORE GENERATION — the initial handshake, or a supervisor
+    // RESPAWN after the core died. `configure-multiviewer` is a one-shot sent only by
+    // StartMediaCoreOnLaunchAsync, so a respawned core kept its `grid` default while this
+    // shell still believed `pgmPvwTop`: the PROGRAM and PREVIEW bus cells vanished off the
+    // top of the multiviewer and the wall degraded to a bare source grid. That also made
+    // tile-click-to-preview and the preview layer editor LOOK broken — both still worked,
+    // but there was no PVW cell left to show their result. The source roster survived
+    // because set-multiview-layout rides the frequent spine sync; only the layout MODE was
+    // lost. Reproduced end-to-end by killing corevideo-native.exe under a live shell
+    // (2026-08-08). Re-arm through the EXISTING debounce, which already carries the
+    // backpressure retry for the startup burst.
     private void OnBridgeProfileChanged(NativeMediaCoreProfile profile) =>
         RunOnUiThread(() =>
         {
             OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
             OnPropertyChanged(nameof(NativeAudioRuntimeStatus));
+            ScheduleMultiviewerConfigResend();
         });
 
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>

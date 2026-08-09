@@ -163,6 +163,33 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   "accent" composites identically to "none") and
   `ScenePersistenceServiceTests.DefaultRouteBorderIsNone` (shell). Never render a
   visible adornment on the program path outside the multiview grid.
+- **A ONE-SHOT COMMAND MUST BE RE-APPLIED ON EVERY CORE GENERATION (2026-08-08).**
+  The core is respawned by the supervisor whenever it dies, *under a live shell*.
+  Anything the shell sends once at launch is **silently lost** on that respawn, and
+  the fresh core answers with its DEFAULT — which is usually a legal value, so
+  nothing looks wrong. This shipped as "the multiviewer is broken":
+  `configure-multiviewer` was sent only by `StartMediaCoreOnLaunchAsync`, so a
+  respawned core sat on `multiviewLayoutMode_ = "grid"` while the shell still
+  believed `pgmPvwTop`. The **PROGRAM and PREVIEW bus cells vanished off the top of
+  the wall** and it degraded to a bare source grid. It presented as FIVE separate
+  bugs — buses gone, layout wrong, tiles blank, tile-click-to-preview dead, preview
+  layer editor dead — but click-to-preview and the editor were fine all along;
+  with no PVW cell there was nowhere to show their result. The source roster
+  survived because `set-multiview-layout` rides the frequent spine sync, which is
+  what made it look like a layout bug rather than a lost command.
+  **Fix pattern:** `MediaCoreSupervisor` fires `ProfileChanged` on every core
+  generation (initial handshake AND respawn) — re-arm from
+  `StudioViewModel.OnBridgeProfileChanged`, reusing the existing debounce rather
+  than adding a second retry mechanism. **And make it observable:** `sessionState()`
+  publishes a `multiviewer` node with the APPLIED config, unconditionally — a node
+  that only appears once configured is absent in exactly the case worth detecting.
+  Audit any other launch-time one-shot against this rule.
+  Repro (this is the acceptance test): with a healthy wall up, `Stop-Process` the
+  `corevideo-native.exe` and watch the wall after the supervisor respawns it.
+  Headless oracle: `node scripts/validate-multiview.mjs [--sources N] [--mode M]`
+  judges the published wall (PGM + PVW cells, N source tiles, 16:9 in-canvas
+  non-overlapping rects, and that the core echoes the configured mode). It proves
+  STRUCTURE, never pixels — the event carries a GPU handle, not a frame.
 - The WinUI window often **opens minimized off-screen** (rect ≈ -32000,-32000). Restore
   gently with `ShowWindow(SW_RESTORE=9)`; do NOT aggressively maximize/move a
   SwapChainPanel window across monitors — it can kill the window (and resize can crash).
