@@ -5239,7 +5239,17 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           work.monitorListenBusId.empty() ? kEmptyTap : localBusTap(work.monitorListenBusId);
       const auto& routedMonitorBus = !listenBus.empty() ? listenBus : localBusTap("mon");
       const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
-      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus : modules_.mixer->monitorBusPcm();
+      // A ROUTED CONSOLE NEVER FALLS BACK TO THE UNMUTED SUM. The legacy
+      // DevSafeAudioMixer bus is every PCM frame summed with no strips, mutes,
+      // or routing — a headless-only convenience. When routing sends exist, an
+      // empty/silent mon bus means the operator MUTED things: falling back here
+      // played the raw unmuted mix the moment every strip was muted (live
+      // meeting, 2026-08-09 — "muted all sources and still hear the output").
+      // Silence is the correct sound of an all-muted console.
+      const bool consoleRouted = !work.routingSends.empty();
+      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus
+                               : consoleRouted     ? kEmptyTap
+                                                   : modules_.mixer->monitorBusPcm();
       const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());
       const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
       if (frameCount <= 0) {
@@ -5292,8 +5302,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // mixer's default program mix). Mutates the loudness members in place under
   // audioOutputMutex_; masterMeterState reads them under the same lock.
   {
+    // Routed console -> never meter the legacy unmuted sum (see the monitor
+    // fallback note above). All-muted must read as silence on the master meter.
+    static const std::vector<float> kEmptyLoudnessTap;
+    const bool loudnessConsoleRouted = !work.routingSends.empty();
     const std::vector<float>& programAudio =
-        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+        !localProgramTap.empty() ? localProgramTap
+        : loudnessConsoleRouted  ? kEmptyLoudnessTap
+                                 : modules_.mixer->monitorBusPcm();
     const int meterChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
     updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
   }
@@ -5340,9 +5356,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       std::remove(outputDestinations.begin(), outputDestinations.end(), std::string("recording")),
       outputDestinations.end());
   const std::vector<float>& streamBusAudio = localBusTap("stream");
+  // Routed console -> silence, never the legacy unmuted sum (monitor note above).
+  static const std::vector<float> kEmptyStreamTap;
+  const bool streamConsoleRouted = !work.routingSends.empty();
   const std::vector<float>& outputProgramAudio =
-      !streamBusAudio.empty() ? streamBusAudio
-                              : !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+      !streamBusAudio.empty()    ? streamBusAudio
+      : !localProgramTap.empty() ? localProgramTap
+      : streamConsoleRouted      ? kEmptyStreamTap
+                                 : modules_.mixer->monitorBusPcm();
   const int outputAudioChannels =
       !streamBusAudio.empty() || !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
   // PROGRAM AUDIO OUT. The senders' VIDEO rides the 60Hz video tick
@@ -5424,8 +5445,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     ++results.recordingProgramFramesDelta;
     const auto isoIds = work.recordingIsoParticipantIds.empty() ? session.isoParticipantIds : work.recordingIsoParticipantIds;
     results.recordingIsoFramesDelta += static_cast<int64_t>(isoIds.size());
+    // Routed console -> record silence when all-muted, never the legacy
+    // unmuted sum (monitor note above).
+    static const std::vector<float> kEmptyRecordTap;
+    const bool recordConsoleRouted = !work.routingSends.empty();
     const std::vector<float>& programAudio =
-        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+        !localProgramTap.empty() ? localProgramTap
+        : recordConsoleRouted    ? kEmptyRecordTap
+                                 : modules_.mixer->monitorBusPcm();
     const int audioChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
     if (!programAudio.empty() && audioChannels > 0) {
       // A3: the recording PTS clock latches this at the session's first audio

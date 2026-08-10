@@ -1685,8 +1685,15 @@ inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame&
   const double noiseFloorDb = frame.noiseFloorDb < 0.0 ? bounded.noiseFloorDb : -72.0;
   const int inputLevel = frame.voiceActive ? clampAudioInt(static_cast<int>(std::lround(rmsLevel * 100.0)), 0, 100) : 0;
   const int nominalSamplesPerPacket = std::max(1, bounded.sampleRate / 50);
+  // MEASURED-SILENT PCM IS SILENT. A silent stem measures rms ~0, but
+  // voiceActive defaults true and the old checks only caught rms in (0, 0.005]
+  // — exactly 0.0 slipped through, so the AGC below "boosted" digital silence
+  // by +6dB and reported outputLevel 24 for EVERY quiet guest: seven identical
+  // meter columns fabricated from silence (live meeting, 2026-08-09, the third
+  // and final meter fabricator). PCM present with no measurable level = silent.
   const bool silenceDetected = !bounded.voiceActive ||
                                (!hasPcm && !hasExplicitRms && !hasExplicitPeak) ||
+                               (hasPcm && rmsLevel <= 0.005 && peakLevel <= 0.01) ||
                                (frame.rmsLevel > 0.0 && rmsLevel <= 0.005) ||
                                (frame.peakLevel > 0.0 && peakLevel <= 0.01);
   const bool clippingDetected = frame.peakLevel > 1.0 || peakLevel >= 0.98 || frame.rmsLevel > 1.0;
