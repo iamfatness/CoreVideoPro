@@ -494,6 +494,19 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
+    // Zoom→program audio topology (owner decision 2026-08-09): per-guest ISO
+    // stems vs Zoom's combined program mix. OneWay + Toggled (never TwoWay):
+    // the VM re-syncs routing on change, and a bounced snapshot must not
+    // re-enter the setter.
+    private void OnZoomAudioModeToggled(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleSwitch toggle && ViewModel is { } vm &&
+            toggle.IsOn != vm.IsPerGuestIsoAudio)
+        {
+            vm.SetZoomAudioMode(toggle.IsOn);
+        }
+    }
+
     // C2 rack: toggle a built-in processor on the SELECTED channel's insert
     // chain. Tag carries the canonical insert name the core DSP recognizes.
     private void OnRackInsertClicked(object sender, RoutedEventArgs e)

@@ -56,6 +56,16 @@ public sealed class ShowInputsCoordinator
     // ── roster persistence ────────────────────────────────────────────────────────
     public void LoadShowInputRoster()
     {
+        // Persisted state restores ONLY at startup, before the operator can have touched
+        // anything. A second load (a future respawn/second-window/deferred path) would
+        // overwrite live operator changes with stale disk state — refuse it LOUDLY.
+        if (_showInputRosterLoaded)
+        {
+            LaunchLog.Write("roster: LoadShowInputRoster REFUSED — already loaded this session; " +
+                "a re-load would overwrite live operator changes with disk state");
+            return;
+        }
+
         try
         {
             var snapshot = _showInputRosterStore.Load();
@@ -100,7 +110,7 @@ public sealed class ShowInputsCoordinator
         {
             ShowInputEditors.Add(new ShowInputSlotViewModel(
                 slot,
-                _host.OnShowInputChanged,
+                OnShowInputEditorChanged,
                 _host.SetCaptureDeviceAudioSource,
                 _host.ResolveSourceDisplayName,
                 _host.SetSourceDisplayName,
@@ -108,6 +118,21 @@ public sealed class ShowInputsCoordinator
         }
 
         RefreshShowInputEditors(force: true);
+    }
+
+    /// <summary>
+    /// Every slot change with editors attached lands here (the editor VM raises it on ANY
+    /// underlying model change — operator picker, unassign, auto-assign, swaps). Persist
+    /// IMMEDIATELY and synchronously: the save used to ride only ApplyShowInputRefresh, a
+    /// COALESCED DispatcherQueuePriority.Low dispatcher callback, so an operator change
+    /// followed by a crash (four on 2026-08-09 alone) lost the pending save and the
+    /// relaunch restored the PRE-change roster over the operator's work. The roster is a
+    /// ~2 KB JSON file; a synchronous write per change is nothing.
+    /// </summary>
+    private void OnShowInputEditorChanged()
+    {
+        SaveShowInputRoster();
+        _host.OnShowInputChanged();
     }
 
     public void RefreshShowInputEditors(bool force = false)

@@ -781,6 +781,33 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // `this` as its IShowInputsHost) before the first LoadShowInputRoster/InitializeShowInputEditors.
     private global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator _showInputsCoordinator = null!;
     private bool _multiviewGridRefreshScheduled;
+    // True while Engine is ON but Zoom has not yet granted raw media (recording
+    // permission pending) — drives the loud waiting status in ApplyMeetingFields.
+    private bool _awaitingRecordingPrivilege;
+
+    // Zoom→program audio topology (owner decision 2026-08-09). Session-scoped
+    // for now (persistence = prefs schema bump, a deliberate follow-up); the
+    // default is the long-standing Z1 program-mix topology.
+    private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.ProgramMix;
+    public ZoomAudioMode ZoomAudioMode => _zoomAudioMode;
+    public bool IsPerGuestIsoAudio => _zoomAudioMode == ZoomAudioMode.PerGuestIso;
+
+    public void SetZoomAudioMode(bool perGuestIso)
+    {
+        var mode = perGuestIso ? ZoomAudioMode.PerGuestIso : ZoomAudioMode.ProgramMix;
+        if (mode == _zoomAudioMode)
+        {
+            return;
+        }
+        _zoomAudioMode = mode;
+        OnPropertyChanged(nameof(ZoomAudioMode));
+        OnPropertyChanged(nameof(IsPerGuestIsoAudio));
+        CommandStatus = perGuestIso
+            ? "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program)."
+            : "Zoom program mix: Zoom's combined, echo-cancelled mix routes to program; guest strips meter only.";
+        // The seeded sends change shape — push the new routing to the core now.
+        _ = TrySyncMediaCoreAsync();
+    }
     private bool _canvasInteractionActive;
     private bool _refreshingSceneBackgroundSelection;
     private bool _applyingDualCaptureSelection;
@@ -908,7 +935,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(EnabledGraphics));
     }
 
-    private readonly List<ParticipantAudioMix> _audioMixChannels = [];
+    // REFERENCE-SWAP ONLY — never mutate this list in place. RefreshAudioMixChannels
+    // is called from BuildProductionSyncContext, which runs on BACKGROUND sync
+    // threads (spine timer, transport retries, ConfigureAwait(false) continuations)
+    // as well as the dispatcher. In-place Clear+AddRange raced every UI-thread
+    // enumeration: it planted the null that crashed the app at 19:00 and then threw
+    // "Source array was not long enough" four times a second once the consumers
+    // were guarded (2026-08-09). The writer builds a complete new list and swaps
+    // the reference; readers capture the reference once and enumerate a list that
+    // is never subsequently mutated. `volatile` orders the publish.
+    private volatile List<ParticipantAudioMix> _audioMixChannels = [];
 
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
@@ -6811,6 +6847,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyDualCaptureSelection();
     }
 
+    // THE THIRD SOURCE-STUFFER DIED HERE (owner-reported three times on 2026-08-09:
+    // "the Sources screen keeps putting the local webcams back into Inputs 1 and 2").
+    //
+    // This method used to write the primary/secondary dual-capture selection STRAIGHT
+    // into ShowInputs[0] and ShowInputs[1] (slots 1-2) via ApplyCaptureDeviceToShowInputSlot
+    // (slot.Kind = webcam kind, slot.CaptureDeviceId = device.Id, slot.InShow = true —
+    // unconditionally, clobbering whatever the operator had placed there). And
+    // RefreshDualCaptureSourceOptions AUTO-PICKS the first two connected capture devices
+    // — the operator's local webcams — whenever no selection resolves, so the pair ran
+    // as a pure background stuffer on EVERY capture-fleet pass: device-watcher events,
+    // opening the Inputs tab (OnActiveTabChanged), every capture connect (incl. the
+    // auto-connect storm after a relaunch), SRT virtual-device refresh. NOTHING in the
+    // UI binds Primary/Secondary/DualCapture* any more (the SRC-1 unified picker
+    // replaced the dual-capture combos), so no operator action was involved at all —
+    // and the coalesced roster save then PERSISTED the stomp, which is why relaunches
+    // restored webcams over the operator's saved Zoom guests. launch.log fingerprint,
+    // live meeting 2026-08-09: 20:05:32 operator sets slots 1-2 to Zoom guests →
+    // 20:05:44 both flip back to UvcWebcam; again at 20:11:41; and 800 ms after the
+    // 20:01:43 relaunch the freshly RESTORED roster was stomped before the operator
+    // touched anything. It survived the two earlier fixes because it is neither the
+    // auto-assign refill (ShowInputRosterService) nor EnsureAssignedSlotsForInShow.
+    //
+    // THE LAW (owner, stated three times that day): sources appear in slots by
+    // OPERATOR action or by NEWCOMER auto-assign ONLY. This path now only maintains
+    // the dual-capture summary text; it touches no slot. Do not resurrect the write.
     private void ApplyDualCaptureSelection()
     {
         if (_applyingDualCaptureSelection)
@@ -6829,42 +6890,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SecondaryCaptureDeviceId = secondary?.Id;
             }
 
-            ApplyCaptureDeviceToShowInputSlot(0, primary);
-            ApplyCaptureDeviceToShowInputSlot(1, secondary);
             UpdateDualCaptureSummary();
-            RefreshShowInputEditors();
-            RefreshMultiviewGridTiles();
-            QueueSelectedCaptureDevicesOnline();
         }
         finally
         {
             _applyingDualCaptureSelection = false;
         }
-    }
-
-    private void ApplyCaptureDeviceToShowInputSlot(int slotIndex, CaptureDevice? device)
-    {
-        if (slotIndex < 0 || slotIndex >= ShowInputs.Count)
-        {
-            return;
-        }
-
-        var slot = ShowInputs[slotIndex];
-        if (device is null)
-        {
-            if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam)
-            {
-                slot.Kind = ShowInputKind.Unassigned;
-                slot.CaptureDeviceId = null;
-                slot.InShow = false;
-            }
-
-            return;
-        }
-
-        slot.Kind = ResolveShowInputKind(device);
-        slot.CaptureDeviceId = device.Id;
-        slot.InShow = true;
     }
 
     private void UpdateDualCaptureSummary()
@@ -7048,13 +7079,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CaptureDevices.Remove(device);
         }
 
-        foreach (var slot in ShowInputs.Where(slot =>
-            slot.Kind == ShowInputKind.SrtIngest &&
-            string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+        using (ShowInputWriteScope.Enter("srt-device-removed"))
         {
-            slot.Kind = ShowInputKind.Unassigned;
-            slot.CaptureDeviceId = null;
-            slot.InShow = false;
+            foreach (var slot in ShowInputs.Where(slot =>
+                slot.Kind == ShowInputKind.SrtIngest &&
+                string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+            {
+                slot.Kind = ShowInputKind.Unassigned;
+                slot.CaptureDeviceId = null;
+                slot.InShow = false;
+            }
         }
 
         foreach (var route in _sceneRoutes.Values.SelectMany(routes => routes)
@@ -8158,8 +8192,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshAudioMixChannels()
     {
-        var existing = _audioMixChannels
-            .Where(channel => !string.IsNullOrWhiteSpace(channel.ParticipantId))
+        // Snapshot + null-guard FIRST. A null slipped into _audioMixChannels on
+        // 2026-08-09 (7 snapshot-rate refreshes threw NREs the dispatcher
+        // hardening absorbed, then a synchronous Audio-tab click hit the same
+        // null and killed the app). The suspected planter is a cross-thread
+        // mutation racing this GroupBy over the bare List — so copy the list
+        // once, drop nulls LOUDLY, and never let this pipeline throw again.
+        var channelsSnapshot = _audioMixChannels.ToArray();
+        var nullCount = channelsSnapshot.Count(channel => channel is null);
+        if (nullCount > 0)
+        {
+            LaunchLog.Write($"audio-mix: {nullCount} NULL channel(s) in _audioMixChannels " +
+                            $"(thread={Environment.CurrentManagedThreadId}, dispatcherAccess={_dispatcher.HasThreadAccess}) — dropped; find the writer");
+        }
+        var existing = channelsSnapshot
+            .Where(channel => channel is not null && !string.IsNullOrWhiteSpace(channel.ParticipantId))
             .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var merged = ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing).ToList();
@@ -8217,8 +8264,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mergedById[sourceId] = BuildWaitingForPcmAudioMixChannel(sourceId, prior);
         }
 
-        _audioMixChannels.Clear();
-        _audioMixChannels.AddRange(mergedById.Values);
+        // Atomic publish (see the field comment): a fully built list, one swap.
+        _audioMixChannels = mergedById.Values.ToList();
 
         // C7d (owner: workspace controls silently dead): the processing
         // workspace edits the SELECTED channel — with no selection every
@@ -8430,7 +8477,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
         audioRoutingSends = EnsureDefaultZoomAudioRoutingSends(
             audioRoutingSends,
-            RoomParticipantsForInputs.Select(participant => participant.Id).ToList())
+            RoomParticipantsForInputs.Select(participant => participant.Id).ToList(),
+            _zoomAudioMode)
             .ToList();
         // Default/fallback sends are synthesized after the matrix rows above.
         // Attach each bus's insert chain here so MASTER VST processing remains
@@ -8695,7 +8743,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var sourceIds = new List<string>();
         sourceIds.AddRange(RoomVideoParticipants.Select(participant => participant.Id));
-        sourceIds.AddRange(_audioMixChannels.Select(channel => channel.ParticipantId));
+        sourceIds.AddRange(_audioMixChannels.Where(channel => channel is not null).Select(channel => channel.ParticipantId));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(PreviewSceneRoutes));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(ProgramSceneRoutes));
 
@@ -8814,9 +8862,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // summed it twice at ~110ms skew (the measured internal echo). The
     // MEETING MIX ("zoom-mix") carries the program defaults instead; ISO rows
     // stay visible in the matrix for deliberate per-speaker routing.
+    /// <summary>
+    /// Seed the Zoom→program audio routing for the selected mode (owner decision
+    /// 2026-08-09, superseding Z1's fixed "zoom-mix → program"):
+    ///
+    /// <see cref="ZoomAudioMode.ProgramMix"/> — Zoom's own mixed bus (echo-cancelled,
+    /// continuous) rides to program; per-guest stems stay unrouted (metering/ISO only).
+    /// The original Z1 topology, now one of two modes.
+    ///
+    /// <see cref="ZoomAudioMode.PerGuestIso"/> — each guest's ISOLATED stem routes to
+    /// program through their own strip, so the operator's faders/mutes/EQ genuinely
+    /// shape program audio per guest. zoom-mix sends to program buses are REMOVED in
+    /// this mode — stems + the mix summed together double every voice. Stems are
+    /// server-gated by Zoom (silence between talk bursts), which is correct for a mix.
+    /// New guests are covered automatically: this runs on every sync context build.
+    /// </summary>
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultZoomAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
-        IReadOnlyList<string> zoomParticipantIds)
+        IReadOnlyList<string> zoomParticipantIds,
+        ZoomAudioMode zoomAudioMode = ZoomAudioMode.ProgramMix)
     {
         if (zoomParticipantIds.Count == 0)
         {
@@ -8825,6 +8889,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
         var completed = sends.ToList();
+
+        if (zoomAudioMode == ZoomAudioMode.PerGuestIso)
+        {
+            // Doubling guard: the meeting mix must not sum with the stems.
+            completed.RemoveAll(send =>
+                string.Equals(send.SourceId, "zoom-mix", StringComparison.Ordinal) &&
+                requiredBusIds.Any(bus => string.Equals(send.BusId, bus, StringComparison.OrdinalIgnoreCase)));
+
+            foreach (var participantId in zoomParticipantIds)
+            {
+                if (string.IsNullOrWhiteSpace(participantId))
+                {
+                    continue;
+                }
+                foreach (var busId in requiredBusIds)
+                {
+                    if (!completed.Any(send =>
+                            string.Equals(send.SourceId, participantId, StringComparison.Ordinal) &&
+                            string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        completed.Add(new MediaCoreAudioRoutingSendWire(participantId, busId, 0));
+                    }
+                }
+            }
+
+            return completed;
+        }
+
+        // ProgramMix: complete zoom-mix onto every program bus. No stem removal
+        // needed here — this seeder SYNTHESIZES its additions per sync (they are
+        // never written back to the matrix), so ISO-mode stem sends simply stop
+        // being generated on flip-back. A stem send the OPERATOR routed in the
+        // matrix deliberately (e.g. one guest's lav alongside the mix) survives,
+        // which the RoutesTheMeetingMixNotIsoParticipants test pins.
         foreach (var busId in requiredBusIds)
         {
             if (!completed.Any(send =>
@@ -10027,6 +10125,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var _mfb = new System.Text.StringBuilder();
             void MfT(string n) { _mfb.Append(n).Append('=').Append(_mf.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms "); _mf.Restart(); }
             ZoomStatus = "Zoom Live";
+            // WAITING STATES MUST BE LOUD. Zoom hands over raw video only after
+            // the host grants recording permission; until then every tile is
+            // black with no error anywhere — indistinguishable from broken
+            // ("No video from zoom", live meeting 2026-08-09: 37 dark seconds).
+            // Tell the operator exactly what is being waited on, and clear it
+            // the moment raw media goes live. Scalar prop, changes at state
+            // transitions only — no snapshot-rate churn (0xc000027b rules).
+            var rawMediaActive = Settings.RawMediaActive;
+            if (ZoomCaptureSubscribed && rawMediaActive != true)
+            {
+                if (!_awaitingRecordingPrivilege)
+                {
+                    _awaitingRecordingPrivilege = true;
+                    EngineStatus = "Waiting for Zoom recording permission — ask the host to allow recording.";
+                }
+            }
+            else if (_awaitingRecordingPrivilege && rawMediaActive == true)
+            {
+                _awaitingRecordingPrivilege = false;
+                EngineStatus = "Zoom capture live.";
+            }
             CurrentRoomLabel = _currentRoomName;
             ApplyCaptionAndLowerThirdPatch(patch);
             MfT("captionLT");
@@ -10261,6 +10380,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .GroupBy(participant => participant.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var rows = _audioMixChannels
+            .Where(channel => channel is not null)  // same null-planter guard as RefreshAudioMixChannels
             .OrderBy(channel => ResolveAudioRowSortKey(channel.ParticipantId, participantsById))
             .Select(mix =>
             {
@@ -11384,6 +11504,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var active = ShowInputs.Where(slot => slot.InShow).ToList();
         if (active.Count > ShowInputRosterService.MaxMultiviewBoxes)
         {
+            using var _ = ShowInputWriteScope.Enter("refresh-truncate");
             foreach (var slot in active.Skip(ShowInputRosterService.MaxMultiviewBoxes))
             {
                 slot.InShow = false;
@@ -11396,7 +11517,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         SaveShowInputRoster();
-        CommandStatus = "Show input roster updated";
+        // HONEST WALL MATH (owner, 2026-08-09): the pgmPvwTop multiviewer has 8
+        // source cells — PGM and PVW occupy two of the 10 boxes — while Sources
+        // allows 10 inputs in-show. The 9th and 10th silently never displayed.
+        // Until a >8 layout exists (owner leans "8 is the practical wall"), say
+        // exactly what is shown instead of letting two sources vanish.
+        var inShowCount = ShowInputs.Count(slot => slot.InShow);
+        CommandStatus = inShowCount > 8
+            ? $"Show input roster updated — multiviewer shows the first 8 of {inShowCount} in-show sources (PGM + PVW use two cells)"
+            : "Show input roster updated";
     }
 
     private void QueueSelectedCaptureDevicesOnline()
@@ -11614,22 +11743,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void EnsureAssignedSlotsForInShow()
     {
-        var defaultParticipant = RoomVideoParticipants.FirstOrDefault()?.Id;
-        var defaultCapture = CaptureDevices.FirstOrDefault(device => device.IsConnected) ??
-            CaptureDevices.FirstOrDefault();
-
+        // NEVER INVENT A SOURCE (owner-reported, 2026-08-09: "sources 1 and 2
+        // keep flipping back to the local cameras"). This used to stuff the
+        // first participant — or the first connected capture device, i.e. the
+        // operator's webcams — into ANY in-show slot without an assignment, and
+        // it runs at the top of every roster refresh: unassigning a slot put a
+        // webcam straight back within a second. It was the second, more
+        // aggressive sibling of the auto-assign refill fixed earlier today.
+        // An in-show slot with nothing assigned has nothing to show — it leaves
+        // the show. Sources appear in slots by OPERATOR action (the picker) or
+        // by roster auto-assign of NEWCOMERS, never by this fallback.
+        using var _ = ShowInputWriteScope.Enter("refresh-leave-show");
         foreach (var slot in ShowInputs.Where(slot => slot.InShow && !slot.IsAssigned))
         {
-            if (!string.IsNullOrWhiteSpace(defaultParticipant))
-            {
-                slot.Kind = ShowInputKind.ZoomParticipant;
-                slot.ParticipantId = defaultParticipant;
-            }
-            else if (defaultCapture is not null)
-            {
-                slot.Kind = ResolveShowInputKind(defaultCapture);
-                slot.CaptureDeviceId = defaultCapture.Id;
-            }
+            slot.InShow = false;
         }
     }
 
@@ -11697,6 +11824,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // gone or which duplicate a lower slot get cleared automatically, LOGGED.
     private void SweepGhostShowInputAssignments()
     {
+        using var _ = ShowInputWriteScope.Enter("ghost-sweep");
         var swept = 0;
         foreach (var slot in ShowInputs)
         {
@@ -11759,6 +11887,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void AssignConnectedCaptureDeviceToShowInput(CaptureDevice device)
     {
+        using var _ = ShowInputWriteScope.Enter("device-connect");
         var targetKind = ResolveShowInputKind(device);
         LaunchLog.Write(string.Format("assign: {0} kind={1} slots={2} freeInShow={3} freeParked={4}", device.Id, targetKind,
             ShowInputs.Count,

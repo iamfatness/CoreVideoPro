@@ -914,8 +914,14 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>Engine-reported raw-media state from the latest zoom snapshot
+    /// (null until the engine reports). Drives the "waiting for Zoom recording
+    /// permission" status in the studio.</summary>
+    public bool? RawMediaActive { get; private set; }
+
     public void ApplyCaptureSnapshot(RawCaptureSnapshot snapshot)
     {
+        RawMediaActive = snapshot.RawMediaActive;
         MeetingState = ParseMeetingState(snapshot.MeetingState);
         LiveParticipantCount = snapshot.Participants.Count;
         RefreshZoomEngineEvidence(_bridge.LastSnapshot, throttle: true);

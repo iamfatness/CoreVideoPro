@@ -154,6 +154,116 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Contains(sourceId!, coordinator.ComputeEligiblePresentIsoSourceIds());
     }
 
+    // ---------------------------------------------------------------- persistence: immediate save + load-once
+    // Regression cover for the 2026-08-09 live-meeting roster-revert defect. Two of the
+    // mechanisms that let a webcam stomp survive: (a) the roster save rode ONLY the
+    // coalesced Low-priority ApplyShowInputRefresh, so a crash (four that day) lost the
+    // operator's pending change and the relaunch restored the pre-change roster; (b) any
+    // future second LoadShowInputRoster would overwrite live operator changes with disk
+    // state. The coordinator now saves synchronously on every editor-observed slot change
+    // and refuses a second load.
+
+    private static (ShowInputsCoordinator Coordinator, FakeShowInputsHost Host, InMemoryShowInputRosterStore Store) BuildWithStore()
+    {
+        var host = new FakeShowInputsHost();
+        var store = new InMemoryShowInputRosterStore();
+        var coordinator = new ShowInputsCoordinator(new FakeMediaCoreBridge(), store, host);
+        coordinator.LoadShowInputRoster();
+        coordinator.InitializeShowInputEditors();
+        return (coordinator, host, store);
+    }
+
+    [Fact]
+    public void OperatorAssignment_PersistsImmediately_WithoutTheCoalescedRefresh()
+    {
+        var (coordinator, host, store) = BuildWithStore();
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest 1" }];
+        coordinator.RefreshShowInputEditors();
+
+        var editor = coordinator.ShowInputEditors[0];
+        editor.SelectedUnifiedSourceId = "zoom:p1";
+        editor.InShow = true;
+
+        // The store must already hold the operator's change — NOTHING else ran (the fake
+        // host's OnShowInputChanged is a no-op, standing in for the coalesced dispatcher
+        // callback a crash would lose).
+        var saved = store.Load();
+        Assert.NotNull(saved);
+        var slot1 = saved!.Slots.First(record => record.SlotNumber == 1);
+        Assert.Equal(ShowInputKind.ZoomParticipant, slot1.Kind);
+        Assert.Equal("p1", slot1.ParticipantId);
+        Assert.True(slot1.InShow);
+    }
+
+    [Fact]
+    public void OperatorUnassign_PersistsImmediately()
+    {
+        var (coordinator, host, store) = BuildWithStore();
+        host.AutomationAutoAssignInputsEnabled = true;
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest 1" }];
+        coordinator.ReapplyShowInputAutoAssign();
+
+        var editor = coordinator.ShowInputEditors.First(e => e.Kind == ShowInputKind.ZoomParticipant);
+        coordinator.UnassignShowInput(editor);
+
+        var saved = store.Load();
+        Assert.NotNull(saved);
+        Assert.DoesNotContain(saved!.Slots, record => record.Kind == ShowInputKind.ZoomParticipant);
+    }
+
+    [Fact]
+    public void AutoAssign_PersistsImmediately()
+    {
+        var (coordinator, host, store) = BuildWithStore();
+        host.AutomationAutoAssignInputsEnabled = true;
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest 1" }];
+
+        coordinator.ReapplyShowInputAutoAssign();
+
+        // The auto-assign wrote the model directly; the editor VMs observe the model and
+        // the coordinator saves synchronously — so a crash right after auto-assign no
+        // longer loses the roster either.
+        var saved = store.Load();
+        Assert.NotNull(saved);
+        var assigned = saved!.Slots.FirstOrDefault(record => record.Kind == ShowInputKind.ZoomParticipant);
+        Assert.NotNull(assigned);
+        Assert.Equal("p1", assigned!.ParticipantId);
+    }
+
+    [Fact]
+    public void SecondLoad_IsRefused_AndNeverOverwritesLiveOperatorChanges()
+    {
+        var (coordinator, host, store) = BuildWithStore();
+        host.RoomParticipantsForInputs = [new Participant { Id = "p2", Name = "Guest 2" }];
+        coordinator.RefreshShowInputEditors();
+
+        // Operator assigns slot 1 live.
+        coordinator.ShowInputEditors[0].SelectedUnifiedSourceId = "zoom:p2";
+
+        // Stale disk state appears (another instance / an old file): a webcam in slot 1.
+        store.Save(new ShowInputRosterSnapshot
+        {
+            Slots =
+            [
+                new ShowInputSlotRecord
+                {
+                    SlotNumber = 1,
+                    Kind = ShowInputKind.UvcWebcam,
+                    CaptureDeviceId = "cam-1",
+                    InShow = true
+                }
+            ]
+        });
+
+        // Persisted state restores ONLY at startup — a second load must refuse, keeping
+        // the operator's live assignment.
+        coordinator.LoadShowInputRoster();
+
+        Assert.Equal(ShowInputKind.ZoomParticipant, host.ShowInputs[0].Kind);
+        Assert.Equal("p2", host.ShowInputs[0].ParticipantId);
+        Assert.Null(host.ShowInputs[0].CaptureDeviceId);
+    }
+
     [Fact]
     public void BuildIsoSourceTargets_Empty_WhenMasterSwitchOff()
     {

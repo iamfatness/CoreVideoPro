@@ -297,6 +297,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             return ControlInvokeResult.Fail($"Show Input slot {slot} is out of range (1-{_vm.ShowInputEditors.Count}).");
         }
 
+        // Operator-equivalent path (Companion/control API) — named so slot-write logs
+        // distinguish it from an in-app picker action.
+        using var _ = ShowInputWriteScope.Enter("control-api.assign");
+
         if (sourceId.StartsWith("zoom:", StringComparison.Ordinal))
         {
             editor.Kind = ShowInputKind.ZoomParticipant;

@@ -57,6 +57,7 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <TextBlock Text="Source mixer" Style="{StaticResource OperatorSectionTitle}"
@@ -75,7 +76,17 @@
                                               Tag="setup" Click="OnAudioModeClicked"
                                               ToolTipService.ToolTip="Devices, monitoring, and processing" />
                             </StackPanel>
-                            <Button Grid.Column="1" Content="Pop out mixer"
+                            <!-- Zoom audio topology (owner decision 2026-08-09): OFF = Zoom's own
+                                 program mix rides to master (echo-cancelled, continuous); ON = each
+                                 guest's ISOLATED stem routes through their strip, so the faders
+                                 genuinely shape program audio per guest. -->
+                            <ToggleSwitch Grid.Column="1" Margin="0,0,16,0"
+                                          AutomationProperties.Name="Per-guest ISO audio to program"
+                                          OnContent="Per-guest ISO" OffContent="Zoom program mix"
+                                          IsOn="{x:Bind ViewModel.IsPerGuestIsoAudio, Mode=OneWay}"
+                                          Toggled="OnZoomAudioModeToggled"
+                                          ToolTipService.ToolTip="Route each guest's isolated audio through their fader instead of Zoom's combined mix" />
+                            <Button Grid.Column="2" Content="Pop out mixer"
                                     Style="{StaticResource OperatorGhostButton}"
                                     MinWidth="132"
                                     Visibility="{x:Bind ShowPopOutButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
