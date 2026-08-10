@@ -1,3 +1,4 @@
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using Xunit;
 
@@ -194,7 +195,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(8, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(9, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -234,10 +235,52 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(8, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(9, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.False(migrated.IsoRecordingEnabled);
         Assert.Empty(migrated.IsoRecordingSourceIds);
+        Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
+    }
+
+    [Fact]
+    public void Serializer_RoundTripsZoomAudioMode()
+    {
+        // v9: the Zoom→program topology persists so a show that runs in per-guest
+        // ISO comes back up that way.
+        var preferences = new ProductionOutputPreferences
+        {
+            ZoomAudioMode = ZoomAudioModePreference.PerGuestIsoValue
+        };
+
+        var roundTripped = ProductionOutputPreferencesSerializer.Deserialize(
+            ProductionOutputPreferencesSerializer.Serialize(preferences));
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, roundTripped.ZoomAudioMode);
+        Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(roundTripped.ZoomAudioMode));
+    }
+
+    [Fact]
+    public void Serializer_MigratesV8FileToV9WithProgramMixDefault()
+    {
+        // A v8 file has no ZoomAudioMode field: it migrates to v9 reading as the
+        // long-standing Z1 program-mix topology — behaviour identical to today for
+        // every existing profile.
+        const string json = """
+            {
+              "Version": 8,
+              "VirtualCameraEnabled": true
+            }
+            """;
+
+        var migrated = ProductionOutputPreferencesSerializer.Deserialize(json, out var wasMigrated);
+
+        Assert.NotNull(migrated);
+        Assert.True(wasMigrated);
+        Assert.Equal(9, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
+        Assert.Null(migrated.ZoomAudioMode);
+        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse(migrated.ZoomAudioMode));
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
     }
 
