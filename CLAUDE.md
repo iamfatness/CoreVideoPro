@@ -192,10 +192,28 @@ comment at the code site; this is the index.
   DeferInvokeCallback). ALL queued UI callbacks now route through `UiDispatch`
   (log-with-stack + survive). A raw `TryEnqueue` with a throwing body is a
   process-killer — never add one.
-- **Sources kept reverting: auto-assign refilled operator-removed guests every
-  sync** (`ShowInputsCoordinator`): the fill pass now only places ids it has
-  NEVER seen this meeting (real newcomers); flipping the auto-assign toggle
-  explicitly reassigns everyone. Also: `DefaultMaxVideoSubscriptions` was 6, so
+- **Sources kept reverting — it took THREE kills, one writer per report.**
+  (1) auto-assign refilled operator-removed guests every sync
+  (`ShowInputsCoordinator`): the fill pass now only places ids it has NEVER seen
+  this meeting (real newcomers); flipping the auto-assign toggle explicitly
+  reassigns everyone. (2) `EnsureAssignedSlotsForInShow` stuffed the first
+  participant/first connected webcam into any in-show-but-unassigned slot every
+  refresh — an unassigned slot now just leaves the show ("NEVER INVENT A
+  SOURCE"). (3) the VESTIGIAL dual-capture selection
+  (`StudioViewModel.ApplyDualCaptureSelection`) force-wrote the auto-picked
+  primary/secondary capture devices (the local webcams) into ShowInputs[0]/[1]
+  — slots 1-2 — on EVERY capture-fleet pass (device-watcher event, Inputs-tab
+  visit, capture connect), with no UI bound to it at all, and the roster save
+  then persisted the stomp; the slot write is deleted
+  (`ShowInputAssignmentLawTests.TheDualCaptureSlotStufferStaysDead`). THE LAW:
+  sources appear in slots by OPERATOR action or newcomer auto-assign ONLY.
+  Enforcement: every `ShowInputSlot` setter logs `slot-write: slotN field
+  old->new by=<reason>` with the ambient `ShowInputWriteScope` reason — an
+  UNTRACKED slot-write in launch.log is a bug (wrap the writer in a scope). The
+  roster also saves SYNCHRONOUSLY on every editor-observed change (the old save
+  rode only the coalesced Low-priority refresh, so a crash lost the operator's
+  pending change), and `LoadShowInputRoster` refuses a second load (persisted
+  state restores ONLY at startup). Also: `DefaultMaxVideoSubscriptions` was 6, so
   the 7th+ camera-on guest was silently never subscribed — now 8 (the product's
   advertised feed count; the engine's downgrade ladder handles SDK refusals
   loudly). And `Selector.SelectedValue` must never be driven by x:Bind inside an

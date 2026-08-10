@@ -60,6 +60,8 @@ public static class ShowInputRosterService
             return;
         }
 
+        using var _ = ShowInputWriteScope.Enter("operator-swap");
+
         var (aKind, aParticipant, aCapture, aAudio, aInShow) =
             (a.Kind, a.ParticipantId, a.CaptureDeviceId, a.AudioDeviceId, a.InShow);
         var (bKind, bParticipant, bCapture, bAudio, bInShow) =
@@ -294,6 +296,8 @@ public static class ShowInputRosterService
         bool autoAssign,
         IReadOnlyList<string>? autoAssignCandidates = null)
     {
+        using var _ = ShowInputWriteScope.Enter("roster-sync");
+
         var validIds = new HashSet<string>(participantIdsInRosterOrder, StringComparer.Ordinal);
 
         // Free slots whose Zoom participant is no longer in the meeting.

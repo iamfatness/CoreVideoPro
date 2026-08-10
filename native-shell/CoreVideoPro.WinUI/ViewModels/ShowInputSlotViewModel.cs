@@ -60,6 +60,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     // the show. Idempotent.
     public void Unassign()
     {
+        using var _ = ShowInputWriteScope.Enter("operator-unassign");
         _slot.InShow = false;
         _slot.Kind = ShowInputKind.Unassigned;
         _onChanged();
@@ -77,7 +78,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
                 return;
             }
 
-            _slot.Kind = value;
+            using (ShowInputWriteScope.Enter("operator-picker"))
+            {
+                _slot.Kind = value;
+            }
             // Pass ALL the retained lists. This previously passed only participants +
             // capture devices, so the optional audioDevices/mediaAssets params defaulted
             // to [] -- switching a slot's TYPE to "Media asset" wiped the media list (an
@@ -99,7 +103,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
                 return;
             }
 
-            _slot.ParticipantId = value;
+            using (ShowInputWriteScope.Enter("operator-picker"))
+            {
+                _slot.ParticipantId = value;
+            }
             OnSlotPropertyChanged();
         }
     }
@@ -114,7 +121,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
                 return;
             }
 
-            _slot.CaptureDeviceId = value;
+            using (ShowInputWriteScope.Enter("operator-picker"))
+            {
+                _slot.CaptureDeviceId = value;
+            }
             SyncAudioDeviceFromCaptureDevice();
             OnSlotPropertyChanged();
         }
@@ -146,7 +156,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
                 return;
             }
 
-            _slot.InShow = value;
+            using (ShowInputWriteScope.Enter("operator-inshow"))
+            {
+                _slot.InShow = value;
+            }
             OnSlotPropertyChanged();
         }
     }
@@ -253,11 +266,13 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
             if (value.StartsWith(ShowInputRosterService.ZoomSourcePrefix, StringComparison.Ordinal))
             {
+                using var _ = ShowInputWriteScope.Enter("operator-picker");
                 _slot.Kind = ShowInputKind.ZoomParticipant;
                 _slot.ParticipantId = value[ShowInputRosterService.ZoomSourcePrefix.Length..];
             }
             else if (value.StartsWith(ShowInputRosterService.MediaSourcePrefix, StringComparison.Ordinal))
             {
+                using var _ = ShowInputWriteScope.Enter("operator-picker");
                 _slot.Kind = ShowInputKind.Media;
                 // Media slots store the full "media:<assetId>" id in ParticipantId.
                 _slot.ParticipantId = value;
@@ -267,10 +282,13 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
                 var deviceId = value[ShowInputRosterService.CaptureSourcePrefix.Length..];
                 var device = _captureDevices.FirstOrDefault(item =>
                     string.Equals(item.Id, deviceId, StringComparison.Ordinal));
-                _slot.Kind = device is null
-                    ? ShowInputKind.UvcWebcam
-                    : ShowInputRosterService.InferCaptureDeviceKind(device);
-                _slot.CaptureDeviceId = deviceId;
+                using (ShowInputWriteScope.Enter("operator-picker"))
+                {
+                    _slot.Kind = device is null
+                        ? ShowInputKind.UvcWebcam
+                        : ShowInputRosterService.InferCaptureDeviceKind(device);
+                    _slot.CaptureDeviceId = deviceId;
+                }
                 SyncAudioDeviceFromCaptureDevice();
             }
             else

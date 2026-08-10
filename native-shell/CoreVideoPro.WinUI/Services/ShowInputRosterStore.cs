@@ -149,6 +149,8 @@ public static class ShowInputRosterSerializer
         // pre-L7 roster file self-heals the first time it is read.
         snapshot = GarbageCollect(snapshot);
 
+        using var _ = ShowInputWriteScope.Enter("roster-load");
+
         var bySlot = snapshot.Slots
             .GroupBy(record => record.SlotNumber)
             .ToDictionary(group => group.Key, group => group.First());

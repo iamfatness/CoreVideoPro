@@ -6847,6 +6847,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyDualCaptureSelection();
     }
 
+    // THE THIRD SOURCE-STUFFER DIED HERE (owner-reported three times on 2026-08-09:
+    // "the Sources screen keeps putting the local webcams back into Inputs 1 and 2").
+    //
+    // This method used to write the primary/secondary dual-capture selection STRAIGHT
+    // into ShowInputs[0] and ShowInputs[1] (slots 1-2) via ApplyCaptureDeviceToShowInputSlot
+    // (slot.Kind = webcam kind, slot.CaptureDeviceId = device.Id, slot.InShow = true —
+    // unconditionally, clobbering whatever the operator had placed there). And
+    // RefreshDualCaptureSourceOptions AUTO-PICKS the first two connected capture devices
+    // — the operator's local webcams — whenever no selection resolves, so the pair ran
+    // as a pure background stuffer on EVERY capture-fleet pass: device-watcher events,
+    // opening the Inputs tab (OnActiveTabChanged), every capture connect (incl. the
+    // auto-connect storm after a relaunch), SRT virtual-device refresh. NOTHING in the
+    // UI binds Primary/Secondary/DualCapture* any more (the SRC-1 unified picker
+    // replaced the dual-capture combos), so no operator action was involved at all —
+    // and the coalesced roster save then PERSISTED the stomp, which is why relaunches
+    // restored webcams over the operator's saved Zoom guests. launch.log fingerprint,
+    // live meeting 2026-08-09: 20:05:32 operator sets slots 1-2 to Zoom guests →
+    // 20:05:44 both flip back to UvcWebcam; again at 20:11:41; and 800 ms after the
+    // 20:01:43 relaunch the freshly RESTORED roster was stomped before the operator
+    // touched anything. It survived the two earlier fixes because it is neither the
+    // auto-assign refill (ShowInputRosterService) nor EnsureAssignedSlotsForInShow.
+    //
+    // THE LAW (owner, stated three times that day): sources appear in slots by
+    // OPERATOR action or by NEWCOMER auto-assign ONLY. This path now only maintains
+    // the dual-capture summary text; it touches no slot. Do not resurrect the write.
     private void ApplyDualCaptureSelection()
     {
         if (_applyingDualCaptureSelection)
@@ -6865,42 +6890,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SecondaryCaptureDeviceId = secondary?.Id;
             }
 
-            ApplyCaptureDeviceToShowInputSlot(0, primary);
-            ApplyCaptureDeviceToShowInputSlot(1, secondary);
             UpdateDualCaptureSummary();
-            RefreshShowInputEditors();
-            RefreshMultiviewGridTiles();
-            QueueSelectedCaptureDevicesOnline();
         }
         finally
         {
             _applyingDualCaptureSelection = false;
         }
-    }
-
-    private void ApplyCaptureDeviceToShowInputSlot(int slotIndex, CaptureDevice? device)
-    {
-        if (slotIndex < 0 || slotIndex >= ShowInputs.Count)
-        {
-            return;
-        }
-
-        var slot = ShowInputs[slotIndex];
-        if (device is null)
-        {
-            if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam)
-            {
-                slot.Kind = ShowInputKind.Unassigned;
-                slot.CaptureDeviceId = null;
-                slot.InShow = false;
-            }
-
-            return;
-        }
-
-        slot.Kind = ResolveShowInputKind(device);
-        slot.CaptureDeviceId = device.Id;
-        slot.InShow = true;
     }
 
     private void UpdateDualCaptureSummary()
@@ -7084,13 +7079,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CaptureDevices.Remove(device);
         }
 
-        foreach (var slot in ShowInputs.Where(slot =>
-            slot.Kind == ShowInputKind.SrtIngest &&
-            string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+        using (ShowInputWriteScope.Enter("srt-device-removed"))
         {
-            slot.Kind = ShowInputKind.Unassigned;
-            slot.CaptureDeviceId = null;
-            slot.InShow = false;
+            foreach (var slot in ShowInputs.Where(slot =>
+                slot.Kind == ShowInputKind.SrtIngest &&
+                string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+            {
+                slot.Kind = ShowInputKind.Unassigned;
+                slot.CaptureDeviceId = null;
+                slot.InShow = false;
+            }
         }
 
         foreach (var route in _sceneRoutes.Values.SelectMany(routes => routes)
@@ -11506,6 +11504,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var active = ShowInputs.Where(slot => slot.InShow).ToList();
         if (active.Count > ShowInputRosterService.MaxMultiviewBoxes)
         {
+            using var _ = ShowInputWriteScope.Enter("refresh-truncate");
             foreach (var slot in active.Skip(ShowInputRosterService.MaxMultiviewBoxes))
             {
                 slot.InShow = false;
@@ -11754,6 +11753,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // An in-show slot with nothing assigned has nothing to show — it leaves
         // the show. Sources appear in slots by OPERATOR action (the picker) or
         // by roster auto-assign of NEWCOMERS, never by this fallback.
+        using var _ = ShowInputWriteScope.Enter("refresh-leave-show");
         foreach (var slot in ShowInputs.Where(slot => slot.InShow && !slot.IsAssigned))
         {
             slot.InShow = false;
@@ -11824,6 +11824,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // gone or which duplicate a lower slot get cleared automatically, LOGGED.
     private void SweepGhostShowInputAssignments()
     {
+        using var _ = ShowInputWriteScope.Enter("ghost-sweep");
         var swept = 0;
         foreach (var slot in ShowInputs)
         {
@@ -11886,6 +11887,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void AssignConnectedCaptureDeviceToShowInput(CaptureDevice device)
     {
+        using var _ = ShowInputWriteScope.Enter("device-connect");
         var targetKind = ResolveShowInputKind(device);
         LaunchLog.Write(string.Format("assign: {0} kind={1} slots={2} freeInShow={3} freeParked={4}", device.Id, targetKind,
             ShowInputs.Count,
