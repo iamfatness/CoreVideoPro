@@ -785,9 +785,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // permission pending) — drives the loud waiting status in ApplyMeetingFields.
     private bool _awaitingRecordingPrivilege;
 
-    // Zoom→program audio topology (owner decision 2026-08-09). Session-scoped
-    // for now (persistence = prefs schema bump, a deliberate follow-up); the
-    // default is the long-standing Z1 program-mix topology.
+    // Zoom→program audio topology (owner decision 2026-08-09). Persists via
+    // ProductionOutputPreferences.ZoomAudioMode (prefs v9) and is restored into
+    // this backing field by ApplyProductionOutputPreferences; anything absent
+    // or unrecognized reads as the long-standing Z1 program-mix default.
     private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.ProgramMix;
     public ZoomAudioMode ZoomAudioMode => _zoomAudioMode;
     public bool IsPerGuestIsoAudio => _zoomAudioMode == ZoomAudioMode.PerGuestIso;

@@ -38,6 +38,11 @@ public sealed class ProductionOutputPreferences
     // profile behaves exactly as it did before the upgrade. Stored as a string,
     // not a bool: an unrecognized value falls back to programMix (see
     // ZoomAudioModePreference). Not secret-bearing.
+    // Downgrade (verified, matches every prior bump): an older v8 build reading
+    // this file ignores the unknown ZoomAudioMode member, does not migrate
+    // (9 < 8 is false), and on its next save rewrites Version: 8 with the field
+    // dropped. Returning to a v9 build then reads the field absent -> programMix.
+    // That is the safe direction, so no downgrade guard is needed.
     public const int CurrentVersion = 9;
 
     public int Version { get; set; } = CurrentVersion;

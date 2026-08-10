@@ -1074,9 +1074,9 @@ arm). Four pieces:
   BACKING-FIELD pattern (a setter would sync a core that isn't up), re-projected onto
   the editors on first `RefreshShowInputEditors`. v7→v8 migrates to program-only
   defaults. (v7 was the true current version — the "v6" in the B2 notes was stale; v7
-  added VstInsertStates. v9 (2026-08-10) persists the Zoom→program audio topology
+  added VstInsertStates.) v9 (2026-08-10) persists the Zoom→program audio topology
   (ZoomAudioMode: "programMix"/"perGuestIso"); absent = programMix, and an
-  unrecognized value falls back to programMix rather than guessing ISO.)
+  unrecognized value falls back to programMix rather than guessing ISO.
 
 ## Current state addendum (2026-07-13, the zero-audio recording bug)
 

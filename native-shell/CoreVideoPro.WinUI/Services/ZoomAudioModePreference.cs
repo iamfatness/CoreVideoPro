@@ -24,6 +24,15 @@ public static class ZoomAudioModePreference
             ? ZoomAudioMode.PerGuestIso
             : ZoomAudioMode.ProgramMix;
 
-    public static string Format(ZoomAudioMode mode) =>
-        mode == ZoomAudioMode.PerGuestIso ? PerGuestIsoValue : ProgramMixValue;
+    // Deliberately asymmetric with Parse above: Parse reads hostile/legacy input
+    // (a corrupted or future-version file) and must stay permissive with a safe
+    // fallback. Format writes operator intent to disk, so it is TOTAL — a switch
+    // over every enum member with no fallback arm — so a third topology added to
+    // ZoomAudioMode without a matching case here is a compiler warning, not a
+    // silent "programMix" write.
+    public static string Format(ZoomAudioMode mode) => mode switch
+    {
+        ZoomAudioMode.ProgramMix => ProgramMixValue,
+        ZoomAudioMode.PerGuestIso => PerGuestIsoValue,
+    };
 }

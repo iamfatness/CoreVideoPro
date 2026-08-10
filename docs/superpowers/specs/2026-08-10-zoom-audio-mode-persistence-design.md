@@ -120,10 +120,20 @@ toggle already produces:
 > Per-guest ISO audio: each guest routes to program through their own fader (Zoom's
 > combined mix is off program).
 
-The operator is told which topology they came up in rather than having to notice a switch
-position. One line, and it matches the loud-not-silent rule that the QA day kept
-reinforcing. Restoring `ProgramMix` says nothing — that is the default, and a status line
-on every launch would be noise.
+Be precise about what this line does, because on its own it is weaker than "the operator
+is told which topology they came up in" sounds. It is set in the constructor, at launch —
+before Engine On, before a join, before any participant exists. `EnsureDefaultZoomAudioRoutingSends`
+no-ops until `zoomParticipantIds.Count > 0` (`StudioViewModel.cs:8887-8890`), so `PerGuestIso`
+has no audible effect until a meeting has guests, which in practice is minutes later. The
+line therefore fires at the one moment the topology it announces cannot yet matter.
+Separately, `CommandStatus` is written from roughly 50 call sites across the shell; the
+happy-path launch does not clobber it, but ordinary pre-show setup — queueing a scene,
+routing a source, assigning a role — will, well before the first guest joins. So the line
+is real and honest (it never claims anything false), but it is a point-in-time status
+write, not a durable indicator, and is likely gone from the screen by the time the mode it
+describes actually engages. Restoring `ProgramMix` still says nothing — that is the
+default, and a status line on every launch would be noise. See "Known residual /
+follow-up" below for what closing this gap would take.
 
 ## Safety analysis
 
@@ -149,6 +159,27 @@ channel strip is dropped from the bus mix, so a guest whose stem is routed befor
 strip is built is briefly dropped (loudly). Strips and the seeder both derive from the
 same roster and the seeder runs every sync, so this converges within a sync cycle. It is
 a property of ISO mode generally, not of persisting it.
+
+## Known residual / follow-up
+
+Persistence changes the operator-action shape of ISO mode: before this branch, running in
+`PerGuestIso` required flipping the toggle every session, so the operator necessarily took
+an action in the current session before zoom-mix left the program buses. After this
+branch, a rig that restarts already in `PerGuestIso` reaches that same state — zoom-mix
+stripped off every program bus the moment a guest joins — with no operator action in the
+session at all. The only signal for it is the launch-time status line described above,
+and that signal is launch-time only: it does not persist, is not re-asserted when the mode
+actually starts affecting audio, and is commonly overwritten by ordinary pre-show setup
+before that point is reached.
+
+This branch does not close that gap; it ships correct persistence and storage, not a
+stronger launch-time signal. Two shapes were identified for a follow-up, neither built
+here: (1) re-assert the `CommandStatus` line at the moment `EnsureDefaultZoomAudioRoutingSends`
+actually stops no-oping — i.e. when the first participant arrives — so the message lands
+when it can matter; or (2) promote the indicator out of the transient `CommandStatus` line
+entirely, into a persistent bound indicator in the `ShowInputWarning`/`RecordingDiskWarning`
+pattern, so it survives being overwritten by unrelated status traffic. Either would close
+the gap; which one (or both) is a product call outside this branch's scope.
 
 ## Testing
 

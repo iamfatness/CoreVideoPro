@@ -285,6 +285,45 @@ public sealed class ProductionOutputPreferencesStoreTests
     }
 
     [Fact]
+    public void Serializer_WritesZoomAudioModeKeyAndValueToTheRawJson()
+    {
+        // A shape assertion at the serializer level: Serializer_RoundTripsZoomAudioMode
+        // proves the TYPE round-trips, but a renamed or [JsonIgnore]'d property would
+        // round-trip perfectly through the same type while writing nothing usable to
+        // disk. Assert the literal on-disk key/value pair, the way the "Version": …
+        // assertions elsewhere in this file already do.
+        var preferences = new ProductionOutputPreferences
+        {
+            ZoomAudioMode = ZoomAudioModePreference.PerGuestIsoValue
+        };
+
+        var raw = ProductionOutputPreferencesSerializer.Serialize(preferences);
+
+        Assert.Contains($"\"{nameof(ProductionOutputPreferences.ZoomAudioMode)}\": \"{ZoomAudioModePreference.PerGuestIsoValue}\"",
+            raw, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Serializer_DeserializedCorruptZoomAudioModeParsesToProgramMix()
+    {
+        // The store also does JSON-level string surgery in ProtectSecretFields, so a
+        // corrupt/unrecognized value must survive DESERIALIZATION (not just Parse in
+        // isolation) and read as the safe default through the real store type.
+        const string json = """
+            {
+              "Version": 9,
+              "ZoomAudioMode": "chaos"
+            }
+            """;
+
+        var loaded = ProductionOutputPreferencesSerializer.Deserialize(json);
+
+        Assert.NotNull(loaded);
+        Assert.Equal("chaos", loaded.ZoomAudioMode);
+        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse(loaded.ZoomAudioMode));
+    }
+
+    [Fact]
     public void Serializer_PreservesExplicitLocalAudioCaptureInCurrentVersion()
     {
         var preferences = new ProductionOutputPreferences
