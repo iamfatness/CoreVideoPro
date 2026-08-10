@@ -935,7 +935,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(EnabledGraphics));
     }
 
-    private readonly List<ParticipantAudioMix> _audioMixChannels = [];
+    // REFERENCE-SWAP ONLY — never mutate this list in place. RefreshAudioMixChannels
+    // is called from BuildProductionSyncContext, which runs on BACKGROUND sync
+    // threads (spine timer, transport retries, ConfigureAwait(false) continuations)
+    // as well as the dispatcher. In-place Clear+AddRange raced every UI-thread
+    // enumeration: it planted the null that crashed the app at 19:00 and then threw
+    // "Source array was not long enough" four times a second once the consumers
+    // were guarded (2026-08-09). The writer builds a complete new list and swaps
+    // the reference; readers capture the reference once and enumerate a list that
+    // is never subsequently mutated. `volatile` orders the publish.
+    private volatile List<ParticipantAudioMix> _audioMixChannels = [];
 
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
@@ -8257,8 +8266,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mergedById[sourceId] = BuildWaitingForPcmAudioMixChannel(sourceId, prior);
         }
 
-        _audioMixChannels.Clear();
-        _audioMixChannels.AddRange(mergedById.Values);
+        // Atomic publish (see the field comment): a fully built list, one swap.
+        _audioMixChannels = mergedById.Values.ToList();
 
         // C7d (owner: workspace controls silently dead): the processing
         // workspace edits the SELECTED channel — with no selection every
