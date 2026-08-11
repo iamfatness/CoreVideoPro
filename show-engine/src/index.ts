@@ -112,3 +112,21 @@ export {
   type OverlayState,
   type QuestionOverlay
 } from "./overlayDirector.js";
+
+/**
+ * The orchestrator layer. `ShowEngine` is what a host process constructs
+ * and ticks; `ShowSnapshot` is what it publishes; `HostAdapter` is the port
+ * a host implements against it, with `MockHost` as the in-memory double
+ * every adapter's own conformance tests can drive. These were all defined
+ * but unreachable from outside the package until this export block — the
+ * three host adapters in Plans 6-9 are built entirely against these names.
+ */
+export { systemClock, type Clock } from "./clock.js";
+export type { HostAdapter, HostCapabilities } from "./hostAdapter.js";
+export { MockHost, type HostCall } from "./mockHost.js";
+export {
+  buildSnapshot,
+  type BuildSnapshotInput,
+  type ShowSnapshot
+} from "./showSnapshot.js";
+export { ShowEngine, type ShowEngineDeps } from "./showEngine.js";
