@@ -11,7 +11,8 @@ import type { StateFs, PersistedShowState } from "./persistence.js";
 import type { Clock } from "./clock.js";
 import type { ZoomEvent } from "./zoomIngest.js";
 import type { QueueState } from "./contracts.js";
-import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
+import { MukanaClient } from "./mukanaClient.js";
+import type { FetchResponse, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
 
 function fixedClock(t = 1000): Clock {
   return { now: () => t };
@@ -803,7 +804,19 @@ function fakeMukanaWithHandsState(state: "ok" | "failing"): MukanaClient {
     hands: state === "ok" ? ok : failing,
     question: ok
   };
-  return { health } as unknown as MukanaClient;
+  // Task 9: `tick()` now polls, and the very first tick is always due (there
+  // is no prior poll to measure a delay against), so this fake needs a real
+  // `fetchHands` even though it exists only to drive capability resolution.
+  // It returns `invalid` unconditionally — never `data` — so `tick()`'s
+  // "leave last-good data in place" rule means it can NEVER overwrite
+  // `engineWithFill`'s hand-seeded `this.queue`; only the separately-stubbed
+  // `health` getter (not this return value) drives the capability these
+  // tests actually assert on.
+  return {
+    health,
+    nextDelayMs: () => Number.MAX_SAFE_INTEGER,
+    fetchHands: async () => ({ kind: "invalid", reason: "fakeMukanaWithHandsState: no real endpoint" })
+  } as unknown as MukanaClient;
 }
 
 function engineWithFill(fill: "queue" | "manual", state: "available" | "unavailable" | "disabled") {
@@ -910,7 +923,11 @@ function fakeMukanaWithMutableHands(): { client: MukanaClient; setHandsOk: () =>
   const client = {
     get health(): Record<MukanaEndpoint, MukanaHealth> {
       return { panelists: ok, hands: handsHealth, question: ok };
-    }
+    },
+    // Task 9: same reasoning as `fakeMukanaWithHandsState` above — the
+    // first tick is always due, so this needs a real (but inert) fetch too.
+    nextDelayMs: () => Number.MAX_SAFE_INTEGER,
+    fetchHands: async () => ({ kind: "invalid", reason: "fakeMukanaWithMutableHands: no real endpoint" })
   } as unknown as MukanaClient;
   return {
     client,
@@ -1208,5 +1225,149 @@ describe("ShowEngine host emission", () => {
     e.onZoomEvent({ kind: "renamed", participantId: "p1", rawName: "Annette | Oslo" });
     await e.tick();
     expect(host.callsOfKind("setNameplates")).toHaveLength(1);
+  });
+});
+
+/**
+ * Test rig for Task 9: an engine wired to a REAL `MukanaClient` over a
+ * controllable `FetchLike`, a mutable injected clock, and a recorded list of
+ * every URL fetched (recorded at fetch-START time, not settle time — this is
+ * what lets the scheduling test below assert on "did tick() start a poll"
+ * without caring whether that poll has resolved yet). All three integrations
+ * are enabled, matching Task 9's brief.
+ *
+ * `hangHands: true` makes every `hands` fetch return a promise that never
+ * settles on its own; each one queues its resolver, and `resolveHands()`
+ * resolves the oldest still-pending one with the current `handsBody`.
+ */
+function mukanaEngine(options: { hangHands?: boolean } = {}) {
+  let nowMs = 0;
+  const clock: Clock = { now: () => nowMs };
+  const fetches: string[] = [];
+
+  let handsBody = "NONE\nNONE\nNONE";
+  let handsOk = true;
+  let handsStatus = 200;
+  const pendingHandsResolvers: Array<(response: FetchResponse) => void> = [];
+
+  const fetch = async (url: string): Promise<FetchResponse> => {
+    fetches.push(url);
+    if (url.includes("req=hands")) {
+      if (options.hangHands === true) {
+        return new Promise<FetchResponse>((resolve) => {
+          pendingHandsResolvers.push(resolve);
+        });
+      }
+      return { ok: handsOk, status: handsStatus, text: async () => handsBody };
+    }
+    // panelists and question both accept an empty-but-valid JSON object.
+    return { ok: true, status: 200, text: async () => "{}" };
+  };
+
+  const config = parseShowEngineConfig({
+    capacity: 8,
+    statePath: "/state/show.json",
+    galleryCells: 16,
+    integrations: { registry: true, handsQueue: true, questionFeed: true },
+    mukana: { baseUrl: "https://example.com/rest.php", event: "officehours" },
+    looks: []
+  });
+  if (config.mukana === null) {
+    throw new Error("unreachable: mukanaEngine always configures a mukana block");
+  }
+
+  const client = new MukanaClient(config.mukana, { fetch });
+  const e = new ShowEngine({
+    config,
+    host: new MockHost(),
+    clock,
+    store: new StateStore(config.statePath, { fs: memoryFs() }),
+    mukana: client
+  });
+
+  return {
+    e,
+    fetches,
+    advance: (ms: number) => {
+      nowMs += ms;
+    },
+    setHandsBody: (body: string) => {
+      handsBody = body;
+    },
+    failHands: () => {
+      handsOk = false;
+      handsStatus = 503;
+    },
+    dormantHands: () => {
+      handsBody = JSON.stringify({ status: 200, detail: "outside show hours" });
+    },
+    resolveHands: () => {
+      const resolver = pendingHandsResolvers.shift();
+      if (resolver !== undefined) {
+        resolver({ ok: true, status: 200, text: async () => handsBody });
+      }
+    }
+  };
+}
+
+describe("ShowEngine Mukana polling", () => {
+  it("polls an endpoint only once its next delay has elapsed", async () => {
+    const { e, fetches, advance } = mukanaEngine();
+    await e.tick();
+    const first = fetches.length;
+    await e.tick();
+    expect(fetches.length).toBe(first);
+    advance(10_000);
+    await e.tick();
+    expect(fetches.length).toBeGreaterThan(first);
+  });
+
+  /**
+   * The invariant this must break on: awaiting a fetch inside tick(). A hung
+   * registry must not stall the show loop — spec §2, normative.
+   */
+  it("completes a tick while a fetch is still in flight", async () => {
+    const { e, resolveHands } = mukanaEngine({ hangHands: true });
+    await expect(e.tick()).resolves.toBeDefined();
+    await expect(e.tick()).resolves.toBeDefined();
+    resolveHands();
+  });
+
+  it("keeps the last good queue when a poll comes back invalid", async () => {
+    const { e, advance, setHandsBody } = mukanaEngine();
+    setHandsBody("4242\n5555\nNONE");
+    advance(10_000);
+    await e.tick();
+    await e.tick();
+    const good = e.snapshot().queue;
+    setHandsBody("<html>gateway timeout</html>");
+    advance(10_000);
+    await e.tick();
+    await e.tick();
+    expect(e.snapshot().queue).toEqual(good);
+  });
+
+  it("moves the hands capability to unavailable when the feed fails", async () => {
+    const { e, advance, failHands } = mukanaEngine();
+    advance(10_000);
+    await e.tick();
+    await e.tick();
+    expect(e.snapshot().capabilities.handsQueue.state).toBe("available");
+    failHands();
+    advance(10_000);
+    await e.tick();
+    await e.tick();
+    const cap = e.snapshot().capabilities.handsQueue;
+    expect(cap.state).toBe("unavailable");
+    expect(cap.detail).not.toBeNull();
+  });
+
+  it("reports dormant as unavailable with the operator-facing detail", async () => {
+    const { e, advance, dormantHands } = mukanaEngine();
+    dormantHands();
+    advance(10_000);
+    await e.tick();
+    await e.tick();
+    expect(e.snapshot().capabilities.handsQueue.state).toBe("unavailable");
   });
 });

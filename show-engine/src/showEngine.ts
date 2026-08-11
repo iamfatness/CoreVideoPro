@@ -30,7 +30,7 @@ import { FiloAssigner } from "./speakerRecency.js";
 import { shouldFollowSpeaker } from "./speakerGate.js";
 import type { ShowEngineConfig } from "./config.js";
 import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
-import { MukanaRegistry, type MukanaOutcome } from "./mukanaParse.js";
+import { MukanaRegistry, type DormantOutcome, type MukanaOutcome, type QuestionOutcome } from "./mukanaParse.js";
 import { LiveSlots } from "./liveSlots.js";
 import { GalleryDirector } from "./galleryDirector.js";
 import { OverrideDb, type OverrideRecord } from "./overrideDb.js";
@@ -52,7 +52,7 @@ import {
   type LookResolution,
   type ManualBoxAssignments
 } from "./lookDirector.js";
-import { stripChairs } from "./handsQueue.js";
+import { stripChairs, type HandsOutcome } from "./handsQueue.js";
 import {
   EXCLUSIVE_ROLES,
   type LookDefinition,
@@ -254,6 +254,41 @@ export class ShowEngine {
    * pending speaker is never replayed into a later tick.
    */
   private pendingSpeakerId: string | null = null;
+
+  /**
+   * Wall-clock time (per the injected `Clock`) each endpoint's poll was last
+   * STARTED, keyed so `nextDelayMs`'s own interval/backoff math (which the
+   * engine deliberately adds no policy on top of) is checked against a fresh
+   * anchor every time a fetch is kicked off — never against when it
+   * SETTLED, since a poll that's still in flight must not look perpetually
+   * "not due yet" once its interval has genuinely elapsed. `-Infinity`
+   * makes every endpoint due on the very first tick that reaches it.
+   */
+  private readonly lastMukanaPollAt: Record<MukanaEndpoint, number> = {
+    panelists: Number.NEGATIVE_INFINITY,
+    hands: Number.NEGATIVE_INFINITY,
+    question: Number.NEGATIVE_INFINITY
+  };
+
+  /**
+   * The outcome of a hands/question fetch that has settled since it was
+   * started, waiting for the next `tick()` to notice and apply it — `null`
+   * once applied, or while no fetch for that endpoint has settled yet.
+   * `tick()` never `await`s the fetch itself (spec §2: no external
+   * integration failure may block a tick); a background `.then()` attached
+   * the moment the fetch is started writes here as its ONLY job, so writing
+   * it can never race `tick()`'s own synchronous read-and-clear at the top
+   * of the next `tick()` call — both run on the same single JS thread, and
+   * a `.then()` callback body itself never runs concurrently with `tick()`'s
+   * own execution. Panelists outcomes reuse the existing `onMukanaPanelists`
+   * apply path instead of a slot like this one, because that path also has
+   * to flip `otherInputsChanged`/`pendingPersist`, which must happen before
+   * `tick()` captures `otherInputsChanged` for this tick's seat-step
+   * decision — see the top of `tick()`.
+   */
+  private panelistsPollSettled: MukanaOutcome | null = null;
+  private handsPollSettled: HandsOutcome | DormantOutcome | null = null;
+  private questionPollSettled: QuestionOutcome | null = null;
 
   constructor(deps: ShowEngineDeps) {
     if (deps.mukana !== undefined && deps.config.mukana === null) {
@@ -619,13 +654,14 @@ export class ShowEngine {
   }
 
   /**
-   * The heartbeat. Runs in a fixed order: commit the buffered roster, seat
-   * it (holding seats still for an unchanged participant set, reseating
-   * only when it actually changed), dispatch a pending active speaker
-   * (Task 6), recompute the derived layers — look resolution, paging,
-   * program staging, overlays (Task 7) — persist if the debounce window
-   * allows it, emit host commands (Task 8 — a no-op today), then advance
-   * the revision and publish.
+   * The heartbeat. Runs in a fixed order: poll Mukana (Task 9 — start any
+   * due fetch and apply whatever settled since the last tick, never
+   * blocking on one in flight), commit the buffered roster, seat it
+   * (holding seats still for an unchanged participant set, reseating only
+   * when it actually changed), dispatch a pending active speaker (Task 6),
+   * recompute the derived layers — look resolution, paging, program
+   * staging, overlays (Task 7) — persist if the debounce window allows it,
+   * emit host commands (Task 8), then advance the revision and publish.
    *
    * Step 1 alone (`ZoomIngest.commit()`) can say nothing changed, but the
    * tick still runs to completion — a look or capability change can alter
@@ -635,6 +671,20 @@ export class ShowEngine {
    * whether any given call is actually worth sending this time.
    */
   async tick(): Promise<ShowSnapshot> {
+    // Mukana polling (Task 9) runs FIRST, before anything else this tick
+    // reads. A settled panelists outcome applies through the existing
+    // `onMukanaPanelists`, which flips `otherInputsChanged`/`pendingPersist`
+    // — those must be set before `otherChanged` is captured immediately
+    // below, or a registry update that just landed would not affect the
+    // seat step until a tick later than it actually could. Hands/question
+    // outcomes replace `this.queue`/`this.question` directly, which the
+    // derived-layers step further down reads — so this must also run
+    // before that. See `pollMukana`'s own doc comment for the scheduling
+    // and non-blocking rules themselves.
+    if (this.mukanaClient !== undefined) {
+      this.pollMukana(this.mukanaClient);
+    }
+
     const rosterCommitted = this.zoomIngest.commit();
     const otherChanged = this.otherInputsChanged;
     this.otherInputsChanged = false;
@@ -934,6 +984,105 @@ export class ShowEngine {
       manualBoxes: this.manualBoxes,
       lookId: this.selectedLookId
     };
+  }
+
+  /**
+   * Mukana polling (Task 9): apply whatever settled since the previous
+   * tick, then start any endpoint whose poll is due.
+   *
+   * Non-blocking by construction, never by discipline someone could get
+   * wrong later: this method contains no `await` at all. Every fetch is
+   * started and immediately `.then()`-attached without awaiting the
+   * returned promise, so a hung registry can only ever delay when its OWN
+   * outcome gets applied — never delay this or any other tick from
+   * returning (spec §2, normative).
+   *
+   * Deliberately does NOT track "is a fetch currently in flight for this
+   * endpoint" to gate starting a new one: `client.nextDelayMs(endpoint)` is
+   * checked against `lastMukanaPollAt[endpoint]`, which is updated the
+   * moment a poll STARTS, not when it settles — so a fetch slower than its
+   * own interval simply gets overlapped by a fresh one rather than the
+   * engine falling silent until the slow one clears. A busy-style gate was
+   * tried and rejected here: because settling a fetch takes several real
+   * microtask turns past when it starts, and each `tick()` call is itself
+   * only one or two of those turns, a gate on "still in flight" can leave
+   * an endpoint marked busy across MULTIPLE ticks whose clock delta alone
+   * would call it due — silently suppressing exactly the re-poll a live
+   * show depends on. The time-based check alone is both simpler and
+   * correct; `nextDelayMs`'s own backoff-after-failure ceiling is what
+   * keeps a truly broken endpoint from being hammered.
+   *
+   * Endpoint gating mirrors `config.integrations`: an endpoint whose
+   * integration is off is never polled, matching the rest of this
+   * package's rule that an unconfigured integration must never silently
+   * reach a URL nobody set (`config.ts`'s own `parseMukana` doc comment).
+   */
+  private pollMukana(client: MukanaClient): void {
+    if (this.panelistsPollSettled !== null) {
+      const outcome = this.panelistsPollSettled;
+      this.panelistsPollSettled = null;
+      this.onMukanaPanelists(outcome);
+    }
+    if (this.handsPollSettled !== null) {
+      const outcome = this.handsPollSettled;
+      this.handsPollSettled = null;
+      this.applyHandsOutcome(outcome);
+    }
+    if (this.questionPollSettled !== null) {
+      const outcome = this.questionPollSettled;
+      this.questionPollSettled = null;
+      this.applyQuestionOutcome(outcome);
+    }
+
+    const now = this.clock.now();
+
+    if (this.config.integrations.registry && this.isMukanaPollDue("panelists", now, client)) {
+      this.lastMukanaPollAt.panelists = now;
+      client.fetchPanelists().then((outcome) => {
+        this.panelistsPollSettled = outcome;
+      });
+    }
+    if (this.config.integrations.handsQueue && this.isMukanaPollDue("hands", now, client)) {
+      this.lastMukanaPollAt.hands = now;
+      client.fetchHands().then((outcome) => {
+        this.handsPollSettled = outcome;
+      });
+    }
+    if (this.config.integrations.questionFeed && this.isMukanaPollDue("question", now, client)) {
+      this.lastMukanaPollAt.question = now;
+      client.fetchQuestion().then((outcome) => {
+        this.questionPollSettled = outcome;
+      });
+    }
+  }
+
+  /** Whether `endpoint`'s next poll is due: `nextDelayMs` already folds interval + backoff; this adds no policy of its own. */
+  private isMukanaPollDue(endpoint: MukanaEndpoint, now: number, client: MukanaClient): boolean {
+    return now - this.lastMukanaPollAt[endpoint] >= client.nextDelayMs(endpoint);
+  }
+
+  /**
+   * Apply one hands-queue fetch outcome. Only `"data"` replaces
+   * `this.queue` — `dormant`/`invalid` leave the last-good queue in place;
+   * `MukanaClient` already recorded the health transition for
+   * `capabilities.handsQueue`, so there is nothing more to do here than
+   * decline to overwrite good data with nothing (spec: discarding good
+   * data over one failed poll is the exact incident this design prevents).
+   * Unlike `onMukanaPanelists`, this never sets `pendingPersist`/
+   * `otherInputsChanged`: the raw hands queue is not part of persisted
+   * state (`buildPersistedState` does not carry it) and does not affect
+   * roster seating, only paging/box-fill, which `tick()`'s derived-layers
+   * step already recomputes fresh every tick regardless.
+   */
+  private applyHandsOutcome(outcome: HandsOutcome | DormantOutcome): void {
+    if (outcome.kind !== "data") return;
+    this.queue = outcome.queue;
+  }
+
+  /** The question-feed twin of `applyHandsOutcome` — see its doc comment for the retention rule. */
+  private applyQuestionOutcome(outcome: QuestionOutcome): void {
+    if (outcome.kind !== "data") return;
+    this.question = outcome.question;
   }
 
   /** The current Mukana health snapshot, or the all-failing stand-in when there is no client at all. */
