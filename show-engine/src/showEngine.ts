@@ -100,6 +100,18 @@ function pinAtSlot(slots: readonly Slot[], slotNumber: number | null): string | 
   return entry?.panelist?.pin ?? null;
 }
 
+/**
+ * Turn a rejection reason from a Mukana fetch promise into the same
+ * `string` shape `MukanaClient.fail` uses for a caught transport error —
+ * `pollMukana`'s rejection handlers use this so a rejected fetch (a
+ * contract-violating `FetchLike`, or anything else outside what
+ * `MukanaClient.request`'s own try/catch covers) still records an ordinary
+ * `invalid` outcome instead of an unhandled promise rejection.
+ */
+function mukanaRejectionReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export type ShowEngineDeps = {
   config: ShowEngineConfig;
   host: HostAdapter;
@@ -268,6 +280,27 @@ export class ShowEngine {
     panelists: Number.NEGATIVE_INFINITY,
     hands: Number.NEGATIVE_INFINITY,
     question: Number.NEGATIVE_INFINITY
+  };
+
+  /**
+   * Whether a fetch for this endpoint is currently in flight — gates
+   * starting a NEW one in `pollMukana`. Set the moment a fetch starts,
+   * cleared in that SAME fetch's `.then()`/rejection handler, never
+   * anywhere else. This is what makes "one in-flight promise per endpoint"
+   * a real invariant rather than a comment: without it, a slow or hung
+   * endpoint gets a fresh overlapping fetch every time its interval elapses
+   * (unbounded concurrent requests against an already-struggling registry,
+   * and — because outcomes are applied in SETTLE order, not START order — a
+   * later-settling but earlier-started fetch can overwrite a fresher one
+   * with stale data, e.g. the hands queue jumping backwards to an older
+   * guest). `nextDelayMs`'s backoff-after-failure ceiling bounds the RATE a
+   * healthy-but-slow endpoint gets hit; this bounds the COUNT in flight at
+   * once to exactly one, which backoff alone does not.
+   */
+  private readonly mukanaPollBusy: Record<MukanaEndpoint, boolean> = {
+    panelists: false,
+    hands: false,
+    question: false
   };
 
   /**
@@ -987,8 +1020,9 @@ export class ShowEngine {
   }
 
   /**
-   * Mukana polling (Task 9): apply whatever settled since the previous
-   * tick, then start any endpoint whose poll is due.
+   * Mukana polling (Task 9, corrected in fix round 1): apply whatever
+   * settled since the previous tick, then start any endpoint whose poll is
+   * due AND not already in flight.
    *
    * Non-blocking by construction, never by discipline someone could get
    * wrong later: this method contains no `await` at all. Every fetch is
@@ -997,20 +1031,32 @@ export class ShowEngine {
    * outcome gets applied — never delay this or any other tick from
    * returning (spec §2, normative).
    *
-   * Deliberately does NOT track "is a fetch currently in flight for this
-   * endpoint" to gate starting a new one: `client.nextDelayMs(endpoint)` is
-   * checked against `lastMukanaPollAt[endpoint]`, which is updated the
-   * moment a poll STARTS, not when it settles — so a fetch slower than its
-   * own interval simply gets overlapped by a fresh one rather than the
-   * engine falling silent until the slow one clears. A busy-style gate was
-   * tried and rejected here: because settling a fetch takes several real
-   * microtask turns past when it starts, and each `tick()` call is itself
-   * only one or two of those turns, a gate on "still in flight" can leave
-   * an endpoint marked busy across MULTIPLE ticks whose clock delta alone
-   * would call it due — silently suppressing exactly the re-poll a live
-   * show depends on. The time-based check alone is both simpler and
-   * correct; `nextDelayMs`'s own backoff-after-failure ceiling is what
-   * keeps a truly broken endpoint from being hammered.
+   * `mukanaPollBusy[endpoint]` gates starting a NEW fetch while one is
+   * still outstanding — see that field's own doc comment for what breaks
+   * without it (unbounded concurrent requests to a hung endpoint, and
+   * settle-order-not-start-order data landing stale-over-fresh). An earlier
+   * revision of this method shipped WITHOUT the gate, reasoning that
+   * settling a fetch takes several real microtask turns and each `tick()`
+   * call is itself only one or two of those turns, so a busy gate could
+   * leave an endpoint marked busy across ticks whose clock delta alone
+   * would call it due. That reasoning was fitted to the test rig, not to
+   * production: it measured true only because the ORIGINAL test rig never
+   * let the microtask queue drain between `tick()` calls. In real time a
+   * fetch settles in milliseconds against a multi-second polling interval —
+   * millions of microtask turns of headroom — so the busy flag is cleared
+   * long before the next poll is ever due. The rig now drains explicitly
+   * (`flush()` in `showEngine.test.ts`) instead of the engine papering over
+   * a fixture gap with a correctness gap of its own.
+   *
+   * A rejected fetch — a `FetchLike` that resolves `text()` to something
+   * other than a string, or any other contract violation `MukanaClient`
+   * doesn't already catch internally — must never become an unhandled
+   * promise rejection (spec §2's whole point: a broken third-party
+   * integration cannot be allowed to take the process down). Every
+   * `.then()` below supplies BOTH handlers; the rejection handler clears
+   * `mukanaPollBusy` exactly like the success path and records an
+   * `invalid` outcome so a rejecting endpoint still surfaces as a normal
+   * failure rather than silently going quiet or crashing the show.
    *
    * Endpoint gating mirrors `config.integrations`: an endpoint whose
    * integration is off is never polled, matching the rest of this
@@ -1036,23 +1082,59 @@ export class ShowEngine {
 
     const now = this.clock.now();
 
-    if (this.config.integrations.registry && this.isMukanaPollDue("panelists", now, client)) {
+    if (
+      this.config.integrations.registry &&
+      !this.mukanaPollBusy.panelists &&
+      this.isMukanaPollDue("panelists", now, client)
+    ) {
       this.lastMukanaPollAt.panelists = now;
-      client.fetchPanelists().then((outcome) => {
-        this.panelistsPollSettled = outcome;
-      });
+      this.mukanaPollBusy.panelists = true;
+      client.fetchPanelists().then(
+        (outcome) => {
+          this.mukanaPollBusy.panelists = false;
+          this.panelistsPollSettled = outcome;
+        },
+        (error: unknown) => {
+          this.mukanaPollBusy.panelists = false;
+          this.panelistsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
+        }
+      );
     }
-    if (this.config.integrations.handsQueue && this.isMukanaPollDue("hands", now, client)) {
+    if (
+      this.config.integrations.handsQueue &&
+      !this.mukanaPollBusy.hands &&
+      this.isMukanaPollDue("hands", now, client)
+    ) {
       this.lastMukanaPollAt.hands = now;
-      client.fetchHands().then((outcome) => {
-        this.handsPollSettled = outcome;
-      });
+      this.mukanaPollBusy.hands = true;
+      client.fetchHands().then(
+        (outcome) => {
+          this.mukanaPollBusy.hands = false;
+          this.handsPollSettled = outcome;
+        },
+        (error: unknown) => {
+          this.mukanaPollBusy.hands = false;
+          this.handsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
+        }
+      );
     }
-    if (this.config.integrations.questionFeed && this.isMukanaPollDue("question", now, client)) {
+    if (
+      this.config.integrations.questionFeed &&
+      !this.mukanaPollBusy.question &&
+      this.isMukanaPollDue("question", now, client)
+    ) {
       this.lastMukanaPollAt.question = now;
-      client.fetchQuestion().then((outcome) => {
-        this.questionPollSettled = outcome;
-      });
+      this.mukanaPollBusy.question = true;
+      client.fetchQuestion().then(
+        (outcome) => {
+          this.mukanaPollBusy.question = false;
+          this.questionPollSettled = outcome;
+        },
+        (error: unknown) => {
+          this.mukanaPollBusy.question = false;
+          this.questionPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
+        }
+      );
     }
   }
 

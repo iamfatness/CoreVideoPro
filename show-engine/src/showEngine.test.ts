@@ -805,17 +805,23 @@ function fakeMukanaWithHandsState(state: "ok" | "failing"): MukanaClient {
     question: ok
   };
   // Task 9: `tick()` now polls, and the very first tick is always due (there
-  // is no prior poll to measure a delay against), so this fake needs a real
-  // `fetchHands` even though it exists only to drive capability resolution.
-  // It returns `invalid` unconditionally — never `data` — so `tick()`'s
-  // "leave last-good data in place" rule means it can NEVER overwrite
-  // `engineWithFill`'s hand-seeded `this.queue`; only the separately-stubbed
-  // `health` getter (not this return value) drives the capability these
-  // tests actually assert on.
+  // is no prior poll to measure a delay against), so this fake needs real
+  // fetch methods even though it exists only to drive capability
+  // resolution. Every one returns `invalid` unconditionally — never
+  // `data` — so `tick()`'s "leave last-good data in place" rule means none
+  // of them can ever overwrite `engineWithFill`'s hand-seeded `this.queue`;
+  // only the separately-stubbed `health` getter (not these return values)
+  // drives the capability these tests actually assert on. Fix round 1,
+  // Minor 8: `fetchPanelists`/`fetchQuestion` are stubbed too (not just
+  // `fetchHands`) so a future test flipping `integrations.registry`/
+  // `questionFeed` on this fake gets an inert response instead of a
+  // runtime `TypeError` from `tick()` with no type-level warning.
   return {
     health,
     nextDelayMs: () => Number.MAX_SAFE_INTEGER,
-    fetchHands: async () => ({ kind: "invalid", reason: "fakeMukanaWithHandsState: no real endpoint" })
+    fetchPanelists: async () => ({ kind: "invalid", reason: "fakeMukanaWithHandsState: no real endpoint" }),
+    fetchHands: async () => ({ kind: "invalid", reason: "fakeMukanaWithHandsState: no real endpoint" }),
+    fetchQuestion: async () => ({ kind: "invalid", reason: "fakeMukanaWithHandsState: no real endpoint" })
   } as unknown as MukanaClient;
 }
 
@@ -925,9 +931,12 @@ function fakeMukanaWithMutableHands(): { client: MukanaClient; setHandsOk: () =>
       return { panelists: ok, hands: handsHealth, question: ok };
     },
     // Task 9: same reasoning as `fakeMukanaWithHandsState` above — the
-    // first tick is always due, so this needs a real (but inert) fetch too.
+    // first tick is always due, so this needs real (but inert) fetches too.
+    // Fix round 1, Minor 8: all three, not just `fetchHands`.
     nextDelayMs: () => Number.MAX_SAFE_INTEGER,
-    fetchHands: async () => ({ kind: "invalid", reason: "fakeMukanaWithMutableHands: no real endpoint" })
+    fetchPanelists: async () => ({ kind: "invalid", reason: "fakeMukanaWithMutableHands: no real endpoint" }),
+    fetchHands: async () => ({ kind: "invalid", reason: "fakeMukanaWithMutableHands: no real endpoint" }),
+    fetchQuestion: async () => ({ kind: "invalid", reason: "fakeMukanaWithMutableHands: no real endpoint" })
   } as unknown as MukanaClient;
   return {
     client,
@@ -1239,6 +1248,20 @@ describe("ShowEngine host emission", () => {
  * `hangHands: true` makes every `hands` fetch return a promise that never
  * settles on its own; each one queues its resolver, and `resolveHands()`
  * resolves the oldest still-pending one with the current `handsBody`.
+ *
+ * `flush()` (fix round 1, Finding 3/7): drains 8 microtask turns via a tight
+ * `await Promise.resolve()` loop. `MukanaClient.request()`'s own two
+ * internal `await`s (`await this.fetch(url)`, `await response.text()`) mean
+ * a fetch's outcome does not become observable to a `tick()`-driven poller
+ * within just 1-2 real `await e.tick()` calls — the exact number of ticks
+ * needed is an accident of how `await`-continuation microtasks interleave
+ * with the fetch's own continuation microtasks, NOT a stable property of
+ * this engine's design. Before `flush()` existed, the polling tests were
+ * accidentally coupled to that interleaving (and, with a busy gate added,
+ * some of them broke outright — see `pollMukana`'s doc comment). `flush()`
+ * decouples every test below from `MukanaClient`'s internal shape: call it
+ * after any `await e.tick()` whose test cares whether an in-flight fetch
+ * has settled.
  */
 function mukanaEngine(options: { hangHands?: boolean } = {}) {
   let nowMs = 0;
@@ -1248,6 +1271,9 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
   let handsBody = "NONE\nNONE\nNONE";
   let handsOk = true;
   let handsStatus = 200;
+  let handsBodyBroken = false;
+  let panelistsBody = "{}";
+  let questionBody = "{}";
   const pendingHandsResolvers: Array<(response: FetchResponse) => void> = [];
 
   const fetch = async (url: string): Promise<FetchResponse> => {
@@ -1258,10 +1284,23 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
           pendingHandsResolvers.push(resolve);
         });
       }
+      if (handsBodyBroken) {
+        // A contract-violating FetchLike: `text()` must resolve to a
+        // `string` per its own type, but a real fetch layer bug (or a
+        // captive-portal / proxy oddity) could hand back something else.
+        // `MukanaClient.request()` calls `parse(body)` OUTSIDE its own
+        // try/catch, so a non-string body makes `parseHandsPayload`'s
+        // `body.split(...)` throw, which makes `client.fetchHands()`'s
+        // returned promise REJECT — this is deliberately how Finding 6's
+        // rejection-safety test below produces a genuine rejection.
+        return { ok: true, status: 200, text: async () => null as unknown as string };
+      }
       return { ok: handsOk, status: handsStatus, text: async () => handsBody };
     }
-    // panelists and question both accept an empty-but-valid JSON object.
-    return { ok: true, status: 200, text: async () => "{}" };
+    if (url.includes("req=panelists")) {
+      return { ok: true, status: 200, text: async () => panelistsBody };
+    }
+    return { ok: true, status: 200, text: async () => questionBody };
   };
 
   const config = parseShowEngineConfig({
@@ -1291,8 +1330,20 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
     advance: (ms: number) => {
       nowMs += ms;
     },
+    flush: async (): Promise<void> => {
+      for (let i = 0; i < 8; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await Promise.resolve();
+      }
+    },
     setHandsBody: (body: string) => {
       handsBody = body;
+    },
+    setPanelistsBody: (body: string) => {
+      panelistsBody = body;
+    },
+    setQuestionBody: (body: string) => {
+      questionBody = body;
     },
     failHands: () => {
       handsOk = false;
@@ -1300,6 +1351,9 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
     },
     dormantHands: () => {
       handsBody = JSON.stringify({ status: 200, detail: "outside show hours" });
+    },
+    breakHandsBody: () => {
+      handsBodyBroken = true;
     },
     resolveHands: () => {
       const resolver = pendingHandsResolvers.shift();
@@ -1312,13 +1366,16 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
 
 describe("ShowEngine Mukana polling", () => {
   it("polls an endpoint only once its next delay has elapsed", async () => {
-    const { e, fetches, advance } = mukanaEngine();
+    const { e, fetches, advance, flush } = mukanaEngine();
     await e.tick();
+    await flush();
     const first = fetches.length;
     await e.tick();
+    await flush();
     expect(fetches.length).toBe(first);
     advance(10_000);
     await e.tick();
+    await flush();
     expect(fetches.length).toBeGreaterThan(first);
   });
 
@@ -1333,41 +1390,193 @@ describe("ShowEngine Mukana polling", () => {
     resolveHands();
   });
 
+  /**
+   * Fix round 1, Finding 3/4/5: the busy gate this test pins is what makes
+   * "one in-flight promise per endpoint" a real invariant instead of a
+   * comment. Drives a hung `hands` fetch, then advances the clock and ticks
+   * repeatedly — `nextDelayMs` alone would call every one of those ticks
+   * "due," so without the gate a fresh overlapping fetch starts on each one
+   * (the reviewer's probe: 20 concurrent hung fetches over 20 ticks, none
+   * retired — unbounded concurrent load against an already-struggling
+   * registry, and settle-order-not-start-order application that can let a
+   * stale fetch overwrite a fresher one). With the gate, exactly one fetch
+   * for `hands` is ever outstanding while the first hasn't settled.
+   */
+  it("never starts a second fetch for an endpoint while one is still in flight", async () => {
+    const { e, fetches, advance } = mukanaEngine({ hangHands: true });
+    await e.tick();
+    const handsCallsAfterFirst = fetches.filter((url) => url.includes("req=hands")).length;
+    expect(handsCallsAfterFirst).toBe(1);
+
+    for (let i = 0; i < 5; i += 1) {
+      advance(10_000);
+      // eslint-disable-next-line no-await-in-loop
+      await e.tick();
+    }
+    const handsCallsAfterMany = fetches.filter((url) => url.includes("req=hands")).length;
+    expect(handsCallsAfterMany).toBe(1);
+  });
+
+  /**
+   * Fix round 1, Finding 6: `MukanaClient.request()` calls `parse(body)`
+   * OUTSIDE its own try/catch, so a `FetchLike` that violates its own
+   * contract (here: `text()` resolving to something other than a string)
+   * makes the fetch's returned promise REJECT rather than resolve to an
+   * `invalid` outcome. `pollMukana`'s fire-and-forget `.then()` calls must
+   * supply a rejection handler for every one of the three fetches, or this
+   * becomes an unhandled promise rejection — under Node's default
+   * `--unhandled-rejections=throw`, that kills the process: precisely the
+   * "a third-party service takes the show down" failure this whole
+   * capability model exists to prevent. Verified by actually listening for
+   * `unhandledRejection` for the duration of the test, not by inference.
+   *
+   * Node defers its "was this rejection ever handled" check past a
+   * microtask-queue drain — `flush()` alone (confirmed: it let the test
+   * pass while vitest's OWN top-level handler still separately reported
+   * the same rejection as an unhandled test-run error) is not enough to
+   * observe it reliably from inside the test. One real macrotask turn
+   * (`setImmediate`) after the flushes is what actually lands inside
+   * Node's check window before the listener is removed.
+   */
+  it("never leaves an unhandled promise rejection when a fetch's promise rejects", async () => {
+    const { e, advance, flush, breakHandsBody } = mukanaEngine();
+    breakHandsBody();
+
+    const rejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      advance(10_000);
+      await e.tick();
+      await flush();
+      await e.tick();
+      await flush();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+
+    expect(rejections).toEqual([]);
+  });
+
   it("keeps the last good queue when a poll comes back invalid", async () => {
-    const { e, advance, setHandsBody } = mukanaEngine();
+    const { e, advance, flush, setHandsBody } = mukanaEngine();
     setHandsBody("4242\n5555\nNONE");
     advance(10_000);
     await e.tick();
+    await flush();
     await e.tick();
+    await flush();
     const good = e.snapshot().queue;
     setHandsBody("<html>gateway timeout</html>");
     advance(10_000);
     await e.tick();
+    await flush();
     await e.tick();
+    await flush();
     expect(e.snapshot().queue).toEqual(good);
   });
 
-  it("moves the hands capability to unavailable when the feed fails", async () => {
-    const { e, advance, failHands } = mukanaEngine();
+  /**
+   * Fix round 1, Finding 1/2: the retention test above only proves "the
+   * value didn't change" — it never proves a poll's data reaches engine
+   * state AT ALL, because (before `flush()`) neither fetch in that test
+   * ever settled within its tick budget. This test observes REAL data
+   * landing, so a mutation that deletes `applyHandsOutcome`'s data branch
+   * has something to red against.
+   */
+  it("populates the hands queue from a poll", async () => {
+    const { e, advance, flush, setHandsBody } = mukanaEngine();
+    setHandsBody("4242,5555\n1383\nNONE");
     advance(10_000);
     await e.tick();
+    await flush();
     await e.tick();
+    await flush();
+    expect(e.snapshot().queue).toEqual({
+      previous: [],
+      current: "1383",
+      upcoming: ["4242", "5555"]
+    });
+  });
+
+  /** Fix round 1, Finding 1/2: same shape as the hands test, for the question feed. */
+  it("populates the audience question from a poll", async () => {
+    const { e, advance, flush, setQuestionBody } = mukanaEngine();
+    setQuestionBody(
+      JSON.stringify({ q: { key: "k1", n: "Ann Lee", q: "Why?", tag: "topic", v: 3, ts: 12 } })
+    );
+    e.setQuestionVisible(true);
+    advance(10_000);
+    await e.tick();
+    await flush();
+    await e.tick();
+    await flush();
+    expect(e.snapshot().overlays.question).toEqual({
+      askerName: "Ann Lee",
+      text: "Why?",
+      tag: "topic",
+      votes: 3
+    });
+  });
+
+  /**
+   * Fix round 1, Finding 1/2: the registry twin — a Mukana panelists poll
+   * must actually reach a seated `Panelist`'s identity, not just merge into
+   * a registry nothing reads. "Ann Lee | 4242" is the OHG identity
+   * convention (`identity.ts`): the PIN `4242` is what `buildPanelistDb`
+   * looks up against the merged registry.
+   */
+  it("merges a panelists poll into a seated panelist's identity", async () => {
+    const { e, advance, flush, setPanelistsBody } = mukanaEngine();
+    setPanelistsBody(
+      JSON.stringify({
+        p1: { displayName: "Ann From Mukana", loc: "Austin, TX", pin: 4242, role: "panelist", online: true }
+      })
+    );
+    e.onZoomEvent(joined("p1", "Ann Lee | 4242"));
+    advance(10_000);
+    await e.tick();
+    await flush();
+    await e.tick();
+    await flush();
+    const panelist = e.snapshot().panelists.find((candidate) => candidate.participantId === "p1");
+    expect(panelist?.displayName).toBe("Ann From Mukana");
+    expect(panelist?.location).toBe("Austin, TX");
+    expect(panelist?.hasMukana).toBe(true);
+  });
+
+  it("moves the hands capability to unavailable when the feed fails", async () => {
+    const { e, advance, flush, failHands } = mukanaEngine();
+    advance(10_000);
+    await e.tick();
+    await flush();
+    await e.tick();
+    await flush();
     expect(e.snapshot().capabilities.handsQueue.state).toBe("available");
     failHands();
     advance(10_000);
     await e.tick();
+    await flush();
     await e.tick();
+    await flush();
     const cap = e.snapshot().capabilities.handsQueue;
     expect(cap.state).toBe("unavailable");
     expect(cap.detail).not.toBeNull();
   });
 
   it("reports dormant as unavailable with the operator-facing detail", async () => {
-    const { e, advance, dormantHands } = mukanaEngine();
+    const { e, advance, flush, dormantHands } = mukanaEngine();
     dormantHands();
     advance(10_000);
     await e.tick();
+    await flush();
     await e.tick();
+    await flush();
     expect(e.snapshot().capabilities.handsQueue.state).toBe("unavailable");
   });
 });
