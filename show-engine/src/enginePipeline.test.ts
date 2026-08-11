@@ -17,6 +17,14 @@
  * tick 5, which left the entire outcome-apply path deletable with the full
  * suite green. `tick()` below therefore drains 8 microtask turns after
  * every engine tick, the same `flush()` shape `showEngine.test.ts` uses.
+ *
+ * Honest note (fix round 1, measured): that drain is NOT currently
+ * load-bearing in THIS file — setting the loop bound to 0 leaves all of
+ * these scenarios green, because the engine's own `await store.save(...)`
+ * happens to yield enough turns for a fetch to settle. It stays because it
+ * is the rig discipline this package committed to and because that
+ * incidental yield is not a property any test here should depend on; do not
+ * read its presence as evidence that these scenarios are drain-sensitive.
  */
 
 import { describe, expect, it } from "vitest";
@@ -37,8 +45,11 @@ import {
   type HostAdapter,
   type HostCall,
   type HostCapabilities,
+  type LookResolution,
   type MukanaEndpoint,
   type MukanaHealth,
+  type Nameplate,
+  type Panelist,
   type PersistedShowState,
   type ShowEngineConfig,
   type ShowEngineDeps,
@@ -543,6 +554,11 @@ describe("scenario 2: the registry dies mid-show", () => {
     });
     // The gallery is a real arrangement restored from disk, not an empty grid.
     expect(healthy.gallery.some((cell) => cell.slot !== 0)).toBe(true);
+    // …and the roster really did pick up registry identity before the
+    // outage, so the "identities survived" comparison below is a claim about
+    // Mukana-derived data rather than about parsed display names (fix round 1
+    // — this scenario used to rely on scenario 1 for that).
+    expect(healthy.panelists.some((panelist) => panelist.hasMukana)).toBe(true);
 
     // --- Mukana dies. Every endpoint, all at once. ---------------------------
     rig.host.clear();
@@ -644,10 +660,24 @@ describe("scenario 2: the registry dies mid-show", () => {
  * panelists, slots, gallery, queue, program, look, page, manualBoxes,
  * tally, overlays, unseated, pagingRefused — compared verbatim. The point
  * of the property is that nobody hand-picked that list; the test below
- * ("the normalizer is not a blanket") proves the residue still has teeth.
+ * ("the normalizer erases exactly two nodes") proves the residue still has
+ * teeth, by pinning the normalizer's output to the input snapshot with
+ * exactly those two nodes replaced — every other field, present and future,
+ * asserted to survive untouched.
+ *
+ * `health` is erased NARROWLY, and the narrowing is deliberate: `state` does
+ * NOT differ between the two engines by construction (the never-configured
+ * stand-in is `"failing"`, and a 503-ing client is also `"failing"`), so
+ * only `consecutiveFailures` and `detail` actually diverge and only those
+ * two are erased. Erasing `state` as well would have been symmetry rather
+ * than necessity — and it would hide a real future divergence.
  */
 const NORMALIZED_CAPABILITY: Capability = { state: "disabled", detail: null };
-const NORMALIZED_HEALTH: MukanaHealth = { state: "ok", consecutiveFailures: 0, detail: null };
+
+/** Erase only the two health fields that genuinely diverge; `state` stays compared. See above. */
+function normalizeHealth(health: MukanaHealth): MukanaHealth {
+  return { state: health.state, consecutiveFailures: 0, detail: null };
+}
 
 function normalizeDegradationChannel(snapshot: ShowSnapshot): ShowSnapshot {
   const copy = structuredClone(snapshot);
@@ -657,12 +687,110 @@ function normalizeDegradationChannel(snapshot: ShowSnapshot): ShowSnapshot {
     questionFeed: { ...NORMALIZED_CAPABILITY }
   };
   copy.health = {
-    panelists: { ...NORMALIZED_HEALTH },
-    hands: { ...NORMALIZED_HEALTH },
-    question: { ...NORMALIZED_HEALTH }
+    panelists: normalizeHealth(copy.health.panelists),
+    hands: normalizeHealth(copy.health.hands),
+    question: normalizeHealth(copy.health.question)
   };
   return copy;
 }
+
+/**
+ * A snapshot in which EVERY node carries a distinctive value — no empty
+ * array, no `null`, no zero, no default-looking record anywhere except the
+ * capability states themselves. It exists so the normalizer guard below can
+ * detect an erasure of ANY node: an eraser that writes an empty/blank value
+ * over a node that was already empty is invisible, which is exactly how the
+ * first version of that guard missed `queue`, `page`, and `unseated`.
+ *
+ * Built through the package's own exported `buildSnapshot`, so a field added
+ * to `ShowSnapshot` later cannot silently escape this fixture — the input
+ * type makes it a compile error (`npm run typecheck:tests`) rather than a
+ * quietly uncovered node.
+ */
+function distinctivePanelist(participantId: string, pin: string): Panelist {
+  return {
+    participantId,
+    rawName: `Name ${participantId} | ${pin} | Somewhere`,
+    online: true,
+    videoOn: false,
+    audioOn: true,
+    handRaised: true,
+    zoomRole: 1,
+    displayName: `Name ${participantId}`,
+    location: "Somewhere",
+    pin,
+    hasMukana: true,
+    role: "panelist",
+    personKey: resolvePersonKey({ participantId, rawName: `Name ${participantId} | ${pin}` })
+  };
+}
+
+const DISTINCTIVE_NAMEPLATE: Nameplate = {
+  position: { kind: "box", box: 2 },
+  slot: 3,
+  name: "Plate Person",
+  location: "Plate City",
+  tone: "breaking"
+};
+
+const DISTINCTIVE_LOOK: LookResolution = {
+  lookId: "distinctive-look",
+  scenePreset: "distinctive-preset",
+  plateTone: "breaking",
+  tallySource: "activeSpeaker",
+  hostSlot: 1,
+  readerSlot: 2,
+  boxes: [{ box: 1, slot: 3 }],
+  nameplates: [DISTINCTIVE_NAMEPLATE],
+  page: 2,
+  pageCount: 5,
+  boxFill: "manual"
+};
+
+const DISTINCTIVE_SNAPSHOT: ShowSnapshot = buildSnapshot({
+  revision: 42,
+  panelists: new Map([["pA", distinctivePanelist("pA", "1111")]]),
+  slots: [
+    { slot: 1, panelist: distinctivePanelist("pA", "1111") },
+    { slot: 2, panelist: null }
+  ],
+  gallery: [
+    { cell: 1, slot: 7 },
+    { cell: 2, slot: 4 }
+  ],
+  queue: { previous: ["1111"], current: "2222", upcoming: ["3333", "4444"] },
+  program: {
+    program: { kind: "slot", slot: 6 },
+    preview: { kind: "gallery" },
+    activeSpeakerFollow: true,
+    activeSpeakerId: "pA"
+  },
+  look: DISTINCTIVE_LOOK,
+  page: 2,
+  manualBoxes: { 2: 5 },
+  tally: {
+    mode: "gallery",
+    onAirSlots: [7],
+    onAirPins: ["1111"],
+    onAirParticipantIds: ["pA"]
+  },
+  overlays: {
+    nameplates: [DISTINCTIVE_NAMEPLATE],
+    question: { askerName: "Asker", text: "Why?", tag: "tag", votes: 9 }
+  },
+  capabilities: {
+    registry: { state: "available", detail: null },
+    handsQueue: { state: "unavailable", detail: "hands down" },
+    questionFeed: { state: "disabled", detail: null }
+  },
+  health: {
+    panelists: { state: "dormant", consecutiveFailures: 3, detail: "off hours" },
+    hands: { state: "failing", consecutiveFailures: 9, detail: "HTTP 503 from hands" },
+    question: { state: "ok", consecutiveFailures: 0, detail: "still a detail" }
+  },
+  unseated: [distinctivePanelist("pB", "5555")],
+  pagingRefused: "paging refused: distinctive reason"
+});
 
 /**
  * The identical show both engines are driven through. Every operator action
@@ -727,10 +855,19 @@ describe("scenario 3: degradation equivalence at the engine level", () => {
     // The engines really are in the two different states this property is about.
     expect(failing.fetches.length).toBeGreaterThan(0);
     expect(never.fetches).toEqual([]);
-    expect(failingSnapshot.capabilities.handsQueue.state).toBe("unavailable");
-    expect(failingSnapshot.capabilities.handsQueue.detail).not.toBeNull();
-    expect(neverSnapshot.capabilities.handsQueue.state).toBe("disabled");
-    expect(neverSnapshot.capabilities.handsQueue.detail).toBeNull();
+    // The erased channel, re-asserted here for ALL THREE capabilities so the
+    // local compensation for erasing it is complete rather than leaning on
+    // coverage elsewhere in the package (fix round 1).
+    expect(failingSnapshot.capabilities).toEqual({
+      registry: { state: "unavailable", detail: expect.any(String) },
+      handsQueue: { state: "unavailable", detail: expect.any(String) },
+      questionFeed: { state: "unavailable", detail: expect.any(String) }
+    });
+    expect(neverSnapshot.capabilities).toEqual({
+      registry: { state: "disabled", detail: null },
+      handsQueue: { state: "disabled", detail: null },
+      questionFeed: { state: "disabled", detail: null }
+    });
 
     // And everything the show is actually made of is identical.
     expect(normalizeDegradationChannel(failingSnapshot)).toEqual(
@@ -748,46 +885,75 @@ describe("scenario 3: degradation equivalence at the engine level", () => {
   });
 
   /**
-   * The guard on the guard. A normalizer that erased too much would make
-   * two genuinely different shows compare equal, and the property above
-   * would pass for the wrong reason forever. Every field the normalizer
-   * does NOT erase must still be able to red it.
+   * The guard on the guard, and the compensating control the whole
+   * deviation from the brief's normalizer leans on. A normalizer that
+   * erased too much would make two genuinely different shows compare equal,
+   * and the property above would pass for the wrong reason forever.
+   *
+   * Fix round 1: this used to spot-check four fields (`revision`, a seated
+   * panelist's name, the look's boxes, `pagingRefused`) by mutating each
+   * and asserting the comparison reds. That did NOT constrain the
+   * normalizer — the reviewer added erasure of NINE more snapshot nodes
+   * (queue, overlays, tally, program, panelists, gallery, page, manualBoxes,
+   * unseated) and every test in this file stayed green. Enforcing "do not
+   * compare hand-picked fields" with four hand-picked fields is exactly the
+   * mistake the brief's rule exists to prevent.
+   *
+   * So the guard is now a full-shape pin instead: the normalizer's output
+   * must equal the input snapshot with EXACTLY the two declaration nodes
+   * replaced and nothing else. It covers every field of `ShowSnapshot`,
+   * including ones added after this was written, and it cannot rot — a new
+   * field on `BuildSnapshotInput` fails `DISTINCTIVE_SNAPSHOT` to compile.
+   *
+   * It is pinned against a SYNTHETIC snapshot, not a show, and that is the
+   * second half of the fix. Measured while writing it: with a real
+   * `runIdenticalShow` snapshot, erasing `queue` inside the normalizer went
+   * UNDETECTED — that show has no usable hands queue, so the node was
+   * already `{[], null, []}` and the eraser wrote back the value that was
+   * there. `page`/`unseated` had the same coincidence. A value-based pin can
+   * only catch an erasure that changes something, so the fixture below gives
+   * every single node a distinctive value no plausible eraser writes.
    */
-  it("the normalizer is not a blanket: a real difference still reds", async () => {
+  it("the normalizer erases exactly two nodes and leaves every other field untouched", async () => {
+    expect(normalizeDegradationChannel(DISTINCTIVE_SNAPSHOT)).toEqual({
+      ...structuredClone(DISTINCTIVE_SNAPSHOT),
+      // Written out literally rather than through `normalizeHealth`, so a
+      // change to that function (e.g. widening it to erase `state` too) reds
+      // here instead of moving in lockstep with its own assertion. The
+      // fixture's health states are `dormant`/`failing`/`ok` — all three, so
+      // no constant an eraser might write can coincide with every one.
+      capabilities: {
+        registry: { state: "disabled", detail: null },
+        handsQueue: { state: "disabled", detail: null },
+        questionFeed: { state: "disabled", detail: null }
+      },
+      health: {
+        panelists: { state: "dormant", consecutiveFailures: 0, detail: null },
+        hands: { state: "failing", consecutiveFailures: 0, detail: null },
+        question: { state: "ok", consecutiveFailures: 0, detail: null }
+      }
+    });
+
+    // The same pin against a REAL show snapshot, so the synthetic fixture
+    // above cannot drift away from the shape the engine actually publishes.
     const rig = showRig({ mode: "none" });
     const snapshot = await runIdenticalShow(rig);
-
-    const withDifferentPage = structuredClone(snapshot);
-    withDifferentPage.revision += 1;
-    expect(normalizeDegradationChannel(withDifferentPage)).not.toEqual(
-      normalizeDegradationChannel(snapshot)
-    );
-
-    const withDifferentSeat = structuredClone(snapshot);
-    const seat = withDifferentSeat.slots[0];
-    if (seat === undefined || seat.panelist === null) {
-      throw new Error("fixture: slot 1 must be occupied for this guard to mean anything");
-    }
-    seat.panelist.displayName = "Someone Else";
-    expect(normalizeDegradationChannel(withDifferentSeat)).not.toEqual(
-      normalizeDegradationChannel(snapshot)
-    );
-
-    const withDifferentLook = structuredClone(snapshot);
-    const look = withDifferentLook.look;
-    if (look === null) {
-      throw new Error("fixture: a look must be resolved for this guard to mean anything");
-    }
-    look.boxes = [];
-    expect(normalizeDegradationChannel(withDifferentLook)).not.toEqual(
-      normalizeDegradationChannel(snapshot)
-    );
-
-    const withDifferentRefusal = structuredClone(snapshot);
-    withDifferentRefusal.pagingRefused = null;
-    expect(normalizeDegradationChannel(withDifferentRefusal)).not.toEqual(
-      normalizeDegradationChannel(snapshot)
-    );
+    expect(normalizeDegradationChannel(snapshot)).toEqual({
+      ...structuredClone(snapshot),
+      capabilities: {
+        registry: NORMALIZED_CAPABILITY,
+        handsQueue: NORMALIZED_CAPABILITY,
+        questionFeed: NORMALIZED_CAPABILITY
+      },
+      health: {
+        panelists: normalizeHealth(snapshot.health.panelists),
+        hands: normalizeHealth(snapshot.health.hands),
+        question: normalizeHealth(snapshot.health.question)
+      }
+    });
+    expect(snapshot.panelists).toHaveLength(5);
+    expect(snapshot.look).not.toBeNull();
+    expect(snapshot.pagingRefused).not.toBeNull();
   });
 });
 
