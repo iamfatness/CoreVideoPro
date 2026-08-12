@@ -316,7 +316,7 @@ without the operator retyping it.
 **Interfaces — Produces, on `ShowEngine`:**
 
 ```ts
-addPanelist(participantId: string, slot?: number): number | null;  // slot omitted = first empty
+addPanelist(participantId: string, slot?: number): number | null;  // string id, not int — see Task 8
 removePanelist(slot: number): void;
 replacePanelist(slot: number, participantId: string): void;
 setRole(pin: string, role: Role): void;
@@ -442,6 +442,45 @@ The registry is **declarative and complete** — the full spec §4.2 list: `ohg.
 `invokeAction` coerces and validates each arg against its declared type and arity, and returns
 `{kind:"error"}` on a mismatch — **it never throws**, because a malformed OSC packet from a Companion
 button must not take down a live show.
+
+**Two owner decisions, 2026-08-12, that override spec §4.2's declared signatures. Use these verbatim.**
+
+**Participant ids and PINs are `string`, not `int`.** Spec §4.2 declares
+`ohg.panelist.add (int zoomID, …)` and `ohg.panelist.role.set (int pin, …)`. Both are wrong for this
+engine and must be amended in the spec as part of this task:
+
+```
+ohg.panelist.add      (string participantId, int slot = 0)   // 0 = first empty
+ohg.panelist.replace  (int slot, string participantId)
+ohg.panelist.role.set (string pin, string role)
+```
+
+A 4-digit PIN such as `"0042"` survives `int` coercion as `42`, and `personKeyForPin("42")` is a
+different person from `personKeyForPin("0042")` — a silent identity swap that would put the wrong
+name and role on air. Participant ids are opaque host strings (design spec §5: "host's id (CVP
+participant id / zoomID)") and are not guaranteed numeric. The host stack has a native `String` param
+type, so nothing is lost on the wire. **Add a test with a leading-zero PIN specifically**; it is the
+case that makes this decision load-bearing rather than cosmetic.
+
+**`ProgramSource` encodes as one prefixed string.** `ohg.program.preview` and `ohg.program.directCut`
+each take a single `string source`, parsed as:
+
+| Wire value | `ProgramSource` |
+|---|---|
+| `"black"` | `{ kind: "black" }` |
+| `"gallery"` | `{ kind: "gallery" }` |
+| `"activeSpeaker"` | `{ kind: "activeSpeaker" }` |
+| `"look:<lookId>"` | `{ kind: "look", lookId }` |
+| `"slot:<n>"` | `{ kind: "slot", slot }` |
+
+Export `parseProgramSource(value: string): ProgramSource | null` and
+`formatProgramSource(source: ProgramSource): string`, and test that they **round-trip in both
+directions for all five variants** — the projection in Task 9 publishes the formatted form, so a
+parse/format asymmetry would make the feedback field disagree with what the action accepts.
+
+An unparseable value (`"look:"` with an empty id, `"slot:abc"`, `"slot:-1"`, an unknown bare word)
+returns `{kind:"error"}` from `invokeAction`. It must not throw and must not mutate the engine —
+this is the same discipline as the malformed-args rule above, reached by a different route.
 
 **A refusal is a first-class result, not an error.** `ohg.look.nextGuest` under manual box fill
 returns `{kind:"refused", reason}` carrying the engine's own `pagingRefused` text — spec §4 requires a
