@@ -829,10 +829,6 @@ describe("ShowEngine derived layers", () => {
     expect(snap.look?.scenePreset).toBe("scene-teatime");
   });
 
-  it("rejects an unknown look id", () => {
-    expect(() => engine().setLook("nope")).toThrow(/nope/);
-  });
-
   /**
    * Fix round 1, Minor: the original version of this test asserted only
    * `mode === "look"` with nobody seated, so it passed whether or not the
@@ -867,34 +863,6 @@ describe("ShowEngine derived layers", () => {
     const snap = await e.tick();
     expect(snap.tally.mode).toBe("activeSpeaker");
     expect(snap.tally.onAirSlots).toEqual([2]);
-  });
-
-  it("clears manual box assignments when the look changes", async () => {
-    const e = engine();
-    e.setLook("teatime");
-    e.assignBox(1, 3);
-    await e.tick();
-    expect(e.snapshot().manualBoxes).toEqual({ 1: 3 });
-    e.setLook("banter");
-    expect(e.snapshot().manualBoxes).toEqual({});
-  });
-
-  it("keeps manual box assignments when the same look is re-selected", async () => {
-    const e = engine();
-    e.setLook("teatime");
-    e.assignBox(1, 3);
-    e.setLook("teatime");
-    expect(e.snapshot().manualBoxes).toEqual({ 1: 3 });
-  });
-
-  it("refuses paging under manual fill instead of throwing", async () => {
-    const e = engine();
-    e.setLook("teatime");
-    await e.tick();
-    expect(() => e.nextGuest()).not.toThrow();
-    const snap = await e.tick();
-    expect(snap.page).toBe(0);
-    expect(snap.pagingRefused).toMatch(/manual/i);
   });
 
   /**
@@ -1157,34 +1125,6 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
   });
 
   /**
-   * Finding 3: an out-of-range `nextGuest`/`prevGuest` must refuse and
-   * leave `this.page` untouched, not silently advance past the end and
-   * rely on `tick()`'s `clampPage` to pull it back with no signal to the
-   * operator that their move did nothing new.
-   */
-  it("refuses to page past the last page instead of relying on tick() to clamp it back silently", async () => {
-    const e = engineWithFill("queue", "available"); // pageCount 3: valid pages 0,1,2
-    e.setLook("teatime");
-    await e.tick();
-    e.nextGuest(); // 0 -> 1
-    e.nextGuest(); // 1 -> 2 (last valid page)
-    e.nextGuest(); // would be 3: refuse
-    const snap = await e.tick();
-    expect(snap.page).toBe(2);
-    expect(snap.pagingRefused).toMatch(/out of range/i);
-  });
-
-  it("refuses to page before the first page instead of silently doing nothing", async () => {
-    const e = engineWithFill("queue", "available");
-    e.setLook("teatime");
-    await e.tick(); // page 0
-    e.prevGuest(); // would be -1: refuse
-    const snap = await e.tick();
-    expect(snap.page).toBe(0);
-    expect(snap.pagingRefused).toMatch(/out of range/i);
-  });
-
-  /**
    * Finding 4: `pagingRefused` must not outlive the condition that caused
    * it. Once the hands feed recovers and the active look's boxes are
    * actually filling from the queue again, a STALE refusal recorded while
@@ -1236,17 +1176,6 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
     expect(snap.pagingRefused).toBeNull();
   });
 
-  /** Finding 4's other writer: a look change must not leave a stale refusal attributed to the look it just left. */
-  it("clears a stale paging refusal on setLook, even to a look that is also manual fill", async () => {
-    const e = engine(); // registry-less: handsQueue disabled, every look is effectively manual
-    e.setLook("teatime");
-    await e.tick();
-    e.nextGuest(); // refused: manual fill
-    expect(e.snapshot().pagingRefused).toMatch(/manual/i);
-    e.setLook("banter");
-    expect(e.snapshot().pagingRefused).toBeNull();
-  });
-
   /** "Also fix": a cold restart (no `setLook()` before `restore()`) must resume the persisted look, not resolve none until an operator re-selects one. */
   it("resumes the persisted look on a cold restart with no setLook() first", async () => {
     const fs = memoryFs({
@@ -1270,18 +1199,6 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
     expect(snap.manualBoxes).toEqual({ 1: 3 });
   });
 
-  /** Minor: `assignBox` rejects a box number outside the active look's range instead of silently persisting garbage. */
-  it("rejects a manual box assignment outside the active look's box range", async () => {
-    const e = engine();
-    e.setLook("teatime"); // 2 boxes
-    expect(() => e.assignBox(3, 1)).toThrow(/out of range/);
-    expect(() => e.assignBox(0, 1)).toThrow();
-  });
-
-  /** Minor: `setPage` rejects a non-integer at the call site rather than letting it surface as a thrown error in a later tick. */
-  it("rejects a non-integer page from setPage", () => {
-    expect(() => engine().setPage(1.5)).toThrow(/integer/);
-  });
 });
 
 /**

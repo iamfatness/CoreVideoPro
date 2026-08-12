@@ -44,19 +44,11 @@ import { deriveTally } from "./tallyPublisher.js";
 import { resolveCapabilities } from "./capabilities.js";
 import { buildSnapshot, type ShowSnapshot } from "./showSnapshot.js";
 import { StateStore, STATE_VERSION, type PersistedShowState } from "./persistence.js";
-import {
-  clampPage,
-  effectiveBoxFill,
-  findChairSlots,
-  pageCountFor,
-  resolveLook,
-  type LookResolution,
-  type ManualBoxAssignments
-} from "./lookDirector.js";
+import { clampPage, findChairSlots, resolveLook, type LookResolution } from "./lookDirector.js";
+import { LookController } from "./lookController.js";
 import { stripChairs, type HandsOutcome } from "./handsQueue.js";
 import {
   EXCLUSIVE_ROLES,
-  type LookDefinition,
   type MukanaQuestion,
   type Panelist,
   type ProgramSource,
@@ -152,15 +144,13 @@ export class ShowEngine {
   private readonly programBus: ProgramBus;
   private readonly overlayDirector: OverlayDirector;
   private readonly hostCommands: HostCommandEmitter;
+  private readonly lookController: LookController;
 
   private liveSlots: LiveSlots;
   private gallery: GalleryDirector;
 
   private tickRevision = 0;
-  private selectedLookId: string | null = null;
   private currentLook: LookResolution | null = null;
-  private page = 0;
-  private manualBoxes: ManualBoxAssignments = {};
   private queue: QueueState = emptyQueue();
   private unseatedPanelists: Panelist[] = [];
 
@@ -177,17 +167,6 @@ export class ShowEngine {
   private questionVisible = false;
 
   /**
-   * Why the last `nextGuest`/`prevGuest` call did not move the page, or
-   * `null` when the last paging attempt (if any) succeeded. Written by
-   * `nextGuest`/`prevGuest`, and cleared early by `tick()` and `setLook`
-   * for the two causes that can go stale on their own (see
-   * `pagingRefusedKind` below) — Fix round 1, Finding 4. A refusal recorded
-   * between ticks is otherwise visible on the snapshot the following tick
-   * publishes.
-   */
-  private pagingRefused: string | null = null;
-
-  /**
    * What the last `restore()` had to discard from the persisted document,
    * republished on every snapshot until another `restore()` replaces it
    * (final review, I3/I4). Empty for a clean restore and for an engine that
@@ -196,25 +175,6 @@ export class ShowEngine {
    * loaded. See `ShowSnapshot.restoreWarnings`.
    */
   private restoreWarnings: string[] = [];
-
-  /**
-   * WHY `pagingRefused` was set, tracked separately from the human-readable
-   * string so `tick()` can decide which refusals it's allowed to clear
-   * without parsing its own message. `"fill"` (the active look's boxes
-   * aren't currently filling from the queue) and `"no-look"` (no look was
-   * selected at all) are both facts about CURRENT state that a later tick
-   * can independently re-check and clear once no longer true — a dead
-   * hands feed recovering, or a look finally getting selected. `"range"`
-   * (the attempted move ran off the end of the current page window) is
-   * NOT auto-cleared by `tick()`: it was true about a specific attempted
-   * move, not a standing condition, and clearing it merely because the
-   * look still fills from the queue (the ONLY fill strategy under which an
-   * out-of-range move is even possible) would wipe it out on the very next
-   * tick — before an operator polling on any normal cadence could ever see
-   * it. Only a subsequent `nextGuest`/`prevGuest` (success or another
-   * refusal) or `setLook` clears a `"range"` refusal.
-   */
-  private pagingRefusedKind: "no-look" | "fill" | "range" | null = null;
 
   /**
    * Whether `overlayDirector.update()` reported a change on the most recent
@@ -304,6 +264,7 @@ export class ShowEngine {
     this.programBus = new ProgramBus({ skipRoles: deps.config.skipRoles });
     this.overlayDirector = new OverlayDirector();
     this.hostCommands = new HostCommandEmitter(deps.host);
+    this.lookController = new LookController({ looks: deps.config.looks });
 
     this.liveSlots = new LiveSlots({
       capacity: deps.config.capacity,
@@ -322,21 +283,7 @@ export class ShowEngine {
    * resolve-against-the-roster/clamp-the-page work happens in `tick()`.
    */
   setLook(lookId: string): void {
-    const look = this.config.looks.find((candidate) => candidate.id === lookId);
-    if (look === undefined) {
-      throw new Error(`ShowEngine.setLook: unknown look id ${JSON.stringify(lookId)}`);
-    }
-    if (this.selectedLookId !== lookId) {
-      this.manualBoxes = {};
-    }
-    this.selectedLookId = lookId;
-    // A paging refusal recorded against the PREVIOUS look (or against no
-    // look at all) has nothing to say about this one — Fix round 1,
-    // Finding 4: it must not survive a look change and read as a stale,
-    // misattributed reason once the new look's own paging (or lack of it)
-    // is what's actually in effect.
-    this.pagingRefused = null;
-    this.pagingRefusedKind = null;
+    this.lookController.select(lookId);
     this.pendingPersist = true;
     this.otherInputsChanged = true;
   }
@@ -345,18 +292,15 @@ export class ShowEngine {
    * Test-only escape hatch: writes the pending page directly, with **no**
    * clamping. Production code should never call this — operator paging
    * goes through `nextGuest`/`prevGuest`, and `tick()`'s own `clampPage`
-   * step is what keeps `this.page` sane between ticks, deriving the valid
+   * step is what keeps the page sane between ticks, deriving the valid
    * range from the current capability state and queue every time. This
    * exists so a property test can plant a page the way a *stale* one would
    * actually arrive at the top of a tick — e.g. left over from a
    * fill-strategy flip or a look change — and prove `tick()` survives it
-   * rather than throwing.
+   * rather than throwing. Forwards to `LookController.setPage`.
    */
   setPage(page: number): void {
-    if (!Number.isInteger(page)) {
-      throw new Error(`ShowEngine.setPage: page ${page} is invalid: page must be an integer`);
-    }
-    this.page = page;
+    this.lookController.setPage(page);
   }
 
   /**
@@ -368,13 +312,19 @@ export class ShowEngine {
    * current page range: `lookDirector.ts`'s own docs are explicit that
    * clamping a direct operator move "would silently swallow a 'next' that
    * ran off the end, which is exactly the silence an operator control must
-   * not produce" (Fix round 1, Finding 3 — the pre-fix version let
-   * `this.page` walk past the end here and relied on `tick()`'s
-   * `clampPage` to quietly pull it back, which is precisely that silence:
-   * the operator got no signal their "next" didn't do anything new). Either
-   * refusal reason — wrong fill strategy, or off the end — is recorded in
-   * `pagingRefused` instead of throwing or silently doing nothing (spec
-   * §4). `this.page` itself is left untouched by a refused move.
+   * not produce" (Fix round 1, Finding 3 — the pre-fix version let the page
+   * walk past the end here and relied on `tick()`'s `clampPage` to quietly
+   * pull it back, which is precisely that silence: the operator got no
+   * signal their "next" didn't do anything new). Either refusal reason —
+   * wrong fill strategy, or off the end — is recorded on
+   * `LookController.refusal()` instead of throwing or silently doing
+   * nothing (spec §4). The page itself is left untouched by a refused move.
+   *
+   * `LookController.adjustPage` only tracks selection/paging state; it does
+   * not resolve capabilities or strip the queue itself, so both are
+   * resolved fresh here — the SAME shape `tick()`'s own `clampPage`/
+   * `resolveLook` pair would use, but resolved independently since a direct
+   * operator move can land between ticks.
    */
   nextGuest(): void {
     this.adjustPage(1);
@@ -386,35 +336,9 @@ export class ShowEngine {
   }
 
   private adjustPage(delta: number): void {
-    const look = this.lookById(this.selectedLookId);
-    if (look === null) {
-      this.pagingRefused = "paging refused: no look is selected";
-      this.pagingRefusedKind = "no-look";
-      return;
-    }
-
     const caps = resolveCapabilities(this.config, this.mukanaHealth());
-    const fill = effectiveBoxFill(look, caps.handsQueue);
-    if (fill !== "queue") {
-      this.pagingRefused = `paging refused: box fill is ${fill}, not queue-driven`;
-      this.pagingRefusedKind = "fill";
-      return;
-    }
-
-    const slots = this.liveSlots.slots();
-    const strippedQueue = this.stripQueueAgainstSeatedChairs(slots);
-    const pageCount = pageCountFor(look, strippedQueue);
-    const target = this.page + delta;
-
-    if (target < 0 || target >= pageCount) {
-      this.pagingRefused = `paging refused: page ${target} is out of range (this look has ${pageCount} page(s))`;
-      this.pagingRefusedKind = "range";
-      return;
-    }
-
-    this.pagingRefused = null;
-    this.pagingRefusedKind = null;
-    this.page = target;
+    const strippedQueue = this.stripQueueAgainstSeatedChairs(this.liveSlots.slots());
+    this.lookController.adjustPage(delta, strippedQueue, caps.handsQueue);
   }
 
   /**
@@ -424,28 +348,18 @@ export class ShowEngine {
    * the operator may be setting it up in advance of a fill-strategy switch.
    * Throws for a box number outside the ACTIVE look's `1..boxes` range —
    * caller error, not a state-changed-under-me refusal, so it throws rather
-   * than getting a typed `pagingRefused`-style response. When no look is
-   * selected yet there is no range to validate against, so only a
-   * non-positive-integer box number is rejected.
+   * than getting a typed refusal response. When no look is selected yet
+   * there is no range to validate against, so only a non-positive-integer
+   * box number is rejected. Forwards to `LookController.assignBox`.
    */
   assignBox(box: number, slot: number): void {
-    const look = this.lookById(this.selectedLookId);
-    if (!Number.isInteger(box) || box < 1 || (look !== null && box > look.boxes)) {
-      throw new Error(
-        look === null
-          ? `ShowEngine.assignBox: box ${box} is invalid: box must be a positive integer`
-          : `ShowEngine.assignBox: box ${box} is out of range for look ${JSON.stringify(look.id)} (1..${look.boxes})`
-      );
-    }
-    this.manualBoxes = { ...this.manualBoxes, [box]: slot };
+    this.lookController.assignBox(box, slot);
     this.pendingPersist = true;
   }
 
-  /** Remove one manual box assignment, leaving the rest untouched. */
+  /** Remove one manual box assignment, leaving the rest untouched. Forwards to `LookController.clearBox`. */
   clearBox(box: number): void {
-    const next = { ...this.manualBoxes };
-    delete next[box];
-    this.manualBoxes = next;
+    this.lookController.clearBox(box);
     this.pendingPersist = true;
   }
 
@@ -666,40 +580,31 @@ export class ShowEngine {
     // A look that is no longer in this configuration cannot be adopted: it
     // would resolve to nothing, forever, and be written straight back to
     // disk on the next save (final review, I3). Dropped and reported.
-    const persistedLookId =
-      persisted.lookId !== null && this.lookById(persisted.lookId) === null
-        ? null
-        : persisted.lookId;
-    if (persistedLookId === null && persisted.lookId !== null) {
-      warnings.push(
-        `persisted look ${JSON.stringify(persisted.lookId)} is not defined in this show's configuration; ` +
-          `it was discarded along with the manual box assignments that belonged to it, and no look is selected`
-      );
+    // `LookController.adoptRestored` also carries Fix round 1's "also fix":
+    // before that method existed, `persisted.lookId` was write-only —
+    // nothing ever read it back — so a genuine cold restart (`restore()`
+    // with no `setLook()` first) resolved no look at all until an operator
+    // re-selected one. But a `setLook()` issued BEFORE `restore()` is a
+    // deliberate choice made after the process came back up, and must win
+    // over whatever was on disk — the same ordering contract
+    // `restoreManualBoxes` below already depends on (see the restore tests:
+    // `setLook("teatime")` then `restore()` from a file whose `lookId`
+    // differs must still leave "teatime" selected).
+    const lookWarning = this.lookController.adoptRestored(persisted.lookId);
+    if (lookWarning !== null) {
+      warnings.push(lookWarning);
     }
-
-    // Adopt the persisted look selection — but ONLY when nothing has
-    // explicitly selected one yet (`selectedLookId` is still its field-init
-    // `null`). Fix round 1, "also fix": before this line, `persisted.lookId`
-    // was write-only — nothing ever read it back — so a genuine cold
-    // restart (`restore()` with no `setLook()` first) resolved no look at
-    // all until an operator re-selected one. But a `setLook()` issued
-    // BEFORE `restore()` is a deliberate choice made after the process came
-    // back up, and must win over whatever was on disk — the same ordering
-    // contract `manualBoxes` below already depends on (see the restore
-    // tests: `setLook("teatime")` then `restore()` from a file whose
-    // `lookId` differs must still leave "teatime" selected).
-    this.selectedLookId = this.selectedLookId ?? persistedLookId;
 
     // A restored assignment set belongs to whatever look was selected when
     // it was saved. Applying it under a different look would put whoever
     // the operator put in box 1 of one arrangement into box 1 of another,
-    // which is not the same seat — discard rather than inherit. Compared
-    // against `this.selectedLookId` AFTER the adoption above, so a cold
-    // restart (which just adopted `persisted.lookId` verbatim) always
-    // matches and restores its own manual boxes, while an explicit
-    // pre-restore `setLook()` to a different look still discards them.
-    this.manualBoxes =
-      persisted.lookId === this.selectedLookId ? { ...persisted.manualBoxes } : {};
+    // which is not the same seat — discard rather than inherit.
+    // `restoreManualBoxes` compares `persisted.lookId` against whatever
+    // `adoptRestored` just selected, so a cold restart (which just adopted
+    // `persisted.lookId` verbatim) always matches and restores its own
+    // manual boxes, while an explicit pre-restore `setLook()` to a
+    // different look still discards them.
+    this.lookController.restoreManualBoxes(persisted.manualBoxes, persisted.lookId);
 
     this.restoreWarnings = warnings;
     if (warnings.length > 0) {
@@ -907,18 +812,18 @@ export class ShowEngine {
     const slots = this.liveSlots.slots();
     const strippedQueue = this.stripQueueAgainstSeatedChairs(slots);
 
-    const look = this.lookById(this.selectedLookId);
+    const look = this.lookController.selected();
     const previousLookId = this.currentLook?.lookId ?? null;
     let resolution: LookResolution | null = null;
 
     if (look !== null) {
-      this.page = clampPage(look, strippedQueue, this.page, caps.handsQueue);
+      this.lookController.setPage(clampPage(look, strippedQueue, this.lookController.page(), caps.handsQueue));
       resolution = resolveLook(look, {
         queue: strippedQueue,
         slots,
-        page: this.page,
+        page: this.lookController.page(),
         handsQueue: caps.handsQueue,
-        manualBoxes: this.manualBoxes
+        manualBoxes: this.lookController.manualBoxes()
       });
     }
 
@@ -936,18 +841,17 @@ export class ShowEngine {
     // (clearing "no-look"), or its boxes are ACTUALLY filling from the
     // queue again (hands feed recovered, clearing "fill"), a refusal
     // recorded while that wasn't true is stale and must not keep
-    // publishing. `nextGuest`/`prevGuest` are the only other writers of
-    // `pagingRefused`, and neither runs every tick, so nothing else would
-    // clear it otherwise. A `"range"` refusal is deliberately NOT cleared
-    // here — see `pagingRefusedKind`'s doc comment for why (it would wipe
-    // out on the very next tick, since queue fill is the only strategy an
-    // out-of-range move can even happen under).
-    const noLookRefusalResolved = this.pagingRefusedKind === "no-look" && resolution !== null;
-    const fillRefusalResolved =
-      this.pagingRefusedKind === "fill" && resolution !== null && resolution.boxFill === "queue";
-    if (noLookRefusalResolved || fillRefusalResolved) {
-      this.pagingRefused = null;
-      this.pagingRefusedKind = null;
+    // publishing. `nextGuest`/`prevGuest` are the only other writers of a
+    // refusal, and neither runs every tick, so nothing else would clear it
+    // otherwise. A `"range"` refusal is deliberately NOT cleared here — see
+    // `LookController.clearStaleRefusal`'s doc comment for why (it would
+    // wipe out on the very next tick, since queue fill is the only strategy
+    // an out-of-range move can even happen under). Only called when a look
+    // actually resolved this tick — `clearStaleRefusal` treats being called
+    // at all as proof a look is selected, matching the `resolution !== null`
+    // guard both refusal kinds required here before the carve-out.
+    if (resolution !== null) {
+      this.lookController.clearStaleRefusal(resolution.boxFill);
     }
 
     // Overlays: re-derive every tick and keep the change flag for Task 8.
@@ -1076,14 +980,14 @@ export class ShowEngine {
       queue: this.queue,
       program,
       look: this.currentLook,
-      page: this.page,
-      manualBoxes: this.manualBoxes,
+      page: this.lookController.page(),
+      manualBoxes: this.lookController.manualBoxes(),
       tally,
       overlays: this.overlayDirector.state(),
       capabilities,
       health,
       unseated: this.unseatedPanelists,
-      pagingRefused: this.pagingRefused,
+      pagingRefused: this.lookController.refusal()?.message ?? null,
       restoreWarnings: this.restoreWarnings
     });
   }
@@ -1095,8 +999,8 @@ export class ShowEngine {
       slots: this.liveSlots.toJSON(),
       overrides: this.overrideDb.entries(),
       gallery: this.gallery.toJSON(),
-      manualBoxes: this.manualBoxes,
-      lookId: this.selectedLookId
+      manualBoxes: this.lookController.manualBoxes(),
+      lookId: this.lookController.selected()?.id ?? null
     };
   }
 
@@ -1152,12 +1056,6 @@ export class ShowEngine {
       };
     }
     return health;
-  }
-
-  /** Look up a `LookDefinition` by id, or `null` for a `null` id. Never throws — `setLook` is the validating gate. */
-  private lookById(lookId: string | null): LookDefinition | null {
-    if (lookId === null) return null;
-    return this.config.looks.find((candidate) => candidate.id === lookId) ?? null;
   }
 
   /**
