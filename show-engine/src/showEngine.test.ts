@@ -1982,7 +1982,14 @@ describe("ShowEngine Mukana polling", () => {
     await flush();
     expect(degraded.capabilities.handsQueue.state).toBe("unavailable");
     expect(degraded.health.hands.state).toBe("failing");
-    expect(degraded.health.hands.detail).toMatch(/no response/);
+    // Fix round 1: pinned to the EXACT operator-facing string (not a loose
+    // `/no response/` regex) — that regex is what let a real regression
+    // through the carve-out invisibly: `MukanaPoller.hungEndpoints()`
+    // briefly returned bare endpoint names, dropping the millisecond figure
+    // an operator needs to tell "marginal" from "dead." The hands fetch
+    // that hung started at t=20_000 (`hungButFresh`'s tick); this tick runs
+    // at t=20_000+6_001=26_001, so outstandingMs is exactly 6001.
+    expect(degraded.health.hands.detail).toBe("no response after 6001ms with a poll still in flight");
     // Degrading is not discarding: the last good queue is still there for
     // the moment the feed comes back.
     expect(degraded.queue).toEqual(healthy.queue);

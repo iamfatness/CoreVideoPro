@@ -1144,11 +1144,11 @@ export class ShowEngine {
     if (client === undefined || this.mukanaPoller === undefined) return NO_REGISTRY_HEALTH;
 
     const health = client.health;
-    for (const endpoint of this.mukanaPoller.hungEndpoints()) {
+    for (const { endpoint, outstandingMs } of this.mukanaPoller.hungEndpoints()) {
       health[endpoint] = {
         state: "failing",
         consecutiveFailures: health[endpoint].consecutiveFailures,
-        detail: "no response with a poll still in flight"
+        detail: `no response after ${outstandingMs}ms with a poll still in flight`
       };
     }
     return health;

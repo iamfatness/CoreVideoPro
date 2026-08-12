@@ -64,6 +64,17 @@ export type PollOutcomes = {
   question: QuestionOutcome | null;
 };
 
+/**
+ * One hung endpoint, as reported by `hungEndpoints()` — the endpoint name
+ * PLUS how long (per the injected `Clock`) its in-flight poll has been
+ * outstanding. `ShowEngine.mukanaHealth` needs the millisecond figure, not
+ * just the fact of hanging, to publish the same operator-facing detail text
+ * ("no response after ${outstandingMs}ms...") this reported before the
+ * carve-out — collapsing it to a bare endpoint list would have quietly
+ * dropped real diagnostic information (fix round 1).
+ */
+export type HungMukanaPoll = { endpoint: MukanaEndpoint; outstandingMs: number };
+
 export class MukanaPoller {
   private readonly client: MukanaClient;
   private readonly clock: Clock;
@@ -250,16 +261,20 @@ export class MukanaPoller {
    * `MUKANA_HUNG_POLL_INTERVALS` of their own intervals — the engine-side
    * correction `MukanaClient`'s own health cannot make for itself (final
    * review, I1 — see `MUKANA_HUNG_POLL_INTERVALS`'s own doc comment for why,
-   * and `FetchLike`'s for the timeout obligation this backstops).
+   * and `FetchLike`'s for the timeout obligation this backstops). Each entry
+   * carries `outstandingMs` (fix round 1) so a caller can report exactly how
+   * stale the hang is, not just that it's hung — the same operator-facing
+   * detail (`"no response after ${outstandingMs}ms..."`) this reported
+   * before the carve-out.
    */
-  hungEndpoints(): readonly MukanaEndpoint[] {
+  hungEndpoints(): readonly HungMukanaPoll[] {
     const now = this.clock.now();
-    const hung: MukanaEndpoint[] = [];
+    const hung: HungMukanaPoll[] = [];
     for (const endpoint of MUKANA_ENDPOINTS) {
       if (!this.mukanaPollBusy[endpoint]) continue;
       const outstandingMs = now - this.lastMukanaPollAt[endpoint];
       if (outstandingMs < this.client.nextDelayMs(endpoint) * MUKANA_HUNG_POLL_INTERVALS) continue;
-      hung.push(endpoint);
+      hung.push({ endpoint, outstandingMs });
     }
     return hung;
   }
