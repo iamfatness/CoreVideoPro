@@ -785,9 +785,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // permission pending) — drives the loud waiting status in ApplyMeetingFields.
     private bool _awaitingRecordingPrivilege;
 
-    // Zoom→program audio topology (owner decision 2026-08-09). Session-scoped
-    // for now (persistence = prefs schema bump, a deliberate follow-up); the
-    // default is the long-standing Z1 program-mix topology.
+    // Zoom→program audio topology (owner decision 2026-08-09). Persists via
+    // ProductionOutputPreferences.ZoomAudioMode (prefs v9) and is restored into
+    // this backing field by ApplyProductionOutputPreferences; anything absent
+    // or unrecognized reads as the long-standing Z1 program-mix default.
     private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.ProgramMix;
     public ZoomAudioMode ZoomAudioMode => _zoomAudioMode;
     public bool IsPerGuestIsoAudio => _zoomAudioMode == ZoomAudioMode.PerGuestIso;
@@ -805,6 +806,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = perGuestIso
             ? "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program)."
             : "Zoom program mix: Zoom's combined, echo-cancelled mix routes to program; guest strips meter only.";
+        // v9: the topology is operator intent — it survives the launch.
+        SaveProductionOutputPreferences();
         // The seeded sends change shape — push the new routing to the core now.
         _ = TrySyncMediaCoreAsync();
     }
@@ -11151,6 +11154,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             IsoRecordingSourceIds = _showInputsCoordinator.IsoSelectedSourceIds
                 .OrderBy(id => id, StringComparer.Ordinal)
                 .ToList(),
+            // v9: the Zoom→program audio topology persists across launches.
+            ZoomAudioMode = ZoomAudioModePreference.Format(_zoomAudioMode),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -11297,6 +11302,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         OnPropertyChanged(nameof(IsoRecordingEnabled));
         RefreshIsoReadouts();
+
+        // v9: restore the Zoom→program audio topology via the BACKING field (same
+        // reason as vcam/ISO above — the setter calls TrySyncMediaCoreAsync and the
+        // core isn't up yet). No respawn re-arm is needed: the seeder
+        // (EnsureDefaultZoomAudioRoutingSends) synthesizes its sends on EVERY
+        // sync-context build, so the mode is continuously re-asserted rather than
+        // sent once — a respawned core picks it up on the next sync.
+        _zoomAudioMode = ZoomAudioModePreference.Parse(preferences.ZoomAudioMode);
+        OnPropertyChanged(nameof(ZoomAudioMode));
+        OnPropertyChanged(nameof(IsPerGuestIsoAudio));
+        if (_zoomAudioMode == ZoomAudioMode.PerGuestIso)
+        {
+            // Loud, not silent: tell the operator which topology they came up in
+            // rather than making them notice a switch position. ProgramMix says
+            // nothing — it's the default, and a line every launch is noise.
+            CommandStatus = "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program).";
+        }
 
         RestoreMasteringFromPreferences(preferences);
 

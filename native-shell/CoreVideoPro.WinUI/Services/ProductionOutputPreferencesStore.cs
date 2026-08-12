@@ -30,7 +30,20 @@ public sealed class ProductionOutputPreferences
     // "zoom:<pid>"/"capture:<id>"). Older files migrate with enabled=false + an
     // empty set = program-only (byte-identical to the pre-ISO product). Not
     // secret-bearing (source ids are per-meeting handles, not credentials).
-    public const int CurrentVersion = 8;
+    // v9 (2026-08-10, follow-up to PR #397): the Zoom→program audio topology
+    // persists — "programMix" (Zoom's own echo-cancelled mix rides the program
+    // buses; the long-standing Z1 default) or "perGuestIso" (each guest's stem
+    // routes through their own strip and zoom-mix leaves the program buses).
+    // Older files migrate with the field absent = programMix, so every existing
+    // profile behaves exactly as it did before the upgrade. Stored as a string,
+    // not a bool: an unrecognized value falls back to programMix (see
+    // ZoomAudioModePreference). Not secret-bearing.
+    // Downgrade (verified, matches every prior bump): an older v8 build reading
+    // this file ignores the unknown ZoomAudioMode member, does not migrate
+    // (9 < 8 is false), and on its next save rewrites Version: 8 with the field
+    // dropped. Returning to a v9 build then reads the field absent -> programMix.
+    // That is the safe direction, so no downgrade guard is needed.
+    public const int CurrentVersion = 9;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -124,6 +137,11 @@ public sealed class ProductionOutputPreferences
     // source ids ("zoom:<pid>" / "capture:<id>"). zoom: ids are per-meeting handles;
     // capture: ids are stable across sessions. Not secret-bearing.
     public List<string> IsoRecordingSourceIds { get; set; } = [];
+
+    // v9: the operator's Zoom→program audio topology. Null/absent/unrecognized =
+    // "programMix". Read and written ONLY through ZoomAudioModePreference so the
+    // wire strings are spelled in exactly one place.
+    public string? ZoomAudioMode { get; set; }
 
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops
