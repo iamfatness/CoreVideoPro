@@ -1263,11 +1263,27 @@ describe("ShowEngine host emission", () => {
  * after any `await e.tick()` whose test cares whether an in-flight fetch
  * has settled.
  */
-function mukanaEngine(options: { hangHands?: boolean } = {}) {
+/**
+ * A two-guest-box look whose boxes fill from the hands queue (the `boxFill`
+ * default), so losing the hands feed is observable as a fill-strategy flip
+ * rather than as nothing at all. Declared as a plain object because
+ * `parseShowEngineConfig` takes `unknown` and validates it itself.
+ */
+const QUEUE_LOOK = {
+  id: "panel",
+  label: "Panel",
+  scenePreset: "scene-panel",
+  boxes: 2,
+  includesHost: false,
+  includesReader: false
+};
+
+function mukanaEngine(options: { hangHands?: boolean; looks?: readonly unknown[] } = {}) {
   let nowMs = 0;
   const clock: Clock = { now: () => nowMs };
   const fetches: string[] = [];
 
+  let handsHangs = options.hangHands === true;
   let handsBody = "NONE\nNONE\nNONE";
   let handsOk = true;
   let handsStatus = 200;
@@ -1279,7 +1295,7 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
   const fetch = async (url: string): Promise<FetchResponse> => {
     fetches.push(url);
     if (url.includes("req=hands")) {
-      if (options.hangHands === true) {
+      if (handsHangs) {
         return new Promise<FetchResponse>((resolve) => {
           pendingHandsResolvers.push(resolve);
         });
@@ -1309,7 +1325,7 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
     galleryCells: 16,
     integrations: { registry: true, handsQueue: true, questionFeed: true },
     mukana: { baseUrl: "https://example.com/rest.php", event: "officehours" },
-    looks: []
+    looks: options.looks ?? []
   });
   if (config.mukana === null) {
     throw new Error("unreachable: mukanaEngine always configures a mukana block");
@@ -1354,6 +1370,10 @@ function mukanaEngine(options: { hangHands?: boolean } = {}) {
     },
     breakHandsBody: () => {
       handsBodyBroken = true;
+    },
+    /** Every hands fetch from here on returns a promise that never settles on its own. */
+    hangHands: () => {
+      handsHangs = true;
     },
     resolveHands: () => {
       const resolver = pendingHandsResolvers.shift();
@@ -1567,6 +1587,106 @@ describe("ShowEngine Mukana polling", () => {
     const cap = e.snapshot().capabilities.handsQueue;
     expect(cap.state).toBe("unavailable");
     expect(cap.detail).not.toBeNull();
+  });
+
+  /**
+   * Final review, I1 — the probe that found it, run as a test. A `FetchLike`
+   * whose hands promise NEVER settles (the contract violation `FetchLike`'s
+   * doc now names: no `AbortSignal.timeout`) used to leave the hands
+   * capability `available` forever, because health is only ever written when
+   * a request settles and the one-in-flight gate meant no later fetch could
+   * contradict it. The consequence measured over 30 simulated minutes was
+   * not stale data: `effectiveBoxFill` stayed `"queue"`, the queue was empty
+   * because nothing ever arrived, and BOTH guest boxes resolved to `null`
+   * for the whole show while the operator's manual assignments sat ignored —
+   * the degradation path this package exists to guarantee never engaged at
+   * all, and the operator's fallback was unreachable on air.
+   *
+   * The assertion that matters is the last one: the boxes are FILLED, from
+   * `manualBoxes`. Everything above it is the state that has to hold for
+   * that fallback to be reachable.
+   */
+  it("falls back to the operator's manual boxes when an endpoint never answers at all", async () => {
+    const { e, advance, flush } = mukanaEngine({ hangHands: true, looks: [QUEUE_LOOK] });
+    e.onZoomEvent(joined("p1", "Ann | 1001"));
+    e.onZoomEvent(joined("p2", "Bo | 1002"));
+    e.setLook("panel");
+    e.assignBox(1, 1);
+    e.assignBox(2, 2);
+
+    // The very first tick starts the hands fetch that will never settle. It
+    // is also the tick that pins the PESSIMISTIC start specifically: no time
+    // has passed, so the engine's own hung-poll degradation cannot have
+    // fired yet, and the only thing that can be reporting this endpoint as
+    // unusable is that it has never answered.
+    const first = await e.tick();
+    await flush();
+    expect(first.capabilities.handsQueue.state).toBe("unavailable");
+    expect(first.look?.boxFill).toBe("manual");
+    expect(first.look?.boxes).toEqual([
+      { box: 1, slot: 1 },
+      { box: 2, slot: 2 }
+    ]);
+
+    // Thirty simulated minutes of a show whose hands feed never answers.
+    let snap = await e.tick();
+    for (let minute = 0; minute < 30; minute += 1) {
+      advance(60_000);
+      // eslint-disable-next-line no-await-in-loop
+      snap = await e.tick();
+      // eslint-disable-next-line no-await-in-loop
+      await flush();
+    }
+
+    expect(snap.health.hands.state).toBe("failing");
+    expect(snap.capabilities.handsQueue.state).toBe("unavailable");
+    expect(snap.capabilities.handsQueue.detail).not.toBeNull();
+    expect(snap.look?.boxFill).toBe("manual");
+    expect(snap.look?.boxes).toEqual([
+      { box: 1, slot: 1 },
+      { box: 2, slot: 2 }
+    ]);
+  });
+
+  /**
+   * Final review, I1, the mid-show half: an endpoint that ANSWERED and then
+   * hung. A pessimistic `initialHealth` alone cannot catch this one — the
+   * client has a genuine `ok` on record and, with the fetch still in flight,
+   * will never be handed anything that overwrites it. The engine holds no
+   * timer and cannot cancel the fetch, so what it does instead is stop
+   * asserting usability it has no current evidence for, off the injected
+   * clock and the endpoint's own `nextDelayMs`.
+   *
+   * The middle assertion is the one that keeps this honest: one interval of
+   * ordinary slowness must NOT be reported as an outage.
+   */
+  it("stops reporting an endpoint as available once its poll has hung for several intervals", async () => {
+    const { e, advance, flush, setHandsBody, hangHands } = mukanaEngine();
+    setHandsBody("4242,5555\n1383\nNONE");
+    advance(10_000);
+    await e.tick();
+    await flush();
+    const healthy = await e.tick();
+    await flush();
+    expect(healthy.capabilities.handsQueue.state).toBe("available");
+
+    hangHands();
+    advance(10_000);
+    const hungButFresh = await e.tick(); // starts the fetch that will never settle
+    await flush();
+    expect(hungButFresh.capabilities.handsQueue.state).toBe("available");
+
+    // The hands interval is 2000ms; three of them is the grace window.
+    advance(6_001);
+    const degraded = await e.tick();
+    await flush();
+    expect(degraded.capabilities.handsQueue.state).toBe("unavailable");
+    expect(degraded.health.hands.state).toBe("failing");
+    expect(degraded.health.hands.detail).toMatch(/no response/);
+    // Degrading is not discarding: the last good queue is still there for
+    // the moment the feed comes back.
+    expect(degraded.queue).toEqual(healthy.queue);
+    expect(degraded.queue.current).toBe("1383");
   });
 
   it("reports dormant as unavailable with the operator-facing detail", async () => {

@@ -29,6 +29,7 @@ import type { PositionAssigner } from "./speakerRecency.js";
 import { FiloAssigner } from "./speakerRecency.js";
 import { shouldFollowSpeaker } from "./speakerGate.js";
 import type { ShowEngineConfig } from "./config.js";
+import { MUKANA_ENDPOINTS } from "./mukanaClient.js";
 import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
 import { MukanaRegistry, type DormantOutcome, type MukanaOutcome, type QuestionOutcome } from "./mukanaParse.js";
 import { LiveSlots } from "./liveSlots.js";
@@ -75,6 +76,30 @@ import type { PersonKey } from "./personKey.js";
  * long since the last actual write.
  */
 const SAVE_DEBOUNCE_MS = 1000;
+
+/**
+ * How many of an endpoint's OWN poll intervals a single in-flight fetch may
+ * be outstanding before this engine stops believing that endpoint's last
+ * reported health (final review, I1).
+ *
+ * `MukanaClient` writes health only when a request settles, so an endpoint
+ * that answered once and then hung would otherwise keep reporting `ok` —
+ * and therefore `available` — over a feed that has been frozen for the rest
+ * of the show. The engine cannot cancel the fetch (no timers, spec §2: time
+ * enters only through the injected `Clock`), and the one-in-flight-per-
+ * endpoint gate means no newer fetch will ever contradict the stale record.
+ * What the engine CAN do is refuse to keep asserting usability it has no
+ * current evidence for: past this many intervals the endpoint is reported
+ * `failing`, which resolves to `unavailable` and engages the same manual
+ * fallback a 503 would.
+ *
+ * Three rather than one: `nextDelayMs` is the interval between poll STARTS,
+ * so a response that merely takes a little longer than one interval is
+ * ordinary slowness on a live network, not a hang. This is a report-only
+ * downgrade — it never cancels the fetch, never starts a competing one, and
+ * is withdrawn the moment that fetch settles and writes real health.
+ */
+const MUKANA_HUNG_POLL_INTERVALS = 3;
 
 /** True for the two roles `OverrideDb.assignExclusiveRole` knows how to enforce. */
 function isExclusiveOverrideRole(role: Role): role is "host" | "reader" {
@@ -1167,9 +1192,38 @@ export class ShowEngine {
     this.question = outcome.question;
   }
 
-  /** The current Mukana health snapshot, or the all-failing stand-in when there is no client at all. */
+  /**
+   * The current Mukana health snapshot, or the all-failing stand-in when
+   * there is no client at all — with one engine-side correction the client
+   * cannot make for itself: an endpoint whose in-flight poll has been
+   * outstanding for `MUKANA_HUNG_POLL_INTERVALS` of its own intervals is
+   * reported `failing` regardless of what its last settled response said
+   * (final review, I1 — see that constant's doc comment for why, and
+   * `FetchLike`'s for the timeout obligation this backstops).
+   *
+   * Safe to mutate in place: `MukanaClient.health` builds a fresh object
+   * with fresh per-endpoint records on every read. The registry-less
+   * `NO_REGISTRY_HEALTH` branch returns the shared module constant by
+   * reference and is deliberately left untouched — there is no client, so
+   * nothing can be in flight.
+   */
   private mukanaHealth(): Record<MukanaEndpoint, MukanaHealth> {
-    return this.mukanaClient?.health ?? NO_REGISTRY_HEALTH;
+    const client = this.mukanaClient;
+    if (client === undefined) return NO_REGISTRY_HEALTH;
+
+    const health = client.health;
+    const now = this.clock.now();
+    for (const endpoint of MUKANA_ENDPOINTS) {
+      if (!this.mukanaPollBusy[endpoint]) continue;
+      const outstandingMs = now - this.lastMukanaPollAt[endpoint];
+      if (outstandingMs < client.nextDelayMs(endpoint) * MUKANA_HUNG_POLL_INTERVALS) continue;
+      health[endpoint] = {
+        state: "failing",
+        consecutiveFailures: health[endpoint].consecutiveFailures,
+        detail: `no response after ${outstandingMs}ms with a poll still in flight`
+      };
+    }
+    return health;
   }
 
   /** Look up a `LookDefinition` by id, or `null` for a `null` id. Never throws — `setLook` is the validating gate. */

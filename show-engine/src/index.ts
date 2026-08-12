@@ -58,6 +58,7 @@ export {
 } from "./mukanaParse.js";
 export {
   MukanaClient,
+  MUKANA_ENDPOINTS,
   type FetchLike,
   type FetchResponse,
   type MukanaEndpoint,
