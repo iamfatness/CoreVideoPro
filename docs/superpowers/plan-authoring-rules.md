@@ -137,6 +137,33 @@ Both are worth keeping as documentation. Both are dangerous unlabeled, because a
 them as guarantees. **Mark them in the test's doc comment**, and never let a confirmatory
 assertion be the only thing standing behind an invariant.
 
+## 9. When a task introduces a contract, at least one fixture must honor it
+
+Added after Plan 6 Task 3, which is the most expensive version of this failure seen so far.
+
+The task introduced an abort contract — `FetchLike` gains a `signal`, and a host **must** supply a
+fetch that honors it. It then shipped 620 tests, four mutation results, and a property test that
+legitimately caught a mutation nothing else could.
+
+**Every fake fetch in every fixture ignored the signal.** So the entire suite exercised only the
+path where the new contract is violated. Against a conforming host the abort fired at 1× the poll
+interval while the feature it guarded engaged at 3× — making the task's headline mechanism
+unreachable, and re-creating the exact on-air flapping the task existed to eliminate, on a code path
+with no protection at all.
+
+The tell was visible in the suite and read as normal: a test pinning 2500 ms as "not an outage"
+passed, while against a conforming host that same latency produced `failing`, `unavailable`, and
+backoff. **The test asserted something production could no longer do, and stayed green**, because the
+double it ran against still lived in the old world.
+
+So: whenever a task adds a requirement on a collaborator — a signal to honor, a method to call, an
+ordering to respect — the task must include a fixture that **satisfies** it, not only the legacy
+doubles that don't. Otherwise the suite measures the world before the change, and the more
+thoroughly it does so, the more convincing the false green.
+
+The generalization: a new contract creates two populations, conforming and non-conforming. Testing
+only one is a coverage gap that no amount of testing *within* that one repairs.
+
 ---
 
 ## Scorecard, for calibration
