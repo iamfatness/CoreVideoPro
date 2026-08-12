@@ -1148,6 +1148,208 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
   });
 });
 
+/**
+ * A `StateFs` that keeps its files where the test can read them, counts
+ * writes, and can hold ONE write open until the test releases it. The
+ * held-open write is what makes the "a change landed during the save" case
+ * (final review, I2) reachable at all: with a synchronous in-memory fs the
+ * window does not exist, which is why the whole persistence-writer half of
+ * this engine went unpinned.
+ */
+function recordingFs(): {
+  fs: StateFs;
+  files: Map<string, string>;
+  writeCount: () => number;
+  holdNextWrite: () => () => void;
+} {
+  const files = new Map<string, string>();
+  let writes = 0;
+  let gate: Promise<void> | null = null;
+
+  const fs: StateFs = {
+    readFile: async (p) => {
+      const v = files.get(p);
+      if (v === undefined) throw new Error(`ENOENT ${p}`);
+      return v;
+    },
+    writeFile: async (p, c) => {
+      writes += 1;
+      if (gate !== null) {
+        const held = gate;
+        gate = null;
+        await held;
+      }
+      files.set(p, c);
+    },
+    rename: async (from, to) => {
+      const v = files.get(from);
+      if (v !== undefined) {
+        files.set(to, v);
+        files.delete(from);
+      }
+    },
+    mkdir: async () => undefined
+  };
+
+  return {
+    fs,
+    files,
+    writeCount: () => writes,
+    holdNextWrite: () => {
+      let open: () => void = () => undefined;
+      gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return open;
+    }
+  };
+}
+
+/** Mirrors `showEngine.ts`'s module-private `SAVE_DEBOUNCE_MS`; advancing by it is what lets the next tick write. */
+const SAVE_DEBOUNCE_MS_FOR_TEST = 1000;
+
+/** Drain enough microtask turns for an in-flight `tick()` to reach its `await store.save(...)`. */
+async function drainTurns(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.resolve();
+  }
+}
+
+describe("ShowEngine persistence", () => {
+  /**
+   * Final review, I5: every restore test in this file seeds the state file
+   * with a JSON literal, so the READ half of persistence was well pinned
+   * while the WRITE half was not — `buildPersistedState` could write
+   * `manualBoxes: {}`, `lookId: null` or `overrides: {}` and the entire
+   * suite stayed green. `ManualBoxAssignments` surviving in state is one of
+   * the three obligations this branch discharges, and it was proven in one
+   * direction only.
+   *
+   * So: drive real operator inputs through the engine, assert on the bytes
+   * that actually reached disk, and then prove a SECOND engine restores
+   * them — the round trip, not either half alone.
+   */
+  it("writes the manual boxes, look, overrides and roster it will later restore", async () => {
+    const store = recordingFs();
+    const host = new MockHost();
+    const first = engine({ host, fs: store.fs });
+    const annKey = resolvePersonKey({ participantId: "p1", rawName: "Ann" });
+
+    first.onZoomEvent(joined("p1", "Ann"));
+    first.onZoomEvent(joined("p2", "Bo"));
+    first.setLook("teatime");
+    first.assignBox(1, 2);
+    first.setOverride({ personKey: annKey, displayName: "", location: "", role: "host" });
+    await first.tick();
+
+    const written = store.files.get("/state/show.json");
+    expect(written).toBeDefined();
+    const document = JSON.parse(written ?? "") as PersistedShowState;
+    expect(document.version).toBe(3);
+    expect(document.manualBoxes).toEqual({ 1: 2 });
+    expect(document.lookId).toBe("teatime");
+    expect(document.overrides[annKey]?.role).toBe("host");
+    expect(document.slots.seats[0]?.panelist.participantId).toBe("p1");
+    expect(document.gallery.cells).toBe(16);
+
+    // The round trip: a fresh engine over the same files, with no setLook()
+    // of its own, comes back to the same show.
+    const second = engine({ fs: store.fs });
+    expect(await second.restore()).toBe(true);
+    const restored = await second.tick();
+    expect(restored.manualBoxes).toEqual({ 1: 2 });
+    expect(restored.look?.lookId).toBe("teatime");
+    expect(restored.slots[0]?.panelist?.participantId).toBe("p1");
+    expect(restored.slots[0]?.panelist?.role).toBe("host");
+  });
+
+  /**
+   * Final review, I2. `pendingPersist` used to be cleared AFTER the await on
+   * the save, so an operator input that arrived while the write was in
+   * flight had its dirty mark wiped: acknowledged in memory, never written,
+   * lost on restart. Manual boxes are the exposed case — `assignBox` sets
+   * only that flag, while `setLook`/`setOverride` are accidentally rescued
+   * by `otherInputsChanged` re-dirtying it at the seat step.
+   *
+   * The rig holds the first write open, issues the assignment inside that
+   * window, then releases it. Without the fix the second write never
+   * happens no matter how many ticks follow.
+   */
+  it("does not drop a change that lands while the previous save is in flight", async () => {
+    const store = recordingFs();
+    let nowMs = 0;
+    const engineUnderTest = new ShowEngine({
+      config: registryLess,
+      host: new MockHost(),
+      clock: { now: () => nowMs },
+      store: new StateStore(registryLess.statePath, { fs: store.fs })
+    });
+
+    engineUnderTest.onZoomEvent(joined("p1", "Ann"));
+    engineUnderTest.setLook("teatime");
+
+    const release = store.holdNextWrite();
+    const firstTick = engineUnderTest.tick();
+    await drainTurns(); // the tick is now parked inside store.save()
+
+    engineUnderTest.assignBox(1, 2); // lands DURING the write
+
+    release();
+    await firstTick;
+    expect(store.writeCount()).toBe(1);
+    const afterFirst = JSON.parse(store.files.get("/state/show.json") ?? "") as PersistedShowState;
+    expect(afterFirst.manualBoxes).toEqual({}); // correctly not in the document that was already being written
+
+    nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+    await engineUnderTest.tick();
+    expect(store.writeCount()).toBe(2);
+    const afterSecond = JSON.parse(store.files.get("/state/show.json") ?? "") as PersistedShowState;
+    expect(afterSecond.manualBoxes).toEqual({ 1: 2 });
+  });
+
+  /**
+   * The other half of the same ordering decision: a write that FAILS must
+   * leave the change marked dirty, so the next tick past the debounce
+   * retries it rather than the fix for I2 turning a failed write into the
+   * same silent loss. The rejection itself propagates out of `tick()` by
+   * design — documented on `tick()`, and the host's to handle.
+   */
+  it("retries a change whose save failed, and propagates the failure", async () => {
+    const store = recordingFs();
+    let nowMs = 0;
+    let failNextWrite = true;
+    const failing: StateFs = {
+      ...store.fs,
+      writeFile: async (p, c) => {
+        if (failNextWrite) {
+          failNextWrite = false;
+          throw new Error("ENOSPC: no space left on device");
+        }
+        await store.fs.writeFile(p, c);
+      }
+    };
+    const engineUnderTest = new ShowEngine({
+      config: registryLess,
+      host: new MockHost(),
+      clock: { now: () => nowMs },
+      store: new StateStore(registryLess.statePath, { fs: failing })
+    });
+
+    engineUnderTest.onZoomEvent(joined("p1", "Ann"));
+    engineUnderTest.setLook("teatime");
+    engineUnderTest.assignBox(1, 2);
+    await expect(engineUnderTest.tick()).rejects.toThrow(/ENOSPC/);
+    expect(store.files.has("/state/show.json")).toBe(false);
+
+    nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+    await engineUnderTest.tick();
+    const document = JSON.parse(store.files.get("/state/show.json") ?? "") as PersistedShowState;
+    expect(document.manualBoxes).toEqual({ 1: 2 });
+    expect(document.lookId).toBe("teatime");
+  });
+});
+
 describe("ShowEngine host emission", () => {
   it("emits the full picture on the first tick", async () => {
     const host = new MockHost();

@@ -275,6 +275,12 @@ export class ShowEngine {
    * payload). Cleared only when `tick()` actually writes — NOT merely when
    * enough time has passed — so a change that arrives mid-debounce-window
    * is never lost, just delayed to the next tick that clears the window.
+   *
+   * "When it writes" means the instant the document is BUILT, before the
+   * `await` on `StateStore.save` (final review, I2): a change that lands
+   * while that write is in flight is not in the document being written, so
+   * it must leave the flag set for the next tick. Clearing it after the
+   * await dropped exactly those changes. A failed write re-sets it.
    */
   private pendingPersist = false;
 
@@ -727,6 +733,16 @@ export class ShowEngine {
    * consumer polling `revision()` can tell every tick apart. Host emission
    * runs every tick too, unconditionally — `hostCommands` is what decides
    * whether any given call is actually worth sending this time.
+   *
+   * **This promise can reject, and the host's tick loop must handle it.**
+   * No external integration can make it reject — that is the whole point of
+   * `pollMukana` being await-free — but the injected `StateFs` can: a full
+   * or read-only disk fails the debounced save and that failure propagates
+   * deliberately, because silently continuing would mean a show whose state
+   * has stopped persisting with nothing saying so. The engine stays usable
+   * (the dirty flag is restored, so the next tick past the debounce retries),
+   * but an unhandled rejection here kills the process under Node's defaults.
+   * A host must wrap its tick call and surface the failure to the operator.
    */
   async tick(): Promise<ShowSnapshot> {
     // Mukana polling (Task 9) runs FIRST, before anything else this tick
@@ -938,9 +954,33 @@ export class ShowEngine {
     const debounceElapsed =
       this.lastSaveTime === null || now - this.lastSaveTime >= SAVE_DEBOUNCE_MS;
     if (this.pendingPersist && debounceElapsed) {
-      await this.store.save(this.buildPersistedState());
-      this.lastSaveTime = now;
+      // Clear `pendingPersist` BEFORE the await, not after (final review,
+      // I2). The document handed to `save` is built synchronously here, so
+      // it captures state as of this instant; any operator input that lands
+      // DURING the write is not in it, and clearing the flag afterwards
+      // wiped exactly that input's dirty mark. Measured with a deferred
+      // `writeFile`: an `assignBox` issued inside the write window was
+      // acknowledged in memory and then never written — three later ticks
+      // with the debounce fully elapsed produced no second write, and a
+      // restart lost it. `assignBox`/`clearBox` are the exposed case
+      // because they set only this flag (`setLook`/`setOverride`/
+      // `clearOverride`/`onMukanaPanelists` also set `otherInputsChanged`,
+      // which the seat step re-dirties), and manual boxes are precisely the
+      // fallback the hands-feed degradation path depends on.
       this.pendingPersist = false;
+      this.lastSaveTime = now;
+      try {
+        await this.store.save(this.buildPersistedState());
+      } catch (error) {
+        // The write did not land, so this state is still unsaved: restore
+        // the dirty mark before propagating (see `tick()`'s doc comment —
+        // a `StateFs` failure is the host's to handle, not something this
+        // engine may swallow). `lastSaveTime` is deliberately NOT rolled
+        // back: a failing disk should be retried on the normal debounce
+        // cadence, not on every tick.
+        this.pendingPersist = true;
+        throw error;
+      }
     }
 
     // Host command emission (Task 8). `hostCommands` owns diffing this
