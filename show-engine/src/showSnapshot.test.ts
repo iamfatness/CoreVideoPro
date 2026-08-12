@@ -78,7 +78,8 @@ function input() {
       hands: { state: "ok" as const, consecutiveFailures: 0, detail: null },
       question: { state: "ok" as const, consecutiveFailures: 0, detail: null }
     },
-    unseated: [panelist("p9", "Cy")]
+    unseated: [panelist("p9", "Cy")],
+    restoreWarnings: ["persisted look \"gone\" is not defined in this show's configuration"]
   };
 }
 
@@ -172,6 +173,16 @@ describe("buildSnapshot", () => {
 
   it("publishes the unseated panelists", () => {
     expect(buildSnapshot(input()).unseated.map((p) => p.participantId)).toEqual(["p9"]);
+  });
+
+  it("publishes the restore warnings and does not share the array with its caller", () => {
+    const src = input();
+    const snap = buildSnapshot(src);
+    expect(snap.restoreWarnings).toEqual([
+      "persisted look \"gone\" is not defined in this show's configuration"
+    ]);
+    src.restoreWarnings.push("MUTATED");
+    expect(snap.restoreWarnings).toHaveLength(1);
   });
 
   it("does not share the unseated array or its panelists with its caller", () => {

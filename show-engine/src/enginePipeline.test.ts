@@ -789,7 +789,8 @@ const DISTINCTIVE_SNAPSHOT: ShowSnapshot = buildSnapshot({
     question: { state: "ok", consecutiveFailures: 0, detail: "still a detail" }
   },
   unseated: [distinctivePanelist("pB", "5555")],
-  pagingRefused: "paging refused: distinctive reason"
+  pagingRefused: "paging refused: distinctive reason",
+  restoreWarnings: ["distinctive restore warning"]
 });
 
 /**

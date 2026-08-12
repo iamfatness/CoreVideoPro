@@ -223,6 +223,16 @@ export class ShowEngine {
   private pagingRefused: string | null = null;
 
   /**
+   * What the last `restore()` had to discard from the persisted document,
+   * republished on every snapshot until another `restore()` replaces it
+   * (final review, I3/I4). Empty for a clean restore and for an engine that
+   * never restored. Replaced wholesale rather than appended to, so a second
+   * `restore()` cannot accumulate warnings about a document it no longer
+   * loaded. See `ShowSnapshot.restoreWarnings`.
+   */
+  private restoreWarnings: string[] = [];
+
+  /**
    * WHY `pagingRefused` was set, tracked separately from the human-readable
    * string so `tick()` can decide which refusals it's allowed to clear
    * without parsing its own message. `"fill"` (the active look's boxes
@@ -654,21 +664,67 @@ export class ShowEngine {
    * Load persisted state through the `StateStore` and apply it. Returns
    * `false` when there was nothing to load (no file, corrupt file, foreign
    * version — `StateStore.load` already treats all of those as "no state").
-   * A `LiveSlotsRestoreError` or `GalleryError` from a structurally-bad file
-   * that passed the store's shallow check is a real corruption and is left
-   * to propagate rather than silently downgrading to an empty roster.
+   *
+   * Three outcomes, not two (final review, I4). A `LiveSlotsRestoreError` or
+   * `GalleryError` from a structurally-INCOHERENT document — a seat whose
+   * `slot` disagrees with its index, an `assignments` array whose length
+   * disagrees with its own `cells` — is a real corruption and still
+   * propagates rather than silently downgrading to an empty roster. But a
+   * count that disagrees with THIS configuration is not corruption at all:
+   * `galleryCellCount` is `min(config.galleryCells, host.maxGalleryCells)`,
+   * so the same good state file restored on a host that renders fewer
+   * gallery cells — the spec's own degradation story — or after an operator
+   * edits `capacity`/`galleryCells`, threw `GalleryError` at startup and
+   * reported a legitimate config change as a broken file. Those two cases
+   * are now detected BEFORE `fromJSON` (by comparing the counts directly,
+   * rather than by catching an error and reading its message), the stale
+   * geometry is discarded, and the discard is reported on the published
+   * snapshot's `restoreWarnings` — recoverable, never silent.
+   *
+   * The same treatment covers a persisted `lookId` this configuration no
+   * longer defines (I3): adopting it left NO look resolving for the rest of
+   * the show with nothing warning, and re-persisted the phantom id so every
+   * later restart repeated it. `setLook` throws for the same input, so this
+   * path may not be quieter than that — it drops the id, drops the manual
+   * boxes that belonged to it (via the comparison below), says so, and
+   * marks the state dirty so the corrected document reaches disk.
    */
   async restore(): Promise<boolean> {
     const persisted = await this.store.load();
     if (persisted === null) return false;
 
-    const restoredSlots = LiveSlots.fromJSON(persisted.slots, {
-      capacity: this.config.capacity,
-      utilityPinBase: this.config.utilityPinBase
-    });
-    const restoredGallery = GalleryDirector.fromJSON(persisted.gallery, {
-      cells: this.galleryCellCount
-    });
+    const warnings: string[] = [];
+
+    let restoredSlots: LiveSlots;
+    if (persisted.slots.capacity === this.config.capacity) {
+      restoredSlots = LiveSlots.fromJSON(persisted.slots, {
+        capacity: this.config.capacity,
+        utilityPinBase: this.config.utilityPinBase
+      });
+    } else {
+      warnings.push(
+        `persisted roster capacity ${persisted.slots.capacity} does not match this show's configured capacity ` +
+          `${this.config.capacity}; the persisted seating was discarded and the roster starts empty`
+      );
+      restoredSlots = new LiveSlots({
+        capacity: this.config.capacity,
+        utilityPinBase: this.config.utilityPinBase
+      });
+    }
+
+    let restoredGallery: GalleryDirector;
+    if (persisted.gallery.cells === this.galleryCellCount) {
+      restoredGallery = GalleryDirector.fromJSON(persisted.gallery, {
+        cells: this.galleryCellCount
+      });
+    } else {
+      warnings.push(
+        `persisted gallery of ${persisted.gallery.cells} cell(s) does not match this show's ${this.galleryCellCount} ` +
+          `(configured gallery cells, clamped to what this host can render); the persisted arrangement was ` +
+          `discarded and the gallery starts empty`
+      );
+      restoredGallery = new GalleryDirector({ cells: this.galleryCellCount });
+    }
 
     this.liveSlots = restoredSlots;
     this.gallery = restoredGallery;
@@ -690,6 +746,20 @@ export class ShowEngine {
         .flatMap((slot) => (slot.panelist === null ? [] : [slot.panelist.participantId]))
     );
 
+    // A look that is no longer in this configuration cannot be adopted: it
+    // would resolve to nothing, forever, and be written straight back to
+    // disk on the next save (final review, I3). Dropped and reported.
+    const persistedLookId =
+      persisted.lookId !== null && this.lookById(persisted.lookId) === null
+        ? null
+        : persisted.lookId;
+    if (persistedLookId === null && persisted.lookId !== null) {
+      warnings.push(
+        `persisted look ${JSON.stringify(persisted.lookId)} is not defined in this show's configuration; ` +
+          `it was discarded along with the manual box assignments that belonged to it, and no look is selected`
+      );
+    }
+
     // Adopt the persisted look selection — but ONLY when nothing has
     // explicitly selected one yet (`selectedLookId` is still its field-init
     // `null`). Fix round 1, "also fix": before this line, `persisted.lookId`
@@ -701,7 +771,7 @@ export class ShowEngine {
     // contract `manualBoxes` below already depends on (see the restore
     // tests: `setLook("teatime")` then `restore()` from a file whose
     // `lookId` differs must still leave "teatime" selected).
-    this.selectedLookId = this.selectedLookId ?? persisted.lookId;
+    this.selectedLookId = this.selectedLookId ?? persistedLookId;
 
     // A restored assignment set belongs to whatever look was selected when
     // it was saved. Applying it under a different look would put whoever
@@ -713,6 +783,16 @@ export class ShowEngine {
     // pre-restore `setLook()` to a different look still discards them.
     this.manualBoxes =
       persisted.lookId === this.selectedLookId ? { ...persisted.manualBoxes } : {};
+
+    this.restoreWarnings = warnings;
+    if (warnings.length > 0) {
+      // Self-heal the document. Without this the discarded look id / stale
+      // geometry stays on disk until some unrelated change happens to
+      // trigger a save, so a restart could keep re-reading (and
+      // re-reporting) the same stale values — the "it never self-heals"
+      // half of I3.
+      this.pendingPersist = true;
+    }
 
     return true;
   }
@@ -1068,7 +1148,8 @@ export class ShowEngine {
       capabilities,
       health,
       unseated: this.unseatedPanelists,
-      pagingRefused: this.pagingRefused
+      pagingRefused: this.pagingRefused,
+      restoreWarnings: this.restoreWarnings
     });
   }
 

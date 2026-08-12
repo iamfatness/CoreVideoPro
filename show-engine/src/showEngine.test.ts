@@ -156,6 +156,47 @@ describe("ShowEngine construction", () => {
   });
 });
 
+/**
+ * A coherent, current-version state document for the `registryLess` config:
+ * capacity 8 with one seated panelist, a full 16-cell gallery, no look. The
+ * restore tests below spread it and change ONE thing, so each test's subject
+ * is the difference rather than a wall of re-typed JSON — and so "this
+ * document is otherwise fine" is true by construction.
+ */
+function persistedFixture(): PersistedShowState {
+  const seats: PersistedShowState["slots"]["seats"] = new Array(8).fill(null);
+  seats[0] = {
+    slot: 1,
+    panelist: {
+      participantId: "p1",
+      rawName: "Ann",
+      online: true,
+      videoOn: true,
+      audioOn: true,
+      handRaised: false,
+      zoomRole: 0,
+      displayName: "Ann",
+      location: "",
+      pin: null,
+      hasMukana: false,
+      role: "panelist",
+      personKey: resolvePersonKey({ participantId: "p1", rawName: "Ann" })
+    }
+  };
+  return {
+    version: 3,
+    slots: { version: 1, capacity: 8, seats },
+    overrides: {},
+    gallery: {
+      version: 1,
+      cells: 16,
+      assignments: Array.from({ length: 16 }, (_, index) => ({ cell: index + 1, slot: 0 }))
+    },
+    manualBoxes: {},
+    lookId: null
+  };
+}
+
 describe("ShowEngine.restore", () => {
   it("returns false when there is no state file", async () => {
     expect(await engine().restore()).toBe(false);
@@ -249,6 +290,101 @@ describe("ShowEngine.restore", () => {
       })
     });
     await expect(engine({ fs }).restore()).rejects.toThrow(LiveSlotsRestoreError);
+  });
+
+  /** The baseline the four "it warned" assertions below are only meaningful against: a clean restore says nothing. */
+  it("reports no restore warnings for a document that matches this configuration", async () => {
+    const fs = memoryFs({ "/state/show.json": JSON.stringify(persistedFixture()) });
+    const e = engine({ fs });
+    expect(await e.restore()).toBe(true);
+    expect(e.snapshot().restoreWarnings).toEqual([]);
+  });
+
+  /**
+   * Final review, I3. A look removed from the configuration used to be
+   * adopted verbatim: `lookById` then resolved nothing, so NO look resolved
+   * for the rest of the show, nothing warned, `pagingRefused` stayed null
+   * until an explicit `nextGuest`, the orphaned manual boxes were kept, and
+   * the phantom id was written straight back on the next save — so it never
+   * self-healed and every later restart repeated it. `setLook` throws for
+   * the same input; this path may not be quieter than that.
+   */
+  it("discards a persisted look this configuration no longer defines, loudly", async () => {
+    const store = recordingFs({
+      "/state/show.json": JSON.stringify({
+        ...persistedFixture(),
+        manualBoxes: { 1: 3 },
+        lookId: "retired-look"
+      })
+    });
+    const e = engine({ fs: store.fs });
+
+    expect(await e.restore()).toBe(true);
+    const warnings = e.snapshot().restoreWarnings;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/retired-look/);
+
+    const snap = await e.tick();
+    expect(snap.look).toBeNull();
+    // The manual boxes belonged to a look that no longer exists — carrying
+    // them to whatever look is selected next would seat the wrong person.
+    expect(snap.manualBoxes).toEqual({});
+    expect(snap.restoreWarnings).toEqual(warnings);
+
+    // …and it self-heals: the corrected document, not the phantom, is what
+    // the next restart will read.
+    const written = JSON.parse(store.files.get("/state/show.json") ?? "") as PersistedShowState;
+    expect(written.lookId).toBeNull();
+    expect(written.manualBoxes).toEqual({});
+  });
+
+  /**
+   * Final review, I4. `galleryCellCount` is
+   * `min(config.galleryCells, host.maxGalleryCells)`, so the SAME good state
+   * file restored on a host that renders fewer gallery cells — the spec's
+   * own degradation story — threw `GalleryError` out of `restore()` and
+   * reported a legitimate configuration change as a corrupt file. The stale
+   * geometry is discarded and reported instead; everything that does not
+   * depend on the cell count survives.
+   */
+  it("starts a fresh gallery when the persisted cell count no longer matches this host", async () => {
+    const fs = memoryFs({
+      "/state/show.json": JSON.stringify({
+        ...persistedFixture(),
+        manualBoxes: { 1: 3 },
+        lookId: "teatime"
+      })
+    });
+    const e = engine({ host: new MockHost({ maxGalleryCells: 4 }), fs });
+
+    expect(await e.restore()).toBe(true);
+    const snap = e.snapshot();
+    expect(snap.restoreWarnings).toHaveLength(1);
+    expect(snap.restoreWarnings[0]).toMatch(/gallery/i);
+    expect(snap.gallery).toHaveLength(4);
+    // The rest of the document was not collateral damage.
+    expect(snap.manualBoxes).toEqual({ 1: 3 });
+    expect(snap.slots[0]?.panelist?.participantId).toBe("p1");
+  });
+
+  /** The roster twin of the gallery case: an operator edit to `capacity` is a config change, not a corrupt file. */
+  it("starts a fresh roster when the persisted capacity no longer matches this configuration", async () => {
+    const fs = memoryFs({
+      "/state/show.json": JSON.stringify({
+        ...persistedFixture(),
+        slots: { version: 1, capacity: 4, seats: new Array(4).fill(null) }
+      })
+    });
+    const e = engine({ fs });
+
+    expect(await e.restore()).toBe(true);
+    const snap = e.snapshot();
+    expect(snap.restoreWarnings).toHaveLength(1);
+    expect(snap.restoreWarnings[0]).toMatch(/capacity/i);
+    expect(snap.slots).toHaveLength(8);
+    expect(snap.slots.every((slot) => slot.panelist === null)).toBe(true);
+    // The gallery had nothing to do with the capacity change.
+    expect(snap.gallery).toHaveLength(16);
   });
 
   /**
@@ -1156,13 +1292,13 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
  * window does not exist, which is why the whole persistence-writer half of
  * this engine went unpinned.
  */
-function recordingFs(): {
+function recordingFs(seed: Record<string, string> = {}): {
   fs: StateFs;
   files: Map<string, string>;
   writeCount: () => number;
   holdNextWrite: () => () => void;
 } {
-  const files = new Map<string, string>();
+  const files = new Map(Object.entries(seed));
   let writes = 0;
   let gate: Promise<void> | null = null;
 

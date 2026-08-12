@@ -48,6 +48,21 @@ export type ShowSnapshot = {
    * typed refusal rather than a throw or a silent no-op (spec §4).
    */
   pagingRefused: string | null;
+  /**
+   * Everything `ShowEngine.restore()` had to DISCARD from the persisted
+   * document to start this show, one operator-readable sentence each; empty
+   * for a clean restore and for an engine that never restored at all.
+   *
+   * This is the "loud, never silent" channel for the recoverable half of
+   * restore (final review, I3/I4). Genuine corruption still throws out of
+   * `restore()`; a persisted look id this configuration no longer defines,
+   * or a persisted geometry that no longer matches this config and host, is
+   * a legitimate operator action rather than a broken file — but recovering
+   * from it silently means an operator whose look selection or gallery
+   * arrangement quietly did not come back, with nothing anywhere saying
+   * why. Rendered wherever `pagingRefused` is rendered.
+   */
+  restoreWarnings: string[];
 };
 
 export type BuildSnapshotInput = {
@@ -67,6 +82,14 @@ export type BuildSnapshotInput = {
   unseated: readonly Panelist[];
   /** Optional so existing callers building this input keep compiling; omitted means null. */
   pagingRefused?: string | null;
+  /**
+   * REQUIRED, unlike `pagingRefused` above: a required field is what makes
+   * `enginePipeline.test.ts`'s `DISTINCTIVE_SNAPSHOT` guard a compile error
+   * for a newly added snapshot node instead of a silently unguarded one,
+   * which is the property the whole-branch review named as the reason that
+   * fixture is the right shape.
+   */
+  restoreWarnings: readonly string[];
 };
 
 function clonePanelist(panelist: Panelist): Panelist {
@@ -184,6 +207,7 @@ export function buildSnapshot(input: BuildSnapshotInput): ShowSnapshot {
     capabilities: cloneCapabilities(input.capabilities),
     health: cloneHealth(input.health),
     unseated: input.unseated.map(clonePanelist),
-    pagingRefused: input.pagingRefused ?? null
+    pagingRefused: input.pagingRefused ?? null,
+    restoreWarnings: [...input.restoreWarnings]
   };
 }
