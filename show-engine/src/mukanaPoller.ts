@@ -40,8 +40,12 @@ import type { ShowIntegrationsConfig } from "./config.js";
  * Three rather than one: `nextDelayMs` is the interval between poll STARTS,
  * so a response that merely takes a little longer than one interval is
  * ordinary slowness on a live network, not a hang. This is a report-only
- * downgrade — it never cancels the fetch, never starts a competing one, and
- * is withdrawn the moment that fetch settles and writes real health.
+ * downgrade — it never cancels the fetch, never starts a competing one.
+ * It is NOT withdrawn the instant that fetch finally settles (Task 3): one
+ * good answer right after a hang is not proof the endpoint has stopped
+ * being marginal, so `MukanaClient.markHung`/`applyHealth` hold the
+ * endpoint `failing` for `MUKANA_RECOVERY_SETTLES` consecutive healthy
+ * settles before trusting it again — see that constant's own doc comment.
  */
 const MUKANA_HUNG_POLL_INTERVALS = 3;
 
@@ -265,7 +269,17 @@ export class MukanaPoller {
    * carries `outstandingMs` (fix round 1) so a caller can report exactly how
    * stale the hang is, not just that it's hung — the same operator-facing
    * detail (`"no response after ${outstandingMs}ms..."`) this reported
-   * before the carve-out.
+   * before the carve-out. That detail is now built and recorded by
+   * `MukanaClient.markHung` itself (Task 3) — called here, the ONE place a
+   * fresh hang is ever detected — rather than left for a caller to
+   * reconstruct: `markHung` both writes the SAME string into `client.health`
+   * (so a caller reading `client.health` directly, without going through
+   * this method's own return value, sees the identical answer) and arms the
+   * hang-recovery hysteresis hold (`MUKANA_RECOVERY_SETTLES`) that outlives
+   * this endpoint's busy window — the part `hungEndpoints()`'s own
+   * busy-gated view can never see once the fetch finally settles. This
+   * method's own return shape and busy-gated behavior are otherwise
+   * UNCHANGED from before Task 3.
    */
   hungEndpoints(): readonly HungMukanaPoll[] {
     const now = this.clock.now();
@@ -274,6 +288,7 @@ export class MukanaPoller {
       if (!this.mukanaPollBusy[endpoint]) continue;
       const outstandingMs = now - this.lastMukanaPollAt[endpoint];
       if (outstandingMs < this.client.nextDelayMs(endpoint) * MUKANA_HUNG_POLL_INTERVALS) continue;
+      this.client.markHung(endpoint, outstandingMs);
       hung.push({ endpoint, outstandingMs });
     }
     return hung;

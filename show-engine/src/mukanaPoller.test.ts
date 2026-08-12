@@ -21,8 +21,9 @@
 
 import { describe, expect, it } from "vitest";
 import type { Clock } from "./clock.js";
-import type { ShowIntegrationsConfig } from "./config.js";
-import type { MukanaClient, MukanaEndpoint } from "./mukanaClient.js";
+import type { MukanaConfig, ShowIntegrationsConfig } from "./config.js";
+import { MukanaClient } from "./mukanaClient.js";
+import type { FetchResponse, MukanaEndpoint } from "./mukanaClient.js";
 import { MukanaPoller } from "./mukanaPoller.js";
 
 /** Matches Task 9's brief: all three integrations enabled, matching the moved tests' original rig. */
@@ -212,4 +213,358 @@ describe("MukanaPoller", () => {
 
     expect(rejections).toEqual([]);
   });
+});
+
+/**
+ * Task 3: closes the hung-endpoint obligation the previous plan carried
+ * forward. Two defects in that plan's fix:
+ *
+ *   1. No hysteresis — one good answer right after a hang flipped
+ *      `boxFill`/availability straight back, so an endpoint hovering near
+ *      the hung threshold could flap the guest boxes every poll cycle.
+ *   2. The `MUKANA_HUNG_POLL_INTERVALS` constant's lower bound was unpinned
+ *      — the existing "ordinary slowness is not an outage" test asserted at
+ *      `outstanding == 0` (the instant a fetch STARTS), which stays green
+ *      even at `MUKANA_HUNG_POLL_INTERVALS = 1`.
+ *
+ * These tests use a REAL `MukanaClient` + `MukanaPoller` pair (not the
+ * `fakeClient()` double above) because the hysteresis bookkeeping under
+ * test — `MukanaClient.markHung`/`applyHealth` — lives inside
+ * `MukanaClient` itself; a fake here would just re-test a hand-written copy
+ * of the production logic instead of the logic.
+ */
+
+/**
+ * A REAL `MukanaClient` + `MukanaPoller` pair wired to a controllable
+ * `hands` fetch. Only `hands` is enabled (`registry`/`questionFeed` off) so
+ * the shared `fetch` only ever needs to answer one endpoint, and every
+ * settle below is deliberately routed through this ONE endpoint so a test
+ * can track its capability as a simple `"ok" -> available` / anything else
+ * `-> unavailable` binary (mirroring `resolveCapability` in
+ * `capabilities.ts`, which this file deliberately does not import — the
+ * property below is about `MukanaPoller`/`MukanaClient`'s OWN published
+ * health, not `ShowEngine`'s wiring of it, which stays untouched by Task 3
+ * by design: see `MukanaPoller.hungEndpoints`'s own doc comment).
+ */
+function realHandsRig(intervalMs: number) {
+  const config: MukanaConfig = {
+    baseUrl: "https://example.com/rest.php",
+    event: "test",
+    panelistsIntervalMs: intervalMs,
+    handsIntervalMs: intervalMs,
+    questionIntervalMs: intervalMs,
+    maxBackoffMs: 60_000
+  };
+  const pending: Array<{
+    resolve: (response: FetchResponse) => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  const fetch = (): Promise<FetchResponse> =>
+    new Promise((resolve, reject) => {
+      pending.push({ resolve, reject });
+    });
+  const client = new MukanaClient(config, { fetch });
+  const clock = movingClock();
+  const integrations: ShowIntegrationsConfig = {
+    registry: false,
+    handsQueue: true,
+    questionFeed: false
+  };
+  const poller = new MukanaPoller({ client, clock, integrations });
+
+  return {
+    client,
+    poller,
+    clock,
+    pendingCount: (): number => pending.length,
+    settleHealthy: (): void => {
+      const next = pending.shift();
+      next?.resolve({ ok: true, status: 200, text: async () => "4242,5555\n1383\nNONE" });
+    },
+    settleInvalid: (): void => {
+      const next = pending.shift();
+      next?.resolve({ ok: false, status: 503, text: async () => "nope" });
+    }
+  };
+}
+
+/** `"ok"` is `available`, anything else (`"failing"`/`"dormant"`) is `unavailable` — `resolveCapability`'s own binary, mirrored here for `hands` only (every rig above force-enables it, nothing else). */
+function handsCapability(client: MukanaClient): "available" | "unavailable" {
+  return client.healthFor("hands").state === "ok" ? "available" : "unavailable";
+}
+
+/**
+ * Runs one full hands poll cycle: starts the (assumed due) fetch, then
+ * waits `latencyMultiplier` x `intervalMs` before settling it healthily —
+ * checking `poller.hungEndpoints()` (and sampling capability) every
+ * `checkpointMs` along the way, the way a real `ShowEngine.tick()` would
+ * re-check health on every tick regardless of whether THIS poll just
+ * started. A single check right at the end would miss a hang that both
+ * crosses the threshold AND settles within the same cycle (`multiplier`
+ * just over 3, e.g. 3.1x) — the exact marginal case defect 1 is about.
+ *
+ * Pads the clock back up to a full `intervalMs` since THIS cycle's poll
+ * started before returning, so the NEXT `runCycle` call's own `poll()`
+ * always finds its due-check satisfied, independent of how fast this one
+ * settled (`latencyMultiplier < 1` settles before a full interval has
+ * elapsed since the poll started).
+ *
+ * Throws (loudly, not a silent no-op) if `poll()` didn't actually start a
+ * fetch — the due-check failing here would otherwise make the whole cycle
+ * vacuous: `settleHealthy()` would resolve nothing, health would never
+ * change, and every assertion downstream would pass for the wrong reason.
+ */
+async function runCycle(
+  rig: ReturnType<typeof realHandsRig>,
+  intervalMs: number,
+  latencyMultiplier: number,
+  checkpointMs: number,
+  onSample: () => void
+): Promise<void> {
+  const before = rig.pendingCount();
+  rig.poller.poll();
+  if (rig.pendingCount() !== before + 1) {
+    throw new Error("runCycle: poll() did not start a new hands fetch — due-check was not satisfied");
+  }
+  const pollStartedAt = rig.clock.now();
+  const settleAtMs = latencyMultiplier * intervalMs;
+  let elapsed = 0;
+  while (elapsed < settleAtMs) {
+    const step = Math.min(checkpointMs, settleAtMs - elapsed);
+    rig.clock.advance(step);
+    elapsed += step;
+    rig.poller.hungEndpoints();
+    onSample();
+  }
+  rig.settleHealthy();
+  await flush();
+  onSample();
+  const sincePollStart = rig.clock.now() - pollStartedAt;
+  if (sincePollStart < intervalMs) {
+    rig.clock.advance(intervalMs - sincePollStart);
+  }
+}
+
+describe("MukanaPoller hung-poll threshold pinning (Task 3, fix round 2 obligation 2)", () => {
+  /**
+   * The lower-bound pin. The previous plan's own "ordinary slowness is not
+   * an outage" test checked this at `outstanding == 0` — the instant the
+   * fetch STARTS, before any real time has passed — which cannot tell
+   * `MUKANA_HUNG_POLL_INTERVALS = 3` from `= 1`: both leave a
+   * zero-outstanding poll looking fine. This test waits a REAL 2500ms
+   * (1.25x a 2000ms interval — genuinely slow, but well under 3x) before
+   * checking, so it reds exactly when the constant collapses to 1 and no
+   * longer covers that wait.
+   */
+  it("keeps hands available across ordinary slowness well under the hung threshold", async () => {
+    const rig = realHandsRig(2000);
+    rig.poller.poll();
+    rig.settleHealthy();
+    await flush();
+    expect(handsCapability(rig.client)).toBe("available");
+
+    rig.clock.advance(2000); // due
+    rig.poller.poll();
+    rig.clock.advance(2500); // outstanding = 2500ms, 1.25x the interval — still < 3x
+    const hung = rig.poller.hungEndpoints();
+
+    expect(hung).toEqual([]);
+    expect(handsCapability(rig.client)).toBe("available");
+  });
+
+  /**
+   * The upper-bound pin (companion to the lower-bound test above): at the
+   * shipped threshold of 3, a poll outstanding 6001ms against a 2000ms
+   * interval (3x + 1ms) IS reported hung. Reds at
+   * `MUKANA_HUNG_POLL_INTERVALS = 30` (6001ms is nowhere near 30x2000ms =
+   * 60000ms), pinning the constant can't drift upward unnoticed either.
+   */
+  it("reports hands hung and unavailable once outstanding for the hung threshold", async () => {
+    const rig = realHandsRig(2000);
+    rig.poller.poll();
+    rig.settleHealthy();
+    await flush();
+    expect(handsCapability(rig.client)).toBe("available");
+
+    rig.clock.advance(2000); // due
+    rig.poller.poll();
+    rig.clock.advance(6001); // 3 x 2000ms + 1ms
+    const hung = rig.poller.hungEndpoints();
+
+    expect(hung).toEqual([{ endpoint: "hands", outstandingMs: 6001 }]);
+    expect(rig.client.healthFor("hands")).toEqual({
+      state: "failing",
+      consecutiveFailures: 0,
+      detail: "no response after 6001ms with a poll still in flight"
+    });
+    expect(handsCapability(rig.client)).toBe("unavailable");
+  });
+});
+
+describe("MukanaClient hang-recovery hysteresis (Task 3, fix round 2 obligation 1)", () => {
+  /**
+   * The direct pin for `MUKANA_RECOVERY_SETTLES = 2`. Reds at
+   * `MUKANA_RECOVERY_SETTLES = 1`: with that mutation, the hung fetch's own
+   * eventual healthy answer (the FIRST settle after degradation) would
+   * already be enough, and `handsCapability` would read `"available"`
+   * immediately — contradicting the `"unavailable"` assertion right after
+   * that settle, below.
+   */
+  it("holds hands degraded through exactly one healthy settle, and clears it on the second", async () => {
+    const rig = realHandsRig(2000);
+    rig.poller.poll();
+    rig.settleHealthy();
+    await flush();
+    expect(handsCapability(rig.client)).toBe("available");
+
+    rig.clock.advance(2000);
+    rig.poller.poll();
+    rig.clock.advance(6001);
+    rig.poller.hungEndpoints(); // detects the hang, arms the recovery hold
+    expect(handsCapability(rig.client)).toBe("unavailable");
+
+    // The hung fetch FINALLY answers — settle #1 of the recovery streak.
+    rig.settleHealthy();
+    await flush();
+    expect(rig.client.healthFor("hands").state).toBe("failing");
+    expect(handsCapability(rig.client)).toBe("unavailable");
+
+    // A second, on-time, healthy poll cycle — settle #2. ONLY now is the
+    // endpoint trusted again.
+    rig.clock.advance(2000);
+    rig.poller.poll();
+    rig.clock.advance(2000);
+    rig.settleHealthy();
+    await flush();
+    expect(rig.client.healthFor("hands")).toEqual({
+      state: "ok",
+      consecutiveFailures: 0,
+      detail: null
+    });
+    expect(handsCapability(rig.client)).toBe("available");
+  });
+
+  /** A settle that FAILS mid-hold breaks the streak: the next healthy settle after it is only settle #1 again, not a continuation. */
+  it("resets the recovery streak on a failed settle mid-hold", async () => {
+    const rig = realHandsRig(2000);
+    rig.poller.poll();
+    rig.settleHealthy();
+    await flush();
+
+    rig.clock.advance(2000);
+    rig.poller.poll();
+    rig.clock.advance(6001);
+    rig.poller.hungEndpoints();
+    rig.settleHealthy(); // settle #1 of 2
+    await flush();
+    expect(handsCapability(rig.client)).toBe("unavailable");
+
+    rig.clock.advance(2000);
+    rig.poller.poll();
+    rig.settleInvalid(); // breaks the streak — NOT settle #2
+    await flush();
+    expect(handsCapability(rig.client)).toBe("unavailable");
+    // The failed settle also bumped `consecutiveFailures` to 1, so the NEXT
+    // due-check needs the backed-off delay (2000 x 2^1 = 4000ms), not the
+    // plain interval — `nextDelayMs` backoff is orthogonal to, and stacks
+    // with, the recovery hold under test here.
+    rig.clock.advance(4000);
+    rig.poller.poll();
+
+    // Two MORE consecutive healthy settles are required from here, not one.
+    rig.settleHealthy();
+    await flush();
+    expect(handsCapability(rig.client)).toBe("unavailable"); // only 1 of 2 since the reset
+
+    rig.clock.advance(2000);
+    rig.poller.poll();
+    rig.settleHealthy();
+    await flush();
+    expect(handsCapability(rig.client)).toBe("available"); // 2 of 2 since the reset
+  });
+});
+
+/**
+ * THE property: the published `handsQueue` capability never changes state
+ * more than once per `MUKANA_RECOVERY_SETTLES`-worth of settles. Quantified
+ * — deliberately, because the previous plan's version of this guarantee
+ * held latency constant (either "settles instantly" or "never settles at
+ * all") and so never exercised the marginal band right around the hung
+ * threshold where the false-positive flapping (defect 1) actually lives.
+ *
+ * Ranged over, per the brief:
+ *   - every latency multiplier named there — 0.5x/1x/2x (comfortably under
+ *     the 3x hung threshold), 2.9x (just under), 3.1x (just over), 10x (a
+ *     genuine hang) — as the latency of ONE poll cycle that eventually
+ *     answers CORRECTLY, just slowly (the exact shape of defect 1: "An
+ *     endpoint answering correctly after ~6.5s... flips boxFill
+ *     queue -> manual -> queue");
+ *   - crossed with recovering after exactly 1 total healthy settle and
+ *     exactly 2 (the shipped `MUKANA_RECOVERY_SETTLES`) — the first
+ *     settle after degradation IS the slow cycle's own eventual answer, so
+ *     "recover after 1" runs no further cycles and "recover after 2" runs
+ *     exactly one more, on-time, healthy one.
+ *
+ * The invariant under test: for a genuinely slow-but-correct endpoint
+ * (latency < 3x), the capability must NEVER go unavailable at all — zero
+ * transitions, the false-positive half of defect 1. For a genuinely hung
+ * one (>= 3x), it goes unavailable EXACTLY once, and comes back available
+ * only once `MUKANA_RECOVERY_SETTLES` total healthy settles have landed —
+ * never earlier, never oscillating in between.
+ */
+describe("published hands capability never flaps faster than the recovery window (Task 3 property)", () => {
+  const INTERVAL_MS = 2000;
+  const CHECKPOINT_MS = 250;
+  const LATENCY_MULTIPLIERS = [0.5, 1, 2, 2.9, 3.1, 10];
+
+  for (const latencyMultiplier of LATENCY_MULTIPLIERS) {
+    for (const totalRecoverySettles of [1, 2] as const) {
+      it(`latency ${latencyMultiplier}x the interval, recovering after ${totalRecoverySettles} total settle(s)`, async () => {
+        const rig = realHandsRig(INTERVAL_MS);
+        const log: Array<"available" | "unavailable"> = [];
+        const sample = (): void => {
+          log.push(handsCapability(rig.client));
+        };
+
+        // Warm up to a genuinely healthy baseline before the cycle under test.
+        rig.poller.poll();
+        rig.settleHealthy();
+        await flush();
+        sample();
+        expect(log[0]).toBe("available");
+
+        // The cycle under test — settle #1 of the recovery streak, if this
+        // one degrades the endpoint at all.
+        rig.clock.advance(INTERVAL_MS); // due
+        await runCycle(rig, INTERVAL_MS, latencyMultiplier, CHECKPOINT_MS, sample);
+
+        // Additional on-time, healthy cycles up to `totalRecoverySettles`
+        // total (the first settle was the cycle above).
+        for (let settled = 1; settled < totalRecoverySettles; settled += 1) {
+          // eslint-disable-next-line no-await-in-loop
+          await runCycle(rig, INTERVAL_MS, 1, CHECKPOINT_MS, sample);
+        }
+
+        let transitions = 0;
+        for (let i = 1; i < log.length; i += 1) {
+          if (log[i] !== log[i - 1]) transitions += 1;
+        }
+        const wentUnavailable = log.includes("unavailable");
+
+        if (latencyMultiplier < 3) {
+          expect(wentUnavailable).toBe(false);
+          expect(transitions).toBe(0);
+          expect(log[log.length - 1]).toBe("available");
+        } else {
+          // MUKANA_RECOVERY_SETTLES is 2 — hardcoded here (not imported)
+          // deliberately, so a mutation to that constant changes what
+          // ACTUALLY happens without changing what this test EXPECTS.
+          const recovered = totalRecoverySettles >= 2;
+          expect(wentUnavailable).toBe(true);
+          expect(transitions).toBe(recovered ? 2 : 1);
+          expect(log[log.length - 1]).toBe(recovered ? "available" : "unavailable");
+        }
+      });
+    }
+  }
 });

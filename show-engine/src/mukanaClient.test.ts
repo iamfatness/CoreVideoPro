@@ -93,6 +93,30 @@ describe("MukanaClient", () => {
     expect(client.nextDelayMs("panelists")).toBe(60000);
   });
 
+  /**
+   * Task 3, the abort contract: `MukanaClient` must actually PASS a signal
+   * to the injected fetch, not merely accept one in `FetchLike`'s type.
+   * `FetchLike`'s own doc comment explains why this matters beyond typing —
+   * without a host fetch that honors `signal`, a hung endpoint's promise
+   * never settles, `consecutiveFailures` never leaves 0, backoff never
+   * engages, and `MukanaPoller`'s hung-poll rule is the only thing left
+   * standing between the show and a frozen queue. This test only proves the
+   * plumbing half (a signal is actually handed to `fetch`) — honoring it is
+   * the host's job, which `FetchLike`'s type cannot enforce.
+   */
+  it("passes an AbortSignal derived from the endpoint's interval to the injected fetch", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const client = new MukanaClient(config, {
+      fetch: async (_url, init) => {
+        capturedSignal = init?.signal;
+        return { ok: true, status: 200, text: async () => panelistsBody };
+      }
+    });
+    await client.fetchPanelists();
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal?.aborted).toBe(false);
+  });
+
   it("resets backoff after a recovery", async () => {
     let body = "nope";
     let ok = false;
