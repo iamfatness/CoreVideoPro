@@ -1578,10 +1578,8 @@ describe("ShowEngine host emission", () => {
 /**
  * Test rig for Task 9: an engine wired to a REAL `MukanaClient` over a
  * controllable `FetchLike`, a mutable injected clock, and a recorded list of
- * every URL fetched (recorded at fetch-START time, not settle time — this is
- * what lets the scheduling test below assert on "did tick() start a poll"
- * without caring whether that poll has resolved yet). All three integrations
- * are enabled, matching Task 9's brief.
+ * every URL fetched (recorded at fetch-START time, not settle time). All
+ * three integrations are enabled, matching Task 9's brief.
  *
  * `hangHands: true` makes every `hands` fetch return a promise that never
  * settles on its own; each one queues its resolver, and `resolveHands()`
@@ -1596,10 +1594,16 @@ describe("ShowEngine host emission", () => {
  * with the fetch's own continuation microtasks, NOT a stable property of
  * this engine's design. Before `flush()` existed, the polling tests were
  * accidentally coupled to that interleaving (and, with a busy gate added,
- * some of them broke outright — see `pollMukana`'s doc comment). `flush()`
- * decouples every test below from `MukanaClient`'s internal shape: call it
- * after any `await e.tick()` whose test cares whether an in-flight fetch
- * has settled.
+ * some of them broke outright — see `MukanaPoller.poll`'s doc comment).
+ * `flush()` decouples every test below from `MukanaClient`'s internal shape:
+ * call it after any `await e.tick()` whose test cares whether an in-flight
+ * fetch has settled.
+ *
+ * Pure polling-MECHANISM tests (the due-check, the busy gate, the
+ * non-blocking/rejection-safety guarantees) live in `mukanaPoller.test.ts`
+ * now, exercising `MukanaPoller` directly (Task 1's carve-out) — what stays
+ * here is the integration-level guarantee that `ShowEngine.tick()` wires
+ * `MukanaPoller`'s outcomes into engine state exactly as before.
  */
 /**
  * A two-guest-box look whose boxes fill from the hands queue (the `boxFill`
@@ -1726,109 +1730,12 @@ function mukanaEngine(options: { hangHands?: boolean; looks?: readonly unknown[]
 }
 
 describe("ShowEngine Mukana polling", () => {
-  it("polls an endpoint only once its next delay has elapsed", async () => {
-    const { e, fetches, advance, flush } = mukanaEngine();
-    await e.tick();
-    await flush();
-    const first = fetches.length;
-    await e.tick();
-    await flush();
-    expect(fetches.length).toBe(first);
-    advance(10_000);
-    await e.tick();
-    await flush();
-    expect(fetches.length).toBeGreaterThan(first);
-  });
-
   /**
-   * The invariant this must break on: awaiting a fetch inside tick(). A hung
-   * registry must not stall the show loop — spec §2, normative.
-   */
-  it("completes a tick while a fetch is still in flight", async () => {
-    const { e, resolveHands } = mukanaEngine({ hangHands: true });
-    await expect(e.tick()).resolves.toBeDefined();
-    await expect(e.tick()).resolves.toBeDefined();
-    resolveHands();
-  });
-
-  /**
-   * Fix round 1, Finding 3/4/5: the busy gate this test pins is what makes
-   * "one in-flight promise per endpoint" a real invariant instead of a
-   * comment. Drives a hung `hands` fetch, then advances the clock and ticks
-   * repeatedly — `nextDelayMs` alone would call every one of those ticks
-   * "due," so without the gate a fresh overlapping fetch starts on each one
-   * (the reviewer's probe: 20 concurrent hung fetches over 20 ticks, none
-   * retired — unbounded concurrent load against an already-struggling
-   * registry, and settle-order-not-start-order application that can let a
-   * stale fetch overwrite a fresher one). With the gate, exactly one fetch
-   * for `hands` is ever outstanding while the first hasn't settled.
-   */
-  it("never starts a second fetch for an endpoint while one is still in flight", async () => {
-    const { e, fetches, advance } = mukanaEngine({ hangHands: true });
-    await e.tick();
-    const handsCallsAfterFirst = fetches.filter((url) => url.includes("req=hands")).length;
-    expect(handsCallsAfterFirst).toBe(1);
-
-    for (let i = 0; i < 5; i += 1) {
-      advance(10_000);
-      // eslint-disable-next-line no-await-in-loop
-      await e.tick();
-    }
-    const handsCallsAfterMany = fetches.filter((url) => url.includes("req=hands")).length;
-    expect(handsCallsAfterMany).toBe(1);
-  });
-
-  /**
-   * Fix round 1, Finding 6: `MukanaClient.request()` calls `parse(body)`
-   * OUTSIDE its own try/catch, so a `FetchLike` that violates its own
-   * contract (here: `text()` resolving to something other than a string)
-   * makes the fetch's returned promise REJECT rather than resolve to an
-   * `invalid` outcome. `pollMukana`'s fire-and-forget `.then()` calls must
-   * supply a rejection handler for every one of the three fetches, or this
-   * becomes an unhandled promise rejection — under Node's default
-   * `--unhandled-rejections=throw`, that kills the process: precisely the
-   * "a third-party service takes the show down" failure this whole
-   * capability model exists to prevent. Verified by actually listening for
-   * `unhandledRejection` for the duration of the test, not by inference.
-   *
-   * Node defers its "was this rejection ever handled" check past a
-   * microtask-queue drain — `flush()` alone (confirmed: it let the test
-   * pass while vitest's OWN top-level handler still separately reported
-   * the same rejection as an unhandled test-run error) is not enough to
-   * observe it reliably from inside the test. One real macrotask turn
-   * (`setImmediate`) after the flushes is what actually lands inside
-   * Node's check window before the listener is removed.
-   */
-  it("never leaves an unhandled promise rejection when a fetch's promise rejects", async () => {
-    const { e, advance, flush, breakHandsBody } = mukanaEngine();
-    breakHandsBody();
-
-    const rejections: unknown[] = [];
-    const onUnhandledRejection = (reason: unknown): void => {
-      rejections.push(reason);
-    };
-    process.on("unhandledRejection", onUnhandledRejection);
-    try {
-      advance(10_000);
-      await e.tick();
-      await flush();
-      await e.tick();
-      await flush();
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-    } finally {
-      process.off("unhandledRejection", onUnhandledRejection);
-    }
-
-    expect(rejections).toEqual([]);
-  });
-
-  /**
-   * Final review, I6: the test above proves a rejection handler EXISTS (it
-   * observes `unhandledRejection`), but not what its body does — replacing
-   * that body with `() => {}` left the whole suite green. The body's real
-   * job is clearing `mukanaPollBusy`, and losing that clear strands the
+   * Final review, I6: `mukanaPoller.test.ts` proves a rejection handler
+   * EXISTS on `MukanaPoller.poll` (it observes `unhandledRejection`
+   * directly against the poller), but not what its body does — replacing
+   * that body with `() => {}` left the whole suite green there. The body's
+   * real job is clearing the busy gate, and losing that clear strands the
    * endpoint for the lifetime of the process: the one-in-flight gate never
    * re-opens, no later fetch ever starts, and the feed is dead for the rest
    * of the show with the client's health frozen at whatever it last said.

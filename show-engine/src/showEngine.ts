@@ -29,9 +29,9 @@ import type { PositionAssigner } from "./speakerRecency.js";
 import { FiloAssigner } from "./speakerRecency.js";
 import { shouldFollowSpeaker } from "./speakerGate.js";
 import type { ShowEngineConfig } from "./config.js";
-import { MUKANA_ENDPOINTS } from "./mukanaClient.js";
 import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
 import { MukanaRegistry, type DormantOutcome, type MukanaOutcome, type QuestionOutcome } from "./mukanaParse.js";
+import { MukanaPoller } from "./mukanaPoller.js";
 import { LiveSlots } from "./liveSlots.js";
 import { GalleryDirector } from "./galleryDirector.js";
 import { OverrideDb, type OverrideRecord } from "./overrideDb.js";
@@ -77,30 +77,6 @@ import type { PersonKey } from "./personKey.js";
  */
 const SAVE_DEBOUNCE_MS = 1000;
 
-/**
- * How many of an endpoint's OWN poll intervals a single in-flight fetch may
- * be outstanding before this engine stops believing that endpoint's last
- * reported health (final review, I1).
- *
- * `MukanaClient` writes health only when a request settles, so an endpoint
- * that answered once and then hung would otherwise keep reporting `ok` —
- * and therefore `available` — over a feed that has been frozen for the rest
- * of the show. The engine cannot cancel the fetch (no timers, spec §2: time
- * enters only through the injected `Clock`), and the one-in-flight-per-
- * endpoint gate means no newer fetch will ever contradict the stale record.
- * What the engine CAN do is refuse to keep asserting usability it has no
- * current evidence for: past this many intervals the endpoint is reported
- * `failing`, which resolves to `unavailable` and engages the same manual
- * fallback a 503 would.
- *
- * Three rather than one: `nextDelayMs` is the interval between poll STARTS,
- * so a response that merely takes a little longer than one interval is
- * ordinary slowness on a live network, not a hang. This is a report-only
- * downgrade — it never cancels the fetch, never starts a competing one, and
- * is withdrawn the moment that fetch settles and writes real health.
- */
-const MUKANA_HUNG_POLL_INTERVALS = 3;
-
 /** True for the two roles `OverrideDb.assignExclusiveRole` knows how to enforce. */
 function isExclusiveOverrideRole(role: Role): role is "host" | "reader" {
   return (EXCLUSIVE_ROLES as readonly Role[]).includes(role);
@@ -123,18 +99,6 @@ function pinAtSlot(slots: readonly Slot[], slotNumber: number | null): string | 
   if (slotNumber === null) return null;
   const entry = slots.find((candidate) => candidate.slot === slotNumber);
   return entry?.panelist?.pin ?? null;
-}
-
-/**
- * Turn a rejection reason from a Mukana fetch promise into the same
- * `string` shape `MukanaClient.fail` uses for a caught transport error —
- * `pollMukana`'s rejection handlers use this so a rejected fetch (a
- * contract-violating `FetchLike`, or anything else outside what
- * `MukanaClient.request`'s own try/catch covers) still records an ordinary
- * `invalid` outcome instead of an unhandled promise rejection.
- */
-function mukanaRejectionReason(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export type ShowEngineDeps = {
@@ -178,6 +142,7 @@ export class ShowEngine {
   private readonly clock: Clock;
   private readonly store: StateStore;
   private readonly mukanaClient: MukanaClient | undefined;
+  private readonly mukanaPoller: MukanaPoller | undefined;
   private readonly assigner: PositionAssigner;
   private readonly galleryCellCount: number;
 
@@ -308,62 +273,6 @@ export class ShowEngine {
    */
   private pendingSpeakerId: string | null = null;
 
-  /**
-   * Wall-clock time (per the injected `Clock`) each endpoint's poll was last
-   * STARTED, keyed so `nextDelayMs`'s own interval/backoff math (which the
-   * engine deliberately adds no policy on top of) is checked against a fresh
-   * anchor every time a fetch is kicked off — never against when it
-   * SETTLED, since a poll that's still in flight must not look perpetually
-   * "not due yet" once its interval has genuinely elapsed. `-Infinity`
-   * makes every endpoint due on the very first tick that reaches it.
-   */
-  private readonly lastMukanaPollAt: Record<MukanaEndpoint, number> = {
-    panelists: Number.NEGATIVE_INFINITY,
-    hands: Number.NEGATIVE_INFINITY,
-    question: Number.NEGATIVE_INFINITY
-  };
-
-  /**
-   * Whether a fetch for this endpoint is currently in flight — gates
-   * starting a NEW one in `pollMukana`. Set the moment a fetch starts,
-   * cleared in that SAME fetch's `.then()`/rejection handler, never
-   * anywhere else. This is what makes "one in-flight promise per endpoint"
-   * a real invariant rather than a comment: without it, a slow or hung
-   * endpoint gets a fresh overlapping fetch every time its interval elapses
-   * (unbounded concurrent requests against an already-struggling registry,
-   * and — because outcomes are applied in SETTLE order, not START order — a
-   * later-settling but earlier-started fetch can overwrite a fresher one
-   * with stale data, e.g. the hands queue jumping backwards to an older
-   * guest). `nextDelayMs`'s backoff-after-failure ceiling bounds the RATE a
-   * healthy-but-slow endpoint gets hit; this bounds the COUNT in flight at
-   * once to exactly one, which backoff alone does not.
-   */
-  private readonly mukanaPollBusy: Record<MukanaEndpoint, boolean> = {
-    panelists: false,
-    hands: false,
-    question: false
-  };
-
-  /**
-   * The outcome of a hands/question fetch that has settled since it was
-   * started, waiting for the next `tick()` to notice and apply it — `null`
-   * once applied, or while no fetch for that endpoint has settled yet.
-   * `tick()` never `await`s the fetch itself (spec §2: no external
-   * integration failure may block a tick); a background `.then()` attached
-   * the moment the fetch is started writes here as its ONLY job, so writing
-   * it can never race `tick()`'s own synchronous read-and-clear at the top
-   * of the next `tick()` call — both run on the same single JS thread, and
-   * a `.then()` callback body itself never runs concurrently with `tick()`'s
-   * own execution. Panelists outcomes reuse the existing `onMukanaPanelists`
-   * apply path instead of a slot like this one, because that path also has
-   * to flip `otherInputsChanged`/`pendingPersist`, which must happen before
-   * `tick()` captures `otherInputsChanged` for this tick's seat-step
-   * decision — see the top of `tick()`.
-   */
-  private panelistsPollSettled: MukanaOutcome | null = null;
-  private handsPollSettled: HandsOutcome | DormantOutcome | null = null;
-  private questionPollSettled: QuestionOutcome | null = null;
-
   constructor(deps: ShowEngineDeps) {
     if (deps.mukana !== undefined && deps.config.mukana === null) {
       throw new Error(
@@ -377,6 +286,14 @@ export class ShowEngine {
     this.clock = deps.clock;
     this.store = deps.store;
     this.mukanaClient = deps.mukana;
+    this.mukanaPoller =
+      deps.mukana === undefined
+        ? undefined
+        : new MukanaPoller({
+            client: deps.mukana,
+            clock: deps.clock,
+            integrations: deps.config.integrations
+          });
     this.assigner = deps.assigner ?? new FiloAssigner({ capacity: deps.config.capacity });
 
     this.galleryCellCount = Math.min(deps.config.galleryCells, deps.host.capabilities().maxGalleryCells);
@@ -816,27 +733,34 @@ export class ShowEngine {
    *
    * **This promise can reject, and the host's tick loop must handle it.**
    * No external integration can make it reject — that is the whole point of
-   * `pollMukana` being await-free — but the injected `StateFs` can: a full
-   * or read-only disk fails the debounced save and that failure propagates
-   * deliberately, because silently continuing would mean a show whose state
-   * has stopped persisting with nothing saying so. The engine stays usable
-   * (the dirty flag is restored, so the next tick past the debounce retries),
-   * but an unhandled rejection here kills the process under Node's defaults.
-   * A host must wrap its tick call and surface the failure to the operator.
+   * `MukanaPoller.poll` being await-free — but the injected `StateFs` can: a
+   * full or read-only disk fails the debounced save and that failure
+   * propagates deliberately, because silently continuing would mean a show
+   * whose state has stopped persisting with nothing saying so. The engine
+   * stays usable (the dirty flag is restored, so the next tick past the
+   * debounce retries), but an unhandled rejection here kills the process
+   * under Node's defaults. A host must wrap its tick call and surface the
+   * failure to the operator.
    */
   async tick(): Promise<ShowSnapshot> {
-    // Mukana polling (Task 9) runs FIRST, before anything else this tick
-    // reads. A settled panelists outcome applies through the existing
+    // Mukana polling (Task 9, carved into `MukanaPoller` in Task 1) runs
+    // FIRST, before anything else this tick reads: `poll()` starts any due,
+    // non-busy fetch, then `drain()` returns whatever settled since the last
+    // tick. A settled panelists outcome applies through the existing
     // `onMukanaPanelists`, which flips `otherInputsChanged`/`pendingPersist`
     // — those must be set before `otherChanged` is captured immediately
     // below, or a registry update that just landed would not affect the
     // seat step until a tick later than it actually could. Hands/question
     // outcomes replace `this.queue`/`this.question` directly, which the
     // derived-layers step further down reads — so this must also run
-    // before that. See `pollMukana`'s own doc comment for the scheduling
-    // and non-blocking rules themselves.
-    if (this.mukanaClient !== undefined) {
-      this.pollMukana(this.mukanaClient);
+    // before that. See `MukanaPoller.poll`'s own doc comment for the
+    // scheduling and non-blocking rules themselves.
+    if (this.mukanaPoller !== undefined) {
+      this.mukanaPoller.poll();
+      const outcomes = this.mukanaPoller.drain();
+      if (outcomes.panelists !== null) this.onMukanaPanelists(outcomes.panelists);
+      if (outcomes.hands !== null) this.applyHandsOutcome(outcomes.hands);
+      if (outcomes.question !== null) this.applyQuestionOutcome(outcomes.question);
     }
 
     const rosterCommitted = this.zoomIngest.commit();
@@ -1177,130 +1101,6 @@ export class ShowEngine {
   }
 
   /**
-   * Mukana polling (Task 9, corrected in fix round 1): apply whatever
-   * settled since the previous tick, then start any endpoint whose poll is
-   * due AND not already in flight.
-   *
-   * Non-blocking by construction, never by discipline someone could get
-   * wrong later: this method contains no `await` at all. Every fetch is
-   * started and immediately `.then()`-attached without awaiting the
-   * returned promise, so a hung registry can only ever delay when its OWN
-   * outcome gets applied — never delay this or any other tick from
-   * returning (spec §2, normative).
-   *
-   * `mukanaPollBusy[endpoint]` gates starting a NEW fetch while one is
-   * still outstanding — see that field's own doc comment for what breaks
-   * without it (unbounded concurrent requests to a hung endpoint, and
-   * settle-order-not-start-order data landing stale-over-fresh). An earlier
-   * revision of this method shipped WITHOUT the gate, reasoning that
-   * settling a fetch takes several real microtask turns and each `tick()`
-   * call is itself only one or two of those turns, so a busy gate could
-   * leave an endpoint marked busy across ticks whose clock delta alone
-   * would call it due. That reasoning was fitted to the test rig, not to
-   * production: it measured true only because the ORIGINAL test rig never
-   * let the microtask queue drain between `tick()` calls. In real time a
-   * fetch settles in milliseconds against a multi-second polling interval —
-   * millions of microtask turns of headroom — so the busy flag is cleared
-   * long before the next poll is ever due. The rig now drains explicitly
-   * (`flush()` in `showEngine.test.ts`) instead of the engine papering over
-   * a fixture gap with a correctness gap of its own.
-   *
-   * A rejected fetch — a `FetchLike` that resolves `text()` to something
-   * other than a string, or any other contract violation `MukanaClient`
-   * doesn't already catch internally — must never become an unhandled
-   * promise rejection (spec §2's whole point: a broken third-party
-   * integration cannot be allowed to take the process down). Every
-   * `.then()` below supplies BOTH handlers; the rejection handler clears
-   * `mukanaPollBusy` exactly like the success path and records an
-   * `invalid` outcome so a rejecting endpoint still surfaces as a normal
-   * failure rather than silently going quiet or crashing the show.
-   *
-   * Endpoint gating mirrors `config.integrations`: an endpoint whose
-   * integration is off is never polled, matching the rest of this
-   * package's rule that an unconfigured integration must never silently
-   * reach a URL nobody set (`config.ts`'s own `parseMukana` doc comment).
-   */
-  private pollMukana(client: MukanaClient): void {
-    if (this.panelistsPollSettled !== null) {
-      const outcome = this.panelistsPollSettled;
-      this.panelistsPollSettled = null;
-      this.onMukanaPanelists(outcome);
-    }
-    if (this.handsPollSettled !== null) {
-      const outcome = this.handsPollSettled;
-      this.handsPollSettled = null;
-      this.applyHandsOutcome(outcome);
-    }
-    if (this.questionPollSettled !== null) {
-      const outcome = this.questionPollSettled;
-      this.questionPollSettled = null;
-      this.applyQuestionOutcome(outcome);
-    }
-
-    const now = this.clock.now();
-
-    if (
-      this.config.integrations.registry &&
-      !this.mukanaPollBusy.panelists &&
-      this.isMukanaPollDue("panelists", now, client)
-    ) {
-      this.lastMukanaPollAt.panelists = now;
-      this.mukanaPollBusy.panelists = true;
-      client.fetchPanelists().then(
-        (outcome) => {
-          this.mukanaPollBusy.panelists = false;
-          this.panelistsPollSettled = outcome;
-        },
-        (error: unknown) => {
-          this.mukanaPollBusy.panelists = false;
-          this.panelistsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
-        }
-      );
-    }
-    if (
-      this.config.integrations.handsQueue &&
-      !this.mukanaPollBusy.hands &&
-      this.isMukanaPollDue("hands", now, client)
-    ) {
-      this.lastMukanaPollAt.hands = now;
-      this.mukanaPollBusy.hands = true;
-      client.fetchHands().then(
-        (outcome) => {
-          this.mukanaPollBusy.hands = false;
-          this.handsPollSettled = outcome;
-        },
-        (error: unknown) => {
-          this.mukanaPollBusy.hands = false;
-          this.handsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
-        }
-      );
-    }
-    if (
-      this.config.integrations.questionFeed &&
-      !this.mukanaPollBusy.question &&
-      this.isMukanaPollDue("question", now, client)
-    ) {
-      this.lastMukanaPollAt.question = now;
-      this.mukanaPollBusy.question = true;
-      client.fetchQuestion().then(
-        (outcome) => {
-          this.mukanaPollBusy.question = false;
-          this.questionPollSettled = outcome;
-        },
-        (error: unknown) => {
-          this.mukanaPollBusy.question = false;
-          this.questionPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
-        }
-      );
-    }
-  }
-
-  /** Whether `endpoint`'s next poll is due: `nextDelayMs` already folds interval + backoff; this adds no policy of its own. */
-  private isMukanaPollDue(endpoint: MukanaEndpoint, now: number, client: MukanaClient): boolean {
-    return now - this.lastMukanaPollAt[endpoint] >= client.nextDelayMs(endpoint);
-  }
-
-  /**
    * Apply one hands-queue fetch outcome. Only `"data"` replaces
    * `this.queue` — `dormant`/`invalid` leave the last-good queue in place;
    * `MukanaClient` already recorded the health transition for
@@ -1327,11 +1127,11 @@ export class ShowEngine {
   /**
    * The current Mukana health snapshot, or the all-failing stand-in when
    * there is no client at all — with one engine-side correction the client
-   * cannot make for itself: an endpoint whose in-flight poll has been
-   * outstanding for `MUKANA_HUNG_POLL_INTERVALS` of its own intervals is
-   * reported `failing` regardless of what its last settled response said
-   * (final review, I1 — see that constant's doc comment for why, and
-   * `FetchLike`'s for the timeout obligation this backstops).
+   * cannot make for itself: an endpoint `this.mukanaPoller.hungEndpoints()`
+   * reports (its in-flight poll has been outstanding beyond the hung
+   * threshold) is reported `failing` regardless of what its last settled
+   * response said (final review, I1 — see `MukanaPoller`'s own doc comment
+   * for why, and `FetchLike`'s for the timeout obligation this backstops).
    *
    * Safe to mutate in place: `MukanaClient.health` builds a fresh object
    * with fresh per-endpoint records on every read. The registry-less
@@ -1341,18 +1141,14 @@ export class ShowEngine {
    */
   private mukanaHealth(): Record<MukanaEndpoint, MukanaHealth> {
     const client = this.mukanaClient;
-    if (client === undefined) return NO_REGISTRY_HEALTH;
+    if (client === undefined || this.mukanaPoller === undefined) return NO_REGISTRY_HEALTH;
 
     const health = client.health;
-    const now = this.clock.now();
-    for (const endpoint of MUKANA_ENDPOINTS) {
-      if (!this.mukanaPollBusy[endpoint]) continue;
-      const outstandingMs = now - this.lastMukanaPollAt[endpoint];
-      if (outstandingMs < client.nextDelayMs(endpoint) * MUKANA_HUNG_POLL_INTERVALS) continue;
+    for (const endpoint of this.mukanaPoller.hungEndpoints()) {
       health[endpoint] = {
         state: "failing",
         consecutiveFailures: health[endpoint].consecutiveFailures,
-        detail: `no response after ${outstandingMs}ms with a poll still in flight`
+        detail: "no response with a poll still in flight"
       };
     }
     return health;
