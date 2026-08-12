@@ -15,39 +15,21 @@
  */
 
 import type { Clock } from "./clock.js";
-import { MUKANA_ENDPOINTS } from "./mukanaClient.js";
+import { MUKANA_ENDPOINTS, MUKANA_HUNG_POLL_INTERVALS } from "./mukanaClient.js";
 import type { MukanaClient, MukanaEndpoint } from "./mukanaClient.js";
 import type { DormantOutcome, MukanaOutcome, QuestionOutcome } from "./mukanaParse.js";
 import type { HandsOutcome } from "./handsQueue.js";
 import type { ShowIntegrationsConfig } from "./config.js";
 
-/**
- * How many of an endpoint's OWN poll intervals a single in-flight fetch may
- * be outstanding before this poller stops believing that endpoint's last
- * reported health (final review, I1).
- *
- * `MukanaClient` writes health only when a request settles, so an endpoint
- * that answered once and then hung would otherwise keep reporting `ok` —
- * and therefore `available` — over a feed that has been frozen for the rest
- * of the show. The poller cannot cancel the fetch (no timers, spec §2: time
- * enters only through the injected `Clock`), and the one-in-flight-per-
- * endpoint gate means no newer fetch will ever contradict the stale record.
- * What the poller CAN do is refuse to keep asserting usability it has no
- * current evidence for: past this many intervals the endpoint is reported
- * via `hungEndpoints()`, which `ShowEngine` resolves to `failing`/
- * `unavailable` the same way a 503 would.
- *
- * Three rather than one: `nextDelayMs` is the interval between poll STARTS,
- * so a response that merely takes a little longer than one interval is
- * ordinary slowness on a live network, not a hang. This is a report-only
- * downgrade — it never cancels the fetch, never starts a competing one.
- * It is NOT withdrawn the instant that fetch finally settles (Task 3): one
- * good answer right after a hang is not proof the endpoint has stopped
- * being marginal, so `MukanaClient.markHung`/`applyHealth` hold the
- * endpoint `failing` for `MUKANA_RECOVERY_SETTLES` consecutive healthy
- * settles before trusting it again — see that constant's own doc comment.
- */
-const MUKANA_HUNG_POLL_INTERVALS = 3;
+// `MUKANA_HUNG_POLL_INTERVALS` moved to `mukanaClient.ts` in fix round 1: it
+// now ALSO sizes `MukanaClient.request`'s own `AbortSignal.timeout`
+// deadline, and the two had to share one definition rather than risk
+// drifting apart the way they already had once (that drift — the abort
+// firing at 1x the interval while this poller's own hung threshold stayed
+// at 3x — was the fix round 1 bug: for any host that honors `signal`, the
+// fetch always aborted before a poll could ever be reported hung here, so
+// the hung path (and the hysteresis built on it) was unreachable). See the
+// constant's own doc comment in `mukanaClient.ts` for the full account.
 
 /**
  * Turn a rejection reason from a Mukana fetch promise into the same
@@ -69,8 +51,8 @@ export type PollOutcomes = {
 };
 
 /**
- * One hung endpoint, as reported by `hungEndpoints()` — the endpoint name
- * PLUS how long (per the injected `Clock`) its in-flight poll has been
+ * One hung endpoint, as reported by `detectHungEndpoints()` — the endpoint
+ * name PLUS how long (per the injected `Clock`) its in-flight poll has been
  * outstanding. `ShowEngine.mukanaHealth` needs the millisecond figure, not
  * just the fact of hanging, to publish the same operator-facing detail text
  * ("no response after ${outstandingMs}ms...") this reported before the
@@ -276,12 +258,23 @@ export class MukanaPoller {
    * (so a caller reading `client.health` directly, without going through
    * this method's own return value, sees the identical answer) and arms the
    * hang-recovery hysteresis hold (`MUKANA_RECOVERY_SETTLES`) that outlives
-   * this endpoint's busy window — the part `hungEndpoints()`'s own
-   * busy-gated view can never see once the fetch finally settles. This
-   * method's own return shape and busy-gated behavior are otherwise
-   * UNCHANGED from before Task 3.
+   * this endpoint's busy window — the part this method's own busy-gated view
+   * can never see once the fetch finally settles. This method's own return
+   * shape and busy-gated behavior are otherwise UNCHANGED from before Task 3.
+   *
+   * NAMED `detect...`, not a bare noun like `hungEndpoints` (fix round 1,
+   * Minor 3), because this is a QUERY THAT MUTATES: every call can write
+   * health and arm a fresh recovery hold via `markHung`, not just read
+   * state. That is reachable from outside the tick loop too —
+   * `ShowEngine.adjustPage` (behind `nextGuest`/`prevGuest`) calls
+   * `mukanaHealth()`, which calls this — so an operator paging through
+   * guests can, as a side effect, arm a recovery hold slightly earlier than
+   * the next tick would have. Harmless today (the hold's effect is
+   * identical either way, and paging happens far less often than ticking),
+   * but the name says what the method actually does rather than implying a
+   * plain getter.
    */
-  hungEndpoints(): readonly HungMukanaPoll[] {
+  detectHungEndpoints(): readonly HungMukanaPoll[] {
     const now = this.clock.now();
     const hung: HungMukanaPoll[] = [];
     for (const endpoint of MUKANA_ENDPOINTS) {

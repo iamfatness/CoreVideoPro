@@ -30,6 +30,44 @@ export type FetchResponse = {
 };
 
 /**
+ * How many of an endpoint's OWN poll intervals a fetch may run before this
+ * package treats it as hung — the ONE constant behind two independent
+ * mechanisms that MUST agree, which is why it lives here rather than split
+ * between them.
+ *
+ * Fix round 1, the abort-deadline bug: this used to be defined only in
+ * `mukanaPoller.ts`, entirely unrelated to the abort deadline below, which
+ * fired at 1x the interval — a full 2x BEFORE a poll could ever be reported
+ * hung. For any host that actually honors `signal` per `FetchLike`'s
+ * contract, that made the hung path — and the hysteresis built on top of
+ * it — UNREACHABLE: the fetch always aborted first, settled `failing` with
+ * no recovery hold armed (`fail()` only called `breakRecoveryStreak`, which
+ * manages an EXISTING hold, never arms a fresh one), and an endpoint
+ * hovering near the threshold flapped `available -> unavailable ->
+ * available` every single poll cycle — the exact defect this task exists
+ * to eliminate, just relocated onto a path with no hysteresis at all.
+ *
+ * Both paths that can now reach this threshold arm the SAME recovery hold:
+ * - `MukanaClient.request` derives its `AbortSignal.timeout` deadline from
+ *   it directly (`MUKANA_HUNG_POLL_INTERVALS * intervalFor(endpoint)`), so
+ *   a conforming host's own abort lands AT the hung threshold instead of an
+ *   interval before it, and routes through `failFromHang` (armed), not
+ *   `fail` (not armed).
+ * - `MukanaPoller.detectHungEndpoints` uses it to decide when an in-flight
+ *   poll — one a NON-conforming host is still holding open past the
+ *   deadline — counts as hung, via `markHung` (also armed).
+ *
+ * Which of the two "wins" the race at the exact threshold no longer matters
+ * for correctness: both degrade, and both require `MUKANA_RECOVERY_SETTLES`
+ * consecutive healthy settles to recover.
+ *
+ * Three rather than one: `nextDelayMs` is the interval between poll
+ * STARTS, so a response that merely takes a little longer than one
+ * interval is ordinary slowness on a live network, not a hang.
+ */
+export const MUKANA_HUNG_POLL_INTERVALS = 3;
+
+/**
  * Consecutive HEALTHY settles a hung-and-since-degraded endpoint must post
  * before `MukanaClient` trusts it as `"ok"` again (Task 3, closing the
  * obligation the previous plan's final review carried forward). Without a
@@ -38,11 +76,14 @@ export type FetchResponse = {
  * endpoint that answers correctly around ~6.5s (near the hung threshold at a
  * 2s interval) would flap `boxFill` `queue → manual → queue` on literally
  * every poll cycle, which on air is visible flickering of who is on screen.
- * `MukanaPoller.hungEndpoints()` arms this window the moment it decides a
- * poll is hung (`markHung`, below); `applyHealth` spends it down one healthy
- * settle at a time and resets it to the full window on any settle that
- * ISN'T healthy — the requirement is genuinely CONSECUTIVE good answers, not
- * merely this many somewhere in the endpoint's history.
+ * `MukanaPoller.detectHungEndpoints()` arms this window the moment it
+ * decides a poll is hung (`markHung`, below) — and `MukanaClient.request`
+ * arms it just the same when ITS OWN abort deadline (also
+ * `MUKANA_HUNG_POLL_INTERVALS` x the interval) fires first
+ * (`failFromHang`). `applyHealth` spends it down one healthy settle at a
+ * time and resets it to the full window on any settle that ISN'T healthy —
+ * the requirement is genuinely CONSECUTIVE good answers, not merely this
+ * many somewhere in the endpoint's history.
  *
  * 2 rather than 1: one good answer proves the fetch itself completed, but
  * not that the endpoint has stopped being marginal — a single lucky
@@ -56,12 +97,21 @@ export const MUKANA_RECOVERY_SETTLES = 2;
  * that honors `init.signal`** — abort the request (or otherwise settle its
  * returned promise) once the signal fires — because nothing in this
  * package can cancel it any other way. `MukanaClient.request` derives an
- * `AbortSignal` from the endpoint's OWN interval on every call
- * (`AbortSignal.timeout`, never the backoff-inflated `nextDelayMs`) and
- * passes it through as `init.signal`; the engine itself still holds no
- * timer of its own (its only notion of time is the injected `Clock`, read
- * inside `tick()`), so honouring that signal is entirely the host's
- * responsibility — this package cannot enforce it from inside.
+ * `AbortSignal` from `MUKANA_HUNG_POLL_INTERVALS` x the endpoint's OWN
+ * interval on every call (`AbortSignal.timeout`, never the
+ * backoff-inflated `nextDelayMs`) and passes it through as `init.signal`.
+ *
+ * **This is the one real wall-clock timer this package holds** (fix round
+ * 1 ruling, kept deliberately: expressing a deadline needs a timer
+ * somewhere, and pushing it out to every host adapter's own `fetch` would
+ * just move the identical obligation three times over instead of removing
+ * it). It is created with `AbortSignal.timeout`, which Node unrefs
+ * automatically — it cannot keep the process alive or leak, and it is
+ * fire-and-forget: nothing in this package ever reads back "how much time
+ * is left." Everywhere else, time still enters only through the injected
+ * `Clock` (read inside `tick()`); honouring the signal itself remains
+ * entirely the host's responsibility, since this package cannot enforce it
+ * from inside once the fetch has been handed off.
  *
  * Why it matters, concretely: without a fetch that honors `signal`, a hung
  * endpoint's promise never settles, so `consecutiveFailures` never leaves
@@ -81,9 +131,9 @@ export const MUKANA_RECOVERY_SETTLES = 2;
  * a never-answered endpoint is never reported as usable, and the engine
  * independently degrades an endpoint whose poll has been outstanding for
  * several of its own intervals (`ShowEngine.mukanaHealth`, fed by
- * `MukanaPoller.hungEndpoints`, which calls `markHung` below). Honouring
- * the signal is still required for genuine recovery: without it the
- * endpoint's health can only ever get stuck, never come back.
+ * `MukanaPoller.detectHungEndpoints`, which calls `markHung` below).
+ * Honouring the signal is still required for genuine recovery: without it
+ * the endpoint's health can only ever get stuck, never come back.
  */
 export type FetchLike = (url: string, init?: { signal?: AbortSignal }) => Promise<FetchResponse>;
 
@@ -180,38 +230,38 @@ export class MukanaClient {
   }
 
   /**
-   * Told by `MukanaPoller.hungEndpoints()` the moment it decides a poll has
-   * been outstanding long enough to call hung (Task 3, closing the previous
-   * plan's carried-forward obligation). Two things happen together, so the
-   * hysteresis DECISION and the health record it produces can never drift
-   * apart the way they would if a caller tried to layer this on top of
-   * `health` from outside:
+   * Told by `MukanaPoller.detectHungEndpoints()` the moment it decides a
+   * poll has been outstanding long enough to call hung (Task 3, closing the
+   * previous plan's carried-forward obligation) — the IN-FLIGHT half of
+   * the hung path; `failFromHang` (below) is the other half, for a
+   * conforming host whose fetch aborts at the SAME threshold before the
+   * poller's own busy-gated check ever runs. Two things happen together,
+   * so the hysteresis DECISION and the health record it produces can never
+   * drift apart the way they would if a caller tried to layer this on top
+   * of `health` from outside:
    *
-   * 1. The endpoint's health is written `failing`, with the SAME
-   *    operator-facing string `ShowEngine.mukanaHealth`'s own (unchanged,
-   *    redundant-while-in-flight) override builds from the identical
-   *    `outstandingMs` — Task 1's review already caught this exact string
-   *    being collapsed once during a carve-out, so it is deliberately
-   *    duplicated here rather than centralized, to avoid reaching back into
-   *    `showEngine.ts` for this task (see `MukanaPoller.hungEndpoints`'s own
-   *    doc comment). `consecutiveFailures` is preserved, not incremented —
-   *    nothing has actually failed a settle here, the fetch is still
-   *    outstanding.
+   * 1. The endpoint's health is written `failing`, with the exact
+   *    operator-facing string `ShowEngine.mukanaHealth` reads straight back
+   *    out of `client.health` (fix round 1: it used to rebuild this same
+   *    string a second time from `outstandingMs`, redundantly — now this
+   *    IS the only place it's built, so there is nothing left to drift).
+   *    `consecutiveFailures` is preserved, not incremented — nothing has
+   *    actually failed a settle here, the fetch is still outstanding.
    * 2. `recoverySettlesRemaining[endpoint]` is armed to the full
    *    `MUKANA_RECOVERY_SETTLES` window. This is what survives past the
    *    moment the hung fetch finally settles — which a busy-gated view like
-   *    `hungEndpoints()` cannot see once the promise resolves and the
+   *    `detectHungEndpoints()` cannot see once the promise resolves and the
    *    endpoint stops being "in flight." `applyHealth` (below) consults it
    *    on every subsequent settle.
    *
    * Idempotent while already degraded: calling this again for the SAME
    * still-hung fetch (which happens every time a caller re-checks
-   * `hungEndpoints()` before it settles) never REDUCES the hold — only a
-   * genuine settle in `applyHealth` does that — but it also never leaves a
-   * PARTIALLY-recovered hold (`recoverySettlesRemaining` < the full window)
-   * sitting there: a fresh hang detection re-arms it to the full window,
-   * because a hang that recurs before recovery finished is not evidence the
-   * endpoint has actually settled down.
+   * `detectHungEndpoints()` before it settles) never REDUCES the hold —
+   * only a genuine settle in `applyHealth` does that — but it also never
+   * leaves a PARTIALLY-recovered hold (`recoverySettlesRemaining` < the
+   * full window) sitting there: a fresh hang detection re-arms it to the
+   * full window, because a hang that recurs before recovery finished is
+   * not evidence the endpoint has actually settled down.
    */
   markHung(endpoint: MukanaEndpoint, outstandingMs: number): void {
     this.state[endpoint] = {
@@ -285,12 +335,17 @@ export class MukanaClient {
     options?: { detectDormant?: boolean }
   ): Promise<T | DormantOutcome> {
     const url = `${this.config.baseUrl}?event=${encodeURIComponent(this.config.event)}&req=${endpoint}`;
-    // Derived from the endpoint's OWN interval, never the backoff-inflated
-    // `nextDelayMs` — see `FetchLike`'s doc comment for the obligation this
-    // places on the host (a fetch that doesn't honor `signal` gets
-    // degradation but never recovery) and why: this package holds no timer
-    // of its own to fall back on.
-    const signal = AbortSignal.timeout(this.intervalFor(endpoint));
+    // `MUKANA_HUNG_POLL_INTERVALS` x the endpoint's OWN interval — aligned
+    // with `MukanaPoller`'s own hung threshold (fix round 1: this used to
+    // be just 1x the interval, a full 2x SHORTER than the hung threshold,
+    // which meant a conforming host's fetch always aborted before the hung
+    // path — and its hysteresis — could ever engage; see
+    // `MUKANA_HUNG_POLL_INTERVALS`'s own doc comment). This IS a real
+    // wall-clock timer (the package's one and only — see `FetchLike`'s doc
+    // comment); it never reads the injected `Clock`, because "abort after
+    // N milliseconds of REAL time" is not something a simulated clock can
+    // drive.
+    const signal = AbortSignal.timeout(MUKANA_HUNG_POLL_INTERVALS * this.intervalFor(endpoint));
 
     let body: string;
     try {
@@ -301,6 +356,21 @@ export class MukanaClient {
       body = await response.text();
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      // `signal.aborted` here means OUR OWN deadline is what ended this
+      // request, not an ordinary/fast transport error — and that deadline
+      // is now the SAME `MUKANA_HUNG_POLL_INTERVALS`-scaled duration
+      // `MukanaPoller.detectHungEndpoints` uses to call a poll hung. So an
+      // abort is, by construction, always a hang — it must arm the
+      // recovery hold exactly like `markHung` does (`failFromHang`, not
+      // plain `fail`), or a conforming host that aborts right at the
+      // threshold would settle `failing` with NO hold armed and flip
+      // straight back to `"ok"` on its very next healthy settle: the same
+      // flapping this task exists to eliminate, just moved onto the abort
+      // path (fix round 1 — `fail()`'s `breakRecoveryStreak` alone only
+      // manages an EXISTING hold, it never arms a fresh one).
+      if (signal.aborted) {
+        return this.failFromHang<T>(endpoint, detail);
+      }
       return this.fail<T>(endpoint, detail);
     }
 
@@ -367,13 +437,46 @@ export class MukanaClient {
   }
 
   /**
-   * Records a transport-level failure (thrown fetch, non-2xx) and returns it
-   * as an `invalid` outcome. Every endpoint's outcome type is constrained by
-   * `ParseResult` to include this exact `{ kind: "invalid", reason }` shape,
-   * so building it generically and asserting it as `T` is safe.
+   * Records an ORDINARY transport-level failure (thrown fetch, non-2xx) and
+   * returns it as an `invalid` outcome. Every endpoint's outcome type is
+   * constrained by `ParseResult` to include this exact
+   * `{ kind: "invalid", reason }` shape, so building it generically and
+   * asserting it as `T` is safe.
+   *
+   * NOT for an abort-shaped failure — `request()`'s own catch block routes
+   * those to `failFromHang` instead, which arms the recovery hold rather
+   * than merely preserving an existing one. This is deliberately the
+   * narrower of the two: a fast network error (ECONNREFUSED, a quick 503)
+   * is ordinary backoff territory, not evidence the endpoint was hung.
    */
   private fail<T extends ParseResult>(endpoint: MukanaEndpoint, detail: string): T {
     this.breakRecoveryStreak(endpoint);
+    this.state[endpoint] = {
+      state: "failing",
+      consecutiveFailures: this.state[endpoint].consecutiveFailures + 1,
+      detail
+    };
+    return { kind: "invalid", reason: detail } as T;
+  }
+
+  /**
+   * The abort-path twin of `fail()` (fix round 1): a settle failure caused
+   * by OUR OWN `AbortSignal.timeout` deadline firing, which — because that
+   * deadline is `MUKANA_HUNG_POLL_INTERVALS` x the interval, the SAME
+   * duration `MukanaPoller.detectHungEndpoints` uses — is by construction
+   * always a hang, on a host that happens to honor `signal` faithfully
+   * enough to have reached this deadline instead of settling on its own
+   * first. `fail()`'s `breakRecoveryStreak` only manages a hold that's
+   * ALREADY armed; it never arms a fresh one, which was fix round 1's exact
+   * bug — an endpoint that aborted at the threshold used to settle
+   * `failing` with `recoverySettlesRemaining` still 0, so its very next
+   * healthy settle flipped straight back to `"ok"`. This calls
+   * `armRecoveryHold` instead, so the abort path gets the identical
+   * `MUKANA_RECOVERY_SETTLES`-settle hysteresis the in-flight path
+   * (`markHung`) already had.
+   */
+  private failFromHang<T extends ParseResult>(endpoint: MukanaEndpoint, detail: string): T {
+    this.armRecoveryHold(endpoint);
     this.state[endpoint] = {
       state: "failing",
       consecutiveFailures: this.state[endpoint].consecutiveFailures + 1,

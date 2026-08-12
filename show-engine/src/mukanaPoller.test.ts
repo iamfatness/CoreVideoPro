@@ -244,7 +244,7 @@ describe("MukanaPoller", () => {
  * `capabilities.ts`, which this file deliberately does not import — the
  * property below is about `MukanaPoller`/`MukanaClient`'s OWN published
  * health, not `ShowEngine`'s wiring of it, which stays untouched by Task 3
- * by design: see `MukanaPoller.hungEndpoints`'s own doc comment).
+ * by design: see `MukanaPoller.detectHungEndpoints`'s own doc comment).
  */
 function realHandsRig(intervalMs: number) {
   const config: MukanaConfig = {
@@ -277,13 +277,24 @@ function realHandsRig(intervalMs: number) {
     poller,
     clock,
     pendingCount: (): number => pending.length,
+    // Both throw loudly on an empty queue (fix round 1, Minor 5) rather
+    // than silently no-op via `?.` — `runCycle` below already models the
+    // right shape: a broken due-check upstream must fail the test that
+    // called this, not make the settle silently vanish and leave the next
+    // assertion passing for the wrong reason (health simply never changes).
     settleHealthy: (): void => {
       const next = pending.shift();
-      next?.resolve({ ok: true, status: 200, text: async () => "4242,5555\n1383\nNONE" });
+      if (next === undefined) {
+        throw new Error("realHandsRig.settleHealthy: no hands fetch is pending");
+      }
+      next.resolve({ ok: true, status: 200, text: async () => "4242,5555\n1383\nNONE" });
     },
     settleInvalid: (): void => {
       const next = pending.shift();
-      next?.resolve({ ok: false, status: 503, text: async () => "nope" });
+      if (next === undefined) {
+        throw new Error("realHandsRig.settleInvalid: no hands fetch is pending");
+      }
+      next.resolve({ ok: false, status: 503, text: async () => "nope" });
     }
   };
 }
@@ -296,7 +307,7 @@ function handsCapability(client: MukanaClient): "available" | "unavailable" {
 /**
  * Runs one full hands poll cycle: starts the (assumed due) fetch, then
  * waits `latencyMultiplier` x `intervalMs` before settling it healthily —
- * checking `poller.hungEndpoints()` (and sampling capability) every
+ * checking `poller.detectHungEndpoints()` (and sampling capability) every
  * `checkpointMs` along the way, the way a real `ShowEngine.tick()` would
  * re-check health on every tick regardless of whether THIS poll just
  * started. A single check right at the end would miss a hang that both
@@ -333,7 +344,7 @@ async function runCycle(
     const step = Math.min(checkpointMs, settleAtMs - elapsed);
     rig.clock.advance(step);
     elapsed += step;
-    rig.poller.hungEndpoints();
+    rig.poller.detectHungEndpoints();
     onSample();
   }
   rig.settleHealthy();
@@ -366,7 +377,7 @@ describe("MukanaPoller hung-poll threshold pinning (Task 3, fix round 2 obligati
     rig.clock.advance(2000); // due
     rig.poller.poll();
     rig.clock.advance(2500); // outstanding = 2500ms, 1.25x the interval — still < 3x
-    const hung = rig.poller.hungEndpoints();
+    const hung = rig.poller.detectHungEndpoints();
 
     expect(hung).toEqual([]);
     expect(handsCapability(rig.client)).toBe("available");
@@ -389,7 +400,7 @@ describe("MukanaPoller hung-poll threshold pinning (Task 3, fix round 2 obligati
     rig.clock.advance(2000); // due
     rig.poller.poll();
     rig.clock.advance(6001); // 3 x 2000ms + 1ms
-    const hung = rig.poller.hungEndpoints();
+    const hung = rig.poller.detectHungEndpoints();
 
     expect(hung).toEqual([{ endpoint: "hands", outstandingMs: 6001 }]);
     expect(rig.client.healthFor("hands")).toEqual({
@@ -409,6 +420,12 @@ describe("MukanaClient hang-recovery hysteresis (Task 3, fix round 2 obligation 
    * already be enough, and `handsCapability` would read `"available"`
    * immediately — contradicting the `"unavailable"` assertion right after
    * that settle, below.
+   *
+   * Also pins the mid-hold detail string exactly (fix round 1, Minor 1 —
+   * it was unpinned; mutating it to garbage left the full suite green,
+   * even though it is the ONLY explanation an operator gets for why the
+   * queue is still sitting in manual fallback after the feed has already
+   * answered once).
    */
   it("holds hands degraded through exactly one healthy settle, and clears it on the second", async () => {
     const rig = realHandsRig(2000);
@@ -420,13 +437,17 @@ describe("MukanaClient hang-recovery hysteresis (Task 3, fix round 2 obligation 
     rig.clock.advance(2000);
     rig.poller.poll();
     rig.clock.advance(6001);
-    rig.poller.hungEndpoints(); // detects the hang, arms the recovery hold
+    rig.poller.detectHungEndpoints(); // detects the hang, arms the recovery hold
     expect(handsCapability(rig.client)).toBe("unavailable");
 
     // The hung fetch FINALLY answers — settle #1 of the recovery streak.
     rig.settleHealthy();
     await flush();
-    expect(rig.client.healthFor("hands").state).toBe("failing");
+    expect(rig.client.healthFor("hands")).toEqual({
+      state: "failing",
+      consecutiveFailures: 0,
+      detail: "recovered from a hang but not yet trusted — 1 more healthy poll needed"
+    });
     expect(handsCapability(rig.client)).toBe("unavailable");
 
     // A second, on-time, healthy poll cycle — settle #2. ONLY now is the
@@ -454,7 +475,7 @@ describe("MukanaClient hang-recovery hysteresis (Task 3, fix round 2 obligation 
     rig.clock.advance(2000);
     rig.poller.poll();
     rig.clock.advance(6001);
-    rig.poller.hungEndpoints();
+    rig.poller.detectHungEndpoints();
     rig.settleHealthy(); // settle #1 of 2
     await flush();
     expect(handsCapability(rig.client)).toBe("unavailable");

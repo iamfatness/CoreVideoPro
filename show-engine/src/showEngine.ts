@@ -1031,31 +1031,38 @@ export class ShowEngine {
   /**
    * The current Mukana health snapshot, or the all-failing stand-in when
    * there is no client at all — with one engine-side correction the client
-   * cannot make for itself: an endpoint `this.mukanaPoller.hungEndpoints()`
-   * reports (its in-flight poll has been outstanding beyond the hung
-   * threshold) is reported `failing` regardless of what its last settled
-   * response said (final review, I1 — see `MukanaPoller`'s own doc comment
-   * for why, and `FetchLike`'s for the timeout obligation this backstops).
+   * cannot make for itself: an endpoint whose in-flight poll has been
+   * outstanding beyond the hung threshold reads `failing` regardless of what
+   * its last settled response said (final review, I1 — see `MukanaPoller`'s
+   * own doc comment for why, and `FetchLike`'s for the timeout obligation
+   * this backstops).
    *
-   * Safe to mutate in place: `MukanaClient.health` builds a fresh object
-   * with fresh per-endpoint records on every read. The registry-less
-   * `NO_REGISTRY_HEALTH` branch returns the shared module constant by
-   * reference and is deliberately left untouched — there is no client, so
-   * nothing can be in flight.
+   * That correction is applied by CALLING `detectHungEndpoints()` for its
+   * side effect and then reading `client.health` fresh, rather than reading
+   * `client.health` first and overriding entries from its return value (fix
+   * round 1, Minor 2): `detectHungEndpoints()` already writes any hung
+   * endpoint's health directly, via `MukanaClient.markHung` — building a
+   * SECOND copy of that same override here was redundant the moment it
+   * gained that side effect, and worse, ORDER-DEPENDENT: reading
+   * `client.health` before calling `detectHungEndpoints()` only happened to
+   * work because the override loop below unconditionally stomped whatever
+   * stale snapshot it read. Calling it first means there is exactly ONE
+   * place this state is ever written, and this method cannot silently stop
+   * doing anything by a reordering.
+   *
+   * Safe to return directly: `MukanaClient.health` builds a fresh object
+   * with fresh per-endpoint records on every read, so nothing here can be
+   * mutated out from under a caller. The registry-less `NO_REGISTRY_HEALTH`
+   * branch returns the shared module constant by reference and is
+   * deliberately left untouched — there is no client, so nothing can be in
+   * flight.
    */
   private mukanaHealth(): Record<MukanaEndpoint, MukanaHealth> {
     const client = this.mukanaClient;
     if (client === undefined || this.mukanaPoller === undefined) return NO_REGISTRY_HEALTH;
 
-    const health = client.health;
-    for (const { endpoint, outstandingMs } of this.mukanaPoller.hungEndpoints()) {
-      health[endpoint] = {
-        state: "failing",
-        consecutiveFailures: health[endpoint].consecutiveFailures,
-        detail: `no response after ${outstandingMs}ms with a poll still in flight`
-      };
-    }
-    return health;
+    this.mukanaPoller.detectHungEndpoints();
+    return client.health;
   }
 
   /**

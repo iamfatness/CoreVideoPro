@@ -59,6 +59,8 @@ export {
 export {
   MukanaClient,
   MUKANA_ENDPOINTS,
+  MUKANA_HUNG_POLL_INTERVALS,
+  MUKANA_RECOVERY_SETTLES,
   type FetchLike,
   type FetchResponse,
   type MukanaEndpoint,
