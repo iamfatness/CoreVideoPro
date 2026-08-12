@@ -6,6 +6,7 @@ import { StateStore } from "./persistence.js";
 import { parseShowEngineConfig } from "./config.js";
 import { FiloAssigner, VisibleSetAssigner } from "./speakerRecency.js";
 import { ROLES } from "./contracts.js";
+import { resolvePersonKey } from "./personKey.js";
 import type { PlacementChange, PositionAssigner } from "./speakerRecency.js";
 import type { OverrideRecord } from "./overrideDb.js";
 import type { Role } from "./contracts.js";
@@ -168,6 +169,44 @@ describe("active-speaker dispatch gate", () => {
     e.onActiveSpeaker("ghost");
     await e.tick();
     expect(recorder.seen).toEqual(["ghost"]);
+  });
+
+  /**
+   * FINAL REVIEW, Minor: the gate's POSITION relative to
+   * `zoomIngest.commit()` was unpinned — moving the whole gate block above
+   * the roster commit and seat step left the entire suite green, because
+   * every other test in this file ticks once after a join before sending a
+   * speaker event, so the roster is already published by the time the gate
+   * runs.
+   *
+   * It is a real order dependency. `commit()` is `ZoomIngest`'s publish
+   * gate, so a gate that ran before it would resolve roles against the
+   * PREVIOUS published roster: someone who joins and speaks within the same
+   * tick would not be in `snapshot()` yet, `role` would come out `null`, and
+   * `shouldFollowSpeaker(null, ...)` follows unconditionally — the ASL
+   * interpreter this whole obligation exists to protect would take program
+   * on their first word. Joining and immediately speaking is exactly what a
+   * late-arriving interpreter does.
+   *
+   * The override is set BEFORE the join on purpose: overrides are keyed by
+   * `PersonKey`, which is derivable from the join event alone, so the
+   * editorial role is genuinely known to the engine on this tick and the
+   * only thing standing between it and a correct decision is whether the
+   * roster has been committed first.
+   */
+  it("resolves the role of someone who joins and speaks within the SAME tick", async () => {
+    const recorder = new RecordingAssigner(new FiloAssigner({ capacity: 4 }));
+    const e = build(recorder);
+    const key = resolvePersonKey({ participantId: "p1", rawName: "Ann" });
+
+    e.setOverride(override(key, "aslinterpreter"));
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onActiveSpeaker("p1");
+    const snap = await e.tick();
+
+    expect(snap.panelists.find((p) => p.participantId === "p1")?.role).toBe("aslinterpreter");
+    expect(recorder.seen).toEqual([]);
+    expect(snap.program.activeSpeakerId).toBeNull();
   });
 
   it("drops a pending speaker after one tick rather than replaying it", async () => {

@@ -942,6 +942,17 @@ export class ShowEngine {
       );
       const role = speakerPanelists.get(pendingSpeaker)?.role ?? null;
       if (shouldFollowSpeaker(role, this.config.skipRoles)) {
+        // DEFERRED, deliberately (final review, Minor): the assigner's
+        // returned `PlacementChange[]` is discarded and `positions()` has no
+        // caller anywhere in the package, so nothing downstream of this gate
+        // observes the speaker pool. The Plan 3 obligation is discharged AT
+        // THIS BOUNDARY — a skipped role never reaches the assigner, which
+        // is what the property in `speakerGateDispatch.test.ts` proves — but
+        // the visible half of the original defect ("an ASL interpreter sorts
+        // to the front of the gallery") cannot manifest OR be prevented yet,
+        // because no gallery or slot state is driven from recency. Wiring
+        // recency into the gallery is Plan 6's call; until it exists, the
+        // assigner is a correctly-gated pool nobody reads.
         this.assigner.onActiveSpeaker(pendingSpeaker);
         this.programBus.onActiveSpeaker(pendingSpeaker, role);
       }

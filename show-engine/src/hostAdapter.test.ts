@@ -16,6 +16,26 @@ describe("MockHost", () => {
     expect(host.capabilities().maxGalleryCells).toBe(16);
   });
 
+  /**
+   * The invariant this must break on: handing out the instance's own
+   * capability record (final review, Minor). With no `transitions` override
+   * that array WAS the shared module-level default, so one caller casting
+   * away `readonly` and pushing would rewrite the defaults for every
+   * `MockHost` in the process — including in other test files in the same
+   * run. `transitions` is `readonly string[]`, so a cast is what a
+   * conformance test would have to write to do it; the cast is the point.
+   */
+  it("hands out a copy of its capabilities, sharing nothing across instances", () => {
+    const host = new MockHost();
+    const read = host.capabilities();
+    (read.transitions as string[]).push("wipe");
+    read.maxGalleryCells = 1;
+
+    expect(host.capabilities().transitions).toEqual(["cut", "fade"]);
+    expect(host.capabilities().maxGalleryCells).toBe(16);
+    expect(new MockHost().capabilities().transitions).toEqual(["cut", "fade"]);
+  });
+
   it("records calls in arrival order", () => {
     const host = new MockHost();
     host.assignSlot(1, "p1");

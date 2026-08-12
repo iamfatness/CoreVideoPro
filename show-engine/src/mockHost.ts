@@ -30,11 +30,24 @@ export class MockHost implements HostAdapter {
   private readonly calls_: HostCall[] = [];
 
   constructor(capabilities?: Partial<HostCapabilities>) {
-    this.capabilities_ = { ...DEFAULT_CAPABILITIES, ...capabilities };
+    this.capabilities_ = {
+      ...DEFAULT_CAPABILITIES,
+      ...capabilities,
+      transitions: [...(capabilities?.transitions ?? DEFAULT_CAPABILITIES.transitions)]
+    };
   }
 
+  /**
+   * A fresh object with a fresh `transitions` array on every call (final
+   * review, Minor). This used to hand out the instance's own record by
+   * reference — and with no `transitions` override, that array WAS
+   * `DEFAULT_CAPABILITIES.transitions`, shared by every `MockHost` ever
+   * constructed in the process. A Plan 6 conformance test that pushed a
+   * transition onto what it read back would have silently rewritten the
+   * defaults for every other host and every other test file in the run.
+   */
   capabilities(): HostCapabilities {
-    return this.capabilities_;
+    return { ...this.capabilities_, transitions: [...this.capabilities_.transitions] };
   }
 
   calls(): readonly HostCall[] {

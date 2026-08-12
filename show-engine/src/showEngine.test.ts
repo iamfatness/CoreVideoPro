@@ -1709,6 +1709,9 @@ function mukanaEngine(options: { hangHands?: boolean; looks?: readonly unknown[]
     breakHandsBody: () => {
       handsBodyBroken = true;
     },
+    fixHandsBody: () => {
+      handsBodyBroken = false;
+    },
     /** Every hands fetch from here on returns a promise that never settles on its own. */
     hangHands: () => {
       handsHangs = true;
@@ -1819,6 +1822,58 @@ describe("ShowEngine Mukana polling", () => {
     }
 
     expect(rejections).toEqual([]);
+  });
+
+  /**
+   * Final review, I6: the test above proves a rejection handler EXISTS (it
+   * observes `unhandledRejection`), but not what its body does — replacing
+   * that body with `() => {}` left the whole suite green. The body's real
+   * job is clearing `mukanaPollBusy`, and losing that clear strands the
+   * endpoint for the lifetime of the process: the one-in-flight gate never
+   * re-opens, no later fetch ever starts, and the feed is dead for the rest
+   * of the show with the client's health frozen at whatever it last said.
+   * That is the known deadlock this branch's ledger carries as its top open
+   * item, and it had no test signal at all.
+   *
+   * So: reject a fetch, then prove the endpoint is genuinely POLLABLE again
+   * — a new fetch starts on the next due tick, and real data from it lands
+   * in engine state.
+   *
+   * Honest scope note: the handler also records an `invalid` outcome, and
+   * that half is deliberately NOT asserted here, because it is not
+   * observable through the public surface — `applyHandsOutcome` ignores
+   * every non-`data` outcome by design, so recording `invalid` and
+   * recording nothing are indistinguishable from outside. What a wrong
+   * outcome WOULD do (a fabricated `data` outcome overwriting the queue) is
+   * covered by the last-good-queue test below.
+   */
+  it("leaves an endpoint pollable after its fetch rejects", async () => {
+    const { e, fetches, advance, flush, breakHandsBody, fixHandsBody, setHandsBody } =
+      mukanaEngine();
+    const handsFetches = (): number => fetches.filter((url) => url.includes("req=hands")).length;
+
+    breakHandsBody(); // the next hands fetch REJECTS rather than resolving
+    advance(10_000);
+    await e.tick();
+    await flush();
+    expect(handsFetches()).toBe(1);
+
+    fixHandsBody();
+    setHandsBody("4242,5555\n1383\nNONE");
+    advance(10_000);
+    await e.tick();
+    await flush();
+    // The busy flag was cleared by the rejection handler: this endpoint is
+    // being polled again rather than stranded.
+    expect(handsFetches()).toBe(2);
+
+    await e.tick();
+    await flush();
+    expect(e.snapshot().queue).toEqual({
+      previous: [],
+      current: "1383",
+      upcoming: ["4242", "5555"]
+    });
   });
 
   it("keeps the last good queue when a poll comes back invalid", async () => {
