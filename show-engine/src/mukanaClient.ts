@@ -29,6 +29,25 @@ export type FetchResponse = {
   text: () => Promise<string>;
 };
 
+/**
+ * The injected fetch. **A conforming implementation MUST bound how long its
+ * returned promise can stay pending** — with `AbortSignal.timeout(ms)` on a
+ * real `fetch`, or an equivalent — because nothing in this package can
+ * cancel it. The engine holds no timers by design (its only notion of time
+ * is the injected `Clock`, read inside `tick()`), so a promise that never
+ * settles is a fetch that is outstanding for the rest of the process's
+ * life: `MukanaClient` never records health for it (health is written only
+ * when a request settles) and the engine's one-in-flight-per-endpoint gate
+ * never re-opens for it.
+ *
+ * The package defends itself on both sides of that obligation rather than
+ * trusting it — every endpoint starts `failing` (`initialHealth`, below) so
+ * a never-answered endpoint is never reported as usable, and the engine
+ * independently degrades an endpoint whose poll has been outstanding for
+ * several of its own intervals (`ShowEngine.mukanaHealth`). Honouring the
+ * timeout is still required: without it the endpoint recovers only if the
+ * underlying promise eventually settles on its own.
+ */
 export type FetchLike = (url: string) => Promise<FetchResponse>;
 
 export type MukanaHealth = {
@@ -39,7 +58,8 @@ export type MukanaHealth = {
 
 export type MukanaEndpoint = "panelists" | "hands" | "question";
 
-const ENDPOINTS: readonly MukanaEndpoint[] = ["panelists", "hands", "question"];
+/** Every endpoint, in a fixed order — exported so a consumer can iterate health without re-listing the union. */
+export const MUKANA_ENDPOINTS: readonly MukanaEndpoint[] = ["panelists", "hands", "question"];
 
 /**
  * The three kinds every endpoint parser's outcome can take. Each concrete
@@ -50,8 +70,26 @@ const ENDPOINTS: readonly MukanaEndpoint[] = ["panelists", "hands", "question"];
  */
 type ParseResult = { kind: "data" } | DormantOutcome | { kind: "invalid"; reason: string };
 
+/**
+ * Health for an endpoint that has never answered. **Pessimistic on
+ * purpose** (final review, I1): health is written only when a request
+ * SETTLES, so an optimistic `"ok"` start is a claim of usability the client
+ * has no evidence for — and for an endpoint whose very first fetch hangs
+ * (see `FetchLike`), a claim it never revisits. The measured consequence of
+ * the optimistic version was not stale data but a degradation path that
+ * never engaged: `resolveCapabilities` read `ok` → `available`,
+ * `effectiveBoxFill` stayed `"queue"`, the queue was empty because nothing
+ * ever arrived, and every guest box resolved to `null` for the whole show
+ * while the operator's manual assignments sat ignored. Starting `failing`
+ * makes an unanswered endpoint resolve to `unavailable`, which is the state
+ * the rest of the package already knows how to fall back from.
+ *
+ * `consecutiveFailures: 0` is deliberate: nothing has actually failed yet,
+ * and `nextDelayMs` reads that field, so a non-zero value here would
+ * back-off the very first poll of a perfectly healthy registry.
+ */
 function initialHealth(): MukanaHealth {
-  return { state: "ok", consecutiveFailures: 0, detail: null };
+  return { state: "failing", consecutiveFailures: 0, detail: "not polled yet" };
 }
 
 export class MukanaClient {
@@ -71,7 +109,7 @@ export class MukanaClient {
 
   get health(): Record<MukanaEndpoint, MukanaHealth> {
     const copy = {} as Record<MukanaEndpoint, MukanaHealth>;
-    for (const endpoint of ENDPOINTS) {
+    for (const endpoint of MUKANA_ENDPOINTS) {
       copy[endpoint] = { ...this.state[endpoint] };
     }
     return copy;

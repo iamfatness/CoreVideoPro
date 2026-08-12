@@ -127,15 +127,30 @@ describe("MukanaClient per-endpoint behaviour", () => {
     ]);
   });
 
-  it("starts every endpoint healthy", () => {
+  /**
+   * Final review, I1: an endpoint that has never answered must NOT report
+   * as healthy. Health is written only when a request settles, so the
+   * previous optimistic `"ok"` start was a claim of usability the client
+   * had no evidence for — and for a `FetchLike` whose promise never
+   * settles, one it never revisited: `resolveCapabilities` read `available`
+   * for the whole show, `effectiveBoxFill` stayed `"queue"` over an empty
+   * queue, and every guest box resolved to `null` while the operator's
+   * manual assignments were ignored. `consecutiveFailures` stays 0 (nothing
+   * has actually failed), which the delay assertion below pins: a
+   * pessimistic start must not back off the first poll of a healthy
+   * registry.
+   */
+  it("starts every endpoint failing-until-proven, without backing off the first poll", () => {
     const client = new MukanaClient(config, { fetch: respondWith(panelistsBody) });
     for (const endpoint of ["panelists", "hands", "question"] as const) {
       expect(client.healthFor(endpoint)).toEqual({
-        state: "ok",
+        state: "failing",
         consecutiveFailures: 0,
-        detail: null
+        detail: "not polled yet"
       });
     }
+    expect(client.nextDelayMs("panelists")).toBe(5000);
+    expect(client.nextDelayMs("hands")).toBe(2000);
   });
 
   it("uses each endpoint's own interval for the base delay", () => {

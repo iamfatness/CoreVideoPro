@@ -1,14 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { StateStore, type ShowState, type StateFs } from "./persistence.js";
+import { STATE_VERSION, StateStore, type PersistedShowState, type StateFs } from "./persistence.js";
 
-const state: ShowState = {
-  version: 2,
+const state: PersistedShowState = {
+  version: 3,
   slots: { version: 1, capacity: 2, seats: [null, null] },
   overrides: {
     "pin:1383": { personKey: "pin:1383", displayName: "J.J.", location: "CA", role: "host" }
   },
-  gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] }
+  gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] },
+  manualBoxes: {},
+  lookId: null
 };
+
+function baseState(): PersistedShowState {
+  return {
+    version: STATE_VERSION,
+    slots: { version: 1, capacity: 0, seats: [] },
+    overrides: {},
+    gallery: { version: 1, cells: 0, assignments: [] },
+    manualBoxes: {},
+    lookId: null
+  };
+}
 
 function fakeFs(seed: Record<string, string> = {}): StateFs & { files: Map<string, string> } {
   const files = new Map<string, string>(Object.entries(seed));
@@ -188,14 +201,14 @@ describe("StateStore", () => {
 
   it("returns null when slots is explicitly null", async () => {
     const store = new StateStore("/show/state.json", {
-      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 2, slots: null, overrides: {} }) })
+      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 3, slots: null, overrides: {} }) })
     });
     expect(await store.load()).toBeNull();
   });
 
   it("returns null when overrides is explicitly null", async () => {
     const store = new StateStore("/show/state.json", {
-      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 2, slots: state.slots, overrides: null }) })
+      fs: fakeFs({ "/show/state.json": JSON.stringify({ version: 3, slots: state.slots, overrides: null }) })
     });
     expect(await store.load()).toBeNull();
   });
@@ -204,7 +217,7 @@ describe("StateStore", () => {
     const store = new StateStore("/show/state.json", {
       fs: fakeFs({
         "/show/state.json": JSON.stringify({
-          version: 2,
+          version: 3,
           slots: { version: 1, capacity: 2, seats: "garbage" },
           overrides: {}
         })
@@ -217,7 +230,7 @@ describe("StateStore", () => {
     const store = new StateStore("/show/state.json", {
       fs: fakeFs({
         "/show/state.json": JSON.stringify({
-          version: 2,
+          version: 3,
           slots: { version: 1, capacity: "2", seats: [null, null] },
           overrides: {}
         })
@@ -228,11 +241,13 @@ describe("StateStore", () => {
 });
 
 describe("StateStore gallery node", () => {
-  const withGallery: ShowState = {
-    version: 2,
+  const withGallery: PersistedShowState = {
+    version: 3,
     slots: { version: 1, capacity: 2, seats: [null, null] },
     overrides: {},
-    gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] }
+    gallery: { version: 1, cells: 2, assignments: [{ cell: 1, slot: 0 }, { cell: 2, slot: 0 }] },
+    manualBoxes: {},
+    lookId: null
   };
 
   it("round-trips a state carrying a gallery", async () => {
@@ -243,7 +258,7 @@ describe("StateStore gallery node", () => {
 
   it("returns null for a state file with no gallery node", async () => {
     const legacy = JSON.stringify({
-      version: 2,
+      version: 3,
       slots: withGallery.slots,
       overrides: {}
     });
@@ -260,5 +275,63 @@ describe("StateStore gallery node", () => {
       })
     });
     expect(await store.load()).toBeNull();
+  });
+});
+
+describe("PersistedShowState v3", () => {
+  it("round-trips manual box assignments and the look they belong to", async () => {
+    const fs = fakeFs();
+    const store = new StateStore("/state/show.json", { fs });
+    const written: PersistedShowState = {
+      ...baseState(),
+      manualBoxes: { 1: 4, 2: 7 },
+      lookId: "teatime"
+    };
+    await store.save(written);
+    expect(await store.load()).toEqual(written);
+  });
+
+  it("round-trips an empty manual assignment set and a null look", async () => {
+    const fs = fakeFs();
+    const store = new StateStore("/state/show.json", { fs });
+    const written: PersistedShowState = { ...baseState(), manualBoxes: {}, lookId: null };
+    await store.save(written);
+    expect(await store.load()).toEqual(written);
+  });
+
+  /**
+   * The invariant this must break on: accepting a v2 file. A v2 file has no
+   * manualBoxes and its overrides are PIN-keyed, so loading one would seat a
+   * roster whose operator role assignments silently vanished.
+   */
+  it("rejects a version-2 file rather than migrating it", async () => {
+    const fs = fakeFs();
+    await fs.writeFile(
+      "/state/show.json",
+      JSON.stringify({ ...baseState(), version: 2, manualBoxes: {}, lookId: null })
+    );
+    expect(await new StateStore("/state/show.json", { fs }).load()).toBeNull();
+  });
+
+  it("rejects a v3 file whose manualBoxes is not an object", async () => {
+    const fs = fakeFs();
+    await fs.writeFile(
+      "/state/show.json",
+      JSON.stringify({ ...baseState(), manualBoxes: [], lookId: null })
+    );
+    expect(await new StateStore("/state/show.json", { fs }).load()).toBeNull();
+  });
+
+  it("rejects a v3 file whose lookId is neither string nor null", async () => {
+    const fs = fakeFs();
+    await fs.writeFile(
+      "/state/show.json",
+      JSON.stringify({ ...baseState(), manualBoxes: {}, lookId: 7 })
+    );
+    expect(await new StateStore("/state/show.json", { fs }).load()).toBeNull();
+  });
+
+  it("exports the current version so a host can name what it rejected", () => {
+    expect(STATE_VERSION).toBe(3);
   });
 });
