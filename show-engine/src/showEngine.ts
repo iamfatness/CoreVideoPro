@@ -47,7 +47,7 @@ import { resolveCapabilities } from "./capabilities.js";
 import { buildSnapshot, type ShowSnapshot } from "./showSnapshot.js";
 import { StateStore, STATE_VERSION, type PersistedShowState } from "./persistence.js";
 import { clampPage, findChairSlots, resolveLook, type LookResolution } from "./lookDirector.js";
-import { LookController } from "./lookController.js";
+import { LookController, type PagingRefusalKind } from "./lookController.js";
 import { stripChairs, type HandsOutcome } from "./handsQueue.js";
 import {
   EXCLUSIVE_ROLES,
@@ -369,6 +369,22 @@ export class ShowEngine {
   /** The mirror of `nextGuest`; see its docs. */
   prevGuest(): void {
     this.adjustPage(-1);
+  }
+
+  /**
+   * Forward `LookController.refusal()` verbatim — message AND kind — for a
+   * caller that needs to know WHY the last `nextGuest`/`prevGuest` did not
+   * move, not just that it didn't. The published snapshot only ever needed
+   * the message (`buildSnapshotFrom`'s `pagingRefused`), so that forwarder
+   * drops `kind` on the floor; this one doesn't. Added for Task 8's `ohg.*`
+   * action registry (`ohg.look.nextGuest`/`prevGuest` report a refusal as a
+   * first-class `ActionResult`, carrying the engine's own refusal text) —
+   * carried over from Task 2's note that this decision belonged here rather
+   * than being rediscovered mid-task. `null` when the last attempted move
+   * (if any) succeeded, exactly mirroring `LookController.refusal()` itself.
+   */
+  pagingRefusal(): { message: string; kind: PagingRefusalKind } | null {
+    return this.lookController.refusal();
   }
 
   private adjustPage(delta: number): void {

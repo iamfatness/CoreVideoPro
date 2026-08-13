@@ -12,10 +12,19 @@ import {
   BOX_FILLS,
   canUse,
   effectiveBoxFill,
+  formatProgramSource,
+  invokeAction,
   isBoxFill,
+  oscAddressFor,
+  OHG_ACTIONS,
+  parseProgramSource,
   personKeyForPin,
   resolveCapabilities,
   resolvePersonKey,
+  type ActionDefinition,
+  type ActionParam,
+  type ActionParamType,
+  type ActionResult,
   type Capability,
   type CapabilityState,
   type HealthByEndpoint,
@@ -53,5 +62,28 @@ describe("capability layer exports", () => {
       question: { state: "ok", consecutiveFailures: 0, detail: null }
     };
     expect([key, caps, fill, manual, health]).toHaveLength(5);
+  });
+});
+
+describe("ohg action registry exports", () => {
+  it("exports every runtime value a host bridge needs", () => {
+    expect(invokeAction).toBeTypeOf("function");
+    expect(oscAddressFor).toBeTypeOf("function");
+    expect(parseProgramSource).toBeTypeOf("function");
+    expect(formatProgramSource).toBeTypeOf("function");
+    expect(OHG_ACTIONS.length).toBeGreaterThan(0);
+  });
+
+  it("exports every type a host bridge needs to name", () => {
+    const paramType: ActionParamType = "string";
+    const param: ActionParam = { name: "source", type: paramType, required: true, description: "" };
+    const definition: ActionDefinition = {
+      id: "ohg.program.preview",
+      title: "Stage preview",
+      description: "",
+      params: [param]
+    };
+    const result: ActionResult = { kind: "ok" };
+    expect([param, definition, result]).toHaveLength(3);
   });
 });

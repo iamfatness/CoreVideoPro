@@ -133,3 +133,21 @@ export {
   type ShowSnapshot
 } from "./showSnapshot.js";
 export { ShowEngine, type ShowEngineDeps } from "./showEngine.js";
+
+/**
+ * The `ohg.*` action registry (Task 8) — the declarative surface every host
+ * bridge (Companion, OSC, the three native panels) invokes against, plus
+ * the `ProgramSource` wire codec its `preview`/`directCut` actions share
+ * with Task 9's feedback projection.
+ */
+export {
+  formatProgramSource,
+  invokeAction,
+  oscAddressFor,
+  parseProgramSource,
+  OHG_ACTIONS,
+  type ActionDefinition,
+  type ActionParam,
+  type ActionParamType,
+  type ActionResult
+} from "./actions.js";
