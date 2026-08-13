@@ -20,6 +20,10 @@
 #endif
 #include <Windows.h>
 #include <wincodec.h>
+#elif defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <ImageIO/ImageIO.h>
 #endif
 
 namespace corevideo::modules {
@@ -140,10 +144,72 @@ class PlatformStillImageDecoder final : public IStillImageDecoder {
       CoUninitialize();
     }
     return ok;
+#elif defined(__APPLE__)
+    // ImageIO decode on the cache worker. CGBitmapContext can only DRAW
+    // premultiplied alpha, but the compositor blend is SRC_ALPHA/INV_SRC_ALPHA
+    // and expects STRAIGHT alpha (same contract as the WIC 32bppBGRA path) —
+    // so draw premultiplied BGRA, then un-premultiply once.
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+        kCFAllocatorDefault, reinterpret_cast<const UInt8*>(path.c_str()),
+        static_cast<CFIndex>(path.size()), false);
+    if (!url) {
+      error = "could not build a file URL for the asset path";
+      return false;
+    }
+    CGImageSourceRef source = CGImageSourceCreateWithURL(url, nullptr);
+    CFRelease(url);
+    if (!source) {
+      error = "ImageIO could not open the file";
+      return false;
+    }
+    CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, nullptr);
+    CFRelease(source);
+    if (!image) {
+      error = "ImageIO could not decode frame 0";
+      return false;
+    }
+    const size_t width = CGImageGetWidth(image);
+    const size_t height = CGImageGetHeight(image);
+    if (width == 0 || height == 0) {
+      error = "ImageIO reported an empty image";
+      CGImageRelease(image);
+      return false;
+    }
+    const size_t stride = width * 4;
+    auto pixels = std::make_shared<std::vector<uint8_t>>(stride * height);
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    // Little-endian ARGB word order == B,G,R,A byte order in memory.
+    CGContextRef context = CGBitmapContextCreate(
+        pixels->data(), width, height, 8, stride, colorSpace,
+        static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(colorSpace);
+    if (!context) {
+      error = "CGBitmapContext creation failed";
+      CGImageRelease(image);
+      return false;
+    }
+    CGContextDrawImage(context, CGRectMake(0, 0, static_cast<CGFloat>(width),
+                                           static_cast<CGFloat>(height)),
+                       image);
+    CGContextRelease(context);
+    CGImageRelease(image);
+    for (size_t offset = 0; offset < pixels->size(); offset += 4) {
+      uint8_t* px = pixels->data() + offset;
+      const uint8_t alpha = px[3];
+      if (alpha != 0 && alpha != 255) {
+        px[0] = static_cast<uint8_t>((px[0] * 255 + alpha / 2) / alpha);
+        px[1] = static_cast<uint8_t>((px[1] * 255 + alpha / 2) / alpha);
+        px[2] = static_cast<uint8_t>((px[2] * 255 + alpha / 2) / alpha);
+      }
+    }
+    out.width = static_cast<int>(width);
+    out.height = static_cast<int>(height);
+    out.bgra = std::move(pixels);
+    return true;
 #else
     (void)path;
     (void)out;
-    error = "no still-image decoder on this platform (WIC is Windows-only)";
+    error = "no still-image decoder on this platform";
     return false;
 #endif
   }
@@ -159,7 +225,10 @@ std::string normalizeMediaAssetPath(std::string path) {
   constexpr const char* prefix = "file:///";
   if (path.rfind(prefix, 0) == 0) {
     path = path.substr(std::strlen(prefix));
+#if defined(_WIN32)
+    // Windows-only: '/'→'\\' would destroy POSIX paths on mac/linux.
     std::replace(path.begin(), path.end(), '/', '\\');
+#endif
   }
   return path;
 }

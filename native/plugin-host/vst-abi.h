@@ -97,6 +97,10 @@ inline constexpr Tuid kIEditControllerIid = makeComTuid(0xDCD7BBE3, 0x7742448D, 
 inline constexpr Tuid kIComponentHandlerIid = makeComTuid(0x93A0BEA3, 0x0BD045DB, 0x8E890B0C, 0xC1E46AC6);
 inline constexpr Tuid kIPlugViewIid = makeComTuid(0x5BC32507, 0xD06049EA, 0xA6151B52, 0x2B755B29);
 inline constexpr Tuid kIPlugFrameIid = makeComTuid(0x367FAF01, 0xAFA94693, 0x8D4DA2A0, 0xED0882A3);
+// A2: IBStream — the byte-stream contract IComponent::get/setState reads and
+// writes through (the host implements it over a memory buffer; plugins only
+// ever see the vtable).
+inline constexpr Tuid kIBStreamIid = makeComTuid(0xC3BF6EA2, 0x30994752, 0x9B6BF990, 0x1EE33E9B);
 
 inline bool tuidEqual(const char* a, const char* b) {
   return a != nullptr && b != nullptr && std::memcmp(a, b, 16) == 0;
@@ -306,6 +310,26 @@ struct IPlugViewVtbl {
   tresult(CVST_API* checkSizeConstraint)(void* self, ViewRect* rect);
 };
 struct IPlugView { IPlugViewVtbl* vtbl; };
+
+// A2: IBStream (state persistence). Vtable order is the published binary
+// interface: FUnknown's 3 entries, then read/write/seek/tell. Seek modes are
+// the public kIBSeekSet/Cur/End constants.
+inline constexpr int32_t kIBSeekSet = 0;
+inline constexpr int32_t kIBSeekCur = 1;
+inline constexpr int32_t kIBSeekEnd = 2;
+
+struct IBStreamVtbl {
+  // FUnknown
+  tresult(CVST_API* queryInterface)(void* self, const char* iid, void** obj);
+  uint32_t(CVST_API* addRef)(void* self);
+  uint32_t(CVST_API* release)(void* self);
+  // IBStream
+  tresult(CVST_API* read)(void* self, void* buffer, int32_t numBytes, int32_t* numBytesRead);
+  tresult(CVST_API* write)(void* self, void* buffer, int32_t numBytes, int32_t* numBytesWritten);
+  tresult(CVST_API* seek)(void* self, int64_t pos, int32_t mode, int64_t* result);
+  tresult(CVST_API* tell)(void* self, int64_t* pos);
+};
+struct IBStream { IBStreamVtbl* vtbl; };
 
 struct IComponentHandlerVtbl {
   tresult(CVST_API* queryInterface)(void* self, const char* iid, void** obj);

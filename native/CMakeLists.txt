@@ -1,11 +1,28 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
+
+# A single-config generator (Ninja/Makefiles) with no CMAKE_BUILD_TYPE compiles
+# at -O0. This is a REAL-TIME media core: unoptimized, a 10x1080p show ran the
+# render tick at 27ms/25fps instead of 3.9ms/57fps, because things like
+# destroying a 3MB frame buffer degrade to a per-byte loop. Every macOS configure
+# site (scripts/run-mac-shell.sh, CI) omitted the flag, so the whole port was
+# measured and shipped unoptimized. Default it here so no caller can forget;
+# an explicit -DCMAKE_BUILD_TYPE=Debug still wins.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (default: Release)" FORCE)
+  message(STATUS "CMAKE_BUILD_TYPE not set â€” defaulting to Release (-O3).")
+endif()
 
 option(COREVIDEO_STUB "Build portable stub media-core modules" ON)
 option(COREVIDEO_ENABLE_DEV_ADAPTERS "Build SDK/GPU/hardware adapters that require a dev machine" OFF)
 option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Windows SDK root." OFF)
 option(COREVIDEO_WITH_D3D11 "Build the Windows D3D11 GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_METAL "Build the macOS Metal GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_AVF_ENCODER "Build the macOS AVFoundation/VideoToolbox recording encoder. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_COREAUDIO "Build the macOS CoreAudio monitor-output and capture-audio adapters. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_AVF_CAPTURE "Build the macOS AVFoundation camera capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_SCK "Build the macOS ScreenCaptureKit screen/window capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_MF_ENCODER "Build the Windows Media Foundation hardware encoder adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WASAPI_MONITOR "Build the Windows WASAPI audio monitor output adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WASAPI_CAPTURE "Build the Windows WASAPI audio capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
@@ -50,6 +67,7 @@ add_library(corevideo_native
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
   src/modules/BrowserSourceHostAdapter.cpp
+  src/compositor/CompositorOverlayRaster.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
@@ -69,6 +87,8 @@ add_library(corevideo_native
   src/modules/VirtualCameraPublisher.cpp
   src/modules/UvcCaptureSupport.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
+  src/modules/CoreAudioCaptureSourceAdapter.cpp
+  src/modules/CoreAudioMonitorOutputAdapter.cpp
   src/modules/WasapiMonitorOutputAdapter.cpp
   src/modules/WinUiCaptureDeviceAdapter.cpp
   src/modules/ZoomEngineClient.cpp
@@ -82,6 +102,29 @@ add_library(corevideo_native
   src/zoom/ShmFrameReader.cpp
 )
 
+# The Metal compositor is ObjC++ and only compiles on Apple toolchains; other
+# platforms link the null factory in StubModules.cpp. The file itself is gated
+# (COREVIDEO_WITH_METAL) so the plain stub build compiles it to the null
+# factory too.
+if(APPLE)
+  target_sources(corevideo_native PRIVATE
+    src/compositor/MetalCompositorAdapter.mm
+    src/modules/AVFoundationEncoderAdapter.mm
+    src/modules/AvfCaptureDeviceAdapter.mm
+    src/modules/SckScreenCaptureAdapter.mm)
+  set_source_files_properties(
+    src/compositor/MetalCompositorAdapter.mm
+    src/modules/AVFoundationEncoderAdapter.mm
+    src/modules/AvfCaptureDeviceAdapter.mm
+    src/modules/SckScreenCaptureAdapter.mm
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  # StillMediaFrameCache decodes stills via ImageIO on Apple (WIC analogue);
+  # it compiles on every config, so the frameworks link unconditionally here.
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation"
+    "-framework CoreText")
+endif()
+
 target_include_directories(corevideo_native PUBLIC src)
 target_include_directories(corevideo_native PRIVATE zoom-engine/shared)
 target_include_directories(corevideo_native PUBLIC plugin-host)
@@ -90,6 +133,11 @@ target_compile_definitions(corevideo_native
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
     COREVIDEO_WITH_ZOOM=$<BOOL:${COREVIDEO_WITH_ZOOM}>
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
+    COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
+    COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
+    COREVIDEO_WITH_AVF_CAPTURE=$<BOOL:${COREVIDEO_WITH_AVF_CAPTURE}>
+    COREVIDEO_WITH_SCK=$<BOOL:${COREVIDEO_WITH_SCK}>
     COREVIDEO_WITH_MF_ENCODER=$<BOOL:${COREVIDEO_WITH_MF_ENCODER}>
     COREVIDEO_WITH_WASAPI_MONITOR=$<BOOL:${COREVIDEO_WITH_WASAPI_MONITOR}>
     COREVIDEO_WITH_WASAPI_CAPTURE=$<BOOL:${COREVIDEO_WITH_WASAPI_CAPTURE}>
@@ -122,7 +170,62 @@ if(COREVIDEO_WITH_D3D11)
   target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler d2d1 dwrite windowscodecs ole32)
 endif()
 
-# winmm provides timeBeginPeriod() — raise the system timer resolution to 1ms so the
+if(COREVIDEO_WITH_METAL)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_METAL requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_METAL supports the macOS Metal adapter only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework Metal" "-framework Foundation" "-framework IOSurface")
+endif()
+
+if(COREVIDEO_WITH_AVF_ENCODER)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_ENCODER requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_ENCODER supports the macOS adapter only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+endif()
+
+if(COREVIDEO_WITH_COREAUDIO)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_COREAUDIO requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_COREAUDIO supports the macOS adapters only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework CoreAudio" "-framework AudioUnit" "-framework AudioToolbox" "-framework CoreFoundation")
+endif()
+
+if(COREVIDEO_WITH_AVF_CAPTURE)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_CAPTURE requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_CAPTURE supports the macOS adapter only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+endif()
+
+if(COREVIDEO_WITH_SCK)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_SCK requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_SCK supports the macOS adapter only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo")
+endif()
+
+# winmm provides timeBeginPeriod() â€” raise the system timer resolution to 1ms so the
 # render loop's sub-frame sleep is accurate (default ~15.6ms granularity caps fps ~40).
 # windowscodecs + ole32 back the still-media WIC decoder (StillMediaFrameCache.cpp),
 # which is _WIN32-gated rather than option-gated so stills work in every Windows build.
@@ -183,15 +286,28 @@ if(COREVIDEO_WITH_VIRTUALCAM)
 endif()
 
 # ---------------------------------------------------------------------------
-# corevideo-browser-host — one WebView2 render process per browser source (BR-1).
+# corevideo-browser-host â€” one WebView2 render process per browser source (BR-1).
 # Renders --url offscreen, WGC-self-captures its window, publishes BGRA frames
 # into the named capture SHM the core maps (src/modules/BrowserSourceShm.h).
-# Uses the VENDORED WebView2 SDK (third_party/webview2 — provenance/license in
+# Uses the VENDORED WebView2 SDK (third_party/webview2 â€” provenance/license in
 # its README.md); the WebView2 *Runtime* is probed at host startup.
 # ---------------------------------------------------------------------------
-if(COREVIDEO_WITH_BROWSER_HOST)
+# macOS twin of the WebView2 host: WKWebView rendered offscreen, published into
+# the SAME seqlock segment (BrowserSourceShm.h) the Windows host writes, so the
+# core's ingest seam is identical on both platforms.
+if(COREVIDEO_WITH_BROWSER_HOST AND APPLE)
+  add_executable(corevideo-browser-host browser-host/main-macos.mm)
+  target_include_directories(corevideo-browser-host PRIVATE src)
+  set_target_properties(corevideo-browser-host PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+  target_compile_options(corevideo-browser-host PRIVATE -fobjc-arc)
+  target_link_libraries(corevideo-browser-host PRIVATE
+    "-framework Cocoa" "-framework WebKit" "-framework CoreGraphics")
+endif()
+
+if(COREVIDEO_WITH_BROWSER_HOST AND NOT APPLE)
   if(NOT WIN32)
-    message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST supports Windows only.")
+    message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST supports Windows and macOS only.")
   endif()
   if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST requires an x64 build (vendored WebView2LoaderStatic.lib is x64).")
@@ -351,7 +467,7 @@ add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
 # ---------------------------------------------------------------------------
-# Synthetic (fake) Zoom capture engine — NO Zoom SDK dependency.
+# Synthetic (fake) Zoom capture engine â€” NO Zoom SDK dependency.
 # Speaks the exact same named-pipe + shared-memory protocol as
 # corevideo-zoom-engine, but fabricates a multi-participant meeting so the
 # multi-participant crash/freeze scenario can be reproduced and validated
@@ -393,7 +509,13 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
   if(NOT ZOOM_SDK_DIR)
     message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE requires -DZOOM_SDK_DIR=<path to Zoom SDK>")
   endif()
-  if(EXISTS "${ZOOM_SDK_DIR}/include")
+  if(APPLE)
+    # The macOS SDK is ZoomSDK.framework (headers live inside the framework);
+    # ZOOM_SDK_DIR is the directory CONTAINING the framework (-F search path).
+    if(NOT EXISTS "${ZOOM_SDK_DIR}/ZoomSDK.framework")
+      message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE expected ZoomSDK.framework under ZOOM_SDK_DIR=${ZOOM_SDK_DIR}")
+    endif()
+  elseif(EXISTS "${ZOOM_SDK_DIR}/include")
     set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/include")
   elseif(EXISTS "${ZOOM_SDK_DIR}/h")
     set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/h")
@@ -401,36 +523,67 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
     message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE expected include/ or h/ under ZOOM_SDK_DIR=${ZOOM_SDK_DIR}")
   endif()
 
-  add_executable(corevideo-zoom-engine
-    zoom-engine/engine/main.cpp
-    zoom-engine/engine/engine-video.cpp
-    zoom-engine/engine/engine-audio.cpp
-    zoom-engine/engine/engine-share.cpp
-  )
-  target_include_directories(corevideo-zoom-engine PRIVATE
-    zoom-engine/engine
-    zoom-engine/shared
-    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}"
-    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/rawdata"
-    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/meeting_service_components"
-  )
-  if(WIN32)
-    file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
+  if(APPLE)
+    # The macOS Meeting SDK is a pure Objective-C framework (no C++ surface),
+    # so the engine is the self-contained ObjC++ rewrite in main-macos.mm â€”
+    # the Windows sources cannot compile against it. Re-forked from the
+    # CoreVideo OBS plugin's mac port; see the header of main-macos.mm.
+    add_executable(corevideo-zoom-engine zoom-engine/engine/main-macos.mm)
+    target_include_directories(corevideo-zoom-engine PRIVATE
+      zoom-engine/engine
+      zoom-engine/shared
+    )
+    # -F must be on BOTH the compile line (so `#import <ZoomSDK/ZoomSDK.h>`
+    # resolves via the framework's Headers dir) and the link line.
+    target_compile_options(corevideo-zoom-engine PRIVATE "-F${ZOOM_SDK_DIR}")
     target_link_libraries(corevideo-zoom-engine PRIVATE
-      ws2_32 crypt32 winhttp shlwapi ${ZOOM_SDK_LIBRARY})
-    if(EXISTS "${ZOOM_SDK_DIR}/bin")
-      add_custom_command(TARGET corevideo-zoom-engine POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${ZOOM_SDK_DIR}/bin"
-          "$<TARGET_FILE_DIR:corevideo-zoom-engine>")
-    endif()
-  elseif(APPLE)
-    target_link_libraries(corevideo-zoom-engine PRIVATE
-      "-F${ZOOM_SDK_DIR}/lib" "-framework ZoomSDK"
-      "-framework CoreFoundation" "-framework Foundation")
+      "-F${ZOOM_SDK_DIR}"
+      "-framework ZoomSDK"
+      "-framework Foundation"
+      # The engine hosts an NSApplication: the Zoom macOS SDK is an AppKit
+      # client, so a bare NSRunLoop cannot service its delegate callbacks.
+      "-framework AppKit"
+    )
+    # BUILD_RPATH is required, not optional: the framework is linked through
+    # raw -F/-framework flags, so CMake infers no build-tree rpath â€” without
+    # this the binary has ZERO LC_RPATH entries and dyld aborts at launch.
+    # INSTALL_RPATH targets the shipped bundle layout: the SDK loads its
+    # runtime bundles through the MAIN bundle's Contents/Frameworks, so the
+    # engine must run as <App>.app/Contents/MacOS/<engine> with the SDK there
+    # (without that, sdkAuth fails synchronously with no delegate callback).
+    set_target_properties(corevideo-zoom-engine PROPERTIES
+      BUILD_WITH_INSTALL_RPATH OFF
+      BUILD_RPATH "${ZOOM_SDK_DIR}"
+      INSTALL_RPATH "@executable_path/../Frameworks"
+    )
   else()
-    target_link_libraries(corevideo-zoom-engine PRIVATE
-      "${ZOOM_SDK_DIR}/lib/libsdk.so" rt)
+    add_executable(corevideo-zoom-engine
+      zoom-engine/engine/main.cpp
+      zoom-engine/engine/engine-video.cpp
+      zoom-engine/engine/engine-audio.cpp
+      zoom-engine/engine/engine-share.cpp
+    )
+    target_include_directories(corevideo-zoom-engine PRIVATE
+      zoom-engine/engine
+      zoom-engine/shared
+      "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}"
+      "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/rawdata"
+      "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/meeting_service_components"
+    )
+    if(WIN32)
+      file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
+      target_link_libraries(corevideo-zoom-engine PRIVATE
+        ws2_32 crypt32 winhttp shlwapi ${ZOOM_SDK_LIBRARY})
+      if(EXISTS "${ZOOM_SDK_DIR}/bin")
+        add_custom_command(TARGET corevideo-zoom-engine POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${ZOOM_SDK_DIR}/bin"
+            "$<TARGET_FILE_DIR:corevideo-zoom-engine>")
+      endif()
+    else()
+      target_link_libraries(corevideo-zoom-engine PRIVATE
+        "${ZOOM_SDK_DIR}/lib/libsdk.so" rt)
+    endif()
   endif()
 endif()
 
@@ -457,19 +610,29 @@ if(BUILD_TESTING)
     tests/ContractParityTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
+    tests/EngineIpcShmNameTest.cpp
+    tests/MetalCompositorTest.cpp
+    tests/AvfEncoderRecordingTest.cpp
+    tests/CoreAudioAdapterTest.cpp
+    tests/MacCaptureSupportTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/OverlayTileRasterTest.cpp
+    tests/PluginHostRespawnPolicyTest.cpp
+    tests/NdiPixelConvertTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
+    tests/EncoderPolicyTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
+    tests/SrtFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/VstHostAbiTest.cpp
+    tests/VstLatencyCompensationTest.cpp
     tests/ZoomFrameReaderTest.cpp
     tests/ZoomEngineClientTest.cpp
     tests/ZoomEngineProcessTest.cpp
@@ -482,6 +645,11 @@ if(BUILD_TESTING)
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
     COREVIDEO_WITH_ZOOM=$<BOOL:${COREVIDEO_WITH_ZOOM}>
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
+    COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
+    COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
+    COREVIDEO_WITH_AVF_CAPTURE=$<BOOL:${COREVIDEO_WITH_AVF_CAPTURE}>
+    COREVIDEO_WITH_SCK=$<BOOL:${COREVIDEO_WITH_SCK}>
     COREVIDEO_WITH_MF_ENCODER=$<BOOL:${COREVIDEO_WITH_MF_ENCODER}>
     COREVIDEO_WITH_WASAPI_MONITOR=$<BOOL:${COREVIDEO_WITH_WASAPI_MONITOR}>
     COREVIDEO_WITH_WASAPI_CAPTURE=$<BOOL:${COREVIDEO_WITH_WASAPI_CAPTURE}>

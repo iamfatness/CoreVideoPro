@@ -73,6 +73,19 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _supportBundleStatus = string.Empty;
 
+    // S3 opt-in telemetry. Consent lives in a standalone flag file (default OFF);
+    // the service owns the session clock + daily heartbeat and only ever sends
+    // when the toggle is ON and the ingest endpoint/key are configured.
+    private readonly TelemetryConsentStore _telemetryConsentStore;
+    private readonly TelemetryEventService _telemetry;
+    private bool _suppressTelemetryPersist;
+
+    [ObservableProperty]
+    private bool _telemetryEnabled;
+
+    [ObservableProperty]
+    private string _telemetryPreviewJson = string.Empty;
+
     public ObservableCollection<RecentZoomMeeting> RecentMeetings { get; } = [];
 
     public SettingsViewModel(
@@ -95,6 +108,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         _zoomStatusChanged = zoomStatusChanged;
         _onMeetingJoined = onMeetingJoined;
         _recentMeetingStore = recentMeetingStore ?? new FileRecentZoomMeetingStore(FileRecentZoomMeetingStore.DefaultStorePath());
+
+        _telemetryConsentStore = new TelemetryConsentStore(TelemetryConsentStore.DefaultPath());
+        _telemetry = new TelemetryEventService(() => _bridge.LastSnapshot, _telemetryConsentStore);
+        // Load persisted consent WITHOUT re-persisting it (default OFF on a fresh profile).
+        _suppressTelemetryPersist = true;
+        TelemetryEnabled = _telemetryConsentStore.Load().Enabled;
+        _suppressTelemetryPersist = false;
+        _telemetry.Start();
+
         _ = RefreshOAuthStatusAsync();
         _ = LoadRecentMeetingsAsync();
         RefreshSdkReadiness();
@@ -107,6 +129,72 @@ public sealed partial class SettingsViewModel : ObservableObject
     /// </summary>
     public void ConfigureOutputDestinations(Func<IReadOnlyList<SupportBundleOutputDestination>>? factory) =>
         _outputDestinationsFactory = factory;
+
+    // ---- S3 opt-in telemetry (spec §S3) ------------------------------------
+
+    /// <summary>Exactly what a telemetry event contains — the settings copy line.</summary>
+    public string TelemetryConsentCopy =>
+        "Send anonymous health data on app close and once a day: app version, session length, " +
+        "output counts (recording / streaming / virtual camera on-off, ISO / capture / participant counts), " +
+        "crashes since the last send, and a hardware class (CPU cores, RAM band, GPU tier). " +
+        "No names, meeting IDs, stream keys, URLs, or file paths are ever included.";
+
+    /// <summary>True when the ingest endpoint + key are configured (beta config); the toggle still gates sending.</summary>
+    public bool TelemetryConfigured => _telemetry.IsConfigured;
+
+    /// <summary>Note shown when telemetry is unconfigured so the toggle isn't a silent no-op.</summary>
+    public string TelemetryConfigStatus => TelemetryConfigured
+        ? "Telemetry endpoint configured."
+        : "No telemetry endpoint is configured in this build — nothing is sent even when enabled.";
+
+    public bool ShowTelemetryPreview => !string.IsNullOrWhiteSpace(TelemetryPreviewJson);
+
+    partial void OnTelemetryPreviewJsonChanged(string value) =>
+        OnPropertyChanged(nameof(ShowTelemetryPreview));
+
+    /// <summary>Persist the opt-in on change (unless we're loading the stored value at startup).</summary>
+    partial void OnTelemetryEnabledChanged(bool value)
+    {
+        if (_suppressTelemetryPersist)
+        {
+            return;
+        }
+
+        try
+        {
+            _telemetryConsentStore.SetEnabled(value);
+            LaunchLog.Write($"telemetry: consent {(value ? "ENABLED" : "disabled")} by operator");
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"telemetry: could not persist consent ({ex.Message})");
+        }
+    }
+
+    /// <summary>
+    /// Builds and shows the EXACT payload that would be sent (spec §7 —
+    /// inspectable before egress). Works whether or not telemetry is enabled, so
+    /// the operator can audit the egress before opting in.
+    /// </summary>
+    [RelayCommand]
+    private void PreviewTelemetry()
+    {
+        try
+        {
+            TelemetryPreviewJson = _telemetry.BuildPreviewJson();
+        }
+        catch (Exception ex)
+        {
+            TelemetryPreviewJson = $"(could not build preview: {ex.Message})";
+        }
+    }
+
+    /// <summary>
+    /// Fire-and-forget session-end telemetry for the app-shutdown path. Gated on
+    /// consent + config, bounded by a tight timeout — MUST NOT be awaited on the
+    /// shutdown critical path (spec §S3.4: never block or delay close).
+    /// </summary>
+    public void FlushTelemetrySessionEnd() => _telemetry.FireSessionEnd();
 
     public IReadOnlyList<ZoomEngineEvidenceItem> DiagnosticsReadout => _diagnosticsReadout;
 
@@ -391,6 +479,33 @@ public sealed partial class SettingsViewModel : ObservableObject
         });
     }
 
+    /// <summary>
+    /// S1 crash pipeline: writes the same redacted support bundle the manual
+    /// export produces, but to a caller-chosen path and without touching the
+    /// settings-page status text. Thin wrapper over the existing export path —
+    /// SupportBundleBuilder itself is untouched (a parallel S2 task extends it).
+    /// Call from the UI thread; the destination factory reads VM state.
+    /// </summary>
+    public async Task<bool> TryWriteSupportBundleSnapshotAsync(string filePath)
+    {
+        try
+        {
+            var outputs = _outputDestinationsFactory?.Invoke();
+            await SupportBundleBuilder.WriteAsync(
+                filePath,
+                _bridge.LastSnapshot,
+                _bridge.Health,
+                new SupportBundleAppInfo(),
+                outputs).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"crash-report: support bundle snapshot failed {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
     [RelayCommand]
     private async Task ExportSupportBundleAsync()
     {
@@ -405,13 +520,59 @@ public sealed partial class SettingsViewModel : ObservableObject
                 _bridge.Health,
                 new SupportBundleAppInfo(),
                 outputs).ConfigureAwait(true);
-            SupportBundleStatus = $"Support bundle exported to {path}";
             LaunchLog.Write($"support-bundle: exported to {path}");
+
+            // S2 bundle v2: also pack the JSON + bounded/redacted log tails +
+            // crash-dump listing into a zip next to the JSON. A zip failure must
+            // never lose the JSON export — report the JSON path instead.
+            string? zipPath = null;
+            try
+            {
+                var archive = await SupportBundleArchiveBuilder.WriteArchiveAsync(
+                    SupportBundleArchiveBuilder.DefaultArchivePath(path),
+                    path).ConfigureAwait(true);
+                zipPath = archive.ZipPath;
+                LaunchLog.Write(
+                    $"support-bundle: archive written {zipPath} ({archive.IncludedCount}/{archive.Entries.Count} entries)");
+            }
+            catch (Exception zipEx)
+            {
+                LaunchLog.Write($"support-bundle: archive failed {zipEx.GetType().Name}: {zipEx.Message}");
+            }
+
+            if (zipPath is not null)
+            {
+                SupportBundleStatus = $"Support bundle exported to {zipPath}";
+                RevealInExplorer(zipPath);
+            }
+            else
+            {
+                SupportBundleStatus = $"Support bundle exported to {path} (zip archive failed; see launch.log)";
+            }
         }
         catch (Exception ex)
         {
             SupportBundleStatus = $"Support bundle export failed: {ex.Message}";
             LaunchLog.Write($"support-bundle: export failed {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    // Reveal the exported bundle zip in Explorer (same non-fatal posture as the
+    // recording-folder reveal in ProductionSettingsWindow).
+    private static void RevealInExplorer(string filePath)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{filePath}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"support-bundle: explorer reveal failed {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -719,7 +880,19 @@ public sealed partial class SettingsViewModel : ObservableObject
                 var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
                 ApplyCaptureSnapshot(snapshot);
                 JoinStatus = "Disconnected from Zoom.";
-                _bridge.Stop();
+                // The MEDIA CORE STAYS UP. This used to _bridge.Stop() — a
+                // kill-tree of the whole core child — so leaving a Zoom meeting
+                // silently killed every capture device, the virtual camera, the
+                // program render and any recording, and the supervisor treated
+                // it as a deliberate stop so nothing respawned: the studio sat
+                // "unstable" (endless deferred syncs) until an app restart
+                // (live session, 2026-08-09: core log ends the second the leave
+                // ran; shell limped for 93 minutes). The kill was a sledgehammer
+                // from the era when the Zoom ENGINE could not be trusted to die;
+                // the engine is its own subprocess with the G4-ordered teardown
+                // now, and zoom-leave above already makes it exit cleanly. A
+                // meeting is one SOURCE — leaving it must not tear down the
+                // switcher. _bridge.Stop() remains the APP-EXIT path only.
             }
             else
             {
@@ -741,8 +914,14 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>Engine-reported raw-media state from the latest zoom snapshot
+    /// (null until the engine reports). Drives the "waiting for Zoom recording
+    /// permission" status in the studio.</summary>
+    public bool? RawMediaActive { get; private set; }
+
     public void ApplyCaptureSnapshot(RawCaptureSnapshot snapshot)
     {
+        RawMediaActive = snapshot.RawMediaActive;
         MeetingState = ParseMeetingState(snapshot.MeetingState);
         LiveParticipantCount = snapshot.Participants.Count;
         RefreshZoomEngineEvidence(_bridge.LastSnapshot, throttle: true);
@@ -1204,13 +1383,9 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private void RunOnUiThread(Action action)
     {
-        if (_dispatcher.HasThreadAccess)
-        {
-            action();
-            return;
-        }
-
-        _dispatcher.TryEnqueue(() => action());
+        // See UiDispatch: a throwing TryEnqueue callback fail-fasts the process
+        // with no managed log. Route through the hardened dispatcher.
+        UiDispatch.Run(_dispatcher, action, "SettingsViewModel");
     }
 
     private void SetJoinProgress(ZoomMeetingState state, string status) =>

@@ -56,6 +56,7 @@ enum class ZoomEngineEventKind {
   ActiveSpeaker,
   Frame,
   Audio,
+  RawMediaStatus,
   Error,
 };
 
@@ -72,6 +73,11 @@ struct ZoomEngineEvent {
   std::uint32_t byteLength = 0;
   std::size_t participantCount = 0;
   bool ok = false;
+  // RawMediaStatus events only: engine-reported raw-media state ("active" field
+  // of the raw_media_status event). True after StartRawRecording succeeds and
+  // subscriptions re-arm; false after stop_raw_media (StopRawRecording +
+  // unsubscribe_all) completes on the engine's command loop.
+  bool rawMediaActive = false;
   std::vector<ZoomEngineParticipant> participants;
 };
 
@@ -119,13 +125,17 @@ std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength);
 // complete) so pollers skip the full-frame copy when nothing changed.
 std::uint32_t readZoomEngineI420FrameSequence(const void* sharedMemory, std::size_t sharedMemorySize);
 
+// buildThumbnail=false skips the (downscaled) RGBA convert entirely — the frame
+// then carries only the full-res I420 planes for the compositor. Callers use it
+// to pace thumbnail work/events without touching the real video path.
 std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     const void* sharedMemory,
     std::size_t sharedMemorySize,
     const std::string& sourceUuid,
     std::uint32_t participantId,
     std::uint32_t maxWidth,
-    std::uint32_t maxHeight);
+    std::uint32_t maxHeight,
+    bool buildThumbnail = true);
 
 // One PCM chunk snapshot-read from an engine audio SHM region (single-slot
 // seqlock, same tear protocol as the video frames: odd sequence = mid-write).

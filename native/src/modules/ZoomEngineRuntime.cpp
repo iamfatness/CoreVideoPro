@@ -60,7 +60,12 @@ constexpr double kFrameStaleAfterMs = 1000.0;
 
 }  // namespace
 
-ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {}
+ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {
+  // Frame sync is ON by default (owner decision 2026-08-06: behave like a
+  // hardware switcher input). COREVIDEO_FRAME_SYNC=0 trades the smoothness back
+  // for one frame of latency — keep it working, it is the A/B control.
+  frameSyncEnabled_ = envInt("COREVIDEO_FRAME_SYNC", 1) != 0;
+}
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
   // Stop the video-ingest thread FIRST: it takes mutex_ briefly and touches
@@ -123,6 +128,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     initialized_ = false;
     mediaStarted_ = false;
     latestDecodedFrames_.clear();
+    frameSync_.clear();
     pendingAudio_.clear();
     closeAudioStreamsLocked();
   closeVideoStreamsLocked();
@@ -243,11 +249,32 @@ rpc::Json ZoomEngineRuntime::leave() {
   state_.reset();
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
+  frameSync_.clear();
   pendingAudio_.clear();
   closeAudioStreamsLocked();
   closeVideoStreamsLocked();
   sentSubscriptions_.clear();  // a rejoin must re-subscribe from scratch
   ++fallbackTick_;
+  return rawCaptureSnapshotLocked();
+}
+
+rpc::Json ZoomEngineRuntime::stopCapture() {
+  if (!configured()) {
+    return nullptr;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  // Operator no longer wants raw capture; a later spine sync with
+  // startCapture=true (or a Joined event) re-arms via ensureMediaStartedLocked.
+  captureRequested_ = false;
+  if (process_ && process_->running()) {
+    enqueueEngineSendLocked("stop_media", buildZoomEngineStopMediaCommand());
+  }
+  mediaStarted_ = false;
+  // The engine's stop_raw_media unsubscribes EVERY source; forget the dedup map
+  // so a fresh capture-on re-sends every subscribe instead of assuming the old
+  // ones survived (they did not).
+  sentSubscriptions_.clear();
   return rawCaptureSnapshotLocked();
 }
 
@@ -404,11 +431,67 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
 
 std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t timestampMs) {
   std::lock_guard<std::mutex> lock(mutex_);
+  // INGEST -> RENDER HANDOFF LATENCY. This is called from the render thread, so
+  // `now - observedAt` is exactly how long a decoded frame waited between the
+  // ingest thread seeing it in shared memory and the compositor picking it up.
+  // Reported as a DISTRIBUTION, not a mean: a switcher is judged on its worst
+  // frames. The unmeasured head of the path (engine SHM write -> ingest thread
+  // observing it) is bounded above by the 8ms ingest poll interval.
+  static std::vector<double> s_samples;
+  static auto s_stamp = std::chrono::steady_clock::now();
+  const auto nowTp = std::chrono::steady_clock::now();
+
   std::vector<VideoFrame> frames;
   frames.reserve(latestDecodedFrames_.size());
-  for (const auto& [participantId, decoded] : latestDecodedFrames_) {
+  for (auto& [participantId, decoded] : latestDecodedFrames_) {
+    // FRAME SYNC: draw this tick's frame from the queue, keeping kFrameSyncCushion
+    // in reserve. Priming waits for cushion+1 so the reserve exists BEFORE the
+    // first frame goes to air — that reserve is the entire point, and building it
+    // lazily would just reproduce the catch-up buffer that measured no benefit.
+    if (frameSyncEnabled_) {
+      auto& sync = frameSync_[participantId];
+      if (!sync.primed && sync.frames.size() > kFrameSyncCushion) {
+        sync.primed = true;
+      }
+      // HOLD the cushion at its target, never merely inherit it. Frames pile up
+      // before the render thread starts pulling a newly joined source, and
+      // draining one-per-tick from a deep queue would lock that startup backlog
+      // in as PERMANENT latency (measured: p50 27ms on one run, 37ms on the next,
+      // purely on join timing). A frame sync resyncs instead of falling behind,
+      // so discard the excess and keep exactly the cushion.
+      while (sync.frames.size() > kFrameSyncCushion + 1) {
+        sync.frames.pop_front();
+        ++slotOverwritten_;  // stale backlog, and it never reached the compositor
+      }
+      if (sync.primed && !sync.frames.empty()) {
+        decoded = std::move(sync.frames.front());
+        sync.frames.pop_front();
+      }
+    }
     if (!decoded.i420 || decoded.width <= 0 || decoded.height <= 0) {
       continue;
+    }
+    // Slot accounting: is this a frame the compositor has not seen, or the same
+    // one re-served because nothing new arrived since the last tick?
+    if (decoded.fetched) {
+      ++slotStarved_;
+    } else {
+      ++slotFresh_;
+      decoded.fetched = true;
+    }
+    // Sample each frame EXACTLY ONCE, on the first fetch after it was published.
+    // latestDecodedFrames_ holds the latest frame per participant and re-serves it
+    // on ticks where nothing new arrived, so sampling every fetch measures how
+    // stale the held frame is, not how long a new frame waited — which inflates
+    // the tail with frames that were already on screen.
+    static std::map<std::string, std::int64_t> s_lastSampled;
+    if (decoded.observedAt.time_since_epoch().count() != 0) {
+      auto& lastId = s_lastSampled[participantId];
+      if (lastId != decoded.frameId) {
+        lastId = decoded.frameId;
+        s_samples.push_back(
+            std::chrono::duration<double, std::milli>(nowTp - decoded.observedAt).count());
+      }
     }
     VideoFrame frame;
     frame.participantId = participantId;
@@ -422,6 +505,36 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.i420Height = decoded.height;
     frame.frameId = decoded.frameId;
     frames.push_back(std::move(frame));
+  }
+
+  const double windowSec = std::chrono::duration<double>(nowTp - s_stamp).count();
+  if (windowSec >= 2.0 && !s_samples.empty()) {
+    std::sort(s_samples.begin(), s_samples.end());
+    const auto at = [&](double q) {
+      const auto idx = static_cast<std::size_t>(q * (s_samples.size() - 1));
+      return s_samples[idx];
+    };
+    std::fprintf(stderr,
+                 "[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
+                 "(n=%zu, +<=2ms upstream poll)\n",
+                 at(0.50), at(0.99), s_samples.back(), s_samples.size());
+    // Where every decoded frame went. published = fresh + overwritten (+ one
+    // in-flight per source); starved = render ticks that re-served a frame the
+    // compositor already had. Overwritten is the only true motion loss.
+    std::fprintf(stderr,
+                 "[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
+                 "starved=%lld over %.2fs\n",
+                 slotPublished_, slotFresh_, slotOverwritten_,
+                 slotPublished_ > 0 ? 100.0 * slotOverwritten_ / slotPublished_ : 0.0,
+                 slotStarved_, windowSec);
+    slotPublished_ = 0;
+    slotOverwritten_ = 0;
+    slotFresh_ = 0;
+    slotStarved_ = 0;
+    s_samples.clear();
+    s_stamp = nowTp;
+  } else if (s_samples.size() > 20000) {
+    s_samples.clear();  // never let the sample buffer grow unbounded
   }
   return frames;
 }
@@ -711,6 +824,9 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
       {"meetingState", snapshot.meetingState == "in-meeting" ? "in_meeting" : snapshot.meetingState},
       {"participants", participants},
       {"tick", fallbackTick_},
+      // Engine-reported truth (raw_media_status events), NOT the last command
+      // sent: the shell's Capture state/status reads this.
+      {"rawMediaActive", snapshot.rawMediaActive},
   };
   if (!snapshot.activeSpeakerId.empty()) {
     result.emplace("activeSpeakerId", snapshot.activeSpeakerId);
@@ -760,6 +876,7 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
   return rpc::Json::Object{
       {"meetingState", runtime.meetingState},
       {"sdkVersion", "zoom-engine"},
+      {"rawMediaActive", runtime.rawMediaActive},
       {"participantCount", static_cast<int>(runtime.participants.size())},
       {"activeSpeakerId", runtime.activeSpeakerId},
       {"screenShareParticipantId", runtime.screenShareParticipantId},
@@ -825,9 +942,17 @@ void ZoomEngineRuntime::ensureVideoIngestThreadLocked() {
 }
 
 void ZoomEngineRuntime::videoIngestLoop() {
+  // Poll interval is pure ADDED LATENCY: a frame written to shared memory sits
+  // unseen for up to this long before the ingest thread notices it. At 8ms that
+  // was ~4ms average of dead time on every source, on a 16.7ms frame budget.
+  // The locked peek is a 16-byte sequence read per stream and the expensive
+  // snapshot only runs when a sequence actually changed, so polling faster costs
+  // almost nothing: 2ms bounds the miss at ~1ms average (measured: no change in
+  // render cost, ingest stage stays ~0.05ms).
+  constexpr auto kVideoIngestPollMs = std::chrono::milliseconds(2);
   while (videoIngestRun_.load(std::memory_order_acquire)) {
     drainVideoStreamsThreePhase();
-    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    std::this_thread::sleep_for(kVideoIngestPollMs);
   }
 }
 
@@ -843,7 +968,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t sequence = 0;
+    bool buildThumbnail = false;
   };
+  // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
+  // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
+  constexpr std::int64_t kThumbnailEmitIntervalMs = 500;
   std::vector<SnapshotJob> jobs;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -856,8 +985,19 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
         if (!shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_),
                                   zoomEngineI420FrameByteSize(ref.width, ref.height))) {
           delete opened;
-          continue;  // not created yet; retry next poll
+          // LOUD past ~2s of consecutive failures (this path polls at render
+          // rate). "Not created yet" is normal for the first few polls; a
+          // stream that has announced dimensions but stays unmappable is a
+          // frozen source, and this used to retry in complete silence.
+          if (++ref.regionOpenFailures == 120 || ref.regionOpenFailures % 600 == 0) {
+            std::fprintf(stderr,
+                         "[zoom-ingest] %s: video shm STILL unmappable after %d polls "
+                         "(%ux%u announced) — source is frozen, engine region missing or undersized\n",
+                         uuid.c_str(), ref.regionOpenFailures, ref.width, ref.height);
+          }
+          continue;  // retry next poll
         }
+        ref.regionOpenFailures = 0;
         ref.regionOpaque = std::shared_ptr<void>(opened, [](void* pointer) {
           auto* region = static_cast<ShmRegion*>(pointer);
           shm_region_destroy(*region);
@@ -869,7 +1009,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       if (sequence == 0 || (sequence & 1u) != 0 || sequence == ref.lastSequence) {
         continue;  // never written, mid-write, or unchanged: 16-byte cost
       }
-      jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence});
+      const auto nowMs = runtimeElapsedMs();
+      const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
+                                  nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
+      jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
+                      buildThumbnail});
     }
   }
 
@@ -878,12 +1022,48 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
   struct SnapshotResult {
     SnapshotJob job;
     std::optional<ZoomEngineRgbaFrame> frame;
+    std::shared_ptr<const std::vector<std::uint8_t>> i420Shared;
+    std::chrono::steady_clock::time_point observedAt{};
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
   for (auto& job : jobs) {
     results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
-                                                            job.participantId, 640, 360)});
+                                                            job.participantId, 640, 360,
+                                                            job.buildThumbnail)});
+    // Take ownership of the decoded I420 into its shared buffer HERE, while
+    // UNLOCKED. This used to happen in the publish phase under mutex_, where it
+    // copy-constructed the whole plane set (~3.1MB per 1080p participant). The
+    // render thread calls latestDecodedVideoFrames() while holding coreMutex, so
+    // it blocked behind that memcpy — ~7ms of a 10x1080p tick, 12ms while
+    // recording. Moving it out leaves the publish phase a pointer store, which
+    // is what "Phase 3 (locked, cheap)" always claimed to be.
+    auto& result = results.back();
+    result.observedAt = std::chrono::steady_clock::now();
+    if (result.frame && !result.frame->i420.empty()) {
+      result.i420Shared =
+          std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
+    }
+  }
+
+  // Achieved ingest rate: how many decoded frames per second actually reach the
+  // core. The compositor's upload counters are throttled (multiview composites
+  // every 3rd tick), so they CANNOT be used as an ingest proxy — this is the
+  // real number, and it is what proves whether a 1080p60 wall is being consumed.
+  {
+    static auto s_stamp = std::chrono::steady_clock::now();
+    static long long s_published = 0;
+    for (const auto& r : results) {
+      if (r.frame) ++s_published;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double sec = std::chrono::duration<double>(now - s_stamp).count();
+    if (sec >= 2.0) {
+      std::fprintf(stderr, "[zoom-ingest] %.0f frames/s decoded into the core (%.1f MB/s)\n",
+                   s_published / sec, s_published / sec * 3.11);
+      s_published = 0;
+      s_stamp = now;
+    }
   }
 
   // Phase 3 (locked, cheap): publish.
@@ -899,24 +1079,60 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       continue;
     }
     stream->second.lastSequence = result.job.sequence;
-    publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame);
+    publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
+                            std::move(result.i420Shared), result.observedAt);
   }
 }
 
-void ZoomEngineRuntime::publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
-                                                const ZoomEngineRgbaFrame& frame) {
+void ZoomEngineRuntime::publishVideoFrameLocked(
+    const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
+    std::shared_ptr<const std::vector<std::uint8_t>> i420,
+    std::chrono::steady_clock::time_point observedAt) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs());
 
   // Tap the full-resolution I420 planes for the compositor without disturbing
   // the stdout/event queue below that feeds the WinUI multiview tiles.
-  if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && !frame.i420.empty()) {
+  if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && i420 &&
+      !i420->empty()) {
     DecodedFrame& decoded = latestDecodedFrames_[frame.participantId];
-    decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(frame.i420);
-    decoded.width = static_cast<int>(frame.i420Width);
-    decoded.height = static_cast<int>(frame.i420Height);
-    decoded.frameId = static_cast<std::int64_t>(frame.frameId);
+    ++slotPublished_;
+
+    DecodedFrame incoming;
+    incoming.i420 = std::move(i420);
+    incoming.observedAt = observedAt;
+    incoming.width = static_cast<int>(frame.i420Width);
+    incoming.height = static_cast<int>(frame.i420Height);
+    incoming.frameId = static_cast<std::int64_t>(frame.frameId);
+
+    if (frameSyncEnabled_) {
+      // Queue behind whatever is already waiting — never jump the line, or a
+      // parked frame surfaces later and OUT OF ORDER (measured once as an 800ms
+      // p99 while the delivery number happily read 97%).
+      auto& sync = frameSync_[frame.participantId];
+      sync.frames.push_back(std::move(incoming));
+      if (sync.frames.size() > kFrameSyncMaxDepth) {
+        // Sustained overflow: the source is genuinely outrunning the render.
+        // Drop the OLDEST so the wall stays current instead of drifting behind.
+        sync.frames.pop_front();
+        ++slotOverwritten_;
+      }
+    } else {
+      if (decoded.i420 && !decoded.fetched) {
+        // Latest-wins fallback (COREVIDEO_FRAME_SYNC=0): a decoded frame is
+        // destroyed before the compositor ever took it. Real lost motion.
+        ++slotOverwritten_;
+      }
+      decoded = std::move(incoming);
+    }
   }
+
+  // Thumbnail-throttled frames carry only the I420 tap (above) — no event. The
+  // pace decision lives in the phase-1 peek (VideoStreamRef.lastThumbnailEmitMs).
+  if (frame.rgba.empty()) {
+    return;
+  }
+  ref.lastThumbnailEmitMs = runtimeElapsedMs();
 
   const auto observedAtMs = runtimeElapsedMs();
   const int thumbW = static_cast<int>(frame.width);

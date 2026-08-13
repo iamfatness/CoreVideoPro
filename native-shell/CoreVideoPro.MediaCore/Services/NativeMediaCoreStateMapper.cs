@@ -231,6 +231,7 @@ public static class NativeMediaCoreStateMapper
             Status = session.Status,
             MasterLevel = session.MasterLevel,
             LoudnessLufs = session.LoudnessLufs,
+            MasterMeter = session.MasterMeter,
             PluginHost = session.PluginHost,
             LimiterEnabled = session.LimiterEnabled,
             LimiterActive = session.LimiterActive,

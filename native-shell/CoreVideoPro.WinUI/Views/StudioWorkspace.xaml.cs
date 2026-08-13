@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Dispatching;
@@ -51,6 +55,107 @@ public sealed partial class StudioWorkspace : UserControl
     {
         ScheduleParticipantListRefresh();
         StartHeaderClock();
+        BeginCrashReportScan();
+    }
+
+    // ==== S1 crash pipeline (docs/beta-engineering-spec.md §S1) ====
+    // Launch-time dump detection is async and OFF the startup critical path; the
+    // InfoBar is a static one-shot surface driven entirely from this code-behind
+    // (no bound collections — 0xc000027b rules). Nothing is ever auto-sent.
+
+    private static int _crashScanStarted; // once per process, not per load
+    private CrashReportCoordinator? _crashCoordinator;
+    private IReadOnlyList<CrashDumpFile>? _pendingCrashDumps;
+
+    private void BeginCrashReportScan()
+    {
+        if (Interlocked.Exchange(ref _crashScanStarted, 1) == 1)
+        {
+            return;
+        }
+
+        var coordinator = CrashReportCoordinator.CreateFromEnvironment();
+        if (coordinator is null)
+        {
+            LaunchLog.Write("crash-report: telemetry endpoint/key not configured — crash reporting disabled");
+            return;
+        }
+
+        _crashCoordinator = coordinator;
+        _ = RunCrashReportScanAsync(coordinator);
+    }
+
+    private async Task RunCrashReportScanAsync(CrashReportCoordinator coordinator)
+    {
+        try
+        {
+            var dumps = await Task.Run(coordinator.ScanAndAdvanceWatermark).ConfigureAwait(true);
+            if (dumps.Count == 0)
+            {
+                return;
+            }
+
+            _pendingCrashDumps = dumps;
+            var newest = dumps[^1];
+            CrashReportBar.Message =
+                $"A crash dump from {newest.ProcessName} was found " +
+                $"({(dumps.Count == 1 ? "1 dump" : $"{dumps.Count} dumps")}). " +
+                "Send a report to help fix it? The report (dump + recent logs, secrets redacted) " +
+                "is saved locally either way — nothing is sent unless you click Send.";
+            CrashReportBar.IsOpen = true;
+        }
+        catch (Exception ex)
+        {
+            // The crash reporter must never take the studio down.
+            LaunchLog.Write($"crash-report: launch scan failed {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private async void OnCrashReportSendClicked(object sender, RoutedEventArgs e)
+    {
+        var coordinator = _crashCoordinator;
+        var dumps = _pendingCrashDumps;
+        if (coordinator is null || dumps is null || dumps.Count == 0)
+        {
+            CrashReportBar.IsOpen = false;
+            return;
+        }
+
+        CrashReportSendButton.IsEnabled = false;
+        CrashReportBar.Message = "Assembling and sending the crash report…";
+
+        try
+        {
+            var settings = (_boundViewModel ?? ViewModel)?.Settings;
+            Func<string, Task<bool>> writeBundle = settings is null
+                ? static _ => Task.FromResult(false)
+                : settings.TryWriteSupportBundleSnapshotAsync;
+
+            var outcome = await coordinator.SendAsync(dumps, writeBundle).ConfigureAwait(true);
+
+            CrashReportBar.Severity = outcome.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
+            CrashReportBar.Title = outcome.Success ? "Crash report sent" : "Crash report not sent";
+            CrashReportBar.Message = outcome.Message;
+            if (outcome.Success || !outcome.CanRetry)
+            {
+                _pendingCrashDumps = null;
+                CrashReportSendButton.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                CrashReportSendButton.Content = "Try again";
+                CrashReportSendButton.IsEnabled = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"crash-report: send failed {ex.GetType().Name}: {ex.Message}");
+            CrashReportBar.Severity = InfoBarSeverity.Error;
+            CrashReportBar.Title = "Crash report not sent";
+            CrashReportBar.Message = $"Sending failed: {ex.Message}";
+            CrashReportSendButton.Content = "Try again";
+            CrashReportSendButton.IsEnabled = true;
+        }
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -209,15 +314,15 @@ public sealed partial class StudioWorkspace : UserControl
         }
 
         _participantListRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _participantListRefreshScheduled = false;
             ParticipantListView.ItemsSource = null;
-            _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+            UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
             {
                 ParticipantListView.ItemsSource = ViewModel?.ParticipantListItems;
-            });
-        });
+            }, "StudioWorkspace.participant-list.rebind");
+        }, "StudioWorkspace.participant-list.clear");
     }
 
     // Owner: the room panel is redundant with the Sources tab. The X on the

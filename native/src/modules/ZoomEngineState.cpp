@@ -44,7 +44,13 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
                                         : "Zoom SDK authentication failed.");
       break;
     case ZoomEngineEventKind::Error:
-      meetingState_ = "error";
+      // A mid-meeting error (e.g. raw_media_start_failed while the record
+      // privilege is pending) is a WARNING — demoting meetingState_ made the
+      // shell read "not in a meeting" while live. Only pre-join errors are
+      // join failures.
+      if (meetingState_ != "in-meeting") {
+        meetingState_ = "error";
+      }
       addWarning(!event.message.empty() ? event.message
                  : !event.stage.empty() ? "Zoom engine failed during " + event.stage + "."
                                         : "Zoom engine reported an error.");
@@ -71,6 +77,12 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
       break;
     case ZoomEngineEventKind::ActiveSpeaker:
       activeSpeakerId_ = event.participantId;
+      break;
+    case ZoomEngineEventKind::RawMediaStatus:
+      rawMediaActive_ = event.rawMediaActive;
+      events_.emplace_back(event.rawMediaActive
+                               ? "Zoom raw media started" + (event.message.empty() ? "." : " (" + event.message + ").")
+                               : "Zoom raw media stopped" + (event.message.empty() ? "." : " (" + event.message + ")."));
       break;
     case ZoomEngineEventKind::Frame: {
       auto& stats = subscriptionStats_[event.sourceUuid];
@@ -159,6 +171,7 @@ void ZoomEngineRuntimeState::addWarning(const std::string& warning) {
 void ZoomEngineRuntimeState::reset() {
   meetingState_ = "idle";
   sdkAuthenticated_ = false;
+  rawMediaActive_ = false;
   activeSpeakerId_ = 0;
   screenShareParticipantId_ = 0;
   participants_.clear();
@@ -180,6 +193,7 @@ ZoomEngineRuntimeSnapshot ZoomEngineRuntimeState::snapshot() const {
   }
   snapshot.events = events_;
   snapshot.warnings = warnings_;
+  snapshot.rawMediaActive = rawMediaActive_;
   return snapshot;
 }
 

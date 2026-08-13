@@ -53,11 +53,18 @@
                                         <TextBlock Text="{x:Bind Name}" FontSize="12" FontWeight="SemiBold" />
                                         <!-- R1: assign a production role (session-only). Role-targeted
                                              scene layers and the core director follow this. -->
+                                        <!-- SelectedValue is applied in code-behind (OnProductionRoleComboLoaded),
+                                             NOT by x:Bind. Pushing it through x:Bind's phased ProcessBindings
+                                             threw COMException 0x80004005 out of Selector.set_SelectedValue and
+                                             killed the app: these rows live in an ItemsRepeater, so a recycled
+                                             container can be re-bound while its ItemsSource binding is still
+                                             resolving, and selecting a value the ComboBox does not have yet
+                                             throws. Tag carries the whole row so the handler has both ids. -->
                                         <ComboBox ItemsSource="{Binding ViewModel.ProductionRoleAssignmentOptions, ElementName=SourcesInputsRoot}"
                                                   SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
-                                                  SelectedValue="{x:Bind ProductionRoleId}"
-                                                  Tag="{x:Bind ParticipantId}"
+                                                  Tag="{x:Bind}"
+                                                  Loaded="OnProductionRoleComboLoaded"
                                                   SelectionChanged="OnProductionRoleChanged"
                                                   FontSize="10" MinWidth="110" Padding="6,2,6,2" />
                                     </StackPanel>
@@ -283,6 +290,13 @@
                                Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
                     <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
+                    <!-- An in-show input whose source no longer exists (unplugged display,
+                         changed camera id) is dropped from the multiview silently, leaving
+                         an unexplained placeholder tile. Say so. Scalar string + Visibility
+                         only — never a snapshot-rate bound collection (0xc000027b). -->
+                    <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
+                             Message="{x:Bind ViewModel.ShowInputWarning, Mode=OneWay}"
+                             Visibility="{x:Bind ViewModel.ShowInputWarningVisibility, Mode=OneWay}" />
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -342,6 +356,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="{x:Bind SlotNumber}" FontWeight="SemiBold" FontSize="12"
                                                    VerticalAlignment="Center" />
@@ -396,7 +411,16 @@
                                                   DisplayMemberPath="Label"
                                                   Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                   HorizontalAlignment="Left" VerticalAlignment="Center" />
-                                        <Button Grid.Column="5"
+                                        <!-- ISO-4 (spec §7): per-source ISO recording toggle. Only eligible
+                                             video-bearing sources (Zoom guests + capture devices) show it; it
+                                             feeds the operator's isoSourceIds selection (armed only when the
+                                             transport "Program + ISOs" switch is on). -->
+                                        <CheckBox Grid.Column="5" Content="ISO" MinWidth="0" Margin="0"
+                                                  IsChecked="{x:Bind IsoEnabled, Mode=TwoWay}"
+                                                  Visibility="{x:Bind ShowIsoToggle, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                  ToolTipService.ToolTip="Record an isolated per-source file for this input (Program + ISOs)"
+                                                  VerticalAlignment="Center" />
+                                        <Button Grid.Column="6"
                                                 Content="Grade"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
@@ -404,7 +428,7 @@
                                                 CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"
                                                 VerticalAlignment="Center" />
                                         <!-- Lifecycle L1: detach this slot (source stays available) -->
-                                        <Button Grid.Column="6"
+                                        <Button Grid.Column="7"
                                                 Content="Unassign"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"

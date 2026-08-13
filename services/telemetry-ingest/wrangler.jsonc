@@ -7,5 +7,21 @@
   "preview_urls": false,
   "vars": {
     "ENVIRONMENT": "staging"
-  }
+  },
+  // S0 storage bindings. The real Cloudflare resources must exist before
+  // `wrangler deploy` (see README.md in this directory):
+  //   npx wrangler r2 bucket create corevideo-telemetry-reports
+  //   npx wrangler kv namespace create REPORTS_KV   -> paste the returned id below
+  "r2_buckets": [
+    {
+      "binding": "REPORTS_BUCKET",
+      "bucket_name": "corevideo-telemetry-reports"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "REPORTS_KV",
+      "id": "REPLACE_WITH_REPORTS_KV_NAMESPACE_ID"
+    }
+  ]
 }

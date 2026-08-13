@@ -157,6 +157,7 @@ std::vector<fs::path> scanRoots() {
 #include <windows.h>
 #include <objbase.h>
 
+#include <array>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -377,6 +378,54 @@ int processBundle(const std::string& bundlePath, const std::string& className) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// A2 CLI proof: --state-roundtrip <bundle> <className>. Instantiates the
+// plugin, captures its component state (IBStream), pushes the same blob back
+// through setState, captures again, and prints a machine-readable verdict —
+// the headless state proof that needs no app and no host transport.
+// ---------------------------------------------------------------------------
+int stateRoundtripBundle(const std::string& bundlePath, const std::string& className) {
+  const auto printVerdict = [&](bool pass, size_t bytes, bool identical, const std::string& error) {
+    std::fprintf(stdout,
+                 "{\"cmd\":\"state-roundtrip\",\"pass\":%s,\"plugin\":\"%s\",\"bytes\":%zu,"
+                 "\"identicalRecapture\":%s,\"error\":\"%s\"}\n",
+                 pass ? "true" : "false", jsonEscape(className).c_str(), bytes,
+                 identical ? "true" : "false", jsonEscape(error).c_str());
+    std::fflush(stdout);
+  };
+  const LoadedModule loaded = loadPluginModule(bundlePath);
+  if (loaded.factory == nullptr) {
+    printVerdict(false, 0, false, loaded.error);
+    return 0;
+  }
+  corevideo::vsthost::VstPluginInstance instance;
+  if (!instance.start(loaded.factory, className, {})) {
+    printVerdict(false, 0, false, instance.lastError());
+    return 0;
+  }
+  std::string error;
+  std::vector<uint8_t> first;
+  if (!instance.getComponentState(&first, &error)) {
+    printVerdict(false, 0, false, error);
+    return 0;
+  }
+  if (!instance.setComponentState(first, &error)) {
+    printVerdict(false, first.size(), false, error);
+    return 0;
+  }
+  std::vector<uint8_t> second;
+  if (!instance.getComponentState(&second, &error)) {
+    printVerdict(false, first.size(), false, error);
+    return 0;
+  }
+  // identicalRecapture is informational: plugins may serialize timestamps or
+  // versions, so byte identity is a bonus, not the pass criterion (the pass
+  // is get -> set -> get all succeeding).
+  printVerdict(true, first.size(), first == second, "");
+  instance.shutdown();
+  return 0;
+}
+
 }  // namespace
 #endif  // _WIN32
 
@@ -422,7 +471,11 @@ int serveInstance(const std::string& instance) {
   HANDLE req = ::OpenEventA(SYNCHRONIZE, FALSE, hostReqEventName(instance).c_str());
   HANDLE done = ::OpenEventA(EVENT_MODIFY_STATE, FALSE, hostDoneEventName(instance).c_str());
   HANDLE editor = ::OpenEventA(SYNCHRONIZE, FALSE, hostEditorEventName(instance).c_str());
-  if (shm == nullptr || req == nullptr || done == nullptr || editor == nullptr) {
+  HANDLE param = ::OpenEventA(SYNCHRONIZE, FALSE, hostParamEventName(instance).c_str());
+  HANDLE stateReq = ::OpenEventA(SYNCHRONIZE, FALSE, hostStateReqEventName(instance).c_str());
+  HANDLE stateDone = ::OpenEventA(EVENT_MODIFY_STATE, FALSE, hostStateDoneEventName(instance).c_str());
+  if (shm == nullptr || req == nullptr || done == nullptr || editor == nullptr ||
+      param == nullptr || stateReq == nullptr || stateDone == nullptr) {
     std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: transport objects missing for '%s'\"}\n",
                  jsonEscape(instance).c_str());
     return 3;
@@ -439,9 +492,19 @@ int serveInstance(const std::string& instance) {
   std::map<std::string, std::unique_ptr<ServeSlot>> slots;
   std::string publishedStatusKey;  // dedupes statusGeneration bumps
   std::string publishedEditorStatusKey;
+  // A1: ONE editor window at a time (the editor telemetry is singular, and a
+  // second plugin GUI stacking over the first from a faceless host process is
+  // operator-hostile). Tracks the slot whose editor is open so a user close
+  // and a selection switch both keep the status truthful.
+  ServeSlot* editorSlot = nullptr;
 
-  const auto publishStatus = [&](int32_t code, const std::string& activePlugin, const std::string& error) {
-    const std::string key = std::to_string(code) + "\x1f" + activePlugin + "\x1f" + error;
+  // v3: latencySamples rides the status publish — it changes exactly when the
+  // active selection changes (kept in the dedupe key so a latency change alone
+  // still bumps the generation).
+  const auto publishStatus = [&](int32_t code, const std::string& activePlugin, const std::string& error,
+                                 uint32_t latencySamples) {
+    const std::string key = std::to_string(code) + "\x1f" + activePlugin + "\x1f" + error + "\x1f" +
+                            std::to_string(latencySamples);
     if (key == publishedStatusKey) {
       return;
     }
@@ -449,6 +512,7 @@ int serveInstance(const std::string& instance) {
     block->statusCode = code;
     copyBlockString(block->activePlugin, activePlugin.c_str());
     copyBlockString(block->lastError, error.c_str());
+    block->latencySamples = latencySamples;
     block->statusGeneration = block->statusGeneration + 1;
   };
 
@@ -480,11 +544,201 @@ int serveInstance(const std::string& instance) {
     return slots.emplace(slotKey, std::move(slot)).first->second.get();
   };
 
+  // The operator closing the editor window (WM_CLOSE → clean detach inside
+  // pumpEditorMessages) must flip the telemetry back to idle — otherwise the
+  // shell chip claims an open editor that no longer exists.
+  const auto publishEditorCloseIfUserClosed = [&] {
+    if (editorSlot != nullptr && !editorSlot->instance.editorOpen()) {
+      editorSlot = nullptr;
+      publishEditorStatus(kHostEditorIdle, "", "");
+    }
+  };
+
+  // ---- v3 param surface publish. The ACTIVE param slot is the last audio
+  // selection processed (the editor selection when no audio flows). Rebuilds
+  // the published list on slot change; refreshes values (rate-capped ~100ms —
+  // editor knob moves land within a beat, never per audio tick) and bumps
+  // paramValuesGeneration ONLY when something actually changed.
+  ServeSlot* paramSlot = nullptr;
+  std::string paramSlotClass;
+  ULONGLONG lastParamRefreshMs = 0;
+  std::array<double, kHostParamPublishMax> publishedValues{};
+  std::vector<corevideo::vst3::ParamID> publishedIds;
+
+  const auto publishParamList = [&](ServeSlot* slot, const std::string& className) {
+    paramSlot = slot;
+    paramSlotClass = className;
+    publishedIds.clear();
+    int32_t published = 0;
+    int32_t total = 0;
+    if (slot != nullptr && slot->error.empty() && slot->instance.hasController()) {
+      total = slot->instance.parameterCount();
+      const int32_t cap = total < kHostParamPublishMax ? total : kHostParamPublishMax;
+      for (int32_t index = 0; index < cap; ++index) {
+        corevideo::vst3::ParameterInfo info{};
+        if (!slot->instance.parameterInfoAt(index, &info)) {
+          continue;
+        }
+        HostParamEntry& entry = block->params[published];
+        entry.id = info.id;
+        entry.stepCount = info.stepCount;
+        entry.flags = info.flags;
+        const double value = slot->instance.paramNormalized(info.id);
+        entry.normalized = value;
+        copyBlockString(entry.title,
+                        corevideo::vsthost::detail::utf16ToUtf8Ascii(info.title, 128).c_str());
+        copyBlockString(entry.units,
+                        corevideo::vsthost::detail::utf16ToUtf8Ascii(info.units, 128).c_str());
+        copyBlockString(entry.display, slot->instance.paramDisplay(info.id, value).c_str());
+        publishedValues[static_cast<size_t>(published)] = value;
+        publishedIds.push_back(info.id);
+        ++published;
+      }
+    }
+    block->paramTotalCount = total;
+    block->paramPublishedCount = published;
+    copyBlockString(block->paramPluginClass, className.c_str());
+    block->paramListGeneration = block->paramListGeneration + 1;
+    block->paramValuesGeneration = block->paramValuesGeneration + 1;
+  };
+
+  const auto refreshParamValues = [&](bool force) {
+    if (paramSlot == nullptr || publishedIds.empty()) {
+      return;
+    }
+    const ULONGLONG nowMs = ::GetTickCount64();
+    if (!force && nowMs - lastParamRefreshMs < 100) {
+      return;
+    }
+    lastParamRefreshMs = nowMs;
+    bool changed = false;
+    for (size_t index = 0; index < publishedIds.size(); ++index) {
+      const double value = paramSlot->instance.paramNormalized(publishedIds[index]);
+      if (value != publishedValues[index]) {
+        publishedValues[index] = value;
+        HostParamEntry& entry = block->params[index];
+        entry.normalized = value;
+        copyBlockString(entry.display,
+                        paramSlot->instance.paramDisplay(publishedIds[index], value).c_str());
+        changed = true;
+      }
+    }
+    if (changed) {
+      block->paramValuesGeneration = block->paramValuesGeneration + 1;
+    }
+  };
+
+  const auto ensureParamSlot = [&](ServeSlot* slot, const std::string& className) {
+    if (slot != paramSlot || className != paramSlotClass) {
+      publishParamList(slot, className);
+    }
+  };
+
+  // Core -> host set-param ring drain. The host is the value authority — the
+  // applied values flow back through the published surface above.
+  uint32_t paramSetCursor = 0;
+  const auto drainParamSets = [&] {
+    const std::string bundle(block->paramSetPluginBundle,
+                             strnlen(block->paramSetPluginBundle, sizeof(block->paramSetPluginBundle)));
+    const std::string className(block->paramSetPluginClass,
+                                strnlen(block->paramSetPluginClass, sizeof(block->paramSetPluginClass)));
+    const uint32_t seq = block->paramSetSeq;
+    if (seq == paramSetCursor) {
+      return;
+    }
+    // Overflow: keep only the newest ring's worth (latest value wins).
+    if (seq - paramSetCursor > static_cast<uint32_t>(kHostParamSetRing)) {
+      paramSetCursor = seq - static_cast<uint32_t>(kHostParamSetRing);
+    }
+    ServeSlot* slot = bundle.empty() ? nullptr : ensureSlot(bundle, className);
+    if (slot == nullptr || !slot->error.empty()) {
+      paramSetCursor = seq;
+      return;  // load failure is already loud on the status channel
+    }
+    ensureParamSlot(slot, slot->instance.activeClassName());
+    for (; paramSetCursor != seq; ++paramSetCursor) {
+      const HostParamSetEntry entry = block->paramSet[paramSetCursor % kHostParamSetRing];
+      slot->instance.setParamNormalized(entry.id, entry.normalized);
+    }
+    refreshParamValues(true);
+  };
+
+  // ---- v3 state get/set (control-plane round trip on this serve thread; the
+  // core deadline-bypasses audio if a getState overlaps a tick — honest
+  // misses, never a stall, same posture as plugin loads).
+  const auto handleStateRequest = [&] {
+    const int32_t kind = block->stateRequestKind;
+    const std::string bundle(block->statePluginBundle,
+                             strnlen(block->statePluginBundle, sizeof(block->statePluginBundle)));
+    const std::string className(block->statePluginClass,
+                                strnlen(block->statePluginClass, sizeof(block->statePluginClass)));
+    std::string error;
+    int32_t resultCode = kHostStateResultFailed;
+    int32_t dataBytes = 0;
+    ServeSlot* slot = bundle.empty() ? nullptr : ensureSlot(bundle, className);
+    if (slot == nullptr) {
+      error = "state request without a plugin selection";
+    } else if (!slot->error.empty()) {
+      error = slot->error;
+    } else if (kind == kHostStateRequestGet) {
+      std::vector<uint8_t> data;
+      if (slot->instance.getComponentState(&data, &error)) {
+        if (data.size() > static_cast<size_t>(kHostStateMaxBytes)) {
+          error = "plugin state too large (" + std::to_string(data.size()) + " bytes > " +
+                  std::to_string(kHostStateMaxBytes) + " cap)";
+        } else {
+          std::memcpy(block->stateData, data.data(), data.size());
+          dataBytes = static_cast<int32_t>(data.size());
+          resultCode = kHostStateResultOk;
+        }
+      }
+    } else if (kind == kHostStateRequestSet) {
+      const int32_t incoming = block->stateDataBytes;
+      if (incoming < 0 || incoming > kHostStateMaxBytes) {
+        error = "state payload size out of range";
+      } else {
+        std::vector<uint8_t> data(block->stateData, block->stateData + incoming);
+        if (slot->instance.setComponentState(data, &error)) {
+          resultCode = kHostStateResultOk;
+          // Restored state changes every published value: force a re-publish
+          // so sliders and the shell reflect the restore immediately.
+          ensureParamSlot(slot, slot->instance.activeClassName());
+          publishParamList(slot, slot->instance.activeClassName());
+        }
+      }
+    } else {
+      error = "unknown state request kind " + std::to_string(kind);
+    }
+    if (resultCode != kHostStateResultOk) {
+      std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: state %s '%s' FAILED: %s\"}\n",
+                   kind == kHostStateRequestSet ? "set" : "get", jsonEscape(className).c_str(),
+                   jsonEscape(error).c_str());
+      std::fflush(stdout);
+    }
+    block->stateResultCode = resultCode;
+    copyBlockString(block->stateError, error.c_str());
+    block->stateDataBytes = dataBytes != 0 ? dataBytes : (kind == kHostStateRequestGet ? 0 : block->stateDataBytes);
+    block->stateResponseGeneration = block->stateRequestGeneration;
+    ::SetEvent(stateDone);
+  };
+
   for (;;) {
-    HANDLE waits[] = {req, editor};
-    const DWORD wait = ::MsgWaitForMultipleObjects(2, waits, FALSE, 30000, QS_ALLINPUT);
-    if (wait == WAIT_OBJECT_0 + 2) {
+    HANDLE waits[] = {req, editor, param, stateReq};
+    const DWORD wait = ::MsgWaitForMultipleObjects(4, waits, FALSE, 30000, QS_ALLINPUT);
+    if (wait == WAIT_OBJECT_0 + 4) {
       for (auto& entry : slots) entry.second->instance.pumpEditorMessages();
+      publishEditorCloseIfUserClosed();
+      // Editor interaction is the main source of value changes between audio
+      // ticks — refresh (rate-capped) so knob moves reach the shell sliders.
+      refreshParamValues(false);
+      continue;
+    }
+    if (wait == WAIT_OBJECT_0 + 2) {
+      drainParamSets();
+      continue;
+    }
+    if (wait == WAIT_OBJECT_0 + 3) {
+      handleStateRequest();
       continue;
     }
     if (wait == WAIT_OBJECT_0 + 1) {
@@ -493,11 +747,24 @@ int serveInstance(const std::string& instance) {
       const std::string className(block->editorPluginClass,
                                   strnlen(block->editorPluginClass, sizeof(block->editorPluginClass)));
       ServeSlot* slot = ensureSlot(bundle, className);
+      // Selection switch: close the previous plugin's editor cleanly before
+      // showing the new one (single-editor invariant).
+      if (editorSlot != nullptr && editorSlot != slot) {
+        editorSlot->instance.closeEditor();
+        editorSlot = nullptr;
+      }
       if (slot == nullptr || !slot->error.empty()) {
         publishEditorStatus(kHostEditorFailed, className,
                             slot != nullptr ? slot->error : "editor slot could not load");
       } else if (slot->instance.showEditor("CoreVideo Pro - " + slot->instance.activeClassName())) {
+        editorSlot = slot;
         publishEditorStatus(kHostEditorOpen, slot->instance.activeClassName(), "");
+        // No audio flowing yet? The editor selection still publishes a param
+        // surface so the shell sliders are live alongside the plugin GUI.
+        ensureParamSlot(slot, slot->instance.activeClassName());
+        // Deliver the window's initial message burst (paint/show) immediately
+        // rather than waiting for the next queue wake.
+        slot->instance.pumpEditorMessages();
       } else {
         publishEditorStatus(kHostEditorFailed, slot->instance.activeClassName(), slot->instance.lastError());
       }
@@ -518,7 +785,7 @@ int serveInstance(const std::string& instance) {
                                 strnlen(block->pluginClass, sizeof(block->pluginClass)));
     if (bundle.empty()) {
       applyTestGain(block);
-      publishStatus(kHostStatusTestProcessor, "test:-6dB", "");
+      publishStatus(kHostStatusTestProcessor, "test:-6dB", "", 0);
     } else {
       const std::string slotKey = bundle + "\x1f" + className;
       auto found = slots.find(slotKey);
@@ -556,17 +823,21 @@ int serveInstance(const std::string& instance) {
       if (!slot.error.empty()) {
         // Bypass: block left untouched. The core hears its own audio and the
         // snapshot shows the error — never a fake "processing" status.
-        publishStatus(kHostStatusPluginFailed, className, slot.error);
+        publishStatus(kHostStatusPluginFailed, className, slot.error, 0);
       } else if (block->sampleCount < 2 || block->sampleCount > kHostBlockMaxSamples) {
         // Transient/garbage block header: skip (untouched), don't poison the slot.
       } else if (slot.instance.processInterleavedStereo(block->pcm, block->sampleCount)) {
-        publishStatus(kHostStatusPluginActive, slot.instance.activeClassName(), "");
+        publishStatus(kHostStatusPluginActive, slot.instance.activeClassName(), "",
+                      slot.instance.latencySamples());
+        // The audio selection owns the published param surface.
+        ensureParamSlot(&slot, slot.instance.activeClassName());
+        refreshParamValues(false);
       } else {
         slot.error = slot.instance.lastError().empty() ? "process() failed" : slot.instance.lastError();
         std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: process '%s' FAILED: %s\"}\n",
                      jsonEscape(className).c_str(), jsonEscape(slot.error).c_str());
         std::fflush(stdout);
-        publishStatus(kHostStatusPluginFailed, className, slot.error);
+        publishStatus(kHostStatusPluginFailed, className, slot.error, 0);
       }
     }
 
@@ -615,10 +886,20 @@ int main(int argc, char** argv) {
 #endif
   }
 
+  if (mode == "--state-roundtrip" && argc > 2) {
+#ifdef _WIN32
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    return stateRoundtripBundle(argv[2], argc > 3 ? argv[3] : "");
+#else
+    std::fprintf(stdout, "{\"cmd\":\"state-roundtrip\",\"pass\":false,\"error\":\"unsupported on this platform\"}\n");
+    return 0;
+#endif
+  }
+
   if (mode != "--scan") {
     std::fprintf(stdout,
                  "{\"cmd\":\"error\",\"msg\":\"corevideo-plugin-host supports --scan, --probe <bundle>, "
-                 "--process <bundle> <className>, --serve <instance>\"}\n");
+                 "--process <bundle> <className>, --state-roundtrip <bundle> <className>, --serve <instance>\"}\n");
     return 2;
   }
 

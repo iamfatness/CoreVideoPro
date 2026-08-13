@@ -174,13 +174,20 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (bytes == 0 || bytes > kVirtualCameraMaxPayload) {
       return;
     }
-    nv12_.assign(nv12, nv12 + bytes);
-    if (mirror_) {
-      mirrorNv12InPlace(nv12_.data(), w, h);
-    }
     auto* payload = static_cast<std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
     header_->seq = header_->seq + 1;  // odd
-    std::memcpy(payload, nv12_.data(), bytes);
+    if (mirror_) {
+      // Mirroring needs a scratch buffer it can flip in place before publishing.
+      nv12_.assign(nv12, nv12 + bytes);
+      mirrorNv12InPlace(nv12_.data(), w, h);
+      std::memcpy(payload, nv12_.data(), bytes);
+    } else {
+      // Straight into the mapped payload: the staging copy was pure overhead.
+      // This runs per frame on the tap thread now (60Hz, not the old 50Hz poll),
+      // so the second 3MB copy was ~180MB/s of memory bandwidth for nothing.
+      // Safe inside the seqlock: readers retry while seq is odd.
+      std::memcpy(payload, nv12, bytes);
+    }
     header_->width = w;
     header_->height = h;
     header_->byteLen = static_cast<std::uint32_t>(bytes);
@@ -208,7 +215,12 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (shmFile_ != INVALID_HANDLE_VALUE) {
       CloseHandle(shmFile_);
       shmFile_ = INVALID_HANDLE_VALUE;
-      ::DeleteFileA(virtualCameraShmFilePath().c_str());  // best-effort cleanup
+      // NEVER delete the slot file here. Frame Server readers hold the file
+      // object via FILE_SHARE_DELETE; deleting unlinks it under them, and a
+      // later start() creates a NEW file object the orphaned readers never
+      // see - frozen frames / slate / program-slate strobing forever (the
+      // "flashing camera" class). The writer re-opens IN PLACE on start()
+      // and the reader self-heals by path (SharedFrameReader).
     }
     started_ = false;
     status_.enabled = false;

@@ -194,6 +194,102 @@ inline vst3::IParameterChangesVtbl* parameterChangesVtbl() {
   return &vtbl;
 }
 
+// ---------------------------------------------------------------------------
+// A2: minimal raw-ABI memory IBStream. IComponent::getState writes the
+// plugin's state INTO it; setState reads a saved blob back OUT of it. Stack
+// lifetime, no real ref counting (plugins hold it only for the call), honest
+// partial-read semantics (kResultOk with a short byte count = EOF, the VST3
+// stream contract).
+// ---------------------------------------------------------------------------
+struct MemoryStream {
+  vst3::IBStreamVtbl* vtbl;
+  std::vector<uint8_t>* data = nullptr;
+  int64_t cursor = 0;
+};
+
+inline vst3::tresult CVST_API memoryStreamQueryInterface(void* self, const char* iid, void** obj) {
+  if (obj == nullptr) return vst3::kNoInterface;
+  if (vst3::tuidEqual(iid, vst3::kFUnknownIid.bytes) ||
+      vst3::tuidEqual(iid, vst3::kIBStreamIid.bytes)) {
+    *obj = self;
+    return vst3::kResultOk;
+  }
+  *obj = nullptr;
+  return vst3::kNoInterface;
+}
+
+inline vst3::tresult CVST_API memoryStreamRead(void* self, void* buffer, int32_t numBytes, int32_t* numBytesRead) {
+  auto* stream = static_cast<MemoryStream*>(self);
+  if (stream->data == nullptr || buffer == nullptr || numBytes < 0) {
+    if (numBytesRead != nullptr) *numBytesRead = 0;
+    return vst3::kResultFalse;
+  }
+  const int64_t available = static_cast<int64_t>(stream->data->size()) - stream->cursor;
+  const int64_t count = available < 0 ? 0 : (available < numBytes ? available : numBytes);
+  if (count > 0) {
+    std::memcpy(buffer, stream->data->data() + stream->cursor, static_cast<size_t>(count));
+    stream->cursor += count;
+  }
+  if (numBytesRead != nullptr) *numBytesRead = static_cast<int32_t>(count);
+  return vst3::kResultOk;
+}
+
+inline vst3::tresult CVST_API memoryStreamWrite(void* self, void* buffer, int32_t numBytes, int32_t* numBytesWritten) {
+  auto* stream = static_cast<MemoryStream*>(self);
+  if (stream->data == nullptr || buffer == nullptr || numBytes < 0) {
+    if (numBytesWritten != nullptr) *numBytesWritten = 0;
+    return vst3::kResultFalse;
+  }
+  const auto end = static_cast<size_t>(stream->cursor) + static_cast<size_t>(numBytes);
+  if (stream->data->size() < end) {
+    stream->data->resize(end);
+  }
+  if (numBytes > 0) {
+    std::memcpy(stream->data->data() + stream->cursor, buffer, static_cast<size_t>(numBytes));
+    stream->cursor += numBytes;
+  }
+  if (numBytesWritten != nullptr) *numBytesWritten = numBytes;
+  return vst3::kResultOk;
+}
+
+inline vst3::tresult CVST_API memoryStreamSeek(void* self, int64_t pos, int32_t mode, int64_t* result) {
+  auto* stream = static_cast<MemoryStream*>(self);
+  if (stream->data == nullptr) return vst3::kResultFalse;
+  int64_t target = 0;
+  switch (mode) {
+    case vst3::kIBSeekSet: target = pos; break;
+    case vst3::kIBSeekCur: target = stream->cursor + pos; break;
+    case vst3::kIBSeekEnd: target = static_cast<int64_t>(stream->data->size()) + pos; break;
+    default: return vst3::kResultFalse;
+  }
+  if (target < 0) target = 0;
+  stream->cursor = target;
+  if (result != nullptr) *result = target;
+  return vst3::kResultOk;
+}
+
+inline vst3::tresult CVST_API memoryStreamTell(void* self, int64_t* pos) {
+  auto* stream = static_cast<MemoryStream*>(self);
+  if (pos == nullptr) return vst3::kResultFalse;
+  *pos = stream->cursor;
+  return vst3::kResultOk;
+}
+
+inline vst3::IBStreamVtbl* memoryStreamVtbl() {
+  static vst3::IBStreamVtbl vtbl = {
+      &memoryStreamQueryInterface, &staticAddRef, &staticRelease,
+      &memoryStreamRead, &memoryStreamWrite, &memoryStreamSeek, &memoryStreamTell,
+  };
+  return &vtbl;
+}
+
+inline MemoryStream makeMemoryStream(std::vector<uint8_t>* data) {
+  MemoryStream stream;
+  stream.vtbl = memoryStreamVtbl();
+  stream.data = data;
+  return stream;
+}
+
 inline std::string toLowerAscii(const std::string& value) {
   std::string lowered;
   lowered.reserve(value.size());
@@ -339,6 +435,82 @@ class VstPluginInstance {
     return queue != nullptr && queue->vtbl->addPoint(queue, 0, normalized, nullptr) == vst3::kResultOk;
   }
 
+  // ---- A2 param bridge (raw IEditController calls; null-safe) -------------
+  [[nodiscard]] bool hasController() const { return controller_ != nullptr; }
+
+  [[nodiscard]] int32_t parameterCount() const {
+    return controller_ != nullptr ? controller_->vtbl->getParameterCount(controller_) : 0;
+  }
+
+  bool parameterInfoAt(int32_t index, vst3::ParameterInfo* info) const {
+    return controller_ != nullptr && info != nullptr &&
+           controller_->vtbl->getParameterInfo(controller_, index, info) == vst3::kResultOk;
+  }
+
+  [[nodiscard]] double paramNormalized(vst3::ParamID id) const {
+    return controller_ != nullptr ? controller_->vtbl->getParamNormalized(controller_, id) : 0.0;
+  }
+
+  // Host authority for slider edits: the CONTROLLER takes the value (so an
+  // open editor's knob follows) and the same value is queued as an input
+  // parameter change for the next process() call (so the DSP hears it — the
+  // controller and processor are separate objects in the VST3 model).
+  bool setParamNormalized(vst3::ParamID id, double normalized) {
+    if (controller_ == nullptr) return false;
+    normalized = std::max(0.0, std::min(1.0, normalized));
+    controller_->vtbl->setParamNormalized(controller_, id, normalized);
+    queueParameterChange(id, normalized);
+    return true;
+  }
+
+  // Plugin-formatted display string for a normalized value ("" when the
+  // plugin declines). ASCII-folded like every other block string.
+  [[nodiscard]] std::string paramDisplay(vst3::ParamID id, double normalized) const {
+    if (controller_ == nullptr) return {};
+    char16_t text[128] = {};
+    if (controller_->vtbl->getParamStringByValue(controller_, id, normalized, text) != vst3::kResultOk) {
+      return {};
+    }
+    return detail::utf16ToUtf8Ascii(text, 128);
+  }
+
+  // ---- A2 state persistence (IComponent::get/setState over MemoryStream) --
+  bool getComponentState(std::vector<uint8_t>* out, std::string* outError) {
+    if (component_ == nullptr || out == nullptr) {
+      if (outError != nullptr) *outError = "no component loaded";
+      return false;
+    }
+    out->clear();
+    detail::MemoryStream stream = detail::makeMemoryStream(out);
+    const vst3::tresult result = component_->vtbl->getState(component_, &stream);
+    if (result != vst3::kResultOk) {
+      if (outError != nullptr) *outError = "IComponent::getState failed (0x" + hex(result) + ")";
+      return false;
+    }
+    return true;
+  }
+
+  bool setComponentState(const std::vector<uint8_t>& data, std::string* outError) {
+    if (component_ == nullptr) {
+      if (outError != nullptr) *outError = "no component loaded";
+      return false;
+    }
+    std::vector<uint8_t> mutableData = data;  // stream API is non-const
+    detail::MemoryStream stream = detail::makeMemoryStream(&mutableData);
+    const vst3::tresult result = component_->vtbl->setState(component_, &stream);
+    if (result != vst3::kResultOk) {
+      if (outError != nullptr) *outError = "IComponent::setState failed (0x" + hex(result) + ")";
+      return false;
+    }
+    // The controller mirrors the restored processor state so the editor and
+    // the published param values reflect it (VST3 setComponentState contract).
+    if (controller_ != nullptr) {
+      stream.cursor = 0;
+      controller_->vtbl->setComponentState(controller_, &stream);
+    }
+    return true;
+  }
+
 #ifdef _WIN32
   bool showEditor(const std::string& title);
   void closeEditor();
@@ -350,6 +522,9 @@ class VstPluginInstance {
   void pumpEditorMessages() {}
   vst3::tresult resizeEditor(vst3::ViewRect*) { return vst3::kNotImplemented; }
 #endif
+  // True while an editor window exists (the serve loop uses the open→closed
+  // transition to publish the idle editor status after a user close).
+  [[nodiscard]] bool editorOpen() const { return editorWindow_ != nullptr; }
 
   bool start(vst3::IPluginFactory* factory, const std::string& className,
              const VstProcessorConfig& config = {}) {
@@ -666,12 +841,43 @@ inline LRESULT CALLBACK vstEditorWindowProc(HWND hwnd, UINT message, WPARAM wPar
   }
   switch (message) {
     case WM_CLOSE:
-      ::ShowWindow(hwnd, SW_HIDE);
+      // A1 lifecycle: closing the window DETACHES cleanly — removed() before
+      // DestroyWindow (the VST3 contract) — instead of hiding with the view
+      // still attached. The serve loop notices editorOpen() flipped and
+      // publishes the idle editor status so the shell chip stays truthful.
+      if (owner != nullptr) {
+        owner->closeEditor();
+      } else {
+        ::DestroyWindow(hwnd);
+      }
       return 0;
     case WM_SETFOCUS:
       return 0;
     default:
       return ::DefWindowProcW(hwnd, message, wParam, lParam);
+  }
+}
+
+// Best-effort raise for a window created by a BACKGROUND process. The serve
+// host is spawned by the core with no console and no foreground rights, so
+// SetForegroundWindow is routinely denied — Phase 0 diagnosis showed the
+// editor opening VISIBLE but foreground=0 at a CW_USEDEFAULT cascade
+// position, i.e. BEHIND the maximized operator console: the owner-visible
+// symptom "no plugin UI ever appears". A topmost pulse puts the window at the
+// top of the z-order even without activation; when the OS still refuses
+// foreground, flash the taskbar button so the operator always gets a visible
+// signal. Deliberately no AttachThreadInput/input-hook tricks — never steal
+// foreground aggressively.
+inline void raiseEditorWindowBestEffort(HWND hwnd) {
+  ::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  ::SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+  ::SetForegroundWindow(hwnd);
+  if (::GetForegroundWindow() != hwnd) {
+    FLASHWINFO flash{};
+    flash.cbSize = sizeof(flash);
+    flash.hwnd = hwnd;
+    flash.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
+    ::FlashWindowEx(&flash);
   }
 }
 
@@ -681,8 +887,11 @@ inline bool VstPluginInstance::showEditor(const std::string& title) {
     return false;
   }
   if (editorWindow_ != nullptr) {
-    ::ShowWindow(static_cast<HWND>(editorWindow_), SW_SHOWNORMAL);
-    ::SetForegroundWindow(static_cast<HWND>(editorWindow_));
+    // Second "Open controls": focus the EXISTING window (restoring a minimized
+    // one) — never a double createView/attached.
+    HWND existing = static_cast<HWND>(editorWindow_);
+    ::ShowWindow(existing, ::IsIconic(existing) ? SW_RESTORE : SW_SHOW);
+    raiseEditorWindowBestEffort(existing);
     return true;
   }
   editorView_ = static_cast<vst3::IPlugView*>(controller_->vtbl->createView(controller_, "editor"));
@@ -724,10 +933,21 @@ inline bool VstPluginInstance::showEditor(const std::string& title) {
   RECT outer{0, 0, width, height};
   const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   ::AdjustWindowRect(&outer, style, FALSE);
+  // Sane placement instead of the CW_USEDEFAULT cascade: centered on the
+  // primary monitor's work area (clamped so the title bar always stays
+  // reachable). The operator's console is usually maximized there — center is
+  // where an opened panel is expected.
+  RECT workArea{0, 0, 1920, 1080};
+  ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+  const int outerWidth = outer.right - outer.left;
+  const int outerHeight = outer.bottom - outer.top;
+  const int posX = std::max<int>(workArea.left,
+                                 workArea.left + (workArea.right - workArea.left - outerWidth) / 2);
+  const int posY = std::max<int>(workArea.top,
+                                 workArea.top + (workArea.bottom - workArea.top - outerHeight) / 2);
   std::wstring wideTitle(title.begin(), title.end());
   HWND hwnd = ::CreateWindowExW(0, kClassName, wideTitle.c_str(), style,
-                                CW_USEDEFAULT, CW_USEDEFAULT,
-                                outer.right - outer.left, outer.bottom - outer.top,
+                                posX, posY, outerWidth, outerHeight,
                                 nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
   if (hwnd == nullptr) {
     lastError_ = "could not create editor host window";
@@ -745,7 +965,7 @@ inline bool VstPluginInstance::showEditor(const std::string& title) {
   editorAttached_ = true;
   ::ShowWindow(hwnd, SW_SHOWNORMAL);
   ::UpdateWindow(hwnd);
-  ::SetForegroundWindow(hwnd);
+  raiseEditorWindowBestEffort(hwnd);
   return true;
 }
 

@@ -1,0 +1,365 @@
+/**
+ * Typed show configuration for the OHG show engine.
+ * Replaces the Isadora patch's `infraestructure-*.js` include files: every
+ * external address, interval, and capacity lives here, validated at load so a
+ * bad config fails loudly at startup instead of mid-show.
+ */
+
+import {
+  BOX_FILLS,
+  DEFAULT_SKIP_ROLES,
+  isBoxFill,
+  isPlateTone,
+  isRole,
+  isTallySource,
+  PLATE_TONES,
+  TALLY_SOURCES,
+  type LookDefinition,
+  type Role
+} from "./contracts.js";
+
+export type MukanaConfig = {
+  /** Base REST endpoint, e.g. https://host/phpsdk/php-panel-rest.php */
+  baseUrl: string;
+  /** The `event` query parameter, e.g. "officehours" */
+  event: string;
+  panelistsIntervalMs: number;
+  handsIntervalMs: number;
+  questionIntervalMs: number;
+  /** Ceiling for exponential backoff after consecutive failures */
+  maxBackoffMs: number;
+};
+
+/**
+ * Which optional external inputs this show is configured for. Each flag
+ * defaults to `false`: an un-configured integration must never silently poll
+ * a URL nobody set.
+ */
+export type ShowIntegrationsConfig = {
+  registry: boolean;
+  handsQueue: boolean;
+  questionFeed: boolean;
+};
+
+export type ShowEngineConfig = {
+  /** Number of concurrent participant slots the host can deliver */
+  capacity: number;
+  /**
+   * PINs at or above this value denote utility participants (graphics bots,
+   * playback machines) that are pinned to the tail slots rather than the
+   * first free slot. `pin - utilityPinBase` is the offset from the last slot.
+   */
+  utilityPinBase: number;
+  /**
+   * How to reach Mukana, or `null` for a show that has no Mukana at all.
+   * A show with every integration off never calls the backend, so demanding
+   * its address would make the un-integrated show — the case the capability
+   * model exists to serve — invent a URL to start. The block is therefore
+   * omissible, and omitting it is only permitted while every flag in
+   * `integrations` is off: enabling one without an address is the
+   * "silently poll a URL nobody set" mistake in its other direction, and is
+   * rejected at parse time rather than discovered mid-show.
+   */
+  mukana: MukanaConfig | null;
+  /** Absolute path of the persisted show-state JSON file */
+  statePath: string;
+  /** Roles automatically excluded from on-screen selection, e.g. the ASL interpreter. */
+  skipRoles: Role[];
+  /** Named on-screen arrangements available to this show. */
+  looks: LookDefinition[];
+  /** Number of cells in the on-screen gallery grid. */
+  galleryCells: number;
+  /** Which optional external inputs this show is configured for. */
+  integrations: ShowIntegrationsConfig;
+};
+
+const DEFAULT_UTILITY_PIN_BASE = 9000;
+const DEFAULT_PANELISTS_INTERVAL_MS = 5000;
+const DEFAULT_HANDS_INTERVAL_MS = 2000;
+const DEFAULT_QUESTION_INTERVAL_MS = 2000;
+const DEFAULT_MAX_BACKOFF_MS = 60000;
+const DEFAULT_GALLERY_CELLS = 16;
+const MAX_LOOK_BOXES = 4;
+
+function asRecord(value: unknown, field: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`show-engine ${field}: expected an object, got ${typeof value}`);
+  }
+  return value as Record<string, unknown>;
+}
+
+/** `label` is the dotted path used in error messages; `key` is the actual property. */
+function requireString(source: Record<string, unknown>, key: string, label: string): string {
+  const value = source[key];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`show-engine ${label}: required non-empty string`);
+  }
+  return value;
+}
+
+function requirePositiveInt(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): number {
+  const value = source[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`show-engine ${label}: required integer >= 1, got ${String(value)}`);
+  }
+  return value;
+}
+
+function optionalPositiveInt(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  fallback: number
+): number {
+  const value = source[key];
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`show-engine ${label}: expected integer >= 1, got ${String(value)}`);
+  }
+  return value;
+}
+
+function requireBoolean(source: Record<string, unknown>, key: string, label: string): boolean {
+  const value = source[key];
+  if (typeof value !== "boolean") {
+    throw new Error(`show-engine ${label}: required boolean, got ${String(value)}`);
+  }
+  return value;
+}
+
+function requireIntInRange(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  min: number,
+  max: number
+): number {
+  const value = source[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(
+      `show-engine ${label}: expected integer in ${min}..${max}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+function optionalPlateTone(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): LookDefinition["plateTone"] {
+  const value = source[key];
+  if (value === undefined) return "neutral";
+  if (!isPlateTone(value)) {
+    throw new Error(
+      `show-engine ${label}: expected one of ${PLATE_TONES.join(", ")}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+function optionalTallySource(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): LookDefinition["tallySource"] {
+  const value = source[key];
+  if (value === undefined) return "boxes";
+  if (!isTallySource(value)) {
+    throw new Error(
+      `show-engine ${label}: expected one of ${TALLY_SOURCES.join(", ")}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+function optionalBoxFill(
+  source: Record<string, unknown>,
+  key: string,
+  label: string
+): LookDefinition["boxFill"] {
+  const value = source[key];
+  if (value === undefined) return "queue";
+  if (!isBoxFill(value)) {
+    throw new Error(
+      `show-engine ${label}: expected one of ${BOX_FILLS.join(", ")}, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+function optionalBoolean(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  fallback: boolean
+): boolean {
+  const value = source[key];
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") {
+    throw new Error(`show-engine ${label}: expected boolean, got ${String(value)}`);
+  }
+  return value;
+}
+
+/** Parse `root.integrations`, defaulting every flag to off. */
+function parseIntegrations(root: Record<string, unknown>): ShowIntegrationsConfig {
+  const value = root.integrations;
+  if (value === undefined) {
+    return { registry: false, handsQueue: false, questionFeed: false };
+  }
+  const integrationsRaw = asRecord(value, "config.integrations");
+  return {
+    registry: optionalBoolean(integrationsRaw, "registry", "config.integrations.registry", false),
+    handsQueue: optionalBoolean(
+      integrationsRaw,
+      "handsQueue",
+      "config.integrations.handsQueue",
+      false
+    ),
+    questionFeed: optionalBoolean(
+      integrationsRaw,
+      "questionFeed",
+      "config.integrations.questionFeed",
+      false
+    )
+  };
+}
+
+/** Parse `root.skipRoles`, defaulting to the ASL interpreter. Rejects, never coerces, unknown roles. */
+function parseSkipRoles(root: Record<string, unknown>): Role[] {
+  const value = root.skipRoles;
+  if (value === undefined) return [...DEFAULT_SKIP_ROLES];
+  if (!Array.isArray(value)) {
+    throw new Error(`show-engine config.skipRoles: expected an array, got ${typeof value}`);
+  }
+  return value.map((entry, index) => {
+    if (!isRole(entry)) {
+      throw new Error(
+        `show-engine config.skipRoles[${index}]: unknown role ${JSON.stringify(entry)}`
+      );
+    }
+    return entry;
+  });
+}
+
+/** Parse a single look entry out of `root.looks[index]`. */
+function parseLook(entry: unknown, index: number): LookDefinition {
+  const label = `config.looks[${index}]`;
+  const lookRaw = asRecord(entry, label);
+  return {
+    id: requireString(lookRaw, "id", `${label}.id`),
+    label: requireString(lookRaw, "label", `${label}.label`),
+    scenePreset: requireString(lookRaw, "scenePreset", `${label}.scenePreset`),
+    boxes: requireIntInRange(lookRaw, "boxes", `${label}.boxes`, 0, MAX_LOOK_BOXES),
+    includesHost: requireBoolean(lookRaw, "includesHost", `${label}.includesHost`),
+    includesReader: requireBoolean(lookRaw, "includesReader", `${label}.includesReader`),
+    plateTone: optionalPlateTone(lookRaw, "plateTone", `${label}.plateTone`),
+    tallySource: optionalTallySource(lookRaw, "tallySource", `${label}.tallySource`),
+    boxFill: optionalBoxFill(lookRaw, "boxFill", `${label}.boxFill`)
+  };
+}
+
+/** Parse `root.looks`, defaulting to empty. Rejects duplicate `id` values. */
+function parseLooks(root: Record<string, unknown>): LookDefinition[] {
+  const value = root.looks;
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`show-engine config.looks: expected an array, got ${typeof value}`);
+  }
+  const looks = value.map((entry, index) => parseLook(entry, index));
+  const seenIds = new Set<string>();
+  for (const look of looks) {
+    if (seenIds.has(look.id)) {
+      throw new Error(`show-engine config.looks: duplicate look id ${JSON.stringify(look.id)}`);
+    }
+    seenIds.add(look.id);
+  }
+  return looks;
+}
+
+/**
+ * Parse `root.mukana`, or `null` when the block is absent and no integration
+ * needs it. An absent block with an integration enabled is an error: that
+ * config asks the engine to poll an address it was never given.
+ *
+ * An explicit `null` counts as absent, so a config that survived a
+ * `JSON.stringify`/`parse` round trip parses back to what it started as.
+ */
+function parseMukana(
+  root: Record<string, unknown>,
+  integrations: ShowIntegrationsConfig
+): MukanaConfig | null {
+  if (root.mukana === undefined || root.mukana === null) {
+    const enabled = Object.entries(integrations)
+      .filter(([, on]) => on)
+      .map(([name]) => name);
+    if (enabled.length > 0) {
+      throw new Error(
+        `show-engine config.mukana: required when integrations are enabled (${enabled.join(", ")})`
+      );
+    }
+    return null;
+  }
+
+  const mukanaRaw = asRecord(root.mukana, "config.mukana");
+  return {
+    baseUrl: requireString(mukanaRaw, "baseUrl", "config.mukana.baseUrl"),
+    event: requireString(mukanaRaw, "event", "config.mukana.event"),
+    panelistsIntervalMs: optionalPositiveInt(
+      mukanaRaw,
+      "panelistsIntervalMs",
+      "config.mukana.panelistsIntervalMs",
+      DEFAULT_PANELISTS_INTERVAL_MS
+    ),
+    handsIntervalMs: optionalPositiveInt(
+      mukanaRaw,
+      "handsIntervalMs",
+      "config.mukana.handsIntervalMs",
+      DEFAULT_HANDS_INTERVAL_MS
+    ),
+    questionIntervalMs: optionalPositiveInt(
+      mukanaRaw,
+      "questionIntervalMs",
+      "config.mukana.questionIntervalMs",
+      DEFAULT_QUESTION_INTERVAL_MS
+    ),
+    maxBackoffMs: optionalPositiveInt(
+      mukanaRaw,
+      "maxBackoffMs",
+      "config.mukana.maxBackoffMs",
+      DEFAULT_MAX_BACKOFF_MS
+    )
+  };
+}
+
+/** Validate raw JSON into a ShowEngineConfig, applying defaults. Throws on any invalid field. */
+export function parseShowEngineConfig(raw: unknown): ShowEngineConfig {
+  const root = asRecord(raw, "config");
+  const integrations = parseIntegrations(root);
+
+  return {
+    capacity: requirePositiveInt(root, "capacity", "config.capacity"),
+    utilityPinBase: optionalPositiveInt(
+      root,
+      "utilityPinBase",
+      "config.utilityPinBase",
+      DEFAULT_UTILITY_PIN_BASE
+    ),
+    statePath: requireString(root, "statePath", "config.statePath"),
+    skipRoles: parseSkipRoles(root),
+    looks: parseLooks(root),
+    galleryCells: optionalPositiveInt(
+      root,
+      "galleryCells",
+      "config.galleryCells",
+      DEFAULT_GALLERY_CELLS
+    ),
+    integrations,
+    mukana: parseMukana(root, integrations)
+  };
+}

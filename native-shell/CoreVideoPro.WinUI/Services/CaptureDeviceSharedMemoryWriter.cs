@@ -26,6 +26,33 @@ public static class CaptureDeviceSharedMemoryWriter
 
     public readonly record struct WriteResult(bool MappingChanged, string ShmName, int Width, int Height);
 
+    /// <summary>One live shared buffer, as it must be announced to the core.</summary>
+    public readonly record struct LiveMapping(string DeviceId, string ShmName, int Width, int Height);
+
+    /// <summary>
+    /// Every mapping currently live, so the caller can RE-ANNOUNCE them to a new core
+    /// generation. <see cref="Write"/> reports MappingChanged only when it CREATES a
+    /// buffer, so a core that respawns under a live shell never learns about buffers
+    /// that already existed: the bridge goes on writing capture pixels at full rate
+    /// into shared memory that nobody is reading, and those sources sit on the
+    /// placeholder tile forever. Core-side captures (screen/WGC) recover on their own
+    /// because the fresh core re-enumerates them; only the shell-bridged cameras are
+    /// stranded, which is what makes this look like "some tiles are blank".
+    /// </summary>
+    public static IReadOnlyList<LiveMapping> LiveMappings()
+    {
+        lock (Gate)
+        {
+            var live = new List<LiveMapping>(Maps.Count);
+            foreach (var (deviceId, map) in Maps)
+            {
+                live.Add(new LiveMapping(deviceId, map.Name, map.Width, map.Height));
+            }
+
+            return live;
+        }
+    }
+
     private sealed class Mapping
     {
         public required MemoryMappedFile File;

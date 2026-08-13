@@ -4,6 +4,7 @@
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
 #include "modules/PluginHostClient.h"
+#include "modules/PluginHostRespawnPolicy.h"
 #include "modules/AudioDsp.h"
 #include "modules/AudioMastering.h"
 #include "modules/VirtualCameraPublisher.h"
@@ -14,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -26,6 +28,9 @@ namespace corevideo::core {
 class MediaCore {
  public:
   explicit MediaCore(modules::ModuleSet modules = modules::createDefaultModules());
+  // Clears the compositor's vcam sink before members are destroyed (see the
+  // definition — the publisher outlives nothing without it).
+  ~MediaCore();
 
   [[nodiscard]] rpc::Json profile() const;
   [[nodiscard]] rpc::Json sessionState() const;
@@ -54,6 +59,11 @@ class MediaCore {
   // spawn + SDK auth + join handshake) and must not freeze the render thread.
   [[nodiscard]] bool zoomEngineConfigured() const;
   [[nodiscard]] rpc::Json leaveZoom();
+  // Capture-off (rpc "zoom-stop-capture"): stops Zoom raw media in the engine
+  // (StopRawRecording clears the participant-facing recording indicator +
+  // unsubscribe_all stops frames) while STAYING in the meeting. Non-blocking:
+  // the engine command rides ZoomEngineRuntime's sender thread.
+  [[nodiscard]] rpc::Json stopZoomCapture();
   [[nodiscard]] rpc::Json zoomSnapshot() const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
@@ -84,6 +94,16 @@ class MediaCore {
   // `coreMutex` is the JsonRpcServer's single big lock; lock order is
   // coreMutex(outer) → audioOutputMutex_(inner). Call WITHOUT either lock held.
   void renderAudioOutputTick(std::mutex& coreMutex);
+  // Program VIDEO out on the video cadence (60Hz), so recordings/senders are not
+  // sampled through the audio worker's 20ms grid. Call setVideoOutputTickRunning
+  // before driving it, or the audio worker will submit video too.
+  void renderVideoOutputTick(std::mutex& coreMutex);
+  // Wake the video-out tick after a render. MUST be called with coreMutex
+  // RELEASED — notifying under it wakes a thread that instantly blocks on it.
+  void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
+  void setVideoOutputTickRunning(bool running) {
+    videoOutputTickRunning_.store(running, std::memory_order_release);
+  }
   // Marks that a dedicated audio/output worker thread now drives renderAudioOutputTick,
   // so the synchronous command-thread path (renderSyntheticTick(videoOnly=false) and
   // the empty-poll tick in applyCommands) stops doing the audio/output work itself.
@@ -113,6 +133,25 @@ class MediaCore {
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
 
+  // A2 (round-2 PR 2): param bridge + state persistence commands, called by
+  // JsonRpcServer's dedicated routes (hence public). All control-plane — they
+  // touch only leaf mutexes and the client's dedicated param/state events,
+  // NEVER the realtime audio req/done exchange.
+  void setVstInsertParam(const rpc::Json& command);
+  // Pull command: fetches the plugin's CURRENT component state fresh from the
+  // isolated host; returns {stateBase64,bytes} or {error} — loud, never a
+  // silent default blob.
+  [[nodiscard]] rpc::Json getVstInsertState(const rpc::Json& command);
+  // Caches a saved state blob per selection query and injects it into every
+  // host generation that has not received it yet — including after each
+  // respawn (closes "respawn loses state"). Injection retries on scan
+  // completion + host launch, so pushing states before the first scan
+  // resolves is safe.
+  void setVstInsertState(const rpc::Json& command);
+  // Injection worker body (detached threads + the serve launch thread call
+  // it; never the audio worker, never under coreMutex).
+  void injectPendingVstStates();
+
  private:
   void loadSceneGraph(const rpc::Json& command);
   void setParticipantTransform(const rpc::Json& command);
@@ -131,6 +170,25 @@ class MediaCore {
   void failRecordingSession(const rpc::Json& command);
   void recoverRecordingSession(const rpc::Json& command);
   void configureEncoderRecordingRequest();
+  // Read the ISO source selection from a recording command: prefers
+  // `isoSourceIds` (scheme-qualified `zoom:<pid>`/`capture:<id>`), falls back to
+  // legacy `isoParticipantIds` (bare ids). Returns the RAW list as given.
+  [[nodiscard]] std::vector<std::string> readIsoSourceIds(const rpc::Json& command) const;
+  // Normalize a raw ISO id to its canonical form: a bare (scheme-less) id is a
+  // Zoom participant, so `zoom:<id>`; anything already scheme-qualified is kept.
+  [[nodiscard]] static std::string normalizeIsoSourceId(const std::string& rawId);
+  // Resolve a canonical ISO source id to a human display name (Zoom userId →
+  // roster displayName; `capture:<id>` → the capture device name, or a browser
+  // source's URL host; ISO-3). Falls back to the bare id tail.
+  [[nodiscard]] std::string resolveIsoDisplayName(const std::string& sourceId) const;
+  // ISO-3 audio pairing: does this ISO source carry its own audio stem? A Zoom
+  // participant always does; a `capture:<id>` source does ONLY when the operator
+  // paired an audio input to that capture device (captureAudioSources_). A pure
+  // camera → false → a VIDEO-ONLY ISO (no all-silence audio track).
+  [[nodiscard]] bool isoSourceHasAudio(const std::string& sourceId) const;
+  // The current ISO selection as canonical scheme-qualified ids (`zoom:<pid>` /
+  // `capture:<id>`), for the snapshot `isoSourceIds` mirror.
+  [[nodiscard]] std::vector<std::string> canonicalIsoSourceIds() const;
   void syncParticipantAudioMix(const rpc::Json& command);
   void syncVirtualCamera(const rpc::Json& command);
   [[nodiscard]] rpc::Json virtualCameraState() const;
@@ -231,7 +289,9 @@ class MediaCore {
     int zIndex = 0;
     bool hasRect = false;
     std::string fitMode = "fill";
-    std::string borderStyle = "accent";
+    // "none" by default: borders are opt-in styling; PROGRAM (and the vcam/
+    // recording/stream outputs downstream of it) must composite clean.
+    std::string borderStyle = "none";
     std::string borderColor = "#44C1A1";
     float borderThickness = 2.f;
     float sourceScale = 1.f;
@@ -243,6 +303,8 @@ class MediaCore {
     float opacity = 1.f;
     bool hasColorGrade = false;
     modules::CompositorColorGrade colorGrade;
+    bool hasChromaKey = false;
+    modules::CompositorChromaKey chromaKey;
   };
 
   struct SceneBackgroundState {
@@ -381,6 +443,12 @@ class MediaCore {
   double programLufsShortTerm_ = -120.0;
   double programLufsIntegrated_ = -120.0;
   double programTruePeakDbfs_ = -120.0;
+  // Streaming true-peak detector state (B2): sinc history persists across
+  // 20ms chunks so inter-sample peaks straddling a block edge are measured
+  // correctly (the finite-buffer meter misreads there). Worker-only, under
+  // audioOutputMutex_ like the loudness members above.
+  modules::StreamingTruePeakMeterState programTruePeakMeterL_;
+  modules::StreamingTruePeakMeterState programTruePeakMeterR_;
   std::chrono::steady_clock::time_point lastLoudnessCompute_{};
   modules::ProgramFrame lastProgramFrame_;
   std::string encoderLifecycleStatus_ = "idle";
@@ -395,7 +463,15 @@ class MediaCore {
   std::string recordingFilenamePrefix_ = "program";
   std::string recordingFormat_ = "mp4";
   std::string recordingQuality_ = "high";
+  // Raw ISO source-id selection from the command (accepts `isoSourceIds` with
+  // `zoom:<pid>`/`capture:<id>`, back-compat `isoParticipantIds` bare ids). The
+  // canonical id + roster display name are resolved at request-build time.
   std::vector<std::string> recordingIsoParticipantIds_;
+  // Latest per-ISO-source video frame snapshotted under coreMutex at the render
+  // gather, keyed by canonical source id (`zoom:<pid>` / `capture:<id>`). Cheap
+  // zero-copy VideoFrame refs (shared_ptr payloads) — NO pixel copy under the
+  // lock. The audio worker's gather picks the selected sources into the ISO work.
+  std::map<std::string, modules::VideoFrame> latestIsoSourceFrames_;
   double recordingStartedAtMs_ = 0;
   double recordingElapsedMs_ = 0;
   int64_t recordingProgramFramesWritten_ = 0;
@@ -421,6 +497,36 @@ class MediaCore {
       std::make_unique<modules::StillMediaFrameCache>();
   std::unique_ptr<modules::IVirtualCameraPublisher> virtualCamera_ = modules::createVirtualCameraPublisher();
   bool virtualCameraEnabled_ = false;
+  // The compositor pushes the tap at render cadence, so the output worker must
+  // not publish it too (that would double every frame).
+  bool compositorPublishesVcam_ = false;
+  // Set while a 60Hz video tick is driving program video out; the audio worker
+  // then submits audio only. Atomic: read by the audio worker, written by the
+  // server thread that owns the tick's lifetime.
+  std::atomic<bool> videoOutputTickRunning_{false};
+  // True while the senders have destinations. Lets the video tick run one more
+  // time after outputs clear, so the stop-carrying sync() is actually delivered.
+  std::atomic<bool> senderSyncActive_{false};
+  // The newest program NV12 tap. WRITTEN by renderVideoOutputTick and READ by
+  // the audio worker for the network senders — both under audioOutputMutex_.
+  // takeVcamNv12 hands out each generation once, so exactly one caller may take.
+  // Edge-trigger state for the video tick (coreMutex-guarded): the last program
+  // frame it published, so a tick with nothing new costs one comparison instead
+  // of a ProgramFrame copy and a duplicate submit.
+  int64_t lastVideoOutFrameNumber_ = -1;
+  // Destinations the tick last synced. A change must reach the senders even on a
+  // tick with no new frame — that is how they get STOPPED.
+  std::vector<std::string> lastVideoOutDestinations_;
+  // Program-frame publish signal. The render thread bumps the counter and
+  // notifies; the video-out tick waits on it instead of polling, so it wakes
+  // once per real frame rather than acquiring coreMutex on a timer.
+  std::atomic<uint64_t> programPublishSeq_{0};
+  std::condition_variable videoOutCv_;
+  std::mutex videoOutWaitMutex_;
+  uint64_t lastVideoOutPublishSeq_ = 0;
+  std::vector<std::uint8_t> latestProgramNv12_;
+  int latestProgramNv12Width_ = 0;
+  int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
@@ -492,6 +598,27 @@ class MediaCore {
   // 10-second diagnosis, not silence.
   std::string pluginHostInsertError_;
   bool pluginHostScanAutoKicked_ = false;  // one-shot scan kick from the worker path
+  // A1: serve respawn backoff (5→10→20→40→60s, give up after 5 consecutive
+  // failures → insert stays loudly auto-bypassed). Guarded by pluginHostMutex_;
+  // operator actions (new selection, "Open controls") reset the ladder.
+  modules::PluginHostRespawnPolicy pluginHostRespawnPolicy_;
+  std::string pluginHostLastSelectionKey_;
+  bool pluginHostGaveUpAnnounced_ = false;  // one-shot stderr on give-up
+  // A2: saved component-state blobs per "vst:" selection QUERY (the shell's
+  // persistence key), injected into each host generation exactly once.
+  // Guarded by pluginHostMutex_ (leaf). injectedHostGeneration tracks the
+  // pluginHostClient_.startCount() the blob last landed in, so a respawned
+  // host (new generation) gets it re-pushed.
+  struct VstSavedState {
+    std::vector<uint8_t> blob;
+    int64_t injectedHostGeneration = 0;  // 0 = never injected
+  };
+  std::map<std::string, VstSavedState> vstSavedStates_;
+  // A2: snapshot param surface cache — rebuilt ONLY when a host param
+  // generation moved (never per snapshot tick). Guarded by pluginHostMutex_.
+  mutable rpc::Json cachedVstParamsJson_ = rpc::Json::Array{};
+  mutable uint32_t cachedVstParamsListGeneration_ = 0;
+  mutable uint32_t cachedVstParamsValuesGeneration_ = 0;
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;
@@ -541,6 +668,9 @@ class MediaCore {
     std::vector<std::string> loopbackCaptureEndpointIds;
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
+    // Per-source ISO video for this tick (ISO-1), zero-copy shared_ptr refs
+    // snapshotted from latestIsoSourceFrames_ under coreMutex at gather.
+    std::vector<modules::IsoSourceVideoFrame> isoSources;
     std::vector<std::string> outputDestinations;
     std::vector<modules::OutputDestinationSettings> outputDestinationSettings;
     modules::ProgramFrame programFrame;
@@ -658,6 +788,12 @@ class MediaCore {
   // emitted only on structural change (and once at cold start).
   uint32_t lastMultiviewStructureSignature_ = 0;
   bool multiviewStructureEmitted_ = false;
+  std::uint64_t multiviewTickCounter_ = 0;
+  // Published multiview identity, held across throttled composites.
+  modules::ProgramFrameSharedTexture lastMultiviewTexture_;
+  std::vector<modules::MultiviewTileRect> lastMultiviewTiles_;
+  int lastMultiviewWidth_ = 0;
+  int lastMultiviewHeight_ = 0;
   std::vector<rpc::Json> pendingMultiviewSharedTextureEvents_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;

@@ -36,8 +36,28 @@ constexpr std::size_t mappingBytes(int width, int height) {
 // buffer. Derived from the host pid + source ordinal so two app instances (or a
 // restarted core) never collide.
 inline std::string shmName(unsigned long corePid, int sourceOrdinal) {
+#ifdef _WIN32
   return "Local\\CoreVideoPro.browser." + std::to_string(corePid) + "." +
          std::to_string(sourceOrdinal);
+#else
+  // POSIX shm_open names are capped at ~31 CHARACTERS on macOS (SHM_NAME_MAX);
+  // a longer name fails with ENAMETOOLONG and the source silently never maps.
+  // This project has already lost time to that ceiling once on the plugin<->
+  // engine transport, so keep this aggressively short: "/cvpb." + pid + "." +
+  // ordinal is 8 + 10 + 1 + 2 = 21 worst case.
+  return "/cvpb." + std::to_string(corePid) + "." + std::to_string(sourceOrdinal);
+#endif
+}
+
+// Guards the ceiling above at compile-ish time for the caller: a name that would
+// be rejected is a silent black source, so callers assert rather than discover
+// it at runtime.
+inline bool shmNameFitsPlatformLimit(const std::string& name) {
+#ifdef _WIN32
+  return name.size() < 260;
+#else
+  return name.size() <= 31;
+#endif
 }
 
 inline uint32_t loadSeq(const uint8_t* base) {

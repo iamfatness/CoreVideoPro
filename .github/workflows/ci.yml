@@ -7,6 +7,100 @@ on:
     branches: [main]
 
 jobs:
+  # D1 (docs/beta-engineering-spec.md): package.json is the single version
+  # source of truth; fail fast when the appxmanifest / csproj drift from it.
+  # release.yml gains the same gate as part of the D5 pipeline rework.
+  version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Version sources agree with package.json
+        run: node scripts/stamp-version.mjs --check
+
+  # Design-token gate for the macOS shell (docs/design-handoff-macos.md).
+  # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /
+  # SF Mono and raw system colors despite a faithful DesignSystem.swift —
+  # this keeps the brand fonts/tokens from silently regressing.
+  mac-show-drill:
+    # Headless SHOW rehearsal: drives the real core through configure -> scenes
+    # -> operator traffic -> record, and fails on request timeouts, an
+    # over-budget render tick (the class that starves every command), a wall
+    # missing its PGM/PVW cells, or a recording that writes nothing.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      # The drill OPENS the recording to prove it is playable at program
+      # resolution — bytes on disk are not proof. macos-14 runners ship no
+      # ffmpeg, so without this the assertion cannot run at all.
+      - name: Install ffmpeg (ffprobe for the recording assertion)
+        run: brew install ffmpeg
+      - name: Configure (metal)
+        run: |
+          cmake -S native -B native/build-metal -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
+            -DCOREVIDEO_WITH_METAL=ON -DCOREVIDEO_WITH_AVF_ENCODER=ON \
+            -DCOREVIDEO_WITH_COREAUDIO=ON
+      - name: Build core
+        run: >
+          cmake --build native/build-metal
+          --target corevideo-native corevideo-zoom-engine-fake
+      - name: Show drill
+        run: python3 scripts/mac-show-drill.py --seconds 25
+      # Production wall under load: synthetic 1080p60 Zoom feeds through the real
+      # ingest path. Gates sustained fps, frame DELIVERY and coreMutex hold — the
+      # class that made the port look slow for weeks.
+      #
+      # ADVISORY ON CI, BLOCKING ON REAL HARDWARE — and that is not a quiet
+      # downgrade, so read the numbers before restoring it.
+      #
+      # A macos-14 runner cannot SOURCE this load, so the run measures the runner
+      # rather than the code. Measured 2026-08-07 across two runs:
+      #   --load 8: engine produced ~250 of 480 frames/s; output held 59.3fps
+      #   --load 3: engine produced  ~71 of 180 frames/s; output held 45.2fps
+      # The lighter load scored WORSE, so this is variance on shared CI hardware,
+      # not a ceiling that a smaller --load can duck under. For comparison, a real
+      # box sources 479 frames/s (1.49GB/s) and delivers 101% at --load 8.
+      #
+      # Left blocking, it is permanent red that trains everyone to ignore CI;
+      # deleted, the numbers vanish. So it still RUNS and still prints its full
+      # verdict — the log shows exactly what was sourced and delivered — but does
+      # not gate the merge. The drill also now names a harness shortfall instead
+      # of blaming the core for frames the harness never produced.
+      #
+      # THE REAL GATE IS LOCAL: run `python3 scripts/mac-show-drill.py --load 8`
+      # on real hardware before shipping perf work. Restore continue-on-error
+      # removal the day CI runs on a machine that can source 1.5GB/s.
+      - name: Show drill (8x1080p60 load) — advisory, see comment
+        continue-on-error: true
+        run: python3 scripts/mac-show-drill.py --load 8 --seconds 25
+
+  mac-shell-design-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Design-token lint (mac-shell)
+        run: bash scripts/lint-mac-design.sh
+
+  # The shell had ZERO tests for ~9k lines, so every regression reached the
+  # owner in a live session first — including a prefs bug that silently wiped
+  # every saved setting. The suite runs IN the app binary rather than under
+  # XCTest so it also runs on a machine with Command Line Tools only (no Xcode);
+  # a suite that runs in CI but not on the developer's box finds bugs too late.
+  mac-shell-tests:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build shell
+        run: cd mac-shell && swift build -c release
+      - name: Shell test suite
+        run: COREVIDEO_SHELL_TESTS=1 mac-shell/.build/release/CoreVideoProShell
+      - name: Redaction + prefs self-check
+        run: COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -54,6 +148,32 @@ jobs:
       - run: npm ci
       - run: npm run test:native-core
 
+  # The show-engine workspace had no CI coverage of any kind: the root
+  # typecheck's `include` is the Vite app only, and no workflow ran
+  # `test:show-engine`. Its tests ran solely when someone typed the command
+  # locally, and its test files were never typechecked at all (the package
+  # tsconfig excludes them so they stay out of dist, and vitest strips types
+  # with esbuild rather than checking them). That let seven fixtures drift out
+  # of sync with the types they construct while every test still passed.
+  # `typecheck:show-engine` runs both configs — sources and tests — so a
+  # fixture contradicting its types is a red build, which is what
+  # `index.test.ts` already claims to guarantee.
+  show-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck (sources and tests)
+        run: npm run typecheck:show-engine
+      - name: Tests
+        run: npm run test:show-engine
+      - name: Build
+        run: npm run build:show-engine
+
   native-stub:
     runs-on: ubuntu-latest
     needs: typecheck
@@ -69,6 +189,59 @@ jobs:
         run: ./native/build/corevideo-native-tests --gtest_filter=ContractParity.*
       - name: Native stub tests
         run: ctest --test-dir native/build --output-on-failure
+
+  # macOS twin of native-stub: keeps the portable core buildable + green on
+  # Apple Silicon for the macOS port (AppleClang has no std parallel
+  # algorithms and caps POSIX shm names at 31 chars — both are covered by
+  # dedicated fixes/tests that only exercise on this runner).
+  native-stub-macos:
+    runs-on: macos-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install ninja
+      - name: Configure stub build
+        run: cmake -S native -B native/build -DCOREVIDEO_STUB=ON -G Ninja
+      - name: Build
+        run: cmake --build native/build
+      - name: Contract parity (protocol drift gate)
+        run: ./native/build/corevideo-native-tests --gtest_filter=ContractParity.*
+      - name: Native stub tests
+        run: ctest --test-dir native/build --output-on-failure
+
+  # Metal GPU compositor build: the real (non-stub) macOS configuration with
+  # the Metal adapter enabled. GitHub macOS runners expose an Apple
+  # paravirtual Metal device, so the MetalCompositor tests actually render;
+  # on a GPU-less runner they self-skip (loudly) instead of failing.
+  native-metal-macos:
+    runs-on: macos-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install ninja
+      - name: Configure Metal build
+        run: >
+          cmake -S native -B native/build-metal -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON
+          -DCOREVIDEO_WITH_METAL=ON
+          -DCOREVIDEO_WITH_AVF_ENCODER=ON
+          -DCOREVIDEO_WITH_COREAUDIO=ON
+          -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON
+      - name: Build
+        run: cmake --build native/build-metal
+      - name: Metal compositor tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='MetalCompositor.*'
+      - name: AVFoundation encoder tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='AvfEncoderRecording.*'
+      - name: CoreAudio adapter tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='CoreAudioAdapters.*'
+      - name: macOS capture tests
+        run: ./native/build-metal/corevideo-native-tests --gtest_filter='MacCapture*'
+      - name: Full native tests (Metal configuration)
+        run: ctest --test-dir native/build-metal --output-on-failure
 
   # ThreadSanitizer over the stub build: the Phase 2 audio/output worker decouple
   # relies on a strict coreMutex/audioOutputMutex_ two-lock discipline, and a single

@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "corevideo-ops-monitor",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "ENVIRONMENT": "staging"
+    // Optional probe-target overrides (see README). Left unset here so the
+    // defaults in lib/checks.mjs (buildTargets) apply. Set to "off" to skip a
+    // target:
+    //   "OPS_BROKER_START_URL": "https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor",
+    //   "OPS_LICENSING_URL":    "https://corevideo-licensing-api.<account>.workers.dev/health",
+    //   "OPS_TELEMETRY_URL":    "https://corevideo-telemetry-ingest.<account>.workers.dev/health",
+    //   "OPS_CAPTION_URL":      "https://corevideo-caption-broker.<account>.workers.dev/health",
+    //   "OPS_SELF_URL":         "https://corevideo-ops-monitor.<account>.workers.dev/health"
+  },
+  // Cron Trigger: probe every 5 minutes.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  // Flap-dampener last-state store. Create the namespace and paste its id here
+  // BEFORE `wrangler deploy` (see README.md "Deploying"):
+  //   npx wrangler kv namespace create OPS_STATE   -> paste the returned id below
+  "kv_namespaces": [
+    {
+      "binding": "OPS_STATE",
+      "id": "REPLACE_WITH_OPS_STATE_NAMESPACE_ID"
+    }
+  ]
+  // Secret (set out-of-band, NOT in this file):
+  //   npx wrangler secret put OPS_ALERT_WEBHOOK_URL   (Discord/Slack webhook; optional)
+  // deploy-staging-workers.ps1 sets it from scripts/.staging-secrets.local
+  // (COREVIDEO_OPS_ALERT_WEBHOOK_URL=...) when present.
+}

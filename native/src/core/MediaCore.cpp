@@ -53,6 +53,12 @@ int64_t monotonicMs() {
           .count());
 }
 
+// Key parameters are normalized: a value outside 0..1 is a caller bug, and
+// clamping keeps the shader's smoothstep well-formed.
+float clampUnit(double value) {
+  return static_cast<float>(value < 0.0 ? 0.0 : (value > 1.0 ? 1.0 : value));
+}
+
 float clampColorGradeAxis(double value) {
   return static_cast<float>(std::max(-100.0, std::min(100.0, value)));
 }
@@ -130,11 +136,11 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("smart-framing");
   }
 
-#if COREVIDEO_WITH_WASAPI_CAPTURE
+#if COREVIDEO_WITH_WASAPI_CAPTURE || COREVIDEO_WITH_COREAUDIO
   result.emplace_back("local-audio-capture");
 #endif
 
-#if COREVIDEO_WITH_WASAPI_MONITOR
+#if COREVIDEO_WITH_WASAPI_MONITOR || COREVIDEO_WITH_COREAUDIO
   result.emplace_back("audio-monitor-output");
 #endif
 
@@ -172,7 +178,9 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("aja-capture");
 #endif
 
-#if COREVIDEO_WITH_UVC
+#if COREVIDEO_WITH_UVC || COREVIDEO_WITH_AVF_CAPTURE
+  // Shared across the Windows MF adapter and the macOS AVFoundation twin —
+  // the string means "native camera capture available" (CoreAudio precedent).
   result.emplace_back("uvc-capture");
 #endif
 
@@ -320,7 +328,33 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 }  // namespace
 
 MediaCore::MediaCore(modules::ModuleSet modules)
-    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {}
+    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
+  // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
+  // output worker capped a 60fps program at 50fps everywhere. The sink runs on
+  // the compositor's tap thread; publishNv12 is internally locked and no-ops
+  // until start() has run, so no enabled-flag is read across threads here.
+  if (modules_.compositor && modules_.compositor->publishesVcamFrames()) {
+    compositorPublishesVcam_ = true;
+    auto* publisher = virtualCamera_.get();
+    modules_.compositor->setVcamFrameSink(
+        [publisher](const std::uint8_t* nv12, int width, int height) {
+          try {
+            publisher->publishNv12(nv12, width, height);
+          } catch (...) {
+          }
+        });
+  }
+}
+
+MediaCore::~MediaCore() {
+  // TEARDOWN BARRIER, not a courtesy. modules_ is declared BEFORE virtualCamera_,
+  // so the publisher is destroyed FIRST while the compositor's tap thread is
+  // still alive — a captured raw pointer would dangle. Clearing the sink blocks
+  // until any in-flight publish returns.
+  if (modules_.compositor) {
+    modules_.compositor->setVcamFrameSink(nullptr);
+  }
+}
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
@@ -501,6 +535,16 @@ rpc::Json MediaCore::leaveZoom() {
   return zoomSnapshot();
 }
 
+rpc::Json MediaCore::stopZoomCapture() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->stopCapture();
+  }
+
+  // Stub path: capture-off is NOT a leave — the meeting stays joined.
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
 rpc::Json MediaCore::zoomSnapshot() const {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->snapshot();
@@ -567,6 +611,10 @@ rpc::Json MediaCore::sessionState() const {
       {"overlayCount", overlayCount_},
       {"outputs", stringArray(session.destinations)},
       {"isoParticipantIds", stringArray(session.isoParticipantIds)},
+      // ISO-3 parity: the canonical scheme-qualified selection (`zoom:<pid>` /
+      // `capture:<id>`) alongside the legacy bare list, so the shell reads back
+      // exactly the ids it can pass to isoSourceIds.
+      {"isoSourceIds", stringArray(canonicalIsoSourceIds())},
       {"outputProfile", outputProfileJson(outputProfileId_, outputResolution_, outputWidth_, outputHeight_, outputFps_, outputTargetBitrateMbps_)},
       {"encoder", session.encoderName},
       {"codec", session.codec},
@@ -652,6 +700,23 @@ rpc::Json MediaCore::sessionState() const {
                                       {"composite", hasPreviewScene()},
                                   });
   }
+  // The multiviewer config the core is ACTUALLY running — always published, even
+  // at defaults. `configure-multiviewer` is a ONE-SHOT the shell sends at app
+  // launch; when the core respawns under a live shell nothing re-sent it, so the
+  // fresh core sat on its `grid` default while the shell still believed
+  // `pgmPvwTop`. That silently dropped the PGM/PVW bus cells off the top of the
+  // wall and degraded it to a bare source grid, and the shell could not detect it
+  // because the applied mode was reported NOWHERE. Reporting it is what lets the
+  // shell reconcile a core generation it did not configure (2026-08-08).
+  state.emplace("multiviewer", rpc::Json::Object{
+                                   {"layoutMode", multiviewLayoutMode_},
+                                   {"tileCount", multiviewTileCount_},
+                                   {"sourceCount", static_cast<int>(multiviewSources_.size())},
+                                   {"showLabels", multiviewShowLabels_},
+                                   {"showTally", multiviewShowTally_},
+                                   {"showMeters", multiviewShowMeters_},
+                                   {"showClock", multiviewShowClock_},
+                               });
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);
@@ -1059,6 +1124,10 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     startPluginHostScan();
   } else if (type == "open-vst-editor") {
     openVstPluginEditor(command);
+  } else if (type == "set-vst-param") {
+    setVstInsertParam(command);
+  } else if (type == "set-vst-state") {
+    setVstInsertState(command);
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
   } else if (type == "sync-capture-audio-sources") {
@@ -1344,10 +1413,13 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       if (state.fitMode != "fit" && state.fitMode != "fill" && state.fitMode != "stretch") {
         state.fitMode = "fill";
       }
-      state.borderStyle = route.getString("borderStyle", "accent");
+      // Default "none": PROGRAM (and everything downstream of it — virtual
+      // camera, recordings, streams) must composite clean unless the operator
+      // explicitly opts a route into a border.
+      state.borderStyle = route.getString("borderStyle", "none");
       if (state.borderStyle != "none" && state.borderStyle != "solid" && state.borderStyle != "accent" &&
           state.borderStyle != "program" && state.borderStyle != "warning") {
-        state.borderStyle = "accent";
+        state.borderStyle = "none";
       }
       state.borderColor = route.getString("borderColor", "#44C1A1");
       state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
@@ -1355,6 +1427,19 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.sourceOffsetX = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetX", 0.0))));
       state.sourceOffsetY = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetY", 0.0))));
       state.opacity = static_cast<float>((std::max)(0.0, (std::min)(1.0, route.getNumber("opacity", 1.0))));
+      if (const rpc::Json* chromaKey = route.get("chromaKey"); chromaKey && chromaKey->isObject()) {
+        // Enabled must be EXPLICIT: a route carrying key settings the operator
+        // has switched off must not key. Absent `enabled` means on, so a caller
+        // that sends settings at all is asking for them.
+        const rpc::Json* enabled = chromaKey->get("enabled");
+        state.hasChromaKey = !enabled || enabled->asBool();
+        state.chromaKey.keyR = clampUnit(chromaKey->getNumber("keyR", 0.0));
+        state.chromaKey.keyG = clampUnit(chromaKey->getNumber("keyG", 1.0));
+        state.chromaKey.keyB = clampUnit(chromaKey->getNumber("keyB", 0.0));
+        state.chromaKey.similarity = clampUnit(chromaKey->getNumber("similarity", 0.4));
+        state.chromaKey.smoothness = clampUnit(chromaKey->getNumber("smoothness", 0.1));
+        state.chromaKey.spill = clampUnit(chromaKey->getNumber("spill", 0.2));
+      }
       if (const rpc::Json* colorGrade = route.get("colorGrade"); colorGrade && colorGrade->isObject()) {
         state.hasColorGrade = true;
         state.colorGrade = readColorGrade(*colorGrade);
@@ -1508,12 +1593,15 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
       destination.videoCodec = streamVideoCodec_;
     }
   }
+  if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
+    recordingIsoParticipantIds_ = readIsoSourceIds(command);
+  }
   {
     // Encoder module mutation: guard against the audio/output worker's concurrent
     // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     configureEncoderRecordingRequest();
-    modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
+    modules_.encoder->start(command.getStringArray("destinations"), recordingIsoParticipantIds_);
   }
   if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
     encoderLifecycleStatus_ = "encoding";
@@ -1578,8 +1666,8 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
         recordingTargetBitrateMbps_,
         recordingVideoCodec_);
   }
-  if (command.get("isoParticipantIds")) {
-    recordingIsoParticipantIds_ = command.getStringArray("isoParticipantIds");
+  if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
+    recordingIsoParticipantIds_ = readIsoSourceIds(command);
   }
   {
     // encoder->configureRecording mutation: guard against the worker's encoder use.
@@ -1589,6 +1677,28 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
 }
 
 void MediaCore::startRecordingSession(const rpc::Json& command) {
+  // IDEMPOTENT per sessionId. start-recording-session rides the shell's
+  // REPEATING sync channel (BuildSyncCommands emits it on every batch while
+  // recording), and this handler used to restart the writer — new session
+  // folder, new MP4, all counters reset — on every delivery. With Magic Scene
+  // auto-direct flipping the preview scene ~1/s, a live meeting produced ONE
+  // 1-second recording shard PER SECOND (193 folders in ~3 minutes, none
+  // playable as a show). A repeated start for the session that is ALREADY
+  // recording is the sync channel re-asserting state, not an operator action:
+  // drop it. A stop (or a different sessionId) still restarts normally —
+  // matching the dedup-by-signature law every other repeated command follows.
+  const auto incomingSessionId = command.getString("sessionId", "");
+  if (recordingStatus_ == "recording" && !incomingSessionId.empty() &&
+      incomingSessionId == recordingSessionId_) {
+    static std::map<std::string, std::int64_t> s_dedupLogCount;
+    if (s_dedupLogCount[incomingSessionId]++ == 0) {
+      std::fprintf(stderr,
+                   "[recording] start-recording-session '%s' repeated while already "
+                   "recording — deduped (the writer keeps its session)\n",
+                   incomingSessionId.c_str());
+    }
+    return;
+  }
   setRecordingTargets(command);
   recordingSessionId_ = command.getString("sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_);
   recordingStartedAtMs_ = command.get("startedAtMs") ? command.get("startedAtMs")->asNumber() : recordingStartedAtMs_;
@@ -1673,6 +1783,16 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.format = recordingFormat_;
   request.quality = recordingQuality_;
   request.isoParticipantIds = recordingIsoParticipantIds_;
+  // ISO-1: canonical id + roster display name per selected source, so the writer
+  // names files ISO-01-<SafeName>.mp4 (spec §5) instead of a per-meeting id.
+  request.isoSources.clear();
+  request.isoSources.reserve(recordingIsoParticipantIds_.size());
+  for (const auto& rawId : recordingIsoParticipantIds_) {
+    const std::string sourceId = normalizeIsoSourceId(rawId);
+    // ISO-3: hasAudio is the capture audio-pairing decision — a pure-video
+    // capture source gets a VIDEO-ONLY ISO (no all-silence AAC track).
+    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId), isoSourceHasAudio(sourceId)});
+  }
   request.width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : (lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_);
   request.height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : (lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_);
   request.fps = recordingOutputFps_ > 0 ? recordingOutputFps_ : outputFps_;
@@ -1680,7 +1800,111 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.audioCodec = "aac";
   request.audioBitrateKbps = std::max(32, std::min(512, recordingAudioBitrateKbps_));
   request.targetBitrateMbps = static_cast<int>(std::max(1.0, recordingTargetBitrateMbps_));
+  // Mux the program from the full-resolution NV12 tap instead of the 320x180
+  // preview thumbnail (the corner-tile defect). The tap is a dedicated 1080p
+  // scale-blit, so require an exact size match: feeding a 1080p buffer into a
+  // 4K writer would letterbox the show into part of the frame, which is the very
+  // failure being fixed. A non-1080p recording keeps the old path and stays
+  // wrong — closing that needs a program-sized readback, not this switch.
+  request.programNv12 = modules_.compositor && modules_.compositor->suppliesProgramNv12() &&
+                        request.width == 1920 && request.height == 1080;
   modules_.encoder->configureRecording(request);
+}
+
+std::vector<std::string> MediaCore::readIsoSourceIds(const rpc::Json& command) const {
+  // Prefer the ISO-1 scheme-qualified list; fall back to the legacy bare-id list.
+  if (command.get("isoSourceIds")) {
+    return command.getStringArray("isoSourceIds");
+  }
+  return command.getStringArray("isoParticipantIds");
+}
+
+std::string MediaCore::normalizeIsoSourceId(const std::string& rawId) {
+  if (rawId.empty() || rawId.find(':') != std::string::npos) {
+    return rawId;  // already scheme-qualified (zoom:/capture:/media:)
+  }
+  return "zoom:" + rawId;  // bare id = a Zoom participant (back-compat)
+}
+
+std::string MediaCore::resolveIsoDisplayName(const std::string& sourceId) const {
+  // Strip the scheme to get the underlying id.
+  const auto colon = sourceId.find(':');
+  const std::string scheme = colon == std::string::npos ? "" : sourceId.substr(0, colon);
+  const std::string bareId = colon == std::string::npos ? sourceId : sourceId.substr(colon + 1);
+  if (scheme == "zoom" || scheme.empty()) {
+    // Look the participant up in the live roster (userId → displayName).
+    const auto snapshot = zoomSnapshot();
+    if (const rpc::Json* participants = snapshot.get("participants"); participants && participants->isArray()) {
+      for (const auto& participant : participants->asArray()) {
+        if (participant.getString("userId") == bareId) {
+          const std::string name = participant.getString("displayName");
+          if (!name.empty()) {
+            return name;
+          }
+        }
+      }
+    }
+  } else if (scheme == "capture") {
+    // ISO-3: a capture source id is `capture:<deviceId>` (UVC / screen / window)
+    // or `capture:browser:<n>`. Resolve the friendly device name so post sees
+    // `ISO-NN-<CameraName>.mp4`, not a hashed device id. Browser sources carry a
+    // URL; the rest are enumerated capture devices (match by id OR OS device id).
+    if (bareId.rfind("browser:", 0) == 0) {
+      for (const auto& item : browserSources_->telemetry()) {
+        if ("browser:" + item.id == bareId && !item.url.empty()) {
+          return item.url;  // sanitized to a safe fragment at file-open
+        }
+      }
+    }
+    if (modules_.captureDevice) {
+      for (const auto& device : modules_.captureDevice->enumerate()) {
+        if ((device.id == bareId || device.nativeDeviceId == bareId) && !device.name.empty()) {
+          return device.name;
+        }
+      }
+    }
+    // Fall back to a paired audio device name if one was configured (a capture
+    // card that presents only through its audio input still reads better named).
+    for (const auto& source : captureAudioSources_) {
+      if (source.captureDeviceId == bareId && !source.audioDeviceName.empty()) {
+        return source.audioDeviceName;
+      }
+    }
+  }
+  return bareId.empty() ? sourceId : bareId;
+}
+
+bool MediaCore::isoSourceHasAudio(const std::string& sourceId) const {
+  const auto colon = sourceId.find(':');
+  const std::string scheme = colon == std::string::npos ? "" : sourceId.substr(0, colon);
+  const std::string bareId = colon == std::string::npos ? sourceId : sourceId.substr(colon + 1);
+  // A Zoom participant always carries its own isolate_audio stem (silence-filled
+  // when gated) — the ISO-2 self-contained-A+V shape.
+  if (scheme == "zoom" || scheme.empty()) {
+    return true;
+  }
+  // ISO-3 capture: audio only when the operator paired a real audio input to
+  // THIS capture device (Elgato-class embedded audio, or a mic assigned to the
+  // camera). A pure camera (no paired audio) and browser sources (no page audio
+  // in BR-1) → VIDEO-ONLY ISO, no all-silence AAC track.
+  if (scheme == "capture") {
+    for (const auto& source : captureAudioSources_) {
+      if (source.captureDeviceId == bareId && source.audioSourceKind != "none" &&
+          !source.audioDeviceId.empty()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<std::string> MediaCore::canonicalIsoSourceIds() const {
+  std::vector<std::string> out;
+  out.reserve(recordingIsoParticipantIds_.size());
+  for (const auto& rawId : recordingIsoParticipantIds_) {
+    out.push_back(normalizeIsoSourceId(rawId));
+  }
+  return out;
 }
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
@@ -1702,6 +1926,16 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     if (const auto* v = mastering->get("presenceDb")) params.presenceDb = v->asNumber();
     if (const auto* v = mastering->get("highShelfDb")) params.highShelfDb = v->asNumber();
     if (const auto* v = mastering->get("stereoWidth")) params.stereoWidth = v->asNumber();
+    // B1 glue dynamics + multiband (master-vst-round2-spec §B1). Absent fields
+    // keep the struct defaults, which equal the pre-B1 fixed values.
+    if (const auto* v = mastering->get("glueRatio")) params.glueRatio = v->asNumber();
+    if (const auto* v = mastering->get("glueAttackMs")) params.glueAttackMs = v->asNumber();
+    if (const auto* v = mastering->get("glueReleaseMs")) params.glueReleaseMs = v->asNumber();
+    if (const auto* v = mastering->get("glueMakeupDb")) params.glueMakeupDb = v->asNumber();
+    if (const auto* v = mastering->get("glueMultiband")) params.glueMultiband = v->asBool();
+    if (const auto* v = mastering->get("glueBandLowDb")) params.glueBandLowDb = v->asNumber();
+    if (const auto* v = mastering->get("glueBandMidDb")) params.glueBandMidDb = v->asNumber();
+    if (const auto* v = mastering->get("glueBandHighDb")) params.glueBandHighDb = v->asNumber();
     if (params.enabled != masteringParams_.enabled || params.targetLufs != masteringParams_.targetLufs) {
       std::fprintf(stderr, "[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
                    params.enabled ? 1 : 0, params.targetLufs, params.ceilingDbfs, params.glueAmount,
@@ -2358,7 +2592,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       if (state.fitMode != "fit" && state.fitMode != "fill" && state.fitMode != "stretch") {
         state.fitMode = "fill";
       }
-      state.borderStyle = route.getString("borderStyle", "accent");
+      state.borderStyle = route.getString("borderStyle", "none");
       state.borderColor = route.getString("borderColor", "#44C1A1");
       state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
       state.sourceScale = static_cast<float>((std::max)(0.25, (std::min)(4.0, route.getNumber("sourceScale", 1.0))));
@@ -3060,12 +3294,14 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
   programLufsMomentary_ = modules::computeMomentaryLufs(programMeterL_.data() + momentaryOffset,
                                                         programMeterR_.data() + momentaryOffset, momentarySamples, rate);
   programLufsShortTerm_ = modules::computeShortTermLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
-  // True peak uses 4x oversampling (a polyphase FIR per sample). Re-scanning the
-  // full 3 s window every tick costs ~240ms and was starving the 60fps render â€”
-  // oversample only THIS chunk and hold a slowly-decaying peak, which is what a
-  // true-peak meter displays anyway.
-  const double chunkTruePeak = std::max(modules::computeTruePeakDbfs(chunkL.data(), frames, 4),
-                                        modules::computeTruePeakDbfs(chunkR.data(), frames, 4));
+  // True peak: STREAMING 4x-oversampled detector (B2). The old per-chunk
+  // computeTruePeakDbfs zero-padded both block edges, so inter-sample peaks
+  // near/straddling a 20ms boundary were misread (~+0.4 dB over-report on
+  // ISP-heavy content — #309 verification note). The streaming state keeps the
+  // sinc history across chunks; display still holds a slowly-decaying peak.
+  const double chunkTruePeak =
+      std::max(modules::streamingTruePeakBlockDbfs(programTruePeakMeterL_, chunkL.data(), frames),
+               modules::streamingTruePeakBlockDbfs(programTruePeakMeterR_, chunkR.data(), frames));
   programTruePeakDbfs_ = std::max(chunkTruePeak, programTruePeakDbfs_ - 0.5);
   programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
 }
@@ -3694,10 +3930,16 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   const bool metadataValid = session.recordingMetadataValid ||
                              (programFramesWritten > 0 && !containerFormat.empty() && !videoCodec.empty() && recordingWidth > 0 && recordingHeight > 0 &&
                               recordingFps > 0 && !audioCodec.empty());
+  // Prefer the sink's REAL artifact path (the MF sink writes into a per-session
+  // subfolder, spec §5); fall back to the synthesized flat path for the stub.
+  const std::string programPath = !session.recordingArtifactPath.empty()
+                                      ? session.recordingArtifactPath
+                                      : recordingTargetFolder_ + "/" + recordingFilenamePrefix_ +
+                                            "-program-0." + recordingFormat_;
   rpc::Json::Array streams{
       rpc::Json::Object{
           {"kind", "program"},
-          {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
+          {"path", programPath},
           {"status", recordingWriterStatus_},
           {"expectedFrames", static_cast<double>(programFramesWritten + recordingDroppedFrames_)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
@@ -3710,20 +3952,55 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"metadataValid", metadataValid},
       },
   };
-  for (const auto& participantId : isoIds) {
-    streams.emplace_back(rpc::Json::Object{
-        {"kind", "iso"},
-        {"participantId", participantId},
-        {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
-        {"status", recordingWriterStatus_},
-        {"readiness", "ready"},
-        {"framesWritten", static_cast<double>(programFramesWritten)},
-        {"durationMs", durationMs},
-        {"frameRate", recordingFps},
-        {"hasAudio", audioPresent},
-        {"bytesWritten", static_cast<double>(programFramesWritten * 140000)},
-        {"metadataValid", metadataValid},
-    });
+  if (!session.isoStreams.empty()) {
+    // ISO-1: real per-writer health from the Media Foundation sink — one node per
+    // selected ISO source with its own path, frame count, open state and warning.
+    // A video-only-broken ISO (writer failed to open / lost its track) is as loud
+    // as a video-only program was (#286): its warning shows here AND folds into
+    // recording.warning below.
+    for (const auto& iso : session.isoStreams) {
+      rpc::Json::Object node{
+          {"kind", "iso"},
+          {"sourceId", iso.sourceId},
+          {"participantId", iso.sourceId},
+          {"displayName", iso.displayName},
+          {"path", iso.path},
+          {"status", iso.warning.empty() ? recordingWriterStatus_ : std::string("warning")},
+          {"readiness", iso.trackOpen ? "ready" : "missing"},
+          {"framesWritten", static_cast<double>(iso.videoFrameCount)},
+          {"durationMs", durationMs},
+          {"frameRate", recordingFps},
+          // ISO-2: each ISO is self-contained A+V — hasAudio reflects real muxed
+          // raw-stem samples (silence-fill keeps a gated stem's timeline aligned,
+          // so a talking guest reports audio; a never-opened writer reports none).
+          {"hasAudio", iso.audioSampleCount > 0},
+          {"audioSamples", static_cast<double>(iso.audioSampleCount)},
+          {"bytesWritten", static_cast<double>(iso.bytesWritten)},
+          {"metadataValid", iso.trackOpen},
+      };
+      if (!iso.warning.empty()) {
+        node.emplace("warning", iso.warning);
+      }
+      streams.emplace_back(std::move(node));
+    }
+  } else {
+    // Stub / non-MF sink: synthesize ISO nodes from the selected ids (no real
+    // per-writer stats available).
+    for (const auto& participantId : isoIds) {
+      streams.emplace_back(rpc::Json::Object{
+          {"kind", "iso"},
+          {"participantId", participantId},
+          {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
+          {"status", recordingWriterStatus_},
+          {"readiness", "ready"},
+          {"framesWritten", static_cast<double>(programFramesWritten)},
+          {"durationMs", durationMs},
+          {"frameRate", recordingFps},
+          {"hasAudio", audioPresent},
+          {"bytesWritten", static_cast<double>(programFramesWritten * 140000)},
+          {"metadataValid", metadataValid},
+      });
+    }
   }
 
   rpc::Json::Object recording{
@@ -3745,7 +4022,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
        }},
       {"estimatedDiskRateMBps", 4.99},
-      {"programPath", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
+      {"programPath", programPath},
       {"streams", streams},
       {"proof",
        rpc::Json::Object{
@@ -3775,6 +4052,12 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   };
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);
+  }
+  if (!session.recordingSessionDir.empty()) {
+    recording.emplace("sessionDir", session.recordingSessionDir);
+  }
+  if (!session.recordingManifestPath.empty()) {
+    recording.emplace("manifestPath", session.recordingManifestPath);
   }
   if (!recordingError_.empty()) {
     recording.emplace("error", recordingError_);
@@ -3952,15 +4235,22 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.order = videoLayerIndex;
       }
       layer.fitMode = route.fitMode;
-      layer.borderStyle = route.borderStyle;
+      // Borders NEVER composite into program/preview: they exist solely to
+      // separate tiles in the MULTIVIEW (which sets its own explicit tally
+      // borders). Whatever a route carries on the wire, the feed stays clean —
+      // a green route-border frame baked into program reached the virtual
+      // camera, recordings, and streams (owner rule, 2026-07-31).
+      layer.borderStyle = "none";
       layer.borderColor = route.borderColor;
-      layer.borderThickness = route.borderThickness;
+      layer.borderThickness = 0.f;
       layer.sourceScale = route.sourceScale;
       layer.sourceOffsetX = route.sourceOffsetX;
       layer.sourceOffsetY = route.sourceOffsetY;
       layer.opacity = route.opacity;
       layer.hasColorGrade = route.hasColorGrade;
       layer.colorGrade = route.colorGrade;
+      layer.hasChromaKey = route.hasChromaKey;
+      layer.chromaKey = route.chromaKey;
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }
@@ -4096,6 +4386,15 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   static int64_t s_stageProgramUs = 0;
   static int64_t s_stageMultiviewUs = 0;
   static int64_t s_stagePreviewUs = 0;
+  static int64_t s_stageEmitUs = 0;
+  // Ingest sub-attribution: at 10x1080p the ingest stage dominates the tick, and
+  // "ingest" alone doesn't say whether the cost is the engine tap, the per-source
+  // polls, or the roster merge. Each is a different fix.
+  static int64_t s_subFetchUs = 0;
+  static int64_t s_subStoreUs = 0;
+  static int64_t s_subTapUs = 0;
+  static int64_t s_subPollUs = 0;
+  static int64_t s_subMergeUs = 0;
   static int s_stageTicks = 0;
   auto stageMark = std::chrono::steady_clock::now();
   const auto markStage = [&stageMark, videoOnly](int64_t& acc) {
@@ -4112,6 +4411,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
   if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
+    markStage(s_subFetchUs);
     for (const auto& frame : decoded) {
       if (frame.hasI420()) {
         // GPU path: carry the raw I420 planes through to the compositor, which
@@ -4133,9 +4433,22 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
             frame.timestampMs);
       }
     }
+    // Split the per-frame store calls from the destruction of `decoded` (which
+    // releases each shared I420 buffer) so a long tap says which one it is.
+    markStage(s_subStoreUs);
   }
 
-  auto videoFrames = modules_.zoom->pollVideoFrames();
+  // With a REAL Zoom engine configured, suppress only the SYNTHETIC FALLBACK
+  // tiles (RealZoomCaptureSource falls back to the wrapped synthetic source
+  // when it holds no real frames): the animated placeholders upload
+  // ~16MB/frame under coreMutex (measured 26ms/tick on the Metal path). The
+  // earlier all-or-nothing gate here also discarded the REAL decoded engine
+  // frames ingested just above — live meetings rendered blank on macOS.
+  markStage(s_subTapUs);
+  const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
+  auto videoFrames = (engineLive && (!realZoom || realZoom->participantCount() == 0))
+                         ? std::vector<modules::VideoFrame>{}
+                         : modules_.zoom->pollVideoFrames();
   auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
   // Browser-source frames ride the capture stream (keyed "capture:browser:<n>"),
   // so scenes/multiview/routing treat them exactly like any capture device. Same
@@ -4146,6 +4459,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
                          std::make_move_iterator(browserFrames.begin()),
                          std::make_move_iterator(browserFrames.end()));
   }
+  markStage(s_subPollUs);
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
@@ -4179,6 +4493,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
+  markStage(s_subMergeUs);
   // Still-image media routes (logos/bugs): inject the persistent decoded frames
   // (keyed "media:<assetId>") so program, preview bus and multiview all match
   // them like any other source frame. Cheap by construction — shared_ptr copies
@@ -4189,6 +4504,30 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     auto stillFrames = stillMediaCache_->collectFrames(frameTimestampMs);
     videoFrames.insert(videoFrames.end(), std::make_move_iterator(stillFrames.begin()),
                        std::make_move_iterator(stillFrames.end()));
+  }
+  // ISO-1: snapshot the latest per-source video frame (keyed by canonical source
+  // id) so the audio worker's gather can hand each selected ISO writer its own
+  // frame. Zero-copy: VideoFrame carries shared_ptr payloads, so this is a cheap
+  // ref copy under coreMutex — NO pixel work under the lock (spec §9 LAW). Only
+  // built while recording ISO, and only for frames with real decoded content.
+  if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
+      !recordingIsoParticipantIds_.empty()) {
+    latestIsoSourceFrames_.clear();
+    for (const auto& frame : videoFrames) {
+      if (!frame.hasI420() && !frame.hasPixels()) {
+        continue;  // metadata-only roster frame — no pixels to ISO-record yet
+      }
+      const std::string& pid = frame.participantId;
+      if (pid.rfind("media:", 0) == 0) {
+        continue;  // media routes are not ISO sources (v1 non-goal)
+      }
+      // capture:/browser: frames already carry their scheme; a bare id is a Zoom
+      // participant → `zoom:<pid>` (matches normalizeIsoSourceId).
+      const std::string key = pid.find(':') != std::string::npos ? pid : "zoom:" + pid;
+      latestIsoSourceFrames_[key] = frame;
+    }
+  } else if (!latestIsoSourceFrames_.empty()) {
+    latestIsoSourceFrames_.clear();
   }
   markStage(s_stageIngestUs);
 
@@ -4222,7 +4561,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // consumed `ProgramFrame::preview` (a 320x180 UI thumbnail), so YouTube saw
   // the connection but could not render the declared 4K program correctly.
   // The tap scales on-GPU to 1080p and converts to NV12 on its own thread.
-  renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive;
+  renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive ||
+      ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
+       modules_.compositor->wantsFullProgramReadbackForRecording());
 
   if (modules_.mediaFrames) {
     auto mediaLayers = renderPlan.layers;
@@ -4250,6 +4591,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   }
   markStage(s_stagePlanUs);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
+  // Mark a new program frame for the video-out tick. Only the COUNTER moves here
+  // (atomic, free); the wakeup itself is deliberately NOT sent under coreMutex —
+  // the caller sends it via notifyProgramFramePublished() after releasing the
+  // lock, because notifying inside it wakes a thread that immediately blocks on
+  // the very lock we still hold (measured: operator command p99 51ms -> 107ms).
+  programPublishSeq_.fetch_add(1, std::memory_order_release);
   if (!videoOnly && lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
@@ -4258,7 +4605,29 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
   // stays on the light videoOnly tick (no CPU readback).
-  if (!multiviewSources_.empty()) {
+  // Render whenever there are sources OR the layout has PGM/PVW cells: an
+  // operator with nothing assigned yet must still see the program and preview
+  // buses (every hardware multiviewer shows them from power-on). Gating the
+  // whole pass on sources left the mac shell with a black box and no P/P.
+  const bool multiviewHasProgramPreview = multiviewLayoutMode_ != "grid";
+  // The multiviewer is a MONITOR WALL, not the program bus: compositing it on
+  // every 60fps tick (it builds the full program AND preview plans, then runs
+  // a second GPU pass) pushed coreMutex holds to 20-35ms and starved the RPC
+  // queue until commands timed out. ~20fps is indistinguishable on a wall and
+  // gives the lock back. The FIRST tick always renders so the buses appear
+  // immediately, and a structural change forces one too.
+  ++multiviewTickCounter_;
+  // Multiview composite cadence. This was every 3rd tick (~19fps on a 57fps
+  // render) because an UNOPTIMIZED build made the second GPU pass part of a
+  // 27ms lock hold that starved the RPC queue. On the optimized build the whole
+  // tick is ~4.6ms under a full 8x1080p60 wall, so the throttle now only costs
+  // the operator a choppy monitor wall for no benefit — a production multiviewer
+  // is expected to run at full rate. Kept as a named constant so it can be
+  // raised again if a slower machine ever needs it.
+  constexpr int kMultiviewTickDivisor = 1;
+  const bool multiviewDue = !multiviewStructureEmitted_ ||
+                            (multiviewTickCounter_ % kMultiviewTickDivisor) == 0;
+  if ((!multiviewSources_.empty() || multiviewHasProgramPreview) && multiviewDue) {
     auto multiviewPlan = buildMultiviewRenderPlan(videoFrames);
     multiviewPlan.skipCpuReadback = true;
     lastProgramFrame_.multiviewSharedTexture = modules_.compositor->renderMultiview(multiviewPlan, videoFrames);
@@ -4277,6 +4646,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // placed its layers into, plus the PGM/PVW cells for the pgmPvw modes.
     const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
     lastProgramFrame_.multiviewTiles = buildMultiviewTiles(activeSpeakerId);
+    // Cache for the throttled ticks below.
+    lastMultiviewTexture_ = lastProgramFrame_.multiviewSharedTexture;
+    lastMultiviewTiles_ = lastProgramFrame_.multiviewTiles;
+    lastMultiviewWidth_ = lastProgramFrame_.multiviewWidth;
+    lastMultiviewHeight_ = lastProgramFrame_.multiviewHeight;
+  } else if (lastMultiviewTexture_.iosurfaceId != 0 ||
+             !lastMultiviewTexture_.sharedHandleHex.empty()) {
+    // Throttled tick: the program frame is rebuilt every tick, so without this
+    // the multiview texture and tiles read EMPTY on 2 of every 3 ticks. A
+    // consumer sampling the snapshot then saw no wall at all (a fresh shell
+    // connecting to a running core got a permanently black multiviewer, since
+    // the EVENT only fires on structural change). The composite is throttled;
+    // its published identity must not be.
+    lastProgramFrame_.multiviewSharedTexture = lastMultiviewTexture_;
+    lastProgramFrame_.multiviewTiles = lastMultiviewTiles_;
+    lastProgramFrame_.multiviewWidth = lastMultiviewWidth_;
+    lastProgramFrame_.multiviewHeight = lastMultiviewHeight_;
   }
   markStage(s_stageMultiviewUs);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
@@ -4312,18 +4698,30 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // "uploads in the last ~2s window".
     static modules::CompositorSourceTexStats s_lastTexStats;
     const auto texStats = modules_.compositor->sourceTexStats();
+    // s_stageIngestUs now holds only the ingest TAIL (still-media + ISO snapshot);
+    // the tap/poll/merge sub-marks consumed the rest, so report their sum as the
+    // stage total and break it out beside it.
+    const int64_t ingestTotalUs =
+        s_stageIngestUs + s_subFetchUs + s_subStoreUs + s_subTapUs + s_subPollUs + s_subMergeUs;
     std::fprintf(stderr,
-                 "[render] stages avg-ms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f"
+                 "[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
+                 "plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
                  "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
-                 s_stageIngestUs / (s_stageTicks * 1000.0), s_stagePlanUs / (s_stageTicks * 1000.0),
+                 ingestTotalUs / (s_stageTicks * 1000.0),
+                 s_subFetchUs / (s_stageTicks * 1000.0), s_subStoreUs / (s_stageTicks * 1000.0),
+                 s_subTapUs / (s_stageTicks * 1000.0), s_subPollUs / (s_stageTicks * 1000.0),
+                 s_subMergeUs / (s_stageTicks * 1000.0), s_stagePlanUs / (s_stageTicks * 1000.0),
                  s_stageProgramUs / (s_stageTicks * 1000.0), s_stageMultiviewUs / (s_stageTicks * 1000.0),
                  s_stagePreviewUs / (s_stageTicks * 1000.0),
+                 s_stageEmitUs / (s_stageTicks * 1000.0),
                  static_cast<long long>(texStats.cachedUploads - s_lastTexStats.cachedUploads),
                  static_cast<long long>(texStats.cacheHits - s_lastTexStats.cacheHits),
                  static_cast<long long>(texStats.textureCreates - s_lastTexStats.textureCreates),
                  static_cast<long long>(texStats.scratchUploads - s_lastTexStats.scratchUploads));
     s_lastTexStats = texStats;
     s_stageIngestUs = s_stagePlanUs = s_stageProgramUs = s_stageMultiviewUs = s_stagePreviewUs = 0;
+    s_stageEmitUs = 0;
+    s_subFetchUs = s_subStoreUs = s_subTapUs = s_subPollUs = s_subMergeUs = 0;
     s_stageTicks = 0;
   }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
@@ -4349,6 +4747,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       enqueueProgramFramePreviewEvent();
       lastFrameEventEmit_ = nowTp;
     }
+    markStage(s_stageEmitUs);
   }
   // The audio/output half (mixer->mix, routed-bus matrix + insert chains,
   // monitorOutput->render, BS.1770 loudness, encoder->submit/submitAudio,
@@ -4388,6 +4787,15 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
     auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
     audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
   }
+  if (modules_.captureDevice) {
+    // Audio embedded in a capture TRANSPORT. An SRT contribution feed carries its
+    // guest's audio inside the same stream, with no OS audio device to pair it
+    // with, so it arrives here rather than through the WASAPI capture-audio path.
+    // Keyed "capture:<deviceId>", so it lands in the existing routing, metering
+    // and ISO paths exactly like a paired capture input.
+    auto transportAudio = modules_.captureDevice->pollAudioFrames(frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), transportAudio.begin(), transportAudio.end());
+  }
   if (modules_.mediaFrames) {
     // Media-layer audio needs the active scene layers; rebuild the plan here (it is
     // derived from scene-route / media-playback state, not from the polled frames).
@@ -4420,6 +4828,20 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
   }
   work.recordingActive = (recordingStatus_ == "recording" || recordingStatus_ == "warning");
   work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
+  // ISO-1: pick the selected sources' latest frames (snapshotted under coreMutex
+  // above in the render gather) into the work item — zero-copy shared_ptr refs.
+  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && !latestIsoSourceFrames_.empty()) {
+    for (const auto& rawId : recordingIsoParticipantIds_) {
+      const std::string sourceId = normalizeIsoSourceId(rawId);
+      const auto it = latestIsoSourceFrames_.find(sourceId);
+      if (it != latestIsoSourceFrames_.end()) {
+        // displayName left empty here: the sink maps by sourceId to a writer
+        // whose name/path were resolved at recording start (avoids a roster
+        // lookup under coreMutex every tick).
+        work.isoSources.push_back({sourceId, std::string(), it->second});
+      }
+    }
+  }
   work.outputDestinations = outputDestinations_;
   work.outputDestinationSettings = outputDestinationSettings_;
   work.programFrame = lastProgramFrame_;
@@ -4490,6 +4912,46 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
   if (mixMs >= 30) std::fprintf(stderr, "[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
 
+  // A3 (latency compensation, owner decision: COMPENSATE): the active
+  // plugin's reported latency, valid only while the host is genuinely
+  // processing. Channel-level alignment delays every source WITHOUT a
+  // host-handled insert by this amount so a plugin-hosting sibling channel is
+  // not late against the rest of its bus. Cross-BUS alignment needs per-path
+  // latency attribution the single-slot telemetry cannot express yet — the
+  // honest scope note lives in docs/master-vst-round2-spec.md §A3.
+  // COREVIDEO_VST_LATENCY_ALIGN=0 disables the delay wiring (telemetry stays).
+  static const bool vstLatencyAlignEnabled = [] {
+    const char* flag = std::getenv("COREVIDEO_VST_LATENCY_ALIGN");
+    return flag == nullptr || flag[0] != '0';
+  }();
+  uint32_t vstActiveLatencySamples = 0;
+  bool anyChannelVstInsert = false;
+  bool anyBusVstInsert = false;
+  {
+    for (const auto& channel : work.channels) {
+      for (const auto& insert : channel.pluginInserts) {
+        if (isHostHandledInsertName(insert)) {
+          anyChannelVstInsert = true;
+          break;
+        }
+      }
+      if (anyChannelVstInsert) break;
+    }
+    for (const auto& send : work.routingSends) {
+      for (const auto& insert : send.busPluginInserts) {
+        if (isHostHandledInsertName(insert)) {
+          anyBusVstInsert = true;
+          break;
+        }
+      }
+      if (anyBusVstInsert) break;
+    }
+    if ((anyChannelVstInsert || anyBusVstInsert) && pluginHostClient_.ready() &&
+        pluginHostClient_.statusCode() == corevideo::pluginhost::kHostStatusPluginActive) {
+      vstActiveLatencySamples = pluginHostClient_.latencySamples();
+    }
+  }
+
   // Routed-bus matrix mix over the real PCM into a LOCAL bus map (published later).
   {
     std::vector<modules::RoutedAudioSource> routedSources;
@@ -4502,8 +4964,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       source.sourceId = frame.participantId;
       source.pcm = &frame.pcm;
       source.channels = frame.channels;
+      bool hasStrip = false;
       for (const auto& channel : work.channels) {
         if (channel.participantId == frame.participantId) {
+          hasStrip = true;
           source.muted = channel.muted;
           source.solo = channel.solo;
           source.pan = channel.pan;
@@ -4522,8 +4986,46 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           }
           source.noiseSuppression = channel.noiseSuppression;
           source.sampleRate = modules_.mixer->monitorBusSampleRate();
+          // A3: sources whose own chain hosts the plugin already carry its
+          // latency; every OTHER source gets the compensating delay.
+          if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
+            bool hostsPlugin = false;
+            for (const auto& insert : channel.pluginInserts) {
+              if (isHostHandledInsertName(insert)) {
+                hostsPlugin = true;
+                break;
+              }
+            }
+            source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
+          }
           break;
         }
+      }
+      // THE FADER LAW (owner rule, 2026-08-09): no audio source reaches ANY bus
+      // without a fader. A routed source with no channel strip used to sum into
+      // master unmuted at unity — which is why "mute everything" did not silence
+      // the master: the audible path (the Zoom meeting mix) had no strip at all.
+      // When the operator has a console (channels synced), a strip-less source
+      // is DROPPED from the bus mix, loudly, so the leak names itself. Headless
+      // callers (validators, scripts) sync no channels and keep unity behavior.
+      if (!hasStrip && !work.channels.empty()) {
+        static std::map<std::string, std::int64_t> s_lastWarn;
+        auto& warned = s_lastWarn[frame.participantId];
+        if (warned++ % 250 == 0) {  // ~every 5s at 50Hz, first occurrence immediately
+          std::fprintf(stderr,
+                       "[audio] FADER LAW: routed source '%s' has NO channel strip — "
+                       "dropped from the bus mix (add a fader to make it audible)\n",
+                       frame.participantId.c_str());
+        }
+        continue;
+      }
+      // A3: sources with no channel-strip entry still need the compensating
+      // delay (they sum into the same buses); give them their persistent DSP
+      // state so the delay line survives across ticks.
+      if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0 &&
+          source.dspState == nullptr) {
+        source.dspState = &channelDspStates_[frame.participantId];
+        source.alignDelayFrames = vstActiveLatencySamples;
       }
       routedSources.push_back(source);
     }
@@ -4737,7 +5239,17 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           work.monitorListenBusId.empty() ? kEmptyTap : localBusTap(work.monitorListenBusId);
       const auto& routedMonitorBus = !listenBus.empty() ? listenBus : localBusTap("mon");
       const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
-      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus : modules_.mixer->monitorBusPcm();
+      // A ROUTED CONSOLE NEVER FALLS BACK TO THE UNMUTED SUM. The legacy
+      // DevSafeAudioMixer bus is every PCM frame summed with no strips, mutes,
+      // or routing — a headless-only convenience. When routing sends exist, an
+      // empty/silent mon bus means the operator MUTED things: falling back here
+      // played the raw unmuted mix the moment every strip was muted (live
+      // meeting, 2026-08-09 — "muted all sources and still hear the output").
+      // Silence is the correct sound of an all-muted console.
+      const bool consoleRouted = !work.routingSends.empty();
+      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus
+                               : consoleRouted     ? kEmptyTap
+                                                   : modules_.mixer->monitorBusPcm();
       const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());
       const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
       if (frameCount <= 0) {
@@ -4790,98 +5302,142 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // mixer's default program mix). Mutates the loudness members in place under
   // audioOutputMutex_; masterMeterState reads them under the same lock.
   {
+    // Routed console -> never meter the legacy unmuted sum (see the monitor
+    // fallback note above). All-muted must read as silence on the master meter.
+    static const std::vector<float> kEmptyLoudnessTap;
+    const bool loudnessConsoleRouted = !work.routingSends.empty();
     const std::vector<float>& programAudio =
-        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+        !localProgramTap.empty() ? localProgramTap
+        : loudnessConsoleRouted  ? kEmptyLoudnessTap
+                                 : modules_.mixer->monitorBusPcm();
     const int meterChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
     updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
   }
 
-  // Encoder submit (uses the program-frame snapshot), output-sender network sync,
-  // recording mux. encoder->submit early-returns when the frame carries no CPU
-  // pixels, so when no output is active (readback skipped) this is harmless.
-  modules_.encoder->submit(work.programFrame);
+  // Fetch the compositor's full-program 1080p NV12 tap ONCE per tick and share it
+  // with the recorder, RTMP and the virtual camera. The tap owns the slow GPU
+  // work; this worker only copies the latest ~3MB frame and never maps the render
+  // device. It must be taken BEFORE the encoder submit below: the recorder muxes
+  // from this buffer (RecordingSessionRequest::programNv12), and attaching it only
+  // to the senders' copy is what left recordings muxing the 320x180 preview.
+  // THE TAP IS TAKEN BY THE VIDEO TICK, NOT HERE. takeVcamNv12 yields each tap
+  // generation exactly ONCE, so two callers would starve each other; the 60Hz
+  // renderVideoOutputTick owns the take and leaves the newest frame in
+  // latestProgramNv12_ (both run under audioOutputMutex_, so this is a plain
+  // read). The senders below still need it on work.programFrame.
+  bool hasNewProgramNv12 = false;
+  if (!latestProgramNv12_.empty() && latestProgramNv12Width_ > 0 && latestProgramNv12Height_ > 0) {
+    hasNewProgramNv12 = true;
+    work.programFrame.programNv12Width = latestProgramNv12Width_;
+    work.programFrame.programNv12Height = latestProgramNv12Height_;
+    work.programFrame.programNv12 = latestProgramNv12_;
+  }
+
+  // PROGRAM VIDEO IS SUBMITTED BY THE VIDEO TICK when one is running. This
+  // worker paces on a 20ms AUDIO grid (960 samples at 48k), and submitting video
+  // here muxed the program at ~51fps while the compositor produced 60 — measured
+  // 755 frames over 14.83s in a container declaring 60. Video PTS is wall-clock
+  // (RecordingPtsClock::videoPts) and deduped by frameNumber, so submitting on a
+  // separate, faster tick cannot drift the A/V relationship; it just stops
+  // dropping ~10 frameNumbers a second. Audio still leaves from this worker.
+  if (!videoOutputTickRunning_.load(std::memory_order_acquire)) {
+    modules_.encoder->submit(work.programFrame);
+  }
+  // ISO-1: each selected source's OWN video into its own MP4 (rides the same
+  // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
+  // drop-to-latest under back-pressure, never program A/V). Program above is
+  // priority-1 and unaffected by ISO.
+  if (!work.isoSources.empty()) {
+    modules_.encoder->submitIsoVideo(work.isoSources);
+  }
   const auto session = modules_.encoder->session();
   auto outputDestinations = work.outputDestinations;
   outputDestinations.erase(
       std::remove(outputDestinations.begin(), outputDestinations.end(), std::string("recording")),
       outputDestinations.end());
   const std::vector<float>& streamBusAudio = localBusTap("stream");
+  // Routed console -> silence, never the legacy unmuted sum (monitor note above).
+  static const std::vector<float> kEmptyStreamTap;
+  const bool streamConsoleRouted = !work.routingSends.empty();
   const std::vector<float>& outputProgramAudio =
-      !streamBusAudio.empty() ? streamBusAudio
-                              : !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+      !streamBusAudio.empty()    ? streamBusAudio
+      : !localProgramTap.empty() ? localProgramTap
+      : streamConsoleRouted      ? kEmptyStreamTap
+                                 : modules_.mixer->monitorBusPcm();
   const int outputAudioChannels =
       !streamBusAudio.empty() || !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
-  const auto failOutputSenderSync = [&](const std::string& message) {
-    const auto destination =
-        std::find(outputDestinations.begin(), outputDestinations.end(), "rtmp") != outputDestinations.end()
-            ? "rtmp"
-            : !outputDestinations.empty() ? outputDestinations.front() : std::string("stream");
+  // PROGRAM AUDIO OUT. The senders' VIDEO rides the 60Hz video tick
+  // (renderVideoOutputTick calls sync); only the PCM leaves from here, on the
+  // cadence that actually produces it. FFmpeg takes video and audio through two
+  // separate inputs, so they never had to arrive in one call — and while they
+  // did, the whole stream was paced by this 20ms audio grid.
+  if (videoOutputTickRunning_.load(std::memory_order_acquire)) {
+    if (!outputDestinations.empty() && !outputProgramAudio.empty()) {
+      try {
+        modules_.outputSender->submitAudio(outputProgramAudio, outputAudioChannels,
+                                           modules_.mixer->monitorBusSampleRate());
+      } catch (...) {
+        // Sender health is reported by the video tick's sync; never let an audio
+        // push take down the audio worker.
+      }
+    }
+  } else {
+    // No video tick (direct/unit-test callers): keep the original single-call
+    // path so applyCommands stays synchronous and self-contained.
+    const auto failOutputSenderSync = [&](const std::string& message) {
+      const auto destination =
+          std::find(outputDestinations.begin(), outputDestinations.end(), "rtmp") != outputDestinations.end()
+              ? "rtmp"
+              : !outputDestinations.empty() ? outputDestinations.front() : std::string("stream");
+      try {
+        modules_.outputSender->fail(destination, message,
+                                    static_cast<double>(work.programFrame.frameNumber * 33));
+      } catch (...) {
+      }
+    };
+    const auto& outputProgramFrame = work.programFrame;
+    const auto tOut0 = std::chrono::steady_clock::now();
     try {
-      modules_.outputSender->fail(destination, message, static_cast<double>(work.programFrame.frameNumber * 33));
+      // Wall time, never frameNumber — a frameNumber clock advanced with the
+      // tick rate and pushed a declared 30fps stream at nearly 50.
+      static const auto outputClockEpoch = std::chrono::steady_clock::now();
+      const double outputElapsedMs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - outputClockEpoch)
+              .count());
+      modules_.outputSender->sync(
+          outputDestinations,
+          &outputProgramFrame,
+          outputElapsedMs,
+          work.outputDestinationSettings,
+          outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
+          outputAudioChannels,
+          modules_.mixer->monitorBusSampleRate());
+      const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - tOut0)
+                             .count();
+      if (outMs >= 20) {
+        std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
+                     static_cast<long long>(outMs), outputDestinations.size());
+      }
+    } catch (const std::exception& ex) {
+      failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
     } catch (...) {
+      failOutputSenderSync("Output sender failed during sync.");
     }
-  };
-  // Fetch the compositor's full-program 1080p NV12 tap once and share it with
-  // both RTMP and the virtual camera. The tap owns the slow GPU work; this
-  // worker only copies the latest ~3MB frame and never maps the render device.
-  static std::vector<std::uint8_t> programNv12;  // output worker is single-threaded
-  static int programNv12Width = 0;
-  static int programNv12Height = 0;
-  bool hasNewProgramNv12 = false;
-  if (!outputDestinations.empty() || virtualCameraEnabled_) {
-    int width = 0;
-    int height = 0;
-    hasNewProgramNv12 = modules_.compositor->takeVcamNv12(programNv12, width, height);
-    if (hasNewProgramNv12) {
-      programNv12Width = width;
-      programNv12Height = height;
-    }
-  }
-  auto outputProgramFrame = work.programFrame;
-  if (!outputDestinations.empty() && !programNv12.empty() && programNv12Width > 0 && programNv12Height > 0) {
-    outputProgramFrame.programNv12Width = programNv12Width;
-    outputProgramFrame.programNv12Height = programNv12Height;
-    outputProgramFrame.programNv12 = programNv12;
-  }
-  const auto tOut0 = std::chrono::steady_clock::now();
-  try {
-    // RTMP pacing must follow wall time, not ProgramFrame::frameNumber. The
-    // audio/output worker runs at ~50 Hz, so the old frameNumber * 33 clock
-    // advanced ~1.65 seconds per real second and pushed a declared 30 fps
-    // stream at almost 50 fps. YouTube accepts the handshake, then closes that
-    // over-speed ingest after a few seconds. Capture real monotonic time before
-    // enqueueing into AsyncOutputSender so dropped work cannot accelerate it.
-    static const auto outputClockEpoch = std::chrono::steady_clock::now();
-    const double outputElapsedMs = static_cast<double>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - outputClockEpoch)
-            .count());
-    modules_.outputSender->sync(
-        outputDestinations,
-        &outputProgramFrame,
-        outputElapsedMs,
-        work.outputDestinationSettings,
-        outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
-        outputAudioChannels,
-        modules_.mixer->monitorBusSampleRate());
-    const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - tOut0)
-                           .count();
-    if (outMs >= 20) {
-      std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
-                   static_cast<long long>(outMs), outputDestinations.size());
-    }
-  } catch (const std::exception& ex) {
-    failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
-  } catch (...) {
-    failOutputSenderSync("Output sender failed during sync.");
   }
   // Virtual Camera: publish the program frame to the SHM slot the OS reads.
-  // Same per-tick output cadence as the network senders (no shared-lock pixel
-  // work). No-op when the operator has not enabled the virtual camera.
-  if (virtualCameraEnabled_ && hasNewProgramNv12) {
+  //
+  // FALLBACK PATH ONLY. This worker ticks at ~50Hz — an AUDIO constant (960
+  // samples at 48k) — so publishing here capped a 60fps program at 50fps on
+  // every output and added up to 20ms of quantisation. Compositors that can push
+  // the tap at the render cadence do so through ICompositor::setVcamFrameSink
+  // (wired in the constructor); this runs only for those that cannot, and must
+  // never run alongside them or every frame is published twice.
+  if (virtualCameraEnabled_ && hasNewProgramNv12 && !compositorPublishesVcam_) {
     try {
-      virtualCamera_->publishNv12(programNv12.data(), programNv12Width, programNv12Height);
+      virtualCamera_->publishNv12(latestProgramNv12_.data(), latestProgramNv12Width_,
+                                  latestProgramNv12Height_);
     } catch (...) {
     }
   }
@@ -4889,13 +5445,69 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     ++results.recordingProgramFramesDelta;
     const auto isoIds = work.recordingIsoParticipantIds.empty() ? session.isoParticipantIds : work.recordingIsoParticipantIds;
     results.recordingIsoFramesDelta += static_cast<int64_t>(isoIds.size());
+    // Routed console -> record silence when all-muted, never the legacy
+    // unmuted sum (monitor note above).
+    static const std::vector<float> kEmptyRecordTap;
+    const bool recordConsoleRouted = !work.routingSends.empty();
     const std::vector<float>& programAudio =
-        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+        !localProgramTap.empty() ? localProgramTap
+        : recordConsoleRouted    ? kEmptyRecordTap
+                                 : modules_.mixer->monitorBusPcm();
     const int audioChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
     if (!programAudio.empty() && audioChannels > 0) {
+      // A3: the recording PTS clock latches this at the session's first audio
+      // buffer — with a latency-reporting plugin anywhere in the program path
+      // (channel via alignment, bus/master directly), the whole program mix is
+      // content-late by that amount and the muxed audio timeline reflects it.
+      modules_.encoder->setAudioContentLatencySamples(static_cast<int>(vstActiveLatencySamples));
       modules_.encoder->submitAudio(programAudio.data(),
                                     static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
                                     audioChannels, modules_.mixer->monitorBusSampleRate());
+    }
+    // ISO-2: per-source RAW-STEM audio → each ISO's own MP4 (self-contained A+V).
+    // The stem is work.audioFrames[i].pcm — each source's isolated PCM, resampled
+    // to the bus rate at gather but tapped BEFORE the channel-strip DSP and the
+    // bus mix (RoutedAudioSource.pcm is a const pointer into these buffers; the
+    // DSP runs on copies inside mixRoutedBuses), matching the owner's raw-stem
+    // decision. Submitted every tick for EVERY selected source: a source with no
+    // PCM this tick (Zoom gates non-active speakers) rides an EMPTY entry so the
+    // sink silence-fills its stem to the shared epoch and it never drifts (§2c).
+    // Rides AsyncEncoderSink like the video — disk pressure drops ISO audio to
+    // silence-filled gaps, never program audio (spec §9).
+    if (!recordingIsoParticipantIds_.empty()) {
+      std::map<std::string, const modules::AudioFrame*> stemByCanonicalId;
+      for (const auto& frame : work.audioFrames) {
+        if (frame.pcm.empty() || frame.channels <= 0) {
+          continue;
+        }
+        const std::string key = frame.participantId.find(':') != std::string::npos
+                                    ? frame.participantId
+                                    : "zoom:" + frame.participantId;
+        stemByCanonicalId[key] = &frame;
+      }
+      std::vector<modules::IsoSourceAudio> isoAudio;
+      isoAudio.reserve(recordingIsoParticipantIds_.size());
+      for (const auto& rawId : recordingIsoParticipantIds_) {
+        const std::string sourceId = normalizeIsoSourceId(rawId);
+        modules::IsoSourceAudio stem;
+        stem.sourceId = sourceId;
+        const auto it = stemByCanonicalId.find(sourceId);
+        if (it != stemByCanonicalId.end()) {
+          const modules::AudioFrame& frame = *it->second;
+          stem.pcm = frame.pcm;  // raw stem copy (small; safe across threads)
+          stem.channels = frame.channels;
+          stem.sampleRate = frame.sampleRate;
+          stem.frameCount = static_cast<int>(frame.pcm.size() / static_cast<size_t>(frame.channels));
+        } else {
+          stem.channels = 0;  // no audio this tick → silence-fill
+          stem.frameCount = 0;
+          stem.sampleRate = modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
+        }
+        isoAudio.push_back(std::move(stem));
+      }
+      if (!isoAudio.empty()) {
+        modules_.encoder->submitIsoAudio(isoAudio);
+      }
     }
     const auto encoderSession = modules_.encoder->session();
     results.recordingAudioPacketsObserved = encoderSession.recordingAudioPacketCount;
@@ -4944,6 +5556,127 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
 // Worker entry point: gather (brief coreMutex) â†’ work (audioOutputMutex_ only) â†’
 // publish (brief coreMutex). The render thread takes ONLY coreMutex and so is never
 // blocked by the long DSP/IO span; the worker never holds both locks at once.
+// PROGRAM VIDEO OUT, on the VIDEO cadence.
+//
+// Everything that leaves this app used to be sampled by the ~50Hz audio/output
+// worker, whose 20ms period is an audio constant (960 samples at 48k, spec 4.2)
+// with a hard-won absolute-deadline pacer behind it. Gating video on it capped a
+// 60fps program at ~51fps in recordings. Raising that worker to 60Hz would break
+// the audio block contract, so video gets its own tick.
+//
+// Lock discipline is unchanged: coreMutex (brief snapshot) THEN audioOutputMutex_
+// (encoder), never both held at once, never reversed — the same order the audio
+// worker uses, so the two serialise on audioOutputMutex_ rather than deadlock.
+// That lock is held ~13% of the time by the audio worker (measured work=2.6ms per
+// 20ms tick), so contention here is rare.
+void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
+  // Block until the compositor publishes a new program frame. The bounded wait
+  // is a liveness floor, not a cadence: it lets the tick re-evaluate output
+  // state (and deliver a sender stop) when the program is idle.
+  {
+    std::unique_lock<std::mutex> wait(videoOutWaitMutex_);
+    const auto seen = lastVideoOutPublishSeq_;
+    videoOutCv_.wait_for(wait, std::chrono::milliseconds(20), [&] {
+      return programPublishSeq_.load(std::memory_order_acquire) != seen;
+    });
+    lastVideoOutPublishSeq_ = programPublishSeq_.load(std::memory_order_acquire);
+  }
+  modules::ProgramFrame frame;
+  std::vector<std::string> senderDestinations;
+  std::vector<modules::OutputDestinationSettings> senderSettings;
+  bool senderExpectsAudio = false;
+  {
+    std::lock_guard<std::mutex> lock(coreMutex);
+    ScopedLockHoldTimer holdTimer("video.gather", LockHoldGuardrail::kDefaultBudgetUs);
+    const bool wanted = !outputDestinations_.empty() || virtualCameraEnabled_ ||
+                        recordingStatus_ == "recording" || recordingStatus_ == "warning";
+    // Keep ticking one more time after the last destination goes away: the
+    // senders are STOPPED by a sync() carrying no destinations, so returning
+    // early the instant outputs clear would strand a live stream running.
+    if (!wanted && !senderSyncActive_.load(std::memory_order_acquire)) {
+      return;
+    }
+    // EDGE-TRIGGERED on a new program frame, and this is what makes the tick
+    // correct rather than lucky (see the CV wait above). A 60Hz sampler reading
+    // a 60Hz producer is the frame-pairing problem the Zoom ingest synchroniser
+    // exists to fix, and it measured as a 51.7fps recording of a 60fps program.
+    //
+    // A DESTINATION CHANGE also has to get through, even with no new frame: the
+    // senders are started and STOPPED by sync(), so gating purely on frames
+    // would strand a live stream running after outputs clear.
+    const bool newFrame = lastProgramFrame_.frameNumber != lastVideoOutFrameNumber_;
+    const bool destinationsChanged = outputDestinations_ != lastVideoOutDestinations_;
+    if (!newFrame && !destinationsChanged) {
+      return;
+    }
+    lastVideoOutFrameNumber_ = lastProgramFrame_.frameNumber;
+    lastVideoOutDestinations_ = outputDestinations_;
+    senderDestinations = outputDestinations_;
+    senderSettings = outputDestinationSettings_;
+    // Has the operator routed ANY audio? If so the senders must be configured
+    // with a real PCM input from their first frame (see the sync call below).
+    senderExpectsAudio = !audioRoutingSends_.empty();
+    // Carries preview/dims/frameNumber/warnings, so a compositor with no NV12
+    // tap still submits exactly what the old path submitted.
+    frame = lastProgramFrame_;
+  }
+  std::lock_guard<std::mutex> lock(audioOutputMutex_);
+  int tapWidth = 0;
+  int tapHeight = 0;
+  if (modules_.compositor->takeVcamNv12(latestProgramNv12_, tapWidth, tapHeight)) {
+    latestProgramNv12Width_ = tapWidth;
+    latestProgramNv12Height_ = tapHeight;
+  }
+  if (!latestProgramNv12_.empty() && latestProgramNv12Width_ > 0 && latestProgramNv12Height_ > 0) {
+    frame.programNv12Width = latestProgramNv12Width_;
+    frame.programNv12Height = latestProgramNv12Height_;
+    frame.programNv12 = latestProgramNv12_;
+  }
+  modules_.encoder->submit(frame);
+
+  // Network senders: VIDEO on this cadence. Audio is pushed separately by the
+  // audio worker (outputSender->submitAudio) because FFmpeg takes the two
+  // through separate inputs. "recording" is an encoder destination, not a sender.
+  senderDestinations.erase(
+      std::remove(senderDestinations.begin(), senderDestinations.end(), std::string("recording")),
+      senderDestinations.end());
+  senderSyncActive_.store(!senderDestinations.empty(), std::memory_order_release);
+  const auto failOutputSenderSync = [&](const std::string& message) {
+    const auto destination =
+        std::find(senderDestinations.begin(), senderDestinations.end(), "rtmp") != senderDestinations.end()
+            ? "rtmp"
+            : !senderDestinations.empty() ? senderDestinations.front() : std::string("stream");
+    try {
+      modules_.outputSender->fail(destination, message, 0.0);
+    } catch (...) {
+    }
+  };
+  try {
+    // Pacing follows WALL TIME, never ProgramFrame::frameNumber: a frameNumber
+    // clock advanced with the tick rate and pushed a declared 30fps stream at
+    // nearly 50, which YouTube accepts and then closes seconds later.
+    static const auto outputClockEpoch = std::chrono::steady_clock::now();
+    const double outputElapsedMs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - outputClockEpoch)
+            .count());
+    // Carry the audio LAYOUT (never the PCM — that rides submitAudio on the
+    // audio worker). The sender bakes its audio input into the FFmpeg argument
+    // list, so it has to know on the FIRST sync whether real audio is coming;
+    // learning it later means a restart, and a restarted SRT caller is refused
+    // by a listener that already accepted one.
+    const int declaredChannels = senderExpectsAudio ? 2 : 0;
+    const int declaredSampleRate =
+        senderExpectsAudio ? modules_.mixer->monitorBusSampleRate() : 0;
+    modules_.outputSender->sync(senderDestinations, &frame, outputElapsedMs, senderSettings,
+                                nullptr, declaredChannels, declaredSampleRate);
+  } catch (const std::exception& ex) {
+    failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
+  } catch (...) {
+    failOutputSenderSync("Output sender failed during sync.");
+  }
+}
+
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
   AudioOutputWorkItem work;
   {
@@ -5049,23 +5782,70 @@ void MediaCore::startPluginHostScan() {
       }
     }
 
-    std::lock_guard<std::mutex> lock(pluginHostMutex_);
-    pluginHostStatus_ = "ready";
-    pluginHostScanInFlight_ = false;
+    {
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      pluginHostStatus_ = "ready";
+      pluginHostScanInFlight_ = false;
+    }
+    // A2: saved states pushed BEFORE the scan resolved (the shell restores
+    // them at startup) can resolve now — inject any still pending.
+    injectPendingVstStates();
   }).detach();
 }
+
+namespace {
+int64_t pluginHostSteadyNowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+}  // namespace
 
 void MediaCore::ensurePluginHostServeStarted() {
   bool expected = false;
   if (!pluginHostServeStarting_.compare_exchange_strong(expected, true)) {
     return;  // starter already ran (or is running)
   }
+  // A1: respawns ride the house backoff ladder (5→10→20→40→60s, give up after
+  // 5 consecutive failed retries) so a crash-on-load plugin cannot hot-loop
+  // CreateProcess during a show. The policy lives under pluginHostMutex_ — a
+  // tiny leaf the worker already takes per tick in resolveVstInsertForWorker.
+  bool allowed = false;
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    allowed = pluginHostRespawnPolicy_.requestStart(pluginHostSteadyNowMs());
+    if (!allowed && pluginHostRespawnPolicy_.gaveUp() && !pluginHostGaveUpAnnounced_) {
+      pluginHostGaveUpAnnounced_ = true;
+      std::fprintf(stderr,
+                   "[plugin-host] serve respawn GAVE UP after %d consecutive failures; VST inserts "
+                   "stay BYPASSED (audio unprocessed) until the plug-in is re-selected\n",
+                   pluginHostRespawnPolicy_.consecutiveFailures());
+    }
+  }
+  if (!allowed) {
+    pluginHostServeStarting_.store(false, std::memory_order_release);
+    return;
+  }
   // Detached: CreateProcess + kernel-object setup never runs in the audio
   // worker; the worker bypasses until ready() flips.
   std::thread([this] {
     const auto exePath = resolvePluginHostExecutablePath();
+    bool launched = false;
     if (!exePath.empty()) {
-      pluginHostClient_.start(exePath, "serve-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+      launched = pluginHostClient_.start(
+          exePath, "serve-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+    }
+    {
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      pluginHostRespawnPolicy_.onLaunchResult(pluginHostSteadyNowMs(), launched);
+    }
+    if (!launched) {
+      std::fprintf(stderr, "[plugin-host] serve launch FAILED (%s)\n",
+                   exePath.empty() ? "corevideo-plugin-host.exe not found" : exePath.c_str());
+    } else {
+      // A2: every fresh host generation (first launch AND respawns) gets the
+      // saved states re-pushed — a respawned host must not run default state.
+      injectPendingVstStates();
     }
     // Allow a new starter after launch failure or a later isolated-host exit.
     // The audio worker observes ready()==false and requests a replacement;
@@ -5081,6 +5861,13 @@ void MediaCore::openVstPluginEditor(const rpc::Json& command) {
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
     pluginHostInsertError_ = "cannot open controls: no VST3 plug-in selected";
     return;
+  }
+  {
+    // Operator action: clicking "Open controls" resets the respawn ladder so a
+    // gave-up host is always recoverable without an app restart (spec A1).
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostRespawnPolicy_.reset();
+    pluginHostGaveUpAnnounced_ = false;
   }
   const VstInsertSelection selection = resolveVstInsertForWorker(query);
   if (!selection.resolved) return;
@@ -5105,6 +5892,124 @@ void MediaCore::openVstPluginEditor(const rpc::Json& command) {
   }).detach();
 }
 
+void MediaCore::setVstInsertParam(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  if (query.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "cannot set a parameter: no VST3 plug-in selected";
+    return;
+  }
+  const auto paramId = static_cast<uint32_t>(command.getNumber("paramId", 0));
+  double normalized = command.getNumber("normalized", 0.0);
+  normalized = std::max(0.0, std::min(1.0, normalized));
+  const VstInsertSelection selection = resolveVstInsertForWorker(query);
+  if (!selection.resolved) {
+    return;  // resolveVstInsertForWorker already surfaced the loud error
+  }
+  if (!pluginHostClient_.ready() || !pluginHostClient_.hostAlive() ||
+      !pluginHostClient_.setParam(selection.bundleId, selection.className, paramId, normalized)) {
+    // No silent drops: the host is down — kick the (backoff-gated) respawn so
+    // the next slider move lands; saved state restores the value either way.
+    ensurePluginHostServeStarted();
+  }
+}
+
+rpc::Json MediaCore::getVstInsertState(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  const auto failed = [](const std::string& message) {
+    return rpc::Json(rpc::Json::Object{{"error", message}});
+  };
+  if (query.empty()) {
+    return failed("cannot capture state: no VST3 plug-in selected");
+  }
+  const VstInsertSelection selection = resolveVstInsertForWorker(query);
+  if (!selection.resolved) {
+    return failed(selection.error);
+  }
+  if (!pluginHostClient_.ready() || !pluginHostClient_.hostAlive()) {
+    return failed("isolated VST3 host is not running");
+  }
+  std::vector<uint8_t> blob;
+  std::string error;
+  if (!pluginHostClient_.getState(selection.bundleId, selection.className, &blob, &error)) {
+    return failed(error.empty() ? "state capture failed" : error);
+  }
+  return rpc::Json(rpc::Json::Object{
+      {"stateBase64", modules::base64Encode(blob.data(), blob.size())},
+      {"bytes", static_cast<double>(blob.size())},
+  });
+}
+
+void MediaCore::setVstInsertState(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  const std::string stateBase64 = command.getString("stateBase64");
+  if (query.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "cannot restore state: no VST3 plug-in selected";
+    return;
+  }
+  std::vector<uint8_t> blob = modules::base64Decode(stateBase64);
+  if (blob.empty() && !stateBase64.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "saved state for '" + query + "' is not valid base64; restore skipped";
+    std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    VstSavedState& saved = vstSavedStates_[query];
+    saved.blob = std::move(blob);
+    saved.injectedHostGeneration = 0;  // new blob: every generation needs it
+  }
+  // Immediate attempt when the host is already running; otherwise the scan /
+  // serve-launch triggers retry it. Detached: injection does state round
+  // trips (ms-to-seconds when the host must load the plugin first).
+  std::thread([this] { injectPendingVstStates(); }).detach();
+}
+
+void MediaCore::injectPendingVstStates() {
+  if (!pluginHostClient_.ready() || !pluginHostClient_.hostAlive()) {
+    return;  // retried on the next launch/scan trigger
+  }
+  const int64_t hostGeneration = pluginHostClient_.startCount();
+  struct PendingInjection {
+    std::string query;
+    std::vector<uint8_t> blob;
+  };
+  std::vector<PendingInjection> pending;
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    for (auto& [query, saved] : vstSavedStates_) {
+      if (saved.injectedHostGeneration != hostGeneration && !saved.blob.empty()) {
+        pending.push_back({query, saved.blob});
+      }
+    }
+  }
+  for (auto& entry : pending) {
+    const VstInsertSelection selection = resolveVstInsertForWorker(entry.query);
+    if (!selection.resolved) {
+      continue;  // scan not ready yet — the scan-complete trigger retries
+    }
+    std::string error;
+    if (pluginHostClient_.setState(selection.bundleId, selection.className, entry.blob, &error)) {
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      auto found = vstSavedStates_.find(entry.query);
+      if (found != vstSavedStates_.end()) {
+        found->second.injectedHostGeneration = hostGeneration;
+      }
+    } else {
+      // LOUD: restore failure = chip status via serve.lastError, never a
+      // silent default state.
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      pluginHostInsertError_ = "saved state restore for '" + entry.query + "' failed: " + error;
+      std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+    }
+  }
+}
+
 VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query) {
   VstInsertSelection selection;
   bool kickScan = false;
@@ -5112,6 +6017,16 @@ VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
     selection = resolveVstInsertSelection(query, pluginHostPlugins_);
     pluginHostInsertError_ = selection.resolved ? std::string{} : selection.error;
+    if (selection.resolved) {
+      // A NEW selection is an operator action: reset the respawn ladder so a
+      // crash-looped previous plug-in never blocks trying a different one.
+      const std::string selectionKey = selection.bundleId + "\x1f" + selection.className;
+      if (selectionKey != pluginHostLastSelectionKey_) {
+        pluginHostLastSelectionKey_ = selectionKey;
+        pluginHostRespawnPolicy_.reset();
+        pluginHostGaveUpAnnounced_ = false;
+      }
+    }
     if (!selection.resolved && pluginHostStatus_ == "absent" && !pluginHostScanAutoKicked_) {
       // No scan has ever run but the operator named a plugin: kick ONE scan
       // (async, detached) so the insert self-heals once results land.
@@ -5150,9 +6065,41 @@ rpc::Json MediaCore::pluginHostState() const {
   }
   // P2c failure honesty: a core-side selection error (typo'd insert name, no
   // scan) outranks the host-side status; otherwise report what the host
-  // actually did (active plugin, or its load/process error).
-  const std::string lastError =
+  // actually did (active plugin, or its load/process error). A respawn
+  // give-up outranks both — the insert is auto-bypassed and only an operator
+  // action recovers it, so the message must never be masked (it is DERIVED
+  // from policy state here, not stored, because the worker rewrites
+  // pluginHostInsertError_ every tick).
+  std::string lastError =
       !pluginHostInsertError_.empty() ? pluginHostInsertError_ : pluginHostClient_.lastError();
+  if (pluginHostRespawnPolicy_.gaveUp()) {
+    lastError = "isolated VST3 host crashed repeatedly; plug-in bypassed — re-select it or "
+                "reopen its controls to retry";
+  }
+  // A2: the published param surface, generation-gated — the Json array is
+  // rebuilt ONLY when the host bumped a param generation (list change or an
+  // actual value change), never per snapshot tick. Callers hold
+  // pluginHostMutex_ (this function), which guards the cache members.
+  const modules::VstPublishedParams publishedParams = pluginHostClient_.params();
+  if (publishedParams.listGeneration != cachedVstParamsListGeneration_ ||
+      publishedParams.valuesGeneration != cachedVstParamsValuesGeneration_) {
+    cachedVstParamsListGeneration_ = publishedParams.listGeneration;
+    cachedVstParamsValuesGeneration_ = publishedParams.valuesGeneration;
+    rpc::Json::Array paramsJson;
+    paramsJson.reserve(publishedParams.entries.size());
+    for (const auto& param : publishedParams.entries) {
+      paramsJson.emplace_back(rpc::Json::Object{
+          {"id", static_cast<double>(param.id)},
+          {"title", param.title},
+          {"units", param.units},
+          {"display", param.display},
+          {"stepCount", static_cast<double>(param.stepCount)},
+          {"normalized", param.normalized},
+      });
+    }
+    cachedVstParamsJson_ = std::move(paramsJson);
+  }
+  const uint32_t latencySamples = pluginHostClient_.latencySamples();
   return rpc::Json::Object{
       {"status", pluginHostStatus_},
       {"plugins", plugins},
@@ -5167,6 +6114,23 @@ rpc::Json MediaCore::pluginHostState() const {
                     {"editorStatusCode", static_cast<double>(pluginHostClient_.editorStatusCode())},
                     {"editorActivePlugin", pluginHostClient_.editorActivePlugin()},
                     {"editorLastError", pluginHostClient_.editorLastError()},
+                    // A3: the active plugin's reported latency (0 = none) —
+                    // feeds the per-insert badge and the PTS compensation.
+                    {"latencySamples", static_cast<double>(latencySamples)},
+                    {"latencyMs", static_cast<double>(latencySamples) / 48.0},
+                    // A2: generic param surface for the ACTIVE selection.
+                    {"paramPluginClass", publishedParams.pluginClass},
+                    {"paramTotalCount", static_cast<double>(publishedParams.totalCount)},
+                    {"paramListGeneration", static_cast<double>(publishedParams.listGeneration)},
+                    {"paramValuesGeneration", static_cast<double>(publishedParams.valuesGeneration)},
+                    {"params", cachedVstParamsJson_},
+                    // A1: respawn backoff telemetry (attempts = consecutive
+                    // failed respawns; gaveUp = auto-bypassed until reset).
+                    {"respawn", rpc::Json::Object{
+                                    {"attempts", static_cast<double>(
+                                                     pluginHostRespawnPolicy_.consecutiveFailures())},
+                                    {"gaveUp", pluginHostRespawnPolicy_.gaveUp()},
+                                }},
                 }},
   };
 }

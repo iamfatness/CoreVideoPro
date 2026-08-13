@@ -162,7 +162,10 @@ public sealed record MediaCoreRecordingTargetsWire(
     string FilenamePrefix,
     string Format,
     string Quality,
-    IReadOnlyList<string> IsoParticipantIds);
+    IReadOnlyList<string> IsoParticipantIds,
+    // Canonical scheme-qualified ISO selection (`zoom:<pid>` / `capture:<id>`). The core
+    // prefers this over IsoParticipantIds (the legacy bare-id list, kept for back-compat).
+    IReadOnlyList<string>? IsoSourceIds = null);
 
 public sealed record MediaCoreStreamDestinationWire(
     string Id,
@@ -272,6 +275,16 @@ public sealed record MediaCoreProductionSyncContext
     public double AudioMasteringPresenceDb { get; init; }
     public double AudioMasteringHighShelfDb { get; init; }
     public double AudioMasteringStereoWidth { get; init; } = 1.0;
+    // B1 glue dynamics (master-vst-round2-spec §B1); defaults = the pre-B1
+    // fixed values so an untouched context is bit-identical to old behavior.
+    public double AudioMasteringGlueRatio { get; init; } = 2.0;
+    public double AudioMasteringGlueAttackMs { get; init; } = 30.0;
+    public double AudioMasteringGlueReleaseMs { get; init; } = 250.0;
+    public double AudioMasteringGlueMakeupDb { get; init; }
+    public bool AudioMasteringGlueMultiband { get; init; }
+    public double AudioMasteringGlueBandLowDb { get; init; }
+    public double AudioMasteringGlueBandMidDb { get; init; }
+    public double AudioMasteringGlueBandHighDb { get; init; }
 
     // Virtual camera (virtual-camera-spec V4/V5).
     public bool VirtualCameraEnabled { get; init; }

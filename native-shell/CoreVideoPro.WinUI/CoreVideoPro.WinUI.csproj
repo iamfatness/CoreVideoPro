@@ -14,6 +14,10 @@
     <WindowsPackageType>None</WindowsPackageType>
     <ApplicationTitle>CoreVideo Pro</ApplicationTitle>
     <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <!-- Stamp the assembly with the same display version so the unpackaged
+         shell (WindowsPackageType=None) can report its real version to the D4
+         update check; packaged runs read the package identity instead. -->
+    <Version>$(ApplicationDisplayVersion)</Version>
     <ApplicationVersion>100</ApplicationVersion>
     <EnableMsixTooling>true</EnableMsixTooling>
     <AppxPackageSigningEnabled Condition="'$(WindowsPackageType)' == 'MSIX'">false</AppxPackageSigningEnabled>
@@ -36,6 +40,8 @@
     <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.2.0" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <!-- DPAPI (ProtectedData) for credentials at rest — S4 secrets. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
   </ItemGroup>

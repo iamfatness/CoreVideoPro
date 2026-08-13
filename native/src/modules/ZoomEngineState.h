@@ -37,6 +37,11 @@ struct ZoomEngineRuntimeSnapshot {
   std::vector<ZoomEngineSubscriptionStats> subscriptions;
   std::vector<std::string> events;
   std::vector<std::string> warnings;
+  // Engine-reported raw-media state (raw_media_status events). True only after
+  // the engine confirmed StartRawRecording; false after stop_raw_media
+  // completed (StopRawRecording + unsubscribe_all) or on leave/reset. The
+  // Capture UI reflects THIS, not the last command we sent.
+  bool rawMediaActive = false;
 };
 
 class ZoomEngineRuntimeState {
@@ -65,6 +70,7 @@ class ZoomEngineRuntimeState {
 
   std::string meetingState_ = "idle";
   bool sdkAuthenticated_ = false;
+  bool rawMediaActive_ = false;
   std::uint32_t activeSpeakerId_ = 0;
   std::uint32_t screenShareParticipantId_ = 0;
   std::map<std::uint32_t, ZoomEngineParticipant> participants_;

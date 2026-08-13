@@ -932,7 +932,7 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
   corevideo::core::MediaCore mediaCore;
   // Enable a lower-third overlay; the first tick captures the building-in
   // animation (low alpha), later ticks settle it on-air.
-  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+  const auto earlyState = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "set-overlay-asset"},
           {"overlayId", "key:lower-third"},
@@ -972,19 +972,22 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
     return colors.size();
   };
 
+  // Preview EVENTS are wall-clock throttled (~30fps), so WHICH animation tick
+  // lands in the event queue depends on host speed — on a fast machine the
+  // whole settle loop below can complete inside one throttle window. Keep the
+  // events as an emission smoke check only, and probe pixels through the
+  // per-call state, which embeds the same preview unthrottled: tick 1 vs tick
+  // 13 is deterministic on every host.
   const auto earlyPreviews = mediaCore.drainProgramFramePreviewEvents();
   ASSERT_FALSE(earlyPreviews.empty());
-  const size_t earlyColors = bandDistinctColors(earlyPreviews.back());
+  const size_t earlyColors = bandDistinctColors(earlyState);
 
   // Advance several ticks so the building-in animation settles on-air.
   corevideo::rpc::Json settledState = nullptr;
   for (int i = 0; i < 12; ++i) {
     settledState = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
   }
-  const auto settledPreviews = mediaCore.drainProgramFramePreviewEvents();
-  const size_t settledColors = settledPreviews.empty()
-                                   ? bandDistinctColors(settledState)
-                                   : bandDistinctColors(settledPreviews.back());
+  const size_t settledColors = bandDistinctColors(settledState);
 
   // Settled overlay rasters real text/brand pixels (non-uniform band) and is
   // more opaque/legible than the first building-in frame.
@@ -1107,6 +1110,125 @@ TEST(MediaCoreCommand, PerRouteColorGradeChangesCompositorRenderPlanSignature) {
       second.get("programFrame")->get("renderPlanSignature")->asNumber());
 }
 
+// CHROMA KEY. The core advertised a "chroma-key" capability — and listed it as
+// REQUIRED in kRequiredMvpCapabilities — while implementing none of it: the only
+// command carrying a chromaKey payload discarded it (setParticipantTransform
+// takes an UNNAMED rpc::Json), the render-plan layer had no key fields, and
+// neither shader had keying math. Anything gating on that capability got a true
+// answer that meant nothing. These pin the plumbing that now backs the claim.
+TEST(MediaCoreCommand, PerRouteChromaKeyChangesCompositorRenderPlanSignature) {
+  const auto sceneWith = [](double similarity) {
+    return corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "load-scene-graph"},
+            {"sceneId", "keyed"},
+            {"routes", corevideo::rpc::Json::Array{
+                           corevideo::rpc::Json::Object{
+                               {"routeId", "a"},
+                               {"mode", "fixed"},
+                               {"audioRole", "mix"},
+                               {"participantId", "speaker-1"},
+                               {"chromaKey",
+                                corevideo::rpc::Json::Object{
+                                    {"keyR", 0.0},
+                                    {"keyG", 1.0},
+                                    {"keyB", 0.0},
+                                    {"similarity", similarity},
+                                    {"smoothness", 0.1},
+                                    {"spill", 0.2},
+                                }},
+                           },
+                       }},
+        },
+    };
+  };
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto first = mediaCore.applyCommands(sceneWith(0.4));
+  const auto second = mediaCore.applyCommands(sceneWith(0.6));
+  ASSERT_NE(first.get("programFrame"), nullptr);
+  ASSERT_NE(second.get("programFrame"), nullptr);
+  // A key parameter the operator changed MUST reach the render plan; if the
+  // payload were discarded again both signatures would be identical.
+  EXPECT_NE(first.get("programFrame")->get("renderPlanSignature")->asNumber(),
+            second.get("programFrame")->get("renderPlanSignature")->asNumber());
+}
+
+// `enabled:false` must actually disable it. A route can carry key settings the
+// operator has switched off, and keying anyway would punch holes in a live
+// program.
+TEST(MediaCoreCommand, ChromaKeyDisabledRendersIdenticallyToNoKeyAtAll) {
+  const auto scene = [](bool withKey, bool enabled) {
+    corevideo::rpc::Json::Object route{
+        {"routeId", "a"},
+        {"mode", "fixed"},
+        {"audioRole", "mix"},
+        {"participantId", "speaker-1"},
+    };
+    if (withKey) {
+      route["chromaKey"] = corevideo::rpc::Json::Object{
+          {"enabled", enabled},
+          {"keyG", 1.0},
+          {"similarity", 0.4},
+      };
+    }
+    return corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+        {"type", "load-scene-graph"},
+        {"sceneId", "keyed"},
+        {"routes", corevideo::rpc::Json::Array{route}},
+    }};
+  };
+  corevideo::core::MediaCore withoutKey(corevideo::modules::createStubModules());
+  corevideo::core::MediaCore disabledKey(corevideo::modules::createStubModules());
+  const auto plain = withoutKey.applyCommands(scene(false, false));
+  const auto off = disabledKey.applyCommands(scene(true, false));
+  ASSERT_NE(plain.get("programFrame"), nullptr);
+  ASSERT_NE(off.get("programFrame"), nullptr);
+  EXPECT_EQ(plain.get("programFrame")->get("renderPlanSignature")->asNumber(),
+            off.get("programFrame")->get("renderPlanSignature")->asNumber());
+}
+
+// Borders NEVER composite into program/preview — they exist solely to separate
+// tiles in the multiview (owner rule, 2026-07-31). Whatever borderStyle a route
+// carries on the wire (missing, "none", or an explicit "accent"), the composed
+// feed is identical: the old "accent" default baked a studio-green frame into
+// the program, which the virtual camera, recordings, and streams all inherit.
+TEST(MediaCoreCommand, RouteBordersNeverCompositeIntoProgram) {
+  const auto loadScene = [](const char* borderStyle) {
+    auto route = corevideo::rpc::Json::Object{
+        {"routeId", "a"},
+        {"mode", "fixed"},
+        {"audioRole", "mix"},
+        {"participantId", "speaker-1"},
+    };
+    if (borderStyle != nullptr) {
+      route["borderStyle"] = borderStyle;
+    }
+    return corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "load-scene-graph"},
+            {"sceneId", "solo"},
+            {"routes", corevideo::rpc::Json::Array{std::move(route)}},
+        },
+    };
+  };
+  const auto signatureOf = [](const corevideo::rpc::Json& state) {
+    const auto* frame = state.get("programFrame");
+    EXPECT_NE(frame, nullptr);
+    return frame->get("renderPlanSignature")->asNumber();
+  };
+
+  corevideo::core::MediaCore defaulted(corevideo::modules::createStubModules());
+  corevideo::core::MediaCore borderless(corevideo::modules::createStubModules());
+  corevideo::core::MediaCore accented(corevideo::modules::createStubModules());
+
+  const auto defaultSignature = signatureOf(defaulted.applyCommands(loadScene(nullptr)));
+  const auto noneSignature = signatureOf(borderless.applyCommands(loadScene("none")));
+  const auto accentSignature = signatureOf(accented.applyCommands(loadScene("accent")));
+
+  EXPECT_EQ(defaultSignature, noneSignature);
+  EXPECT_EQ(defaultSignature, accentSignature);
+}
+
 // The compositor must be ALWAYS ON: even with no scene graph, no Zoom input frames,
 // and an empty command tick, every applyCommands call advances the program frame and
 // emits a synthetic black/slate program preview so the operator's Preview/Program
@@ -1145,6 +1267,9 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #if COREVIDEO_WITH_D3D11
   EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core");
   EXPECT_EQ(profile.getString("renderer"), "d3d11");
+#elif COREVIDEO_WITH_METAL
+  EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core");
+  EXPECT_EQ(profile.getString("renderer"), "metal");
 #else
   EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core Stub");
   EXPECT_EQ(profile.getString("renderer"), "software");
@@ -1158,11 +1283,13 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_TRUE(jsonArrayContains(capabilities, "audio-mixer"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "scene-graph-rendering"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "dynamic-overlays"));
-  const bool hasWasapiCapture = corevideo::modules::createWasapiAudioCaptureSource() != nullptr;
-  const bool hasWasapiMonitor = corevideo::modules::createWasapiMonitorOutput() != nullptr;
-  EXPECT_EQ(jsonArrayContains(capabilities, "local-audio-capture"), hasWasapiCapture);
-  EXPECT_EQ(jsonArrayContains(capabilities, "audio-monitor-output"), hasWasapiMonitor);
-#if COREVIDEO_WITH_D3D11
+  const bool hasAudioCapture = corevideo::modules::createWasapiAudioCaptureSource() != nullptr ||
+                               corevideo::modules::createCoreAudioCaptureSource() != nullptr;
+  const bool hasAudioMonitor = corevideo::modules::createWasapiMonitorOutput() != nullptr ||
+                               corevideo::modules::createCoreAudioMonitorOutput() != nullptr;
+  EXPECT_EQ(jsonArrayContains(capabilities, "local-audio-capture"), hasAudioCapture);
+  EXPECT_EQ(jsonArrayContains(capabilities, "audio-monitor-output"), hasAudioMonitor);
+#if COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL
   EXPECT_TRUE(jsonArrayContains(capabilities, "gpu-compositor"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "chroma-key"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "smart-framing"));
@@ -1178,10 +1305,13 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #if COREVIDEO_WITH_MF_ENCODER
   EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
+#elif COREVIDEO_WITH_AVF_ENCODER
+  EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
 #endif
-#if COREVIDEO_WITH_UVC
+#if COREVIDEO_WITH_UVC || COREVIDEO_WITH_AVF_CAPTURE
   EXPECT_TRUE(jsonArrayContains(capabilities, "uvc-capture"));
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "uvc-capture"));
@@ -1214,6 +1344,8 @@ TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
   const auto health = mediaCore.health();
 #if COREVIDEO_WITH_D3D11
   EXPECT_EQ(health.getString("renderer"), "d3d11");
+#elif COREVIDEO_WITH_METAL
+  EXPECT_EQ(health.getString("renderer"), "metal");
 #else
   EXPECT_EQ(health.getString("renderer"), "software");
 #endif
@@ -1669,6 +1801,9 @@ TEST(MediaCoreCommand, ReportsEncoderMetadataInHealthAndSession) {
   const auto health = mediaCore.health();
 #if COREVIDEO_WITH_MF_ENCODER
   EXPECT_EQ(health.getString("encoder"), "media-foundation");
+  EXPECT_TRUE(health.get("hardwareEncoder")->asBool());
+#elif COREVIDEO_WITH_AVF_ENCODER
+  EXPECT_EQ(health.getString("encoder"), "videotoolbox");
   EXPECT_TRUE(health.get("hardwareEncoder")->asBool());
 #else
   EXPECT_EQ(health.getString("encoder"), "software-counting");
@@ -3890,6 +4025,48 @@ TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
   const auto* snapshotMultiview = snapshot.get("multiviewSharedTexture");
   ASSERT_NE(snapshotMultiview, nullptr);
   EXPECT_FALSE(snapshotMultiview->get("texture")->getString("sharedHandleHex").empty());
+}
+
+// Regression (2026-08-08, "the multiviewer is broken"): the core must PUBLISH the
+// multiviewer config it is actually running, so the shell can tell that a core it
+// did not launch is sitting on the "grid" default.
+//
+// The bug this pins: `configure-multiviewer` is a one-shot the shell sends at app
+// launch. When the CORE respawns under a live shell, nothing re-sent it, so the
+// fresh core stayed at its `grid` default while the shell still believed
+// `pgmPvwTop`. The PGM/PVW bus cells vanished off the top of the wall and it
+// degraded to a bare source grid — with no way for the shell to notice, because
+// the applied mode was not reported anywhere. Reproduced end-to-end by killing
+// corevideo-native.exe under a running shell.
+//
+// Needs no GPU: this is command/snapshot state, not a composite.
+TEST(MediaCoreMultiview, SnapshotReportsTheAppliedMultiviewerConfig) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  // A FRESH core — exactly what a respawn produces — reports the grid default.
+  // This is the hazard: it is a perfectly valid mode, so it fails silently.
+  const auto fresh = mediaCore.sessionState();
+  const auto* freshMultiviewer = fresh.get("multiviewer");
+  ASSERT_NE(freshMultiviewer, nullptr)
+      << "sessionState must always surface the applied multiviewer config";
+  EXPECT_EQ(freshMultiviewer->getString("layoutMode"), "grid")
+      << "a fresh core defaults to grid — the shell must be able to SEE that";
+
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "configure-multiviewer"},
+      {"layoutMode", "pgmPvwTop"},
+      {"tileCount", 8},
+      {"showLabels", true},
+      {"showTally", false},
+  });
+
+  const auto applied = mediaCore.sessionState();
+  const auto* multiviewer = applied.get("multiviewer");
+  ASSERT_NE(multiviewer, nullptr);
+  EXPECT_EQ(multiviewer->getString("layoutMode"), "pgmPvwTop");
+  EXPECT_EQ(multiviewer->get("tileCount")->asNumber(), 8);
+  EXPECT_TRUE(multiviewer->get("showLabels")->asBool());
+  EXPECT_FALSE(multiviewer->get("showTally")->asBool());
 }
 
 // Regression: in a pgmPvw layout with sources but NO scene cued in preview, the

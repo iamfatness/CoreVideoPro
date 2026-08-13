@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <!-- CoreVideo Pro "Multiview" brand mark, transcribed 1:1 from
+       native-shell/CoreVideoPro.WinUI/Controls/MultiviewMark.xaml.
+       Rounded 16:9 monitor frame divided 2x2, top-right (live) tile filled.
+       Default color is live green #22C86E for both stroke and tile; state
+       variants swap ONLY the tile fill (program amber #E8A41F, air red #E5433F). -->
+  <rect x="14" y="22" width="92" height="76" rx="15" ry="15"
+        fill="none" stroke="#22C86E" stroke-width="6"/>
+  <line x1="60" y1="22" x2="60" y2="98" stroke="#22C86E" stroke-width="5"/>
+  <line x1="14" y1="60" x2="106" y2="60" stroke="#22C86E" stroke-width="5"/>
+  <rect x="65" y="27" width="36" height="28" rx="6" ry="6" fill="#22C86E"/>
+</svg>

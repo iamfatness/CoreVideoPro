@@ -11,9 +11,14 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <execution>
 #include <utility>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <dispatch/dispatch.h>
+#else
+#include <execution>
+#endif
 
 namespace corevideo::modules {
 namespace {
@@ -78,6 +83,7 @@ ZoomEngineEventKind kindForCommand(const std::string& command) {
   if (command == "active_speaker") return ZoomEngineEventKind::ActiveSpeaker;
   if (command == IPC_EVT_FRAME) return ZoomEngineEventKind::Frame;
   if (command == IPC_EVT_AUDIO) return ZoomEngineEventKind::Audio;
+  if (command == IPC_EVT_RAW_MEDIA_STATUS) return ZoomEngineEventKind::RawMediaStatus;
   if (command == "debug") return ZoomEngineEventKind::Debug;
   if (command == IPC_EVT_ERROR) return ZoomEngineEventKind::Error;
   return ZoomEngineEventKind::Unknown;
@@ -181,6 +187,10 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   event.width = uintField(*parsed, "w");
   event.height = uintField(*parsed, "h");
   event.byteLength = uintField(*parsed, "byte_len");
+  event.rawMediaActive = boolField(*parsed, "active");
+  if (event.message.empty() && event.kind == ZoomEngineEventKind::RawMediaStatus) {
+    event.message = parsed->getString("reason");
+  }
   event.ok = event.kind != ZoomEngineEventKind::Unknown && event.kind != ZoomEngineEventKind::AuthFail &&
              event.kind != ZoomEngineEventKind::Error;
 
@@ -247,7 +257,8 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     const std::string& sourceUuid,
     std::uint32_t participantId,
     std::uint32_t maxWidth,
-    std::uint32_t maxHeight) {
+    std::uint32_t maxHeight,
+    bool buildThumbnail) {
   if (!sharedMemory || sharedMemorySize < sizeof(ShmFrameHeader) || maxWidth == 0 || maxHeight == 0) {
     return std::nullopt;
   }
@@ -310,6 +321,9 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   frame.i420Width = before.width;
   frame.i420Height = before.height;
   frame.i420 = std::move(planes);
+  if (!buildThumbnail) {
+    return frame;  // I420-only: the compositor path needs no RGBA
+  }
   const std::uint8_t* yPlane = frame.i420.data();
   const std::uint8_t* uPlane = yPlane + yLength;
   const std::uint8_t* vPlane = uPlane + yLength / 4;
@@ -319,11 +333,7 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   // for a small output size (e.g. 640x360), so this is cheap. The full-resolution
   // per-pixel convert that used to dominate the render is gone: the compositor
   // converts the I420 planes on the GPU instead.
-  std::vector<std::uint32_t> rowIndices(outputHeight);
-  for (std::uint32_t y = 0; y < outputHeight; ++y) {
-    rowIndices[y] = y;
-  }
-  std::for_each(std::execution::par, rowIndices.begin(), rowIndices.end(), [&](std::uint32_t y) {
+  const auto convertRow = [&](std::uint32_t y) {
     const std::uint32_t sourceY = (std::min)(before.height - 1, static_cast<std::uint32_t>(
         (static_cast<std::uint64_t>(y) * before.height) / outputHeight));
     for (std::uint32_t x = 0; x < outputWidth; ++x) {
@@ -332,7 +342,20 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
       auto* rgba = frame.rgba.data() + (static_cast<std::size_t>(y) * outputWidth + x) * 4;
       i420ToRgbaPixel(yPlane, uPlane, vPlane, before.width, sourceX, sourceY, rgba);
     }
-  });
+  };
+#if defined(__APPLE__)
+  // AppleClang libc++ has no parallel algorithms; dispatch_apply is the
+  // platform equivalent of std::execution::par for this row fan-out.
+  dispatch_apply(outputHeight,
+                 dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                 ^(std::size_t y) { convertRow(static_cast<std::uint32_t>(y)); });
+#else
+  std::vector<std::uint32_t> rowIndices(outputHeight);
+  for (std::uint32_t y = 0; y < outputHeight; ++y) {
+    rowIndices[y] = y;
+  }
+  std::for_each(std::execution::par, rowIndices.begin(), rowIndices.end(), convertRow);
+#endif
 
   return frame;
 }

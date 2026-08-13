@@ -100,4 +100,29 @@ public sealed class ScenePersistenceServiceTests
         Assert.Equal("Interview copy 3", ScenePersistenceService.MakeUniqueSceneName("Interview copy", existing));
         Assert.Equal("Solo copy", ScenePersistenceService.MakeUniqueSceneName("Solo copy", existing));
     }
+
+    // Route borders never reach the feeds (owner rule, 2026-07-31: borders
+    // separate multiview tiles only — the old "accent" default baked a
+    // studio-green frame into the composed program, which the virtual camera,
+    // recordings, and streams all inherit). A fresh route carries no border,
+    // normalization of a missing/unknown style resolves to "none", and stale
+    // persisted styles are retired to "none" on load so shell previews match
+    // what the core actually renders.
+    [Fact]
+    public void DefaultRouteBorderIsNone()
+    {
+        Assert.Equal("none", SourceRouteVisualDefaults.BorderStyle);
+        Assert.Equal("none", new SourceRoute { Id = "route-1" }.BorderStyle);
+        Assert.Equal("none", SceneRoutingService.NormalizeBorderStyle(null));
+        Assert.Equal("none", SceneRoutingService.NormalizeBorderStyle("bogus"));
+
+        var staleAccent = ScenePersistenceService.FromPersisted(new PersistedSceneRoute
+        {
+            Id = "legacy-route",
+            Mode = "fixed",
+            AudioRole = "mix",
+            BorderStyle = "accent"
+        });
+        Assert.Equal("none", staleAccent.BorderStyle);
+    }
 }

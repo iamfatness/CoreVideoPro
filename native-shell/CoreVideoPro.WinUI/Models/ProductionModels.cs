@@ -124,7 +124,22 @@ public sealed class InsertSlotItem
     public bool IsProcessing { get; init; }
     public string StatusLabel { get; init; } = "";
     public string StatusTooltip { get; init; } = "";
+    // A3: the plugin's reported latency badge ("+12.4 ms"), empty for
+    // built-ins and zero-latency plugins.
+    public string LatencyLabel { get; init; } = "";
+    public bool HasLatency => LatencyLabel.Length > 0;
     public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn || IsProcessing ? LiveBrush : PendingBrush;
+}
+
+/// <summary>How Zoom audio reaches the program buses (owner decision 2026-08-09,
+/// superseding Z1's fixed topology). ProgramMix = Zoom's own mixed bus (echo-cancelled,
+/// continuous) rides to master; stems stay unrouted. PerGuestIso = each guest's isolated
+/// stem routes through their own strip, so faders/mutes/EQ shape program per guest, and
+/// zoom-mix is removed from program buses (summing both doubles every voice).</summary>
+public enum ZoomAudioMode
+{
+    ProgramMix,
+    PerGuestIso,
 }
 
 public sealed class FeedHealthRow
@@ -982,7 +997,7 @@ public static class ProductionStateHelper
                 return new ParticipantAudioMix
                 {
                     ParticipantId = prior.ParticipantId,
-                    OutputLevel = participant.AudioLevel,
+                    OutputLevel = 0,  // honest meters: roster activity is not a level
                     GainDb = prior.GainDb,
                     ManualGainDb = prior.ManualGainDb,
                     Pan = prior.Pan,
@@ -990,8 +1005,8 @@ public static class ProductionStateHelper
                     NoiseSuppression = prior.NoiseSuppression,
                     Muted = prior.Muted,
                     Status = prior.Status,
-                    Lufs = EstimateParticipantLufs(participant.AudioLevel, prior.Muted),
-                    TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, prior.Muted),
+                    Lufs = -120,
+                    TruePeakDb = -120,
                     PluginInserts = prior.PluginInserts.ToList()
                 };
             }
@@ -999,7 +1014,7 @@ public static class ProductionStateHelper
             return new ParticipantAudioMix
             {
                 ParticipantId = participant.Id,
-                OutputLevel = participant.AudioLevel,
+                OutputLevel = 0,  // honest meters: roster activity is not a level
                 GainDb = 0,
                 ManualGainDb = 0,
                 Pan = 0,
@@ -1011,18 +1026,12 @@ public static class ProductionStateHelper
                 NoiseSuppression = false,
                 Muted = participant.IsMuted,
                 Status = participant.IsMuted ? "muted" : "balanced",
-                Lufs = EstimateParticipantLufs(participant.AudioLevel, participant.IsMuted),
-                TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, participant.IsMuted),
+                Lufs = -120,
+                TruePeakDb = -120,
                 PluginInserts = []
             };
         }).ToList();
     }
-
-    private static double EstimateParticipantLufs(int level, bool muted) =>
-        muted || level <= 0 ? -60 : Math.Clamp(-34 + level * 0.22, -60, -10);
-
-    private static double EstimateTruePeakDb(int level, bool muted) =>
-        muted || level <= 0 ? -60 : Math.Clamp(-30 + level * 0.28, -60, -1);
 
     public static string BuildAudioMixSummary(IReadOnlyList<Participant> participants) =>
         participants.Count == 0

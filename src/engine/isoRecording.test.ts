@@ -34,6 +34,11 @@ describe("estimateIsoTrackBitrateMbps", () => {
   it("returns 1 Mbps for ambient", () => {
     expect(estimateIsoTrackBitrateMbps("ambient")).toBe(1);
   });
+
+  it("records a capture device at the participant tier (ISO-3)", () => {
+    expect(estimateIsoTrackBitrateMbps("capture", "1080p")).toBe(6);
+    expect(estimateIsoTrackBitrateMbps("capture", "720p")).toBe(4);
+  });
 });
 
 describe("isoTrackLabel", () => {
@@ -49,6 +54,11 @@ describe("isoTrackLabel", () => {
     expect(isoTrackLabel("program-mix")).toBe("Program Mix");
     expect(isoTrackLabel("screen-share")).toBe("Screen Share");
     expect(isoTrackLabel("ambient")).toBe("Ambient");
+  });
+
+  it("uses the capture device name, falling back to 'Capture' (ISO-3)", () => {
+    expect(isoTrackLabel("capture", "Logitech Cam")).toBe("Logitech Cam");
+    expect(isoTrackLabel("capture")).toBe("Capture");
   });
 });
 
@@ -128,6 +138,34 @@ describe("planIsoRecording", () => {
     expect(plan.tracks[0].estimatedBitrateMbps).toBe(4);
     expect(plan.tracks[0].resolutionTier).toBe("720p");
   });
+
+  it("sets a canonical zoom sourceId on participant tracks", () => {
+    const plan = planIsoRecording([participants[0]], { includeProgramMix: false });
+    expect(plan.tracks[0].sourceId).toBe("zoom:p-1");
+  });
+
+  it("adds capture-device tracks after participants with capture: source ids (ISO-3)", () => {
+    const plan = planIsoRecording(participants, {
+      includeProgramMix: false,
+      captureSources: [
+        { id: "cam0", name: "Logitech Cam" },
+        { id: "screen-1", name: "Screen 1" },
+      ],
+    });
+    const captureTracks = plan.tracks.filter((t) => t.source === "capture");
+    expect(captureTracks).toHaveLength(2);
+    // Capture tracks follow the 3 participant tracks in selection order.
+    expect(plan.tracks[3].source).toBe("capture");
+    expect(plan.tracks[3].sourceId).toBe("capture:cam0");
+    expect(plan.tracks[3].label).toBe("Logitech Cam");
+    expect(plan.tracks[4].sourceId).toBe("capture:screen-1");
+    // A capture device records at the participant tier (native BGRA, not a proxy).
+    expect(captureTracks[0].estimatedBitrateMbps).toBe(6);
+    // ISO-NN naming uses the device label (sanitized), not the id.
+    expect(isoOutputPath("recordings/show", plan.tracks[3].label, plan.tracks[3].trackIndex, "capture")).toBe(
+      "recordings/show/ISO-04-Logitech-Cam.mp4"
+    );
+  });
 });
 
 describe("validateIsoAgainstDisk", () => {
@@ -151,18 +189,24 @@ describe("validateIsoAgainstDisk", () => {
 });
 
 describe("isoOutputPath", () => {
-  it("builds a zero-padded track path", () => {
-    expect(isoOutputPath("recordings/show", "Alice", 0)).toBe(
-      "recordings/show/track-01-alice.mov"
+  it("builds a zero-padded ISO track path (spec §5 scheme)", () => {
+    expect(isoOutputPath("recordings/show", "Alice", 0, "participant")).toBe(
+      "recordings/show/ISO-01-Alice.mp4"
     );
-    expect(isoOutputPath("recordings/show", "Program Mix", 9)).toBe(
-      "recordings/show/track-10-program-mix.mov"
+    expect(isoOutputPath("recordings/show", "Bob Jones", 9, "participant")).toBe(
+      "recordings/show/ISO-10-Bob-Jones.mp4"
     );
   });
 
-  it("slugifies label with spaces and special chars", () => {
-    expect(isoOutputPath("recordings/show", "Screen Share", 2)).toBe(
-      "recordings/show/track-03-screen-share.mov"
+  it("names the program mix Program.mp4", () => {
+    expect(isoOutputPath("recordings/show", "Program Mix", 9, "program-mix")).toBe(
+      "recordings/show/Program.mp4"
+    );
+  });
+
+  it("sanitizes label with spaces and special chars, preserving case", () => {
+    expect(isoOutputPath("recordings/show", "Screen Share!", 2, "screen-share")).toBe(
+      "recordings/show/ISO-03-Screen-Share.mp4"
     );
   });
 });

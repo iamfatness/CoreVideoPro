@@ -162,23 +162,49 @@ inline MultiviewLayoutPlan computeMultiviewLayout(
   }
 
   if (mode == "pgmPvwTop" || mode == "pgmPvwLarge") {
-    // Broadcast convention (ATEM/Riedel/R&S): PREVIEW on the left, PROGRAM on the right.
-    plan.previewCell = insetRect({0.f, 0.f, 0.5f, 0.5f}, pad);
-    plan.programCell = insetRect({0.5f, 0.f, 0.5f, 0.5f}, pad);
-    const float regionY = 0.5f;
-    const float regionH = 0.5f;
-    // Wrap to two source rows above 5 tiles so a full 10-input wall stays readable.
-    const int rows = (count > 5) ? 2 : 1;
-    const int cols = std::max(1, (std::max(1, count) + rows - 1) / rows);
-    const float cellW = 1.f / static_cast<float>(cols);
-    const float cellH = regionH / static_cast<float>(rows);
+    // Production multiviewer wall (Blackmagic ATEM / Viz Vectar shape): two
+    // LARGE bus windows on top — PREVIEW left, PROGRAM right, the broadcast
+    // convention — over a source grid that re-flows and re-sizes with the
+    // number of live sources.
+    //
+    // Geometry note that makes exact 16:9 possible: in a 16:9 canvas a 16:9
+    // tile has EQUAL normalized width and height (w*16/(h*9) == 16/9 => w==h).
+    // So two half-width bus windows are exactly 16:9 at h = 0.5, and every
+    // source tile below is sized square-in-normalized-space.
+    constexpr float kBusW = 0.5f;
+    constexpr float kBusH = 0.5f;  // == 16:9 at half width
+    // With nothing below, center the two bus windows in the full canvas.
+    const float busY = count > 0 ? 0.f : (1.f - kBusH) * 0.5f;
+    plan.previewCell = insetRect({0.f, busY, kBusW, kBusH}, pad);
+    plan.programCell = insetRect({kBusW, busY, kBusW, kBusH}, pad);
+    if (count == 0) {
+      return plan;
+    }
+
+    const float regionY = kBusH;
+    const float regionH = 1.f - kBusH;
+    // One row up to 4 sources (bigger tiles when the show is small), two rows
+    // through 10 — the ATEM 10-way wall.
+    const int rows = count <= 4 ? 1 : 2;
+    const int cols = (count + rows - 1) / rows;
+    float tileW = 1.f / static_cast<float>(cols);
+    float tileH = tileW;  // 16:9
+    if (tileH * static_cast<float>(rows) > regionH) {
+      // Too tall for the strip: fit the height and keep the aspect.
+      tileH = regionH / static_cast<float>(rows);
+      tileW = tileH;
+    }
+    const float blockTop = regionY + (regionH - tileH * static_cast<float>(rows)) * 0.5f;
     for (int i = 0; i < count; ++i) {
       const int row = i / cols;
       const int col = i % cols;
-      pushCell({static_cast<float>(col) * cellW,
-                regionY + static_cast<float>(row) * cellH,
-                cellW,
-                cellH});
+      // Center a partial last row rather than left-hanging it.
+      const int inThisRow = std::min(cols, count - row * cols);
+      const float rowLeft = (1.f - tileW * static_cast<float>(inThisRow)) * 0.5f;
+      pushCell({rowLeft + static_cast<float>(col) * tileW,
+                blockTop + static_cast<float>(row) * tileH,
+                tileW,
+                tileH});
     }
     return plan;
   }

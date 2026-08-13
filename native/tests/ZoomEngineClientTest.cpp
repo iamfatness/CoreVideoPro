@@ -148,6 +148,25 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   EXPECT_EQ(speaker->participantId, 77u);
 }
 
+TEST(ZoomEngineClient, ParsesRawMediaStatusEvents) {
+  // Capture-off truth channel: the engine emits raw_media_status whenever raw
+  // recording actually starts/stops; the runtime mirrors it into the snapshot's
+  // `rawMediaActive` so the shell shows engine-reported state.
+  const auto stopped = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"raw_media_status","active":false,"reason":"capture-off"})");
+  ASSERT_TRUE(stopped.has_value());
+  EXPECT_EQ(stopped->kind, corevideo::modules::ZoomEngineEventKind::RawMediaStatus);
+  EXPECT_TRUE(stopped->ok);
+  EXPECT_FALSE(stopped->rawMediaActive);
+  EXPECT_EQ(stopped->message, "capture-off");
+
+  const auto started = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"raw_media_status","active":true,"reason":"manual_start"})");
+  ASSERT_TRUE(started.has_value());
+  EXPECT_EQ(started->kind, corevideo::modules::ZoomEngineEventKind::RawMediaStatus);
+  EXPECT_TRUE(started->rawMediaActive);
+}
+
 TEST(ZoomEngineClient, ParsesImmediateJoinFailureAsErrorEvent) {
   const auto event = corevideo::modules::parseZoomEngineEvent(
       R"({"cmd":"error","stage":"join","msg":"join_failed","code":3,"reason":"SDKERR_UNAUTHENTICATION"})");
@@ -244,6 +263,28 @@ TEST(ZoomEngineClient, ReadsI420SharedMemoryIntoRgbaThumbnail) {
   EXPECT_TRUE(frame->rgba[1] >= 250);
   EXPECT_TRUE(frame->rgba[2] >= 250);
   EXPECT_EQ(frame->rgba[3], 255);
+}
+
+// Thumbnail pacing (2026-07-19 system-audio clicking): throttled reads skip the
+// RGBA convert but MUST still deliver the full-res I420 planes — the compositor
+// path is per-frame, only the shell thumbnail event is paced.
+TEST(ZoomEngineClient, SkipsTheRgbaThumbnailWhenNotRequestedButKeepsI420) {
+  auto memory = makeI420SharedMemory(4, 2, 255, 128, 128);
+  const auto frame = corevideo::modules::readZoomEngineI420FrameSnapshot(
+      memory.data(),
+      memory.size(),
+      "source-123",
+      42,
+      2,
+      2,
+      /*buildThumbnail=*/false);
+
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_TRUE(frame->rgba.empty());
+  EXPECT_EQ(frame->i420Width, 4u);
+  EXPECT_EQ(frame->i420Height, 2u);
+  EXPECT_EQ(frame->i420.size(), 4u * 2u + (4u * 2u / 4u) * 2u);
+  EXPECT_EQ(frame->frameId, 2u);
 }
 
 TEST(ZoomEngineClient, RejectsIncompleteOrInProgressSharedMemoryFrames) {

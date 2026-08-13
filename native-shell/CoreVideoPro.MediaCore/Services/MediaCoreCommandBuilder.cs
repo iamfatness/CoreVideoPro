@@ -361,7 +361,16 @@ public static class MediaCoreCommandBuilder
                 lowShelfDb = context.AudioMasteringLowShelfDb,
                 presenceDb = context.AudioMasteringPresenceDb,
                 highShelfDb = context.AudioMasteringHighShelfDb,
-                stereoWidth = context.AudioMasteringStereoWidth
+                stereoWidth = context.AudioMasteringStereoWidth,
+                // B1 glue dynamics + multiband (master-vst-round2-spec §B1).
+                glueRatio = context.AudioMasteringGlueRatio,
+                glueAttackMs = context.AudioMasteringGlueAttackMs,
+                glueReleaseMs = context.AudioMasteringGlueReleaseMs,
+                glueMakeupDb = context.AudioMasteringGlueMakeupDb,
+                glueMultiband = context.AudioMasteringGlueMultiband,
+                glueBandLowDb = context.AudioMasteringGlueBandLowDb,
+                glueBandMidDb = context.AudioMasteringGlueBandMidDb,
+                glueBandHighDb = context.AudioMasteringGlueBandHighDb
             },
             ["channels"] = context.AudioMixChannels.Select(channel => new
             {
@@ -573,6 +582,9 @@ public static class MediaCoreCommandBuilder
             }).ToList(),
             ["isoParticipantIds"] = context.Recording
                 ? context.RecordingTargets.IsoParticipantIds
+                : Array.Empty<string>(),
+            ["isoSourceIds"] = context.Recording
+                ? (IReadOnlyList<string>)(context.RecordingTargets.IsoSourceIds ?? [])
                 : Array.Empty<string>()
         });
     }
@@ -589,8 +601,24 @@ public static class MediaCoreCommandBuilder
         }
 
         var targets = context.RecordingTargets;
-        var isoSuffix = targets.IsoParticipantIds.Count > 0
-            ? string.Join("-", targets.IsoParticipantIds)
+        var isoSourceIds = (IReadOnlyList<string>)(targets.IsoSourceIds ?? []);
+        // Session-id suffix: prefer the canonical ISO selection, else the legacy bare ids,
+        // else "program" (program-only). Sanitized so a `capture:<id>` never breaks the id.
+        //
+        // SORTED, deliberately: the core dedups repeated start-recording-session by
+        // sessionId, and the resolver emits ids in ROSTER order — so a roster flap
+        // that merely REORDERED the same selection minted a "different" session and
+        // restarted the writer mid-recording (live meeting 2026-08-09: a burst of
+        // 1-second recording shards while the roster settled). Sorting makes the
+        // session identity order-insensitive; a genuine selection CHANGE still
+        // produces a new id and restarts (which is how ISO writers re-arm).
+        var isoSuffixSource = isoSourceIds.Count > 0
+            ? isoSourceIds
+            : (IReadOnlyList<string>)targets.IsoParticipantIds;
+        var isoSuffix = isoSuffixSource.Count > 0
+            ? string.Join("-", isoSuffixSource
+                .Select(id => id.Replace(':', '-'))
+                .OrderBy(id => id, StringComparer.Ordinal))
             : "program";
         var sessionId = $"{targets.FilenamePrefix}-{isoSuffix}";
 
@@ -603,7 +631,8 @@ public static class MediaCoreCommandBuilder
             ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
             ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
-            ["isoParticipantIds"] = targets.IsoParticipantIds
+            ["isoParticipantIds"] = targets.IsoParticipantIds,
+            ["isoSourceIds"] = isoSourceIds
         });
 
         yield return Command("start-recording-session", new Dictionary<string, object?>
@@ -616,7 +645,8 @@ public static class MediaCoreCommandBuilder
             ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
             ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
-            ["isoParticipantIds"] = targets.IsoParticipantIds
+            ["isoParticipantIds"] = targets.IsoParticipantIds,
+            ["isoSourceIds"] = isoSourceIds
         });
     }
 

@@ -87,7 +87,33 @@ uint64_t AsyncOutputSender::enqueue(Item&& item) {
         }
       }
     }
-    state_->queue.push_back(std::move(item));
+    // Audio is a TIMELINE, so a queued audio block is never dropped the way a
+    // stale video frame is — it is merged into the newest pending audio item of
+    // the same layout, keeping chronological order. Same 5s ceiling as above so
+    // a blocked endpoint cannot grow memory without bound.
+    bool merged = false;
+    if (item.kind == Kind::Audio) {
+      for (auto it = state_->queue.rbegin(); it != state_->queue.rend(); ++it) {
+        if (it->kind != Kind::Audio) {
+          continue;
+        }
+        if (it->audioChannels == item.audioChannels && it->audioSampleRate == item.audioSampleRate) {
+          it->audioPcm.insert(it->audioPcm.end(), item.audioPcm.begin(), item.audioPcm.end());
+          const size_t maxSamples = static_cast<size_t>((std::max)(1, item.audioSampleRate)) *
+                                    static_cast<size_t>((std::max)(1, item.audioChannels)) * 5;
+          if (it->audioPcm.size() > maxSamples) {
+            it->audioPcm.erase(
+                it->audioPcm.begin(),
+                it->audioPcm.begin() + static_cast<std::ptrdiff_t>(it->audioPcm.size() - maxSamples));
+          }
+          merged = true;
+        }
+        break;  // only the newest audio item is a merge candidate
+      }
+    }
+    if (!merged) {
+      state_->queue.push_back(std::move(item));
+    }
   }
   state_->queueCv.notify_one();
   return seq;
@@ -125,6 +151,21 @@ OutputSenderSession AsyncOutputSender::sync(
   }
   enqueue(std::move(item));
   return session();
+}
+
+void AsyncOutputSender::submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) {
+  if (pcm.empty() || channels <= 0 || sampleRate <= 0) {
+    return;
+  }
+  // Queued like everything else so it stays ORDERED against sync() — the inner
+  // sender writes video and audio into two FFmpeg inputs whose clocks must not
+  // cross. Never dropped (see the merge in enqueue): audio is a timeline.
+  Item item;
+  item.kind = Kind::Audio;
+  item.audioPcm = pcm;
+  item.audioChannels = channels;
+  item.audioSampleRate = sampleRate;
+  enqueue(std::move(item));
 }
 
 OutputSenderSession AsyncOutputSender::fail(const std::string& destination, const std::string& message, double elapsedMs) {
@@ -189,6 +230,7 @@ void AsyncOutputSender::writerLoop(std::shared_ptr<State> state) {
     }
 
     OutputSenderSession fresh;
+    bool updatesSnapshot = true;
     if (state->inner) {
       if (item.kind == Kind::Sync) {
         fresh = state->inner->sync(
@@ -201,11 +243,14 @@ void AsyncOutputSender::writerLoop(std::shared_ptr<State> state) {
             item.audioSampleRate);
       } else if (item.kind == Kind::Fail) {
         fresh = state->inner->fail(item.destination, item.message, item.elapsedMs);
+      } else if (item.kind == Kind::Audio) {
+        state->inner->submitAudio(item.audioPcm, item.audioChannels, item.audioSampleRate);
+        updatesSnapshot = false;  // audio carries no session state to publish
       } else {
         fresh = state->inner->recover(item.destination, item.elapsedMs, item.message);
       }
     }
-    {
+    if (updatesSnapshot) {
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
       state->snapshot = std::move(fresh);
     }

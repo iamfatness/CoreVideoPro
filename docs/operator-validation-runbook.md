@@ -135,7 +135,7 @@ Embedded OAuth identity (same broker as [CoreVideo plugin](https://github.com/ia
 |-------|-------|
 | Broker start | `https://corevideo.iamfatness.us/oauth/start` |
 | Zoom redirect (broker) | `https://corevideo.iamfatness.us/oauth/callback` |
-| App return URI | `corevideopro://oauth/callback` |
+| App return URI | `corevideo://oauth/callback` (broker allowlists exactly this; `corevideopro://` is a legacy alias the app still accepts) |
 | Public Client ID | `y6sIWSwiTZe1JygMx4C9EQ` |
 
 Operator steps:
@@ -143,12 +143,12 @@ Operator steps:
 1. Open **Settings** -> **Zoom account (Public Client OAuth + PKCE)**.
 2. Confirm readiness shows **OAuth PKCE broker** embedded (not blocked).
 3. Click **Sign in with Zoom**; browser opens the broker start URL.
-4. Complete Zoom consent; browser redirects to `corevideopro://oauth/callback`.
+4. Complete Zoom consent; browser redirects to `corevideo://oauth/callback`.
 5. WinUI should show **Signed in** and mint broker JWT + ZAK on join.
 
 Troubleshooting:
 
-- Deep link does not return to app: confirm `corevideopro` protocol is registered (WinUI manifest / packaged install).
+- Deep link does not return to app: confirm `corevideo` protocol is registered (WinUI manifest / packaged install; unpackaged runs self-register HKCU on launch).
 - `Zoom rejected the OAuth client`: Marketplace app must be **Public Client OAuth (PKCE)**.
 - Override broker URL only when testing staging: `$env:COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`.
 
@@ -207,6 +207,41 @@ RTMP runtime is missing. Install FFmpeg or set COREVIDEO_FFMPEG_BIN_DIR to a bin
 
 This warning means RTMP runtime proof is limited. It does not invalidate compositor preview, recording, native shell, Zoom join, or audio DSP validation.
 
+## 11b. ISO recording (Program only vs Program + ISOs, Demo E)
+
+ISO records a self-contained per-source MP4 (own video + own audio) for each selected
+source, time-aligned to the program — the podcast/interview deliverable (Demo E: open
+Program + ≥2 ISOs in an NLE/DAW; they sync within a few frames).
+
+Operator flow:
+
+1. **Program only vs Program + ISOs.** Open the Record caret (recording-output flyout) →
+   the **"Program + ISOs"** switch. Default is **Program only** (records `Program.mp4`
+   only — byte-identical to a no-ISO recording). Turn it on to arm ISO writers.
+2. **Pick per-source ISOs.** In **Sources → Inputs**, tick the **ISO** checkbox on each
+   eligible row (Zoom guests + capture devices; media assets are not ISO-eligible). A
+   pure camera → video-only ISO; a camera with a paired microphone → muxed A+V.
+3. **Arm.** Press Record. A **disk pre-flight** runs first: genuinely-insufficient space
+   BLOCKS the start with a message; low space shows a persistent warning but lets you
+   proceed; ample space arms silently. The flyout shows **"Program + N ISOs"** and any
+   per-stream ISO warning.
+4. **Where files land (spec §5 folder scheme).** Each session writes one subfolder under
+   the recording target folder (default `%USERPROFILE%\Videos\CoreVideo Pro`):
+
+   ```text
+   <RecordingFolder>/<prefix>-<yyyymmdd-hhmmss>/
+     Program.mp4
+     ISO-01-<SafeName>.mp4     # roster/display name, sanitized; 01.. in selection order
+     ISO-02-<SafeName>.mp4
+     manifest.json             # session id, epoch, program + ISO entries
+   ```
+
+5. **Diagnose.** Diagnostics → Export support bundle lists every ISO path + encode health
+   (frames, audio samples, per-stream warning) so a failed ISO is visible from the bundle.
+
+The selection + switch persist across launches (ProductionOutputPreferences v8). Headless
+Demo E proof (Zoom): `node scripts/validate-iso-record.mjs`.
+
 ## 12. Package for demo
 
 ```powershell
@@ -247,7 +282,7 @@ These are still not general release guarantees:
 - [ ] Deterministic program preview evidence present (`programPreviewSeen`, `programFramePreview`, stable `renderPlanId`)
 - [ ] Native audio DSP evidence present (`audioMixSession`, `mixedFrameCount`, master/loudness/limiter metrics)
 - [ ] WinUI launches (App Runtime 2.x)
-- [ ] PKCE sign-in completes via `corevideopro://oauth/callback`
+- [ ] PKCE sign-in completes via `corevideo://oauth/callback`
 - [ ] Live join shows roster + program preview
 - [ ] `pack:native` bundles `corevideo-native.exe` from `build-dev`
 - [ ] FFmpeg packaging state is known: runtime manifest/DLLs present, or missing-runtime warning accepted

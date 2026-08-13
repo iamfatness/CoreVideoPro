@@ -608,6 +608,14 @@ class CompositeOutputSender final : public IOutputSender {
     return combined;
   }
 
+  // Fan out on the AUDIO cadence. Senders that carry no audio inherit the
+  // no-op default, so this is safe for every member.
+  void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    for (const auto& sender : senders_) {
+      sender->submitAudio(pcm, channels, sampleRate);
+    }
+  }
+
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
     OutputSenderSession combined;
     for (const auto& sender : senders_) {
@@ -911,6 +919,15 @@ class CompositeCaptureDevice final : public ICaptureDevice {
     return result;
   }
 
+  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+    std::vector<AudioFrame> result;
+    for (const auto& device : devices_) {
+      auto frames = device->pollAudioFrames(timestampMs);
+      result.insert(result.end(), frames.begin(), frames.end());
+    }
+    return result;
+  }
+
  private:
   std::vector<std::unique_ptr<ICaptureDevice>> devices_;
 };
@@ -943,21 +960,47 @@ std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource() {
   return std::make_unique<StubAudioCaptureSource>();
 }
 
+#if !defined(__APPLE__)
+// The Metal factory's translation unit (MetalCompositorAdapter.mm) is only
+// compiled on Apple toolchains; every other platform links this null factory
+// (the same pattern as the D3D11 null factory on non-Windows).
+std::unique_ptr<ICompositor> createMetalCompositor() {
+  return nullptr;
+}
+std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink() {
+  return nullptr;
+}
+std::unique_ptr<ICaptureDevice> createAvfCaptureDevice() {
+  return nullptr;
+}
+std::unique_ptr<ICaptureDevice> createSckScreenCaptureDevice() {
+  return nullptr;
+}
+#endif
+
 ModuleSet createDefaultModules() {
   auto modules = createStubModules();
   if (auto compositor = createD3D11Compositor()) {
     modules.compositor = std::move(compositor);
+  } else if (auto metalCompositor = createMetalCompositor()) {
+    modules.compositor = std::move(metalCompositor);
   }
   if (auto mediaFrames = createMediaFoundationMediaFrameSource()) {
     modules.mediaFrames = std::move(mediaFrames);
   }
   if (auto monitorOutput = createWasapiMonitorOutput()) {
     modules.monitorOutput = std::move(monitorOutput);
+  } else if (auto coreAudioMonitor = createCoreAudioMonitorOutput()) {
+    modules.monitorOutput = std::move(coreAudioMonitor);
   }
   if (auto audioCapture = createWasapiAudioCaptureSource()) {
     modules.audioCapture = std::move(audioCapture);
+  } else if (auto coreAudioCapture = createCoreAudioCaptureSource()) {
+    modules.audioCapture = std::move(coreAudioCapture);
   }
-  if (auto encoder = createMediaFoundationEncoderSink()) {
+  if (auto avfEncoder = createAVFoundationEncoderSink()) {
+    modules.encoder = std::move(avfEncoder);
+  } else if (auto encoder = createMediaFoundationEncoderSink()) {
     modules.encoder = std::move(encoder);
   }
   std::vector<std::unique_ptr<IOutputSender>> outputSenders;
@@ -991,6 +1034,14 @@ ModuleSet createDefaultModules() {
   // remains the fallback arbiter for the same device id.
   if (auto uvc = createUvcCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(uvc));
+  }
+  // macOS camera capture (AVFoundation): the UVC twin, same arbitration rules.
+  if (auto avfCameras = createAvfCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(avfCameras));
+  }
+  // macOS screen/window capture (ScreenCaptureKit): the WGC twin.
+  if (auto sckScreens = createSckScreenCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(sckScreens));
   }
   // Screen capture (WGC): monitors as sources, same arbitration rules.
   if (auto wgcScreens = createWgcScreenCaptureDevice()) {

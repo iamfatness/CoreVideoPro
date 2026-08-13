@@ -20,7 +20,10 @@ public enum SourceAudioRole
 public static class SourceRouteVisualDefaults
 {
     public const string FitMode = "fill";
-    public const string BorderStyle = "accent";
+    // "none" by default: borders are opt-in styling. The old "accent" default
+    // baked a studio-green frame around every default route into the composed
+    // program — which the virtual camera, recordings, and streams all inherit.
+    public const string BorderStyle = "none";
     public const string BorderColor = "#44C1A1";
     public const double BorderThickness = 2;
     public const double SourceScale = 1;

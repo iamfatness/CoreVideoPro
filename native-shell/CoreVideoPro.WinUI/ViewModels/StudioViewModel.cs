@@ -9,6 +9,7 @@ using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.WinUI.ViewModels.Transport;
 using CoreVideoPro.WinUI.Views;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -35,7 +36,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
-    private readonly DispatcherQueueTimer _automationTimer;
     private readonly ZoomOAuthService _zoomOAuth;
     private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
@@ -64,6 +64,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _masteringCompareSlot = "A";
     private MasteringSettings _masteringCompareA = MasteringPresetCatalog.Neutral;
     private MasteringSettings _masteringCompareB = MasteringPresetCatalog.Neutral;
+    // Operator-saved master-rack presets (B2). Mutated only on explicit user
+    // actions (save/rename/delete) and once at preferences load — never at
+    // snapshot rate, so binding a collection here is outside the 0xc000027b
+    // rules.
+    public ObservableCollection<MasteringUserPreset> MasteringUserPresets { get; } = [];
+
+    [ObservableProperty]
+    private string? _selectedMasteringUserPresetId;
+
+    [ObservableProperty]
+    private string _masteringPresetNameInput = string.Empty;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -125,12 +136,213 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnVirtualCameraEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        // O1: vcam intent persists across launches (restore sets the backing
+        // field directly, so this save only fires on real operator changes).
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
-    partial void OnVirtualCameraMirrorChanged(bool value) => _ = TrySyncMediaCoreAsync();
+    partial void OnVirtualCameraMirrorChanged(bool value)
+    {
+        SaveProductionOutputPreferences();
+        _ = TrySyncMediaCoreAsync();
+    }
 
-    partial void OnVirtualCameraDeviceNameChanged(string value) => _ = TrySyncMediaCoreAsync();
+    partial void OnVirtualCameraDeviceNameChanged(string value)
+    {
+        SaveProductionOutputPreferences();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    // ── ISO recording (ISO-4, spec §7 — Show-mode progressive disclosure) ──────────
+    // The transport-level "Program only" ↔ "Program + ISOs" master switch. OFF (the
+    // default) = program-only: NO ISO writers arm and the recording-arm path is
+    // behaviorally identical to the pre-ISO product. Persisted in
+    // ProductionOutputPreferences (v8); restore sets the backing field directly (the O1
+    // vcam pattern), so this handler only fires on real operator changes.
+    [ObservableProperty]
+    private bool _isoRecordingEnabled;
+
+    // Operator's per-source ISO selection (canonical scheme-qualified source ids `zoom:<pid>` /
+    // `capture:<id>`) now lives on the ShowInputsCoordinator (PR3 strangler) as
+    // IsoSelectedSourceIds — the ISO × ShowInputs integration moved with the roster cluster.
+    partial void OnIsoRecordingEnabledChanged(bool value)
+    {
+        SaveProductionOutputPreferences();
+        ApplyIsoSelectionToEditors();
+        RefreshIsoReadouts();
+        // Arm/disarm ISO writers if a recording is live; otherwise the next arm picks it up.
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    // OnShowInputIsoToggled + ApplyIsoSelectionToEditors moved to ShowInputsCoordinator (PR3
+    // strangler); ApplyIsoSelectionToEditors keeps a same-named private forwarder in
+    // StudioViewModel.ShowInputs.cs so its call sites are unchanged.
+
+    /// <summary>ISO health readouts are scalar computed props notified per snapshot apply
+    /// (the WorkspaceCompGrLevel pattern) — never a snapshot-rate bound collection.</summary>
+    private void RefreshIsoReadouts()
+    {
+        OnPropertyChanged(nameof(IsoArmedSummary));
+        OnPropertyChanged(nameof(IsoHealthWarning));
+        OnPropertyChanged(nameof(IsoHealthWarningVisibility));
+    }
+
+    /// <summary>"Program only" / "Program + N ISO(s)" readout for the transport/record area.
+    /// While recording, counts the live ISO streams from the snapshot; otherwise the armed
+    /// selection.</summary>
+    public string IsoArmedSummary
+    {
+        get
+        {
+            if (!IsoRecordingEnabled)
+            {
+                return "Program only";
+            }
+
+            int armed;
+            var streams = _bridge.LastSnapshot?.Recording?.Streams;
+            if (Recording && streams is { Count: > 0 })
+            {
+                armed = streams.Count(stream =>
+                    !string.Equals(stream.Kind, "program", StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                armed = IsoSourceSelectionResolver
+                    .Resolve(true, _showInputsCoordinator.IsoSelectedSourceIds, ComputeEligiblePresentIsoSourceIds())
+                    .Count;
+            }
+
+            return armed == 0
+                ? "Program + ISOs (no sources selected)"
+                : $"Program + {armed} ISO{(armed == 1 ? string.Empty : "s")}";
+        }
+    }
+
+    /// <summary>First per-stream ISO warning from the recording snapshot (reuses the loud
+    /// recording-warning channel), or null when every ISO is healthy.</summary>
+    public string? IsoHealthWarning
+    {
+        get
+        {
+            var streams = _bridge.LastSnapshot?.Recording?.Streams;
+            if (streams is null)
+            {
+                return null;
+            }
+
+            foreach (var stream in streams)
+            {
+                if (string.Equals(stream.Kind, "program", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(stream.Warning))
+                {
+                    continue;
+                }
+
+                var name = string.IsNullOrWhiteSpace(stream.DisplayName)
+                    ? stream.SourceId ?? stream.ParticipantId ?? "ISO"
+                    : stream.DisplayName;
+                return $"{name}: {stream.Warning}";
+            }
+
+            return null;
+        }
+    }
+
+    public Microsoft.UI.Xaml.Visibility IsoHealthWarningVisibility =>
+        string.IsNullOrWhiteSpace(IsoHealthWarning)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    // ISO-4 (spec §6): a persistent low-disk-space warning set by the recording-arm
+    // pre-flight (survives the transient "start requested" status). Null when disk is ample.
+    [ObservableProperty]
+    private string? _recordingDiskWarning;
+
+    partial void OnRecordingDiskWarningChanged(string? value) =>
+        OnPropertyChanged(nameof(RecordingDiskWarningVisibility));
+
+    public Microsoft.UI.Xaml.Visibility RecordingDiskWarningVisibility =>
+        string.IsNullOrWhiteSpace(RecordingDiskWarning)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    // An in-show input pointing at a source that no longer exists (a display that was
+    // unplugged, a camera that changed id). The slot is dropped from the multiview
+    // silently, so without this the operator only ever sees an unexplained placeholder
+    // tile — the owner rig sat like that for a week on "screen:3". Null when every
+    // in-show assignment resolves.
+    [ObservableProperty]
+    private string? _showInputWarning;
+
+    partial void OnShowInputWarningChanged(string? value) =>
+        OnPropertyChanged(nameof(ShowInputWarningVisibility));
+
+    public Microsoft.UI.Xaml.Visibility ShowInputWarningVisibility =>
+        string.IsNullOrWhiteSpace(ShowInputWarning)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    /// <summary>ISO-4 (spec §6): evaluate free space on the recording target volume against
+    /// the program + selected-ISO write rate. Returns false (skip — never block) when the
+    /// volume can't be measured. Shell-side by design: no core protocol/snapshot field is
+    /// needed — the shell already owns the folder, program bitrate, and ISO selection.</summary>
+    private bool TryEvaluateRecordingDiskPreflight(out IsoDiskPreflightResult result)
+    {
+        result = null!;
+        var folder = NormalizeOutputText(RecordingTargetFolder, ResolveDefaultRecordingFolder());
+        if (!TryGetVolumeFreeBytes(folder, out var freeBytes))
+        {
+            return false;
+        }
+
+        var programBitrateMbps = NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps);
+        var isoCount = BuildIsoSourceTargets().SourceIds.Count;
+        result = IsoDiskPreflight.Evaluate(programBitrateMbps, isoCount, freeBytes);
+        return true;
+    }
+
+    /// <summary>Free bytes on the volume that holds <paramref name="folder"/>. Walks up to an
+    /// existing ancestor so a not-yet-created target folder still resolves its drive.</summary>
+    private static bool TryGetVolumeFreeBytes(string folder, out long freeBytes)
+    {
+        freeBytes = 0;
+        try
+        {
+            var dir = folder;
+            while (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+            {
+                var parent = System.IO.Path.GetDirectoryName(dir);
+                if (string.IsNullOrEmpty(parent) || string.Equals(parent, dir, StringComparison.Ordinal))
+                {
+                    dir = parent ?? string.Empty;
+                    break;
+                }
+
+                dir = parent;
+            }
+
+            var root = System.IO.Path.GetPathRoot(string.IsNullOrEmpty(dir) ? folder : dir);
+            if (string.IsNullOrEmpty(root))
+            {
+                return false;
+            }
+
+            var drive = new System.IO.DriveInfo(root);
+            if (!drive.IsReady)
+            {
+                return false;
+            }
+
+            freeBytes = drive.AvailableFreeSpace;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     public string VirtualCameraStatusLabel
     {
@@ -194,6 +406,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private double _masteringStereoWidth = 1.0;
+
+    // B1 glue dynamics (master-vst-round2-spec §B1). Defaults are the pre-B1
+    // fixed values, so an untouched panel is bit-identical to old behavior.
+    [ObservableProperty]
+    private double _masteringGlueRatio = 2.0;
+
+    [ObservableProperty]
+    private double _masteringGlueAttackMs = 30.0;
+
+    [ObservableProperty]
+    private double _masteringGlueReleaseMs = 250.0;
+
+    [ObservableProperty]
+    private double _masteringGlueMakeupDb;
+
+    [ObservableProperty]
+    private bool _masteringGlueMultiband;
+
+    [ObservableProperty]
+    private double _masteringGlueBandLowDb;
+
+    [ObservableProperty]
+    private double _masteringGlueBandMidDb;
+
+    [ObservableProperty]
+    private double _masteringGlueBandHighDb;
 
     [ObservableProperty]
     private bool _audioMonitoringEnabled;
@@ -460,7 +698,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<ShowInputSlot> ShowInputs { get; } =
         new(ShowInputRosterService.CreateDefaultSlots());
 
-    public ObservableCollection<ShowInputSlotViewModel> ShowInputEditors { get; } = [];
+    // The projected editor rows are OWNED by ShowInputsCoordinator (PR3 strangler). This stays a
+    // property named ShowInputEditors so XAML x:Bind is unchanged; it forwards onto the
+    // coordinator's stable collection instance (diff-updated in place, never replaced).
+    public ObservableCollection<ShowInputSlotViewModel> ShowInputEditors => _showInputsCoordinator.ShowInputEditors;
 
     public ObservableCollection<SrtIngestSource> SrtIngestSources { get; } =
     [
@@ -468,48 +709,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     ];
 
     [ObservableProperty]
-    private ProductionMode _productionMode = ProductionMode.Manual;
-
-    [ObservableProperty]
-    private string _magicSceneStatus = "Join a meeting to enable Magic Scene";
-
-    [ObservableProperty]
-    private string _autoProductionReadout = "Join a Zoom meeting to enable scene recommendations.";
-
-    [ObservableProperty]
-    private string _automationButtonLabel = "Automation disabled";
-
-    [ObservableProperty]
-    private bool _automationAutoTakeEnabled = true;
-
-    [ObservableProperty]
-    private bool _automationPreferScreenShare = true;
-
-    [ObservableProperty]
-    private bool _automationLowerThirdsEnabled = true;
-
-    // When on, newly-joined Zoom participants auto-fill FREE Show Input slots (never
-    // disturbing operator- or capture-assigned slots). See SyncShowInputsFromMeeting.
-    [ObservableProperty]
-    private bool _automationAutoAssignInputsEnabled = true;
-
-    [ObservableProperty]
-    private bool _automationCaptionsEnabled = true;
-
-    [ObservableProperty]
     private string _takeTransitionMode = "fade";
-
-    [ObservableProperty]
-    private double _automationConfidenceThreshold = 70;
-
-    [ObservableProperty]
-    private double _automationSwitchDelaySeconds = 4;
-
-    [ObservableProperty]
-    private double _automationPanelParticipantThreshold = 4;
-
-    [ObservableProperty]
-    private string _automationLastAction = "Automation is idle";
 
     [ObservableProperty]
     private ColorGrade _colorGrade = ProductionCatalog.ColorGrade;
@@ -573,20 +773,49 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, string> _sourceDisplayNames = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
-    private string? _automationPendingSceneId;
-    private DateTimeOffset? _automationPendingSince;
-    private bool _automationTakeInFlight;
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
     private int _programMediaPlaybackTakeVersion;
-    private readonly IShowInputRosterStore _showInputRosterStore = CreateShowInputRosterStore();
-    private bool _showInputRosterLoaded;
+    // ShowInputs roster store + loaded-flag + editor-signature + ISO selection moved to
+    // ShowInputsCoordinator (PR3 strangler). The coordinator is constructed in the ctor (it needs
+    // `this` as its IShowInputsHost) before the first LoadShowInputRoster/InitializeShowInputEditors.
+    private global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator _showInputsCoordinator = null!;
     private bool _multiviewGridRefreshScheduled;
+    // True while Engine is ON but Zoom has not yet granted raw media (recording
+    // permission pending) — drives the loud waiting status in ApplyMeetingFields.
+    private bool _awaitingRecordingPrivilege;
+
+    // Zoom→program audio topology (owner decision 2026-08-09). Persists via
+    // ProductionOutputPreferences.ZoomAudioMode (prefs v9) and is restored into
+    // this backing field by ApplyProductionOutputPreferences; anything absent
+    // or unrecognized reads as the long-standing Z1 program-mix default.
+    private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.ProgramMix;
+    public ZoomAudioMode ZoomAudioMode => _zoomAudioMode;
+    public bool IsPerGuestIsoAudio => _zoomAudioMode == ZoomAudioMode.PerGuestIso;
+
+    public void SetZoomAudioMode(bool perGuestIso)
+    {
+        var mode = perGuestIso ? ZoomAudioMode.PerGuestIso : ZoomAudioMode.ProgramMix;
+        if (mode == _zoomAudioMode)
+        {
+            return;
+        }
+        _zoomAudioMode = mode;
+        OnPropertyChanged(nameof(ZoomAudioMode));
+        OnPropertyChanged(nameof(IsPerGuestIsoAudio));
+        CommandStatus = perGuestIso
+            ? "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program)."
+            : "Zoom program mix: Zoom's combined, echo-cancelled mix routes to program; guest strips meter only.";
+        // v9: the topology is operator intent — it survives the launch.
+        SaveProductionOutputPreferences();
+        // The seeded sends change shape — push the new routing to the core now.
+        _ = TrySyncMediaCoreAsync();
+    }
     private bool _canvasInteractionActive;
     private bool _refreshingSceneBackgroundSelection;
     private bool _applyingDualCaptureSelection;
-    private bool _recordingToggleInFlight;
-    private bool _streamToggleInFlight;
+    // Transport in-flight guards moved to TransportCoordinator (PR2 strangler); CanToggle*
+    // predicates read them via _transportCoordinator.
     private readonly HashSet<string> _captureAutoConnectInFlight = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _captureConnectGate = new(1, 1);
 
@@ -709,8 +938,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(EnabledGraphics));
     }
 
-    private readonly List<ParticipantAudioMix> _audioMixChannels = [];
-    private AutoProductionState _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
+    // REFERENCE-SWAP ONLY — never mutate this list in place. RefreshAudioMixChannels
+    // is called from BuildProductionSyncContext, which runs on BACKGROUND sync
+    // threads (spine timer, transport retries, ConfigureAwait(false) continuations)
+    // as well as the dispatcher. In-place Clear+AddRange raced every UI-thread
+    // enumeration: it planted the null that crashed the app at 19:00 and then threw
+    // "Source array was not long enough" four times a second once the consumers
+    // were guarded (2026-08-09). The writer builds a complete new list and swaps
+    // the reference; readers capture the reference once and enumerate a list that
+    // is never subsequently mutated. `volatile` orders the publish.
+    private volatile List<ParticipantAudioMix> _audioMixChannels = [];
 
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
@@ -847,7 +1084,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                             : "on target"
             : "awaiting audio";
 
-    public string TruePeakLabel => "—";
+    // B2: real post-mastering true peak from the core's streaming detector
+    // (masterMeter rides the audio snapshot; -120 = meter not primed yet).
+    public string TruePeakLabel =>
+        _bridge.LastSnapshot?.AudioMixSession.MasterMeter is { TruePeakDbfs: > -119.0 } meter
+            ? $"{meter.TruePeakDbfs:0.0} dBTP"
+            : "—";
 
     public string GainAdjustLabel => SelectedGainLabel;
 
@@ -859,13 +1101,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProductionStateHelper.BuildSceneIntelligenceSummary(RoomVideoParticipants, ProductionMode);
 
     public string RecommendedSceneName =>
-        ProductionStateHelper.RecommendedSceneName(Scenes, _automationRecommendation.RecommendedSceneId);
+        ProductionStateHelper.RecommendedSceneName(Scenes, MagicScene.Recommendation.RecommendedSceneId);
 
     public string RecommendedLayout =>
-        ProductionStateHelper.RecommendedLayout(Scenes, _automationRecommendation.RecommendedSceneId);
+        ProductionStateHelper.RecommendedLayout(Scenes, MagicScene.Recommendation.RecommendedSceneId);
 
     public string RecommendedConfidence =>
-        _automationRecommendation.Confidence > 0 ? $"{_automationRecommendation.Confidence}%" : "—";
+        MagicScene.Recommendation.Confidence > 0 ? $"{MagicScene.Recommendation.Confidence}%" : "—";
 
     public string AutoSwitchLabel => ProductionMode == ProductionMode.SetAndForget ? "Auto" : "Manual";
 
@@ -887,7 +1129,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string ScreenShareLabel => RoomVideoParticipants.Any(p => p.IsScreenSharing) ? "Active" : "Off";
 
-    public string AutoProductionReason => _automationRecommendation.Reason;
+    public string AutoProductionReason => MagicScene.Recommendation.Reason;
 
     public AudioMixState AudioMix => new()
     {
@@ -920,6 +1162,81 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MasterLimiterEnabled
             ? "Master protection is armed; activity only lights when peaks reach the ceiling."
             : "Master protection is bypassed; no limiting is applied.";
+
+    // ---- B2 rack meters: POST-mastering integrated LUFS + true peak --------
+    // Scalar props notified per snapshot apply (RefreshAudioReadoutBindings) —
+    // the sanctioned meter pattern (WorkspaceCompGrLevel); never a collection.
+
+    public double MasteringMeterIntegratedLufs =>
+        _bridge.LastSnapshot?.AudioMixSession.MasterMeter.IntegratedLufs ?? -120.0;
+
+    public double MasteringMeterTruePeakDbfs =>
+        _bridge.LastSnapshot?.AudioMixSession.MasterMeter.TruePeakDbfs ?? -120.0;
+
+    public string MasteringMeterIntegratedLabel =>
+        MasteringMeterIntegratedLufs > -119.0 ? $"{MasteringMeterIntegratedLufs:0.0} LUFS" : "—";
+
+    public string MasteringMeterTruePeakLabel =>
+        MasteringMeterTruePeakDbfs > -119.0 ? $"{MasteringMeterTruePeakDbfs:0.0} dBTP" : "—";
+
+    public string MasteringMeterTargetLabel => $"target {MasteringTargetLufs:0} LUFS";
+
+    public string MasteringMeterCeilingLabel => $"ceiling {MasteringCeilingDbfs:0.0} dBTP";
+
+    // ---- B2 rack stage engagement (bright = the core is processing the stage,
+    // dim = neutral/bypassed — the DspResponseCurve IsEngaged convention).
+    // Each mirrors the exact neutral-value bypass conditions in
+    // processMasteringChain (AudioMastering.h), so a dim stage IS a no-op.
+
+    public bool MasteringStageInputEngaged => MasteringEnabled && MasteringInputGainDb != 0.0;
+
+    public bool MasteringStageFilterEngaged =>
+        MasteringEnabled && (MasteringHighPassHz > 0.0 || MasteringLowPassHz > 0.0);
+
+    public bool MasteringStageToneEngaged =>
+        MasteringEnabled &&
+        (MasteringLowShelfDb != 0.0 || MasteringPresenceDb != 0.0 || MasteringHighShelfDb != 0.0);
+
+    public bool MasteringStageRideEngaged => MasteringEnabled && MasteringMaxRideDb > 0.0;
+
+    public bool MasteringStageGlueEngaged => MasteringEnabled && MasteringGlueAmount > 0.0;
+
+    public bool MasteringStageWidthEngaged => MasteringEnabled && MasteringStereoWidth != 1.0;
+
+    // The mastering true-peak ceiling always runs while MASTER IN is on (it is
+    // the chain's safety stage) — honesty rule: brightness reflects processing.
+    public bool MasteringStageCeilingEngaged => MasteringEnabled;
+
+    private const double StageDimOpacity = 0.55;
+
+    public double MasteringStageInputOpacity => MasteringStageInputEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageFilterOpacity => MasteringStageFilterEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageToneOpacity => MasteringStageToneEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageRideOpacity => MasteringStageRideEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageGlueOpacity => MasteringStageGlueEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageWidthOpacity => MasteringStageWidthEngaged ? 1.0 : StageDimOpacity;
+    public double MasteringStageCeilingOpacity => MasteringStageCeilingEngaged ? 1.0 : StageDimOpacity;
+
+    private void RefreshMasteringStageBindings()
+    {
+        OnPropertyChanged(nameof(MasteringStageInputEngaged));
+        OnPropertyChanged(nameof(MasteringStageFilterEngaged));
+        OnPropertyChanged(nameof(MasteringStageToneEngaged));
+        OnPropertyChanged(nameof(MasteringStageRideEngaged));
+        OnPropertyChanged(nameof(MasteringStageGlueEngaged));
+        OnPropertyChanged(nameof(MasteringStageWidthEngaged));
+        OnPropertyChanged(nameof(MasteringStageCeilingEngaged));
+        OnPropertyChanged(nameof(MasteringStageInputOpacity));
+        OnPropertyChanged(nameof(MasteringStageFilterOpacity));
+        OnPropertyChanged(nameof(MasteringStageToneOpacity));
+        OnPropertyChanged(nameof(MasteringStageRideOpacity));
+        OnPropertyChanged(nameof(MasteringStageGlueOpacity));
+        OnPropertyChanged(nameof(MasteringStageWidthOpacity));
+        OnPropertyChanged(nameof(MasteringStageCeilingOpacity));
+        OnPropertyChanged(nameof(MasteringTargetLufs));
+        OnPropertyChanged(nameof(MasteringMeterTargetLabel));
+        OnPropertyChanged(nameof(MasteringMeterCeilingLabel));
+    }
 
     public string SelectedAudioMonitorDeviceName =>
         AudioRenderDevices.FirstOrDefault(device =>
@@ -1094,6 +1411,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RoomVideoParticipants = [];
         CurrentRoomLabel = "No meeting";
         _multiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        // PR3 strangler: the ShowInputs roster/projection/auto-assign/ISO cluster is owned by
+        // ShowInputsCoordinator. Construct it (with `this` as its IShowInputsHost) BEFORE the first
+        // roster load/projection so the same-named forwarders route through it.
+        _showInputsCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator(
+            _bridge, CreateShowInputRosterStore(), this);
         LoadShowInputRoster();
         InitializeShowInputEditors();
         RefreshMultiviewGridTiles();
@@ -1102,7 +1424,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioParticipantRows();
 
         _zoomOAuth = new ZoomOAuthService(
-            new FileZoomTokenStore(FileZoomTokenStore.DefaultTokenStorePath()),
+            // S4 secrets-at-rest: DPAPI (CurrentUser) encrypt/decrypt delegates.
+            // Legacy plaintext token files pass through decrypt unchanged and the
+            // store re-saves them encrypted on first load.
+            new FileZoomTokenStore(
+                FileZoomTokenStore.DefaultTokenStorePath(),
+                encrypt: DpapiSecretProtector.Protect,
+                decrypt: DpapiSecretProtector.Unprotect),
             openUrl: ExternalUriLauncher.OpenAsync);
         _zoomOAuthCoordinator = new ZoomOAuthAppCoordinator(
             _zoomOAuth,
@@ -1152,11 +1480,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         });
         _zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
+        _transportCoordinator = new global::CoreVideoPro.WinUI.ViewModels.Transport.TransportCoordinator(_bridge, this, this);
         Overlays = new OverlaysViewModel(this);
+        MagicScene = new global::CoreVideoPro.WinUI.ViewModels.MagicScene.MagicSceneCoordinator(this);
+        MagicScene.PropertyChanged += OnMagicScenePropertyChanged;
         LoadProductionOutputPreferences();
-        _automationTimer = _dispatcher.CreateTimer();
-        _automationTimer.Interval = TimeSpan.FromMilliseconds(500);
-        _automationTimer.Tick += (_, _) => EvaluateAutomationPolicy();
         InitializeGraphicsCatalog();
         InitializeSceneRoutes();
         RefreshPreviewRoutingState();
@@ -1218,7 +1546,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // Recording rights can be requested in a breakout room without capture running,
     // so recording only requires being in a meeting (NOT an active capture subscription).
-    public bool CanToggleRecording => Settings.IsInMeeting && !_recordingToggleInFlight;
+    public bool CanToggleRecording => Settings.IsInMeeting && !_transportCoordinator.RecordingToggleInFlight;
 
     public string CaptureEngineHint => CanToggleCapture
         ? "Start or stop Zoom video capture for this meeting."
@@ -1589,7 +1917,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var inserts = SelectedAudioMix?.PluginInserts ?? [];
         var serve = VstServeState;
         var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts) +
-                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}";
+                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:{serve.LatencySamples}:" +
+                        $"{serve.Respawn.Attempts}:{serve.Respawn.GaveUp}";
         if (string.Equals(signature, _insertSlotsSignature, StringComparison.Ordinal))
         {
             return;
@@ -1601,8 +1931,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 var builtIn = IsBuiltInInsert(name);
                 var processing = !builtIn && IsVstInsertProcessing(name);
-                var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
-                             !string.IsNullOrWhiteSpace(serve.LastError);
+                // A1: a respawn give-up is an auto-bypass — as loud as a load
+                // failure on every VST chip.
+                var failed = !builtIn && IsVstInsert(name) &&
+                             ((serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)) ||
+                              serve.Respawn.GaveUp);
+                var editorText = !builtIn && IsVstInsert(name) &&
+                                 InsertMatchesVstPlugin(name, serve.EditorActivePlugin)
+                    ? FormatVstEditorStatus(serve)
+                    : string.Empty;
+                var tooltip = builtIn
+                    ? "Processing active."
+                    : processing
+                        ? "Plug-in active. Click to open its controls."
+                        : failed
+                            ? serve.Respawn.GaveUp
+                                ? "Plug-in host crashed repeatedly; bypassed. Re-select the plug-in to retry."
+                                : "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                            : "Plug-in starting; audio continues unchanged.";
                 return new InsertSlotItem
                 {
                     // Keep the canonical value: removal/reordering use it as
@@ -1612,13 +1958,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     IsBuiltIn = builtIn,
                     IsProcessing = processing,
                     StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
-                    StatusTooltip = builtIn
-                        ? "Processing active."
-                        : processing
-                            ? "Plug-in active. Click to open its controls."
-                            : failed
-                                ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
-                                : "Plug-in starting; audio continues unchanged.",
+                    StatusTooltip = editorText.Length == 0 ? tooltip : $"{tooltip} {editorText}",
+                    LatencyLabel = processing ? FormatVstLatencyLabel(serve) : "",
                 };
             })
             .ToList();
@@ -1847,6 +2188,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? FormatVstServeStatus(VstServeState)
             : "No VST3 insert on selected channel";
 
+    private int _openVstControlsGeneration;
+
     public async Task OpenVstControlsAsync(string insertName)
     {
         if (!IsVstInsert(insertName))
@@ -1859,14 +2202,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? insertName[4..].Trim()
             : insertName;
         CommandStatus = $"Opening {label} controls…";
+        var pollGeneration = ++_openVstControlsGeneration;
         try
         {
             await _bridge.OpenVstEditorAsync(insertName);
         }
         catch (Exception ex)
         {
+            // A1: a rejected/failed command is status text, never a silent no-op.
             CommandStatus = $"Could not open plug-in controls: {ex.Message}";
+            return;
         }
+
+        // The editor verdict lands via serve telemetry (the host may load the
+        // plug-in first — Waves shells take seconds). Poll briefly so the
+        // operator always gets a verdict in the status line, loud either way.
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            await Task.Delay(500);
+            if (pollGeneration != _openVstControlsGeneration)
+            {
+                return;  // a newer click owns the status line
+            }
+
+            var serve = VstServeState;
+            if (serve.EditorStatusCode != 0 &&
+                InsertMatchesVstPlugin(insertName, serve.EditorActivePlugin))
+            {
+                CommandStatus = FormatVstEditorStatus(serve);
+                return;
+            }
+        }
+
+        CommandStatus = $"No verdict opening {label} controls — see the processing rack status line.";
     }
 
     public Task OpenSelectedAudioProcessingVstControlsAsync()
@@ -1926,7 +2294,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var serve = VstServeState;
         var signature = (SelectedAudioProcessingTargetId ?? string.Empty) + "|" + string.Join("\u0001", inserts) +
                         $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
-                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}";
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}:{serve.LatencySamples}:" +
+                        $"{serve.Respawn.Attempts}:{serve.Respawn.GaveUp}";
         if (string.Equals(signature, _audioProcessingSlotsSignature, StringComparison.Ordinal)) return;
 
         _audioProcessingSlotsSignature = signature;
@@ -1934,8 +2303,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             var builtIn = IsBuiltInInsert(name);
             var processing = !builtIn && IsVstInsertProcessing(name);
-            var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
-                         !string.IsNullOrWhiteSpace(serve.LastError);
+            // A1: a respawn give-up is an auto-bypass — as loud as a load failure.
+            var failed = !builtIn && IsVstInsert(name) &&
+                         ((serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)) ||
+                          serve.Respawn.GaveUp);
+            var editorText = !builtIn && IsVstInsert(name) &&
+                             InsertMatchesVstPlugin(name, serve.EditorActivePlugin)
+                ? FormatVstEditorStatus(serve)
+                : string.Empty;
+            var tooltip = builtIn
+                ? "Processing active."
+                : processing
+                    ? "Plug-in active. Click to open its controls."
+                    : failed
+                        ? serve.Respawn.GaveUp
+                            ? "Plug-in host crashed repeatedly; bypassed. Re-select the plug-in to retry."
+                            : "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                        : "Plug-in starting; audio continues unchanged. Click to open its controls.";
             return new InsertSlotItem
             {
                 Name = name,
@@ -1943,13 +2327,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 IsBuiltIn = builtIn,
                 IsProcessing = processing,
                 StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
-                StatusTooltip = builtIn
-                    ? "Processing active."
-                    : processing
-                        ? "Plug-in active. Click to open its controls."
-                        : failed
-                            ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
-                            : "Plug-in starting; audio continues unchanged. Click to open its controls."
+                StatusTooltip = editorText.Length == 0 ? tooltip : $"{tooltip} {editorText}",
+                LatencyLabel = processing ? FormatVstLatencyLabel(serve) : ""
             };
         }).ToList();
         OnPropertyChanged(nameof(SelectedAudioProcessingSlots));
@@ -1960,14 +2339,69 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? FormatVstServeStatus(VstServeState)
             : "Built-in processing settings are synced with the native media core metadata.";
 
-    private static string FormatVstServeStatus(NativeMediaCorePluginHostServe serve) =>
-        serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0
+    // A1: the rack status line — audio state first, then the editor state so a
+    // controls failure is visible text, never a silent no-op. Public static for
+    // unit tests (the StudioViewModelAudioStatusTests pattern).
+    public static string FormatVstServeStatus(NativeMediaCorePluginHostServe serve)
+    {
+        if (serve.Respawn.GaveUp)
+        {
+            return "VST3 host crashed repeatedly — plug-in bypassed, audio continues unprocessed. " +
+                   "Re-select the plug-in or reopen its controls to retry.";
+        }
+
+        var audioStatus = serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0
             ? $"Processing {serve.ActivePlugin} in the isolated VST3 host."
             : serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)
                 ? $"Bypassed safely: {serve.LastError}"
                 : serve.DeadlineMisses > 0
                     ? $"Host starting or missed its deadline ({serve.DeadlineMisses}); audio remains bypassed."
                     : "Isolated VST3 host starting; audio remains bypassed until the first processed block returns.";
+        var editorStatus = FormatVstEditorStatus(serve);
+        return editorStatus.Length == 0 ? audioStatus : $"{audioStatus} {editorStatus}";
+    }
+
+    /// <summary>
+    /// A3: the latency badge text for a processing VST slot — "+2.7 ms" from
+    /// the host's reported latencySamples, "" for zero-latency plugins.
+    /// Public static for unit tests.
+    /// </summary>
+    public static string FormatVstLatencyLabel(NativeMediaCorePluginHostServe serve) =>
+        serve.LatencySamples > 0 ? $"+{serve.LatencyMs:0.#} ms" : "";
+
+    /// <summary>
+    /// A1: operator words for pluginHost.serve.editor{StatusCode,ActivePlugin,
+    /// LastError}. Empty when the editor is idle. The createView-null case is
+    /// called out verbatim per spec: "This plugin has no editor."
+    /// </summary>
+    public static string FormatVstEditorStatus(NativeMediaCorePluginHostServe serve) =>
+        serve.EditorStatusCode switch
+        {
+            1 => $"Controls open: {serve.EditorActivePlugin}.",
+            2 => serve.EditorLastError.Contains("does not provide a native editor",
+                                                StringComparison.OrdinalIgnoreCase)
+                ? "This plugin has no editor."
+                : $"Controls failed: {(string.IsNullOrWhiteSpace(serve.EditorLastError) ? "unknown editor error" : serve.EditorLastError)}",
+            _ => string.Empty,
+        };
+
+    // Does an insert-chain name ("VST: Curves AQ Stereo", "vst:<bundle>/<class>")
+    // refer to the plugin the host is reporting about? Same loose matching the
+    // processing badge uses — the host reports the resolved class name.
+    public static bool InsertMatchesVstPlugin(string insertName, string pluginName)
+    {
+        if (string.IsNullOrWhiteSpace(pluginName))
+        {
+            return false;
+        }
+
+        var query = insertName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? insertName[4..].Trim()
+            : insertName;
+        return string.Equals(pluginName, query, StringComparison.OrdinalIgnoreCase) ||
+               query.Contains(pluginName, StringComparison.OrdinalIgnoreCase) ||
+               pluginName.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
 
     // Status-pill design language: a pill is GREEN (dot + tint + text) when its
     // thing is on/live, RED when off/offline. Capture and Zoom share this so the
@@ -2383,7 +2817,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
         RefreshTransportState();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2395,6 +2831,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2412,6 +2850,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnMasteringPresenceDbChanged(double value) => SyncMasteringControlChange();
     partial void OnMasteringHighShelfDbChanged(double value) => SyncMasteringControlChange();
     partial void OnMasteringStereoWidthChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueRatioChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueAttackMsChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueReleaseMsChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueMakeupDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueMultibandChanged(bool value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueBandLowDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueBandMidDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringGlueBandHighDbChanged(double value) => SyncMasteringControlChange();
 
     private void SyncMasteringControlChange()
     {
@@ -2421,6 +2867,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
+        // B2: every rack tweak persists (schema v6) so mastering survives a
+        // restart; the load-time restore rides the initial full sync.
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2491,7 +2941,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MasteringPresenceDb,
         MasteringHighShelfDb,
         MasteringStereoWidth,
-        MasterLimiterEnabled);
+        MasterLimiterEnabled,
+        MasteringGlueRatio,
+        MasteringGlueAttackMs,
+        MasteringGlueReleaseMs,
+        MasteringGlueMakeupDb,
+        MasteringGlueMultiband,
+        MasteringGlueBandLowDb,
+        MasteringGlueBandMidDb,
+        MasteringGlueBandHighDb);
 
     private void ApplyMasteringSettings(MasteringSettings settings)
     {
@@ -2511,6 +2969,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MasteringHighShelfDb = settings.HighShelfDb;
             MasteringStereoWidth = settings.StereoWidth;
             MasterLimiterEnabled = settings.LimiterEnabled;
+            MasteringGlueRatio = settings.GlueRatio;
+            MasteringGlueAttackMs = settings.GlueAttackMs;
+            MasteringGlueReleaseMs = settings.GlueReleaseMs;
+            MasteringGlueMakeupDb = settings.GlueMakeupDb;
+            MasteringGlueMultiband = settings.GlueMultiband;
+            MasteringGlueBandLowDb = settings.GlueBandLowDb;
+            MasteringGlueBandMidDb = settings.GlueBandMidDb;
+            MasteringGlueBandHighDb = settings.GlueBandHighDb;
         }
         finally
         {
@@ -2527,9 +2993,104 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioReadoutBindings();
+        RefreshMasteringStageBindings();
         RefreshTransportState();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
+
+    // ---- B2 operator-saved presets (save/rename/delete beside the built-ins) ----
+
+    private MasteringUserPreset? FindSelectedMasteringUserPreset() =>
+        MasteringUserPresets.FirstOrDefault(preset =>
+            string.Equals(preset.Id, SelectedMasteringUserPresetId, StringComparison.Ordinal));
+
+    [RelayCommand]
+    private void SaveMasteringUserPreset()
+    {
+        if (MasteringPresetLibrary.Save(
+                MasteringUserPresets.ToList(), MasteringPresetNameInput, CaptureMasteringSettings())
+            is not { } result)
+        {
+            CommandStatus = MasteringPresetLibrary.IsBuiltInName(MasteringPresetNameInput)
+                ? "That name belongs to a built-in starting point — pick another."
+                : "Preset not saved — enter a short name (built-in names are reserved).";
+            return;
+        }
+
+        ReplaceMasteringUserPresets(result.Presets);
+        SelectedMasteringUserPresetId = result.Saved.Id;
+        SaveProductionOutputPreferences();
+        CommandStatus = $"Master preset \"{result.Saved.Name}\" saved.";
+    }
+
+    [RelayCommand]
+    private void ApplyMasteringUserPreset(string? presetId)
+    {
+        var preset = MasteringUserPresets.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, presetId ?? SelectedMasteringUserPresetId, StringComparison.Ordinal));
+        if (preset is null)
+        {
+            CommandStatus = "Select a saved master preset first.";
+            return;
+        }
+
+        SelectedMasteringUserPresetId = preset.Id;
+        ApplyMasteringSettings(preset.Settings);
+        CommandStatus = $"Master preset \"{preset.Name}\" applied to comparison {_masteringCompareSlot}.";
+    }
+
+    [RelayCommand]
+    private void RenameMasteringUserPreset()
+    {
+        if (FindSelectedMasteringUserPreset() is not { } selected)
+        {
+            CommandStatus = "Select a saved master preset to rename.";
+            return;
+        }
+
+        if (MasteringPresetLibrary.Rename(MasteringUserPresets.ToList(), selected.Id, MasteringPresetNameInput)
+            is not { } result)
+        {
+            CommandStatus = "Rename failed — the new name is empty, reserved, or already in use.";
+            return;
+        }
+
+        ReplaceMasteringUserPresets(result.Presets);
+        SelectedMasteringUserPresetId = result.Renamed.Id;
+        SaveProductionOutputPreferences();
+        CommandStatus = $"Master preset renamed to \"{result.Renamed.Name}\".";
+    }
+
+    [RelayCommand]
+    private void DeleteMasteringUserPreset()
+    {
+        if (FindSelectedMasteringUserPreset() is not { } selected ||
+            MasteringPresetLibrary.Delete(MasteringUserPresets.ToList(), selected.Id) is not { } result)
+        {
+            CommandStatus = "Select a saved master preset to delete.";
+            return;
+        }
+
+        ReplaceMasteringUserPresets(result.Presets);
+        SelectedMasteringUserPresetId = null;
+        SaveProductionOutputPreferences();
+        CommandStatus = $"Master preset \"{selected.Name}\" deleted.";
+    }
+
+    private void ReplaceMasteringUserPresets(IEnumerable<MasteringUserPreset> presets)
+    {
+        // User-action rate only (save/rename/delete/load) — never snapshot rate.
+        MasteringUserPresets.Clear();
+        foreach (var preset in presets)
+        {
+            MasteringUserPresets.Add(preset);
+        }
+
+        OnPropertyChanged(nameof(HasMasteringUserPresets));
+    }
+
+    public bool HasMasteringUserPresets => MasteringUserPresets.Count > 0;
 
     partial void OnAudioMonitoringEnabledChanged(bool value)
     {
@@ -2918,14 +3479,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnRecordingQualityChanged(string value) => OnRecordingOutputOptionChanged();
 
-    partial void OnProductionModeChanged(ProductionMode value)
-    {
-        RefreshTransportAutomationState();
-        EvaluateAutomationPolicy();
-        OnPropertyChanged(nameof(AutomationButtonLabel));
-        OnPropertyChanged(nameof(AutoProductionReadout));
-    }
-
     partial void OnActiveTabChanged(StudioTab value)
     {
         OnPropertyChanged(nameof(IsStudioTab));
@@ -3048,21 +3601,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StudioLowerThirdToolTip));
     }
 
-    partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationPreferScreenShareChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationLowerThirdsEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
-    partial void OnAutomationAutoAssignInputsEnabledChanged(bool value)
-    {
-        OnAutomationPolicyChanged();
-        // Turning it on should immediately fill free slots from the current roster.
-        ReapplyShowInputAutoAssign();
-    }
-
-    partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
     partial void OnTakeTransitionModeChanged(string value)
     {
         var normalized = NormalizeTakeTransitionMode(value);
@@ -3076,54 +3614,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(TakeToolTip));
     }
 
-    partial void OnAutomationConfidenceThresholdChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 0, 100);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationConfidenceThreshold = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    partial void OnAutomationSwitchDelaySecondsChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 0, 30);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationSwitchDelaySeconds = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    partial void OnAutomationPanelParticipantThresholdChanged(double value)
-    {
-        var clamped = Math.Clamp(value, 2, 10);
-        if (Math.Abs(clamped - value) > 0.01)
-        {
-            AutomationPanelParticipantThreshold = clamped;
-            return;
-        }
-
-        OnAutomationPolicyChanged();
-    }
-
-    private void OnAutomationPolicyChanged()
-    {
-        _automationPendingSceneId = null;
-        _automationPendingSince = null;
-        OnPropertyChanged(nameof(AutomationPolicySummary));
-        OnPropertyChanged(nameof(AutomationScenePolicySummary));
-        OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
-        OnPropertyChanged(nameof(AutomationTakeModeLabel));
-        RefreshProgramLowerThirdKeyPosition();
-        RefreshProductionReadouts();
-    }
-
     private static string NormalizeTakeTransitionMode(string? transitionMode) =>
         transitionMode?.Trim().ToLowerInvariant() switch
         {
@@ -3133,92 +3623,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _ => "fade"
         };
 
-    [RelayCommand]
-    private void ResetAutomationDefaults()
-    {
-        AutomationAutoTakeEnabled = true;
-        AutomationPreferScreenShare = true;
-        AutomationLowerThirdsEnabled = true;
-        AutomationAutoAssignInputsEnabled = true;
-        AutomationCaptionsEnabled = true;
-        AutomationConfidenceThreshold = 70;
-        AutomationSwitchDelaySeconds = 4;
-        AutomationPanelParticipantThreshold = 4;
-        AutomationLastAction = "Automation defaults restored";
-        CommandStatus = "Automation defaults restored";
-    }
-
     // The top-right toggle controls the Zoom CAPTURE SUBSCRIPTION, not the media core.
     // The media core / compositor is always on (started on join, stopped on leave) so
     // the program/preview surfaces always show the live compositor output. Toggling here
-    // only subscribes/unsubscribes the raw Zoom ingest spine sync.
+    // only subscribes/unsubscribes the raw Zoom ingest spine sync. Orchestration lives in
+    // TransportCoordinator.ToggleEngineAsync (PR2 strangler); this stays the generated
+    // [RelayCommand] so XAML x:Bind + the external NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanToggleCapture))]
-    private async Task ToggleEngineAsync()
-    {
-        try
-        {
-            if (ZoomCaptureSubscribed)
-            {
-                UnsubscribeZoomCapture("Zoom capture paused");
-            }
-            else
-            {
-                // The media core should already be running from launch. If it died, bring it back up rather than dead-ending.
-                // ConfigureAwait(true): this is a UI [RelayCommand]; the whole
-                // continuation below sets x:Bound properties (EngineStatus,
-                // ZoomCaptureSubscribed) + RefreshSurfaceBindings, so it MUST resume on
-                // the UI thread or it fail-fasts (CoreMessagingXP 0xc000027b). This was
-                // the recurring Engine-On crash.
-                await EnsureMediaCoreRunningAsync("Restarting media core...").ConfigureAwait(true);
-
-                if (!_bridge.Running)
-                {
-                    EngineStatus = "Media core is unavailable — rejoin the meeting.";
-                    return;
-                }
-
-                EngineStatus = "Requesting Zoom capture…";
-                _bridge.ConfigureZoomSpineSync(BuildSpinePayload);
-                ZoomCaptureSubscribed = true;
-                _surfaces.SetZoomCaptureSubscribed(true, _bridge.Profile?.Renderer);
-                _surfaces.SetPreviewParticipant(SelectedParticipantId);
-                EngineStatus = $"Capture live — {_bridge.ProfileSummary}";
-                Settings.RefreshSdkReadiness();
-                try
-                {
-                    await SyncActiveSceneAsync().ConfigureAwait(true);
-                }
-                catch (MediaCoreSyncInFlightException)
-                {
-                    // Transient backpressure: another sync was already running when
-                    // the operator flipped Engine On. Capture is enabled and the
-                    // spine/periodic sync will apply the active scene shortly — this
-                    // is NOT a toggle failure, so keep capture on.
-                    EngineStatus = $"Capture live — {_bridge.ProfileSummary}";
-                }
-                RefreshSurfaceBindings();
-                RefreshTransportState();
-                ToggleRecordingCommand.NotifyCanExecuteChanged();
-            }
-        }
-        catch (MediaCoreSyncInFlightException)
-        {
-            // Backpressure during toggle — non-fatal; leave capture enabled.
-            EngineStatus = "Capture starting…";
-            RefreshTransportState();
-            ToggleRecordingCommand.NotifyCanExecuteChanged();
-        }
-        catch (Exception ex)
-        {
-            ZoomCaptureSubscribed = false;
-            _surfaces.SetZoomCaptureSubscribed(false);
-            EngineStatus = ex.Message;
-            Settings.RefreshSdkReadiness();
-            RefreshSurfaceBindings();
-            RefreshTransportState();
-            ToggleRecordingCommand.NotifyCanExecuteChanged();
-        }
-    }
+    private Task ToggleEngineAsync() => _transportCoordinator.ToggleEngineAsync();
 
     [RelayCommand]
     private void SelectScene(string sceneId)
@@ -3551,47 +3963,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // Take promotes Preview → Program. Because the compositor is always on, the program
     // composition + native scene sync must run regardless of whether Zoom capture is
     // subscribed; otherwise the program feed never reflects the new scene.
+    // Take orchestration lives in TransportCoordinator.TakeAsync (PR2 strangler). This stays the
+    // generated [RelayCommand] (CanExecute = CanTake, shared with Scenes/MagicScene) so XAML and
+    // the external TakeCommand.NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanTake))]
-    private async Task TakeAsync()
-    {
-        var previousProgramSceneId = ActiveSceneId;
-        var takenSceneId = PreviewSceneId;
-
-        // Cueing media while Preview and Program reference the same scene creates an
-        // off-air draft. A conventional Take must still put that cue on air; the old
-        // scene-id-only CanTake rule disabled the button and stranded the operator.
-        // Commit only the pending draft in this case, then run the normal media
-        // promotion so the held Preview frame restarts from frame zero on Program.
-        if (string.Equals(previousProgramSceneId, takenSceneId, StringComparison.Ordinal) &&
-            _livePreviewDraft is not null &&
-            HasPendingProgramMediaCue(GetMutableRoutes(takenSceneId), _livePreviewDraft))
-        {
-            CopyPreviewRoutesToScene(takenSceneId);
-        }
-        else
-        {
-            ActiveSceneId = takenSceneId;
-            PreviewSceneId = previousProgramSceneId;
-        }
-
-        _programMediaPlaybackTakeVersion++;
-        PromoteProgramMediaRouteToPlayback();
-        RefreshPreviewRoutingState();
-        CommandStatus = $"{ProgramSceneSummary} taken with {TakeTransitionLabel.ToLowerInvariant()}";
-        OutputStatus = "Program updated";
-
-        if (_bridge.Running)
-        {
-            try
-            {
-                await SyncActiveSceneAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                RunOnUiThread(() => CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
-            }
-        }
-    }
+    private Task TakeAsync() => _transportCoordinator.TakeAsync();
 
     [RelayCommand]
     private void SetTakeTransition(string? transitionMode)
@@ -3600,619 +3976,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"Take transition set to {TakeTransitionLabel}";
     }
 
+    // Recording orchestration (arm/disarm, disk pre-flight, #286 rollback, backpressure retry)
+    // lives in TransportCoordinator.ToggleRecordingAsync (PR2 strangler). This stays the
+    // generated [RelayCommand] so XAML + external NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanToggleRecording))]
-    private async Task ToggleRecordingAsync()
-    {
-        if (_recordingToggleInFlight)
-        {
-            return;
-        }
+    private Task ToggleRecordingAsync() => _transportCoordinator.ToggleRecordingAsync();
 
-        _recordingToggleInFlight = true;
-        ToggleRecordingCommand.NotifyCanExecuteChanged();
-        var starting = !Recording;
-        var previousRecording = Recording;
-        LaunchLog.Write(
-            $"recording: toggle requested action={(starting ? "start" : "stop")} " +
-            $"format={NormalizeRecordingFormat(RecordingFormat)} " +
-            $"bitrate={NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps):0.0}Mbps " +
-            $"codec={RecordingVideoCodec}");
+    private bool CanToggleStreaming() => !_transportCoordinator.StreamToggleInFlight;
 
-        Recording = starting;
-        RefreshOutputStatus();
-
-        try
-        {
-            await EnsureMediaCoreRunningAsync(starting ? "Starting media core for recording..." : "Updating media core...").ConfigureAwait(false);
-            var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
-            if (starting && TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
-            {
-                RunOnUiThread(() =>
-                {
-                    Recording = previousRecording;
-                    RefreshOutputStatus();
-                    OutputStatus = healthFailureStatus;
-                    OutputSessionStatus = OutputStatus;
-                });
-                _ = SyncFailedRecordingStartRollbackAsync(healthFailureStatus);
-                return;
-            }
-
-            RunOnUiThread(() =>
-            {
-                OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
-                OutputSessionStatus = OutputStatus;
-            });
-        }
-        catch (MediaCoreSyncInFlightException)
-        {
-            RunOnUiThread(() =>
-            {
-                OutputStatus = starting ? "Recording starting - applying..." : "Recording stopping - applying...";
-                OutputSessionStatus = OutputStatus;
-            });
-            LaunchLog.Write($"recording: {(starting ? "start" : "stop")} deferred because media core sync is in flight");
-            _ = RetryRecordingSyncAsync(starting);
-        }
-        catch (Exception ex)
-        {
-            var action = starting ? "start" : "stop";
-            var failureStatus = FormatRecordingFailureStatus(action, ex);
-            LaunchLog.Write($"recording: {action} failed {ex.GetType().Name}: {ex.Message}");
-            RunOnUiThread(() =>
-            {
-                Recording = previousRecording;
-                RefreshOutputStatus();
-                OutputStatus = failureStatus;
-                OutputSessionStatus = OutputStatus;
-            });
-
-            if (starting && !previousRecording)
-            {
-                _ = SyncFailedRecordingStartRollbackAsync(failureStatus);
-            }
-        }
-        finally
-        {
-            RunOnUiThread(() =>
-            {
-                _recordingToggleInFlight = false;
-                ToggleRecordingCommand.NotifyCanExecuteChanged();
-            });
-        }
-    }
-
-    private async Task SyncFailedRecordingStartRollbackAsync(string failureStatus)
-    {
-        for (var attempt = 0; attempt < 4; attempt++)
-        {
-            await Task.Delay(150).ConfigureAwait(false);
-            try
-            {
-                await SyncActiveSceneAsync().ConfigureAwait(false);
-                return;
-            }
-            catch (MediaCoreSyncInFlightException)
-            {
-                // Still busy; retry shortly.
-            }
-            catch (Exception ex)
-            {
-                var rollbackFailure = NormalizeStreamingFailureDetail(ex.Message);
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = $"{failureStatus} Recording cleanup also failed: {rollbackFailure}";
-                    OutputSessionStatus = OutputStatus;
-                });
-                return;
-            }
-        }
-
-        RunOnUiThread(() =>
-        {
-            OutputStatus = $"{failureStatus} Recording cleanup is still waiting for media core.";
-            OutputSessionStatus = OutputStatus;
-        });
-    }
-
-    private async Task RetryRecordingSyncAsync(bool starting)
-    {
-        for (var attempt = 0; attempt < 5; attempt++)
-        {
-            await Task.Delay(150).ConfigureAwait(false);
-            try
-            {
-                var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
-                if (starting && TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
-                {
-                    RunOnUiThread(() =>
-                    {
-                        Recording = ResolveRecordingStateAfterFailedRetry(starting);
-                        RefreshOutputStatus();
-                        OutputStatus = healthFailureStatus;
-                        OutputSessionStatus = OutputStatus;
-                    });
-                    _ = SyncFailedRecordingStartRollbackAsync(healthFailureStatus);
-                    return;
-                }
-
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
-                    OutputSessionStatus = OutputStatus;
-                    RefreshOutputStatus();
-                });
-                return;
-            }
-            catch (MediaCoreSyncInFlightException)
-            {
-                // Still busy; try again shortly.
-            }
-            catch (Exception ex)
-            {
-                var failureStatus = FormatRecordingFailureStatus(starting ? "start" : "stop", ex);
-                RunOnUiThread(() =>
-                {
-                    Recording = ResolveRecordingStateAfterFailedRetry(starting);
-                    RefreshOutputStatus();
-                    OutputStatus = failureStatus;
-                    OutputSessionStatus = OutputStatus;
-                });
-
-                if (starting)
-                {
-                    _ = SyncFailedRecordingStartRollbackAsync(failureStatus);
-                }
-                return;
-            }
-        }
-
-        var exhaustedStatus = FormatRecordingSyncRetryExhaustedStatus(starting);
-        RunOnUiThread(() =>
-        {
-            Recording = ResolveRecordingStateAfterFailedRetry(starting);
-            RefreshOutputStatus();
-            OutputStatus = exhaustedStatus;
-            OutputSessionStatus = OutputStatus;
-        });
-
-        if (starting)
-        {
-            _ = SyncFailedRecordingStartRollbackAsync(exhaustedStatus);
-        }
-    }
-
-    private bool CanToggleStreaming() => !_streamToggleInFlight;
-
+    // Streaming orchestration (validate → arm → health/sender proof → rollback → backpressure
+    // retry) lives in TransportCoordinator.ToggleStreamingAsync (PR2 strangler). This stays the
+    // generated [RelayCommand] so XAML + external NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanToggleStreaming))]
-    private async Task ToggleStreamingAsync()
-    {
-        if (_streamToggleInFlight)
-        {
-            return;
-        }
-
-        _streamToggleInFlight = true;
-        ToggleStreamingCommand.NotifyCanExecuteChanged();
-        var starting = !Streaming;
-        var requestedDestinations = BuildSelectedStreamDestinations(validatedOnly: true);
-        LaunchLog.Write(
-            $"stream: toggle requested action={(starting ? "start" : "stop")} " +
-            $"rtmp={StreamRtmpEnabled} ndi={StreamNdiEnabled} srt={StreamSrtEnabled} " +
-            $"destinations={FormatStreamDestinationTelemetry(requestedDestinations)} " +
-            $"bitrate={NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps):0.0}Mbps " +
-            $"codec={StreamVideoCodec} encoder={StreamEncoderMode}");
-        try
-        {
-            if (starting && ValidateStreamDestinations() is { Length: > 0 } validationError)
-            {
-                var failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(validationError));
-                LaunchLog.Write($"stream: start blocked ({validationError})");
-                OutputStatus = failureStatus;
-                OutputSessionStatus = failureStatus;
-                return;
-            }
-
-            var previousStreaming = Streaming;
-            Streaming = starting;
-            RefreshOutputStatus();
-
-            try
-            {
-                await EnsureMediaCoreRunningAsync(starting ? "Starting media core for stream..." : "Updating media core...").ConfigureAwait(false);
-                if (starting && ValidateStreamDestinations() is { Length: > 0 } runtimeValidationError)
-                {
-                    var failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(runtimeValidationError));
-                    LaunchLog.Write($"stream: start blocked after media-core profile ({runtimeValidationError})");
-                    RunOnUiThread(() =>
-                    {
-                        Streaming = previousStreaming;
-                        RefreshOutputStatus();
-                        OutputStatus = failureStatus;
-                        OutputSessionStatus = OutputStatus;
-                    });
-                    return;
-                }
-
-                var snapshot = await SyncActiveSceneAsync(starting ? "stream-start" : "stream-stop").ConfigureAwait(false);
-                if (starting && TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
-                {
-                    LaunchLog.Write($"stream: start failed health proof {healthFailureStatus}");
-                    RunOnUiThread(() =>
-                    {
-                        Streaming = previousStreaming;
-                        RefreshOutputStatus();
-                        OutputStatus = healthFailureStatus;
-                        OutputSessionStatus = OutputStatus;
-                    });
-                    _ = SyncFailedStreamStartRollbackAsync(healthFailureStatus);
-                    return;
-                }
-
-                if (starting)
-                {
-                    var proof = await WaitForStreamingStartProofAsync(requestedDestinations, snapshot).ConfigureAwait(false);
-                    if (!string.IsNullOrWhiteSpace(proof.FailureStatus))
-                    {
-                        LaunchLog.Write($"stream: start failed sender proof {proof.FailureStatus}");
-                        RunOnUiThread(() =>
-                        {
-                            Streaming = previousStreaming;
-                            RefreshOutputStatus();
-                            OutputStatus = proof.FailureStatus;
-                            OutputSessionStatus = OutputStatus;
-                        });
-                        _ = SyncFailedStreamStartRollbackAsync(proof.FailureStatus);
-                        return;
-                    }
-                }
-
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
-                    OutputSessionStatus = OutputStatus;
-                });
-            }
-            catch (MediaCoreSyncInFlightException)
-            {
-                // A background sync was mid-flight, so this toggle's sync was skipped
-                // for backpressure. The requested Streaming state is already set, so
-                // keep it and let a follow-up sync apply it instead of rolling back and
-                // reporting a hard failure (this is the confusing "media-..." error).
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = starting ? "Streaming starting - applying..." : "Streaming stopping - applying...";
-                    OutputSessionStatus = OutputStatus;
-                });
-                LaunchLog.Write($"stream: {(starting ? "start" : "stop")} deferred because media core sync is in flight");
-                _ = RetryStreamSyncAsync(starting);
-            }
-            catch (Exception ex)
-            {
-                var action = starting ? "start" : "stop";
-                var failureStatus = FormatStreamingFailureStatus(action, ex);
-                LaunchLog.Write($"stream: {action} failed {ex.GetType().Name}: {ex.Message}");
-                RunOnUiThread(() =>
-                {
-                    Streaming = previousStreaming;
-                    RefreshOutputStatus();
-                    OutputStatus = failureStatus;
-                    OutputSessionStatus = OutputStatus;
-                });
-
-                if (starting && !previousStreaming)
-                {
-                    _ = SyncFailedStreamStartRollbackAsync(failureStatus);
-                }
-            }
-        }
-        finally
-        {
-            RunOnUiThread(() =>
-            {
-                _streamToggleInFlight = false;
-                ToggleStreamingCommand.NotifyCanExecuteChanged();
-            });
-        }
-    }
-
-    private async Task SyncFailedStreamStartRollbackAsync(string failureStatus)
-    {
-        LaunchLog.Write($"stream: rollback after failed start {failureStatus}");
-        for (var attempt = 0; attempt < 4; attempt++)
-        {
-            await Task.Delay(150).ConfigureAwait(false);
-            try
-            {
-                await SyncActiveSceneAsync().ConfigureAwait(false);
-                return;
-            }
-            catch (MediaCoreSyncInFlightException)
-            {
-                // Wait for the active sync to clear, then retry the explicit stop.
-            }
-            catch (Exception ex)
-            {
-                var rollbackFailure = NormalizeStreamingFailureDetail(ex.Message);
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = $"{failureStatus} Stream cleanup also failed: {rollbackFailure}";
-                    OutputSessionStatus = OutputStatus;
-                });
-                return;
-            }
-        }
-
-        RunOnUiThread(() =>
-        {
-            OutputStatus = $"{failureStatus} Stream cleanup is still waiting for media core.";
-            OutputSessionStatus = OutputStatus;
-        });
-    }
-
-    // Re-applies the production sync after a stream toggle was skipped for
-    // backpressure, so the requested Streaming state actually reaches the media
-    // core once the in-flight sync clears. Retries a few times, then gives up
-    // quietly (the periodic sync will still converge).
-    private async Task RetryStreamSyncAsync(bool starting)
-    {
-        for (var attempt = 0; attempt < 5; attempt++)
-        {
-            await Task.Delay(150).ConfigureAwait(false);
-            try
-            {
-                var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
-                if (starting && TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
-                {
-                    LaunchLog.Write($"stream: retry start failed health proof {healthFailureStatus}");
-                    RunOnUiThread(() =>
-                    {
-                        Streaming = ResolveStreamingStateAfterFailedRetry(starting);
-                        RefreshOutputStatus();
-                        OutputStatus = healthFailureStatus;
-                        OutputSessionStatus = OutputStatus;
-                    });
-                    _ = SyncFailedStreamStartRollbackAsync(healthFailureStatus);
-                    return;
-                }
-
-                if (starting)
-                {
-                    var requestedDestinations = BuildSelectedStreamDestinations(validatedOnly: true);
-                    var proof = await WaitForStreamingStartProofAsync(requestedDestinations, snapshot).ConfigureAwait(false);
-                    if (!string.IsNullOrWhiteSpace(proof.FailureStatus))
-                    {
-                        LaunchLog.Write($"stream: retry start failed sender proof {proof.FailureStatus}");
-                        RunOnUiThread(() =>
-                        {
-                            Streaming = ResolveStreamingStateAfterFailedRetry(starting);
-                            RefreshOutputStatus();
-                            OutputStatus = proof.FailureStatus;
-                            OutputSessionStatus = OutputStatus;
-                        });
-                        _ = SyncFailedStreamStartRollbackAsync(proof.FailureStatus);
-                        return;
-                    }
-                }
-
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
-                    OutputSessionStatus = OutputStatus;
-                    RefreshOutputStatus();
-                });
-                return;
-            }
-            catch (MediaCoreSyncInFlightException)
-            {
-                // Still busy; try again shortly.
-            }
-            catch (Exception ex)
-            {
-                var failureStatus = FormatStreamingFailureStatus(starting ? "start" : "stop", ex);
-                RunOnUiThread(() =>
-                {
-                    Streaming = ResolveStreamingStateAfterFailedRetry(starting);
-                    RefreshOutputStatus();
-                    OutputStatus = failureStatus;
-                    OutputSessionStatus = OutputStatus;
-                });
-
-                if (starting)
-                {
-                    _ = SyncFailedStreamStartRollbackAsync(failureStatus);
-                }
-                return;
-            }
-        }
-
-        var exhaustedStatus = FormatStreamSyncRetryExhaustedStatus(starting);
-        RunOnUiThread(() =>
-        {
-            Streaming = ResolveStreamingStateAfterFailedRetry(starting);
-            RefreshOutputStatus();
-            OutputStatus = exhaustedStatus;
-            OutputSessionStatus = OutputStatus;
-        });
-
-        if (starting)
-        {
-            _ = SyncFailedStreamStartRollbackAsync(exhaustedStatus);
-        }
-    }
-
-    public static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
-
-    public static string FormatStreamSyncRetryExhaustedStatus(bool requestedStarting) =>
-        requestedStarting
-            ? "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again."
-            : "Streaming stop failed: Media core is busy applying changes. Wait a moment and try Stream again.";
-
-    private async Task<(NativeMediaCoreStateSnapshot Snapshot, string? FailureStatus)> WaitForStreamingStartProofAsync(
-        IReadOnlyList<string> requestedDestinations,
-        NativeMediaCoreStateSnapshot initialSnapshot)
-    {
-        var snapshot = initialSnapshot;
-        for (var attempt = 0; attempt < 6; attempt++)
-        {
-            if (TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
-            {
-                return (snapshot, healthFailureStatus);
-            }
-
-            if (IsStreamingStartProven(snapshot, requestedDestinations))
-            {
-                return (snapshot, null);
-            }
-
-            await Task.Delay(200).ConfigureAwait(false);
-            snapshot = await _bridge.PollSnapshotAsync().ConfigureAwait(false);
-        }
-
-        return TryFormatStreamingStartNoSenderFailure(snapshot, requestedDestinations, out var failureStatus)
-            ? (snapshot, failureStatus)
-            : (snapshot, null);
-    }
-
-    private static bool IsStreamingStartProven(
-        NativeMediaCoreStateSnapshot snapshot,
-        IReadOnlyList<string> requestedDestinations)
-    {
-        if (requestedDestinations.Count == 0)
-        {
-            return false;
-        }
-
-        return requestedDestinations.Any(destination =>
-            snapshot.OutputSenderSession.Senders.Any(sender =>
-                sender.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
-                sender.Status is "starting" or "live") ||
-            snapshot.OutputHealth.Any(item =>
-                item.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
-                item.Status == "live"));
-    }
-
-    public static bool TryFormatStreamingStartNoSenderFailure(
-        NativeMediaCoreStateSnapshot snapshot,
-        IReadOnlyList<string> requestedDestinations,
-        out string failureStatus)
-    {
-        failureStatus = string.Empty;
-        if (requestedDestinations.Count == 0)
-        {
-            return false;
-        }
-
-        if (IsStreamingStartProven(snapshot, requestedDestinations))
-        {
-            return false;
-        }
-
-        var unavailableSender = snapshot.OutputSenderSession.Senders.FirstOrDefault(sender =>
-            requestedDestinations.Any(destination => sender.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase)) &&
-            IsUnavailableOutputSenderWarning(sender));
-        if (unavailableSender is not null)
-        {
-            var unavailableDetail = BuildOutputSenderFailureDetail(unavailableSender);
-            failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(unavailableDetail));
-            return true;
-        }
-
-        var destinations = string.Join(", ", requestedDestinations.Select(destination => destination.ToUpperInvariant()));
-        var senderState = $"{snapshot.OutputSenderSession.Status}:{snapshot.OutputSenderSession.ActiveSenderCount}";
-        var detail = $"Selected stream destinations ({destinations}) did not arm a native output sender. Sender state {senderState}.";
-        failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
-        return true;
-    }
-
-    private static bool IsUnavailableOutputSenderWarning(NativeMediaCoreOutputSender sender)
-    {
-        var detail = string.Join(
-            " ",
-            new[] { sender.LastResultCode, sender.Warning, sender.RuntimeDetail, sender.LastError }
-                .Where(static part => !string.IsNullOrWhiteSpace(part)))
-            .ToLowerInvariant();
-        return detail.Contains("output-unavailable", StringComparison.Ordinal) ||
-               detail.Contains("not available in this build", StringComparison.Ordinal) ||
-               detail.Contains("runtime-missing", StringComparison.Ordinal) ||
-               detail.Contains("libndi runtime", StringComparison.Ordinal) ||
-               detail.Contains("no ndi sender module", StringComparison.Ordinal) ||
-               detail.Contains("no srt sender module", StringComparison.Ordinal);
-    }
-
-    private static bool IsUnavailableOutputHealthWarning(NativeMediaCoreOutputHealth item)
-    {
-        var detail = item.Message?.ToLowerInvariant() ?? string.Empty;
-        return detail.Contains("output-unavailable", StringComparison.Ordinal) ||
-               detail.Contains("not available in this build", StringComparison.Ordinal) ||
-               detail.Contains("runtime-missing", StringComparison.Ordinal) ||
-               detail.Contains("libndi runtime", StringComparison.Ordinal) ||
-               detail.Contains("no ndi sender module", StringComparison.Ordinal) ||
-               detail.Contains("no srt sender module", StringComparison.Ordinal);
-    }
-
-    public static bool ResolveRecordingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
-
-    public static string FormatRecordingSyncRetryExhaustedStatus(bool requestedStarting) =>
-        requestedStarting
-            ? "Recording start failed: Media core is busy applying changes. Wait a moment and try Record again."
-            : "Recording stop failed: Media core is busy applying changes. Wait a moment and try Record again.";
-
-    public static bool TryFormatRecordingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
-    {
-        var detail = snapshot.OutputHealth
-            .Where(item =>
-                item.Status is "failed" or "warning" &&
-                item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
-            .Select(item => item.Message)
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        detail ??= snapshot.Recording is { Active: true, Status: "failed" or "warning" } recording
-            ? recording.Error ?? recording.Warning
-            : null;
-
-        if (string.IsNullOrWhiteSpace(detail))
-        {
-            failureStatus = string.Empty;
-            return false;
-        }
-
-        failureStatus = FormatRecordingFailureStatus("start", new InvalidOperationException(detail));
-        return true;
-    }
-
-    public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
-    {
-        var detail = snapshot.OutputSenderSession.Senders
-            .Where(static sender => sender.Status is "failed" or "warning")
-            .Select(BuildOutputSenderFailureDetail)
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        detail ??= snapshot.OutputHealth
-            .Where(item =>
-                item.Status is "failed" or "warning" &&
-                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
-            .Select(item => item.Message)
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        detail ??= snapshot.OutputSenderSession.Warnings
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        if (string.IsNullOrWhiteSpace(detail))
-        {
-            failureStatus = string.Empty;
-            return false;
-        }
-
-        failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
-        return true;
-    }
-
-    private static string BuildOutputSenderFailureDetail(NativeMediaCoreOutputSender sender) =>
-        string.Join(
-            " ",
-            new[] { sender.LastResultCode, sender.Warning, sender.RuntimeDetail, sender.LastError }
-                .Where(static part => !string.IsNullOrWhiteSpace(part)));
+    private Task ToggleStreamingAsync() => _transportCoordinator.ToggleStreamingAsync();
 
     [RelayCommand]
     private void SetViewMode(string mode)
@@ -4972,7 +4748,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var serve = host.Serve;
         var serveSignature = $"{serve.Running}|{serve.StatusCode}|{serve.ActivePlugin}|{serve.LastError}|" +
                              $"{serve.DeadlineMisses}|{(serve.Exchanges > 0)}|" +
-                             $"{serve.EditorStatusCode}|{serve.EditorActivePlugin}|{serve.EditorLastError}";
+                             $"{serve.EditorStatusCode}|{serve.EditorActivePlugin}|{serve.EditorLastError}|" +
+                             $"{serve.LatencySamples}|{serve.ParamPluginClass}|{serve.ParamTotalCount}|" +
+                             $"{serve.Respawn.Attempts}|{serve.Respawn.GaveUp}";
         if (!string.Equals(serveSignature, _vstServeSignature, StringComparison.Ordinal))
         {
             _vstServeSignature = serveSignature;
@@ -4980,6 +4758,142 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
             RefreshSelectedChannelInsertSlots();
             RefreshSelectedAudioProcessingSlots();
+        }
+
+        // A2: restore-once push + the param-activity state-capture debounce.
+        TrackVstStatePersistence(serve);
+    }
+
+    // ---- A2: generic VST param surface + component-state persistence -------
+
+    /// <summary>
+    /// The host-published params for this insert, when it is the plugin the
+    /// host is currently reporting about (one active param surface at a time —
+    /// the host instance model). Empty otherwise; the flyout says so.
+    /// </summary>
+    public IReadOnlyList<NativeMediaCoreVstParam> VstParamsForInsert(string insertName)
+    {
+        var serve = VstServeState;
+        return serve.Params.Count > 0 && InsertMatchesVstPlugin(insertName, serve.ParamPluginClass)
+            ? serve.Params
+            : [];
+    }
+
+    public int VstParamTotalCount => VstServeState.ParamTotalCount;
+
+    /// <summary>Slider edit → core → isolated host setParamNormalized. The host
+    /// is the value authority: the applied value flows back through the
+    /// published params (and the plugin's own editor follows).</summary>
+    public async Task SetVstInsertParamAsync(string insertName, long paramId, double normalized)
+    {
+        try
+        {
+            await _bridge.SetVstParamAsync(insertName, paramId, Math.Clamp(normalized, 0.0, 1.0));
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = $"Plug-in parameter change failed: {ex.Message}";
+        }
+    }
+
+    // Persisted VST3 component states, keyed by insert selection name
+    // ("vst:<class>"). Loaded from ProductionOutputPreferences v6, pushed to
+    // the core once the bridge runs (the core injects them into every host
+    // generation, including respawns), and re-captured on a debounce after
+    // param/editor activity.
+    private readonly Dictionary<string, string> _vstInsertStates = new(StringComparer.OrdinalIgnoreCase);
+    private bool _vstStatesRestorePushed;
+    private long _vstParamValuesGenerationSeen;
+    private string _vstParamPluginClassSeen = string.Empty;
+    private DateTime _vstParamPluginClassSince = DateTime.MinValue;
+    private CancellationTokenSource? _vstStateCaptureDebounce;
+
+    // Captures scheduled only after the plugin has been the active param
+    // surface for a grace window: the first generation bumps after a (re)load
+    // are the publish + the saved-state injection themselves — capturing then
+    // could persist a DEFAULT state over the operator's saved one.
+    private static readonly TimeSpan VstStateCaptureGrace = TimeSpan.FromSeconds(5);
+
+    private void TrackVstStatePersistence(NativeMediaCorePluginHostServe serve)
+    {
+        if (!_vstStatesRestorePushed && _bridge.Running && _vstInsertStates.Count > 0)
+        {
+            _vstStatesRestorePushed = true;
+            foreach (var pair in _vstInsertStates.ToList())
+            {
+                _ = PushSavedVstStateAsync(pair.Key, pair.Value);
+            }
+        }
+
+        if (!string.Equals(serve.ParamPluginClass, _vstParamPluginClassSeen, StringComparison.OrdinalIgnoreCase))
+        {
+            _vstParamPluginClassSeen = serve.ParamPluginClass;
+            _vstParamPluginClassSince = DateTime.UtcNow;
+            _vstParamValuesGenerationSeen = serve.ParamValuesGeneration;
+            return;
+        }
+
+        if (serve.ParamValuesGeneration == _vstParamValuesGenerationSeen)
+        {
+            return;
+        }
+
+        _vstParamValuesGenerationSeen = serve.ParamValuesGeneration;
+        if (string.IsNullOrWhiteSpace(serve.ParamPluginClass) ||
+            DateTime.UtcNow - _vstParamPluginClassSince < VstStateCaptureGrace)
+        {
+            return;
+        }
+
+        ScheduleVstStateCapture($"vst:{serve.ParamPluginClass}");
+    }
+
+    private void ScheduleVstStateCapture(string selection)
+    {
+        _vstStateCaptureDebounce?.Cancel();
+        var debounce = new CancellationTokenSource();
+        _vstStateCaptureDebounce = debounce;
+        _ = CaptureVstStateAfterDelayAsync(selection, debounce.Token);
+    }
+
+    private async Task CaptureVstStateAfterDelayAsync(string selection, CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(2000, token);
+        }
+        catch (TaskCanceledException)
+        {
+            return;  // superseded by newer activity
+        }
+
+        try
+        {
+            var stateBase64 = await _bridge.GetVstStateAsync(selection);
+            if (!string.IsNullOrEmpty(stateBase64))
+            {
+                _vstInsertStates[selection] = stateBase64;
+                SaveProductionOutputPreferences();
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"vst: state capture for {selection} failed: {ex.Message}");
+        }
+    }
+
+    private async Task PushSavedVstStateAsync(string selection, string stateBase64)
+    {
+        try
+        {
+            await _bridge.SetVstStateAsync(selection, stateBase64);
+        }
+        catch (Exception ex)
+        {
+            // LOUD: a failed restore is operator-visible status, never a
+            // silently-default plugin.
+            LaunchLog.Write($"vst: state restore push for {selection} failed: {ex.Message}");
+            CommandStatus = $"Plug-in state restore failed for {selection}: {ex.Message}";
         }
     }
 
@@ -5583,181 +5497,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"{label} added";
         _ = TrySyncMediaCoreAsync();
         return true;
-    }
-
-    [RelayCommand]
-    private void ToggleAutomation()
-    {
-        if (!CanToggleSetAndForget() && ProductionMode != ProductionMode.SetAndForget)
-        {
-            CommandStatus = "Set & Forget is locked on this license tier";
-            return;
-        }
-
-        ProductionMode = ProductionMode == ProductionMode.SetAndForget
-            ? ProductionMode.Manual
-            : ProductionMode.SetAndForget;
-        AutomationButtonLabel = ProductionMode == ProductionMode.SetAndForget
-            ? "Automation enabled"
-            : "Automation disabled";
-        RefreshProductionReadouts();
-        CommandStatus = ProductionMode == ProductionMode.SetAndForget
-            ? $"Set & Forget enabled: {_automationRecommendation.Reason}"
-            : "Manual mode — operator controls scenes";
-        RefreshTransportAutomationState();
-    }
-
-    [RelayCommand]
-    private void RunMagicScene()
-    {
-        if (!Settings.IsInMeeting)
-        {
-            CommandStatus = "Magic Scene requires an active Zoom meeting";
-            return;
-        }
-
-        var recommendedSceneId = _automationRecommendation.RecommendedSceneId;
-        PreviewSceneId = recommendedSceneId;
-        var sceneName = RecommendedSceneName;
-        MagicSceneStatus = $"Magic Scene applied: {sceneName} queued on preview";
-        ApplyAutomationOverlayPolicy();
-        SchedulePreviewRoutingRefresh();
-        CommandStatus = $"{sceneName} queued by Magic Scene";
-        RefreshSceneItems();
-    }
-
-    private void EvaluateAutomationPolicy()
-    {
-        if (ProductionMode != ProductionMode.SetAndForget)
-        {
-            if (_automationTimer.IsRunning)
-            {
-                _automationTimer.Stop();
-            }
-
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = "Manual mode - automation is not changing scenes";
-            return;
-        }
-
-        if (!_automationTimer.IsRunning)
-        {
-            _automationTimer.Start();
-        }
-
-        ApplyAutomationOverlayPolicy();
-
-        if (RoomVideoParticipants.Count == 0)
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = "Waiting for meeting participants";
-            return;
-        }
-
-        if (_automationRecommendation.Confidence < AutomationConfidenceThreshold)
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"Holding current scene - confidence {_automationRecommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
-            return;
-        }
-
-        var targetSceneId = _automationRecommendation.RecommendedSceneId;
-        if (string.Equals(targetSceneId, ActiveSceneId, StringComparison.Ordinal))
-        {
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"{RecommendedSceneName} is already on program";
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        if (!string.Equals(_automationPendingSceneId, targetSceneId, StringComparison.Ordinal))
-        {
-            _automationPendingSceneId = targetSceneId;
-            _automationPendingSince = now;
-            AutomationLastAction = $"Holding {RecommendedSceneName} for {AutomationSwitchDelaySeconds:0}s before switching";
-            return;
-        }
-
-        var elapsedSeconds = _automationPendingSince is { } pendingSince
-            ? (now - pendingSince).TotalSeconds
-            : 0;
-        if (elapsedSeconds < AutomationSwitchDelaySeconds)
-        {
-            AutomationLastAction = $"Holding {RecommendedSceneName}: {elapsedSeconds:0.0}/{AutomationSwitchDelaySeconds:0}s";
-            return;
-        }
-
-        if (!string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal))
-        {
-            PreviewSceneId = targetSceneId;
-            SchedulePreviewRoutingRefresh();
-        }
-
-        if (AutomationAutoTakeEnabled)
-        {
-            AutomationLastAction = $"Taking {RecommendedSceneName} to program";
-            _ = TakeAutomationPreviewAsync(targetSceneId);
-        }
-        else
-        {
-            AutomationLastAction = $"{RecommendedSceneName} queued on preview";
-            CommandStatus = AutomationLastAction;
-        }
-    }
-
-    private async Task TakeAutomationPreviewAsync(string targetSceneId)
-    {
-        if (_automationTakeInFlight || !string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal) || !CanTake)
-        {
-            return;
-        }
-
-        _automationTakeInFlight = true;
-        try
-        {
-            await TakeAsync();
-            _automationPendingSceneId = null;
-            _automationPendingSince = null;
-            AutomationLastAction = $"{Scenes.First(scene => scene.Id == targetSceneId).Name} taken by automation";
-        }
-        finally
-        {
-            _automationTakeInFlight = false;
-        }
-    }
-
-    private void ApplyAutomationOverlayPolicy()
-    {
-        var changed = false;
-        changed |= SetAutomationGraphic("lower-third", AutomationLowerThirdsEnabled);
-        changed |= SetAutomationGraphic("caption", AutomationCaptionsEnabled);
-
-        RefreshProgramLowerThirdKeyPosition();
-
-        if (!AutomationCaptionsEnabled)
-        {
-            if (!string.IsNullOrEmpty(CaptionText))
-            {
-                CaptionText = string.Empty;
-                changed = true;
-            }
-
-            if (!string.IsNullOrEmpty(CaptionSpeaker))
-            {
-                CaptionSpeaker = string.Empty;
-                changed = true;
-            }
-        }
-
-        if (changed)
-        {
-            OnPropertyChanged(nameof(EnabledGraphics));
-            _ = TrySyncMediaCoreAsync();
-        }
     }
 
     private bool SetAutomationGraphic(string kind, bool enabled)
@@ -6752,6 +6491,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 return false;
             }
 
+            // The core reports the device "connected" — but connect() flips to
+            // "connected" the instant the reader thread STARTS, before any frame
+            // arrives. A single-consumer capture card (Elgato HD60 S+) held by
+            // another app opens + negotiates fine, then delivers no samples: it
+            // would sit forever on a placeholder tile. CONFIRM a real first frame
+            // (signalPresent) before committing; if the core's no-first-frame
+            // watchdog fires (device → "error") or the window elapses, release
+            // native and fall back to the WinUI MediaCapture bridge below.
+            if (!await ConfirmNativeFirstFrameAsync(device).ConfigureAwait(false))
+            {
+                try
+                {
+                    await _bridge.DisconnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
+                }
+                catch (Exception disconnectEx)
+                {
+                    LaunchLog.Write($"capture: native uvc release failed {device.Id}: {disconnectEx.Message}");
+                }
+                LaunchLog.Write($"capture: native uvc no first frame {device.Id}; releasing and falling back to bridge");
+                return false;
+            }
+
             // The core now owns this camera via Media Foundation. Tear down any managed
             // MediaCapture bridge session for the same device so we never run two readers
             // against one device (the bridge reader would otherwise keep restarting — see
@@ -6778,6 +6539,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         catch (Exception ex)
         {
             LaunchLog.Write($"capture: native uvc connect failed {device.Id}: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    // Polls the core's capture-device status until the native reader delivers a
+    // real first frame (signalPresent=true → commit) or the reader fails to
+    // (device errors / disappears / the window elapses → fall back to the WinUI
+    // MediaCapture bridge). Bounded and off the UI thread; never throws.
+    private async Task<bool> ConfirmNativeFirstFrameAsync(CaptureDevice device)
+    {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            while (true)
+            {
+                IReadOnlyList<NativeCaptureDeviceStatus> devices;
+                try
+                {
+                    devices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write($"capture: native uvc first-frame poll failed {device.Id}: {ex.Message}");
+                    return false;
+                }
+
+                var status = NativeUvcCapturePolicy.FindDevice(devices, device.Id, device.NativeDeviceId);
+                switch (NativeUvcCapturePolicy.EvaluateFirstFrame(status, (int)elapsed.ElapsedMilliseconds))
+                {
+                    case NativeUvcCapturePolicy.FirstFrameOutcome.Confirmed:
+                        return true;
+                    case NativeUvcCapturePolicy.FirstFrameOutcome.FallBack:
+                        if (!string.IsNullOrWhiteSpace(status?.Warning))
+                        {
+                            LaunchLog.Write($"capture: native uvc device warning {device.Id}: {status!.Warning}");
+                        }
+                        return false;
+                    default:
+                        await Task.Delay(250).ConfigureAwait(false);
+                        break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"capture: native uvc first-frame wait error {device.Id}: {ex.Message}");
             return false;
         }
     }
@@ -6964,41 +6771,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // SRT-ingest add/remove bodies moved to ShowInputsCoordinator (PR3 strangler). These stay the
+    // generated [RelayCommand]s (AddSrtIngestSourceCommand / RemoveSrtIngestSourceCommand) so XAML
+    // x:Bind + the CanAddSrtIngestSource CanExecute wiring are unchanged.
     [RelayCommand(CanExecute = nameof(CanAddSrtIngestSource))]
-    private void AddSrtIngestSource()
-    {
-        if (!CanAddSrtIngestSource)
-        {
-            CommandStatus = $"SRT ingest is capped at {MaxSrtIngestSources} sources.";
-            return;
-        }
-
-        var nextNumber = Enumerable.Range(1, MaxSrtIngestSources)
-            .First(number => SrtIngestSources.All(source => source.Number != number));
-        var source = CreateSrtIngestSource(nextNumber);
-        SrtIngestSources.Add(source);
-        CommandStatus = $"{source.Name} added as a routable SRT input";
-    }
+    private void AddSrtIngestSource() => _showInputsCoordinator.AddSrtIngestSource();
 
     [RelayCommand]
-    private void RemoveSrtIngestSource(string sourceId)
-    {
-        if (SrtIngestSources.Count <= 1)
-        {
-            CommandStatus = "Keep at least one SRT ingest source configured.";
-            return;
-        }
-
-        var source = SrtIngestSources.FirstOrDefault(item => string.Equals(item.Id, sourceId, StringComparison.Ordinal));
-        if (source is null)
-        {
-            return;
-        }
-
-        SrtIngestSources.Remove(source);
-        RemoveVirtualSrtIngestDevice(source.DeviceId);
-        CommandStatus = $"{source.Name} removed from SRT inputs";
-    }
+    private void RemoveSrtIngestSource(string sourceId) => _showInputsCoordinator.RemoveSrtIngestSource(sourceId);
 
     private void OnSrtIngestSourcesChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
@@ -7070,6 +6850,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyDualCaptureSelection();
     }
 
+    // THE THIRD SOURCE-STUFFER DIED HERE (owner-reported three times on 2026-08-09:
+    // "the Sources screen keeps putting the local webcams back into Inputs 1 and 2").
+    //
+    // This method used to write the primary/secondary dual-capture selection STRAIGHT
+    // into ShowInputs[0] and ShowInputs[1] (slots 1-2) via ApplyCaptureDeviceToShowInputSlot
+    // (slot.Kind = webcam kind, slot.CaptureDeviceId = device.Id, slot.InShow = true —
+    // unconditionally, clobbering whatever the operator had placed there). And
+    // RefreshDualCaptureSourceOptions AUTO-PICKS the first two connected capture devices
+    // — the operator's local webcams — whenever no selection resolves, so the pair ran
+    // as a pure background stuffer on EVERY capture-fleet pass: device-watcher events,
+    // opening the Inputs tab (OnActiveTabChanged), every capture connect (incl. the
+    // auto-connect storm after a relaunch), SRT virtual-device refresh. NOTHING in the
+    // UI binds Primary/Secondary/DualCapture* any more (the SRC-1 unified picker
+    // replaced the dual-capture combos), so no operator action was involved at all —
+    // and the coalesced roster save then PERSISTED the stomp, which is why relaunches
+    // restored webcams over the operator's saved Zoom guests. launch.log fingerprint,
+    // live meeting 2026-08-09: 20:05:32 operator sets slots 1-2 to Zoom guests →
+    // 20:05:44 both flip back to UvcWebcam; again at 20:11:41; and 800 ms after the
+    // 20:01:43 relaunch the freshly RESTORED roster was stomped before the operator
+    // touched anything. It survived the two earlier fixes because it is neither the
+    // auto-assign refill (ShowInputRosterService) nor EnsureAssignedSlotsForInShow.
+    //
+    // THE LAW (owner, stated three times that day): sources appear in slots by
+    // OPERATOR action or by NEWCOMER auto-assign ONLY. This path now only maintains
+    // the dual-capture summary text; it touches no slot. Do not resurrect the write.
     private void ApplyDualCaptureSelection()
     {
         if (_applyingDualCaptureSelection)
@@ -7088,42 +6893,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SecondaryCaptureDeviceId = secondary?.Id;
             }
 
-            ApplyCaptureDeviceToShowInputSlot(0, primary);
-            ApplyCaptureDeviceToShowInputSlot(1, secondary);
             UpdateDualCaptureSummary();
-            RefreshShowInputEditors();
-            RefreshMultiviewGridTiles();
-            QueueSelectedCaptureDevicesOnline();
         }
         finally
         {
             _applyingDualCaptureSelection = false;
         }
-    }
-
-    private void ApplyCaptureDeviceToShowInputSlot(int slotIndex, CaptureDevice? device)
-    {
-        if (slotIndex < 0 || slotIndex >= ShowInputs.Count)
-        {
-            return;
-        }
-
-        var slot = ShowInputs[slotIndex];
-        if (device is null)
-        {
-            if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam)
-            {
-                slot.Kind = ShowInputKind.Unassigned;
-                slot.CaptureDeviceId = null;
-                slot.InShow = false;
-            }
-
-            return;
-        }
-
-        slot.Kind = ResolveShowInputKind(device);
-        slot.CaptureDeviceId = device.Id;
-        slot.InShow = true;
     }
 
     private void UpdateDualCaptureSummary()
@@ -7307,13 +7082,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CaptureDevices.Remove(device);
         }
 
-        foreach (var slot in ShowInputs.Where(slot =>
-            slot.Kind == ShowInputKind.SrtIngest &&
-            string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+        using (ShowInputWriteScope.Enter("srt-device-removed"))
         {
-            slot.Kind = ShowInputKind.Unassigned;
-            slot.CaptureDeviceId = null;
-            slot.InShow = false;
+            foreach (var slot in ShowInputs.Where(slot =>
+                slot.Kind == ShowInputKind.SrtIngest &&
+                string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+            {
+                slot.Kind = ShowInputKind.Unassigned;
+                slot.CaptureDeviceId = null;
+                slot.InShow = false;
+            }
         }
 
         foreach (var route in _sceneRoutes.Values.SelectMany(routes => routes)
@@ -7370,7 +7148,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshProductionReadouts()
     {
-        _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation(
+        MagicScene.Recommendation = ProductionStateHelper.BuildAutomationRecommendation(
             _bridge.LastSnapshot?.AutoProduction,
             RoomVideoParticipants,
             Scenes,
@@ -7380,7 +7158,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
-        AutoProductionReadout = BuildAutoProductionReadout();
+        AutoProductionReadout = MagicScene.BuildAutoProductionReadout();
         RefreshAudioMixChannels();
         RefreshCaptureFleetSummary();
 
@@ -7401,7 +7179,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AutomationTakeModeLabel));
         OnPropertyChanged(nameof(CaptionQualitySummary));
         RefreshAudioReadoutBindings();
-        EvaluateAutomationPolicy();
+        // ISO-4: "N ISOs armed" + per-stream health, scalar props per snapshot apply.
+        RefreshIsoReadouts();
+        MagicScene.EvaluateAutomationPolicy();
     }
 
     private void RefreshAudioReadoutBindings()
@@ -7414,6 +7194,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MasterLimiterActivityLabel));
         OnPropertyChanged(nameof(MasterLimiterSummary));
         OnPropertyChanged(nameof(MasteringActivityLabel));
+        // B2 post-mastering rack meters — scalar notifications per snapshot
+        // apply (the WorkspaceCompGrLevel pattern; no bound collections).
+        OnPropertyChanged(nameof(MasteringMeterIntegratedLufs));
+        OnPropertyChanged(nameof(MasteringMeterTruePeakDbfs));
+        OnPropertyChanged(nameof(MasteringMeterIntegratedLabel));
+        OnPropertyChanged(nameof(MasteringMeterTruePeakLabel));
         RefreshAudioMonitorBindings();
     }
 
@@ -7660,386 +7446,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return cleaned.Length <= maxLength ? cleaned : $"{cleaned[..(maxLength - 3)]}...";
     }
 
-    public static string FormatRecordingFailureStatus(string action, Exception exception)
-    {
-        var detail = NormalizeStreamingFailureDetail(exception.Message);
-        var lowered = detail.ToLowerInvariant();
-        var mediaCoreFailure =
-            lowered.Contains("media core", StringComparison.Ordinal) ||
-            lowered.Contains("media-core", StringComparison.Ordinal) ||
-            lowered.Contains("native media core", StringComparison.Ordinal) ||
-            lowered.Contains("native-media-core", StringComparison.Ordinal) ||
-            lowered.Contains("json-rpc", StringComparison.Ordinal) ||
-            lowered.Contains("json rpc", StringComparison.Ordinal) ||
-            lowered.Contains("broken pipe", StringComparison.Ordinal) ||
-            lowered.Contains("process exited", StringComparison.Ordinal) ||
-            lowered.Contains("process is not running", StringComparison.Ordinal);
-        var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
-                     lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
-            ? "Media core is busy applying changes. Wait a moment and try Record again."
-            : lowered.Contains("program frame", StringComparison.Ordinal) ||
-              lowered.Contains("program pixels", StringComparison.Ordinal)
-                ? "Program video is not ready. Put a valid source on Program before recording."
-            : lowered.Contains("target folder", StringComparison.Ordinal) ||
-              lowered.Contains("path", StringComparison.Ordinal) ||
-              lowered.Contains("directory", StringComparison.Ordinal) ||
-              lowered.Contains("disk", StringComparison.Ordinal)
-                ? "Recording target is not ready. Check the folder path and disk space."
-            : mediaCoreFailure
-                ? "Media core failed while starting recording. Open Details for the native error."
-                : "Media core rejected the recording request.";
+    private static string FormatRecordingFailureStatus(string action, Exception exception) =>
+        TransportStatusFormatter.FormatRecordingFailureStatus(action, exception);
 
-        var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
-        return $"Recording {normalizedAction} failed: {prefix} {detail}";
-    }
+    private static string FormatStreamingFailureStatus(string action, Exception exception) =>
+        TransportStatusFormatter.FormatStreamingFailureStatus(action, exception);
 
-    public static string FormatStreamingFailureStatus(string action, Exception exception)
-    {
-        var rawLowered = exception.Message?.ToLowerInvariant() ?? string.Empty;
-        var detail = NormalizeStreamingFailureDetail(exception.Message);
-        var lowered = detail.ToLowerInvariant();
-        var rtmpContext =
-            rawLowered.Contains("rtmp", StringComparison.Ordinal) ||
-            rawLowered.Contains("rtmps", StringComparison.Ordinal) ||
-            lowered.Contains("rtmp", StringComparison.Ordinal) ||
-            lowered.Contains("rtmps", StringComparison.Ordinal);
-        var ffmpegRuntimeMissing =
-            lowered.Contains("ffmpeg executable", StringComparison.Ordinal) ||
-            lowered.Contains("ffmpeg.exe was not found", StringComparison.Ordinal) ||
-            lowered.Contains("ffmpeg folder not found", StringComparison.Ordinal) ||
-            lowered.Contains("does not contain ffmpeg.exe", StringComparison.Ordinal) ||
-            lowered.Contains("choose the bin folder", StringComparison.Ordinal);
-        var mediaCoreFailure =
-            lowered.Contains("media core", StringComparison.Ordinal) ||
-            lowered.Contains("media-core", StringComparison.Ordinal) ||
-            lowered.Contains("native media core", StringComparison.Ordinal) ||
-            lowered.Contains("native-media-core", StringComparison.Ordinal) ||
-            lowered.Contains("json-rpc", StringComparison.Ordinal) ||
-            lowered.Contains("json rpc", StringComparison.Ordinal) ||
-            lowered.Contains("broken pipe", StringComparison.Ordinal) ||
-            lowered.Contains("process exited", StringComparison.Ordinal) ||
-            lowered.Contains("process is not running", StringComparison.Ordinal);
-        var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
-                     lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
-            ? "Media core is busy applying changes. Wait a moment and try Stream again."
-            : lowered.Contains("program frame", StringComparison.Ordinal) ||
-                     lowered.Contains("program pixels", StringComparison.Ordinal)
-            ? "Program video is not ready. Put a valid source on Program before streaming."
-            : lowered.Contains("did not arm a native output sender", StringComparison.Ordinal) ||
-              lowered.Contains("sender state idle", StringComparison.Ordinal)
-                ? "Native output sender did not start. Check Stream settings and open Health for sender diagnostics."
-            : lowered.Contains("select at least one stream destination", StringComparison.Ordinal)
-                ? "No stream destination is selected. Enable RTMP, NDI, or SRT before streaming."
-            : lowered.Contains("configure rtmp", StringComparison.Ordinal) ||
-              lowered.Contains("rtmp server url", StringComparison.Ordinal) ||
-              lowered.Contains("rtmp stream key", StringComparison.Ordinal)
-                ? "RTMP settings are incomplete. Configure the server URL and stream key before streaming."
-            : lowered.Contains("configure an ndi program name", StringComparison.Ordinal)
-                ? "NDI settings are incomplete. Set the NDI program name before streaming."
-            : lowered.Contains("ndi", StringComparison.Ordinal) &&
-              (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
-               lowered.Contains("no ndi sender module", StringComparison.Ordinal) ||
-               lowered.Contains("not available in this build", StringComparison.Ordinal) ||
-               lowered.Contains("libndi runtime", StringComparison.Ordinal) ||
-               lowered.Contains("runtime-missing", StringComparison.Ordinal) ||
-               lowered.Contains("missing ndi-output", StringComparison.Ordinal))
-                ? "NDI output is not available. Install the NDI runtime or use a build with NDI output enabled."
-            : lowered.Contains("srt", StringComparison.Ordinal) &&
-              (lowered.Contains("configure", StringComparison.Ordinal) ||
-               lowered.Contains("must", StringComparison.Ordinal) ||
-               lowered.Contains("passphrase", StringComparison.Ordinal))
-                ? "SRT settings are incomplete. Check host, port, latency, and passphrase before streaming."
-            : lowered.Contains("srt", StringComparison.Ordinal) &&
-              (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
-               lowered.Contains("no srt sender module", StringComparison.Ordinal) ||
-               lowered.Contains("not available in this build", StringComparison.Ordinal) ||
-               lowered.Contains("missing srt-output", StringComparison.Ordinal))
-                ? "SRT output is not available in this build. Use RTMP/NDI or install a build with SRT output enabled."
-            : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
-                ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
-                : rtmpContext ||
-                  lowered.Contains("connection refused", StringComparison.Ordinal)
-                    ? "RTMP output failed. Check the server URL, stream key, and network."
-                    : mediaCoreFailure
-                        ? "Media core failed while starting stream. Open Details for the native error."
-                        : "Media core rejected the stream request.";
+    private static string FormatOutputStatusBrief(string? status) =>
+        TransportStatusFormatter.FormatOutputStatusBrief(status);
 
-        var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
-        return $"Streaming {normalizedAction} failed: {prefix} {detail}";
-    }
+    private static bool ShouldShowOutputStatusDetails(string? status) =>
+        TransportStatusFormatter.ShouldShowOutputStatusDetails(status);
 
-    public static string FormatOutputStatusBrief(string? status)
-    {
-        if (string.IsNullOrWhiteSpace(status))
-        {
-            return "Outputs idle";
-        }
-
-        var normalized = status.Trim();
-        if (normalized.StartsWith("Streaming start failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return FormatStreamingFailureBrief(normalized, "Streaming start failed");
-        }
-
-        if (normalized.StartsWith("Streaming stop failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream stop failed";
-        }
-
-        if (normalized.StartsWith("Recording start failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return FormatRecordingFailureBrief(normalized, "Recording start failed");
-        }
-
-        if (normalized.StartsWith("Recording stop failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Recording stop failed";
-        }
-
-        if (normalized.StartsWith("Streaming settings sync failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream settings failed";
-        }
-
-        if (normalized.StartsWith("Streaming settings failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            return FormatStreamingFailureBrief(normalized, "Stream settings failed");
-        }
-
-        if (normalized.StartsWith("RTMP output failed:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("RTMPS output failed:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("SRT output failed:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("NDI output failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            var separatorIndex = normalized.IndexOf(':', StringComparison.Ordinal);
-            return separatorIndex > 0 ? normalized[..separatorIndex] : "Streaming failed";
-        }
-
-        if (normalized.StartsWith("Output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("Output failed:", StringComparison.OrdinalIgnoreCase))
-        {
-            if (normalized.Contains("rtmp", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("rtmps", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase))
-            {
-                return normalized.Contains("failed", StringComparison.OrdinalIgnoreCase)
-                    ? "RTMP output failed"
-                    : "RTMP output warning";
-            }
-
-            return normalized.Contains("failed", StringComparison.OrdinalIgnoreCase)
-                ? "Output failed"
-                : "Output warning";
-        }
-
-        if (normalized.StartsWith("RTMP output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("RTMPS output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("SRT output warning:", StringComparison.OrdinalIgnoreCase) ||
-            normalized.StartsWith("NDI output warning:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream warning";
-        }
-
-        if (normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("error", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Output failed";
-        }
-
-        return normalized.Length <= 28 ? normalized : $"{normalized[..25]}...";
-    }
-
-    private static string FormatRecordingFailureBrief(string normalized, string fallback)
-    {
-        if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Program video not ready";
-        }
-
-        if (normalized.Contains("Recording target is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Recording target not ready";
-        }
-
-        if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core rejected recording";
-        }
-
-        if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
-        {
-            if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core exited";
-            }
-
-            if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core pipe failed";
-            }
-
-            return "Media core failed";
-        }
-
-        if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core busy";
-        }
-
-        return fallback;
-    }
-
-    private static string FormatStreamingFailureBrief(string normalized, string fallback)
-    {
-        if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Program video not ready";
-        }
-
-        if (normalized.Contains("Native output sender did not start", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Stream sender not armed";
-        }
-
-        if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
-        {
-            return "RTMP output failed";
-        }
-
-        if (normalized.Contains("No stream destination is selected", StringComparison.OrdinalIgnoreCase))
-        {
-            return "No stream destination";
-        }
-
-        if (normalized.Contains("RTMP settings are incomplete", StringComparison.OrdinalIgnoreCase))
-        {
-            return "RTMP settings missing";
-        }
-
-        if (normalized.Contains("NDI settings are incomplete", StringComparison.OrdinalIgnoreCase))
-        {
-            return "NDI settings missing";
-        }
-
-        if (normalized.Contains("NDI output is not available", StringComparison.OrdinalIgnoreCase))
-        {
-            return "NDI unavailable";
-        }
-
-        if (normalized.Contains("SRT settings are incomplete", StringComparison.OrdinalIgnoreCase))
-        {
-            return "SRT settings missing";
-        }
-
-        if (normalized.Contains("SRT output is not available", StringComparison.OrdinalIgnoreCase))
-        {
-            return "SRT unavailable";
-        }
-
-        if (normalized.Contains("FFmpeg is not ready", StringComparison.OrdinalIgnoreCase))
-        {
-            return "FFmpeg not ready";
-        }
-
-        if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core rejected stream";
-        }
-
-        if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
-        {
-            if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
-                normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core exited";
-            }
-
-            if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Native core pipe failed";
-            }
-
-            return "Media core failed";
-        }
-
-        if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core busy";
-        }
-
-        return fallback;
-    }
-
-    public static bool ShouldShowOutputStatusDetails(string? status)
-    {
-        if (string.IsNullOrWhiteSpace(status))
-        {
-            return false;
-        }
-
-        var normalized = status.Trim();
-        return normalized.Length > 28 ||
-            normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("rejected", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeStreamingFailureDetail(string? message)
-    {
-        var detail = string.IsNullOrWhiteSpace(message)
-            ? "No native error detail was returned."
-            : message.Trim();
-
-        if (detail.Contains("media-core sync in flight", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("sync in flight", StringComparison.OrdinalIgnoreCase) &&
-            detail.Contains("backpressure", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Media core is still applying another output change. Wait a moment and try again.";
-        }
-
-        string[] noisyPrefixes =
-        [
-            "media-core sync failed:",
-            "native-media-core-sync failed:",
-            "native media core sync failed:",
-            "media-core request failed:",
-            "native media core request failed:",
-            "start-program-output failed:",
-            "start-program-output failed.",
-            "program-output failed:",
-            "program-output failed.",
-            "stop-program-output failed:",
-            "stop-program-output failed.",
-            "output sender failed during sync:",
-            "output sender failed:",
-            "rtmp output sender failed:",
-            "rtmp sender failed:"
-        ];
-
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var prefix in noisyPrefixes)
-            {
-                if (!detail.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                detail = detail[prefix.Length..].Trim();
-                changed = true;
-            }
-        }
-
-        if (detail.Equals("missing:ffmpeg executable", StringComparison.OrdinalIgnoreCase))
-        {
-            return "FFmpeg executable was not found in the configured bin folder, app folder, or PATH.";
-        }
-
-        return detail;
-    }
+    private static string NormalizeStreamingFailureDetail(string? message) =>
+        TransportStatusFormatter.NormalizeStreamingFailureDetail(message);
 
     public static string FormatAudioMonitorEngineStatus(NativeMediaCoreAudioMixSession audio)
         => FormatAudioMonitorEngineStatus(audio, capture: null);
@@ -8775,8 +8195,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshAudioMixChannels()
     {
-        var existing = _audioMixChannels
-            .Where(channel => !string.IsNullOrWhiteSpace(channel.ParticipantId))
+        // Snapshot + null-guard FIRST. A null slipped into _audioMixChannels on
+        // 2026-08-09 (7 snapshot-rate refreshes threw NREs the dispatcher
+        // hardening absorbed, then a synchronous Audio-tab click hit the same
+        // null and killed the app). The suspected planter is a cross-thread
+        // mutation racing this GroupBy over the bare List — so copy the list
+        // once, drop nulls LOUDLY, and never let this pipeline throw again.
+        var channelsSnapshot = _audioMixChannels.ToArray();
+        var nullCount = channelsSnapshot.Count(channel => channel is null);
+        if (nullCount > 0)
+        {
+            LaunchLog.Write($"audio-mix: {nullCount} NULL channel(s) in _audioMixChannels " +
+                            $"(thread={Environment.CurrentManagedThreadId}, dispatcherAccess={_dispatcher.HasThreadAccess}) — dropped; find the writer");
+        }
+        var existing = channelsSnapshot
+            .Where(channel => channel is not null && !string.IsNullOrWhiteSpace(channel.ParticipantId))
             .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var merged = ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing).ToList();
@@ -8834,8 +8267,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mergedById[sourceId] = BuildWaitingForPcmAudioMixChannel(sourceId, prior);
         }
 
-        _audioMixChannels.Clear();
-        _audioMixChannels.AddRange(mergedById.Values);
+        // Atomic publish (see the field comment): a fully built list, one swap.
+        _audioMixChannels = mergedById.Values.ToList();
 
         // C7d (owner: workspace controls silently dead): the processing
         // workspace edits the SELECTED channel — with no selection every
@@ -8878,14 +8311,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PluginInserts = prior?.PluginInserts.ToList() ?? [],
             InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
         };
-
-    private string BuildAutoProductionReadout()
-    {
-        var auto = _automationRecommendation;
-        return auto.Confidence > 0
-            ? $"Auto: {auto.Action} {auto.Confidence}% — {auto.Reason}"
-            : auto.Reason;
-    }
 
     private Dictionary<string, object?> BuildSpinePayload()
     {
@@ -8983,7 +8408,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
         // as the program routes; the core skips the extra composite for single-source previews.
-        var resolvedScenePreviewRoutes = GetPreviewEditableRoutes()
+        var resolvedScenePreviewRoutes = GetPreviewRoutesForSync()
             .Select(ResolveRouteFromShowInput)
             .ToList();
         var resolvedPreviewRoutes = BrowserOverlayProgramService.ApplyKeyState(
@@ -9055,7 +8480,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
         audioRoutingSends = EnsureDefaultZoomAudioRoutingSends(
             audioRoutingSends,
-            RoomParticipantsForInputs.Select(participant => participant.Id).ToList())
+            RoomParticipantsForInputs.Select(participant => participant.Id).ToList(),
+            _zoomAudioMode)
             .ToList();
         // Default/fallback sends are synthesized after the matrix rows above.
         // Attach each bus's insert chain here so MASTER VST processing remains
@@ -9070,12 +8496,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioMixChannels();
         var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
 
-        var isoParticipantIds = BuildIsoParticipantTargets();
-
-        if (isoParticipantIds.Count == 0)
-        {
-            isoParticipantIds = MediaCoreProductionSyncContext.DefaultRecordingTargets.IsoParticipantIds.ToList();
-        }
+        var isoTargets = BuildIsoSourceTargets();
 
         var playbackSelection = MediaRoutePlaybackService.ResolvePlaybackSelection(
             SelectedMediaAssetId,
@@ -9102,6 +8523,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _sourceDisplayNames)
             : [];
         var multiviewGrid = ShowInputRosterService.ResolveGridShape(multiviewSources.Count);
+
+        // An in-show input whose source no longer exists is silently dropped from the
+        // multiview list — the operator just gets a placeholder tile and no reason. On
+        // the owner rig slot 3 pointed at "screen:3" after the display count changed and
+        // sat unresolved for a week. Scalar string + Visibility only (the sanctioned
+        // 0xc000027b-safe shape) — never a snapshot-rate bound collection.
+        var unresolvedInputs = ShowInputRosterService.DescribeUnresolvedAssignments(
+            ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets);
+        ShowInputWarning = unresolvedInputs.Count == 0 ? null : string.Join(" ", unresolvedInputs);
 
         return new MediaCoreProductionSyncContext
         {
@@ -9143,7 +8573,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RecordingVideoCodec,
                 NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps),
                 NormalizeAudioBitrateKbps(RecordingAudioBitrateKbps)),
-            RecordingTargets = BuildRecordingTargets(isoParticipantIds),
+            RecordingTargets = BuildRecordingTargets(isoTargets.SourceIds, isoTargets.ParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
                     graphic.Id,
@@ -9196,6 +8626,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringPresenceDb = MasteringPresenceDb,
             AudioMasteringHighShelfDb = MasteringHighShelfDb,
             AudioMasteringStereoWidth = MasteringStereoWidth,
+            AudioMasteringGlueRatio = MasteringGlueRatio,
+            AudioMasteringGlueAttackMs = MasteringGlueAttackMs,
+            AudioMasteringGlueReleaseMs = MasteringGlueReleaseMs,
+            AudioMasteringGlueMakeupDb = MasteringGlueMakeupDb,
+            AudioMasteringGlueMultiband = MasteringGlueMultiband,
+            AudioMasteringGlueBandLowDb = MasteringGlueBandLowDb,
+            AudioMasteringGlueBandMidDb = MasteringGlueBandMidDb,
+            AudioMasteringGlueBandHighDb = MasteringGlueBandHighDb,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
             VirtualCameraDeviceName = VirtualCameraDeviceName,
@@ -9308,7 +8746,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var sourceIds = new List<string>();
         sourceIds.AddRange(RoomVideoParticipants.Select(participant => participant.Id));
-        sourceIds.AddRange(_audioMixChannels.Select(channel => channel.ParticipantId));
+        sourceIds.AddRange(_audioMixChannels.Where(channel => channel is not null).Select(channel => channel.ParticipantId));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(PreviewSceneRoutes));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(ProgramSceneRoutes));
 
@@ -9427,9 +8865,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // summed it twice at ~110ms skew (the measured internal echo). The
     // MEETING MIX ("zoom-mix") carries the program defaults instead; ISO rows
     // stay visible in the matrix for deliberate per-speaker routing.
+    /// <summary>
+    /// Seed the Zoom→program audio routing for the selected mode (owner decision
+    /// 2026-08-09, superseding Z1's fixed "zoom-mix → program"):
+    ///
+    /// <see cref="ZoomAudioMode.ProgramMix"/> — Zoom's own mixed bus (echo-cancelled,
+    /// continuous) rides to program; per-guest stems stay unrouted (metering/ISO only).
+    /// The original Z1 topology, now one of two modes.
+    ///
+    /// <see cref="ZoomAudioMode.PerGuestIso"/> — each guest's ISOLATED stem routes to
+    /// program through their own strip, so the operator's faders/mutes/EQ genuinely
+    /// shape program audio per guest. zoom-mix sends to program buses are REMOVED in
+    /// this mode — stems + the mix summed together double every voice. Stems are
+    /// server-gated by Zoom (silence between talk bursts), which is correct for a mix.
+    /// New guests are covered automatically: this runs on every sync context build.
+    /// </summary>
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultZoomAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
-        IReadOnlyList<string> zoomParticipantIds)
+        IReadOnlyList<string> zoomParticipantIds,
+        ZoomAudioMode zoomAudioMode = ZoomAudioMode.ProgramMix)
     {
         if (zoomParticipantIds.Count == 0)
         {
@@ -9438,6 +8892,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
         var completed = sends.ToList();
+
+        if (zoomAudioMode == ZoomAudioMode.PerGuestIso)
+        {
+            // Doubling guard: the meeting mix must not sum with the stems.
+            completed.RemoveAll(send =>
+                string.Equals(send.SourceId, "zoom-mix", StringComparison.Ordinal) &&
+                requiredBusIds.Any(bus => string.Equals(send.BusId, bus, StringComparison.OrdinalIgnoreCase)));
+
+            foreach (var participantId in zoomParticipantIds)
+            {
+                if (string.IsNullOrWhiteSpace(participantId))
+                {
+                    continue;
+                }
+                foreach (var busId in requiredBusIds)
+                {
+                    if (!completed.Any(send =>
+                            string.Equals(send.SourceId, participantId, StringComparison.Ordinal) &&
+                            string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        completed.Add(new MediaCoreAudioRoutingSendWire(participantId, busId, 0));
+                    }
+                }
+            }
+
+            return completed;
+        }
+
+        // ProgramMix: complete zoom-mix onto every program bus. No stem removal
+        // needed here — this seeder SYNTHESIZES its additions per sync (they are
+        // never written back to the matrix), so ISO-mode stem sends simply stop
+        // being generated on flip-back. A stem send the OPERATOR routed in the
+        // matrix deliberately (e.g. one guest's lav alongside the mix) survives,
+        // which the RoutesTheMeetingMixNotIsoParticipants test pins.
         foreach (var busId in requiredBusIds)
         {
             if (!completed.Any(send =>
@@ -9539,8 +9027,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "local-machine-audio"
             : $"capture:{source.CaptureDeviceId}";
 
+    // FADER LAW (owner rule, 2026-08-09): every PCM-bearing routed source gets a
+    // channel strip. "zoom-mix" used to be excluded here — but it is THE audible
+    // Zoom path (Z1 routes zoom-mix → program; per-participant stems are
+    // unrouted), so the operator's mixer showed nine faders that controlled
+    // nothing audible while the actual meeting audio had no fader at all.
+    // Muting every strip and still hearing audio on master was this line.
+    // "active-speaker" / "screen-share" stay excluded: they are role ALIASES
+    // that resolve to other sources, not PCM sources themselves.
     public static bool IsConcreteAudioMixSourceId(string sourceId) =>
-        !string.Equals(sourceId, "zoom-mix", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "active-speaker", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "screen-share", StringComparison.OrdinalIgnoreCase);
 
@@ -9723,37 +9218,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _bridge.Profile);
     }
 
-    public static string? ValidateStreamDestinationCapabilities(
-        bool streamRtmpEnabled,
-        bool streamNdiEnabled,
-        bool streamSrtEnabled,
-        NativeMediaCoreProfile? profile)
-    {
-        if (profile is null)
-        {
-            return null;
-        }
-
-        if (streamRtmpEnabled && !HasNativeOutputCapability(profile, "rtmp-output"))
-        {
-            return "RTMP output is selected, but the native media core profile is missing rtmp-output.";
-        }
-
-        if (streamNdiEnabled && !HasNativeOutputCapability(profile, "ndi-output"))
-        {
-            return "NDI output is selected, but the native media core profile is missing ndi-output.";
-        }
-
-        if (streamSrtEnabled && !HasNativeOutputCapability(profile, "srt-output"))
-        {
-            return "SRT output is selected, but the native media core profile is missing srt-output.";
-        }
-
-        return null;
-    }
+    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile) =>
+        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamNdiEnabled, streamSrtEnabled, profile);
 
     private static bool HasNativeOutputCapability(NativeMediaCoreProfile profile, string capability) =>
-        profile.Capabilities.Contains(capability, StringComparer.OrdinalIgnoreCase);
+        TransportStatusFormatter.HasNativeOutputCapability(profile, capability);
 
     private bool IsRtmpConfigured()
         => ValidateRtmpSettings() is null;
@@ -9776,66 +9245,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtKeyLength,
             StreamSrtPassphrase);
 
-    private MediaCoreRecordingTargetsWire BuildRecordingTargets(IReadOnlyList<string> isoParticipantIds) =>
+    private MediaCoreRecordingTargetsWire BuildRecordingTargets(
+        IReadOnlyList<string> isoSourceIds,
+        IReadOnlyList<string> isoParticipantIds) =>
         new(
             TargetFolder: NormalizeOutputText(RecordingTargetFolder, ResolveDefaultRecordingFolder()),
             FilenamePrefix: NormalizeOutputText(RecordingFilenamePrefix, MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix),
             Format: NormalizeRecordingFormat(RecordingFormat),
             Quality: NormalizeRecordingQuality(RecordingQuality),
-            IsoParticipantIds: isoParticipantIds.Take(8).ToList());
+            IsoParticipantIds: isoParticipantIds,
+            IsoSourceIds: isoSourceIds);
 
-    private IReadOnlyList<string> BuildIsoParticipantTargets()
-    {
-        var ordered = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var cell in VideoRoutingMatrix.Rows
-            .SelectMany(row => row.Cells)
-            .Where(cell => cell.IsRouted && cell.Destination.Id.StartsWith("iso-", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(cell => cell.Destination.Id, StringComparer.Ordinal))
-        {
-            if (TryResolveRoutingSourceParticipantId(cell.SourceId, out var participantId) &&
-                seen.Add(participantId))
-            {
-                ordered.Add(participantId);
-            }
-        }
-
-        foreach (var participantId in GetMutableRoutes(ActiveSceneId)
-            .Where(route =>
-                route.AudioRole == SourceAudioRole.Isolated &&
-                route.ParticipantId is not null)
-            .Select(route => route.ParticipantId!)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(id => id, StringComparer.Ordinal))
-        {
-            if (seen.Add(participantId))
-            {
-                ordered.Add(participantId);
-            }
-        }
-
-        return ordered.Take(8).ToList();
-    }
-
-    private bool TryResolveRoutingSourceParticipantId(string sourceId, out string participantId)
-    {
-        participantId = string.Empty;
-        if (!TryParseInputSourceId(sourceId, out var slotNumber))
-        {
-            return false;
-        }
-
-        var slot = ShowInputs.FirstOrDefault(input => input.SlotNumber == slotNumber);
-        if (slot?.Kind != ShowInputKind.ZoomParticipant ||
-            string.IsNullOrWhiteSpace(slot.ParticipantId))
-        {
-            return false;
-        }
-
-        participantId = slot.ParticipantId;
-        return true;
-    }
+    // BuildIsoSourceTargets + ComputeEligiblePresentIsoSourceIds moved to ShowInputsCoordinator
+    // (PR3 strangler); both keep same-named private forwarders in StudioViewModel.ShowInputs.cs so
+    // the recording-payload builders + IsoArmedSummary call sites are unchanged.
 
     private static string NormalizeOutputText(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
@@ -10159,24 +9582,58 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RunOnUiThread(Action action)
     {
-        if (_dispatcher.HasThreadAccess)
-        {
-            action();
-            return;
-        }
-
-        _dispatcher.TryEnqueue(() => action());
+        // UiDispatch catches + logs callback exceptions. A raw TryEnqueue callback
+        // that throws bypasses every managed handler and fail-fasts the process
+        // with 0xc000027b — three live-meeting crashes on 2026-08-09 decoded to
+        // exactly that (see UiDispatch).
+        UiDispatch.Run(_dispatcher, action, "StudioViewModel");
     }
 
     private void OnBridgeStatusChanged(string status) =>
         RunOnUiThread(() => EngineStatus = status);
 
+    // A ProfileChanged is a NEW CORE GENERATION — the initial handshake, or a supervisor
+    // RESPAWN after the core died. `configure-multiviewer` is a one-shot sent only by
+    // StartMediaCoreOnLaunchAsync, so a respawned core kept its `grid` default while this
+    // shell still believed `pgmPvwTop`: the PROGRAM and PREVIEW bus cells vanished off the
+    // top of the multiviewer and the wall degraded to a bare source grid. That also made
+    // tile-click-to-preview and the preview layer editor LOOK broken — both still worked,
+    // but there was no PVW cell left to show their result. The source roster survived
+    // because set-multiview-layout rides the frequent spine sync; only the layout MODE was
+    // lost. Reproduced end-to-end by killing corevideo-native.exe under a live shell
+    // (2026-08-08). Re-arm through the EXISTING debounce, which already carries the
+    // backpressure retry for the startup burst.
     private void OnBridgeProfileChanged(NativeMediaCoreProfile profile) =>
         RunOnUiThread(() =>
         {
             OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
             OnPropertyChanged(nameof(NativeAudioRuntimeStatus));
+            ScheduleMultiviewerConfigResend();
+            ReannounceCaptureShmToNewCore();
         });
+
+    // Second half of the same respawn class: register-capture-shm is announced ONLY
+    // when CaptureDeviceSharedMemoryWriter creates a buffer (MappingChanged). A core
+    // respawn does not touch the shell's mapping, so the registration was never
+    // re-sent — the bridge went on writing capture frames at full rate into shared
+    // memory the fresh core had no record of, and those cameras sat on the placeholder
+    // tile forever. Core-side captures (screen/WGC) recovered on their own because the
+    // new core re-enumerates them, which is why only SOME tiles stayed blank.
+    private void ReannounceCaptureShmToNewCore()
+    {
+        foreach (var mapping in CaptureDeviceSharedMemoryWriter.LiveMappings())
+        {
+            if (string.IsNullOrEmpty(mapping.ShmName))
+            {
+                continue;
+            }
+
+            // Fire-and-forget per device, mirroring OnCaptureDeviceFrameReceived: a
+            // failure here must never block the UI thread or the other devices.
+            _ = _bridge.RegisterCaptureShmAsync(
+                mapping.DeviceId, mapping.ShmName, mapping.Width, mapping.Height);
+        }
+    }
 
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
@@ -10430,6 +9887,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // Unsubscribes the raw Zoom capture spine while leaving the media core / compositor
     // running. The program/preview surfaces fall back to a "capture paused / slate" state
     // (driven by the always-on compositor) rather than "waiting for compositor output".
+    // ALSO tells the engine to stop raw media: dropping the spine sync only stops OUR
+    // payloads — without zoom-stop-capture the engine kept StartRawRecording live, so
+    // Zoom's participant-facing recording indicator stayed up and frames kept flowing
+    // after the Capture button went red (rig-observed).
     private void UnsubscribeZoomCapture(string status)
     {
         _bridge.ConfigureZoomSpineSync(null);
@@ -10437,6 +9898,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ZoomCaptureSubscribed = false;
         EngineStatus = status;
         CommandStatus = status;
+        if (_bridge.Running && Settings.IsInMeeting)
+        {
+            EngineStatus = "Stopping capture…";
+            _ = StopEngineRawMediaAsync(status);
+        }
         if (Settings.IsInMeeting && _bridge.LastSnapshot is { } snapshot)
         {
             ApplyMeetingFieldsFromSnapshot(snapshot);
@@ -10451,6 +9917,62 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
         ToggleEngineCommand.NotifyCanExecuteChanged();
         ToggleRecordingCommand.NotifyCanExecuteChanged();
+    }
+
+    // Capture-off engine stop, off the UI thread (the zoom-stop-capture round-trip is
+    // pipe I/O — never block a [RelayCommand]). The core enqueues stop_media for the
+    // engine's sender thread and answers immediately; the engine's command loop then
+    // runs stop_raw_media (StopRawRecording — clears the participant-facing recording
+    // indicator — + unsubscribe_all). We poll the engine-reported rawMediaActive for a
+    // few seconds so the status line reflects TRUTH, not hope. All bound-property
+    // updates marshal back through the dispatcher (0xc000027b rules).
+    private async Task StopEngineRawMediaAsync(string fallbackStatus)
+    {
+        try
+        {
+            var snapshot = await _bridge.StopZoomCaptureAsync().ConfigureAwait(false);
+            var stopped = snapshot.RawMediaActive != true;
+            for (var attempt = 0; !stopped && attempt < 12; attempt++)
+            {
+                await Task.Delay(250).ConfigureAwait(false);
+                if (!_bridge.Running)
+                {
+                    return; // core went away (leave/shutdown) — nothing left to confirm
+                }
+
+                var poll = await _bridge.GetZoomSnapshotAsync().ConfigureAwait(false);
+                stopped = poll.RawMediaActive != true;
+            }
+
+            var message = stopped
+                ? "Capture stopped — Zoom recording indicator cleared"
+                : "Capture stop sent — Zoom has not confirmed raw media stopped";
+            UiDispatch.Run(_dispatcher, () =>
+            {
+                if (ZoomCaptureSubscribed || !Settings.IsInMeeting)
+                {
+                    return; // re-enabled or left the meeting while we confirmed
+                }
+
+                EngineStatus = message;
+                CommandStatus = message;
+            }, "zoom-stop-capture.confirm");
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"zoom-stop-capture: failed {ex.GetType().Name}: {ex.Message}");
+            UiDispatch.Run(_dispatcher, () =>
+            {
+                if (ZoomCaptureSubscribed || !_bridge.Running)
+                {
+                    // Re-enabled meanwhile, or the whole core is going down
+                    // (leave/app exit) — the failure is expected teardown noise.
+                    return;
+                }
+
+                EngineStatus = $"{fallbackStatus} — engine stop failed: {ex.Message}";
+            }, "zoom-stop-capture.failure");
+        }
     }
 
     private void StopMediaCoreSession(string status)
@@ -10475,7 +9997,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // thread; this was the recurring ~30-60s crash.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(() => ApplyLiveProductionPatch(patch));
+            UiDispatch.Run(_dispatcher, () => ApplyLiveProductionPatch(patch), "ApplyLiveProductionPatch");
             return;
         }
 
@@ -10606,6 +10128,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var _mfb = new System.Text.StringBuilder();
             void MfT(string n) { _mfb.Append(n).Append('=').Append(_mf.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms "); _mf.Restart(); }
             ZoomStatus = "Zoom Live";
+            // WAITING STATES MUST BE LOUD. Zoom hands over raw video only after
+            // the host grants recording permission; until then every tile is
+            // black with no error anywhere — indistinguishable from broken
+            // ("No video from zoom", live meeting 2026-08-09: 37 dark seconds).
+            // Tell the operator exactly what is being waited on, and clear it
+            // the moment raw media goes live. Scalar prop, changes at state
+            // transitions only — no snapshot-rate churn (0xc000027b rules).
+            var rawMediaActive = Settings.RawMediaActive;
+            if (ZoomCaptureSubscribed && rawMediaActive != true)
+            {
+                if (!_awaitingRecordingPrivilege)
+                {
+                    _awaitingRecordingPrivilege = true;
+                    EngineStatus = "Waiting for Zoom recording permission — ask the host to allow recording.";
+                }
+            }
+            else if (_awaitingRecordingPrivilege && rawMediaActive == true)
+            {
+                _awaitingRecordingPrivilege = false;
+                EngineStatus = "Zoom capture live.";
+            }
             CurrentRoomLabel = _currentRoomName;
             ApplyCaptionAndLowerThirdPatch(patch);
             MfT("captionLT");
@@ -10817,39 +10360,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasCaptionTranscript));
     }
 
-    private void SyncShowInputsFromMeeting(
-        IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
-    {
-        // Free slots whose participant left, and (when auto-assign is on) fill FREE slots
-        // with newly-joined participants without disturbing operator/capture assignments.
-        ShowInputRosterService.SyncZoomParticipantSlots(
-            ShowInputs,
-            participants.Select(participant => participant.Id).ToList(),
-            AutomationAutoAssignInputsEnabled);
-
-        RefreshShowInputEditors();
-        RefreshMultiviewGridTiles();
-    }
-
-    // Re-run the roster→slot auto-assign from the CURRENT room roster (used when the operator
-    // flips the auto-assign toggle). No-op stale-removal when there is no meeting.
-    // MUST use RoomParticipantsForInputs (all in-room, video on OR off) — the SAME set the
-    // meeting-sync path passes. RoomVideoParticipants filters out camera-off participants, so
-    // using it here would make the helper's stale-removal pass free a camera-off participant's
-    // assigned slot the moment the operator flips the toggle.
-    private void ReapplyShowInputAutoAssign()
-    {
-        ShowInputRosterService.SyncZoomParticipantSlots(
-            ShowInputs,
-            RoomParticipantsForInputs
-                .Select(participant => participant.Id)
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .ToList(),
-            AutomationAutoAssignInputsEnabled);
-
-        RefreshShowInputEditors();
-        RefreshMultiviewGridTiles();
-    }
+    // SyncShowInputsFromMeeting + ReapplyShowInputAutoAssign (roster→slot auto-assign) moved to
+    // ShowInputsCoordinator (PR3 strangler); same-named private forwarders in
+    // StudioViewModel.ShowInputs.cs keep the meeting-sync + auto-assign-toggle call sites unchanged.
 
     private void RefreshParticipantListItems()
     {
@@ -10870,6 +10383,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .GroupBy(participant => participant.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var rows = _audioMixChannels
+            .Where(channel => channel is not null)  // same null-planter guard as RefreshAudioMixChannels
             .OrderBy(channel => ResolveAudioRowSortKey(channel.ParticipantId, participantsById))
             .Select(mix =>
             {
@@ -11319,7 +10833,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // 0xc000027b). Marshal defensively; runs inline when already on the UI thread.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(RefreshSurfaceBindings);
+            UiDispatch.Run(_dispatcher, RefreshSurfaceBindings, "RefreshSurfaceBindings");
             return;
         }
 
@@ -11441,11 +10955,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _multiviewGridRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _multiviewGridRefreshScheduled = false;
             RefreshMultiviewGridTiles();
-        });
+        }, "multiview-grid.coalesced");
     }
 
     private static IProductionOutputPreferencesStore CreateProductionOutputPreferencesStore()
@@ -11453,7 +10967,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             var folder = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
-            return new FileProductionOutputPreferencesStore(folder);
+            return CreateFileStore(folder);
         }
         catch (Exception)
         {
@@ -11462,13 +10976,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 var folder = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "CoreVideoPro");
-                return new FileProductionOutputPreferencesStore(folder);
+                return CreateFileStore(folder);
             }
             catch (Exception)
             {
                 return new InMemoryProductionOutputPreferencesStore();
             }
         }
+
+        // S4 secrets-at-rest: RTMP stream key + SRT passphrase are DPAPI-encrypted
+        // field-level; plaintext legacy files load and re-save encrypted.
+        static FileProductionOutputPreferencesStore CreateFileStore(string folder) =>
+            new(folder,
+                protectSecret: DpapiSecretProtector.Protect,
+                unprotectSecret: DpapiSecretProtector.Unprotect);
     }
 
     private void LoadProductionOutputPreferences()
@@ -11604,6 +11125,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
             BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
+            VirtualCameraEnabled = VirtualCameraEnabled,
+            VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraName = string.IsNullOrWhiteSpace(VirtualCameraDeviceName)
+                ? null
+                : VirtualCameraDeviceName,
             MultiviewLayoutMode = NormalizeMultiviewLayoutMode(MultiviewLayoutMode),
             MultiviewTileCount = ClampMultiviewTileCount(MultiviewTileCount),
             MultiviewShowLabels = MultiviewShowLabels,
@@ -11618,11 +11144,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 pair => pair.Key,
                 pair => pair.Value,
                 StringComparer.Ordinal),
+            VstInsertStates = _vstInsertStates.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.OrdinalIgnoreCase),
+            // v8 (ISO-4): the "Program + ISOs" master switch + the operator's ISO source
+            // selection persist across launches.
+            IsoRecordingEnabled = IsoRecordingEnabled,
+            IsoRecordingSourceIds = _showInputsCoordinator.IsoSelectedSourceIds
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList(),
+            // v9: the Zoom→program audio topology persists across launches.
+            ZoomAudioMode = ZoomAudioModePreference.Format(_zoomAudioMode),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
                     scene,
                     _sceneRoutes.TryGetValue(scene.Id, out var routes) ? routes : []))
+                .ToList(),
+            // B2 (v6): the whole master rack — live settings, both A/B slots,
+            // the active slot, and the operator's saved presets. The ACTIVE
+            // slot's stored copy is refreshed from the live controls first so
+            // a tweak made after the last A/B switch is not lost.
+            MasteringCurrent = MasteringPresetLibrary.ToPersisted(CaptureMasteringSettings()),
+            MasteringCompareA = MasteringPresetLibrary.ToPersisted(
+                IsMasteringCompareA ? CaptureMasteringSettings() : _masteringCompareA),
+            MasteringCompareB = MasteringPresetLibrary.ToPersisted(
+                IsMasteringCompareB ? CaptureMasteringSettings() : _masteringCompareB),
+            MasteringCompareSlot = _masteringCompareSlot,
+            MasteringUserPresets = MasteringUserPresets
+                .Select(MasteringPresetLibrary.ToPersistedPreset)
                 .ToList()
         };
 
@@ -11719,6 +11270,58 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Overlays.NotifyBrandKitChanged();
         }
 
+        // O1: restore vcam intent via the BACKING fields, not the properties —
+        // the property setters fire SaveProductionOutputPreferences (a no-op
+        // mid-load, but pointless) and TrySyncMediaCoreAsync (the core is not
+        // up yet during construction). The initial full sync in
+        // StartMediaCoreOnLaunchAsync carries these values to the core over the
+        // exact wire the UI toggle rides (VirtualCameraEnabled/Mirror/DeviceName
+        // on the production sync command), so a persisted enabled=true
+        // re-enables the camera once the core is ready — one declarative sync,
+        // no second registration path, idempotent by construction.
+        _virtualCameraEnabled = preferences.VirtualCameraEnabled;
+        _virtualCameraMirror = preferences.VirtualCameraMirror;
+        _virtualCameraDeviceName = preferences.VirtualCameraName ?? string.Empty;
+        OnPropertyChanged(nameof(VirtualCameraEnabled));
+        OnPropertyChanged(nameof(VirtualCameraMirror));
+        OnPropertyChanged(nameof(VirtualCameraDeviceName));
+        OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+
+        // v8 (ISO-4): restore the ISO selection + "Program + ISOs" switch via the BACKING
+        // field (same reason as vcam above — the setter would sync a core that isn't up).
+        // The persisted selection rides the next full sync; the editors re-project it on
+        // their first RefreshShowInputEditors.
+        _isoRecordingEnabled = preferences.IsoRecordingEnabled;
+        _showInputsCoordinator.IsoSelectedSourceIds.Clear();
+        foreach (var id in preferences.IsoRecordingSourceIds)
+        {
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                _showInputsCoordinator.IsoSelectedSourceIds.Add(id);
+            }
+        }
+        OnPropertyChanged(nameof(IsoRecordingEnabled));
+        RefreshIsoReadouts();
+
+        // v9: restore the Zoom→program audio topology via the BACKING field (same
+        // reason as vcam/ISO above — the setter calls TrySyncMediaCoreAsync and the
+        // core isn't up yet). No respawn re-arm is needed: the seeder
+        // (EnsureDefaultZoomAudioRoutingSends) synthesizes its sends on EVERY
+        // sync-context build, so the mode is continuously re-asserted rather than
+        // sent once — a respawned core picks it up on the next sync.
+        _zoomAudioMode = ZoomAudioModePreference.Parse(preferences.ZoomAudioMode);
+        OnPropertyChanged(nameof(ZoomAudioMode));
+        OnPropertyChanged(nameof(IsPerGuestIsoAudio));
+        if (_zoomAudioMode == ZoomAudioMode.PerGuestIso)
+        {
+            // Loud, not silent: tell the operator which topology they came up in
+            // rather than making them notice a switch position. ProgramMix says
+            // nothing — it's the default, and a line every launch is noise.
+            CommandStatus = "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program).";
+        }
+
+        RestoreMasteringFromPreferences(preferences);
+
         MultiviewLayoutMode = NormalizeMultiviewLayoutMode(preferences.MultiviewLayoutMode);
         MultiviewTileCount = ClampMultiviewTileCount(preferences.MultiviewTileCount);
         MultiviewShowLabels = preferences.MultiviewShowLabels;
@@ -11741,6 +11344,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
             {
                 _sourceDisplayNames[pair.Key] = pair.Value.Trim();
+            }
+        }
+
+        // A2: saved VST3 component states. Pushed to the core once the bridge
+        // runs (TrackVstStatePersistence); the core re-injects after every
+        // host respawn.
+        _vstInsertStates.Clear();
+        foreach (var pair in preferences.VstInsertStates)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+            {
+                _vstInsertStates[pair.Key] = pair.Value;
             }
         }
 
@@ -11773,6 +11388,87 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneBackgroundSelection();
     }
 
+    /// <summary>
+    /// B2 (prefs v6): restore the master rack through the BACKING fields, the
+    /// O1 vcam pattern — the property setters would fire
+    /// SaveProductionOutputPreferences (a no-op mid-load) and
+    /// TrySyncMediaCoreAsync (the core is not up yet during construction).
+    /// The initial full sync in StartMediaCoreOnLaunchAsync carries these
+    /// values to the core on the same mastering{} wire every rack tweak rides,
+    /// so a persisted rack re-applies once the core is ready — one declarative
+    /// sync, idempotent by construction. Null blocks (pre-v6 files) keep the
+    /// in-app defaults untouched.
+    /// </summary>
+    private void RestoreMasteringFromPreferences(ProductionOutputPreferences preferences)
+    {
+        ReplaceMasteringUserPresets(
+            MasteringPresetLibrary.FromPersistedPresets(preferences.MasteringUserPresets));
+
+        if (preferences.MasteringCurrent is not { } persistedCurrent)
+        {
+            return;
+        }
+
+        var current = MasteringPresetLibrary.FromPersisted(persistedCurrent);
+        _masteringCompareSlot =
+            string.Equals(preferences.MasteringCompareSlot, "B", StringComparison.OrdinalIgnoreCase) ? "B" : "A";
+        _masteringCompareA = preferences.MasteringCompareA is { } persistedA
+            ? MasteringPresetLibrary.FromPersisted(persistedA)
+            : current;
+        _masteringCompareB = preferences.MasteringCompareB is { } persistedB
+            ? MasteringPresetLibrary.FromPersisted(persistedB)
+            : current;
+
+        _masteringEnabled = current.Enabled;
+        _masteringTargetIndex = current.TargetIndex;
+        _masteringGlueAmount = current.GlueAmount;
+        _masteringCeilingDbfs = current.CeilingDbfs;
+        _masteringMaxRideDb = current.MaxRideDb;
+        _masteringInputGainDb = current.InputGainDb;
+        _masteringHighPassHz = current.HighPassHz;
+        _masteringLowPassHz = current.LowPassHz;
+        _masteringLowShelfDb = current.LowShelfDb;
+        _masteringPresenceDb = current.PresenceDb;
+        _masteringHighShelfDb = current.HighShelfDb;
+        _masteringStereoWidth = current.StereoWidth;
+        _masterLimiterEnabled = current.LimiterEnabled;
+        _masteringGlueRatio = current.GlueRatio;
+        _masteringGlueAttackMs = current.GlueAttackMs;
+        _masteringGlueReleaseMs = current.GlueReleaseMs;
+        _masteringGlueMakeupDb = current.GlueMakeupDb;
+        _masteringGlueMultiband = current.GlueMultiband;
+        _masteringGlueBandLowDb = current.GlueBandLowDb;
+        _masteringGlueBandMidDb = current.GlueBandMidDb;
+        _masteringGlueBandHighDb = current.GlueBandHighDb;
+
+        OnPropertyChanged(nameof(MasteringEnabled));
+        OnPropertyChanged(nameof(MasteringTargetIndex));
+        OnPropertyChanged(nameof(MasteringGlueAmount));
+        OnPropertyChanged(nameof(MasteringCeilingDbfs));
+        OnPropertyChanged(nameof(MasteringMaxRideDb));
+        OnPropertyChanged(nameof(MasteringInputGainDb));
+        OnPropertyChanged(nameof(MasteringHighPassHz));
+        OnPropertyChanged(nameof(MasteringLowPassHz));
+        OnPropertyChanged(nameof(MasteringLowShelfDb));
+        OnPropertyChanged(nameof(MasteringPresenceDb));
+        OnPropertyChanged(nameof(MasteringHighShelfDb));
+        OnPropertyChanged(nameof(MasteringStereoWidth));
+        OnPropertyChanged(nameof(MasterLimiterEnabled));
+        OnPropertyChanged(nameof(MasteringGlueRatio));
+        OnPropertyChanged(nameof(MasteringGlueAttackMs));
+        OnPropertyChanged(nameof(MasteringGlueReleaseMs));
+        OnPropertyChanged(nameof(MasteringGlueMakeupDb));
+        OnPropertyChanged(nameof(MasteringGlueMultiband));
+        OnPropertyChanged(nameof(MasteringGlueBandLowDb));
+        OnPropertyChanged(nameof(MasteringGlueBandMidDb));
+        OnPropertyChanged(nameof(MasteringGlueBandHighDb));
+        OnPropertyChanged(nameof(MasteringCompareSlot));
+        OnPropertyChanged(nameof(IsMasteringCompareA));
+        OnPropertyChanged(nameof(IsMasteringCompareB));
+        OnPropertyChanged(nameof(MasteringTargetLufs));
+        RefreshMasteringStageBindings();
+    }
+
     // Persistence for Input 1-10 slot assignments (alpha #2). The store is abstracted so the
     // round-trip is unit-testable without a running WinUI/ApplicationData host.
     private static IShowInputRosterStore CreateShowInputRosterStore()
@@ -11800,98 +11496,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void LoadShowInputRoster()
-    {
-        try
-        {
-            var snapshot = _showInputRosterStore.Load();
-            // Intent is restored even if the referenced participant/device is no longer present;
-            // RefreshShowInputEditors / BuildMultiviewTiles surface unresolved sources as
-            // unavailable rather than dropping the assignment.
-            ShowInputRosterSerializer.ApplyTo(ShowInputs, snapshot);
-        }
-        catch (Exception)
-        {
-            // Persistence is best-effort; never block startup on a bad/locked store.
-        }
-        finally
-        {
-            _showInputRosterLoaded = true;
-        }
-    }
-
-    private void SaveShowInputRoster()
-    {
-        // Guard against persisting before the saved roster has been loaded/applied.
-        if (!_showInputRosterLoaded)
-        {
-            return;
-        }
-
-        try
-        {
-            _showInputRosterStore.Save(ShowInputRosterSerializer.CaptureFrom(ShowInputs));
-        }
-        catch (Exception)
-        {
-            // Best-effort; a failed save must not surface as a user-facing error.
-        }
-    }
-
-    private void InitializeShowInputEditors()
-    {
-        ShowInputEditors.Clear();
-        foreach (var slot in ShowInputs)
-        {
-            ShowInputEditors.Add(new ShowInputSlotViewModel(
-                slot,
-                OnShowInputChanged,
-                SetCaptureDeviceAudioSource,
-                ResolveSourceDisplayName,
-                SetSourceDisplayName));
-        }
-
-        RefreshShowInputEditors(force: true);
-    }
-
-    private string _showInputEditorsSignature = "";
-
-    private void RefreshShowInputEditors(bool force = false)
-    {
-        EnsureAssignedScreensConnected();
-        var mediaAssets = MediaBinGroups.SelectMany(group => group.Assets).ToList();
-
-        // Rebuild each slot's Source dropdown options ONLY when the set the picker
-        // depends on actually changes. This method is called from many per-snapshot
-        // paths (~10/s); rebuilding the ComboBox ItemsSource every tick resets the
-        // operator's in-progress selection (can't pick a participant) and fires a
-        // SelectionChanged storm. Skip when nothing changed.
-        //
-        // The picker membership depends only on WHO is in the room (participant ids) +
-        // devices + assets — NOT on participant Health. Health (talking/active-speaker/
-        // camera on-off) churns constantly during a live meeting; including it here
-        // rebuilt every slot's ItemsSource on every health tick, which blanked the
-        // selected Source/name in the picker and flooded the dispatcher (a churn/crash
-        // vector). Key the signature on id-set only so options rebuild on join/leave.
-        var signature =
-            string.Join("|", RoomParticipantsForInputs.Select(p => p.Id)) + "#" +
-            string.Join(",", CaptureDevices.Select(d => d.Id)) + "#" +
-            AudioCaptureDevices.Count + "#" + mediaAssets.Count;
-        if (!force && signature == _showInputEditorsSignature)
-        {
-            return;
-        }
-        _showInputEditorsSignature = signature;
-
-        foreach (var editor in ShowInputEditors)
-        {
-            editor.RefreshSourceOptions(RoomParticipantsForInputs, CaptureDevices, AudioCaptureDevices, mediaAssets);
-        }
-
-        OnPropertyChanged(nameof(ShowInputSummary));
-        OnPropertyChanged(nameof(MultiviewHeader));
-        NotifyShowReadinessChanged();
-    }
+    // LoadShowInputRoster / SaveShowInputRoster / InitializeShowInputEditors / RefreshShowInputEditors
+    // (the signature-gated roster→editor projection) + the _showInputEditorsSignature gate moved to
+    // ShowInputsCoordinator (PR3 strangler). Same-named private forwarders in
+    // StudioViewModel.ShowInputs.cs keep the ~20 snapshot-apply call sites unchanged; the 0xc000027b
+    // signature-gating + in-place diff-update + ISO re-projection are preserved exactly.
 
     private void OnShowInputChanged() => ScheduleShowInputRefresh();
 
@@ -11903,11 +11512,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _showInputRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _showInputRefreshScheduled = false;
             ApplyShowInputRefresh();
-        });
+        }, "show-inputs.coalesced");
     }
 
     private void ApplyShowInputRefresh()
@@ -11917,6 +11526,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var active = ShowInputs.Where(slot => slot.InShow).ToList();
         if (active.Count > ShowInputRosterService.MaxMultiviewBoxes)
         {
+            using var _ = ShowInputWriteScope.Enter("refresh-truncate");
             foreach (var slot in active.Skip(ShowInputRosterService.MaxMultiviewBoxes))
             {
                 slot.InShow = false;
@@ -11929,7 +11539,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         SaveShowInputRoster();
-        CommandStatus = "Show input roster updated";
+        // HONEST WALL MATH (owner, 2026-08-09): the pgmPvwTop multiviewer has 8
+        // source cells — PGM and PVW occupy two of the 10 boxes — while Sources
+        // allows 10 inputs in-show. The 9th and 10th silently never displayed.
+        // Until a >8 layout exists (owner leans "8 is the practical wall"), say
+        // exactly what is shown instead of letting two sources vanish.
+        var inShowCount = ShowInputs.Count(slot => slot.InShow);
+        CommandStatus = inShowCount > 8
+            ? $"Show input roster updated — multiviewer shows the first 8 of {inShowCount} in-show sources (PGM + PVW use two cells)"
+            : "Show input roster updated";
     }
 
     private void QueueSelectedCaptureDevicesOnline()
@@ -12147,22 +11765,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void EnsureAssignedSlotsForInShow()
     {
-        var defaultParticipant = RoomVideoParticipants.FirstOrDefault()?.Id;
-        var defaultCapture = CaptureDevices.FirstOrDefault(device => device.IsConnected) ??
-            CaptureDevices.FirstOrDefault();
-
+        // NEVER INVENT A SOURCE (owner-reported, 2026-08-09: "sources 1 and 2
+        // keep flipping back to the local cameras"). This used to stuff the
+        // first participant — or the first connected capture device, i.e. the
+        // operator's webcams — into ANY in-show slot without an assignment, and
+        // it runs at the top of every roster refresh: unassigning a slot put a
+        // webcam straight back within a second. It was the second, more
+        // aggressive sibling of the auto-assign refill fixed earlier today.
+        // An in-show slot with nothing assigned has nothing to show — it leaves
+        // the show. Sources appear in slots by OPERATOR action (the picker) or
+        // by roster auto-assign of NEWCOMERS, never by this fallback.
+        using var _ = ShowInputWriteScope.Enter("refresh-leave-show");
         foreach (var slot in ShowInputs.Where(slot => slot.InShow && !slot.IsAssigned))
         {
-            if (!string.IsNullOrWhiteSpace(defaultParticipant))
-            {
-                slot.Kind = ShowInputKind.ZoomParticipant;
-                slot.ParticipantId = defaultParticipant;
-            }
-            else if (defaultCapture is not null)
-            {
-                slot.Kind = ResolveShowInputKind(defaultCapture);
-                slot.CaptureDeviceId = defaultCapture.Id;
-            }
+            slot.InShow = false;
         }
     }
 
@@ -12214,67 +11830,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // unassign every slot that references it, refresh. Webcams using the WinUI
     // MediaCapture bridge keep their existing capture-toggle path; this covers
     // the core-session kinds (screens today).
+    // Lifecycle L2 take-offline body moved to ShowInputsCoordinator (PR3 strangler). This stays the
+    // generated [RelayCommand] (TakeCaptureDeviceOfflineCommand) so XAML x:Bind is unchanged.
     [RelayCommand]
-    private async Task TakeCaptureDeviceOfflineAsync(string deviceId)
-    {
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            return;
-        }
-        LaunchLog.Write(string.Format("lifecycle: take offline {0}", deviceId));
-        try
-        {
-            var statuses = await _bridge.DisconnectNativeCaptureDeviceAsync(deviceId).ConfigureAwait(false);
-            var match = statuses.FirstOrDefault(s => s.Id == deviceId);
-            RunOnUiThread(() =>
-            {
-                var device = CaptureDevices.FirstOrDefault(d => d.Id == deviceId);
-                if (device is not null)
-                {
-                    device.ConnectionState = CaptureConnectionState.Detected;
-                    device.SignalPresent = match?.SignalPresent ?? false;
-                }
-                foreach (var editor in ShowInputEditors.Where(e => string.Equals(e.CaptureDeviceId, deviceId, StringComparison.Ordinal)).ToList())
-                {
-                    LaunchLog.Write(string.Format("lifecycle: offline {0} unassigns slot {1}", deviceId, editor.SlotNumber));
-                    editor.Unassign();
-                }
-                RefreshShowInputEditors(force: true);
-                RefreshDualCaptureSourceOptions();
-                RefreshCaptureFleetSummary();
-                RefreshPreviewRoutingState();
-                RefreshMultiviewGridTiles();
-                CommandStatus = string.Format("{0} is offline.", device?.Name ?? deviceId);
-                _ = TrySyncMediaCoreAsync();
-            });
-        }
-        catch (Exception ex)
-        {
-            LaunchLog.Write(string.Format("lifecycle: take offline failed {0}: {1}", deviceId, ex.Message));
-        }
-    }
+    private Task TakeCaptureDeviceOfflineAsync(string deviceId) =>
+        _showInputsCoordinator.TakeCaptureDeviceOfflineAsync(deviceId);
 
-    // Lifecycle L1: operator-facing unassign (button on each Show Input row).
+    // Lifecycle L1: operator-facing unassign (button on each Show Input row). Body moved to
+    // ShowInputsCoordinator (PR3 strangler); this stays the generated [RelayCommand].
     [RelayCommand]
-    private void UnassignShowInput(ShowInputSlotViewModel editor)
-    {
-        if (editor is null)
-        {
-            return;
-        }
-        LaunchLog.Write(string.Format("lifecycle: unassign slot {0} (was {1} cap={2} pid={3})",
-            editor.SlotNumber, editor.Kind, editor.CaptureDeviceId ?? "-", editor.ParticipantId ?? "-"));
-        editor.Unassign();
-        RefreshShowInputEditors(force: true);
-        RefreshPreviewRoutingState();
-        RefreshMultiviewGridTiles();
-        _ = TrySyncMediaCoreAsync();
-    }
+    private void UnassignShowInput(ShowInputSlotViewModel editor) =>
+        _showInputsCoordinator.UnassignShowInput(editor);
 
     // Lifecycle L1: startup/refresh ghost sweep - parked slots whose source is
     // gone or which duplicate a lower slot get cleared automatically, LOGGED.
     private void SweepGhostShowInputAssignments()
     {
+        using var _ = ShowInputWriteScope.Enter("ghost-sweep");
         var swept = 0;
         foreach (var slot in ShowInputs)
         {
@@ -12337,6 +11909,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void AssignConnectedCaptureDeviceToShowInput(CaptureDevice device)
     {
+        using var _ = ShowInputWriteScope.Enter("device-connect");
         var targetKind = ResolveShowInputKind(device);
         LaunchLog.Write(string.Format("assign: {0} kind={1} slots={2} freeInShow={3} freeParked={4}", device.Id, targetKind,
             ShowInputs.Count,
@@ -12407,7 +11980,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // inline when already on the UI thread.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(RefreshMultiviewGridTiles);
+            UiDispatch.Run(_dispatcher, RefreshMultiviewGridTiles, "RefreshMultiviewGridTiles");
             return;
         }
 
@@ -12490,7 +12063,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshTransportState()
     {
-        RefreshTransportAutomationState();
+        MagicScene.RefreshTransportAutomationState();
         Transport.ApplyMeetingState(Settings.IsInMeeting);
 
         if (_bridge.Running && _bridge.LastSnapshot is { } snapshot)
@@ -12543,30 +12116,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ShowStatusSummary));
     }
 
-    private void RefreshTransportAutomationState()
-    {
-        var canToggle = CanToggleSetAndForget() || ProductionMode == ProductionMode.SetAndForget;
-        Transport.ApplyAutomationState(ProductionMode, canToggle);
-    }
-
-    private bool CanToggleSetAndForget()
-    {
-        var entitlements = LicenseCatalog.DeriveEntitlements(
-            new LicenseState { Tier = Settings.LicenseTier, Status = Settings.LicenseStatus },
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        return entitlements.SetAndForget;
-    }
-
-    private static string ResolveProgramResolutionLabel(NativeMediaCoreStateSnapshot snapshot)
-    {
-        var profile = snapshot.OutputProfile;
-        if (profile.Width > 0 && profile.Height > 0)
-        {
-            return TransportFormatting.ShortResolutionLabel($"{profile.Width}x{profile.Height}", profile.Fps);
-        }
-
-        return TransportFormatting.ShortResolutionLabel(profile.Resolution, profile.Fps);
-    }
+    private static string ResolveProgramResolutionLabel(NativeMediaCoreStateSnapshot snapshot) =>
+        TransportStatusFormatter.ResolveProgramResolutionLabel(snapshot);
 
     public string SceneRailSummary =>
         $"{Scenes.Count} scenes · PGM {ProgramScene.Name} · PVW {PreviewScene.Name}";
@@ -12713,12 +12264,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return _livePreviewDraft;
     }
 
+    // Read-only companion for sync-context building: returns the draft when one
+    // is valid for the current preview scene, else the stored routes — with ZERO
+    // side effects. BuildProductionSyncContext runs on the spine-sync background
+    // thread as well as the UI thread; the editable accessor above mutates draft
+    // state and (via DiscardLivePreviewDraft) raises binding notifications, which
+    // throw RPC_E_WRONG_THREAD (0x8001010E) off the UI thread — that killed every
+    // spine payload and silently stopped Zoom capture requests (#291 regression).
+    private List<SourceRoute> GetPreviewRoutesForSync()
+    {
+        var draft = _livePreviewDraft;
+        if (draft is not null &&
+            string.Equals(_livePreviewDraftSceneId, PreviewSceneId, StringComparison.Ordinal) &&
+            string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal))
+        {
+            return draft;
+        }
+
+        return GetMutableRoutes(PreviewSceneId);
+    }
+
     private void DiscardLivePreviewDraft()
     {
         _livePreviewDraft = null;
         _livePreviewDraftSceneId = null;
-        OnPropertyChanged(nameof(CanTake));
-        TakeCommand.NotifyCanExecuteChanged();
+        // Binding notifications must land on the UI thread; this can be reached
+        // from non-UI callers (defense-in-depth for the 0x8001010E class above).
+        RunOnUiThread(() =>
+        {
+            OnPropertyChanged(nameof(CanTake));
+            TakeCommand.NotifyCanExecuteChanged();
+        });
     }
 
     // Commits the live-scene draft into the stored scene (called by the Update
@@ -12733,11 +12309,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _previewRoutingRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _previewRoutingRefreshScheduled = false;
             RefreshPreviewRoutingState();
-        });
+        }, "preview-routing.coalesced");
     }
 
     private void RefreshPreviewRoutingState()
@@ -14008,7 +13584,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
-        _automationTimer.Stop();
+        MagicScene.Stop();
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
         _bridge.ProfileChanged -= OnBridgeProfileChanged;

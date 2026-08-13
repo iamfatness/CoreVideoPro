@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -61,6 +62,36 @@ struct VideoFrame {
     const size_t yLen = static_cast<size_t>(i420Width) * static_cast<size_t>(i420Height);
     return i420->size() >= yLen + (yLen / 4) * 2;
   }
+};
+
+// One selected ISO source's video for a single encoder tick (ISO-1). Carries a
+// zero-copy VideoFrame (the frame's I420/BGRA payload is a shared_ptr, so this
+// whole struct is cheap to copy across the coreMutex → audio worker → async
+// encoder thread hops — NO pixel copy under any lock). `sourceId` is the
+// canonical ISO id (`zoom:<pid>` today; `capture:<id>` in ISO-3); `displayName`
+// is informational (the authoritative roster name + file path are assigned at
+// recording start on the RecordingSessionRequest).
+struct IsoSourceVideoFrame {
+  std::string sourceId;
+  std::string displayName;
+  VideoFrame frame;
+};
+
+// One selected ISO source's RAW-STEM audio for a single encoder tick (ISO-2).
+// `pcm` is the source's isolated, interleaved float PCM in [-1, 1] tapped
+// PRE-channel-strip-DSP and PRE-bus-mix (owner decision: raw stems for post) —
+// resampled to the recording bus rate at gather but otherwise untouched. When
+// the source delivered NO audio this tick (Zoom gates non-active speakers), the
+// entry is submitted with an EMPTY `pcm`/`frameCount == 0`: the sink then
+// silence-fills that stem to its epoch-anchored expected sample position so the
+// stem stays time-aligned to program and never drifts (spec §2c). `sourceId`
+// maps to the same per-source ISO writer as the video (`zoom:<pid>`).
+struct IsoSourceAudio {
+  std::string sourceId;
+  std::vector<float> pcm;  // interleaved; size == frameCount * channels (may be empty)
+  int frameCount = 0;
+  int channels = 0;
+  int sampleRate = 48000;
 };
 
 struct AudioFrame {
@@ -124,7 +155,13 @@ struct ProgramFramePreviewPixels {
 };
 
 struct ProgramFrameSharedTexture {
+  // Windows: a keyed-mutex DXGI shared HANDLE in hex. Empty on macOS.
   std::string sharedHandleHex;
+  // macOS: the global IOSurface ID of the IOSurface backing the compositor's
+  // render target (IOSurfaceGetID; the shell resolves it with IOSurfaceLookup).
+  // 0 on Windows. A texture is "present" when EITHER identifier is set — the
+  // two are platform-exclusive siblings, never both set.
+  uint32_t iosurfaceId = 0;
   int width = 0;
   int height = 0;
   std::string format = "B8G8R8A8_UNORM";
@@ -225,6 +262,27 @@ struct CompositorColorGrade {
   float temperature = 0.f;
 };
 
+// Per-layer chroma key (the green/blue screen keyer).
+//
+// The core advertised a "chroma-key" capability — and listed it as REQUIRED —
+// while implementing none of it: the only command carrying a chromaKey payload
+// discarded it (setParticipantTransform takes an UNNAMED rpc::Json), there were
+// no key fields on the render plan, and neither shader had keying math. Anything
+// gating on that capability got a true answer that meant nothing.
+//
+// `similarity` is the chroma distance at which a pixel becomes fully
+// transparent; `smoothness` widens the transition either side of it so edges do
+// not alias; `spill` pulls the key hue out of surviving pixels (green fringing
+// on hair and shoulders). All normalized 0..1.
+struct CompositorChromaKey {
+  float keyR = 0.f;
+  float keyG = 1.f;   // green screen by default
+  float keyB = 0.f;
+  float similarity = 0.4f;
+  float smoothness = 0.1f;
+  float spill = 0.2f;
+};
+
 // Overlay-raster payload for an overlay/lower-third/caption layer. These fields
 // are internal to the compositor render plan (built in MediaCore, consumed by
 // the compositor adapters) and are NOT serialized over the wire, so they do not
@@ -263,7 +321,9 @@ struct CompositorRenderPlanLayer {
   CompositorLayerRect rect;
   float opacity = 1.f;
   std::string fitMode = "fill";
-  std::string borderStyle = "accent";
+  // "none" by default: borders are opt-in styling (multiview tiles set theirs
+  // explicitly); a defaulted layer must never bake chrome into PROGRAM.
+  std::string borderStyle = "none";
   std::string borderColor = "#44C1A1";
   float borderThickness = 2.f;
   float sourceScale = 1.f;
@@ -277,6 +337,10 @@ struct CompositorRenderPlanLayer {
   bool mediaAssetPlaying = false;
   bool hasColorGrade = false;
   CompositorColorGrade colorGrade;
+  // Keying is per-LAYER, not per-participant: the same camera can be keyed in
+  // one scene and not another, which a per-participant model cannot express.
+  bool hasChromaKey = false;
+  CompositorChromaKey chromaKey;
   // Set for overlay/lower-third/caption layers. Empty (default) for video
   // sources, which leaves overlay rendering on the prior solid-fill fallback.
   bool hasOverlayContent = false;
@@ -309,10 +373,33 @@ struct CompositorRenderPlan {
   bool fullProgramReadback = false;
 };
 
+// Per-ISO-writer health (ISO-1). One node per selected ISO source, surfaced in
+// the recording snapshot streams[] and folded into recording.warning so a
+// video-only-broken ISO is as loud as a video-only program was (#286). Populated
+// by the Media Foundation sink from its per-source writers.
+struct IsoStreamStatus {
+  std::string sourceId;
+  std::string displayName;
+  std::string path;
+  std::string kind = "iso";
+  int64_t videoFrameCount = 0;
+  int64_t audioSampleCount = 0;  // 0 until ISO-2 muxes per-source audio
+  int64_t bytesWritten = 0;
+  bool trackOpen = false;        // the writer opened + began writing its video track
+  std::string warning;           // per-source open/write failure (empty = healthy)
+};
+
 struct OutputSession {
   bool active = false;
   std::vector<std::string> destinations;
   std::vector<std::string> isoParticipantIds;
+  // Per-session subfolder + manifest (ISO-1 folder scheme, spec §5). Empty for
+  // the stub / non-MF sinks.
+  std::string recordingSessionDir;
+  std::string recordingManifestPath;
+  // Real per-ISO-writer health from the Media Foundation sink (empty on the
+  // stub, where the snapshot synthesizes ISO nodes from the selected ids).
+  std::vector<IsoStreamStatus> isoStreams;
   int64_t encodedFrameCount = 0;
   std::string encoderName = "software-counting";
   std::string codec = "h264";
@@ -345,13 +432,33 @@ struct OutputSession {
   std::string recordingError;
 };
 
+// One selected ISO source at recording start: the canonical id + the roster
+// display name used to sanitize the on-disk file name (spec §5). Resolved in
+// MediaCore (roster lookup) so post-production sees `ISO-01-<Name>.mp4`, not a
+// per-meeting participant id.
+struct IsoSourceSelection {
+  std::string sourceId;      // `zoom:<pid>` (ISO-1) or `capture:<id>` (ISO-3)
+  std::string displayName;   // roster / device name (sanitized at file-open)
+  // ISO-3 capture audio-pairing rule: a Zoom participant always has audio (its
+  // `isolate_audio` stem). A `capture:<id>` source has audio ONLY when the
+  // operator paired an audio input to that capture device (Elgato-class embedded
+  // audio / a mic assigned to the camera via sync-capture-audio-sources); a pure
+  // camera with no paired audio is a VIDEO-ONLY ISO (no all-silence AAC track).
+  // Resolved in MediaCore from captureAudioSources_ at request-build time. When
+  // false, the ISO writer opens WITHOUT an audio stream.
+  bool hasAudio = true;
+};
+
 struct RecordingSessionRequest {
   std::string sessionId = "native-recording-session";
   std::string targetFolder = "Recordings/CoreVideo Pro/native-core";
   std::string filenamePrefix = "program";
   std::string format = "mp4";
   std::string quality = "high";
+  // Legacy flat id list (back-compat: bare participant ids). Prefer isoSources
+  // below, which carries display names for the ISO-1 folder/name scheme.
   std::vector<std::string> isoParticipantIds;
+  std::vector<IsoSourceSelection> isoSources;
   int width = 1920;
   int height = 1080;
   int fps = 30;
@@ -359,6 +466,12 @@ struct RecordingSessionRequest {
   std::string audioCodec = "aac";
   int audioBitrateKbps = 192;
   int targetBitrateMbps = 10;
+  // Mux the program from ProgramFrame::programNv12 (the full-resolution GPU tap)
+  // instead of the 320x180 `preview` thumbnail. Set by MediaCore only when the
+  // compositor actually supplies that tap AND the requested recording size
+  // matches it exactly — writing a differently-sized buffer into the writer is
+  // precisely the defect this exists to fix. See ICompositor::suppliesProgramNv12.
+  bool programNv12 = false;
 };
 
 struct OutputSender {
@@ -563,6 +676,41 @@ class ICompositor {
   // Upload accounting for the per-source texture cache. Defaulted to zeros so
   // the software/stub compositor stays valid; only the GPU adapter tracks it.
   [[nodiscard]] virtual CompositorSourceTexStats sourceTexStats() const { return {}; }
+  // True when the encoder should receive the FULL-resolution program
+  // (ProgramFrame::programFullBgra) while recording. Default false: on
+  // Windows the D3D11 path serves recording from the vcam tap economics and
+  // setting fullProgramReadback would spin that tap for nothing. The Metal
+  // adapter returns true — on Apple-silicon shared memory the full readback
+  // is a cheap getBytes, and it is what lets the recording encoder mux
+  // native-resolution program instead of the 320x180 preview.
+  [[nodiscard]] virtual bool wantsFullProgramReadbackForRecording() const { return false; }
+
+  // Does this compositor publish the full-resolution program as NV12
+  // (ProgramFrame::programNv12)? The D3D11 adapter does — that tap is what feeds
+  // the virtual camera and RTMP — while Metal publishes programFullBgra instead.
+  // Recording uses it to mux real program pixels rather than the 320x180
+  // preview; without it the whole show lands in a corner of a black frame.
+  [[nodiscard]] virtual bool suppliesProgramNv12() const { return false; }
+
+  // PUSH the program tap at the RENDER cadence instead of waiting to be polled.
+  //
+  // The virtual camera used to be published by the ~50Hz audio/output worker,
+  // which polls takeVcamNv12 once per tick. That worker's 20ms period is an
+  // AUDIO constant (960 samples at 48k), and gating video on it meant a 60fps
+  // program reached every output at 50fps — measured 2026-08-07: render thread
+  // 59.7fps, output worker 49.7Hz, virtual camera published 50.0fps. That is 10
+  // discarded frames a second AND up to 20ms of quantisation on a path whose
+  // whole budget is one 16.7ms frame.
+  //
+  // The sink is invoked on the tap thread the moment a new NV12 frame exists,
+  // holding NO compositor lock. The callee must be cheap and must not block on
+  // the render thread. Setting or clearing the sink waits for any in-flight
+  // call, so clear it before the callee is destroyed.
+  using VcamFrameSink = std::function<void(const std::uint8_t* nv12, int width, int height)>;
+  virtual void setVcamFrameSink(VcamFrameSink /*sink*/) {}
+  // Does this compositor push frames to that sink? When it does, MediaCore must
+  // NOT also publish from the output worker or every frame is published twice.
+  [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }
 };
 
 class IMediaFrameSource {
@@ -634,6 +782,22 @@ class IEncoderSink {
   virtual void configureRecording(const RecordingSessionRequest& request) = 0;
   virtual OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) = 0;
   virtual void submit(const ProgramFrame& frame) = 0;
+  // ISO-1: mux each selected source's OWN video into its own MP4 (mapped
+  // sourceId → per-source writer), alongside the program submit above. The
+  // frames carry zero-copy shared_ptr payloads (I420 for Zoom → NV12 encoder
+  // input, no CPU color-convert under any lock; any convert happens on the
+  // async encoder thread). Default no-op keeps non-recording / stub sinks valid.
+  virtual void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) { (void)sources; }
+  // ISO-2: mux each selected source's OWN raw-stem audio into its own MP4 (the
+  // same sourceId → per-source writer map as submitIsoVideo), so each ISO is a
+  // self-contained A+V file. Submitted every tick for every selected source:
+  // entries with real PCM mux it; entries with empty PCM silence-fill that
+  // stem's timeline to the shared epoch (spec §2c) so a gated guest's ISO has
+  // silence exactly where they were not talking, staying sample-aligned to
+  // program. Rides AsyncEncoderSink like the video, so a slow disk drops ISO
+  // audio (→ silence in the stem, timeline intact), never program audio, never
+  // a worker stall. Default no-op keeps non-recording / stub sinks valid.
+  virtual void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) { (void)sources; }
   // Mux real program-audio PCM alongside the video frames. `interleaved` holds
   // `frameCount` sample-frames of `channels` float samples in [-1, 1] at
   // `sampleRate` Hz. Default no-op so encoders that don't yet handle audio stay
@@ -645,6 +809,13 @@ class IEncoderSink {
     (void)channels;
     (void)sampleRate;
   }
+  // A3 (VST latency compensation): the program-audio content latency added by
+  // an active out-of-process plugin, in samples at the program rate. The
+  // recording PTS clock latches it at the FIRST audio buffer of a session so
+  // the muxed audio timeline reflects the delayed content (A/V stays true).
+  // Must be thread-safe (called from the audio worker; implementations store
+  // an atomic). Default no-op keeps non-recording sinks valid.
+  virtual void setAudioContentLatencySamples(int latencySamples) { (void)latencySamples; }
   // Finalize any open recording container(s) — moov write + writer close — so
   // the artifact on disk is playable the moment the operator stops recording,
   // WITHOUT tearing down the encoder session (streaming destinations keep
@@ -673,6 +844,17 @@ class IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) = 0;
+  // Push program AUDIO alone, on the AUDIO cadence, decoupled from sync()'s video
+  // cadence. Video and audio reach FFmpeg through SEPARATE inputs (a raw video
+  // pipe and a PCM audio pipe), so they never needed to arrive together — but
+  // carrying audio as a sync() argument tied both to one call, and that call was
+  // the ~50Hz audio worker's. A 60fps program was therefore streamed at 50fps.
+  // The video tick now calls sync() (video), the audio worker calls this.
+  //
+  // Senders that carry audio must treat "we have real audio" as STICKY state set
+  // here, not as "this sync() call happened to carry PCM" — otherwise a video-only
+  // sync looks like audio disappearing and restarts the encoder process.
+  virtual void submitAudio(const std::vector<float>& /*pcm*/, int /*channels*/, int /*sampleRate*/) {}
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
   virtual OutputSenderSession session() const = 0;
@@ -706,6 +888,13 @@ class ICaptureDevice {
   virtual std::vector<CaptureDeviceInfo> disconnect(const std::string&) { return enumerate(); }
   virtual std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>&) { return enumerate(); }
   virtual std::vector<VideoFrame> pollVideoFrames(int64_t) { return {}; }
+  // Audio EMBEDDED in the capture transport itself, keyed "capture:<deviceId>"
+  // like every other capture source. Local cameras and cards pair a separate
+  // WASAPI input instead (CaptureAudioSourceConfig), but an SRT contribution feed
+  // carries its guest's audio inside the same stream and there is no OS audio
+  // device to pair with it. Defaults to empty, so only transports that actually
+  // carry audio implement it.
+  virtual std::vector<AudioFrame> pollAudioFrames(int64_t) { return {}; }
 };
 
 struct ModuleSet {
@@ -729,15 +918,30 @@ ModuleSet createStubModules();
 // createDefaultModules directly and keep the synchronous encoder.
 ModuleSet createLiveServerModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
+// The macOS Metal twin; returns nullptr unless COREVIDEO_WITH_METAL (mirrors
+// the D3D11 null factory — each is non-null on at most one platform).
+std::unique_ptr<ICompositor> createMetalCompositor();
 std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
+// macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
+std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();
+std::unique_ptr<IAudioCaptureSource> createCoreAudioCaptureSource();
+// macOS capture twins (AVFoundation cameras / ScreenCaptureKit screens+windows);
+// nullptr unless COREVIDEO_WITH_AVF_CAPTURE / COREVIDEO_WITH_SCK.
+std::unique_ptr<ICaptureDevice> createAvfCaptureDevice();
+std::unique_ptr<ICaptureDevice> createSckScreenCaptureDevice();
 std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();
 std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource();
 std::unique_ptr<IAudioCaptureSource> createWasapiAudioCaptureSource();
 std::unique_ptr<IEncoderSink> createStubRecordingEncoderSink();
+// The macOS AVFoundation/VideoToolbox twin; nullptr unless COREVIDEO_WITH_AVF_ENCODER.
+std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();
 std::unique_ptr<IOutputSender> createSrtOutputSender();
+// SRT delivery over the shared FFmpeg sender (same pipeline as RTMP, MPEG-TS
+// container, srt:// endpoint). Defined in RtmpOutputSenderAdapter.cpp.
+std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();

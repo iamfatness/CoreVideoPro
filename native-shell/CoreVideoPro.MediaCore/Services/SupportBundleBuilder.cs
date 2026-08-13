@@ -284,15 +284,24 @@ public static class SupportBundleBuilder
                             TargetBitrateMbps = proof.TargetBitrateMbps
                         }
                         : null,
+                    // ISO-4 DoD: every ISO stream lists path + encode health so a failed
+                    // ISO is diagnosable from the bundle. Paths are NOT secrets (no keys/
+                    // tokens ride a recording file path), so they are emitted verbatim; no
+                    // new field carries a secret, keeping the redaction guarantee intact.
                     Streams = recording.Streams
                         .Select(stream => new SupportBundleMediaCoreRecordingStream
                         {
                             Kind = stream.Kind,
+                            SourceId = stream.SourceId,
                             ParticipantId = stream.ParticipantId,
+                            DisplayName = stream.DisplayName,
+                            Path = stream.Path,
                             Status = stream.Status,
                             FramesWritten = stream.FramesWritten,
+                            AudioSamples = stream.AudioSamples,
                             DroppedFrames = stream.DroppedFrames,
                             BytesWritten = stream.BytesWritten,
+                            HasAudio = stream.HasAudio,
                             Warning = stream.Warning
                         })
                         .ToArray()
@@ -582,6 +591,30 @@ public static class SupportBundleBuilder
 
                 if (mediaCore.Recording is { Status: "recording" or "warning" } recording)
                 {
+                    // ISO-4 DoD: list ISO paths + encode health in the triage summary so a
+                    // failed ISO is visible without opening the streams array.
+                    var isoStreams = recording.Streams
+                        .Where(stream => stream.Kind is not "program")
+                        .ToArray();
+                    if (isoStreams.Length > 0)
+                    {
+                        var isoWithAudio = isoStreams.Count(stream => stream.HasAudio);
+                        var isoWithWarning = isoStreams.Count(stream => !string.IsNullOrWhiteSpace(stream.Warning));
+                        lines.Add(
+                            $"ISO recordings: {isoStreams.Length} stream(s); {isoWithAudio} with audio; {isoWithWarning} with warnings");
+                        foreach (var stream in isoStreams)
+                        {
+                            var name = string.IsNullOrWhiteSpace(stream.DisplayName)
+                                ? stream.SourceId ?? stream.ParticipantId ?? "?"
+                                : stream.DisplayName;
+                            var warn = string.IsNullOrWhiteSpace(stream.Warning) ? string.Empty : $"; WARNING: {stream.Warning}";
+                            lines.Add(
+                                $"ISO {name}: {stream.Status}; {stream.FramesWritten} frames; " +
+                                $"{(stream.HasAudio ? $"{stream.AudioSamples} audio samples" : "video-only")}; " +
+                                $"{stream.Path ?? "(no path)"}{warn}");
+                        }
+                    }
+
                     var proof = recording.Proof;
                     if (proof is not null)
                     {

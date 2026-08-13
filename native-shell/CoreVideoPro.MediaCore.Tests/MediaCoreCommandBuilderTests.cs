@@ -842,6 +842,41 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.False(command.ExtensionData!["showClock"].GetBoolean());
     }
 
+    [Fact]
+    public void EmitsCanonicalIsoSourceIdsOnRecordingCommands()
+    {
+        // ISO-4: the shell now sends scheme-qualified isoSourceIds (zoom:/capture:) — the
+        // core prefers it over the legacy bare isoParticipantIds.
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "speaker-slides",
+            SceneRoutes = [new("speaker-slides-1", "active-speaker", "mix", null)],
+            Participants = Participants,
+            Recording = true,
+            CanvasOutputProfile = new MediaCoreOutputProfileWire("canvas-1080p60", "1920x1080", 1920, 1080, 60, 18),
+            RecordingOutputProfile = new MediaCoreOutputProfileWire("recording-1080p60", "1920x1080", 1920, 1080, 60, 18, "h264"),
+            RecordingTargets = MediaCoreProductionSyncContext.DefaultRecordingTargets with
+            {
+                IsoSourceIds = ["zoom:p2", "capture:cam0"],
+                IsoParticipantIds = ["p2"]
+            }
+        });
+
+        var output = commands.Single(command => command.Type == "start-program-output");
+        Assert.Equal(["zoom:p2", "capture:cam0"], GetStringArray(output, "isoSourceIds"));
+
+        var targets = commands.Single(command => command.Type == "set-recording-targets");
+        Assert.Equal(["zoom:p2", "capture:cam0"], GetStringArray(targets, "isoSourceIds"));
+
+        var recording = commands.Single(command => command.Type == "start-recording-session");
+        Assert.Equal(["zoom:p2", "capture:cam0"], GetStringArray(recording, "isoSourceIds"));
+        // Session id sanitizes the ':' in capture ids so it stays a valid id fragment.
+        // Suffix ids are SORTED: session identity must be order-insensitive so a
+        // roster flap that reorders the same ISO selection cannot mint a "new"
+        // session and restart the writer mid-recording (2026-08-09 shard burst).
+        Assert.Equal("corevideo-recording-capture-cam0-zoom-p2", GetString(recording, "sessionId"));
+    }
+
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)
     {
         if (command.ExtensionData is null ||

@@ -84,15 +84,33 @@ public sealed class OperatorUiTelemetryPlacementTests
         var xaml = ReadView("AudioPage.xaml");
 
         Assert.Contains("Master processor", xaml, StringComparison.Ordinal);
+        // B2 rack: seven stages in DSP chain order, engage-dim opacity, and
+        // post-mastering meters with target/ceiling guides.
         Assert.Contains("01  INPUT", xaml, StringComparison.Ordinal);
-        Assert.Contains("06  SAFETY LIMITER", xaml, StringComparison.Ordinal);
+        Assert.Contains("04  RIDE", xaml, StringComparison.Ordinal);
+        Assert.Contains("05  GLUE", xaml, StringComparison.Ordinal);
+        Assert.Contains("06  WIDTH", xaml, StringComparison.Ordinal);
+        Assert.Contains("07  CEILING", xaml, StringComparison.Ordinal);
+        Assert.Contains("INPUT  ›  FILTER  ›  TONE  ›  RIDE  ›  GLUE  ›  WIDTH  ›  CEILING", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.MasteringStageGlueOpacity", xaml, StringComparison.Ordinal);
+        Assert.Contains("controls:MasteringGuideMeter", xaml, StringComparison.Ordinal);
+        Assert.Contains("INTEGRATED · POST-MASTER", xaml, StringComparison.Ordinal);
+        Assert.Contains("TRUE PEAK · POST-MASTER", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.MasteringMeterIntegratedLufs", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.MasteringMeterTruePeakDbfs", xaml, StringComparison.Ordinal);
         Assert.Contains("Program L/R · processing order", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Native DSP", xaml, StringComparison.Ordinal);
         Assert.Contains("controls:MasteringToneCurve", xaml, StringComparison.Ordinal);
         Assert.Contains("ViewModel.SelectMasteringCompareSlotCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("ViewModel.ApplyMasteringPresetCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("ViewModel.ResetMasteringStageCommand", xaml, StringComparison.Ordinal);
-        Assert.Contains("A/B stores two complete processor states", xaml, StringComparison.Ordinal);
+        // B2 persistence: slots survive restarts; user presets sit beside the
+        // built-in starting points, adjacent to the meters they affect.
+        Assert.Contains("A/B slots and the whole rack persist across restarts", xaml, StringComparison.Ordinal);
+        Assert.Contains("MY PRESETS", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.SaveMasteringUserPresetCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.RenameMasteringUserPresetCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.DeleteMasteringUserPresetCommand", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.AudioValidationFirstIssue", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Header=\"Mastering rack\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("land next", xaml, StringComparison.OrdinalIgnoreCase);

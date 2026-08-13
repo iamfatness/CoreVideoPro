@@ -2,7 +2,7 @@ using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-public sealed class MediaCoreBridgeService : IAsyncDisposable
+public sealed class MediaCoreBridgeService : IMediaCoreBridge
 {
     private readonly MediaCoreSupervisor _supervisor;
     private readonly object _gate = new();
@@ -104,6 +104,18 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public Task OpenVstEditorAsync(string selection, CancellationToken cancellationToken = default) =>
         _supervisor.OpenVstEditorAsync(selection, cancellationToken);
 
+    // A2: generic VST param bridge + state persistence passthroughs.
+    public Task SetVstParamAsync(string selection, long paramId, double normalized,
+        CancellationToken cancellationToken = default) =>
+        _supervisor.SetVstParamAsync(selection, paramId, normalized, cancellationToken);
+
+    public Task SetVstStateAsync(string selection, string stateBase64,
+        CancellationToken cancellationToken = default) =>
+        _supervisor.SetVstStateAsync(selection, stateBase64, cancellationToken);
+
+    public Task<string?> GetVstStateAsync(string selection, CancellationToken cancellationToken = default) =>
+        _supervisor.GetVstStateAsync(selection, cancellationToken);
+
     public Task SetCaptureAudioSyncOffsetAsync(
         string deviceId,
         int offsetMs,
@@ -185,6 +197,24 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         }
 
         var capture = await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
+    }
+
+    /// <summary>
+    /// Capture-off: stop Zoom raw media in the engine while staying in the
+    /// meeting (see <see cref="MediaCoreSupervisor.StopZoomCaptureAsync"/>).
+    /// Publishing the snapshot keeps the merged meeting state fresh; the spine
+    /// sync stays stopped because the payload factory is already null.
+    /// </summary>
+    public async Task<RawCaptureSnapshot> StopZoomCaptureAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Running)
+        {
+            throw new InvalidOperationException("Media core is not running.");
+        }
+
+        var capture = await _supervisor.StopZoomCaptureAsync(cancellationToken).ConfigureAwait(false);
         PublishCaptureSnapshot(capture);
         return capture;
     }

@@ -36,3 +36,4 @@ scripts/.staging-secrets.local
 rec/
 audiotap/
 audiotap-soak/
+mac-shell/.build/

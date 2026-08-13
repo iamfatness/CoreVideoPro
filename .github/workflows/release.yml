@@ -1,22 +1,43 @@
 name: Release
 
+# Tag-driven release pipeline (docs/beta-engineering-spec.md section D5).
+#
+# Flow: `npm run bump:version -- patch` -> commit -> `git tag vX.Y.Z` -> push tag.
+# The tag produces a SIGNED GitHub Release containing:
+#   - CoreVideoPro-vX.Y.Z.msix        (production-signed MSIX)
+#   - CoreVideoPro.appinstaller       (App Installer manifest, D4 contract)
+#   - CoreVideoPro-symbols-vX.Y.Z.zip (ALL product PDBs -- crash dumps resolve, S1)
+#   - latest.json                     (version + msix URL + sha256, D4 shell check)
+#
+# workflow_dispatch is a BUILD DRY-RUN only: it builds and packs the MSIX but
+# never signs and never creates a release; the artifact is loudly named UNSIGNED.
+# A production release path never silently degrades (spec section 7): every
+# signing/packing gap is a hard failure -- no continue-on-error anywhere.
+#
+# Required repo secrets (see PR / docs/beta-engineering-spec.md D5 for details):
+#   ZOOM_SDK_URL                      private HTTPS URL (R2 presigned / private
+#                                     release asset) to the Zoom Meeting SDK
+#                                     Windows zip. NEVER the public repo.
+#   Signing -- exactly ONE route:
+#     COREVIDEO_SIGN_METADATA_JSON    (route A: Azure Trusted Signing) metadata
+#                                     JSON *content*; the workflow materializes
+#                                     it to a file and provisions the dlib.
+#     AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET   route A creds
+#     COREVIDEO_SIGN_PFX_BASE64       (route B) base64 of the .pfx file
+#     COREVIDEO_SIGN_PFX_PASSWORD     (route B) PFX password
+#     COREVIDEO_SIGN_CERT_THUMBPRINT  (route C, self-hosted runners only)
+#   COREVIDEO_SIGN_EXPECTED_PUBLISHER expected cert subject (publisher gate)
+# Required repo variables:
+#   COREVIDEO_UPDATE_BASE_URL         HTTPS base URL of the update host (D0/D4)
+# Optional repo variables:
+#   COREVIDEO_SIGN_TIMESTAMP_URL      RFC3161 timestamp URL (defaults inside
+#                                     scripts/sign-native-msix.ps1)
+#   COREVIDEO_FFMPEG_URL              HTTPS URL of an FFmpeg shared-build .zip to
+#                                     bundle the RTMP runtime; when unset the
+#                                     release ships WITHOUT ffmpeg (loud warning).
+
 on:
   workflow_dispatch:
-    inputs:
-      platform:
-        description: Packaging platform (win, mac, or all)
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - win
-          - mac
-      publish:
-        description: Upload installers to GitHub Releases (requires tag version in package.json)
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
       - "v*"
@@ -29,40 +50,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Job 0 -- validate: tag == package.json version, all version sources in sync
+  # (D1 stamp check), and a CHANGELOG section exists for the release notes.
   validate:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Verify tag matches package.json version
+        if: github.event_name == 'push'
         run: |
           VERSION=$(node -p "require('./package.json').version")
           TAG="${GITHUB_REF_NAME#v}"
           if [ "$VERSION" != "$TAG" ]; then
-            echo "package.json version ($VERSION) must match tag ($TAG)"
+            echo "::error::package.json version ($VERSION) must match tag ($TAG). Run 'npm run bump:version -- <level>' and re-tag."
             exit 1
           fi
-      - name: Extract release notes
-        id: notes
-        run: |
-          BODY=$(node scripts/release-notes.mjs "${GITHUB_REF_NAME}")
-          {
-            echo "body<<EOF"
-            echo "$BODY"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+      - name: Version stamp sync check (D1)
+        # package.json is the single version source of truth; appxmanifest +
+        # csproj must already be stamped (scripts/stamp-version.mjs, PR #293).
+        run: npm run stamp:version:check
+      - name: Release notes exist for this version
+        if: github.event_name == 'push'
+        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME"
 
-  pack-native-windows:
-    needs: [validate]
-    if: >-
-      always() &&
-      (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
-      (github.event_name == 'push' ||
-      github.event.inputs.platform == 'all' ||
-      github.event.inputs.platform == 'win')
+  release-windows:
+    needs: validate
     runs-on: windows-latest
-    env:
-      COREVIDEO_PUBLISH: ${{ github.event_name == 'push' && 'always' || (github.event.inputs.publish && 'always' || 'never') }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -73,15 +93,276 @@ jobs:
         with:
           dotnet-version: "9.0.x"
       - run: npm ci
-      - name: Package Windows native shell
-        # Requires .NET 9 SDK (setup-dotnet) and Node 22 (setup-node). package-native.ps1
-        # throws a clear error if dotnet or node is missing from PATH.
-        run: npm run pack:native
-      - name: Upload Windows native artifacts
-        if: env.COREVIDEO_PUBLISH == 'never'
+
+      - name: Read version
+        id: version
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+
+      - name: Stage Zoom SDK from private source
+        env:
+          ZOOM_SDK_URL: ${{ secrets.ZOOM_SDK_URL }}
+        run: |
+          if (-not $env:ZOOM_SDK_URL) {
+            Write-Host "::error::ZOOM_SDK_URL secret is not set. The release build requires the Zoom Meeting SDK for Windows from a PRIVATE source (spec D5/D0.3): upload the SDK zip to a private location (R2 bucket presigned URL, or a private repo release asset URL with an embedded token) and set the ZOOM_SDK_URL repo secret to that HTTPS URL. The SDK must NEVER be fetched from or committed to the public repo."
+            exit 1
+          }
+          $archive = Join-Path $env:RUNNER_TEMP "zoom-sdk.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "zoom-sdk"
+          Write-Host "[zoom-sdk] downloading SDK archive from private source..."
+          Invoke-WebRequest -Uri $env:ZOOM_SDK_URL -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $extractDir -Force
+          # Locate the SDK arch root: the directory whose h/zoom_sdk.h exists
+          # (handles nested package folders and x64 subdirectories).
+          $header = Get-ChildItem -Path $extractDir -Recurse -Filter "zoom_sdk.h" |
+            Where-Object { $_.Directory.Name -eq "h" } |
+            Select-Object -First 1
+          if (-not $header) {
+            Write-Host "::error::Downloaded Zoom SDK archive does not contain h/zoom_sdk.h anywhere. Check that ZOOM_SDK_URL points at the Zoom Meeting SDK for Windows zip."
+            exit 1
+          }
+          $sdkRoot = $header.Directory.Parent.FullName
+          if (-not (Test-Path (Join-Path $sdkRoot "lib\sdk.lib"))) {
+            Write-Host "::error::Zoom SDK at $sdkRoot has h/zoom_sdk.h but no lib/sdk.lib; the archive layout is incomplete."
+            exit 1
+          }
+          Write-Host "[zoom-sdk] SDK arch root: $sdkRoot"
+          Add-Content -Path $env:GITHUB_ENV -Value "ZOOM_SDK_DIR=$sdkRoot"
+
+      - name: Provision FFmpeg runtime (optional, RTMP)
+        env:
+          COREVIDEO_FFMPEG_URL: ${{ vars.COREVIDEO_FFMPEG_URL }}
+        run: |
+          if (-not $env:COREVIDEO_FFMPEG_URL) {
+            Write-Host "::warning::COREVIDEO_FFMPEG_URL repo variable is not set -- this release will NOT bundle the FFmpeg runtime, so RTMP streaming is disabled in the shipped package (corevideo-ffmpeg-runtime.json will record status=missing). Set the variable to an FFmpeg shared-build .zip URL to bundle it."
+            exit 0
+          }
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "ffmpeg"
+          Invoke-WebRequest -Uri $env:COREVIDEO_FFMPEG_URL -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $extractDir -Force
+          $ffmpegExe = Get-ChildItem -Path $extractDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          if (-not $ffmpegExe) {
+            Write-Host "::error::COREVIDEO_FFMPEG_URL archive contained no ffmpeg.exe."
+            exit 1
+          }
+          Write-Host "[ffmpeg] runtime bin: $($ffmpegExe.DirectoryName)"
+          Add-Content -Path $env:GITHUB_ENV -Value "COREVIDEO_FFMPEG_BIN_DIR=$($ffmpegExe.DirectoryName)"
+
+      - name: Build native core (Release + PDBs)
+        # build-native-dev.ps1 stages the Zoom runtime, configures CMake with all
+        # production adapters, builds every corevideo-* target Release, and
+        # stages each binary AND its .pdb (native/CMakeLists.txt /Zi /DEBUG).
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/build-native-dev.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package MSIX
+        run: npm run pack:native:msix
+
+      - name: Require a real MSIX (no silent fallback in a release)
+        run: |
+          # package-native-msix.ps1 degrades to an unsigned loose layout when
+          # MakeAppx/publish fails -- acceptable for dev, NEVER for a release.
+          if (-not (Test-Path "artifacts/native/CoreVideoPro.msix")) {
+            Write-Host "::error::pack:native:msix did not produce artifacts/native/CoreVideoPro.msix (it fell back to the loose layout). A release requires a real MSIX -- see the packaging step log."
+            exit 1
+          }
+          if ($env:COREVIDEO_FFMPEG_BIN_DIR) {
+            $manifestPath = "native-shell/CoreVideoPro.WinUI/msix-payload/corevideo-ffmpeg-runtime.json"
+            $status = (Get-Content $manifestPath -Raw | ConvertFrom-Json).status
+            if ($status -ne "staged") {
+              Write-Host "::error::FFmpeg runtime was provisioned but the MSIX payload manifest reports status '$status' (expected 'staged')."
+              exit 1
+            }
+          }
+
+      - name: Assemble symbols bundle
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $stage = Join-Path $env:RUNNER_TEMP "symbols"
+          New-Item -ItemType Directory -Path (Join-Path $stage "native") -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $stage "shell") -Force | Out-Null
+          # Every product PDB from the native build tree. All product binaries
+          # (exes + the vcam DLL) are corevideo-*; this skips MSVC intermediate
+          # vc*.pdb compiler junk but must not skip any product PDB.
+          $nativePdbs = Get-ChildItem -Path "native/build-dev" -Recurse -Filter "corevideo-*.pdb" |
+            Group-Object Name | ForEach-Object { $_.Group | Sort-Object LastWriteTime -Descending | Select-Object -First 1 }
+          if (-not $nativePdbs) {
+            Write-Host "::error::No corevideo-*.pdb found under native/build-dev -- the native build did not emit symbols. Crash dumps from this release would be unreadable (spec S1); refusing to release without symbols."
+            exit 1
+          }
+          foreach ($required in @("corevideo-native.pdb", "corevideo-zoom-engine.pdb", "corevideo-virtualcam.pdb")) {
+            if (-not ($nativePdbs.Name -contains $required)) {
+              Write-Host "::error::Symbols bundle is missing $required. Every product PDB must ship (spec S1)."
+              exit 1
+            }
+          }
+          $nativePdbs | Copy-Item -Destination (Join-Path $stage "native")
+          # Shell PDBs (managed) from the WinUI Release build the MSIX packed.
+          $shellPdbs = Get-ChildItem -Path "native-shell/CoreVideoPro.WinUI/bin/Release" -Recurse -Filter "*.pdb" -ErrorAction SilentlyContinue |
+            Group-Object Name | ForEach-Object { $_.Group | Sort-Object LastWriteTime -Descending | Select-Object -First 1 }
+          if ($shellPdbs) {
+            $shellPdbs | Copy-Item -Destination (Join-Path $stage "shell")
+          } else {
+            Write-Host "::warning::No shell PDBs found under native-shell/CoreVideoPro.WinUI/bin/Release."
+          }
+          New-Item -ItemType Directory -Path "artifacts" -Force | Out-Null
+          $zip = "artifacts/CoreVideoPro-symbols-v$version.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          Write-Host "[symbols] bundle contents:"
+          Get-ChildItem -Path $stage -Recurse -File | ForEach-Object { Write-Host "  $($_.FullName.Substring($stage.Length + 1)) ($($_.Length) bytes)" }
+
+      # ---- Everything below runs only for a real tag release. ----
+
+      - name: Materialize signing inputs (exactly one route)
+        if: github.event_name == 'push'
+        env:
+          COREVIDEO_SIGN_METADATA_JSON: ${{ secrets.COREVIDEO_SIGN_METADATA_JSON }}
+          COREVIDEO_SIGN_PFX_BASE64: ${{ secrets.COREVIDEO_SIGN_PFX_BASE64 }}
+          COREVIDEO_SIGN_CERT_THUMBPRINT: ${{ secrets.COREVIDEO_SIGN_CERT_THUMBPRINT }}
+        run: |
+          $routes = 0
+          if ($env:COREVIDEO_SIGN_METADATA_JSON) {
+            # Route A: Azure Trusted Signing. Materialize the metadata JSON and
+            # provision the signing dlib (signtool /dlib) from NuGet.
+            $meta = Join-Path $env:RUNNER_TEMP "trusted-signing-metadata.json"
+            Set-Content -Path $meta -Value $env:COREVIDEO_SIGN_METADATA_JSON -NoNewline -Encoding utf8
+            $clientDir = Join-Path $env:RUNNER_TEMP "trusted-signing-client"
+            nuget install Microsoft.Trusted.Signing.Client -OutputDirectory $clientDir -NonInteractive | Out-Host
+            $dlib = Get-ChildItem -Path $clientDir -Recurse -Filter "Azure.CodeSigning.Dlib.dll" |
+              Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
+            if (-not $dlib) {
+              Write-Host "::error::Microsoft.Trusted.Signing.Client was installed but no x64 Azure.CodeSigning.Dlib.dll was found."
+              exit 1
+            }
+            Add-Content -Path $env:GITHUB_ENV -Value "COREVIDEO_SIGN_METADATA=$meta"
+            Add-Content -Path $env:GITHUB_ENV -Value "COREVIDEO_SIGN_DLIB=$($dlib.FullName)"
+            $routes++
+          }
+          if ($env:COREVIDEO_SIGN_PFX_BASE64) {
+            # Route B: classic PFX. Materialize the cert file from base64.
+            $pfx = Join-Path $env:RUNNER_TEMP "signing-cert.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:COREVIDEO_SIGN_PFX_BASE64))
+            Add-Content -Path $env:GITHUB_ENV -Value "COREVIDEO_SIGN_PFX_PATH=$pfx"
+            $routes++
+          }
+          if ($env:COREVIDEO_SIGN_CERT_THUMBPRINT) {
+            # Route C: cert-store thumbprint -- only meaningful on a self-hosted
+            # runner that has the cert installed. Passed through as-is.
+            $routes++
+          }
+          if ($routes -ne 1) {
+            Write-Host "::error::Exactly ONE signing route must be configured via repo secrets (found $routes): [A] COREVIDEO_SIGN_METADATA_JSON (+ AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET) for Azure Trusted Signing, [B] COREVIDEO_SIGN_PFX_BASE64 (+ COREVIDEO_SIGN_PFX_PASSWORD), or [C] COREVIDEO_SIGN_CERT_THUMBPRINT (self-hosted only). See scripts/sign-native-msix.ps1 (PR #295) for the full contract. A release is NEVER produced unsigned (spec section 7)."
+            exit 1
+          }
+
+      - name: Sign MSIX (production mode, hard-fail)
+        if: github.event_name == 'push'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          COREVIDEO_SIGN_EXPECTED_PUBLISHER: ${{ secrets.COREVIDEO_SIGN_EXPECTED_PUBLISHER }}
+          COREVIDEO_SIGN_PFX_PASSWORD: ${{ secrets.COREVIDEO_SIGN_PFX_PASSWORD }}
+          COREVIDEO_SIGN_CERT_THUMBPRINT: ${{ secrets.COREVIDEO_SIGN_CERT_THUMBPRINT }}
+          COREVIDEO_SIGN_TIMESTAMP_URL: ${{ vars.COREVIDEO_SIGN_TIMESTAMP_URL }}
+        # scripts/sign-native-msix.ps1 -Mode production (PR #295) hard-fails
+        # (exit 2-7) on any gap: missing signtool, missing/ambiguous cert,
+        # publisher mismatch, sign/timestamp/verify failure. This step failing
+        # MUST fail the workflow -- never add continue-on-error here.
+        run: npm run sign:native-msix:prod
+
+      - name: Generate .appinstaller (D4 contract)
+        if: github.event_name == 'push'
+        env:
+          COREVIDEO_UPDATE_BASE_URL: ${{ vars.COREVIDEO_UPDATE_BASE_URL }}
+        run: |
+          if (-not $env:COREVIDEO_UPDATE_BASE_URL) {
+            Write-Host "::error::COREVIDEO_UPDATE_BASE_URL repo variable is not set. The .appinstaller needs the stable HTTPS base URL of the update host (D0/D4 hosting decision, e.g. an R2 bucket behind a custom domain). Set the variable and re-run."
+            exit 1
+          }
+          $version = "${{ steps.version.outputs.version }}"
+          $base = $env:COREVIDEO_UPDATE_BASE_URL.TrimEnd('/')
+          node scripts/make-appinstaller.mjs `
+            --version $version `
+            --msix-url "$base/CoreVideoPro-v$version.msix" `
+            --appinstaller-url "$base/CoreVideoPro.appinstaller" `
+            --output "artifacts/native/CoreVideoPro.appinstaller"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Generate latest.json
+        if: github.event_name == 'push'
+        env:
+          COREVIDEO_UPDATE_BASE_URL: ${{ vars.COREVIDEO_UPDATE_BASE_URL }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $base = $env:COREVIDEO_UPDATE_BASE_URL.TrimEnd('/')
+          $msix = Get-Item "artifacts/native/CoreVideoPro.msix"
+          $latest = [ordered]@{
+            version = $version
+            msixUrl = "$base/CoreVideoPro-v$version.msix"
+            appinstallerUrl = "$base/CoreVideoPro.appinstaller"
+            sha256 = (Get-FileHash -Path $msix.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            sizeBytes = $msix.Length
+            publishedAt = (Get-Date).ToUniversalTime().ToString("o")
+          } | ConvertTo-Json
+          Set-Content -Path "artifacts/latest.json" -Value $latest -Encoding utf8
+          Write-Host $latest
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $tag = $env:GITHUB_REF_NAME
+          $releaseDir = "artifacts/release"
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+          Copy-Item "artifacts/native/CoreVideoPro.msix" "$releaseDir/CoreVideoPro-v$version.msix"
+          Copy-Item "artifacts/native/CoreVideoPro.appinstaller" "$releaseDir/CoreVideoPro.appinstaller"
+          Copy-Item "artifacts/CoreVideoPro-symbols-v$version.zip" $releaseDir
+          Copy-Item "artifacts/latest.json" $releaseDir
+          $notes = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          node scripts/release-notes.mjs $tag | Out-File -FilePath $notes -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $assets = Get-ChildItem -Path $releaseDir -File | ForEach-Object { $_.FullName }
+          gh release create $tag --title "CoreVideo Pro v$version" --notes-file $notes --verify-tag @assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish to update host (TODO -- D0/D4 hosting decision)
+        if: github.event_name == 'push'
+        env:
+          COREVIDEO_UPDATE_BASE_URL: ${{ vars.COREVIDEO_UPDATE_BASE_URL }}
+        run: |
+          # TODO(D0/D4): automate once the owner picks the update host + creds
+          # (spec D4 recommends an R2 bucket behind the existing Cloudflare
+          # account with a custom domain). Deliberately fail-soft: the signed
+          # release exists either way; auto-update just won't see it until the
+          # files below are published.
+          $version = "${{ steps.version.outputs.version }}"
+          $base = $env:COREVIDEO_UPDATE_BASE_URL.TrimEnd('/')
+          Write-Host "::warning::Update-host publish is NOT automated yet. To light up install/auto-update, upload these GitHub Release assets to the update host so these URLs resolve:"
+          Write-Host "  CoreVideoPro-v$version.msix   -> $base/CoreVideoPro-v$version.msix"
+          Write-Host "  CoreVideoPro.appinstaller     -> $base/CoreVideoPro.appinstaller"
+          Write-Host "  latest.json                   -> $base/latest.json"
+          Write-Host "Example (R2): wrangler r2 object put <bucket>/CoreVideoPro.appinstaller --file CoreVideoPro.appinstaller (+ msix + latest.json), or the R2 dashboard."
+
+      # ---- Dry-run (workflow_dispatch) artifacts: explicitly UNSIGNED. ----
+
+      - name: Upload UNSIGNED MSIX (dry-run only)
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: corevideo-native-win
-          path: artifacts/native/win-unpacked
+          name: CoreVideoPro-msix-UNSIGNED-dry-run
+          path: artifacts/native/CoreVideoPro.msix
           if-no-files-found: error
 
+      - name: Upload symbols bundle (dry-run only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoreVideoPro-symbols-dry-run
+          path: artifacts/CoreVideoPro-symbols-v*.zip
+          if-no-files-found: error

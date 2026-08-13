@@ -78,6 +78,11 @@ struct RtmpFfmpegArgsConfig {
   // handle exposed as "pipe:3"; on POSIX it is the read end fd exposed as
   // "pipe:<fd>" or a named-pipe path.
   std::string audioInput = "pipe:3";
+  // Output container. FLV is RTMP's transport; SRT carries MPEG-TS. Everything
+  // else in this builder (raw pipes, pacing, encoder selection, AAC) is shared
+  // between the two, which is why SRT delivery rides this same path instead of
+  // linking libsrt into the core.
+  std::string container = "flv";
 };
 
 inline std::string quoteRtmpArgument(const std::string& value) {
@@ -118,7 +123,15 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     args << " -re -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
          << " -ac " << channels << " -i " << config.audioInput;
   } else {
-    args << " -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
+    // -re is REQUIRED here. lavfi generates silence as fast as the CPU allows,
+    // so without wallclock pacing the AAC stream races seconds ahead of the
+    // 60fps video pipe. The muxer then emits audio packets far in advance of the
+    // first video packet, and an RTMP endpoint probing the stream finds an
+    // advertised h264 track with no decoder configuration ("unspecified size")
+    // and closes the connection before any picture arrives. Symptom: the stream
+    // connects and carries perfect audio with NO VIDEO. The real-audio branch
+    // above already paces for exactly this reason; the silent branch did not.
+    args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
   }
   args << " -map 0:v:0 -map 1:a:0"
        << " -c:v " << config.videoEncoder << config.videoEncoderExtraArgs
@@ -132,7 +145,8 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
        // Keep the audio clock tied to wallclock-paced video so A/V stays in sync
        // when the PCM pipe briefly under/overruns relative to the frame pipe.
        << " -af aresample=async=1:first_pts=0"
-       << " -f flv " << quoteRtmpArgument(config.endpoint);
+       << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
+       << quoteRtmpArgument(config.endpoint);
   return args.str();
 }
 

@@ -105,6 +105,17 @@ Json JsonRpcServer::handle(const Json& request) {
                        });
   }
 
+  // Capture-off: stop Zoom raw media (recording indicator + frames) while
+  // staying in the meeting. Non-blocking — the engine command is enqueued for
+  // ZoomEngineRuntime's sender thread, so handling this under coreMutex is
+  // sub-ms; the snapshot carries the engine-reported `rawMediaActive`.
+  if (hasType(request, "zoom-stop-capture")) {
+    return success(id, Json::Object{
+                           {"type", "zoom-stop-capture"},
+                           {"snapshot", mediaCore_.stopZoomCapture()},
+                       });
+  }
+
   if (hasType(request, "zoom-snapshot")) {
     return success(id, Json::Object{
                            {"type", "zoom-snapshot"},
@@ -233,8 +244,41 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"type", "ack"}});
   }
 
+  // A2: state pull needs a REAL response payload (the base64 blob), so it gets
+  // a dedicated route instead of the applyCommands snapshot path. Control
+  // plane: the state round trip runs on this command thread against the
+  // host's dedicated state events, never the audio exchange.
+  if (hasType(request, "get-vst-state")) {
+    const Json state = mediaCore_.getVstInsertState(request);
+    const std::string error = state.getString("error");
+    if (!error.empty()) {
+      return failure(id, "vst-state-error", error);
+    }
+    return success(id, Json::Object{{"type", "vst-state"}, {"state", state}});
+  }
+
+  // A2: slider drags send set-vst-param at gesture rate — a cheap ack instead
+  // of a full snapshot rebuild per tick. Both handlers touch only the plugin
+  // host leaf mutexes (no coreMutex), so they are safe on this thread.
+  if (hasType(request, "set-vst-param")) {
+    mediaCore_.setVstInsertParam(request);
+    return success(id, Json::Object{{"type", "ack"}});
+  }
+  if (hasType(request, "set-vst-state")) {
+    mediaCore_.setVstInsertState(request);
+    return success(id, Json::Object{{"type", "ack"}});
+  }
+
+  // A1 regression guard (owner-reported "Open controls shows no plugin UI,
+  // ever"): the shell sends open-vst-editor (and can send scan-vst-plugins) as
+  // a TOP-LEVEL request, not inside a media-core-sync commands batch. Before
+  // these types were routed here the request fell through to the
+  // protocol-error below — a silently swallowed rejection, so the editor
+  // command never reached MediaCore::openVstPluginEditor. (set-vst-param /
+  // set-vst-state have their own cheap-ack routes above.)
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
-      hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset")) {
+      hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset") ||
+      hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins")) {
     return success(id, Json::Object{{"snapshot", mediaCore_.applyCommands(commandBatch(request))}});
   }
 
@@ -423,10 +467,32 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
+    // Past this per-tick render cost the loop is saturated and must yield.
+    constexpr long long kRenderYieldThresholdMs = 12;
+    constexpr long long kRenderYieldMs = 6;
     long long frames = 0;
     long long lockWaitUs = 0;
     long long renderUs = 0;
+    long long drainUs = 0;
     auto rateStamp = std::chrono::steady_clock::now();
+    // FIXED-CADENCE pacing. The deadline used to be `t0 + budget` with t0 read at
+    // the top of EVERY iteration, so each frame's overshoot silently became the
+    // next frame's start: a pure relative deadline that can only ever lose time.
+    // Measured 17.27ms/frame => 57.9fps on a tick with 10ms of headroom — the
+    // render was never the problem, the clock was. Accumulate from a fixed anchor
+    // so a late frame is followed by a SHORTER wait and the average holds 60,
+    // with bounded catch-up (same discipline as the audio worker's pacer) so a
+    // genuinely overrunning tick can't build unpayable debt.
+    constexpr long long kFrameBudgetUs = 16666;  // 60fps
+    constexpr int kMaxCatchUpFrames = 3;
+    // A 60.0 AVERAGE can still hide judder: one 33ms frame plus one 0ms frame
+    // averages perfectly and looks broken on motion. Broadcast switchers are
+    // judged on DROPPED frames, not mean fps, so count intervals that ran past
+    // 1.5x budget (a frame the operator/stream actually lost) and keep the worst.
+    long long lateFrames = 0;
+    long long worstFrameUs = 0;
+    auto lastFrameStart = std::chrono::steady_clock::now();
+    auto nextDeadline = std::chrono::steady_clock::now() + std::chrono::microseconds(kFrameBudgetUs);
 #ifdef _WIN32
     // Raise the system timer resolution to 1ms so sub-frame sleeps in this loop are
     // accurate. The Windows default (~15.6ms) rounds any sleep up to a full tick, which
@@ -436,6 +502,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
       {
+        // Explicit long long: microseconds::rep is `long` on Linux/GCC and
+        // `long long` on MSVC, so an `auto` here makes the std::max below a
+        // deduction failure that breaks the Linux build only.
+        const long long intervalUs = static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t0 - lastFrameStart).count());
+        if (intervalUs > kFrameBudgetUs * 3 / 2) {
+          ++lateFrames;
+        }
+        worstFrameUs = (std::max)(worstFrameUs, intervalUs);
+        lastFrameStart = t0;
+      }
+      long long tickRenderMs = 0;
+      {
         std::unique_lock<std::mutex> lock(coreMutex);
         // Increment 6 guardrail: sanctioned long-hold site — the video-only GPU
         // tick typically holds ~1-2ms; warn (rate-capped) past half a frame.
@@ -443,6 +522,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
                                             core::LockHoldGuardrail::kRenderTickBudgetUs);
         const auto t1 = std::chrono::steady_clock::now();
         mediaCore_.renderDisplayTick();
+        // The event drain + stringify + enqueue below runs UNDER coreMutex but
+        // outside MediaCore's own stage instrumentation, so it was invisible in
+        // the "[render] stages" line — the unaccounted remainder of a long tick.
+        // Participant texture events scale with the roster (10x1080p = 10 events
+        // per tick, each JSON-serialized here), so it must be attributed.
+        const auto tDrain = std::chrono::steady_clock::now();
         for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
           enqueueFrame(event.stringify());
         }
@@ -462,6 +547,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto t2 = std::chrono::steady_clock::now();
         lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+        drainUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - tDrain).count();
         // The 120-frame average below can hide a single multi-second stall; surface
         // any individual coreMutex acquire or render tick that blocks > 200ms.
         const auto holdLockMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -470,17 +556,38 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           std::fprintf(stderr, "[render] STALL lockWait=%lldms render=%lldms\n",
                        static_cast<long long>(holdLockMs), static_cast<long long>(holdRenderMs));
         }
+        tickRenderMs = holdRenderMs;
+      }
+      // Wake the program-video-out worker HERE — coreMutex is released. Doing it
+      // inside the scope above woke a thread that immediately blocked on the lock
+      // we still held, and cost operator command p99 51ms -> 107ms.
+      mediaCore_.notifyProgramFramePublished();
+      // COMMAND PRIORITY. A saturated tick (a real show: several 1080p Zoom
+      // feeds plus capture sources pushed this to ~34ms) exceeds the frame
+      // budget, so the pacer below sleeps zero and this loop re-acquires
+      // coreMutex immediately — the lock is then held ~100% of wall time and
+      // NO request can ever acquire it, so every shell command times out
+      // (joins, scene syncs, assigns). Yield a fixed slice with the lock
+      // RELEASED whenever the tick overran. Dropping a frame is invisible;
+      // a timed-out command breaks the app.
+      if (tickRenderMs > kRenderYieldThresholdMs) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kRenderYieldMs));
       }
       if (++frames >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
         std::fprintf(stderr,
-                     "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  (avg/frame over %lld)\n",
+                     "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
+                     "dropped=%lld  worst=%.1fms  (avg/frame over %lld)\n",
                      sec > 0 ? frames / sec : 0.0, lockWaitUs / (frames * 1000.0),
-                     renderUs / (frames * 1000.0), frames);
+                     renderUs / (frames * 1000.0), drainUs / (frames * 1000.0),
+                     lateFrames, worstFrameUs / 1000.0, frames);
         frames = 0;
         lockWaitUs = 0;
         renderUs = 0;
+        drainUs = 0;
+        lateFrames = 0;
+        worstFrameUs = 0;
         rateStamp = now;
       }
       // Precise 60fps pacer. sleep_for alone overshoots ~1-2ms even at
@@ -491,17 +598,26 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // (Win10 1803+) gives ~0.5ms wakeup precision without burning the CPU; only a
       // ~200us yield tail remains to absorb the residual jitter. Heavy iterations
       // (work >= budget) blow past the deadline and run flat out, as before.
-      constexpr long long kFrameBudgetUs = 16666;  // 60fps
-      const auto deadline = t0 + std::chrono::microseconds(kFrameBudgetUs);
+      const auto deadline = nextDeadline;
 #ifdef _WIN32
       static thread_local HANDLE pacerTimer = ::CreateWaitableTimerExW(
           nullptr, nullptr,
           CREATE_WAITABLE_TIMER_HIGH_RESOLUTION | CREATE_WAITABLE_TIMER_MANUAL_RESET,
           TIMER_ALL_ACCESS);
-      // 500us tail: the high-res timer still wakes ~300-400us late under load; a 200us
-      // guard measured 58.7fps (frames slipping past the deadline). 500us re-locks 60
-      // while spinning 3x less than the old 1.5ms guard.
-      constexpr auto kSpinGuardUs = std::chrono::microseconds(500);
+      // 200us tail. The old 500us guard existed to mask the RELATIVE-deadline pacer:
+      // with `deadline = t0 + budget` every overshoot became the next frame's start,
+      // so a 200us guard measured 58.7fps and 500us was needed to "re-lock" 60. The
+      // deadline is now accumulated from a fixed anchor (above), which reclaims that
+      // time by construction, so the guard no longer has drift to hide. Re-measured
+      // on the owner's rig at 8x1080p60, 3 interleaved 40s drill runs each:
+      //   500us -> 59.9/60.0/60.0 fps, 0 dropped, 64.1/63.3/64.5 s core CPU
+      //   200us -> 60.0/60.0/60.0 fps, 0 dropped, 60.7/60.7/55.7 s core CPU
+      // Same delivery (90-91%) and coreMutex over-budget (1-2%) either way; the CPU
+      // ranges do not overlap. That reclaimed spin is in the exact loop implicated in
+      // glitching OTHER apps' audio during the virtual-camera work, so it is worth
+      // real money. Do not raise this without re-running the drill — and never raise
+      // it to paper over a pacing bug again.
+      constexpr auto kSpinGuardUs = std::chrono::microseconds(200);
       auto nowPace = std::chrono::steady_clock::now();
       if (pacerTimer != nullptr && nowPace + kSpinGuardUs < deadline) {
         const auto waitUs =
@@ -525,6 +641,15 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       while (std::chrono::steady_clock::now() < deadline) {
         // Tiny tail to absorb timer overshoot; yield keeps it civil.
         std::this_thread::yield();
+      }
+      nextDeadline += std::chrono::microseconds(kFrameBudgetUs);
+      // Bounded catch-up: if the tick genuinely overran (heavy show, thermal
+      // throttle) don't try to reclaim unbounded lost frames by free-running —
+      // re-anchor and keep real-time cadence from here.
+      const auto afterPace = std::chrono::steady_clock::now();
+      if (nextDeadline + std::chrono::microseconds(kFrameBudgetUs * kMaxCatchUpFrames) <
+          afterPace) {
+        nextDeadline = afterPace + std::chrono::microseconds(kFrameBudgetUs);
       }
     }
   });
@@ -613,6 +738,48 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         // else: behind but recoverable — loop immediately (catch-up tick).
       } else {
         std::this_thread::sleep_until(deadline);
+      }
+    }
+  });
+
+  // Dedicated PROGRAM VIDEO OUT worker. Everything leaving the app used to be
+  // sampled by the audio worker above, whose 20ms period is an AUDIO constant —
+  // so a 60fps program was recorded and streamed at ~51fps. Raising that worker
+  // to 60Hz would break the 960-sample block contract (spec 4.2) that its pacer
+  // exists to hold, so video gets its own grid at the OUTPUT frame rate.
+  //
+  // Same absolute-deadline pacer as the audio worker and for the same reason: a
+  // relative sleep_for adds the Windows overshoot (~1ms even at
+  // timeBeginPeriod(1)) to every period, which can only approach the target from
+  // below. Unlike audio there is nothing to "catch up" — a late video tick has
+  // no buffered samples to shed — so a blown deadline just re-anchors.
+  mediaCore_.setVideoOutputTickRunning(true);
+  std::thread videoOutputThread([&] {
+    // NO PACER. renderVideoOutputTick BLOCKS until the compositor publishes a new
+    // program frame (bounded ~20ms so it can still re-evaluate output state when
+    // the program is idle), so the wait IS the pacing. Two paced designs were
+    // measured and both were wrong: at 60Hz the sampler aliased against the 60Hz
+    // producer and muxed 51.7fps, and at 120Hz the extra coreMutex acquisitions
+    // dropped the 8x1080p60 drill to 57.4fps with a 141ms command p99.
+    long long ticks = 0;
+    long long workUs = 0;
+    auto rateStamp = std::chrono::steady_clock::now();
+    while (!stopping.load()) {
+      const auto t0 = std::chrono::steady_clock::now();
+      mediaCore_.renderVideoOutputTick(coreMutex);  // blocks until a new frame
+      workUs += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - t0)
+                    .count();
+      if (++ticks >= 120) {
+        const auto now = std::chrono::steady_clock::now();
+        const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        // `work` here INCLUDES the wait for the next frame, so it tracks the
+        // frame interval rather than the cost of a submit.
+        std::fprintf(stderr, "[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+                     sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
+        ticks = 0;
+        workUs = 0;
+        rateStamp = now;
       }
     }
   });
@@ -781,6 +948,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   if (zoomPumpThread.joinable()) {
     zoomPumpThread.join();
   }
+  if (videoOutputThread.joinable()) {
+    videoOutputThread.join();
+  }
+  mediaCore_.setVideoOutputTickRunning(false);
   if (audioOutputThread.joinable()) {
     audioOutputThread.join();
   }

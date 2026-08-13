@@ -157,4 +157,71 @@ public sealed class NativeUvcCapturePolicyTests
         using var response = JsonDocument.Parse(json);
         Assert.Null(CoreProtocolParser.TryParseCaptureDevices(response));
     }
+
+    [Fact]
+    public void FindDevice_MatchesRegardlessOfConnectionState()
+    {
+        // Unlike FindConnectedDevice, the first-frame loop must see the device
+        // even after the core downgrades it to "error" (the watchdog fired).
+        var devices = new[]
+        {
+            new NativeCaptureDeviceStatus { Id = "cam", ConnectionState = "error", Warning = "no frames" }
+        };
+
+        Assert.Null(NativeUvcCapturePolicy.FindConnectedDevice(devices, "cam", null));
+        var found = NativeUvcCapturePolicy.FindDevice(devices, "cam", null);
+        Assert.NotNull(found);
+        Assert.Equal("error", found!.ConnectionState);
+    }
+
+    [Fact]
+    public void EvaluateFirstFrame_ConfirmsOnceSignalPresent()
+    {
+        var device = new NativeCaptureDeviceStatus { Id = "cam", ConnectionState = "connected", SignalPresent = true };
+        Assert.Equal(
+            NativeUvcCapturePolicy.FirstFrameOutcome.Confirmed,
+            NativeUvcCapturePolicy.EvaluateFirstFrame(device, elapsedMs: 100));
+    }
+
+    [Fact]
+    public void EvaluateFirstFrame_WaitsWhileConnectedWithinWindow()
+    {
+        // connect() reports "connected" the instant the reader starts — before
+        // any frame. That is NOT a failure yet; keep polling.
+        var device = new NativeCaptureDeviceStatus { Id = "cam", ConnectionState = "connected", SignalPresent = false };
+        Assert.Equal(
+            NativeUvcCapturePolicy.FirstFrameOutcome.Waiting,
+            NativeUvcCapturePolicy.EvaluateFirstFrame(device, elapsedMs: 500));
+    }
+
+    [Fact]
+    public void EvaluateFirstFrame_FallsBackWhenWatchdogErrorsTheDevice()
+    {
+        // The native no-first-frame watchdog downgraded "connected" → "error"
+        // and released the device: fall back to the bridge immediately, even
+        // well inside the wait window.
+        var device = new NativeCaptureDeviceStatus { Id = "cam", ConnectionState = "error", SignalPresent = false };
+        Assert.Equal(
+            NativeUvcCapturePolicy.FirstFrameOutcome.FallBack,
+            NativeUvcCapturePolicy.EvaluateFirstFrame(device, elapsedMs: 500));
+    }
+
+    [Fact]
+    public void EvaluateFirstFrame_FallsBackWhenDeviceDisappears()
+    {
+        Assert.Equal(
+            NativeUvcCapturePolicy.FirstFrameOutcome.FallBack,
+            NativeUvcCapturePolicy.EvaluateFirstFrame(null, elapsedMs: 500));
+    }
+
+    [Fact]
+    public void EvaluateFirstFrame_FallsBackWhenWindowElapsesWithNoFrame()
+    {
+        // Belt-and-braces: even if the device stays "connected" but never
+        // delivers (e.g. the watchdog is disabled), the shell still gives up.
+        var device = new NativeCaptureDeviceStatus { Id = "cam", ConnectionState = "connected", SignalPresent = false };
+        Assert.Equal(
+            NativeUvcCapturePolicy.FirstFrameOutcome.FallBack,
+            NativeUvcCapturePolicy.EvaluateFirstFrame(device, NativeUvcCapturePolicy.FirstFrameTimeoutMs));
+    }
 }

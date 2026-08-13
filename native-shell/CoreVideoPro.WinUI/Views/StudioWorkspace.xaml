@@ -1042,6 +1042,7 @@
                             </StackPanel>
                         </Button>
                         <Button Style="{StaticResource TakeButton}" Width="34" MinHeight="40"
+                            AutomationProperties.Name="Choose Take transition"
                                 Padding="0"
                                 CornerRadius="0,8,8,0"
                                 BorderThickness="1,1,1,1"
@@ -1067,6 +1068,7 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
                     <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                            AutomationProperties.Name="Record"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.RecordButtonBorder, Mode=OneWay}"
@@ -1090,6 +1092,7 @@
                         </StackPanel>
                     </Button>
                     <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                            AutomationProperties.Name="Recording output options"
                             ToolTipService.ToolTip="Recording output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
@@ -1155,6 +1158,38 @@
                                                   DisplayMemberPath="Label"
                                                   HorizontalAlignment="Stretch" />
                                     </Grid>
+                                    <!-- ISO-4 (spec §7): transport-level "Program only" ↔ "Program + ISOs"
+                                         switch + ISO health readout. Per-source ISO selection lives on the
+                                         Sources → Inputs rows; this gates whether the selection arms. -->
+                                    <Border Background="#0C1118" CornerRadius="6" Padding="10,8">
+                                        <StackPanel Spacing="6">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <TextBlock Text="ISO recording" FontWeight="SemiBold" FontSize="13" />
+                                                    <TextBlock Text="{x:Bind ViewModel.IsoArmedSummary, Mode=OneWay}"
+                                                               FontSize="12"
+                                                               Foreground="{StaticResource StudioMutedBrush}" />
+                                                </StackPanel>
+                                                <ToggleSwitch Grid.Column="1" VerticalAlignment="Center"
+                                                              OffContent="Program only" OnContent="Program + ISOs"
+                                                              IsOn="{x:Bind ViewModel.IsoRecordingEnabled, Mode=TwoWay}" />
+                                            </Grid>
+                                            <TextBlock Text="Pick per-source ISOs in Sources → Inputs (the ISO checkbox on each Zoom guest / capture device)."
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
+                                            <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
+                                                     Message="{x:Bind ViewModel.IsoHealthWarning, Mode=OneWay}"
+                                                     Visibility="{x:Bind ViewModel.IsoHealthWarningVisibility, Mode=OneWay}" />
+                                            <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
+                                                     Message="{x:Bind ViewModel.RecordingDiskWarning, Mode=OneWay}"
+                                                     Visibility="{x:Bind ViewModel.RecordingDiskWarningVisibility, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </Border>
                                     <Grid ColumnSpacing="10">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
@@ -1177,7 +1212,7 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
                     <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
-                            FontSize="13" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
+                            FontSize="13" AutomationProperties.Name="Stream" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}"
@@ -1200,6 +1235,7 @@
                         </StackPanel>
                     </Button>
                     <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                            AutomationProperties.Name="Streaming output options"
                             ToolTipService.ToolTip="Streaming output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
@@ -1293,6 +1329,7 @@
                          system webcam Zoom/Teams/Meet can select. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
                     <ToggleButton MinHeight="44" CornerRadius="8,0,0,8" Padding="12,4"
+                                  AutomationProperties.Name="Virtual camera"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
                                   ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
@@ -1307,6 +1344,7 @@
                     </ToggleButton>
                     <!-- V5: virtual camera options (mirror). -->
                     <Button MinHeight="44" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                             AutomationProperties.Name="Virtual camera options"
                              ToolTipService.ToolTip="Virtual camera options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
@@ -1458,5 +1496,26 @@
                 </ScrollViewer>
             </Grid>
         </Border>
+
+        <!-- S1 crash pipeline (docs/beta-engineering-spec.md §S1): one-shot consent
+             surface for last session's crash dumps. Deliberately STATIC — populated
+             once from code-behind after the launch scan, no bound collections, no
+             snapshot-driven updates (0xc000027b rules). Never auto-sends. -->
+        <controls:InfoBar x:Name="CrashReportBar"
+                          Grid.Row="2"
+                          VerticalAlignment="Top"
+                          HorizontalAlignment="Stretch"
+                          Margin="16,10,16,0"
+                          Canvas.ZIndex="1000"
+                          IsOpen="False"
+                          Severity="Warning"
+                          Title="CoreVideo Pro crashed last session"
+                          Message="Send a crash report?">
+            <controls:InfoBar.ActionButton>
+                <Button x:Name="CrashReportSendButton"
+                        Content="Send report"
+                        Click="OnCrashReportSendClicked" />
+            </controls:InfoBar.ActionButton>
+        </controls:InfoBar>
     </Grid>
 </UserControl>

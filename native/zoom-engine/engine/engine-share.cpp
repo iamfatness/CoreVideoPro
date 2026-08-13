@@ -240,8 +240,15 @@ bool EngineShare::ensure_shm(ShareTarget &target,
     if (total < y_len) return false;
     if (target.shm.ptr && target.shm.size >= total) return true;
 
+    // Full 4K capacity up front — share raw data arrives at the sharer's native
+    // resolution and a named Windows section cannot grow while the core holds a
+    // read handle (the resolution-ramp freeze; see engine-ipc.h). A 4K I420
+    // frame is ~12.4MB, Zoom's documented ceiling.
+    const size_t capacity = i420_region_capacity(kMaxShareShmYLen);
+    if (total > capacity) return false;
+
     const std::string region_name = EngineIpc::shm_prefix() + source_uuid;
-    return shm_region_create(target.shm, region_name, total);
+    return shm_region_create(target.shm, region_name, capacity);
 }
 
 void EngineShare::set_active_share_user(uint32_t user_id)

@@ -22,7 +22,12 @@ namespace corevideo::pluginhost {
 // back-channel (host -> core). The magic is bumped so a mismatched pair fails
 // loudly (bad-magic serve error -> core bypasses forever with deadlineMisses
 // climbing) instead of silently ignoring the selection.
-inline constexpr uint32_t kHostBlockMagic = 0x43565032;  // "CVP2"
+// v3 (round-2 A2/A3): parameter surface (host -> core publish + core -> host
+// set-param ring), component STATE get/set (single-shot area, see below), and
+// plugin latencySamples telemetry. Magic bumped CVP2 -> CVP3 so a stale host
+// executable against a new core (or vice versa) fails LOUDLY at serve start
+// (bad-magic error + exit 3) instead of silently ignoring the new fields.
+inline constexpr uint32_t kHostBlockMagic = 0x43565033;  // "CVP3"
 inline constexpr int32_t kHostBlockMaxSamples = 8192;    // interleaved floats (e.g. 960 frames stereo = 1920)
 inline constexpr int32_t kHostPluginPathMax = 512;       // NUL-terminated bundle path
 inline constexpr int32_t kHostPluginNameMax = 128;       // NUL-terminated class name
@@ -30,6 +35,54 @@ inline constexpr int32_t kHostErrorMax = 256;            // NUL-terminated error
 inline constexpr int32_t kHostEditorIdle = 0;
 inline constexpr int32_t kHostEditorOpen = 1;
 inline constexpr int32_t kHostEditorFailed = 2;
+
+// ---- v3 parameter surface -------------------------------------------------
+// Plugins can expose HUNDREDS of parameters (Waves shells). The published
+// surface is capped at the first kHostParamPublishMax by controller index;
+// paramTotalCount always carries the real total so the UI can say
+// "64 of 511 shown". The cap keeps the block bounded and the generic-slider
+// flyout usable; the plugin's own editor remains the full surface.
+inline constexpr int32_t kHostParamPublishMax = 64;
+inline constexpr int32_t kHostParamTitleMax = 64;    // UTF-8 (ASCII-folded) title
+inline constexpr int32_t kHostParamUnitsMax = 16;    // unit label ("dB", "%")
+inline constexpr int32_t kHostParamDisplayMax = 24;  // formatted value ("‑3.0")
+
+// Core -> host set-param requests ride a tiny latest-wins ring: the writer
+// (control plane, one slider at a time) appends {id, normalized} and bumps
+// paramSetSeq; the host drains from its cursor to seq. Ring depth 16 far
+// exceeds one UI gesture between host wakes; overflow safely drops the OLDEST
+// entries (latest value wins — correct for absolute-valued sliders).
+inline constexpr int32_t kHostParamSetRing = 16;
+
+// ---- v3 component state ---------------------------------------------------
+// getState/setState blobs move through a fixed single-shot area. 1 MiB covers
+// real-world channel/mastering plugin states (typically KBs) by orders of
+// magnitude; a state larger than the area FAILS LOUDLY with its size in the
+// error (chunking is deliberately not implemented — a simple bounded contract
+// over a brittle multi-round protocol, per the house robustness rule).
+inline constexpr int32_t kHostStateMaxBytes = 1 * 1024 * 1024;
+inline constexpr int32_t kHostStateRequestNone = 0;
+inline constexpr int32_t kHostStateRequestGet = 1;
+inline constexpr int32_t kHostStateRequestSet = 2;
+inline constexpr int32_t kHostStateResultOk = 0;
+inline constexpr int32_t kHostStateResultFailed = 1;
+
+struct HostParamEntry {
+  uint32_t id = 0;
+  int32_t stepCount = 0;   // 0 = continuous, 1 = toggle, N = N+1 discrete steps
+  int32_t flags = 0;       // ParameterInfo.flags (kCanAutomate etc.), advisory
+  int32_t reserved = 0;
+  double normalized = 0.0;  // current value, [0,1]
+  char title[kHostParamTitleMax] = {};
+  char units[kHostParamUnitsMax] = {};
+  char display[kHostParamDisplayMax] = {};  // plugin-formatted value string
+};
+
+struct HostParamSetEntry {
+  uint32_t id = 0;
+  uint32_t reserved = 0;
+  double normalized = 0.0;
+};
 
 // Host status codes (statusCode field).
 inline constexpr int32_t kHostStatusTestProcessor = 0;  // legacy -6dB test gain
@@ -65,6 +118,48 @@ struct HostAudioBlock {
   int32_t editorStatusCode = kHostEditorIdle;
   char editorActivePlugin[kHostPluginNameMax] = {};
   char editorLastError[kHostErrorMax] = {};
+
+  // ---- v3: latency telemetry (host -> core). Reported by the ACTIVE audio
+  // selection's processor (getLatencySamples); 0 for the test processor and
+  // while nothing loaded. Changes bump statusGeneration (it rides the status
+  // publish) so the core's rare-copy harvest picks it up without polling.
+  volatile uint32_t latencySamples = 0;
+
+  // ---- v3: parameter surface (host -> core). The host publishes the ACTIVE
+  // selection's params (last audio selection processed; the editor selection
+  // when no audio flows). paramListGeneration bumps on plugin/list changes
+  // (titles, count); paramValuesGeneration bumps whenever any published value
+  // or display string changed (editor knob moves land here). The core copies
+  // only on generation change — never per tick.
+  volatile uint32_t paramListGeneration = 0;
+  volatile uint32_t paramValuesGeneration = 0;
+  int32_t paramTotalCount = 0;      // real controller count (may exceed the cap)
+  int32_t paramPublishedCount = 0;  // entries valid in params[]
+  char paramPluginClass[kHostPluginNameMax] = {};  // whose params these are
+  HostParamEntry params[kHostParamPublishMax] = {};
+
+  // ---- v3: core -> host set-param ring (dedicated event, never the audio
+  // req). paramSetPluginBundle/Class select the target slot; entries are
+  // applied in order. The host is the value authority: applied values come
+  // back through the published params above.
+  volatile uint32_t paramSetSeq = 0;
+  char paramSetPluginBundle[kHostPluginPathMax] = {};
+  char paramSetPluginClass[kHostPluginNameMax] = {};
+  HostParamSetEntry paramSet[kHostParamSetRing] = {};
+
+  // ---- v3: component state get/set (dedicated request/done event pair; a
+  // CONTROL-PLANE round trip — the audio worker never touches it). Single
+  // request in flight by construction (the core serializes under a mutex).
+  volatile uint32_t stateRequestGeneration = 0;
+  int32_t stateRequestKind = kHostStateRequestNone;
+  char statePluginBundle[kHostPluginPathMax] = {};
+  char statePluginClass[kHostPluginNameMax] = {};
+  volatile uint32_t stateResponseGeneration = 0;
+  int32_t stateResultCode = kHostStateResultOk;
+  char stateError[kHostErrorMax] = {};
+  int32_t stateDataBytes = 0;  // set: payload in; get: payload out
+  uint8_t stateData[kHostStateMaxBytes] = {};
+
   float pcm[kHostBlockMaxSamples];
 };
 
@@ -87,5 +182,11 @@ inline std::string hostShmName(const std::string& instance) { return "corevideo-
 inline std::string hostReqEventName(const std::string& instance) { return "corevideo-vsthost-req-" + instance; }
 inline std::string hostDoneEventName(const std::string& instance) { return "corevideo-vsthost-done-" + instance; }
 inline std::string hostEditorEventName(const std::string& instance) { return "corevideo-vsthost-editor-" + instance; }
+// v3: set-param nudge (core -> host) and the state request/done pair. All
+// separate from req/done so param/state traffic can NEVER stall the realtime
+// audio exchange.
+inline std::string hostParamEventName(const std::string& instance) { return "corevideo-vsthost-param-" + instance; }
+inline std::string hostStateReqEventName(const std::string& instance) { return "corevideo-vsthost-statereq-" + instance; }
+inline std::string hostStateDoneEventName(const std::string& instance) { return "corevideo-vsthost-statedone-" + instance; }
 
 }  // namespace corevideo::pluginhost

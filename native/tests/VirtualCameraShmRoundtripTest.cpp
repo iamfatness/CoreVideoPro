@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "SharedFrameReader.h"  // native/virtualcam-dll (on the test include path)
+#include "modules/VirtualCameraPublisher.h"
 #include "modules/VirtualCameraShm.h"
 
 using corevideo::modules::VirtualCameraShmHeader;
@@ -193,5 +194,32 @@ TEST(VirtualCameraShmRoundtrip, ReaderSelfHealsAfterTheBackingFileIsSwapped) {
   ASSERT_TRUE(healed);
   EXPECT_EQ(out, f2);
 }
+
+#if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
+// REGRESSION (G4 teardown finding): the REAL publisher's stop() must leave the
+// slot file in place. Deleting it orphans Frame Server readers that hold the
+// file object via FILE_SHARE_DELETE - they freeze on the unlinked file and
+// interleave with the next session's fresh instance as program/slate strobing.
+// start() may fail at MFCreateVirtualCamera on rigs without the registered DLL;
+// the SHM slot is created before that step either way, so the assertion holds
+// in both environments.
+TEST(VirtualCameraPublisher, StopLeavesTheShmSlotFileInPlace) {
+  auto publisher = corevideo::modules::createVirtualCameraPublisher();
+  ASSERT_NE(publisher, nullptr);
+  publisher->start(1920, 1080, 60);
+  if (::GetFileAttributesA(virtualCameraShmFilePath().c_str()) ==
+      INVALID_FILE_ATTRIBUTES) {
+    // Slot could not be created (no ProgramData access on this rig) - there is
+    // nothing to assert about stop() then. (This gtest has no GTEST_SKIP.)
+    return;
+  }
+  publisher->stop();
+  EXPECT_NE(::GetFileAttributesA(virtualCameraShmFilePath().c_str()),
+            INVALID_FILE_ATTRIBUTES)
+      << "stop() must NOT delete the vcam SHM file: readers hold it via "
+         "FILE_SHARE_DELETE and delete orphans them (frozen frames / strobing)";
+  ::DeleteFileA(virtualCameraShmFilePath().c_str());  // test isolation only
+}
+#endif  // COREVIDEO_WITH_VIRTUALCAM
 
 #endif  // _WIN32

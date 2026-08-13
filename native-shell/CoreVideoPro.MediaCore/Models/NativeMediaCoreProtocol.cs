@@ -330,12 +330,20 @@ public sealed class NativeMediaCoreVirtualCamera
 public sealed class NativeMediaCoreRecordingStream
 {
     public required string Kind { get; init; }
+    /// <summary>Canonical ISO source id (`zoom:&lt;pid&gt;` / `capture:&lt;id&gt;`); ISO streams only.</summary>
+    public string? SourceId { get; init; }
     public string? ParticipantId { get; init; }
+    /// <summary>Sanitized roster/display name used for the on-disk ISO file (ISO streams).</summary>
+    public string? DisplayName { get; init; }
     public required string Path { get; init; }
     public required string Status { get; init; }
     public int FramesWritten { get; init; }
+    /// <summary>Per-source audio sample-frames muxed into this ISO's raw-stem AAC track (ISO-2).</summary>
+    public long AudioSamples { get; init; }
     public int DroppedFrames { get; init; }
     public long BytesWritten { get; init; }
+    /// <summary>True when this ISO carries an audio track (a paired capture mic / Zoom stem).</summary>
+    public bool HasAudio { get; init; }
     public string? Warning { get; init; }
 }
 
@@ -442,6 +450,41 @@ public sealed class NativeMediaCorePluginHostServe
     public int EditorStatusCode { get; init; }
     public string EditorActivePlugin { get; init; } = string.Empty;
     public string EditorLastError { get; init; } = string.Empty;
+    // A3: the active plugin's reported latency (0 = none). Feeds the
+    // per-insert latency badge; the core compensates the mix + recording PTS.
+    public long LatencySamples { get; init; }
+    public double LatencyMs { get; init; }
+    // A2: generic parameter surface for the ACTIVE selection. Params carries
+    // the first 64 by controller index; ParamTotalCount is the plugin's real
+    // total ("64 of 511 shown"). ParamValuesGeneration moves whenever any
+    // published value changed (editor knob turns) — the shell's state-capture
+    // debounce keys off it.
+    public string ParamPluginClass { get; init; } = string.Empty;
+    public int ParamTotalCount { get; init; }
+    public long ParamListGeneration { get; init; }
+    public long ParamValuesGeneration { get; init; }
+    public IReadOnlyList<NativeMediaCoreVstParam> Params { get; init; } = [];
+    // A1: serve respawn backoff telemetry. GaveUp means the isolated host
+    // crashed repeatedly and the insert stays auto-bypassed (audio flows
+    // unprocessed) until the operator re-selects the plug-in or reopens its
+    // controls.
+    public NativeMediaCorePluginHostRespawn Respawn { get; init; } = new();
+}
+
+public sealed class NativeMediaCoreVstParam
+{
+    public long Id { get; init; }
+    public string Title { get; init; } = string.Empty;
+    public string Units { get; init; } = string.Empty;
+    public string Display { get; init; } = string.Empty;
+    public int StepCount { get; init; }
+    public double Normalized { get; init; }
+}
+
+public sealed class NativeMediaCorePluginHostRespawn
+{
+    public int Attempts { get; init; }
+    public bool GaveUp { get; init; }
 }
 
 public sealed class NativeMediaCorePluginInfo
@@ -461,11 +504,26 @@ public sealed class NativeMediaCorePluginInfo
     };
 }
 
+/// <summary>
+/// BS.1770 loudness + true-peak of the POST-mastering master bus (the core
+/// meters the routed master AFTER processMasteringChain ran — B2 rack meters).
+/// Values are LUFS/dBTP; -120 = meter not primed yet.
+/// </summary>
+public sealed class NativeMediaCoreMasterMeter
+{
+    public double MomentaryLufs { get; init; } = -120.0;
+    public double ShortTermLufs { get; init; } = -120.0;
+    public double IntegratedLufs { get; init; } = -120.0;
+    public double TruePeakDbfs { get; init; } = -120.0;
+    public int WindowMs { get; init; }
+}
+
 public sealed class NativeMediaCoreAudioMixSession
 {
     public required string Status { get; init; }
     public int MasterLevel { get; init; }
     public double LoudnessLufs { get; init; }
+    public NativeMediaCoreMasterMeter MasterMeter { get; init; } = new();
     public NativeMediaCorePluginHost PluginHost { get; init; } = new();
     public bool LimiterEnabled { get; init; } = true;
     public bool LimiterActive { get; init; }

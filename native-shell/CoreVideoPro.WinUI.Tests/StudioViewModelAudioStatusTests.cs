@@ -3,6 +3,7 @@ using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
+using CoreVideoPro.WinUI.ViewModels.Transport;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -31,7 +32,11 @@ public sealed class StudioViewModelAudioStatusTests
     [InlineData("local-machine-audio", true)]
     [InlineData("capture:uvc-01", true)]
     [InlineData("media", true)]
-    [InlineData("zoom-mix", false)]
+    // FADER LAW (2026-08-09): zoom-mix IS a concrete PCM source — it is the
+    // audible Zoom path (Z1 routes zoom-mix → program), and excluding it left
+    // the meeting mix with no fader: muting every strip did not silence master.
+    // Only role ALIASES (active-speaker / screen-share) stay excluded.
+    [InlineData("zoom-mix", true)]
     [InlineData("active-speaker", false)]
     [InlineData("screen-share", false)]
     public void IsConcreteAudioMixSourceId_TreatsMediaAsMixerChannelButKeepsPlaceholdersOut(
@@ -98,7 +103,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatStreamingFailureStatus_LeadsWithFfmpegActionAndRemovesMediaCorePrefix()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: start-program-output failed. ffmpeg.exe was not found in C:\\ffmpeg\\bin."));
 
@@ -112,7 +117,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatStreamingFailureStatus_LeadsWithRtmpActionForConnectionFailures()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: RTMP sender exited. Connection refused ffmpeg exited with code 1"));
 
@@ -125,7 +130,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatStreamingFailureStatus_RemovesNestedNativeSyncPrefixes()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: native-media-core-sync failed: start-program-output failed. missing:ffmpeg executable"));
 
@@ -141,79 +146,79 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatStreamingFailureStatus_PrioritizesFfmpegRuntimeOverRtmpContext()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: start-program-output failed: RTMP sender requires FFmpeg runtime on this machine (ffmpeg.exe was not found)."));
 
         Assert.StartsWith(
             "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.",
             status);
-        Assert.Equal("FFmpeg not ready", StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.Equal("FFmpeg not ready", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_MapsMissingRtmpConfiguration()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("Configure RTMP server URL before streaming."));
 
         Assert.StartsWith(
             "Streaming start failed: RTMP settings are incomplete. Configure the server URL and stream key before streaming.",
             status);
-        Assert.Equal("RTMP settings missing", StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.Equal("RTMP settings missing", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_MapsNoSelectedDestination()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("Select at least one stream destination."));
 
         Assert.StartsWith(
             "Streaming start failed: No stream destination is selected. Enable RTMP, NDI, or SRT before streaming.",
             status);
-        Assert.Equal("No stream destination", StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.Equal("No stream destination", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_MapsUnavailableNdiOutput()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("NDI output is selected, but no NDI sender module is available in this build."));
 
         Assert.StartsWith(
             "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
             status);
-        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.Equal("NDI unavailable", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_MapsMissingNdiProfileCapability()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("NDI output is selected, but the native media core profile is missing ndi-output."));
 
         Assert.StartsWith(
             "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
             status);
-        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.Equal("NDI unavailable", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_MapsUnavailableSrtOutput()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("srt-output-unavailable: SRT output sender is not available in this build."));
 
         Assert.StartsWith(
             "Streaming start failed: SRT output is not available in this build. Use RTMP/NDI or install a build with SRT output enabled.",
             status);
-        Assert.Equal("SRT unavailable", StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.Equal("SRT unavailable", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
 
     [Fact]
@@ -230,26 +235,26 @@ public sealed class StudioViewModelAudioStatusTests
             Capabilities = ["rtmp-output"]
         };
 
-        Assert.Null(StudioViewModel.ValidateStreamDestinationCapabilities(true, false, false, profile));
+        Assert.Null(TransportStatusFormatter.ValidateStreamDestinationCapabilities(true, false, false, profile));
         Assert.Equal(
             "NDI output is selected, but the native media core profile is missing ndi-output.",
-            StudioViewModel.ValidateStreamDestinationCapabilities(false, true, false, profile));
+            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, true, false, profile));
         Assert.Equal(
             "SRT output is selected, but the native media core profile is missing srt-output.",
-            StudioViewModel.ValidateStreamDestinationCapabilities(false, false, true, profile));
+            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, false, true, profile));
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_MapsSenderNotArmed()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("Selected stream destinations (NDI) did not arm a native output sender. Sender state idle:0."));
 
         Assert.StartsWith(
             "Streaming start failed: Native output sender did not start. Check Stream settings and open Health for sender diagnostics.",
             status);
-        Assert.Equal("Stream sender not armed", StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.Equal("Stream sender not armed", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
 
     [Fact]
@@ -273,9 +278,9 @@ public sealed class StudioViewModelAudioStatusTests
             ]
         };
 
-        Assert.True(StudioViewModel.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
         Assert.Contains("Selected stream destinations (NDI) did not arm a native output sender.", failureStatus, StringComparison.Ordinal);
-        Assert.Equal("Stream sender not armed", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+        Assert.Equal("Stream sender not armed", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
@@ -301,14 +306,14 @@ public sealed class StudioViewModelAudioStatusTests
             }
         };
 
-        Assert.True(StudioViewModel.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
-        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
+        Assert.Equal("NDI unavailable", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_RemovesRtmpSenderWrappers()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core request failed: program-output failed: output sender failed during sync: RTMP sender URL must include a host and application path."));
 
@@ -324,7 +329,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatStreamingFailureStatus_RemovesRtmpSenderFailedWrapper()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: RTMP sender failed: FFmpeg exited with code 1 after ingest rejected credentials."));
 
@@ -339,7 +344,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatStreamingFailureStatus_MapsProgramFrameReadiness()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: output sender failed: RTMP sender is waiting for a program frame."));
 
@@ -352,7 +357,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatStreamingFailureStatus_MapsWrappedInFlightSyncToBusyStatus()
     {
-        var status = StudioViewModel.FormatStreamingFailureStatus(
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync in flight; skipped for backpressure"));
 
@@ -366,35 +371,35 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatOutputStatusBrief_CollapsesStreamingSettingsFailure()
     {
-        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatStreamingFailureStatus(
             "settings",
             new InvalidOperationException("media-core sync failed: output sender failed during sync: RTMP sender exited. Connection refused"));
 
-        Assert.Equal("RTMP output failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Equal("RTMP output failed", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
     }
 
     [Fact]
     public void FormatOutputStatusBrief_CollapsesInvalidStreamingSettingsStoppedStatus()
     {
-        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatStreamingFailureStatus(
             "settings",
             new InvalidOperationException("Configure RTMP stream key before streaming.")) + " Streaming stopped.";
 
-        Assert.Equal("RTMP settings missing", StudioViewModel.FormatOutputStatusBrief(fullStatus));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Equal("RTMP settings missing", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
         Assert.Contains("Streaming stopped", fullStatus, StringComparison.Ordinal);
     }
 
     [Fact]
     public void FormatOutputStatusBrief_SurfacesActionableStreamingFailureAndKeepsDetailsAvailable()
     {
-        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: start-program-output failed. RTMP sender exited. Connection refused ffmpeg exited with code 1"));
 
-        Assert.Equal("RTMP output failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Equal("RTMP output failed", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
         Assert.Contains("Connection refused", fullStatus, StringComparison.Ordinal);
         Assert.DoesNotContain("media-core sync failed", fullStatus, StringComparison.OrdinalIgnoreCase);
     }
@@ -402,79 +407,79 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatOutputStatusBrief_SurfacesProgramReadinessFailure()
     {
-        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: output sender failed: RTMP sender is waiting for a program frame."));
 
-        Assert.Equal("Program video not ready", StudioViewModel.FormatOutputStatusBrief(fullStatus));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Equal("Program video not ready", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
     }
 
     [Fact]
     public void FormatOutputStatusBrief_SurfacesBusyMediaCoreStreamingFailure()
     {
-        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync in flight; skipped for backpressure"));
 
-        Assert.Equal("Media core busy", StudioViewModel.FormatOutputStatusBrief(fullStatus));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Equal("Media core busy", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
     }
 
     [Fact]
     public void FormatRecordingFailureStatus_SurfacesProgramReadinessFailure()
     {
-        var fullStatus = StudioViewModel.FormatRecordingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatRecordingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: output sender failed: recording is waiting for a program frame."));
 
         Assert.StartsWith(
             "Recording start failed: Program video is not ready. Put a valid source on Program before recording.",
             fullStatus);
-        Assert.Equal("Program video not ready", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.Equal("Program video not ready", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
         Assert.DoesNotContain("media-core sync failed", fullStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void FormatRecordingFailureStatus_SurfacesBusyMediaCoreFailure()
     {
-        var fullStatus = StudioViewModel.FormatRecordingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatRecordingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync in flight; skipped for backpressure"));
 
         Assert.StartsWith(
             "Recording start failed: Media core is busy applying changes. Wait a moment and try Record again.",
             fullStatus);
-        Assert.Equal("Media core busy", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.Equal("Media core busy", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
         Assert.DoesNotContain("backpressure", fullStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void FormatRecordingFailureStatus_SurfacesTargetFailures()
     {
-        var fullStatus = StudioViewModel.FormatRecordingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatRecordingFailureStatus(
             "start",
             new IOException("media-core request failed: target folder path is not writable or disk is full."));
 
         Assert.StartsWith(
             "Recording start failed: Recording target is not ready. Check the folder path and disk space.",
             fullStatus);
-        Assert.Equal("Recording target not ready", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.Equal("Recording target not ready", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
         Assert.Contains("disk is full", fullStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void FormatStreamingFailureStatus_SurfacesNativeMediaCoreFailures()
     {
-        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core request failed: native media core process exited while applying start-program-output."));
 
         Assert.StartsWith(
             "Streaming start failed: Media core failed while starting stream. Open Details for the native error.",
             fullStatus);
-        Assert.Equal("Native core exited", StudioViewModel.FormatOutputStatusBrief(fullStatus));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Equal("Native core exited", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
         Assert.Contains("native media core process exited", fullStatus, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("media-core request failed", fullStatus, StringComparison.OrdinalIgnoreCase);
     }
@@ -482,12 +487,12 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatOutputStatusBrief_SurfacesNativeMediaCorePipeFailures()
     {
-        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+        var fullStatus = TransportStatusFormatter.FormatStreamingFailureStatus(
             "start",
             new IOException("media-core request failed: JSON-RPC broken pipe while applying start-program-output."));
 
-        Assert.Equal("Native core pipe failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Equal("Native core pipe failed", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
         Assert.Contains("broken pipe", fullStatus, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("media-core request failed", fullStatus, StringComparison.OrdinalIgnoreCase);
     }
@@ -495,8 +500,8 @@ public sealed class StudioViewModelAudioStatusTests
     [Fact]
     public void FormatOutputStatusBrief_DoesNotShowDetailsForShortIdleStatus()
     {
-        Assert.Equal("Outputs idle", StudioViewModel.FormatOutputStatusBrief("Outputs idle"));
-        Assert.False(StudioViewModel.ShouldShowOutputStatusDetails("Outputs idle"));
+        Assert.Equal("Outputs idle", TransportStatusFormatter.FormatOutputStatusBrief("Outputs idle"));
+        Assert.False(TransportStatusFormatter.ShouldShowOutputStatusDetails("Outputs idle"));
     }
 
     [Theory]
@@ -506,8 +511,8 @@ public sealed class StudioViewModelAudioStatusTests
     [InlineData("Output failed: FFmpeg stdin write failed; the RTMP process stopped or rejected frames.", "RTMP output failed")]
     public void FormatOutputStatusBrief_CollapsesStreamOutputHealthStatus(string status, string expected)
     {
-        Assert.Equal(expected, StudioViewModel.FormatOutputStatusBrief(status));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(status));
+        Assert.Equal(expected, TransportStatusFormatter.FormatOutputStatusBrief(status));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(status));
     }
 
     [Theory]
@@ -515,7 +520,7 @@ public sealed class StudioViewModelAudioStatusTests
     [InlineData(false, true)]
     public void ResolveStreamingStateAfterFailedRetry_RollsBackRequestedState(bool requestedStarting, bool expectedStreaming)
     {
-        Assert.Equal(expectedStreaming, StudioViewModel.ResolveStreamingStateAfterFailedRetry(requestedStarting));
+        Assert.Equal(expectedStreaming, TransportStatusFormatter.ResolveStreamingStateAfterFailedRetry(requestedStarting));
     }
 
     [Theory]
@@ -526,11 +531,11 @@ public sealed class StudioViewModelAudioStatusTests
         string expectedStatus,
         string expectedBrief)
     {
-        var status = StudioViewModel.FormatStreamSyncRetryExhaustedStatus(requestedStarting);
+        var status = TransportStatusFormatter.FormatStreamSyncRetryExhaustedStatus(requestedStarting);
 
         Assert.Equal(expectedStatus, status);
-        Assert.Equal(expectedBrief, StudioViewModel.FormatOutputStatusBrief(status));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(status));
+        Assert.Equal(expectedBrief, TransportStatusFormatter.FormatOutputStatusBrief(status));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(status));
     }
 
     [Theory]
@@ -538,7 +543,7 @@ public sealed class StudioViewModelAudioStatusTests
     [InlineData(false, true)]
     public void ResolveRecordingStateAfterFailedRetry_RollsBackRequestedState(bool requestedStarting, bool expectedRecording)
     {
-        Assert.Equal(expectedRecording, StudioViewModel.ResolveRecordingStateAfterFailedRetry(requestedStarting));
+        Assert.Equal(expectedRecording, TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(requestedStarting));
     }
 
     [Theory]
@@ -549,11 +554,11 @@ public sealed class StudioViewModelAudioStatusTests
         string expectedStatus,
         string expectedBrief)
     {
-        var status = StudioViewModel.FormatRecordingSyncRetryExhaustedStatus(requestedStarting);
+        var status = TransportStatusFormatter.FormatRecordingSyncRetryExhaustedStatus(requestedStarting);
 
         Assert.Equal(expectedStatus, status);
-        Assert.Equal(expectedBrief, StudioViewModel.FormatOutputStatusBrief(status));
-        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(status));
+        Assert.Equal(expectedBrief, TransportStatusFormatter.FormatOutputStatusBrief(status));
+        Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(status));
     }
 
     [Fact]
@@ -572,11 +577,11 @@ public sealed class StudioViewModelAudioStatusTests
             ]
         };
 
-        Assert.True(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
         Assert.StartsWith(
             "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.",
             failureStatus);
-        Assert.Equal("FFmpeg not ready", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+        Assert.Equal("FFmpeg not ready", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
@@ -602,13 +607,13 @@ public sealed class StudioViewModelAudioStatusTests
             }
         };
 
-        Assert.True(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
         Assert.StartsWith(
             "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
             failureStatus);
         Assert.Contains("ndi-output-unavailable", failureStatus, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("runtime-missing", failureStatus, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+        Assert.Equal("NDI unavailable", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
@@ -643,7 +648,7 @@ public sealed class StudioViewModelAudioStatusTests
             }
         };
 
-        Assert.True(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
         Assert.StartsWith(
             "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
             failureStatus);
@@ -667,11 +672,11 @@ public sealed class StudioViewModelAudioStatusTests
             ]
         };
 
-        Assert.True(StudioViewModel.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
         Assert.StartsWith(
             "Recording start failed: Recording target is not ready. Check the folder path and disk space.",
             failureStatus);
-        Assert.Equal("Recording target not ready", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+        Assert.Equal("Recording target not ready", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
@@ -694,11 +699,11 @@ public sealed class StudioViewModelAudioStatusTests
             }
         };
 
-        Assert.True(StudioViewModel.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
         Assert.StartsWith(
             "Recording start failed: Media core failed while starting recording. Open Details for the native error.",
             failureStatus);
-        Assert.Equal("Native core exited", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+        Assert.Equal("Native core exited", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
@@ -717,7 +722,7 @@ public sealed class StudioViewModelAudioStatusTests
             ]
         };
 
-        Assert.False(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.False(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
         Assert.Equal(string.Empty, failureStatus);
     }
 
@@ -737,7 +742,7 @@ public sealed class StudioViewModelAudioStatusTests
             ]
         };
 
-        Assert.False(StudioViewModel.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.False(TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
         Assert.Equal(string.Empty, failureStatus);
     }
 
@@ -2028,6 +2033,51 @@ public sealed class StudioViewModelAudioStatusTests
             Assert.Contains(sends, send => send.SourceId == "zoom-mix" && send.BusId == busId && send.GainDb == 0);
         }
         Assert.Equal(6, sends.Count);
+    }
+
+    [Fact]
+    public void EnsureDefaultZoomAudioRoutingSends_PerGuestIsoRoutesStemsAndDropsTheMixFromProgram()
+    {
+        // Owner decision 2026-08-09: per-guest ISO mode routes each guest's
+        // isolated stem through their own strip and REMOVES zoom-mix from the
+        // program buses — summing both doubles every voice (Z1 measured the
+        // internal echo at ~110ms skew).
+        var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(
+            [
+                new MediaCoreAudioRoutingSendWire("zoom-mix", "master", 0),
+                new MediaCoreAudioRoutingSendWire("16778240", "master", -6),  // operator's custom gain
+            ],
+            ["16778240", "16785408"],
+            ZoomAudioMode.PerGuestIso);
+
+        Assert.DoesNotContain(sends, send => send.SourceId == "zoom-mix");
+        // The operator's deliberate gain survives; the missing buses complete at 0.
+        Assert.Contains(sends, send => send.SourceId == "16778240" && send.BusId == "master" && send.GainDb == -6);
+        foreach (var busId in new[] { "pgm-l", "pgm-r", "stream", "mon" })
+        {
+            Assert.Contains(sends, send => send.SourceId == "16778240" && send.BusId == busId && send.GainDb == 0);
+        }
+        foreach (var busId in new[] { "master", "pgm-l", "pgm-r", "stream", "mon" })
+        {
+            Assert.Contains(sends, send => send.SourceId == "16785408" && send.BusId == busId && send.GainDb == 0);
+        }
+    }
+
+    [Fact]
+    public void EnsureDefaultZoomAudioRoutingSends_FlippingBackToProgramMixRestoresTheZ1Shape()
+    {
+        // The seeder synthesizes per sync, so flip-back = run the ProgramMix
+        // branch over matrix-only sends: stems stop being generated, zoom-mix
+        // completes onto every program bus.
+        var matrixOnly = new List<MediaCoreAudioRoutingSendWire>();
+        var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(
+            matrixOnly, ["16778240"], ZoomAudioMode.ProgramMix);
+
+        Assert.DoesNotContain(sends, send => send.SourceId == "16778240");
+        foreach (var busId in new[] { "master", "pgm-l", "pgm-r", "stream", "mon" })
+        {
+            Assert.Contains(sends, send => send.SourceId == "zoom-mix" && send.BusId == busId);
+        }
     }
 
     [Fact]

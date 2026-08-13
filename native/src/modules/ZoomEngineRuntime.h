@@ -30,6 +30,14 @@ class ZoomEngineRuntime {
   [[nodiscard]] bool configured() const;
   [[nodiscard]] rpc::Json join(const rpc::Json& payload);
   [[nodiscard]] rpc::Json leave();
+  // Capture-off: stop raw media in the engine WITHOUT leaving the meeting.
+  // Enqueues the engine `stop_media` command (engine command loop runs
+  // stop_raw_media: StopRawRecording — which clears Zoom's participant-facing
+  // recording indicator — plus unsubscribe_all across video/share/audio),
+  // clears the local media-started + subscription-dedup state so a later
+  // capture-on re-arms from scratch, and returns the current snapshot.
+  // Non-blocking: pipe I/O rides the dedicated sender thread.
+  [[nodiscard]] rpc::Json stopCapture();
   [[nodiscard]] rpc::Json snapshot();
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
@@ -167,11 +175,59 @@ class ZoomEngineRuntime {
     int width = 0;   // luma width
     int height = 0;  // luma height
     std::int64_t frameId = 0;
+    // When the ingest thread first OBSERVED this frame in shared memory. The
+    // render thread fetches decoded frames on its own 16.7ms cadence, so this is
+    // what makes the ingest->render handoff latency measurable. Cross-process
+    // stamping would need a wire change to ShmFrameHeader, which would break an
+    // already-built engine binary — so the unmeasured head of the path is bounded
+    // by the ingest poll interval instead (see kVideoIngestPollMs).
+    std::chrono::steady_clock::time_point observedAt{};
+    // Has the render thread taken THIS frame yet? The map below is a latest-wins
+    // slot, so a publish into an unfetched slot destroys a decoded frame that
+    // never reached the compositor. That is the only place frames can be lost
+    // once ingest is keeping up, so it must be counted, not inferred.
+    bool fetched = false;
   };
   // Latest decoded I420 frame per participantId, tapped alongside the stdout
   // event queue so the compositor can read real pixels without draining the
   // multiview event path.
   std::map<std::string, DecodedFrame> latestDecodedFrames_;
+
+  // FRAME SYNCHRONIZER (owner decision 2026-08-06) — the input frame sync every
+  // hardware switcher has. A latest-wins slot cannot absorb a ~60Hz source and a
+  // ~60Hz render free-running against each other: ~1ms of jitter lands two frames
+  // in one render interval (one destroyed unseen) and none in the next (a repeat),
+  // measured at 6-10% of frames each way. A CATCH-UP buffer does not fix that —
+  // the starved tick arrives BEFORE the surplus frame, so nothing is in reserve
+  // when it is needed (measured, 2026-08-05).
+  //
+  // The fix is a PERMANENT one-frame cushion: prime to two queued frames before
+  // serving the first, then serve one per fetch. Net rates being equal, the queue
+  // holds steady at one, so a gap draws on the reserve instead of repeating and a
+  // double refills it instead of dropping. Costs exactly one frame (16.7ms) of
+  // source->program latency, by construction, forever.
+  //
+  // Depth is capped: on sustained overflow (a source genuinely faster than the
+  // render) the OLDEST frame is dropped, so latency can never accumulate — a
+  // switcher stays current rather than falling behind. Disable with
+  // COREVIDEO_FRAME_SYNC=0 to trade smoothness back for that frame of latency.
+  struct FrameSyncQueue {
+    std::deque<DecodedFrame> frames;
+    bool primed = false;  // false until the cushion has been built once
+  };
+  std::map<std::string, FrameSyncQueue> frameSync_;
+  bool frameSyncEnabled_ = true;
+  // Serve only once this many frames are queued, leaving kFrameSyncCushion behind.
+  static constexpr std::size_t kFrameSyncCushion = 1;
+  static constexpr std::size_t kFrameSyncMaxDepth = 3;
+
+  // Slot accounting for the ingest->render handoff (all touched under mutex_).
+  // published = fresh + overwritten, so the three numbers close the books on
+  // every decoded frame; starved counts render ticks that found no new frame.
+  long long slotPublished_ = 0;
+  long long slotOverwritten_ = 0;
+  long long slotFresh_ = 0;
+  long long slotStarved_ = 0;
 
   // Pending real PCM per participantId. The reader thread appends a chunk on
   // every engine audio event (snapshot-read from the per-source audio SHM
@@ -204,9 +260,20 @@ class ZoomEngineRuntime {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t lastSequence = 0;
+    // Thumbnail-event pacing (2026-07-19 system-audio clicking): every ingested
+    // frame used to emit a 640x360 base64 event; the zoom pump stringified
+    // ~30/s/participant (~1.2MB each) and latest-wins dropped most of them —
+    // a full core of allocator/memory churn that glitched OTHER apps' audio.
+    // -1 = nothing emitted yet (first frame emits immediately so first-frame
+    // validation stays fast); thereafter ~2/s.
+    std::int64_t lastThumbnailEmitMs = -1;
     // shared_ptr so the UNLOCKED snapshot phase can hold the mapping alive
     // while leave/reset paths release their reference under the lock.
     std::shared_ptr<void> regionOpaque;
+    // Consecutive failed shm opens for this stream, for a rate-limited LOUD
+    // warning. A silently retrying open is how the resolution-ramp freeze
+    // stayed invisible from the core side.
+    int regionOpenFailures = 0;
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
   // Three-phase video drain (audio-starvation fix: frame copies + thumbnail
@@ -222,7 +289,13 @@ class ZoomEngineRuntime {
   std::atomic<bool> videoIngestRun_{false};
   void videoIngestLoop();
   void ensureVideoIngestThreadLocked();
-  void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame);
+  // `i420` is the decoded plane set, already owned by a shared buffer built in
+  // the UNLOCKED snapshot phase — publishing must never copy pixels under mutex_
+  // (the render thread waits on it while holding coreMutex).
+  void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
+                               const ZoomEngineRgbaFrame& frame,
+                               std::shared_ptr<const std::vector<std::uint8_t>> i420,
+                               std::chrono::steady_clock::time_point observedAt);
   void closeVideoStreamsLocked();
 };
 

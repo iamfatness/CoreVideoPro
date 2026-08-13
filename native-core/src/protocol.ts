@@ -1,7 +1,7 @@
 export type MediaCoreRouteMode = "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
 export type MediaCoreAudioRole = "mix" | "isolated" | "audience";
 export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
-export const coreRequestTypes = ["sync", "snapshot", "tick", "zoom-join", "zoom-leave", "zoom-snapshot", "zoom-media-spine-sync"] as const;
+export const coreRequestTypes = ["sync", "snapshot", "tick", "zoom-join", "zoom-leave", "zoom-stop-capture", "zoom-snapshot", "zoom-media-spine-sync"] as const;
 export const coreEventTypes = ["zoom-video-frame", "program-frame-preview", "program-shared-texture"] as const;
 export const zoomMediaSpineSyncTypeNames = ["ZoomMediaSpineSyncPayload", "ZoomMediaSpineNativeSnapshot"] as const;
 
@@ -242,15 +242,28 @@ export type MediaCoreFrame = {
 
 export type MediaCoreRecordingStream = {
   kind: "program" | "iso";
+  /** Canonical ISO source id (`zoom:<pid>` / `capture:<id>`). ISO streams only. */
+  sourceId?: string;
+  /** Back-compat: bare participant id (mirrors sourceId for ISO streams). */
   participantId?: string;
+  /** Sanitized roster/display name used for the on-disk file (ISO streams). */
+  displayName?: string;
   path: string;
   status: MediaCoreRecordingWriterStatus;
   readiness?: "ready" | "missing" | "video-off" | "unsubscribable";
   expectedFrames?: number;
   framesWritten: number;
+  /**
+   * Per-source audio sample-frames muxed into this ISO's own raw-stem AAC track
+   * (ISO-2: silence + real; silence-fill keeps a gated stem time-aligned to
+   * program). 0 while a writer has not opened yet; `hasAudio` reflects `> 0`.
+   */
+  audioSamples?: number;
   missingFrames?: number;
-  droppedFrames: number;
+  droppedFrames?: number;
   bytesWritten: number;
+  hasAudio?: boolean;
+  metadataValid?: boolean;
   lastFrameTimestampMs?: number;
   warning?: string;
 };
@@ -274,6 +287,10 @@ export type MediaCoreRecordingSession = {
   };
   estimatedDiskRateMBps: number;
   programPath: string;
+  /** Per-session subfolder holding Program.mp4 + ISO-NN-*.mp4 + manifest.json. */
+  sessionDir?: string;
+  /** Path to manifest.json (session id, epoch, program + ISO entries). */
+  manifestPath?: string;
   streams: MediaCoreRecordingStream[];
   totalFramesWritten: number;
   totalDroppedFrames: number;
@@ -287,6 +304,12 @@ export type MediaCoreRecordingTargets = {
   filenamePrefix: string;
   format: MediaCoreRecordingFormat;
   quality: MediaCoreRecordingQuality;
+  /**
+   * ISO source selection. Prefer `isoSourceIds` (scheme-qualified `zoom:<pid>`
+   * and — from ISO-3 — `capture:<id>`). `isoParticipantIds` is the legacy
+   * bare-id list, kept for back-compat; the core accepts either.
+   */
+  isoSourceIds?: string[];
   isoParticipantIds: string[];
 };
 
@@ -510,6 +533,9 @@ export type MediaCoreCommand =
       streamOutputProfile?: MediaCoreOutputProfile;
       recordingOutputProfile?: MediaCoreOutputProfile;
       destinationSettings?: MediaCoreStreamDestinationSettings[];
+      // ISO selection: prefer `isoSourceIds` (`zoom:<pid>`/`capture:<id>`);
+      // `isoParticipantIds` is the legacy bare-id list (core accepts either).
+      isoSourceIds?: string[];
       isoParticipantIds: string[];
     }
   | {
@@ -783,6 +809,8 @@ export type MediaCoreStateSnapshot = {
   participantTransformCount: number;
   overlayCount: number;
   outputs: MediaCoreDestination[];
+  /** Canonical ISO source selection (`zoom:<pid>`/`capture:<id>`). */
+  isoSourceIds?: string[];
   isoParticipantIds: string[];
   outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];

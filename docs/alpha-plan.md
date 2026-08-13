@@ -6,6 +6,15 @@ the console UI, mastering, and the operator-perf root cause. Most of its Track B
 content is now shipped product; what remains for alpha is **verification and
 stability**, not feature building. Beta scope lives in `docs/beta-plan.md`._
 
+_Addendum 2026-07-18: gates re-scored after PRs #280 and #286–#291 and the owner's
+30-minute large soak (completed 2026-07-18). Closed since the rewrite: G1's
+default-ON flip (#280, `NativeUvcCapturePolicy` is DEFAULT-ON, opt out with
+`COREVIDEO_NATIVE_UVC=0`), the G2 zero-audio-recording root cause (#286 + headless
+proof), the G3 30-minute soak (owner run 2026-07-18), the G3 sustained-RTMP leg
+(#288), and G4's stale-OAuth-token hard-fail (#290 — `ZoomOAuthService` now
+refreshes via the broker `/oauth/refresh`). Alpha is now down to a short list of
+owed rig verifications; see the scoreboard in `docs/beta-plan.md` §2._
+
 ## 1. What alpha means
 
 **Alpha = the owner runs real production shows on this rig, repeatedly, without the
@@ -42,7 +51,8 @@ hardening); rig re-test staged 2026-07-12.
 Currently opt-in via `COREVIDEO_NATIVE_UVC=1` (persisted on this rig). It is strictly
 better than the bridge (CPU, memory, stability) and validated end-to-end here.
 - [ ] Owner visual confirm on all his real cameras (tiles, multiview, program)
-- [ ] Flip `NativeUvcCapturePolicy.IsEnabled` to default-ON (bridge remains automatic
+- [x] Flip `NativeUvcCapturePolicy.IsEnabled` to default-ON (DONE 2026-07-12, #280 —
+      default-ON, opt out with `COREVIDEO_NATIVE_UVC=0`; bridge remains automatic
       per-device fallback)
 - [ ] Re-run PresentMon under real show load to confirm the 400-875ms UI freezes are
       gone with the UI thread unstarved (closes the P4 diff-update question - only
@@ -76,18 +86,34 @@ A single end-to-end rehearsal that doubles as the backlog of owed rig verificati
       (gate-threshold drag while someone talks), meters + LUFS moving
 - [ ] Mastering: enabled on master, target holds, program L/R inherit
 - [ ] Record 1080p MP4 + one RTMP push + virtual camera in Zoom **simultaneously**
-- [ ] 30+ minute soak in that state: no audio artifacts, no UI degradation, working
-      sets flat, frame drops 0
+      (sustained RTMP itself was broken until #288 — fixed 2026-07-15 with platform
+      profiles + hardened output; confirm the three-output combo specifically)
+- [x] 30+ minute soak in that state: no audio artifacts, no UI degradation, working
+      sets flat, frame drops 0 (owner large soak completed 2026-07-18; capture the
+      run's evidence — working-set curve, drop counters, any warnings — in an
+      alpha-evidence note so it's citable)
 - [ ] Engine off / leave meeting / rejoin mid-show behaves (no deadlock, no orphan state)
+      (Capture-off now actually stops Zoom raw media: shell sends `zoom-stop-capture` →
+      engine `stop_raw_media` (StopRawRecording clears the participant-facing recording
+      indicator); rig-verify banner clears ~2s after Capture off, feeds return on
+      Capture on — see the capture-off PR)
 - [ ] Support bundle exports after the run
 
 ### G4 - Stability debt (fix or explicitly accept before alpha)
-- [ ] **Engine-off teardown audit** against the five ZoomISO deadlock rules (stop off
+- [x] **Engine-off teardown audit** against the five ZoomISO deadlock rules (stop off
       the UI thread, stop-then-destroy order, no locks across SDK calls, watchdog on
       async stop confirm, no STA marshaling) - this is the reference product's
-      production failure; same architecture, same risk
-- [ ] **Stale Zoom OAuth token** hard-fails join with no fallback (known since 07-02) -
-      add refresh/re-auth path
+      production failure; same architecture, same risk. DONE 2026-07-18 (PR #302):
+      five confirmed findings fixed - engine exit now stops raw video + drains the
+      pump before CleanUPSDK, ParticipantSubscription teardown serializes with the
+      raw-frame callback (stopping flag + drain), EngineVideo maps got a mutex with
+      SDK calls kept outside it, leave-meeting bridge Stop moved off the UI thread,
+      and vcam stop() no longer deletes the SHM slot file. Owner rig verification
+      (leave/rejoin cycles, exit-in-meeting, vcam stop/restart) listed in the PR
+- [x] **Stale Zoom OAuth token** hard-fails join with no fallback (known since 07-02) -
+      refresh/re-auth path shipped 2026-07-15 (#290): `ZoomOAuthService` validates the
+      access token and refreshes via the broker `/oauth/refresh` before join; verify
+      once on the rig with a deliberately expired token
 - [ ] 0xc000027b window-resize trigger: mitigation is by design but not soak-verified -
       resize soak while under load
 - [ ] One elevated run of `scripts/setup-crash-dumps.ps1` on the rig (if not yet done)

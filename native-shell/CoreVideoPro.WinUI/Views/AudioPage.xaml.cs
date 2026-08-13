@@ -171,12 +171,23 @@ public sealed partial class AudioPage : UserControl
                     await viewModel.OpenVstControlsAsync(slot.Name);
                 };
                 panel.Children.Add(openControls);
+
+                // A2: generic sliders over the host-published param surface.
+                // Rebuilt on every Opening (transient flyout — outside the
+                // 0xc000027b bound-collection rules); the host is the value
+                // authority, so values here are the host's published truth
+                // (editor knob moves land in them too).
+                if (BuildVstParamSliders(panel, viewModel, slot.Name))
+                {
+                    AddRemoveButton(panel, flyout, slot.Name);
+                    return;
+                }
             }
             panel.Children.Add(new TextBlock
             {
                 Text = slot.IsBuiltIn
                     ? "No adjustable parameters."
-                    : "Open the plug-in controls for this processor. If the plug-in becomes unavailable, CoreVideo keeps program audio running.",
+                    : "Parameters appear here once the plug-in is processing. If the plug-in becomes unavailable, CoreVideo keeps program audio running.",
                 FontSize = 10,
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.7
@@ -200,6 +211,11 @@ public sealed partial class AudioPage : UserControl
             panel.Children.Add(slider);
         }
 
+        AddRemoveButton(panel, flyout, insertName);
+    }
+
+    private void AddRemoveButton(StackPanel panel, Flyout flyout, string insertName)
+    {
         var remove = new Button { Content = "Remove from chain", Margin = new Thickness(0, 6, 0, 0) };
         remove.Click += (_, _) =>
         {
@@ -207,6 +223,67 @@ public sealed partial class AudioPage : UserControl
             flyout.Hide();
         };
         panel.Children.Add(remove);
+    }
+
+    /// <summary>
+    /// A2: generic sliders for a VST insert from the host-published param
+    /// surface. Returns false when the host has not published params for this
+    /// insert yet (plug-in still loading / different active selection), in
+    /// which case the caller shows the explanatory text instead.
+    /// </summary>
+    private bool BuildVstParamSliders(StackPanel panel, StudioViewModel viewModel, string insertName)
+    {
+        var vstParams = viewModel.VstParamsForInsert(insertName);
+        if (vstParams.Count == 0)
+        {
+            return false;
+        }
+
+        var list = new StackPanel { Spacing = 2 };
+        foreach (var param in vstParams)
+        {
+            var headerSuffix = param.Display.Length > 0
+                ? $" · {param.Display}{(param.Units.Length > 0 ? " " + param.Units : "")}"
+                : param.Units.Length > 0 ? $" · {param.Units}" : "";
+            var slider = new Slider
+            {
+                Header = $"{param.Title}{headerSuffix}",
+                Minimum = 0,
+                Maximum = 1,
+                StepFrequency = param.StepCount > 0 ? 1.0 / param.StepCount : 0.01,
+                Value = param.Normalized,
+                FontSize = 10
+            };
+            var paramId = param.Id;
+            // Handler attached AFTER the initial Value set: any ValueChanged is
+            // a real user gesture, no programmatic-echo ping-pong.
+            slider.ValueChanged += (sender, args) =>
+            {
+                _ = ViewModel?.SetVstInsertParamAsync(insertName, paramId, args.NewValue);
+            };
+            list.Children.Add(slider);
+        }
+
+        panel.Children.Add(new ScrollViewer
+        {
+            Content = list,
+            MaxHeight = 320,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        });
+
+        if (viewModel.VstParamTotalCount > vstParams.Count)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = $"Showing {vstParams.Count} of {viewModel.VstParamTotalCount} parameters — " +
+                       "open the plug-in controls for the full surface.",
+                FontSize = 10,
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.7
+            });
+        }
+
+        return true;
     }
 
     // Populate the "Add processing" flyout on open: built-ins first (always
@@ -414,6 +491,19 @@ public sealed partial class AudioPage : UserControl
         if (sender is FrameworkElement { Tag: string mode })
         {
             ViewModel?.SetAudioTabMode(mode);
+        }
+    }
+
+    // Zoom→program audio topology (owner decision 2026-08-09): per-guest ISO
+    // stems vs Zoom's combined program mix. OneWay + Toggled (never TwoWay):
+    // the VM re-syncs routing on change, and a bounced snapshot must not
+    // re-enter the setter.
+    private void OnZoomAudioModeToggled(object sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleSwitch toggle && ViewModel is { } vm &&
+            toggle.IsOn != vm.IsPerGuestIsoAudio)
+        {
+            vm.SetZoomAudioMode(toggle.IsOn);
         }
     }
 

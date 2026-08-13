@@ -76,7 +76,12 @@ class AsyncEncoderSink final : public IEncoderSink {
   OutputSession start(const std::vector<std::string>& destinations,
                       const std::vector<std::string>& isoParticipantIds) override;
   void submit(const ProgramFrame& frame) override;
+  void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override;
+  void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override;
   void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override;
+  // A3: forwarded straight to the inner sink — the interface contract makes
+  // the implementation thread-safe (an atomic store), so no queue item.
+  void setAudioContentLatencySamples(int latencySamples) override;
   void stopRecording() override;
   OutputSession session() const override;
 
@@ -90,7 +95,7 @@ class AsyncEncoderSink final : public IEncoderSink {
   bool drainForTest(std::chrono::milliseconds timeout);
 
  private:
-  enum class Kind { Configure, Start, Video, Audio, StopRecording };
+  enum class Kind { Configure, Start, Video, IsoVideo, Audio, IsoAudio, StopRecording };
 
   struct Item {
     Kind kind;
@@ -102,6 +107,10 @@ class AsyncEncoderSink final : public IEncoderSink {
     std::vector<std::string> isoParticipantIds;
     // Video
     ProgramFrame frame;
+    // IsoVideo (zero-copy: each entry's payload is a shared_ptr)
+    std::vector<IsoSourceVideoFrame> isoSources;
+    // IsoAudio (ISO-2: per-source raw-stem PCM for this tick)
+    std::vector<IsoSourceAudio> isoAudioSources;
     // Audio
     std::vector<float> audioPcm;
     int audioFrameCount = 0;

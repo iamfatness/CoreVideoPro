@@ -1,6 +1,8 @@
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
+#include "modules/EncoderPolicy.h"
+#include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
 #include <atomic>
@@ -125,7 +127,8 @@ std::string normalizeVideoCodec(std::string value) {
 
 std::string normalizeEncoderMode(std::string value) {
   value = lowercaseAscii(std::move(value));
-  if (value == "nvenc" || value == "qsv" || value == "amf" || value == "cpu") {
+  if (value == "nvenc" || value == "qsv" || value == "amf" || value == "cpu" ||
+      value == "videotoolbox") {
     return value;
   }
   return "auto";
@@ -228,6 +231,51 @@ std::string redactedEndpoint(const std::string& endpoint, const std::string& str
     return endpoint;
   }
   return endpoint.substr(0, position) + "<stream-key>";
+}
+
+// This sender serves BOTH FFmpeg-transported protocols. RTMP and SRT differ only
+// in their endpoint syntax, container and validation - the process pipeline,
+// wallclock pacing, NV12 feeding, reconnect/backoff and health reporting are
+// identical, so they share one implementation rather than two 1700-line copies.
+struct FfmpegSenderProtocol {
+  std::string destination = "rtmp";  // the destination name the operator toggles
+  std::string container = "flv";     // FLV for RTMP, MPEG-TS for SRT
+  bool isSrt = false;
+};
+
+inline FfmpegSenderProtocol rtmpProtocol() { return {"rtmp", "flv", false}; }
+inline FfmpegSenderProtocol srtProtocol() { return {"srt", "mpegts", true}; }
+
+// SRT settings carry host/port/mode/latency/passphrase rather than a URL and a
+// stream key, so they get their own matcher and validator.
+const OutputDestinationSettings* findSrtSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
+  for (const auto& settings : destinationSettings) {
+    if (settings.id == "srt" || lowercaseAscii(settings.protocol) == "srt") {
+      return &settings;
+    }
+  }
+  return nullptr;
+}
+
+SrtEndpointConfig srtEndpointConfigFrom(const OutputDestinationSettings& settings) {
+  SrtEndpointConfig config;
+  // Tolerate the host arriving in either field - operators paste a full
+  // "srt://host:port" into the URL box as often as they fill host/port.
+  config.host = !settings.host.empty() ? settings.host : settings.url;
+  config.port = settings.port;
+  config.mode = settings.mode.empty() ? std::string("caller") : lowercaseAscii(settings.mode);
+  config.latencyMs = settings.latencyMs;
+  config.latencyUs = settings.latencyUs;
+  config.passphrase = settings.passphrase;
+  config.keyLength = settings.keyLength;
+  config.streamId = settings.streamId;
+  return config;
+}
+
+// Returns "" when the settings can produce a usable srt:// endpoint.
+std::string validateSrtSettings(const OutputDestinationSettings& settings) {
+  const auto result = buildSrtUrl(srtEndpointConfigFrom(settings));
+  return result.valid ? std::string() : result.error;
 }
 
 const OutputDestinationSettings* findRtmpSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
@@ -386,43 +434,10 @@ std::vector<std::string> tokenizeArguments(const std::string& args) {
 }
 #endif
 
+// Encoder policy (which hardware this product ships, and why) lives in
+// EncoderPolicy.h so it is unit-testable and hard to change by accident.
 std::string ffmpegVideoEncoderFor(const std::string& codec, const std::string& encoderMode) {
-  const auto normalizedCodec = normalizeVideoCodec(codec);
-  const auto normalizedMode = normalizeEncoderMode(encoderMode);
-  if (normalizedMode == "nvenc") {
-    if (normalizedCodec == "h265") {
-      return "hevc_nvenc";
-    }
-    if (normalizedCodec == "av1") {
-      return "av1_nvenc";
-    }
-    return "h264_nvenc";
-  }
-  if (normalizedMode == "qsv") {
-    if (normalizedCodec == "h265") {
-      return "hevc_qsv";
-    }
-    if (normalizedCodec == "av1") {
-      return "av1_qsv";
-    }
-    return "h264_qsv";
-  }
-  if (normalizedMode == "amf") {
-    if (normalizedCodec == "h265") {
-      return "hevc_amf";
-    }
-    if (normalizedCodec == "av1") {
-      return "av1_amf";
-    }
-    return "h264_amf";
-  }
-  if (normalizedCodec == "h265") {
-    return "libx265";
-  }
-  if (normalizedCodec == "av1") {
-    return "libsvtav1";
-  }
-  return "libx264";
+  return preferredEncoderFor(normalizeVideoCodec(codec), normalizeEncoderMode(encoderMode));
 }
 
 std::string encoderSpecificArguments(const std::string& encoderName, const std::string& rateControl) {
@@ -435,6 +450,11 @@ std::string encoderSpecificArguments(const std::string& encoderName, const std::
   }
   if (encoderName.find("_amf") != std::string::npos) {
     return " -quality speed -rc " + rc;
+  }
+  if (encoderName.find("_videotoolbox") != std::string::npos) {
+    // VideoToolbox rejects libx264 preset/tune flags; realtime keeps the
+    // hardware encoder in its low-latency path and prioritize_speed matches.
+    return " -realtime 1 -prio_speed 1";
   }
   if (encoderName == "libsvtav1") {
     return " -preset 8";
@@ -498,53 +518,39 @@ std::string selectFfmpegVideoEncoder(
     const std::string& encoderMode) {
   const auto normalizedCodec = normalizeVideoCodec(codec);
   const auto normalizedMode = normalizeEncoderMode(encoderMode);
-  const auto preferred = ffmpegVideoEncoderFor(normalizedCodec, normalizedMode);
-
-  // Explicit hardware choices are operator intent; let FFmpeg report a precise
-  // device/driver failure instead of silently changing the requested encoder.
-  if (normalizedMode == "nvenc" || normalizedMode == "qsv" || normalizedMode == "amf") {
-    return preferred;
-  }
-
-  std::vector<std::string> candidates{preferred};
-  if (normalizedCodec == "h264") {
-#if defined(_WIN32)
-    if (normalizedMode == "auto") {
-      // Prefer vendor hardware encoders for sustained live output. The old
-      // auto path jumped directly to Media Foundation when libx264 was absent;
-      // MF initialized successfully but stopped consuming the YouTube RTMP
-      // stream after its initial burst on the affected workstation.
-      candidates = {"h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libopenh264"};
-    }
-#endif
-    if (std::find(candidates.begin(), candidates.end(), "libopenh264") == candidates.end()) {
-      candidates.emplace_back("libopenh264");
-    }
-  } else if (normalizedCodec == "h265") {
-#if defined(_WIN32)
-    if (normalizedMode == "auto") {
-      candidates = {"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "libkvazaar"};
-    }
-#endif
-    if (std::find(candidates.begin(), candidates.end(), "libkvazaar") == candidates.end()) {
-      candidates.emplace_back("libkvazaar");
-    }
-  }
-
+  const auto candidates = encoderCandidatesFor(normalizedCodec, normalizedMode);
   for (const auto& candidate : candidates) {
     if (ffmpegEncoderIsAvailable(executable, candidate)) {
       return candidate;
     }
   }
-  return preferred;
+  return candidates.empty() ? preferredEncoderFor(normalizedCodec, normalizedMode) : candidates.front();
 }
 
 class RtmpOutputSender final : public IOutputSender {
  public:
-  explicit RtmpOutputSender(RuntimeProbe runtimeProbe)
-      : runtimeProbe_(std::move(runtimeProbe)), runtimeDetail_(runtimeProbe_.detail), runtimeAvailable_(runtimeProbe_.available) {}
+  RtmpOutputSender(RuntimeProbe runtimeProbe, FfmpegSenderProtocol protocol = rtmpProtocol())
+      : protocol_(std::move(protocol)),
+        runtimeProbe_(std::move(runtimeProbe)),
+        runtimeDetail_(runtimeProbe_.detail),
+        runtimeAvailable_(runtimeProbe_.available) {}
 
   ~RtmpOutputSender() override { stopFfmpegProcess(); }
+
+  // Program audio on the AUDIO cadence. Writes straight into the same queue the
+  // per-tick path uses; the borrow ends inside writeAudioToFfmpeg (it copies into
+  // audioQueue_), so holding a caller-owned reference here is safe.
+  void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    if (pcm.empty() || channels <= 0 || sampleRate <= 0) {
+      return;
+    }
+    pendingAudioPcm_ = &pcm;
+    pendingAudioChannels_ = channels;
+    pendingAudioSampleRate_ = sampleRate;
+    haveRealAudio_ = true;
+    writeAudioToFfmpeg();  // no-op until the process is up with a PCM input
+    pendingAudioPcm_ = nullptr;
+  }
 
   OutputSenderSession sync(
       const std::vector<std::string>& destinations,
@@ -558,12 +564,26 @@ class RtmpOutputSender final : public IOutputSender {
     // process is configured with (and fed) the second PCM input instead of the
     // `anullsrc` silence source. We treat "audio available" as having a positive
     // channel/sample-rate and non-empty PCM.
-    pendingAudioPcm_ = (programAudioPcm && !programAudioPcm->empty() && audioChannels > 0 && audioSampleRate > 0)
-                           ? programAudioPcm
-                           : nullptr;
-    pendingAudioChannels_ = pendingAudioPcm_ ? audioChannels : 0;
-    pendingAudioSampleRate_ = pendingAudioPcm_ ? audioSampleRate : 0;
-    const bool wantsRtmp = std::find(destinations.begin(), destinations.end(), "rtmp") != destinations.end();
+    // Audio presence is STICKY (haveRealAudio_), not per-call. Video now arrives
+    // on its own 60Hz tick while audio arrives on the 50Hz worker via
+    // submitAudio(), so most sync() calls legitimately carry no PCM — and
+    // clearing the layout on those would look like "audio disappeared" and
+    // restart FFmpeg (the arg list bakes in the audio input) on every tick.
+    // A LAYOUT ALONE DECLARES AUDIO — PCM is not required. The FFmpeg argument
+    // list bakes in the audio input, so discovering audio only when the first
+    // PCM buffer arrives means starting with `anullsrc` and RESTARTING moments
+    // later. That restart forces a second SRT connect, and an SRT listener
+    // accepts ONE caller: the reconnect is refused ("Connection to srt://...
+    // failed: I/O error") and the stream never recovers. Declaring the layout on
+    // the first sync gets the process right the first time.
+    if (audioChannels > 0 && audioSampleRate > 0) {
+      pendingAudioChannels_ = audioChannels;
+      pendingAudioSampleRate_ = audioSampleRate;
+      haveRealAudio_ = true;
+    }
+    pendingAudioPcm_ = (programAudioPcm && !programAudioPcm->empty()) ? programAudioPcm : nullptr;
+    const bool wantsRtmp =
+        std::find(destinations.begin(), destinations.end(), protocol_.destination) != destinations.end();
     if (!wantsRtmp) {
       stopFfmpegProcess();
       videoFramePacer_.reset();
@@ -579,7 +599,8 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     ensureSender(elapsedMs);
-    const auto* settings = findRtmpSettings(destinationSettings);
+    const auto* settings = protocol_.isSrt ? findSrtSettings(destinationSettings)
+                                           : findRtmpSettings(destinationSettings);
     if (!settings) {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
@@ -593,7 +614,8 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
-    const auto settingsError = validateRtmpSettings(*settings);
+    const auto settingsError = protocol_.isSrt ? validateSrtSettings(*settings)
+                                               : validateRtmpSettings(*settings);
     if (!settingsError.empty()) {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
@@ -608,7 +630,8 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     const bool ffmpegBinDirectoryChanged = configuredFfmpegBinDirectory_ != settings->ffmpegBinDirectory;
-    configuredEndpoint_ = buildRtmpEndpoint(*settings);
+    configuredEndpoint_ = protocol_.isSrt ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
+                                          : buildRtmpEndpoint(*settings);
     configuredStreamKey_ = settings->streamKey;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
@@ -633,6 +656,29 @@ class RtmpOutputSender final : public IOutputSender {
     const auto codecCompatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
     if (!codecCompatibility.warning.empty()) {
       runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + codecCompatibility.warning;
+    }
+    // LOUD when the requested codec has no supported hardware encoder here.
+    // "AV1 selected, silently got H.264" is the same silent-wrong-output class as
+    // shipping a thumbnail as the program: the stream looks fine and is not what
+    // was asked for. Say which hardware is required instead.
+    unsupportedCodecWarning_.clear();
+    if (!codecHasSupportedHardwareEncoder(configuredVideoCodec_)) {
+      if (configuredVideoCodec_ == "h265") {
+        unsupportedCodecWarning_ =
+            "HEVC/H.265 encoding is not supported in this build; encoding H.264 instead.";
+      } else if (configuredVideoCodec_ == "av1") {
+        unsupportedCodecWarning_ =
+#if defined(__APPLE__)
+            "AV1 encoding needs an NVIDIA Ada (RTX 40-series) GPU; Apple Silicon has no AV1 "
+            "encoder. Encoding H.264 instead.";
+#else
+            "AV1 encoding needs an NVIDIA Ada (RTX 40-series) GPU or newer. Encoding H.264 "
+            "instead.";
+#endif
+      }
+      if (!unsupportedCodecWarning_.empty()) {
+        runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + unsupportedCodecWarning_;
+      }
     }
     runtimeAvailable_ = runtimeProbe_.available;
     if (!runtimeProbe_.ffmpegExecutable.empty()) {
@@ -667,7 +713,7 @@ class RtmpOutputSender final : public IOutputSender {
       appendSendProof(frame, "waiting-for-frame");
       return snapshot();
     }
-    if (!hasProgramNv12(*frame) &&
+    if (!hasProgramNv12(*frame) && !hasProgramFullBgra(*frame) &&
         (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty())) {
       sender_.status = "warning";
       sender_.warning = "RTMP sender is waiting for composed BGRA program pixels.";
@@ -675,6 +721,16 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.lastResultCode = "frame-pixels-missing";
       sender_.lastError = sender_.warning;
       appendSendProof(frame, "frame-pixels-missing");
+      return snapshot();
+    }
+
+    // Skip BEFORE ensureFfmpegProcess: that call pins FFmpeg's -s geometry from
+    // this frame, so letting a preview-sized frame through here is what
+    // restarted the encoder mid-stream.
+    if (!videoSourceUsable(*frame)) {
+      sender_.status = "live";
+      sender_.lastResultCode = "awaiting-full-res-frame";
+      appendSendProof(frame, "awaiting-full-res-frame");
       return snapshot();
     }
 
@@ -689,7 +745,10 @@ class RtmpOutputSender final : public IOutputSender {
     writeAudioToFfmpeg();
     if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
       sender_.status = "live";
-      sender_.warning.clear();
+      // A live stream still carries the unsupported-codec notice: the operator
+      // asked for AV1/HEVC and is getting H.264, which must not go quiet just
+      // because the stream is otherwise healthy.
+      sender_.warning = unsupportedCodecWarning_;
       sender_.runtimeDetail = runtimeDetail_;
       sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
       sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
@@ -719,7 +778,10 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     sender_.status = "live";
-    sender_.warning.clear();
+    // A live stream still carries the unsupported-codec notice: the operator
+    // asked for AV1/HEVC and is getting H.264, which must not go quiet just
+    // because the stream is otherwise healthy.
+    sender_.warning = unsupportedCodecWarning_;
     sender_.runtimeDetail = runtimeDetail_;
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
@@ -734,7 +796,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
-    if (destination != "rtmp") {
+    if (destination != protocol_.destination) {
       return snapshot();
     }
     ensureSender(elapsedMs);
@@ -749,7 +811,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override {
-    if (destination != "rtmp") {
+    if (destination != protocol_.destination) {
       return snapshot();
     }
     stopFfmpegProcess();
@@ -771,7 +833,7 @@ class RtmpOutputSender final : public IOutputSender {
   OutputSenderSession session() const override { return snapshot(); }
 
   void interrupt(const std::string& destination) override {
-    if (destination != "rtmp") {
+    if (destination != protocol_.destination) {
       return;
     }
 #if defined(_WIN32)
@@ -799,24 +861,108 @@ class RtmpOutputSender final : public IOutputSender {
     return frame.programNv12.size() >= required;
   }
 
+  // Full-res BGRA tap (the Metal GPU tap on macOS; fills whenever output is
+  // active). Preferred over `preview` — streaming the 320x180 UI thumbnail
+  // was the silent-quality failure this ordering exists to prevent.
+  static bool hasProgramFullBgra(const ProgramFrame& frame) {
+    if (frame.programFullBgra.width <= 0 || frame.programFullBgra.height <= 0) {
+      return false;
+    }
+    const auto required = static_cast<size_t>(frame.programFullBgra.width) *
+                          static_cast<size_t>(frame.programFullBgra.height) * 4;
+    return frame.programFullBgra.bgra.size() >= required;
+  }
+
   static int videoWidth(const ProgramFrame& frame) {
-    return hasProgramNv12(frame) ? frame.programNv12Width : frame.preview.width;
+    if (hasProgramNv12(frame)) {
+      return frame.programNv12Width;
+    }
+    return hasProgramFullBgra(frame) ? frame.programFullBgra.width : frame.preview.width;
   }
 
   static int videoHeight(const ProgramFrame& frame) {
-    return hasProgramNv12(frame) ? frame.programNv12Height : frame.preview.height;
+    if (hasProgramNv12(frame)) {
+      return frame.programNv12Height;
+    }
+    return hasProgramFullBgra(frame) ? frame.programFullBgra.height : frame.preview.height;
   }
 
   static std::string videoPixelFormat(const ProgramFrame& frame) {
     return hasProgramNv12(frame) ? "nv12" : "bgra";
   }
 
+  static const std::vector<uint8_t>& videoFrameBytes(const ProgramFrame& frame) {
+    if (hasProgramNv12(frame)) {
+      return frame.programNv12;
+    }
+    return hasProgramFullBgra(frame) ? frame.programFullBgra.bgra : frame.preview.bgra;
+  }
+
+  // Has this sender ever seen a full-resolution program buffer? The full-res tap
+  // is ASYNCHRONOUS: it publishes a finished buffer on the ticks where its
+  // readback completed, and ProgramFrame::programFullBgra is EMPTY on the rest.
+  // The static pickers above then silently fall back to `preview` — a 320x180 UI
+  // thumbnail with completely different geometry. FFmpeg is spawned with
+  // `-s <declared>` and fed raw frames on pipe:0, so a mid-stream geometry flip
+  // makes it either restart continuously or sit stitching thumbnails into a
+  // frame that never completes: a video track is advertised and NOTHING
+  // decodable ever arrives, while the separate audio pipe keeps flowing. That is
+  // exactly the "streams audio, no picture" failure. Once full-res is available,
+  // NEVER downgrade — skip the tick instead. FFmpeg paces with -re and simply
+  // receives slightly fewer frames, which is always better than a broken stream.
+  bool fullResLocked_ = false;
+
+  // Returns false when this tick has no frame at the locked geometry and must be
+  // skipped rather than written at the wrong size.
+  bool videoSourceUsable(const ProgramFrame& frame) {
+    const bool full = hasProgramNv12(frame) || hasProgramFullBgra(frame);
+    {
+      static long long s_full = 0, s_total = 0;
+      static auto s_stamp = std::chrono::steady_clock::now();
+      ++s_total;
+      if (full) ++s_full;
+      const auto now = std::chrono::steady_clock::now();
+      // Only report when the tap actually missed — a healthy stream should be
+      // silent here, and a sudden run of misses is the signal worth seeing.
+      if (std::chrono::duration<double>(now - s_stamp).count() >= 3.0) {
+        if (s_full != s_total) {
+          std::fprintf(stderr, "[rtmp] full-res tap missed %lld of %lld ticks\n",
+                       s_total - s_full, s_total);
+        }
+        s_full = 0; s_total = 0; s_stamp = now;
+      }
+    }
+    if (full) {
+      fullResLocked_ = true;
+      return true;
+    }
+    if (fullResLocked_) {
+      return false;  // never downgrade geometry mid-stream
+    }
+    // STARTUP: the full-res tap is asynchronous, so the first tick or two after
+    // arming can arrive before it has published (measured: 1 miss in the first
+    // ~123 ticks, then 100%). Starting FFmpeg on that first preview-sized frame
+    // pins -s to 320x180 and the very next full-res frame forces a restart —
+    // dropping the connection a real ingest has already accepted. Wait briefly
+    // for the tap instead; only fall back to preview if it never appears (a
+    // build with no tap at all), so the legacy path still works.
+    constexpr int kWaitTicksForFullRes = 60;  // ~1.2s at the 50Hz output worker
+    return ++previewOnlyTicks_ > kWaitTicksForFullRes;
+  }
+  int previewOnlyTicks_ = 0;
+
   void ensureSender(double elapsedMs) {
     if (!sender_.senderId.empty()) {
       return;
     }
-    sender_.senderId = "rtmp:program";
-    sender_.destination = "rtmp";
+    // Identity must follow the PROTOCOL, not the class name. The composite adds a
+    // synthetic "<dest> output sender is not available in this build" warning for
+    // any network destination with no registered sender, so an SRT instance
+    // reporting itself as "rtmp" streams perfectly while the operator is told SRT
+    // is unavailable (observed in the first end-to-end SRT proof: 6.4MB of h264
+    // delivered, snapshot said no SRT sender module).
+    sender_.senderId = protocol_.destination + ":program";
+    sender_.destination = protocol_.destination;
     sender_.status = "starting";
     sender_.startedAtMs = elapsedMs;
     sender_.latencyMs = 2100;
@@ -846,7 +992,9 @@ class RtmpOutputSender final : public IOutputSender {
     const bool enhancedChanged = configuredAllowEnhancedRtmp_ != activeAllowEnhancedRtmp_;
     // The audio input layout is baked into the FFmpeg argument list, so a change
     // in audio presence / channel count / sample rate requires a fresh process.
-    const bool audioPresent = pendingAudioPcm_ != nullptr;
+    // Sticky: whether a real PCM input exists at all, NOT whether this
+    // particular call carried a buffer (see the note in sync()).
+    const bool audioPresent = haveRealAudio_;
     const bool audioChanged = audioPresent != activeAudioPresent_ ||
                               pendingAudioChannels_ != activeAudioChannels_ ||
                               pendingAudioSampleRate_ != activeAudioSampleRate_;
@@ -907,6 +1055,13 @@ class RtmpOutputSender final : public IOutputSender {
     ffmpegRetryAfter_ = {};
   }
 
+  // Never emit a raw endpoint: RTMP carries the stream key in the path and SRT
+  // carries the passphrase in the query string.
+  std::string redactedSenderEndpoint() const {
+    return protocol_.isSrt ? redactedSrtUrl(configuredEndpoint_)
+                           : redactedEndpoint(configuredEndpoint_, configuredStreamKey_);
+  }
+
   std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
     // Resolve the requested codec to an RTMP-compatible one (H.265/AV1 fall back
     // to H.264 unless enhanced-RTMP is enabled) so the encoded stream always
@@ -935,6 +1090,7 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
+    config.container = protocol_.container;
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -1091,7 +1247,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
     writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
-              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
@@ -1132,10 +1288,25 @@ class RtmpOutputSender final : public IOutputSender {
 
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
-    // Video read end -> child stdin (fd 0); /dev/null -> stdout/stderr.
+    // Video read end -> child stdin (fd 0); /dev/null -> stdout. stderr goes
+    // to a temp log (published in the start event, Windows parity) — without
+    // it an ingest rejection and a blocked pipe are indistinguishable.
     posix_spawn_file_actions_adddup2(&actions, videoPipe[0], 0);
     posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
-    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+    ffmpegStderrPath_.clear();
+    {
+      const char* tempDir = ::getenv("TMPDIR");
+      std::string logPath = std::string(tempDir ? tempDir : "/tmp");
+      if (!logPath.empty() && logPath.back() != '/') {
+        logPath += '/';
+      }
+      logPath += "corevideo-rtmp-ffmpeg-" + std::to_string(::getpid()) + "-" +
+                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                 ".log";
+      ffmpegStderrPath_ = logPath;
+    }
+    posix_spawn_file_actions_addopen(&actions, 2, ffmpegStderrPath_.c_str(),
+                                     O_WRONLY | O_CREAT | O_TRUNC, 0644);
     std::string audioInputArg = "pipe:0";
     if (activeAudioPresent_) {
       // Audio read end -> child fd 3 (referenced as pipe:3).
@@ -1149,6 +1320,15 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     const std::string argString = buildFfmpegArguments(width, height, audioInputArg, videoInputPixelFormat);
+    // One-shot: the exact invocation, so a stream that connects but delivers no
+    // video can be reproduced by hand instead of inferred.
+    {
+      static bool s_loggedArgs = false;
+      if (!s_loggedArgs) {
+        s_loggedArgs = true;
+        std::fprintf(stderr, "[rtmp] ffmpeg %s\n", argString.c_str());
+      }
+    }
     std::vector<std::string> tokens = tokenizeArguments(argString);
     std::vector<char*> argv;
     argv.reserve(tokens.size() + 2);
@@ -1187,7 +1367,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
     writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
-              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
@@ -1195,7 +1375,8 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"audioChannels\":" + std::to_string(activeAudioPresent_ ? activeAudioChannels_ : 0) +
               ",\"audioSampleRate\":" + std::to_string(activeAudioPresent_ ? activeAudioSampleRate_ : 0) +
               ",\"videoInputPixelFormat\":" + jsonString(videoInputPixelFormat) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) + "}");
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) +
+              ",\"ffmpegStderrPath\":" + jsonString(ffmpegStderrPath_.string()) + "}");
     return true;
 #endif
   }
@@ -1219,7 +1400,7 @@ class RtmpOutputSender final : public IOutputSender {
     // Audio is written on every output-worker tick before video pacing is
     // evaluated in sync(). A failed video write stops the process.
     DWORD written = 0;
-    const auto& videoBytes = hasProgramNv12(frame) ? frame.programNv12 : frame.preview.bgra;
+    const auto& videoBytes = videoFrameBytes(frame);
     const auto* data = videoBytes.data();
     size_t remaining = videoBytes.size();
     while (remaining > 0) {
@@ -1251,7 +1432,31 @@ class RtmpOutputSender final : public IOutputSender {
         return false;  // FFmpeg exited
       }
     }
-    const auto& videoBytes = hasProgramNv12(frame) ? frame.programNv12 : frame.preview.bgra;
+    const auto& videoBytes = videoFrameBytes(frame);
+    // BOUNDARY EVIDENCE (one-shot): ffmpeg is told `-s WxH -pix_fmt <fmt>` and
+    // then fed raw frames on pipe:0. If the byte count does not match that
+    // geometry exactly, ffmpeg blocks forever assembling a frame that never
+    // completes — no video ever reaches the endpoint while the separate audio
+    // pipe keeps flowing. That is precisely the observed symptom, so log what we
+    // declared against what we actually write.
+    {
+      static bool s_logged = false;
+      if (!s_logged) {
+        s_logged = true;
+        const int w = videoWidth(frame);
+        const int h = videoHeight(frame);
+        const auto fmt = videoPixelFormat(frame);
+        const size_t expected = static_cast<size_t>(w) * static_cast<size_t>(h) *
+                                (fmt == "nv12" ? 3u : 8u) / 2u;
+        std::fprintf(stderr,
+                     "[rtmp] first video write: declared %dx%d %s -> expected %zu bytes, "
+                     "actual %zu bytes (source=%s)%s\n",
+                     w, h, fmt.c_str(), expected, videoBytes.size(),
+                     hasProgramNv12(frame) ? "programNv12"
+                         : (hasProgramFullBgra(frame) ? "programFullBgra" : "preview"),
+                     expected == videoBytes.size() ? "" : "  *** MISMATCH ***");
+      }
+    }
     const auto* data = reinterpret_cast<const char*>(videoBytes.data());
     size_t remaining = videoBytes.size();
     while (remaining > 0) {
@@ -1501,7 +1706,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.sendArtifactPath = path.string();
     writeLine("{\"type\":\"rtmp-send-proof-start\",\"destination\":\"rtmp\",\"endpointConfigured\":" +
               std::string(configuredEndpoint_.empty() ? "false" : "true") +
-              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"endpointMode\":\"ffmpeg-process\","
               "\"testMode\":false,\"muxingMode\":\"ffmpeg-process\",\"runtimeLibrary\":\"ffmpeg\",\"runtimeAvailable\":" +
               std::string(runtimeAvailable_ ? "true" : "false") +
@@ -1553,6 +1758,10 @@ class RtmpOutputSender final : public IOutputSender {
     return session;
   }
 
+  FfmpegSenderProtocol protocol_;
+  // Set when the requested codec has no supported hardware encoder here, so the
+  // operator is told rather than silently receiving a different codec.
+  std::string unsupportedCodecWarning_;
   RuntimeProbe runtimeProbe_;
   std::string runtimeDetail_;
   bool runtimeAvailable_ = false;
@@ -1595,6 +1804,10 @@ class RtmpOutputSender final : public IOutputSender {
   const std::vector<float>* pendingAudioPcm_ = nullptr;
   int pendingAudioChannels_ = 0;
   int pendingAudioSampleRate_ = 0;
+  // Sticky "a real PCM source exists", latched by submitAudio/sync and never
+  // cleared by a video-only sync. The FFmpeg arg list bakes in the audio input,
+  // so treating a video-only call as audio-absent would restart the encoder.
+  bool haveRealAudio_ = false;
   bool activeAudioPresent_ = false;
   int activeAudioChannels_ = 0;
   int activeAudioSampleRate_ = 0;
@@ -1627,7 +1840,20 @@ std::unique_ptr<IOutputSender> createRtmpOutputSender() {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
   // REQUIRES DEV MACHINE: real RTMP packet muxing belongs behind this libavformat
   // sender. The scaffold verifies runtime availability without affecting stubs.
-  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""));
+  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), rtmpProtocol());
+#else
+  return nullptr;
+#endif
+}
+
+// SRT DELIVERY. Same FFmpeg process pipeline as RTMP - only the endpoint syntax,
+// container (MPEG-TS) and validation differ - so it is the same sender with a
+// different protocol profile rather than a second implementation. Gated on the
+// RTMP build flag because it IS the RTMP sender; the staged FFmpeg is built with
+// libsrt, verified by loopback before this was wired.
+std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender() {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
+  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), srtProtocol());
 #else
   return nullptr;
 #endif

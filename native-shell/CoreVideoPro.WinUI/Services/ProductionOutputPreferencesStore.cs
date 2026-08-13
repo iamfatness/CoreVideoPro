@@ -4,7 +4,46 @@ namespace CoreVideoPro.WinUI.Services;
 
 public sealed class ProductionOutputPreferences
 {
-    public const int CurrentVersion = 3;
+    // v4 (beta spec S4): StreamRtmpStreamKey / StreamSrtPassphrase are stored
+    // DPAPI-encrypted at rest ("dpapi:" + base64 blob, field-level so the rest
+    // of the file stays diffable). Older plaintext files load fine and are
+    // re-saved encrypted on first load.
+    // v5 (beta spec O1): virtual-camera enable/mirror/name persist so they
+    // survive restarts (they were live-synced but reset every launch). Older
+    // files migrate with the in-app defaults: enabled=false, mirror=false,
+    // name=null (blank keeps the default "CoreVideo Pro Camera" name).
+    // v6 (master-vst-round2-spec §B2): the master rack persists — the full
+    // mastering settings block (incl. B1 glue dynamics/multiband), both A/B
+    // compare slots + which slot is active, and the operator's saved presets
+    // (built-ins stay code-defined in MasteringPresetCatalog and are never
+    // written here). Older files migrate with null blocks = keep the in-app
+    // defaults (mastering off, both slots neutral, no user presets).
+    // v7 (VST round-2 A2): VstInsertStates persists VST3 component-state
+    // blobs (base64) keyed by insert selection name ("vst:<class>"). Older
+    // files migrate with an empty map (no saved plugin state). Keying is per
+    // SELECTION, not per slot: the isolated host runs ONE instance per
+    // selection, so two chips naming the same plugin share one state by
+    // construction. Not a secret-bearing field (plugin DSP settings).
+    // v8 (ISO-record-spec §7, ISO-4): the operator's ISO recording selection
+    // persists — the "Program + ISOs" master switch (IsoRecordingEnabled) and
+    // the set of canonical ISO source ids (IsoRecordingSourceIds:
+    // "zoom:<pid>"/"capture:<id>"). Older files migrate with enabled=false + an
+    // empty set = program-only (byte-identical to the pre-ISO product). Not
+    // secret-bearing (source ids are per-meeting handles, not credentials).
+    // v9 (2026-08-10, follow-up to PR #397): the Zoom→program audio topology
+    // persists — "programMix" (Zoom's own echo-cancelled mix rides the program
+    // buses; the long-standing Z1 default) or "perGuestIso" (each guest's stem
+    // routes through their own strip and zoom-mix leaves the program buses).
+    // Older files migrate with the field absent = programMix, so every existing
+    // profile behaves exactly as it did before the upgrade. Stored as a string,
+    // not a bool: an unrecognized value falls back to programMix (see
+    // ZoomAudioModePreference). Not secret-bearing.
+    // Downgrade (verified, matches every prior bump): an older v8 build reading
+    // this file ignores the unknown ZoomAudioMode member, does not migrate
+    // (9 < 8 is false), and on its next save rewrites Version: 8 with the field
+    // dropped. Returning to a v9 build then reads the field absent -> programMix.
+    // That is the safe direction, so no downgrade guard is needed.
+    public const int CurrentVersion = 9;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -59,6 +98,13 @@ public sealed class ProductionOutputPreferences
     public double LowerThirdBuildOutMs { get; set; }
     public string? BrandLowerThirdStyle { get; set; }
     public string? BrandDefaultOverlayBehavior { get; set; }
+    // Virtual camera (beta spec O1): operator intent survives restarts. Enabled
+    // deliberately defaults to false — exposing the program feed system-wide is
+    // an explicit operator action on a fresh profile, mirroring the local-audio
+    // capture posture above.
+    public bool VirtualCameraEnabled { get; set; }
+    public bool VirtualCameraMirror { get; set; }
+    public string? VirtualCameraName { get; set; }
     public string? MultiviewLayoutMode { get; set; }
     public int MultiviewTileCount { get; set; } = 8;
     public bool MultiviewShowLabels { get; set; } = true;
@@ -76,6 +122,27 @@ public sealed class ProductionOutputPreferences
     // effectively session-scoped.
     public Dictionary<string, string> SourceDisplayNames { get; set; } = new(StringComparer.Ordinal);
 
+    // VST round-2 A2: persisted VST3 component states. Key = insert selection
+    // name (e.g. "vst:Curves AQ Stereo"), value = base64 IComponent state.
+    // Captured on a debounce after param/editor activity; restored at startup
+    // by pushing every entry to the core (which re-injects after host
+    // respawns too).
+    public Dictionary<string, string> VstInsertStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    // v8 (ISO-4, spec §7): the "Program only" ↔ "Program + ISOs" master switch.
+    // Default false = program-only. Not secret-bearing.
+    public bool IsoRecordingEnabled { get; set; }
+
+    // v8 (ISO-4): the operator's per-source ISO selection — canonical scheme-qualified
+    // source ids ("zoom:<pid>" / "capture:<id>"). zoom: ids are per-meeting handles;
+    // capture: ids are stable across sessions. Not secret-bearing.
+    public List<string> IsoRecordingSourceIds { get; set; } = [];
+
+    // v9: the operator's Zoom→program audio topology. Null/absent/unrecognized =
+    // "programMix". Read and written ONLY through ZoomAudioModePreference so the
+    // wire strings are spelled in exactly one place.
+    public string? ZoomAudioMode { get; set; }
+
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops
     // (new/save/update/remove/duplicate) — not on every canvas drag; unsaved
@@ -83,6 +150,52 @@ public sealed class ProductionOutputPreferences
     // Zoom participant ids inside routes are per-meeting and go stale across
     // sessions; show-input-slot assignments (the primary path) survive.
     public List<PersistedScene> CustomScenes { get; set; } = [];
+
+    // Master rack (v6, master-vst-round2-spec §B2). Null blocks = an older
+    // file or a fresh profile — the in-app defaults apply and nothing syncs
+    // to the core beyond what the operator had before the bump.
+    public PersistedMasteringSettings? MasteringCurrent { get; set; }
+    public PersistedMasteringSettings? MasteringCompareA { get; set; }
+    public PersistedMasteringSettings? MasteringCompareB { get; set; }
+    public string MasteringCompareSlot { get; set; } = "A";
+    public List<PersistedMasteringPreset> MasteringUserPresets { get; set; } = [];
+}
+
+/// <summary>
+/// One complete mastering-processor state at rest (mirrors
+/// <c>MasteringSettings</c>; defaults are the neutral in-app values so absent
+/// JSON fields deserialize to the documented pre-B2 behavior).
+/// </summary>
+public sealed class PersistedMasteringSettings
+{
+    public bool Enabled { get; set; }
+    public int TargetIndex { get; set; }
+    public double GlueAmount { get; set; }
+    public double CeilingDbfs { get; set; } = -1.3;
+    public double MaxRideDb { get; set; }
+    public double InputGainDb { get; set; }
+    public double HighPassHz { get; set; }
+    public double LowPassHz { get; set; }
+    public double LowShelfDb { get; set; }
+    public double PresenceDb { get; set; }
+    public double HighShelfDb { get; set; }
+    public double StereoWidth { get; set; } = 1.0;
+    public bool LimiterEnabled { get; set; } = true;
+    public double GlueRatio { get; set; } = 2.0;
+    public double GlueAttackMs { get; set; } = 30.0;
+    public double GlueReleaseMs { get; set; } = 250.0;
+    public double GlueMakeupDb { get; set; }
+    public bool GlueMultiband { get; set; }
+    public double GlueBandLowDb { get; set; }
+    public double GlueBandMidDb { get; set; }
+    public double GlueBandHighDb { get; set; }
+}
+
+public sealed class PersistedMasteringPreset
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public PersistedMasteringSettings Settings { get; set; } = new();
 }
 
 public sealed class PersistedScene
@@ -134,8 +247,43 @@ public static class ProductionOutputPreferencesSerializer
     public static string Serialize(ProductionOutputPreferences preferences) =>
         JsonSerializer.Serialize(preferences, Options);
 
-    public static ProductionOutputPreferences? Deserialize(string? json)
+    /// <summary>
+    /// Runs the two secret-bearing fields (RTMP stream key, SRT passphrase)
+    /// through <paramref name="protect"/> at the JSON level so the caller's
+    /// in-memory preferences object stays plaintext and every other field stays
+    /// human-readable on disk (beta spec S4: field-level, not whole-file).
+    /// </summary>
+    public static string ProtectSecretFields(string json, Func<string, string> protect)
     {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json);
+        if (node is null)
+        {
+            return json;
+        }
+
+        foreach (var field in SecretFieldNames)
+        {
+            if (node[field]?.GetValue<string?>() is { Length: > 0 } value)
+            {
+                node[field] = protect(value);
+            }
+        }
+
+        return node.ToJsonString(Options);
+    }
+
+    public static readonly string[] SecretFieldNames =
+    [
+        nameof(ProductionOutputPreferences.StreamRtmpStreamKey),
+        nameof(ProductionOutputPreferences.StreamSrtPassphrase)
+    ];
+
+    public static ProductionOutputPreferences? Deserialize(string? json) =>
+        Deserialize(json, out _);
+
+    public static ProductionOutputPreferences? Deserialize(string? json, out bool migratedFromOlderVersion)
+    {
+        migratedFromOlderVersion = false;
         if (string.IsNullOrWhiteSpace(json))
         {
             return null;
@@ -152,10 +300,20 @@ public static class ProductionOutputPreferencesSerializer
             // Versions 1-2 defaulted local capture to enabled and selected the
             // first discovered endpoint automatically. Treat that legacy state
             // as implicit, not consent to seize the device on every launch.
-            if (preferences.Version < ProductionOutputPreferences.CurrentVersion)
+            // (Pinned to < 3: the v4 secrets / v5 vcam / v6 mastering / v7 VST
+            // state bumps must not re-run it. Those fields need no explicit
+            // migration — absent fields deserialize to the documented defaults:
+            // vcam off/unmirrored/default name; mastering blocks null = in-app
+            // defaults, no user presets; VstInsertStates empty = no saved state.)
+            if (preferences.Version < 3)
             {
                 preferences.LocalAudioSourceEnabled = false;
+            }
+
+            if (preferences.Version < ProductionOutputPreferences.CurrentVersion)
+            {
                 preferences.Version = ProductionOutputPreferences.CurrentVersion;
+                migratedFromOlderVersion = true;
             }
 
             return preferences;
@@ -172,10 +330,23 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
     public const string DefaultFileName = "production-output-preferences.json";
 
     private readonly string _filePath;
+    private readonly Func<string, string>? _protectSecret;
+    private readonly Func<string, string>? _unprotectSecret;
 
-    public FileProductionOutputPreferencesStore(string folderPath, string? fileName = null)
+    /// <param name="protectSecret">Optional at-rest encryption for the secret
+    /// fields (RTMP stream key, SRT passphrase); e.g. DPAPI via
+    /// <c>DpapiSecretProtector.Protect</c>. Null keeps plaintext (tests).</param>
+    /// <param name="unprotectSecret">Counterpart decryptor; must pass plaintext
+    /// (unprefixed) values through unchanged so legacy files keep loading.</param>
+    public FileProductionOutputPreferencesStore(
+        string folderPath,
+        string? fileName = null,
+        Func<string, string>? protectSecret = null,
+        Func<string, string>? unprotectSecret = null)
     {
         _filePath = Path.Combine(folderPath, fileName ?? DefaultFileName);
+        _protectSecret = protectSecret;
+        _unprotectSecret = unprotectSecret;
     }
 
     public void Save(ProductionOutputPreferences preferences)
@@ -186,7 +357,13 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(_filePath, ProductionOutputPreferencesSerializer.Serialize(preferences));
+        var json = ProductionOutputPreferencesSerializer.Serialize(preferences);
+        if (_protectSecret is not null)
+        {
+            json = ProductionOutputPreferencesSerializer.ProtectSecretFields(json, _protectSecret);
+        }
+
+        File.WriteAllText(_filePath, json);
     }
 
     public ProductionOutputPreferences? Load()
@@ -198,7 +375,38 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
 
         try
         {
-            return ProductionOutputPreferencesSerializer.Deserialize(File.ReadAllText(_filePath));
+            var preferences = ProductionOutputPreferencesSerializer.Deserialize(
+                File.ReadAllText(_filePath), out var migratedFromOlderVersion);
+            if (preferences is null)
+            {
+                return null;
+            }
+
+            var hadPlaintextSecret = false;
+            if (_unprotectSecret is not null)
+            {
+                preferences.StreamRtmpStreamKey =
+                    UnprotectField(nameof(preferences.StreamRtmpStreamKey), preferences.StreamRtmpStreamKey, ref hadPlaintextSecret);
+                preferences.StreamSrtPassphrase =
+                    UnprotectField(nameof(preferences.StreamSrtPassphrase), preferences.StreamSrtPassphrase, ref hadPlaintextSecret);
+            }
+
+            // Migration (beta spec S4): plaintext secrets or an older schema
+            // version re-save encrypted at the new version. Best-effort — a
+            // failed rewrite must never lose working preferences.
+            if (_protectSecret is not null && (hadPlaintextSecret || migratedFromOlderVersion))
+            {
+                try
+                {
+                    Save(preferences);
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write($"prefs: encrypted re-save failed (keeping loaded preferences): {ex.Message}");
+                }
+            }
+
+            return preferences;
         }
         catch (IOException)
         {
@@ -206,6 +414,30 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
         }
         catch (UnauthorizedAccessException)
         {
+            return null;
+        }
+    }
+
+    private string? UnprotectField(string fieldName, string? stored, ref bool hadPlaintextSecret)
+    {
+        if (string.IsNullOrEmpty(stored))
+        {
+            return stored;
+        }
+
+        try
+        {
+            var value = _unprotectSecret!(stored);
+            // Pass-through of a non-empty value means it sat plaintext at rest.
+            hadPlaintextSecret |= string.Equals(value, stored, StringComparison.Ordinal);
+            return value;
+        }
+        catch (Exception ex)
+        {
+            // A blob that cannot be decrypted (e.g. the file was copied from a
+            // different Windows user) is unusable — drop the single field LOUDLY
+            // rather than failing the whole preferences load.
+            LaunchLog.Write($"prefs: could not decrypt {fieldName}; the value must be re-entered: {ex.Message}");
             return null;
         }
     }

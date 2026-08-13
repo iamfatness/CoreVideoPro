@@ -4,7 +4,12 @@
  * constraints, and builds the output folder structure for a recording session.
  */
 
-export type IsoTrackSource = "participant" | "program-mix" | "screen-share" | "ambient";
+export type IsoTrackSource =
+  | "participant"
+  | "capture"
+  | "program-mix"
+  | "screen-share"
+  | "ambient";
 
 export type IsoResolutionTier = "1080p" | "720p" | "480p";
 
@@ -13,6 +18,11 @@ export type IsoTrack = {
   source: IsoTrackSource;
   /** Participant id when source is "participant" */
   participantId?: string;
+  /**
+   * Canonical ISO source id fed to the core's `isoSourceIds`
+   * (`zoom:<pid>` for a participant, `capture:<id>` for a capture device).
+   */
+  sourceId?: string;
   label: string;
   /** Estimated video bitrate in Mbps */
   estimatedBitrateMbps: number;
@@ -34,6 +44,13 @@ export type IsoRecordingPlan = {
 export type IsoRecordingOptions = {
   /** Include a program mix (down-mix of all participants) track */
   includeProgramMix?: boolean;
+  /**
+   * Host capture devices (UVC cameras, screen/window capture) to ISO-record
+   * (ISO-3). Each becomes a `capture:<id>` track after the participant tracks,
+   * in selection order. `id` is the capture device id (NOT scheme-prefixed);
+   * `name` is the device label used for the on-disk `ISO-NN-<name>.mp4`.
+   */
+  captureSources?: Array<{ id: string; name: string }>;
   /** Include a screen-share ISO track when a screen share is active */
   includeScreenShare?: boolean;
   /** Resolution tier to record participant tracks at */
@@ -60,6 +77,8 @@ export function estimateIsoTrackBitrateMbps(
   if (source === "program-mix") return BITRATE_BY_TIER[resolution] * 1.5;
   if (source === "screen-share") return 8; // screen share needs higher bitrate for text clarity
   if (source === "ambient") return 1;
+  // A capture device (host camera / screen) records at the same tier as a
+  // participant — it is native-resolution BGRA, not a composited proxy.
   return BITRATE_BY_TIER[resolution];
 }
 
@@ -70,6 +89,8 @@ export function isoTrackLabel(
   switch (source) {
     case "participant":
       return participantName ?? "Participant";
+    case "capture":
+      return participantName ?? "Capture";
     case "program-mix":
       return "Program Mix";
     case "screen-share":
@@ -89,6 +110,7 @@ export function planIsoRecording(
 ): IsoRecordingPlan {
   const {
     includeProgramMix = true,
+    captureSources = [],
     includeScreenShare = false,
     participantResolution = "1080p",
     sessionName = "session",
@@ -111,8 +133,23 @@ export function planIsoRecording(
       trackIndex: i,
       source: "participant",
       participantId: p.id,
+      sourceId: `zoom:${p.id}`,
       label: isoTrackLabel("participant", p.name),
       estimatedBitrateMbps: estimateIsoTrackBitrateMbps("participant", participantResolution),
+      resolutionTier: participantResolution,
+    });
+  }
+
+  // Capture-device tracks (ISO-3: host camera / screen / window capture). Each
+  // rides a `capture:<id>` source id; the audio-pairing decision (video-only vs
+  // muxed audio) is made core-side from the operator's capture-audio pairing.
+  for (const c of captureSources) {
+    tracks.push({
+      trackIndex: tracks.length,
+      source: "capture",
+      sourceId: `capture:${c.id}`,
+      label: isoTrackLabel("capture", c.name),
+      estimatedBitrateMbps: estimateIsoTrackBitrateMbps("capture", participantResolution),
       resolutionTier: participantResolution,
     });
   }
@@ -192,15 +229,49 @@ export function validateIsoAgainstDisk(
 }
 
 /**
+ * Sanitize a roster/display name into a safe file-name fragment. Mirrors the
+ * native `sanitizeForFilename` (MediaFoundationEncoderAdapter.cpp) so the shell
+ * planner and the core agree on the ISO-1 folder scheme (spec §5): keep
+ * alphanumerics + underscore, collapse other runs to a single dash, trim, cap.
+ */
+export function sanitizeIsoName(name: string, fallback = "source"): string {
+  let out = "";
+  let lastDash = false;
+  for (const ch of name) {
+    if (/[A-Za-z0-9_]/.test(ch)) {
+      out += ch;
+      lastDash = false;
+    } else if (/[ \-.]/.test(ch)) {
+      if (out.length > 0 && !lastDash) {
+        out += "-";
+        lastDash = true;
+      }
+    }
+    if (out.length >= 48) break;
+  }
+  out = out.replace(/-+$/, "");
+  return out.length > 0 ? out : fallback;
+}
+
+/**
  * Build a per-track output file path for use in an NLE or archive.
+ *
+ * ISO-1 folder scheme (spec §5), matching the native encoder: program is
+ * `Program.mp4`; every other track is `ISO-NN-<SafeName>.mp4` (selection order,
+ * self-contained muxed MP4). This replaces the older `track-NN-*.mov` scheme so
+ * the shell planner and the core write the same layout.
  */
 export function isoOutputPath(
   outputFolder: string,
   trackLabel: string,
-  trackIndex: number
+  trackIndex: number,
+  source: IsoTrackSource = "participant"
 ): string {
-  const slug = trackLabel.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-  return `${outputFolder}/track-${String(trackIndex + 1).padStart(2, "0")}-${slug}.mov`;
+  if (source === "program-mix") {
+    return `${outputFolder}/Program.mp4`;
+  }
+  const safe = sanitizeIsoName(trackLabel);
+  return `${outputFolder}/ISO-${String(trackIndex + 1).padStart(2, "0")}-${safe}.mp4`;
 }
 
 export function summarizeIsoPlan(plan: IsoRecordingPlan): string {
