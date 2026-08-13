@@ -291,4 +291,23 @@ export class MukanaPoller {
   private isMukanaPollDue(endpoint: MukanaEndpoint, now: number): boolean {
     return now - this.lastMukanaPollAt[endpoint] >= this.client.nextDelayMs(endpoint);
   }
+
+  /**
+   * Force every endpoint to read as due on the very next `poll()` call,
+   * regardless of its own interval/backoff or how recently it last polled —
+   * the mechanism behind an operator's explicit "sync now" control
+   * (`ShowEngine.syncAll`). Resets `lastMukanaPollAt` rather than calling
+   * any fetch itself: this method takes no `Clock` reading and starts
+   * nothing, it only clears the due-check's anchor so the NEXT `poll()`,
+   * whenever it runs, starts every endpoint immediately instead of waiting
+   * out its interval. An endpoint currently in flight is unaffected — the
+   * busy gate in `poll()` still refuses a second overlapping fetch for it;
+   * a forced sync on a hung endpoint takes effect the moment its current
+   * fetch finally settles and `poll()` next runs.
+   */
+  forceDue(): void {
+    for (const endpoint of MUKANA_ENDPOINTS) {
+      this.lastMukanaPollAt[endpoint] = Number.NEGATIVE_INFINITY;
+    }
+  }
 }

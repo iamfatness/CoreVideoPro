@@ -128,6 +128,37 @@ describe("MukanaPoller", () => {
   });
 
   /**
+   * `forceDue()` — the mechanism behind `ShowEngine.syncAll()` — resets
+   * every endpoint's due-check anchor without starting any fetch itself.
+   * Pinned with a long interval (an hour) so "nothing is naturally due" is
+   * unambiguous: the baseline `poll()` with no clock advance confirms that,
+   * then `forceDue()` alone — still no clock advance — is what makes the
+   * NEXT `poll()` start every endpoint anyway.
+   */
+  it("forceDue makes every endpoint due on the next poll without waiting out its interval", async () => {
+    const { client, totalCalls, settle } = fakeClient(3_600_000);
+    const clock = movingClock();
+    const poller = new MukanaPoller({ client, clock, integrations: ALL_ON });
+
+    poller.poll();
+    const first = totalCalls();
+    expect(first).toBeGreaterThan(0);
+    settle("panelists");
+    settle("hands");
+    settle("question");
+    await flush();
+
+    poller.poll(); // no clock advance: nothing is due yet
+    await flush();
+    expect(totalCalls()).toBe(first);
+
+    poller.forceDue();
+    poller.poll(); // still no clock advance
+    await flush();
+    expect(totalCalls()).toBeGreaterThan(first);
+  });
+
+  /**
    * The invariant this must break on: awaiting a fetch inside `poll()`. A
    * hung registry must not stall the caller — spec §2, normative. Asserted
    * precisely: `poll()` is declared to return `void`; a mutation that makes

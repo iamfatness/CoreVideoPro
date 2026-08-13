@@ -6,7 +6,7 @@ import { StateStore } from "./persistence.js";
 import { parseShowEngineConfig } from "./config.js";
 import { LiveSlotsRestoreError } from "./liveSlots.js";
 import { GalleryError } from "./galleryDirector.js";
-import { resolvePersonKey } from "./personKey.js";
+import { personKeyForPin, resolvePersonKey } from "./personKey.js";
 import type { StateFs, PersistedShowState } from "./persistence.js";
 import type { Clock } from "./clock.js";
 import type { ZoomEvent } from "./zoomIngest.js";
@@ -727,6 +727,231 @@ describe("ShowEngine roster tick", () => {
     const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
     expect(p1?.role).toBe("panelist");
     expect(p2?.role).toBe("host");
+  });
+});
+
+describe("ShowEngine operator seat controls (Task 6)", () => {
+  describe("addPanelist", () => {
+    it("seats a known-but-unseated participant into the first empty slot when no slot is given", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // p1 -> slot 1, p2 -> slot 2
+
+      e.removePanelist(1);
+      const seated = e.addPanelist("p1");
+
+      expect(seated).toBe(1);
+      expect(e.snapshot().slots[0]?.panelist?.participantId).toBe("p1");
+    });
+
+    it("seats a participant at an explicit empty slot", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // p1 -> slot 1 (auto)
+
+      e.removePanelist(1);
+      const seated = e.addPanelist("p1", 5);
+
+      expect(seated).toBe(5);
+      expect(e.snapshot().slots[4]?.panelist?.participantId).toBe("p1");
+    });
+
+    /**
+     * Mutation target: overwriting an occupied slot instead of refusing it
+     * reds this test. `replacePanelist` is the explicit verb for
+     * overwriting; `addPanelist` hitting an occupied slot must fail loudly
+     * so an operator who meant to add finds out, rather than having their
+     * intent silently reinterpreted as a replace.
+     */
+    it("refuses to seat into an occupied slot rather than silently replacing", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // p1 -> slot 1, p2 -> slot 2
+
+      expect(() => e.addPanelist("p2", 1)).toThrow(/occupied/i);
+      // Untouched: still p1 at slot 1, p2 still at its own slot 2.
+      expect(e.snapshot().slots[0]?.panelist?.participantId).toBe("p1");
+      expect(e.snapshot().slots[1]?.panelist?.participantId).toBe("p2");
+    });
+
+    it("throws for a participant id this show has never published", () => {
+      const e = engine();
+      expect(() => e.addPanelist("ghost")).toThrow(/unknown participant/i);
+    });
+  });
+
+  describe("removePanelist", () => {
+    it("clears the seat — not a Zoom departure, an explicit operator action", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick();
+
+      e.removePanelist(1);
+
+      expect(e.snapshot().slots[0]?.panelist).toBeNull();
+    });
+
+    /**
+     * Mutation target: skipping the dirty flag on `removePanelist` reds
+     * this test. The removal itself is immediate (asserted above,
+     * independent of `tick()`), but nothing re-persists it to disk unless
+     * the dirty flag survives to the next debounce-elapsed tick.
+     */
+    it("persists a removed seat on the next tick, by itself, with nothing else changed", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST; // clear the debounce window before the mutation under test
+      e.removePanelist(1);
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[0]).toBeNull();
+    });
+  });
+
+  describe("replacePanelist", () => {
+    it("overwrites whoever holds a slot, occupied or not, and vacates their prior seat", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // p1 -> slot 1, p2 -> slot 2
+
+      e.replacePanelist(1, "p2");
+
+      const slots = e.snapshot().slots;
+      expect(slots[0]?.panelist?.participantId).toBe("p2");
+      expect(slots[1]?.panelist).toBeNull(); // p2's old seat moved, not duplicated
+    });
+
+    it("throws for a participant id this show has never published", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick();
+      expect(() => e.replacePanelist(1, "ghost")).toThrow(/unknown participant/i);
+    });
+  });
+
+  describe("setRole", () => {
+    /**
+     * The opacity test (mutation target: building the override's key by
+     * taking apart a `PersonKey` this class already holds, instead of
+     * calling `personKeyForPin(pin)` directly, reds this test). Asserts on
+     * the exact persisted key, not just the visible role, so any
+     * derivation other than `personKeyForPin(pin)` is caught even if it
+     * happens to demote the right person.
+     */
+    it("resolves the PIN to a PersonKey via personKeyForPin, never by parsing one", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.onZoomEvent(joined("p1", "Ann | 1234"));
+      await e.tick(); // unthrottled first save
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.setRole("1234", "reader");
+      await e.tick();
+
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      const expectedKey = personKeyForPin("1234");
+      expect(document.overrides[expectedKey]?.role).toBe("reader");
+      expect(Object.keys(document.overrides)).toEqual([expectedKey]);
+    });
+
+    /**
+     * Owner ruling, 2026-08-12: PINs are strings, not numbers. `"0042"`
+     * coercing to `42` and back would resolve `personKeyForPin("42")` — a
+     * DIFFERENT person's key — silently swapping identities. Two distinct
+     * panelists carry PINs that only differ by a leading zero; assigning a
+     * role to one must never touch the other.
+     */
+    it("treats a leading-zero PIN as distinct from its numeric value (no int coercion)", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 0042"));
+      e.onZoomEvent(joined("p2", "Bo | 4200")); // shares no digits' worth of ambiguity with "42"
+      await e.tick();
+
+      e.setRole("0042", "host");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("host");
+      expect(p2?.role).toBe("panelist");
+    });
+
+    /**
+     * Mutation target: routing an exclusive role through `OverrideDb.set`
+     * alone (skipping `assignExclusiveRole`) reds this test — it would
+     * leave both p1 and p2 as "host".
+     */
+    it("demotes the prior host when setRole assigns host to someone else", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 1111"));
+      e.onZoomEvent(joined("p2", "Bo | 2222"));
+      await e.tick();
+
+      e.setRole("1111", "host");
+      await e.tick();
+
+      e.setRole("2222", "host");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("panelist");
+      expect(p2?.role).toBe("host");
+    });
+  });
+
+  describe("headline", () => {
+    it("publishes an operator-set headline once visible", async () => {
+      const e = engine();
+      e.setHeadline({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      e.setHeadlineVisible(true);
+      const snap = await e.tick();
+      expect(snap.overlays.headline).toEqual({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      expect(snap.overlays.headlineVisible).toBe(true);
+    });
+
+    it("retains the headline text across a visibility toggle", async () => {
+      const e = engine();
+      e.setHeadline({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      e.setHeadlineVisible(true);
+      await e.tick();
+
+      e.setHeadlineVisible(false);
+      const hidden = await e.tick();
+      expect(hidden.overlays.headline).toEqual({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      expect(hidden.overlays.headlineVisible).toBe(false);
+
+      e.setHeadlineVisible(true);
+      const shownAgain = await e.tick();
+      expect(shownAgain.overlays.headline).toEqual({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      expect(shownAgain.overlays.headlineVisible).toBe(true);
+    });
   });
 });
 
@@ -1927,5 +2152,39 @@ describe("ShowEngine Mukana polling", () => {
     await e.tick();
     await flush();
     expect(e.snapshot().capabilities.handsQueue.state).toBe("unavailable");
+  });
+
+  /**
+   * `syncAll()` forces every endpoint to read as due on the very next tick,
+   * without waiting out its own interval — the operator's explicit "sync
+   * now" control. Proven through a real tick: advancing the clock by less
+   * than any endpoint's interval (panelists 5000ms, hands/question 2000ms)
+   * keeps every poll un-due (the baseline check below), and `syncAll()`
+   * alone — with NO further clock advance — is what makes the next tick
+   * poll everything anyway.
+   */
+  it("syncAll forces every endpoint to poll on the next tick without waiting out its interval", async () => {
+    const { e, fetches, advance, flush } = mukanaEngine();
+
+    advance(10_000); // every endpoint is due on this very first tick regardless
+    await e.tick();
+    await flush();
+    const afterFirst = fetches.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    advance(500); // well under every endpoint's interval — nothing is naturally due
+    await e.tick();
+    await flush();
+    expect(fetches.length).toBe(afterFirst); // baseline: proves the next assertion is syncAll's doing, not the clock's
+
+    e.syncAll();
+    await e.tick(); // no further clock advance
+    await flush();
+    expect(fetches.length).toBeGreaterThan(afterFirst);
+  });
+
+  /** A show with no Mukana client has nothing to force; `syncAll` degrades to a no-op rather than throwing. */
+  it("syncAll is a no-op for a show with no Mukana client", () => {
+    expect(() => engine().syncAll()).not.toThrow();
   });
 });

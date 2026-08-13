@@ -49,6 +49,7 @@ import { LookController } from "./lookController.js";
 import { stripChairs, type HandsOutcome } from "./handsQueue.js";
 import {
   EXCLUSIVE_ROLES,
+  type Headline,
   type MukanaQuestion,
   type Panelist,
   type ProgramSource,
@@ -57,7 +58,7 @@ import {
   type ShowCapabilities,
   type Slot
 } from "./contracts.js";
-import type { PersonKey } from "./personKey.js";
+import { personKeyForPin, type PersonKey } from "./personKey.js";
 
 /**
  * Minimum time between persisted saves, enforced against the injected
@@ -165,6 +166,26 @@ export class ShowEngine {
 
   /** Whether the operator currently wants the audience question on screen. Set by `setQuestionVisible`. */
   private questionVisible = false;
+
+  /**
+   * The operator-set headline, or `null` before one is ever typed. Unlike a
+   * nameplate, nothing derives this from the roster or the resolved look —
+   * see `Headline`'s own doc comment. Not part of `PersistedShowState`
+   * (mirrors `question`/`questionVisible`, which aren't either): it is
+   * live-show scratch state, not something a restart should resurrect. Set
+   * by `setHeadline`; fed to `OverlayDirector.update` every tick alongside
+   * `headlineVisible`.
+   */
+  private headline: Headline | null = null;
+
+  /**
+   * Whether the operator currently wants the headline on screen. Set by
+   * `setHeadlineVisible`, independently of `headline` itself —
+   * `OverlayDirector` retains the text across a visibility toggle (see its
+   * own doc comment), so hiding then re-showing restores the same content
+   * without the operator retyping it.
+   */
+  private headlineVisible = false;
 
   /**
    * What the last `restore()` had to discard from the persisted document,
@@ -369,6 +390,21 @@ export class ShowEngine {
   }
 
   /**
+   * Set (or clear, with `null`) the operator headline's text. Visibility is
+   * a separate control (`setHeadlineVisible`) — setting the text alone does
+   * not put it on screen, matching `Headline`'s "operator-driven, not
+   * derived" design (contracts.ts).
+   */
+  setHeadline(headline: Headline | null): void {
+    this.headline = headline;
+  }
+
+  /** Toggle whether the headline overlay should render. Forwarded to `OverlayDirector.update` every tick; no gating of its own. */
+  setHeadlineVisible(on: boolean): void {
+    this.headlineVisible = on;
+  }
+
+  /**
    * Stage a source in preview. Always updates `ProgramBus`'s own preview
    * field — that is just in-memory bus state, not a host emission — but
    * only forwards to the host when `host.capabilities().hasPreviewBus` is
@@ -436,6 +472,69 @@ export class ShowEngine {
   }
 
   /**
+   * Seat `participantId` into `slot`, or the first empty slot when `slot` is
+   * omitted. This is one of the operator's explicit seat controls the
+   * file-level doc comment on this class refers to — the reason a Zoom
+   * departure never vacates a seat (owner ruling, 2026-08-06): clearing or
+   * changing a seat is always this kind of explicit call, never an
+   * automatic consequence of a connection blip. Looks `participantId` up in
+   * the current published panelist join (`requirePanelist` — the same Zoom
+   * x Mukana x overrides join `tick()`'s seat step and `buildSnapshotFrom`
+   * build fresh every time), so the seated record carries this show's
+   * resolved name/role, never a bare id; throws for a participant this show
+   * has not published.
+   *
+   * An explicit occupied `slot` is refused — thrown, never silently
+   * overwritten. `replacePanelist` is the verb for that; an operator who
+   * meant to add and hit an occupied slot must find out, not have their
+   * intent silently reinterpreted. An out-of-range `slot` is left to
+   * `LiveSlots.replace`'s own `assertSlot` rather than duplicated here.
+   */
+  addPanelist(participantId: string, slot?: number): number | null {
+    const panelist = this.requirePanelist(participantId);
+
+    if (slot === undefined) {
+      const seated = this.liveSlots.add(panelist);
+      if (seated !== null) this.markSeatingDirty();
+      return seated;
+    }
+
+    const occupant = this.liveSlots.slots().find((candidate) => candidate.slot === slot)?.panelist;
+    if (occupant !== undefined && occupant !== null) {
+      throw new Error(
+        `addPanelist: slot ${slot} is already occupied by ${occupant.participantId} — use replacePanelist to overwrite it`
+      );
+    }
+    this.liveSlots.replace(slot, panelist);
+    this.markSeatingDirty();
+    return slot;
+  }
+
+  /**
+   * Clear a seat. THE explicit operator action the file-level doc comment
+   * refers to: a Zoom departure never reaches this path — it only flips a
+   * seated panelist's `online`/`videoOn` (`LiveSlots.refresh`, driven from
+   * `tick()`'s seat step) — so only an operator calling this ever vacates a
+   * slot.
+   */
+  removePanelist(slot: number): void {
+    this.liveSlots.removeSlot(slot);
+    this.markSeatingDirty();
+  }
+
+  /**
+   * Overwrite whoever holds `slot` with `participantId`, regardless of
+   * whether it was occupied — the explicit verb `addPanelist` refuses to
+   * be. Resolves `participantId` the same way `addPanelist` does; throws
+   * for an unknown participant or an out-of-range slot.
+   */
+  replacePanelist(slot: number, participantId: string): void {
+    const panelist = this.requirePanelist(participantId);
+    this.liveSlots.replace(slot, panelist);
+    this.markSeatingDirty();
+  }
+
+  /**
    * Apply one Mukana panelists fetch outcome. Only a `"data"` outcome
    * carries anything to merge — `dormant` (off-hours) and `invalid`
    * (transport failure) outcomes are health information the `MukanaClient`
@@ -472,6 +571,59 @@ export class ShowEngine {
     this.overrideDb.delete(personKey);
     this.pendingPersist = true;
     this.otherInputsChanged = true;
+  }
+
+  /**
+   * The PIN-keyed twin of `setOverride` (spec §4.2's `ohg.panelist.role.set`,
+   * a `Role` narrower than `setOverride`'s free-form `OverrideRecord`).
+   * Takes the **PIN**, never a `PersonKey` — resolved through
+   * `personKeyForPin`, the one sanctioned way to reach a PIN-tier key from a
+   * raw PIN (`personKey.ts`). Never build the key any other way: a
+   * `PersonKey` is opaque and must not be taken apart to recover or rebuild
+   * one, the exact mistake that module's doc comment calls out.
+   *
+   * `displayName`/`location` are pulled from the Mukana registry entry for
+   * this PIN when one exists, else from whatever override this person
+   * already carries (so re-assigning a role never blanks a name an earlier
+   * override recorded), else left empty — the same fallback
+   * `OverrideDb.assignExclusiveRole` already uses for a demoted holder, and
+   * just as harmless here: `buildPanelistDb`'s `pick` treats an empty
+   * override field as absent and falls through to the Mukana/Zoom-parsed
+   * name, so this never blanks what is actually shown on screen.
+   *
+   * For an exclusive role (`"host"`/`"reader"`), `OverrideDb.set` alone
+   * would happily leave two hosts — `assignExclusiveRole` is the only thing
+   * that demotes a prior holder, exactly mirroring `setOverride` above.
+   */
+  setRole(pin: string, role: Role): void {
+    const personKey = personKeyForPin(pin);
+    const registryRecord = this.mukanaRegistry.current()[pin];
+    const priorRecord = this.overrideDb.entries()[personKey];
+    this.overrideDb.set({
+      personKey,
+      displayName: registryRecord?.displayName ?? priorRecord?.displayName ?? "",
+      location: registryRecord?.location ?? priorRecord?.location ?? "",
+      role
+    });
+    if (isExclusiveOverrideRole(role)) {
+      this.overrideDb.assignExclusiveRole(personKey, role, this.mukanaRegistry.current());
+    }
+    this.markSeatingDirty();
+  }
+
+  /**
+   * Force every configured Mukana endpoint to poll on the very next tick,
+   * without waiting out its interval or backoff — the operator's "sync now"
+   * control (spec §4.2's `ohg.panelist.syncAll`/`ohg.mukana.sync`). A show
+   * with no Mukana client (`this.mukanaPoller` undefined) has nothing to
+   * force; this degrades to a no-op rather than an error, matching how
+   * every other Mukana-facing method on this class treats a registry-less
+   * show. Forwards to `MukanaPoller.forceDue` — see its own doc comment for
+   * the mechanism (it starts nothing itself; it only clears the due-check's
+   * anchor for the NEXT `poll()`, which `tick()` always calls).
+   */
+  syncAll(): void {
+    this.mukanaPoller?.forceDue();
   }
 
   /**
@@ -856,17 +1008,15 @@ export class ShowEngine {
 
     // Overlays: re-derive every tick and keep the change flag for Task 8.
     // No `ShowEngine` input sets `question` yet, so it is always `null`
-    // today (see the field's own doc comment). Likewise no `ShowEngine`
-    // input sets the operator headline yet — the `ohg.gfx.headline.*`
-    // action wiring is a later task — so it is always absent/hidden today;
-    // `OverlayDirector.update` still takes it every tick so that wiring is
-    // a one-line change when it lands, not a new call shape.
+    // today (see the field's own doc comment). `headline`/`headlineVisible`
+    // are the operator's own state, written by `setHeadline`/
+    // `setHeadlineVisible`.
     this.overlaysChanged = this.overlayDirector.update({
       look: resolution,
       question: this.question,
       questionVisible: this.questionVisible,
-      headline: null,
-      headlineVisible: false
+      headline: this.headline,
+      headlineVisible: this.headlineVisible
     });
 
     // Tally has no state of its own to advance here — the final snapshot
@@ -1032,6 +1182,41 @@ export class ShowEngine {
   private applyQuestionOutcome(outcome: QuestionOutcome): void {
     if (outcome.kind !== "data") return;
     this.question = outcome.question;
+  }
+
+  /**
+   * Look `participantId` up in the current published panelist join — the
+   * same Zoom x Mukana registry x overrides join `tick()`'s seat step and
+   * `buildSnapshotFrom` build fresh every time, never a stale one carried
+   * from an earlier call. Shared by `addPanelist`/`replacePanelist`. Throws
+   * for a participant this show has never published (a stale or mistyped id
+   * from an operator control): seating a synthetic stand-in would be worse
+   * than refusing outright.
+   */
+  private requirePanelist(participantId: string): Panelist {
+    const panelist = buildPanelistDb(
+      this.zoomIngest.snapshot(),
+      this.mukanaRegistry.current(),
+      this.overrideDb.entries()
+    ).get(participantId);
+    if (panelist === undefined) {
+      throw new Error(`unknown participant id ${JSON.stringify(participantId)}`);
+    }
+    return panelist;
+  }
+
+  /**
+   * Mark both the seat-step-rerun and persisted-state dirty flags together
+   * — shared by every explicit seat control above (`addPanelist`/
+   * `removePanelist`/`replacePanelist`/`setRole`). Unlike `assignBox`/
+   * `clearBox`, which set only `pendingPersist` (see that field's own doc
+   * comment), a direct `LiveSlots` mutation or an override change can leave
+   * other seats' displayed data stale until the seat step's `refresh` next
+   * runs, so both flags always go together here.
+   */
+  private markSeatingDirty(): void {
+    this.pendingPersist = true;
+    this.otherInputsChanged = true;
   }
 
   /**
