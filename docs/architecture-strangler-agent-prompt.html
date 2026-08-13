@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CoreVideo Pro — Architecture Strangler Agent Prompt</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d9cf0;
+      --accent-dim: #1e4a7a;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+      --danger: #f07178;
+      --code-bg: #0b0f14;
+      --mono: "Cascadia Code", "Fira Code", "SF Mono", Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      font-size: 15px;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(15, 20, 25, 0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem 1.25rem;
+      justify-content: space-between;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    header p {
+      margin: 0.15rem 0 0;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0.55rem 1rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #041018;
+    }
+
+    button.primary:hover { filter: brightness(1.08); }
+    button:hover { border-color: var(--accent); }
+    button.copied {
+      background: var(--ok);
+      border-color: var(--ok);
+      color: #042016;
+    }
+
+    main {
+      max-width: 52rem;
+      margin: 0 auto;
+      padding: 1.5rem 1.25rem 4rem;
+    }
+
+    .intro {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.1rem 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .intro h2 {
+      margin: 0 0 0.5rem;
+      font-size: 0.95rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .intro ol {
+      margin: 0.5rem 0 0;
+      padding-left: 1.25rem;
+      color: var(--muted);
+    }
+
+    .intro li { margin: 0.35rem 0; }
+    .intro strong { color: var(--text); }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 0.85rem;
+    }
+
+    .chip {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.25rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .chip.p0 { border-color: var(--danger); color: var(--danger); }
+    .chip.p1 { border-color: var(--warn); color: var(--warn); }
+    .chip.p2 { border-color: var(--accent); color: var(--accent); }
+    .chip.ok { border-color: var(--ok); color: var(--ok); }
+
+    .prompt-wrap {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--code-bg);
+    }
+
+    .prompt-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.65rem 1rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    pre {
+      margin: 0;
+      padding: 1.25rem 1.35rem 1.75rem;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      line-height: 1.5;
+      color: #c8d4e4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    footer {
+      margin-top: 1.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    footer code {
+      font-family: var(--mono);
+      font-size: 0.8em;
+      background: var(--panel);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+    }
+
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>CoreVideo Pro — Architecture Strangler Prompt</h1>
+      <p>Paste into Claude Code / Claude / Codex · Owner focus plan 2026-07-19</p>
+    </div>
+    <div class="actions">
+      <button type="button" class="primary" id="copyBtn" onclick="copyPrompt()">Copy full prompt</button>
+      <button type="button" onclick="selectPrompt()">Select all</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro">
+      <h2>How to use</h2>
+      <ol>
+        <li>Open the <strong>CoreVideo Pro</strong> repo in Claude Code (or paste into Claude/Codex with repo access).</li>
+        <li>Click <strong>Copy full prompt</strong> and paste as the agent task.</li>
+        <li>Optional first message: <em>“Start with PR1 only (StudioViewModel slices + tests). Do not touch C++ until PR1 merges.”</em></li>
+        <li>Require a PR branch + tests; do not merge god-file rewrites without characterization tests.</li>
+      </ol>
+      <div class="chips">
+        <span class="chip p0">P0 StudioViewModel</span>
+        <span class="chip p1">P1 MediaCore / compositor</span>
+        <span class="chip p2">P2 boundary docs</span>
+        <span class="chip ok">No new product scope</span>
+      </div>
+    </section>
+
+    <div class="prompt-wrap">
+      <div class="prompt-bar">
+        <span>Agent prompt · markdown · ready to paste</span>
+        <span id="status"></span>
+      </div>
+      <pre id="prompt" tabindex="0"># Task: Remediate CoreVideo Pro architecture hotspots (maintainability + reliability)
+
+You are working in the **CoreVideo Pro** repo (`iamfatness/CoreVideoPro`).
+
+## Product constraints (do not violate)
+
+Read and obey before writing code:
+
+- `docs/FOCUS_PLAN.md` — authoritative cut line for the next 90 days (golden path + ISO V+A, NDI, SRT, browser BR-1; HOLD ML face framing; OUT DeckLink/AJA/ASIO/macOS/etc.)
+- `CLAUDE.md` — build/run, CoreMessagingXP crash class, lock order, Zoom teardown rules
+- `README.md` — as-built multi-process architecture
+- `docs/alpha-plan.md` / `docs/beta-plan.md` — verification context only; **FOCUS_PLAN wins on cut line**
+
+### Non-goals (hard stop)
+
+- Do **NOT** add product features (no ISO implementation, NDI polish, new sources, VST-r2, UI redesigns) unless a *tiny* seam is required to extract a module.
+- Do **NOT** rewrite the media pipeline, switch UI frameworks, merge processes, or introduce a new IPC style.
+- Do **NOT** “clean up” Pro tools (VST / routing / DSK / Companion) for aesthetics.
+- Do **NOT** drive-by reformat unrelated files or expand protocol surface without parity updates in all three mirrors.
+
+### Goal
+
+Make the codebase **safely changeable** for the focus spine:
+
+`Join → Magic Scene → Take → Record / Stream / Vcam` (+ later ISO / NDI / SRT / browser)
+
+by decomposing god objects and clarifying boundaries with a **strangler pattern** — not a big-bang rewrite.
+
+**User-facing improvement to optimize for:** fewer mid-show regressions, safer spine merges, clearer Show vs Pro ownership — not new buttons.
+
+---
+
+## Architecture issues (priority order)
+
+### P0 — `StudioViewModel` god object (do this first)
+
+**File:** `native-shell/CoreVideoPro.WinUI/ViewModels/StudioViewModel.cs` (~12k+ lines)
+
+**Problem:** One type owns inputs, scenes, Magic Scene / Set &amp; Forget, transport (record/stream/take), audio, graphics, Zoom shell state, surface/multiview binding, automation. Highest regression and agent-collision risk in the repo.
+
+**Required outcome:**
+
+1. Inventory responsibilities (regions, method groups, dependencies). Put the inventory in the PR description.
+2. Extract **vertical slices** into focused types (services / child view-models / coordinators). Preferred slices (order by golden-path value):
+   - `MagicScene*` / `SetAndForget*` / production mode
+   - `Transport*` (record / stream / take / preview arming)
+   - `ShowInput*` / roster assignment / auto-assign
+   - `Graphics*` (lower-thirds / captions / overlays coordination)
+   - Surface / multiview binding coordination (only if still tangled with production state)
+   - Leave deep Pro audio/routing where it already lives if partially split; do not re-home the entire console in one PR
+3. `StudioViewModel` becomes a **composition root + bindings façade** (shrink substantially). Partials are OK only as a short intermediate — prefer real types over permanent partial sprawl.
+4. **Behavior parity** on the golden path unless you fix a clear bug found during extraction (call it out explicitly).
+5. Preserve WinUI rules from `CLAUDE.md`:
+   - CoreMessagingXP `0xc000027b` — never rebuild bound collections at frame rate; keep throttle/diff-in-place patterns
+   - UI-thread marshaling for control/surface updates
+   - Do **not** reintroduce per-tile swap chains; keep core-composited multiview model
+
+**Acceptance (P0):**
+
+- [ ] WinUI / MediaCore / Control tests still pass for touched areas
+- [ ] Characterization tests added *before* moves when logic was untested
+- [ ] Extracted types own Magic Scene + transport at minimum (inputs if time)
+- [ ] Document before/after LOC or method-count for `StudioViewModel`
+- [ ] No new public media protocol unless unavoidable
+
+### P1 — C++ media core hot files (after PR1 or separate PR)
+
+**Hotspots:**
+
+- `MediaCore.cpp` (~4–5k lines)
+- `D3D11CompositorAdapter.cpp` (~2–3k lines)
+- `JsonRpcServer.cpp` if command dispatch + threading are still mixed
+
+**Required outcome:**
+
+1. Extract cohesive modules along existing seams:
+   - command handling vs render tick vs audio/output worker
+   - compositor layout vs GPU resource lifetime vs overlay raster
+   - recording / future ISO sinks vs program bus (**seams only** — do not implement ISO)
+2. Preserve:
+   - lock order: `coreMutex` → `audioOutputMutex_`; Zoom engine outbound queue rules (`docs/phase2-threading-plan.md`, `CLAUDE.md`)
+   - `LockHoldGuardrail` budgets
+   - stub-first builds (`COREVIDEO_STUB`) and ContractParity tests
+3. Move-only refactors with behavioral parity; keep TSan/stub tests green when runnable.
+
+**Acceptance (P1):**
+
+- [ ] Stub/ctest/ContractParity green (or document exact gap)
+- [ ] Protocol changes only with lockstep updates to:
+  - C++ protocol headers
+  - `native-core/src/protocol.ts`
+  - renderer protocol under `src/engine/`
+- [ ] Lock-order comments updated where locks move
+
+### P2 — Boundary clarity (lightweight, with P0/P1)
+
+1. Add or update a short doc: `docs/architecture-seams.md` (or a section linked from `FOCUS_PLAN.md`) covering:
+   - process boundaries (WinUI shell · media core · Zoom engine · vcam DLL)
+   - who owns pixels / PCM
+   - command / snapshot flow
+   - where spine features **must** plug in (core adapters + typed commands — not ViewModel pixel work)
+2. Flag remaining shell-side per-frame work that should live in core (managed capture bridge, etc.) — audit note only unless blocking extraction.
+3. Extracted C# types must use existing MediaCore client/supervisor APIs — no ad-hoc IPC.
+
+### P3 — Doc drift (only where you touch docs)
+
+- Kill outdated “React is the shipping UI” language if you encounter it in files you edit.
+- Point maintainers at `docs/FOCUS_PLAN.md` for sequencing.
+
+---
+
+## Method (mandatory)
+
+1. **Explore first** — inventory god-file regions, dependency graph, existing tests, any partial extractions already started.
+2. **Plan in the PR body** — slices, order, risk, test commands.
+3. **Strangler, incremental PRs preferred:**
+
+   | PR | Scope |
+   |----|--------|
+   | **PR1** | Inventory + extract Magic Scene / production mode + Transport façade + tests |
+   | **PR2** | Show inputs / roster assignment |
+   | **PR3** | Graphics coordination (if still bloated) |
+   | **PR4+** | C++ MediaCore / compositor / JsonRpcServer splits |
+
+   If forced into one PR: separate commits per slice. Prefer shipping **PR1 alone** if context is limited.
+
+4. **Characterization tests before moves** — lock current behavior, move, keep green.
+5. Match existing patterns: naming, nullability, construction/DI already used in `native-shell`.
+6. Update `CLAUDE.md` only if operational rules or entrypoints change.
+
+---
+
+## Hard technical constraints
+
+- Three processes: WinUI shell, `corevideo-native`, Zoom engine subprocess.
+- IPC: JSON-line commands/snapshots; program/preview via keyed-mutex DXGI shared textures; Zoom I420 shared memory.
+- Audio/output stays off the render lock (Phase 2 ~50 Hz worker).
+- Secrets remain DPAPI; support-bundle redaction tests stay green.
+- I420 vs BGRA: Zoom frames use `hasI420()` paths — do not break blank-tile regressions.
+
+---
+
+## Verification (run what you can; state gaps)
+
+```powershell
+npm run typecheck
+npm run test:unit
+npm run test:native-core
+dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj
+dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj
+dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj
+# if available:
+npm run test:gate
+# native stub (CI-equivalent):
+# cmake -S native -B native/build -DCOREVIDEO_STUB=ON &amp;&amp; ctest --test-dir native/build
+```
+
+---
+
+## Deliverables
+
+1. Code refactors per P0 (and P1 if in scope).
+2. PR description with:
+   - before/after structure (text diagram)
+   - list of extracted types and what moved
+   - test results
+   - residual risks (what is still too big)
+3. Ordered **next extraction** list for follow-up agents.
+4. Explicit **behavior parity** statement (what intentionally did not change).
+
+---
+
+## Definition of done
+
+- [ ] `StudioViewModel` is no longer the sole owner of Magic Scene + transport (+ inputs if PR2)
+- [ ] At least one C++ hotspot reduced **or** PR1 shipped cleanly with a precise P1 follow-up plan
+- [ ] Tests green for touched layers
+- [ ] No new product scope; `FOCUS_PLAN.md` spine unchanged
+- [ ] `docs/architecture-seams.md` (or equivalent) written if P2 in scope
+
+---
+
+## Start now
+
+1. Read `docs/FOCUS_PLAN.md` and `CLAUDE.md`.
+2. Skim `StudioViewModel.cs` structure (`#region`, major method groups, Magic Scene / transport symbols).
+3. Propose extraction order for **PR1** in 10 lines.
+4. Add characterization tests for the first slice.
+5. Extract the first slice with behavior parity.
+6. Open/update a branch (`chore/arch-strangler-studio-vm` or similar) and report test output.
+
+If the user said **“PR1 only”**, stop after Magic Scene + Transport extraction + tests. Do not start C++ until asked.
+</pre>
+    </div>
+
+    <footer>
+      <p>
+        Saved in-repo at <code>docs/architecture-strangler-agent-prompt.html</code>.
+        Open in a browser for copy UX, or open the file in the editor and copy the
+        <code>&lt;pre id="prompt"&gt;</code> body.
+      </p>
+      <p>
+        Related: <a href="FOCUS_PLAN.md">FOCUS_PLAN.md</a> ·
+        <a href="../CLAUDE.md">CLAUDE.md</a> ·
+        <a href="../README.md">README.md</a>
+      </p>
+    </footer>
+  </main>
+
+  <script>
+    function promptText() {
+      return document.getElementById("prompt").textContent;
+    }
+
+    function copyPrompt() {
+      const text = promptText();
+      const btn = document.getElementById("copyBtn");
+      const status = document.getElementById("status");
+
+      function ok() {
+        btn.textContent = "Copied";
+        btn.classList.add("copied");
+        status.textContent = "Prompt copied to clipboard";
+        setTimeout(function () {
+          btn.textContent = "Copy full prompt";
+          btn.classList.remove("copied");
+          status.textContent = "";
+        }, 2000);
+      }
+
+      function fail() {
+        selectPrompt();
+        status.textContent = "Clipboard blocked — text selected; copy manually (Ctrl+C)";
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok).catch(fail);
+      } else {
+        fail();
+      }
+    }
+
+    function selectPrompt() {
+      const el = document.getElementById("prompt");
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  </script>
+</body>
+</html>
