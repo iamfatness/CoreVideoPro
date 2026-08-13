@@ -780,6 +780,80 @@ describe("ShowEngine operator seat controls (Task 6)", () => {
       const e = engine();
       expect(() => e.addPanelist("ghost")).toThrow(/unknown participant/i);
     });
+
+    /**
+     * Fix round 1 (Important finding): the dirty flag was untested for the
+     * no-slot (auto-place) branch — the reviewer confirmed by deleting the
+     * `markSeatingDirty()` call from it and rerunning the full suite: no
+     * red anywhere. Mirrors `removePanelist`'s own persistence test shape:
+     * a SETUP round trip (open a slot, persist that) establishes a clean
+     * baseline, then the mutation under test runs alone with nothing else
+     * changed before the persistence-proving tick.
+     */
+    it("persists a seat filled by auto-placement (no slot given) on the next tick, by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save: p1 -> slot 1
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.removePanelist(1); // SETUP: open a slot, and persist that separately
+      await e.tick();
+      expect(store.writeCount()).toBe(2);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.addPanelist("p1"); // no slot given — the auto-place branch under test
+      await e.tick();
+
+      expect(store.writeCount()).toBe(3);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[0]?.panelist?.participantId).toBe("p1");
+    });
+
+    /**
+     * The explicit-slot branch's own twin of the test above — a separate
+     * `markSeatingDirty()` call site in `addPanelist`, so it needs its own
+     * regression guard.
+     */
+    it("persists a seat filled at an explicit slot on the next tick, by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save: p1 -> slot 1
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.removePanelist(1); // SETUP: open a slot, and persist that separately
+      await e.tick();
+      expect(store.writeCount()).toBe(2);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.addPanelist("p1", 5); // explicit empty slot — the branch under test
+      await e.tick();
+
+      expect(store.writeCount()).toBe(3);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[4]?.panelist?.participantId).toBe("p1");
+    });
   });
 
   describe("removePanelist", () => {
@@ -844,6 +918,39 @@ describe("ShowEngine operator seat controls (Task 6)", () => {
       e.onZoomEvent(joined("p1", "Ann"));
       await e.tick();
       expect(() => e.replacePanelist(1, "ghost")).toThrow(/unknown participant/i);
+    });
+
+    /**
+     * Fix round 1 (Important finding): `replacePanelist` had no
+     * persistence regression guard at all. Same shape as
+     * `removePanelist`'s own test — no SETUP round trip needed here since
+     * the slot is already occupied from the first tick.
+     */
+    it("persists a replaced seat on the next tick, by itself, with nothing else changed", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // unthrottled first save: p1 -> slot 1, p2 -> slot 2
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.replacePanelist(1, "p2");
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[0]?.panelist?.participantId).toBe("p2");
+      expect(document.slots.seats[1]).toBeNull();
     });
   });
 
@@ -923,6 +1030,54 @@ describe("ShowEngine operator seat controls (Task 6)", () => {
       const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
       expect(p1?.role).toBe("panelist");
       expect(p2?.role).toBe("host");
+    });
+
+    /**
+     * Fix round 1 (Minor): the demotion coverage above was "host"-only.
+     * `assignExclusiveRole` is role-generic, but an asymmetric fixture set
+     * is exactly what let a Critical through Task 3 of this plan — the
+     * `"reader"` twin closes that gap cheaply.
+     */
+    it("demotes the prior reader when setRole assigns reader to someone else", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 1111"));
+      e.onZoomEvent(joined("p2", "Bo | 2222"));
+      await e.tick();
+
+      e.setRole("1111", "reader");
+      await e.tick();
+
+      e.setRole("2222", "reader");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("panelist");
+      expect(p2?.role).toBe("reader");
+    });
+
+    /**
+     * Fix round 1 (Minor): a plain non-exclusive role assignment must
+     * never touch `assignExclusiveRole` at all — proven by an existing
+     * host surviving a SEPARATE person's `"panelist"` assignment
+     * untouched, not merely by the absence of a thrown error.
+     */
+    it("assigns a non-exclusive role without demoting an existing host", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 1111"));
+      e.onZoomEvent(joined("p2", "Bo | 2222"));
+      await e.tick();
+
+      e.setRole("1111", "host");
+      await e.tick();
+
+      e.setRole("2222", "panelist");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("host"); // untouched by the unrelated panelist assignment
+      expect(p2?.role).toBe("panelist");
     });
   });
 

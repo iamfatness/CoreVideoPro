@@ -555,13 +555,13 @@ export class ShowEngine {
    * prior holder, so it runs right after `set` whenever the written role is
    * exclusive. A registry-less show passes an empty registry, which is
    * `assignExclusiveRole`'s documented "enforce across the override table
-   * alone" case.
+   * alone" case. Shares its `set` → `assignExclusiveRole` sequence with
+   * `setRole` via `applyOverride` (fix round 1: the two used to duplicate
+   * this sequence verbatim, which is exactly the kind of hand-kept-in-sync
+   * logic that hides a Critical) — the two must never diverge.
    */
   setOverride(record: OverrideRecord): void {
-    this.overrideDb.set(record);
-    if (isExclusiveOverrideRole(record.role)) {
-      this.overrideDb.assignExclusiveRole(record.personKey, record.role, this.mukanaRegistry.current());
-    }
+    this.applyOverride(record);
     this.pendingPersist = true;
     this.otherInputsChanged = true;
   }
@@ -593,21 +593,20 @@ export class ShowEngine {
    *
    * For an exclusive role (`"host"`/`"reader"`), `OverrideDb.set` alone
    * would happily leave two hosts — `assignExclusiveRole` is the only thing
-   * that demotes a prior holder, exactly mirroring `setOverride` above.
+   * that demotes a prior holder. Shares that exact sequence with
+   * `setOverride` via `applyOverride` rather than repeating it here — see
+   * that method's own doc comment.
    */
   setRole(pin: string, role: Role): void {
     const personKey = personKeyForPin(pin);
     const registryRecord = this.mukanaRegistry.current()[pin];
     const priorRecord = this.overrideDb.entries()[personKey];
-    this.overrideDb.set({
+    this.applyOverride({
       personKey,
       displayName: registryRecord?.displayName ?? priorRecord?.displayName ?? "",
       location: registryRecord?.location ?? priorRecord?.location ?? "",
       role
     });
-    if (isExclusiveOverrideRole(role)) {
-      this.overrideDb.assignExclusiveRole(personKey, role, this.mukanaRegistry.current());
-    }
     this.markSeatingDirty();
   }
 
@@ -1203,6 +1202,25 @@ export class ShowEngine {
       throw new Error(`unknown participant id ${JSON.stringify(participantId)}`);
     }
     return panelist;
+  }
+
+  /**
+   * Write `record` to `overrideDb` and, for an exclusive role
+   * (`"host"`/`"reader"`), demote whatever prior holder `assignExclusiveRole`
+   * finds — the ONE sequence that keeps an exclusive role single-holder,
+   * shared verbatim by `setOverride` and `setRole` (fix round 1: those two
+   * used to repeat this sequence at each call site by hand, which is
+   * exactly the kind of duplicated invariant that can drift silently — one
+   * call site gets a fix or a refactor and the other doesn't). Neither
+   * caller's own dirty-flag bookkeeping lives here: `setOverride` sets
+   * `pendingPersist`/`otherInputsChanged` directly, `setRole` goes through
+   * `markSeatingDirty` — this method only ever touches `overrideDb`.
+   */
+  private applyOverride(record: OverrideRecord): void {
+    this.overrideDb.set(record);
+    if (isExclusiveOverrideRole(record.role)) {
+      this.overrideDb.assignExclusiveRole(record.personKey, record.role, this.mukanaRegistry.current());
+    }
   }
 
   /**
