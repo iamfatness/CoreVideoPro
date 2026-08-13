@@ -125,7 +125,7 @@ export {
  * three host adapters in Plans 6-9 are built entirely against these names.
  */
 export { systemClock, type Clock } from "./clock.js";
-export type { HostAdapter, HostCapabilities } from "./hostAdapter.js";
+export type { HostAdapter, HostCapabilities, LookPlacement } from "./hostAdapter.js";
 export { MockHost, type HostCall } from "./mockHost.js";
 export {
   buildSnapshot,

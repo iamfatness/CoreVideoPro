@@ -18,10 +18,27 @@ export type HostCapabilities = {
   transitions: readonly string[];
 };
 
+/**
+ * Everything `applyLook` hands a host in one call: the look identity, the
+ * scene preset it renders through, both chairs (either `null` when this
+ * look does not include that chair, or nobody currently fills it), and the
+ * guest boxes. `LookResolution` (`./lookDirector.js`) already resolves all
+ * five values every tick — this is plumbing what the engine already knows,
+ * not a new computation, so a host adapter never has to re-derive
+ * `lookId -> scenePreset` or place the chairs from `setNameplates` itself.
+ */
+export type LookPlacement = {
+  lookId: string;
+  scenePreset: string;
+  hostSlot: number | null;
+  readerSlot: number | null;
+  boxes: ReadonlyMap<number, number | null>;
+};
+
 export interface HostAdapter {
   capabilities(): HostCapabilities;
   assignSlot(slot: number, participantId: string | null): void;
-  applyLook(lookId: string, boxes: ReadonlyMap<number, number | null>): void;
+  applyLook(placement: LookPlacement): void;
   setPreview(source: ProgramSource): void;
   cut(): void;
   auto(transitionId?: string): void;

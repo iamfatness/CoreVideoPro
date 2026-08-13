@@ -35,7 +35,7 @@
  */
 
 import type { GalleryCell, Slot } from "./contracts.js";
-import type { HostAdapter } from "./hostAdapter.js";
+import type { HostAdapter, LookPlacement } from "./hostAdapter.js";
 import type { LookResolution } from "./lookDirector.js";
 import type { OverlayState } from "./overlayDirector.js";
 
@@ -68,13 +68,35 @@ function slotParticipantIds(slots: readonly Slot[]): Map<number, string | null> 
   return next;
 }
 
-/** Box number → roster slot, the shape `applyLook` sends. Guest boxes only — `LookResolution.hostSlot`/`readerSlot` are not part of this map. */
+/** Box number → roster slot, the guest-box part of the `LookPlacement` `applyLook` sends. `LookResolution.hostSlot`/`readerSlot` ride as separate `LookPlacement` fields, not entries in this map. */
 function boxSlots(look: LookResolution): Map<number, number | null> {
   const next = new Map<number, number | null>();
   for (const assignment of look.boxes) {
     next.set(assignment.box, assignment.slot);
   }
   return next;
+}
+
+/** The full `LookPlacement` `applyLook` sends for `look` this tick. */
+function lookPlacement(look: LookResolution): LookPlacement {
+  return {
+    lookId: look.lookId,
+    scenePreset: look.scenePreset,
+    hostSlot: look.hostSlot,
+    readerSlot: look.readerSlot,
+    boxes: boxSlots(look)
+  };
+}
+
+/** Structural equality over every `LookPlacement` field — a change to any one of them (not just `lookId`/`boxes`) is a real placement change worth re-sending. */
+function placementsEqual(a: LookPlacement, b: LookPlacement): boolean {
+  return (
+    a.lookId === b.lookId &&
+    a.scenePreset === b.scenePreset &&
+    a.hostSlot === b.hostSlot &&
+    a.readerSlot === b.readerSlot &&
+    mapsEqual(a.boxes, b.boxes)
+  );
 }
 
 /** Gallery cell → roster slot (`0` = blank), the shape `setGallery` sends. */
@@ -98,8 +120,7 @@ export class HostCommandEmitter {
   private readonly host: HostAdapter;
 
   private lastSlots: Map<number, string | null> | null = null;
-  private lastLookId: string | null = null;
-  private lastBoxes: Map<number, number | null> | null = null;
+  private lastPlacement: LookPlacement | null = null;
   private lastGallery: Map<number, number> | null = null;
 
   constructor(host: HostAdapter) {
@@ -123,26 +144,26 @@ export class HostCommandEmitter {
   }
 
   /**
-   * Emit `applyLook` when there is a resolved look AND either the look id or
-   * any box assignment changed since the last call — `applyLook` takes the
-   * whole box map in one call, so a single differing box re-sends all of
-   * them (there is no per-box call to make instead). A `null` look (no
+   * Emit `applyLook` when there is a resolved look AND ANY field of the
+   * placement changed since the last call — not just the look id or the
+   * boxes. `applyLook` takes the whole placement in one call, so a
+   * `scenePreset` swap or either chair moving with an unchanged `lookId`
+   * must still emit (there is no narrower call to make instead), exactly
+   * as a single differing box re-sends the whole box map. A `null` look (no
    * look selected yet) emits nothing; there is no "unassign the look" host
    * command.
    */
   emitLook(look: LookResolution | null): void {
     if (look === null) return;
 
-    const boxes = boxSlots(look);
-    const lookChanged = look.lookId !== this.lastLookId;
-    const boxesChanged = this.lastBoxes === null || !mapsEqual(boxes, this.lastBoxes);
+    const placement = lookPlacement(look);
+    const changed = this.lastPlacement === null || !placementsEqual(placement, this.lastPlacement);
 
-    if (lookChanged || boxesChanged) {
-      this.host.applyLook(look.lookId, boxes);
+    if (changed) {
+      this.host.applyLook(placement);
     }
 
-    this.lastLookId = look.lookId;
-    this.lastBoxes = boxes;
+    this.lastPlacement = placement;
   }
 
   /** Emit `setGallery` with the whole cell map when any cell changed since the last call. */

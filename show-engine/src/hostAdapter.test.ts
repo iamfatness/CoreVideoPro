@@ -63,7 +63,13 @@ describe("MockHost", () => {
   it("snapshots map arguments so later mutation cannot rewrite history", () => {
     const host = new MockHost();
     const boxes = new Map<number, number | null>([[1, 4]]);
-    host.applyLook("teatime", boxes);
+    host.applyLook({
+      lookId: "teatime",
+      scenePreset: "scene-teatime",
+      hostSlot: 1,
+      readerSlot: null,
+      boxes
+    });
     boxes.set(1, 7);
     boxes.set(2, 9);
     const recorded = host.callsOfKind("applyLook")[0];

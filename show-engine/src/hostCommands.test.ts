@@ -92,12 +92,19 @@ describe("HostCommandEmitter.emitLook", () => {
     expect(host.calls()).toEqual([]);
   });
 
-  it("emits applyLook on the first resolved look", () => {
+  it("emits applyLook on the first resolved look, carrying the scene preset and both chairs", () => {
     const host = new MockHost();
     const emitter = new HostCommandEmitter(host);
     emitter.emitLook(look);
     expect(host.callsOfKind("applyLook")).toEqual([
-      { kind: "applyLook", lookId: "teatime", boxes: [[1, 2]] }
+      {
+        kind: "applyLook",
+        lookId: "teatime",
+        scenePreset: "scene-teatime",
+        hostSlot: 1,
+        readerSlot: null,
+        boxes: [[1, 2]]
+      }
     ]);
   });
 
@@ -117,7 +124,14 @@ describe("HostCommandEmitter.emitLook", () => {
     host.clear();
     emitter.emitLook({ ...look, boxes: [{ box: 1, slot: 3 }] });
     expect(host.callsOfKind("applyLook")).toEqual([
-      { kind: "applyLook", lookId: "teatime", boxes: [[1, 3]] }
+      {
+        kind: "applyLook",
+        lookId: "teatime",
+        scenePreset: "scene-teatime",
+        hostSlot: 1,
+        readerSlot: null,
+        boxes: [[1, 3]]
+      }
     ]);
   });
 
@@ -128,6 +142,62 @@ describe("HostCommandEmitter.emitLook", () => {
     host.clear();
     emitter.emitLook({ ...look, lookId: "banter" });
     expect(host.callsOfKind("applyLook")).toHaveLength(1);
+  });
+
+  /**
+   * The invariant this must break on: diffing `applyLook` only on `lookId`
+   * (and boxes). A host chair move is a real placement change a host adapter
+   * must act on — an unchanged `lookId` must not swallow it.
+   */
+  it("re-emits when the host chair moves, even with an unchanged look id and boxes", () => {
+    const host = new MockHost();
+    const emitter = new HostCommandEmitter(host);
+    emitter.emitLook(look);
+    host.clear();
+    emitter.emitLook({ ...look, hostSlot: 3 });
+    expect(host.callsOfKind("applyLook")).toEqual([
+      {
+        kind: "applyLook",
+        lookId: "teatime",
+        scenePreset: "scene-teatime",
+        hostSlot: 3,
+        readerSlot: null,
+        boxes: [[1, 2]]
+      }
+    ]);
+  });
+
+  it("re-emits when the reader chair moves, even with an unchanged look id and boxes", () => {
+    const host = new MockHost();
+    const emitter = new HostCommandEmitter(host);
+    emitter.emitLook(look);
+    host.clear();
+    emitter.emitLook({ ...look, readerSlot: 3 });
+    expect(host.callsOfKind("applyLook")).toHaveLength(1);
+  });
+
+  /**
+   * The invariant this must break on: diffing `applyLook` only on `lookId`
+   * and `boxes`. A `scenePreset` swap with an unchanged look id and
+   * unchanged boxes is exactly the case that widening this command exists
+   * to carry — it must still emit.
+   */
+  it("re-emits when scenePreset changes, even with an unchanged look id and boxes", () => {
+    const host = new MockHost();
+    const emitter = new HostCommandEmitter(host);
+    emitter.emitLook(look);
+    host.clear();
+    emitter.emitLook({ ...look, scenePreset: "scene-other" });
+    expect(host.callsOfKind("applyLook")).toEqual([
+      {
+        kind: "applyLook",
+        lookId: "teatime",
+        scenePreset: "scene-other",
+        hostSlot: 1,
+        readerSlot: null,
+        boxes: [[1, 2]]
+      }
+    ]);
   });
 });
 
