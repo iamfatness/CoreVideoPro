@@ -220,19 +220,43 @@ public sealed class ShowInputsCoordinator
         return list;
     }
 
+    // Zoom guests the OPERATOR removed from the wall by hand. Auto-assign must not put
+    // them back: this sync runs on every roster tick, so a freed slot was refilled with
+    // the same guest within ~1s and the manual edit reverted in front of the operator.
+    // Session-only and deliberately not persisted — it is a "not in THIS show" decision,
+    // and it is dropped the moment the guest actually leaves, so a rejoin behaves normally.
+    private readonly HashSet<string> _operatorDismissedParticipantIds = new(StringComparer.Ordinal);
+
     // ── auto-assign (roster → free slots) ─────────────────────────────────────────
     public void SyncShowInputsFromMeeting(
         IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
         // Free slots whose participant left, and (when auto-assign is on) fill FREE slots
         // with newly-joined participants without disturbing operator/capture assignments.
+        var participantIds = participants.Select(participant => participant.Id).ToList();
+        ForgetDismissalsForDepartedGuests(participantIds);
+
         ShowInputRosterService.SyncZoomParticipantSlots(
             _host.ShowInputs,
-            participants.Select(participant => participant.Id).ToList(),
-            _host.AutomationAutoAssignInputsEnabled);
+            participantIds,
+            _host.AutomationAutoAssignInputsEnabled,
+            _operatorDismissedParticipantIds);
 
         RefreshShowInputEditors();
         _host.RefreshMultiviewGridTiles();
+    }
+
+    // A dismissal only means "not in this show". Once the guest is gone from the meeting
+    // the decision is stale, so a rejoin is auto-assigned like any new arrival.
+    private void ForgetDismissalsForDepartedGuests(IReadOnlyList<string> participantIdsInRoster)
+    {
+        if (_operatorDismissedParticipantIds.Count == 0)
+        {
+            return;
+        }
+
+        var present = new HashSet<string>(participantIdsInRoster, StringComparer.Ordinal);
+        _operatorDismissedParticipantIds.RemoveWhere(id => !present.Contains(id));
     }
 
     // Re-run the roster→slot auto-assign from the CURRENT room roster (used when the operator
@@ -308,6 +332,14 @@ public sealed class ShowInputsCoordinator
         }
         LaunchLog.Write(string.Format("lifecycle: unassign slot {0} (was {1} cap={2} pid={3})",
             editor.SlotNumber, editor.Kind, editor.CaptureDeviceId ?? "-", editor.ParticipantId ?? "-"));
+        // Remember the operator's intent BEFORE clearing the slot, or the next roster tick
+        // auto-assigns this guest straight back into the slot they just freed.
+        if (editor.Kind == ShowInputKind.ZoomParticipant &&
+            editor.ParticipantId is { Length: > 0 } dismissedParticipantId)
+        {
+            _operatorDismissedParticipantIds.Add(dismissedParticipantId);
+        }
+
         editor.Unassign();
         RefreshShowInputEditors(force: true);
         _host.RefreshPreviewRoutingState();

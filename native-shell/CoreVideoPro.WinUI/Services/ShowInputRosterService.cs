@@ -291,7 +291,8 @@ public static class ShowInputRosterService
     public static void SyncZoomParticipantSlots(
         IList<ShowInputSlot> slots,
         IReadOnlyList<string> participantIdsInRosterOrder,
-        bool autoAssign)
+        bool autoAssign,
+        IReadOnlySet<string>? operatorDismissedParticipantIds = null)
     {
         var validIds = new HashSet<string>(participantIdsInRosterOrder, StringComparer.Ordinal);
 
@@ -323,6 +324,17 @@ public static class ShowInputRosterService
             if (string.IsNullOrWhiteSpace(participantId) || alreadyShown.Contains(participantId))
             {
                 continue;  // already in a slot — keep it stable
+            }
+
+            // An operator who unassigns a guest means it. This sync runs on EVERY roster
+            // tick (~1/s), so without this the freed slot was refilled with the same guest
+            // within a second and the manual edit silently reverted — "the Sources screen
+            // is not saving what I do" (owner, 2026-08-09). A dismissal is forgotten when
+            // the guest actually leaves the meeting, so a rejoin auto-assigns normally.
+            if (operatorDismissedParticipantIds is not null &&
+                operatorDismissedParticipantIds.Contains(participantId))
+            {
+                continue;
             }
 
             var freeSlot = slots.FirstOrDefault(s => s.Kind == ShowInputKind.Unassigned);

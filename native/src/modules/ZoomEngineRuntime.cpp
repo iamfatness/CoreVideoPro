@@ -322,19 +322,31 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       const auto purpose = request.getString("purpose");
       command.sourceUuid = kind + "-" + participantId + "-" + purpose;
       command.mode = kind == "screen-share" ? "screenshare" : "";
-      // Resolution by purpose (0=360P, 1=720P, 2=1080P). TARGET is 1080p60 for EVERY
-      // participant (product spec). But N concurrent 1080P raw subscriptions overloaded
-      // the Zoom SDK (corevideo-zoom-engine ntdll 0xc000000d) and the CPU I420->BGRA path.
-      // INTERIM until the GPU pipeline lands (GPU I420->BGRA + zero-copy composite, which
-      // removes the CPU bottleneck and lets us pull all feeds at full res): the
-      // active-speaker + screen share get 1080P (the program/feature candidate the user
-      // explicitly wants full res), other multiview participants get 720P. The engine
-      // downgrades further on per-feed failure.
-      if (kind == "screen-share" || purpose == "active-speaker") {
-        command.resolution = 2;  // 1080P
-      } else {
-        command.resolution = 1;  // 720P interim (target 1080P via the GPU pipeline)
-      }
+      // Resolution (0=360P, 1=720P, 2=1080P). UNIFORM 1080P for every source — the
+      // product target, and never scale down to dodge a pipeline problem.
+      //
+      // This replaces a MIXED policy (active-speaker/share at 1080P, other multiview
+      // participants at 720P) whose stated reason has expired: it was an "INTERIM until
+      // the GPU pipeline lands", and the GPU I420->BGRA path HAS landed
+      // (kCompositorYuvPixelShader in D3D11CompositorAdapter), so the CPU bottleneck it
+      // was dodging is gone.
+      //
+      // The mixed policy also correlated with a hard failure on real Zoom (2026-08-09,
+      // 8-guest meeting): all six video subscriptions bound with code 0, then five of
+      // them delivered exactly ONE 256x144 frame and stopped, leaving those tiles frozen
+      // on a stale frame while audio kept flowing. Exactly one stream survived, and NOT
+      // the 1080P one — so it was not "high rung wins". Asking for a single consistent
+      // rung removes the SDK's opportunity to arbitrate between them.
+      //
+      // Downscaling for the multiview wall belongs in the compositor, which already
+      // scales every layer — not in what we ask Zoom for.
+      //
+      // KNOWN RISK, deliberately taken: the note this replaces recorded that N concurrent
+      // 1080P subscriptions once overloaded the SDK (corevideo-zoom-engine ntdll
+      // 0xc000000d). That was on the pre-GPU CPU path. If it recurs, the answer is a
+      // pipeline fix, not a resolution cut — and the per-source video health telemetry
+      // must make it LOUD rather than leaving sources "healthy" with zero frames.
+      command.resolution = 2;  // 1080P for every source
       // Audio subscriptions have no resolution concept; key them at -1 so a video
       // and an audio subscription for the same source don't alias.
       const int subscriptionKey = (kind == "participant-audio") ? -1 : command.resolution;
