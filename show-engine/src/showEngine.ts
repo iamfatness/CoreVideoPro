@@ -856,11 +856,17 @@ export class ShowEngine {
 
     // Overlays: re-derive every tick and keep the change flag for Task 8.
     // No `ShowEngine` input sets `question` yet, so it is always `null`
-    // today (see the field's own doc comment).
+    // today (see the field's own doc comment). Likewise no `ShowEngine`
+    // input sets the operator headline yet — the `ohg.gfx.headline.*`
+    // action wiring is a later task — so it is always absent/hidden today;
+    // `OverlayDirector.update` still takes it every tick so that wiring is
+    // a one-line change when it lands, not a new call shape.
     this.overlaysChanged = this.overlayDirector.update({
       look: resolution,
       question: this.question,
-      questionVisible: this.questionVisible
+      questionVisible: this.questionVisible,
+      headline: null,
+      headlineVisible: false
     });
 
     // Tally has no state of its own to advance here — the final snapshot

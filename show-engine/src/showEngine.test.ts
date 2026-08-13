@@ -89,7 +89,12 @@ describe("ShowEngine construction", () => {
     expect(snap.panelists).toEqual([]);
     expect(snap.look).toBeNull();
     expect(snap.tally.mode).toBe("none");
-    expect(snap.overlays).toEqual({ nameplates: [], question: null });
+    expect(snap.overlays).toEqual({
+      nameplates: [],
+      question: null,
+      headline: null,
+      headlineVisible: false
+    });
   });
 
   it("resolves every capability to disabled for a registry-less show", () => {

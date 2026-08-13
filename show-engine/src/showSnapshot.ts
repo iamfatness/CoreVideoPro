@@ -158,7 +158,9 @@ function cloneTally(tally: TallyState): TallyState {
 function cloneOverlays(overlays: OverlayState): OverlayState {
   return {
     nameplates: overlays.nameplates.map(cloneNameplate),
-    question: overlays.question === null ? null : { ...overlays.question }
+    question: overlays.question === null ? null : { ...overlays.question },
+    headline: overlays.headline === null ? null : { ...overlays.headline },
+    headlineVisible: overlays.headlineVisible
   };
 }
 

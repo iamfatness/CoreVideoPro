@@ -67,7 +67,12 @@ function input() {
     page: 0,
     manualBoxes,
     tally: { mode: "none" as const, onAirSlots: tallyOnAirSlots, onAirPins: [], onAirParticipantIds: [] },
-    overlays: { nameplates: overlayNameplates, question: null },
+    overlays: {
+      nameplates: overlayNameplates,
+      question: null,
+      headline: null,
+      headlineVisible: false
+    },
     capabilities: {
       registry: { state: "disabled" as const, detail: null },
       handsQueue: { state: "disabled" as const, detail: null },

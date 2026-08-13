@@ -776,7 +776,9 @@ const DISTINCTIVE_SNAPSHOT: ShowSnapshot = buildSnapshot({
   },
   overlays: {
     nameplates: [DISTINCTIVE_NAMEPLATE],
-    question: { askerName: "Asker", text: "Why?", tag: "tag", votes: 9 }
+    question: { askerName: "Asker", text: "Why?", tag: "tag", votes: 9 },
+    headline: { name: "Distinctive Headline", location: "Distinctive City" },
+    headlineVisible: true
   },
   capabilities: {
     registry: { state: "available", detail: null },

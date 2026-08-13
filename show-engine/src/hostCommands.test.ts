@@ -49,7 +49,12 @@ const gallery: GalleryCell[] = [
   { cell: 2, slot: 0 }
 ];
 
-const overlays: OverlayState = { nameplates: [], question: null };
+const overlays: OverlayState = {
+  nameplates: [],
+  question: null,
+  headline: null,
+  headlineVisible: false
+};
 
 describe("HostCommandEmitter.emitSlots", () => {
   it("emits every slot on the first call", () => {
