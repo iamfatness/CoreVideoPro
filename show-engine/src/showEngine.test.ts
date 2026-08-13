@@ -1110,6 +1110,332 @@ describe("ShowEngine operator seat controls (Task 6)", () => {
   });
 });
 
+describe("ShowEngine gallery operator controls (Task 7)", () => {
+  describe("resetGalleryFromSlots", () => {
+    it("compacts occupied seats into the gallery from cell 1, blanks skipped", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick();
+      e.removePanelist(1); // open a hole at slot 1, so p2 (slot 2) is the only occupant left
+      e.resetGalleryFromSlots();
+      const gallery = e.snapshot().gallery;
+      expect(gallery[0]?.slot).toBe(2);
+      expect(gallery.slice(1).every((c) => c.slot === 0)).toBe(true);
+    });
+
+    /**
+     * Mirrors `addPanelist`'s own dirty-flag regression test shape (Task 6
+     * fix round 1): the reviewer confirmed by deleting the analogous call
+     * that the suite stays green with no persist check on it.
+     */
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.resetGalleryFromSlots();
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments[0]).toEqual({ cell: 1, slot: 1 });
+    });
+  });
+
+  describe("replaceGalleryCell", () => {
+    it("writes the given slot into the given cell", () => {
+      const e = engine();
+      e.replaceGalleryCell(1, 7);
+      expect(e.snapshot().gallery[0]?.slot).toBe(7);
+    });
+
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.onZoomEvent(joined("p1", "Ann")); // give the first tick something to persist
+      await e.tick(); // unthrottled first save
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.replaceGalleryCell(1, 3);
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments[0]).toEqual({ cell: 1, slot: 3 });
+    });
+  });
+
+  describe("removeGalleryCell", () => {
+    it("blanks the given cell, leaving the rest untouched", () => {
+      const e = engine();
+      e.replaceGalleryCell(1, 7);
+      e.replaceGalleryCell(2, 8);
+      e.removeGalleryCell(1);
+      const gallery = e.snapshot().gallery;
+      expect(gallery[0]?.slot).toBe(0);
+      expect(gallery[1]?.slot).toBe(8);
+    });
+
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.replaceGalleryCell(1, 3); // SETUP: persisted separately from the mutation under test
+      await e.tick();
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.removeGalleryCell(1);
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments[0]).toEqual({ cell: 1, slot: 0 });
+    });
+  });
+
+  describe("emptyGallery", () => {
+    it("blanks every cell", () => {
+      const e = engine();
+      e.replaceGalleryCell(1, 7);
+      e.replaceGalleryCell(2, 8);
+      e.emptyGallery();
+      expect(e.snapshot().gallery.every((c) => c.slot === 0)).toBe(true);
+    });
+
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.replaceGalleryCell(1, 3); // SETUP: persisted separately from the mutation under test
+      e.replaceGalleryCell(2, 4);
+      await e.tick();
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.emptyGallery();
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments.every((a) => a.slot === 0)).toBe(true);
+    });
+  });
+});
+
+/**
+ * Smart gallery: `RecencyScores`'s first consumer. `setSmartGallery` is a
+ * pure in-memory toggle (asserted separately below via a persistence
+ * negative); the ordering itself is a `tick()`-driven derived layer, so
+ * every test here drives it through `tick()` rather than calling any
+ * private method directly.
+ */
+describe("ShowEngine smart gallery (Task 7)", () => {
+  /**
+   * Mutation target named in the brief: applying the smart order while
+   * the toggle is off. `resetGalleryFromSlots` seeds a known baseline
+   * (p1 at cell 1, p2 at cell 2); an active-speaker event for p2 alone
+   * must not touch it while `setSmartGallery` was never called (default
+   * off).
+   */
+  it("never reorders the gallery while the toggle is off", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.resetGalleryFromSlots();
+    await e.tick();
+    const before = e.snapshot().gallery.map((c) => c.slot);
+
+    e.onActiveSpeaker("p2");
+    await e.tick();
+
+    expect(e.snapshot().gallery.map((c) => c.slot)).toEqual(before);
+  });
+
+  it("orders occupied cells by speaker recency, most recently active first, once the toggle is on", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    e.onZoomEvent(joined("p3", "Cy"));
+    await e.tick(); // p1 -> slot 1, p2 -> slot 2, p3 -> slot 3
+
+    e.setSmartGallery(true);
+    e.onActiveSpeaker("p3");
+    await e.tick();
+    expect(e.snapshot().gallery[0]?.slot).toBe(3); // only p3 has ever spoken
+
+    e.onActiveSpeaker("p1");
+    await e.tick();
+    const gallery = e.snapshot().gallery;
+    expect(gallery[0]?.slot).toBe(1); // p1 is now the most recently active
+    expect(gallery[1]?.slot).toBe(3);
+    expect(gallery[2]?.slot).toBe(2); // p2 has never spoken, sorts last
+  });
+
+  /**
+   * THE OBLIGATION THIS TASK EXISTS TO DISCHARGE. Mutation target named in
+   * the brief: feeding the interpreter's id to `RecencyScores` (i.e.
+   * calling it outside/before the `shouldFollowSpeaker` gate). An ASL
+   * interpreter signs continuously, so a live Zoom meeting reports them as
+   * active speaker constantly — Zoom's own `onActiveSpeaker` fires for
+   * them far more often than for any panelist who actually takes turns
+   * talking. If that reached `RecencyScores` the gallery picture would
+   * chase the interpreter instead of the panel, exactly the defect this
+   * whole gate obligation (Plan 3) exists to prevent — now extended to the
+   * gallery, not just the position assigner.
+   */
+  it("never lets a skip-gated interpreter reorder the gallery, even dispatched far more often than the panelist who actually spoke", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Ivy"));
+    e.onZoomEvent(joined("p3", "Bo"));
+    await e.tick(); // p1 -> slot 1, p2 -> slot 2, p3 -> slot 3
+
+    const ivyKey = e.snapshot().panelists.find((p) => p.participantId === "p2")?.personKey;
+    expect(ivyKey).toBeDefined();
+    if (ivyKey !== undefined) {
+      e.setOverride({ personKey: ivyKey, displayName: "", location: "", role: "aslinterpreter" });
+    }
+    e.setSmartGallery(true);
+    await e.tick();
+
+    e.onActiveSpeaker("p3"); // the panelist who actually spoke, once
+    await e.tick();
+
+    // The interpreter "speaks" continuously, far outpacing p3 — must never win the front cell.
+    for (let i = 0; i < 5; i += 1) {
+      e.onActiveSpeaker("p2");
+      // eslint-disable-next-line no-await-in-loop
+      await e.tick();
+    }
+
+    // p3 (the one real speaker) stays front; the interpreter (p2, seated at
+    // slot 2) sits wherever their never-ranked, original-order position
+    // puts them — behind p3 and behind p1, but present (still seated, just
+    // never promoted by their own constant dispatch).
+    const gallery = e.snapshot().gallery;
+    expect(gallery[0]?.slot).toBe(3);
+    expect(gallery[1]?.slot).toBe(1);
+    expect(gallery[2]?.slot).toBe(2);
+  });
+
+  it("does not mark state dirty on its own (purely in-memory)", async () => {
+    const store = recordingFs();
+    let nowMs = 0;
+    const e = new ShowEngine({
+      config: registryLess,
+      host: new MockHost(),
+      clock: { now: () => nowMs },
+      store: new StateStore(registryLess.statePath, { fs: store.fs })
+    });
+    e.onZoomEvent(joined("p1", "Ann")); // give the first tick something to persist
+    await e.tick(); // unthrottled first save
+    expect(store.writeCount()).toBe(1);
+
+    nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+    e.setSmartGallery(true);
+    await e.tick();
+    expect(store.writeCount()).toBe(1); // no second write: setSmartGallery alone did not dirty state
+  });
+
+  /**
+   * Closes the gap Plan 5's ledger recorded: `emitGallery`'s diffing was
+   * never exercised through `tick()` — only in `hostCommands.test.ts` —
+   * because no operator API mutated gallery cells before this task. This
+   * drives it end-to-end: a real `ShowEngine` + `MockHost`, through
+   * `tick()`, asserting on what actually reached the host.
+   */
+  it("emits setGallery through tick() when an operator gallery mutation changes a cell", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    host.clear();
+
+    e.replaceGalleryCell(1, 2);
+    await e.tick();
+
+    expect(host.callsOfKind("setGallery")).toHaveLength(1);
+    expect(host.callsOfKind("setGallery")[0]?.cells).toContainEqual([1, 2]);
+  });
+
+  /**
+   * The other half of the same gap: an unchanged gallery must stay silent
+   * through `tick()`, the same churn discipline every other host-emission
+   * family in this file already proves.
+   */
+  it("emits nothing through tick() when no gallery mutation happened", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    await e.tick();
+    host.clear();
+
+    await e.tick();
+    await e.tick();
+
+    expect(host.callsOfKind("setGallery")).toEqual([]);
+  });
+
+  /**
+   * The smart-gallery reordering itself must reach the host too — the same
+   * diffing gap, but for a cell change driven by the tick's own derived
+   * layer rather than a direct operator call.
+   */
+  it("emits setGallery through tick() when smart-gallery ordering changes a cell", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    e.setSmartGallery(true);
+    await e.tick();
+    host.clear();
+
+    e.onActiveSpeaker("p2");
+    await e.tick();
+
+    expect(host.callsOfKind("setGallery")).toHaveLength(1);
+    expect(host.callsOfKind("setGallery")[0]?.cells).toContainEqual([1, 2]);
+  });
+});
+
 describe("ShowEngine restore + non-roster input (fix round 1, Important 3)", () => {
   /**
    * `restore()` seeds `LiveSlots` from disk, but `ZoomIngest` starts empty

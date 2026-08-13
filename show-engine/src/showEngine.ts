@@ -13,7 +13,9 @@
  * questions. The diffing itself lives in `hostCommands.ts` — this file only
  * sequences WHEN each `emit*` call runs and WHAT this tick's already-
  * resolved values are; it holds none of the "did this actually change"
- * logic. The polling loop is Task 9+.
+ * logic. The polling loop is Task 9+. Also here: the gallery operator
+ * controls and `setSmartGallery` (`RecencyScores`'s first consumer, gated
+ * through the same active-speaker gate as the position assigner).
  *
  * The one rule every reviewer of this file must re-verify: `clampPage` and
  * `resolveLook` are called together, exactly once per tick, and always
@@ -26,7 +28,7 @@
 import type { Clock } from "./clock.js";
 import type { HostAdapter } from "./hostAdapter.js";
 import type { PositionAssigner } from "./speakerRecency.js";
-import { FiloAssigner } from "./speakerRecency.js";
+import { FiloAssigner, RecencyScores } from "./speakerRecency.js";
 import { shouldFollowSpeaker } from "./speakerGate.js";
 import type { ShowEngineConfig } from "./config.js";
 import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
@@ -149,6 +151,19 @@ export class ShowEngine {
 
   private liveSlots: LiveSlots;
   private gallery: GalleryDirector;
+
+  /**
+   * Speaker-recency ordering for the gallery — shipped and unused since
+   * Plan 2, this class its first consumer. Orders CANDIDATES, never
+   * places them (see its own doc comment), so every read here pairs with
+   * `GalleryDirector.applyOrder`, the actual placement. Fed only through
+   * the SAME gate that guards `this.assigner` (the gate step in
+   * `tick()`) — an interpreter must never reorder the gallery either.
+   */
+  private readonly recencyScores = new RecencyScores();
+
+  /** Reorder the gallery by speaker recency every tick when true. Set by `setSmartGallery`; off by default; purely in-memory, not part of `PersistedShowState`. */
+  private smartGalleryOn = false;
 
   private tickRevision = 0;
   private currentLook: LookResolution | null = null;
@@ -532,6 +547,35 @@ export class ShowEngine {
     const panelist = this.requirePanelist(participantId);
     this.liveSlots.replace(slot, panelist);
     this.markSeatingDirty();
+  }
+
+  /** Compact the gallery from current seating (blanks skipped, cell 1 = first occupied seat). The operator's "start fresh" control. Forwards to `GalleryDirector.resetFromSlots`. */
+  resetGalleryFromSlots(): void {
+    this.gallery.resetFromSlots(this.liveSlots.slots());
+    this.pendingPersist = true;
+  }
+
+  /** Put roster `slot` in gallery `cell`, overwriting whatever was there. Forwards to `GalleryDirector.replace` (throws for an out-of-range `cell`/`slot`). */
+  replaceGalleryCell(cell: number, slot: number): void {
+    this.gallery.replace(cell, slot);
+    this.pendingPersist = true;
+  }
+
+  /** Blank one gallery cell, leaving every other cell untouched. Forwards to `GalleryDirector.remove`. */
+  removeGalleryCell(cell: number): void {
+    this.gallery.remove(cell);
+    this.pendingPersist = true;
+  }
+
+  /** Blank every gallery cell. Forwards to `GalleryDirector.empty`. */
+  emptyGallery(): void {
+    this.gallery.empty();
+    this.pendingPersist = true;
+  }
+
+  /** Toggle smart gallery ordering (see the gate step and derived-layers step in `tick()`). Not part of `PersistedShowState` — an in-memory preference that always starts OFF after a restart. */
+  setSmartGallery(on: boolean): void {
+    this.smartGalleryOn = on;
   }
 
   /**
@@ -922,19 +966,19 @@ export class ShowEngine {
       );
       const role = speakerPanelists.get(pendingSpeaker)?.role ?? null;
       if (shouldFollowSpeaker(role, this.config.skipRoles)) {
-        // DEFERRED, deliberately (final review, Minor): the assigner's
-        // returned `PlacementChange[]` is discarded and `positions()` has no
-        // caller anywhere in the package, so nothing downstream of this gate
-        // observes the speaker pool. The Plan 3 obligation is discharged AT
-        // THIS BOUNDARY — a skipped role never reaches the assigner, which
-        // is what the property in `speakerGateDispatch.test.ts` proves — but
-        // the visible half of the original defect ("an ASL interpreter sorts
-        // to the front of the gallery") cannot manifest OR be prevented yet,
-        // because no gallery or slot state is driven from recency. Wiring
-        // recency into the gallery is Plan 6's call; until it exists, the
-        // assigner is a correctly-gated pool nobody reads.
+        // The Plan 3 obligation (a skipped role never reaches the
+        // assigner) is discharged AT THIS BOUNDARY — proven by the
+        // property in `speakerGateDispatch.test.ts`. `recencyScores`
+        // (`RecencyScores`'s first consumer) sits on the SAME side of the
+        // SAME gate, for the identical reason: an interpreter must never
+        // sort to the front of the gallery either. Its ordering becomes
+        // gallery cells in the derived-layers step below, gated on
+        // `this.smartGalleryOn`. `this.assigner`'s returned
+        // `PlacementChange[]` remains discarded — that half of Plan 3 is
+        // still deferred.
         this.assigner.onActiveSpeaker(pendingSpeaker);
         this.programBus.onActiveSpeaker(pendingSpeaker, role);
+        this.recencyScores.onActiveSpeaker(pendingSpeaker);
       }
     }
 
@@ -1017,6 +1061,31 @@ export class ShowEngine {
       headline: this.headline,
       headlineVisible: this.headlineVisible
     });
+
+    // Smart gallery: while on, reorder the gallery's occupied cells by
+    // speaker recency every tick (most recent first; never-ranked ids
+    // compact in after, in original slot order — `RecencyScores.order`'s
+    // documented tail). This is the one call site turning that ordering
+    // into actual cells via `GalleryDirector.applyOrder`. Runs every tick
+    // unconditionally, cheaply, so a quiet gallery still reflects current
+    // seating. NOT marked dirty for persistence — mirrors look
+    // resolution/overlays above: derived state recomputed fresh each
+    // tick, not an operator edit to remember.
+    if (this.smartGalleryOn) {
+      const seated = slots.flatMap((entry) =>
+        entry.panelist === null
+          ? []
+          : [{ participantId: entry.panelist.participantId, slot: entry.slot }]
+      );
+      const ordered = this.recencyScores.order(seated.map((entry) => entry.participantId));
+      const slotByParticipantId = new Map<string, number>(
+        seated.map((entry) => [entry.participantId, entry.slot])
+      );
+      const slotOrder = ordered
+        .map((participantId) => slotByParticipantId.get(participantId))
+        .filter((slot): slot is number => slot !== undefined);
+      this.gallery.applyOrder(slotOrder);
+    }
 
     // Tally has no state of its own to advance here — the final snapshot
     // build below already derives it fresh from `this.currentLook` (now
