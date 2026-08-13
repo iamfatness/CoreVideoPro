@@ -8790,6 +8790,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
     }
 
+    // The buses every audible source is default-seeded onto. "mon" is
+    // DELIBERATELY absent (live meeting 2026-08-09 20:06): the monitor follows
+    // MASTER whenever the operator has not explicitly routed the MON bus, so
+    // seeding mon here is redundant for audibility — and actively harmful,
+    // because any default mon send CAPTURES the monitor away from master. In
+    // that live session the operator muted the Zoom program mix and routed
+    // every guest to master/pgm-l/pgm-r; the monitor kept rendering a mon bus
+    // fed only by these seeded defaults (his own idle mic at the noise floor
+    // — telemetry: master -11.5dB, mon -51.5dB, monitorStatus=playing) and he
+    // could not hear his own program. MON sends now exist only when the
+    // operator routes them in the matrix (a deliberate cue mix, which wins).
+    private static readonly string[] DefaultSeededBusIds = ["master", "pgm-l", "pgm-r", "stream"];
+
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultLocalAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
         bool localAudioConfigured,
@@ -8801,7 +8814,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sends;
         }
 
-        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
+        string[] requiredBusIds = DefaultSeededBusIds;
         var completed = sends.ToList();
         foreach (var busId in requiredBusIds)
         {
@@ -8821,7 +8834,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         IReadOnlyList<MediaCoreCaptureAudioSourceWire> captureAudioSources)
     {
         var completed = sends.ToList();
-        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
+        string[] requiredBusIds = DefaultSeededBusIds;  // no "mon" — the monitor follows master (see DefaultSeededBusIds)
         var sourceIds = captureAudioSources
             .Where(IsConfiguredCaptureAudioSource)
             .Select(ResolveCaptureAudioChannelId)
@@ -8880,7 +8893,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sends;
         }
 
-        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
+        string[] requiredBusIds = DefaultSeededBusIds;  // no "mon" — the monitor follows master (see DefaultSeededBusIds)
         var completed = sends.ToList();
 
         if (zoomAudioMode == ZoomAudioMode.PerGuestIso)
@@ -8938,7 +8951,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sends;
         }
 
-        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
+        string[] requiredBusIds = DefaultSeededBusIds;  // no "mon" — the monitor follows master (see DefaultSeededBusIds)
         var completed = sends.ToList();
         foreach (var busId in requiredBusIds)
         {

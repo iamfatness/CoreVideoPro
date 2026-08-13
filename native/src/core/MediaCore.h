@@ -556,6 +556,7 @@ class MediaCore {
   std::string audioMonitorDeviceName_;
   double audioMonitorVolume_ = 0.0;
   std::string audioMonitorStatus_ = "muted";
+  std::string audioMonitorSource_;  // decision-chain leg feeding the monitor (see AudioOutputResults)
   int64_t audioMonitorFramesPlayed_ = 0;
   int64_t audioMonitorUnderruns_ = 0;  // cumulative device-dry gaps (spec R5)
   bool audioMonitorFeedbackRisk_ = false;  // monitor endpoint == loopback endpoint (spec R6)
@@ -684,6 +685,13 @@ class MediaCore {
     int64_t mixedFrameCount = 0;
     bool monitorTouched = false;  // only overwrite monitor status when the monitor ran
     std::string monitorStatus;
+    // Which decision-chain leg fed the monitor this tick: "listen:<busId>",
+    // "mon" (explicit cue mix), "master" (monitor-follows-master default),
+    // "silence" (routed console, nothing at mon/master), "fallback-sum"
+    // (headless legacy), or "" when the monitor did not render (muted/
+    // volume-zero/unavailable). Snapshot `audioMixSession.monitorSource` — a
+    // silent monitor must be diagnosable from telemetry (2026-08-09 incident).
+    std::string monitorSource;
     std::string monitorWarning;
     int64_t monitorFramesPlayedDelta = 0;
     int64_t monitorUnderruns = 0;  // cumulative device-dry gaps (spec R5)

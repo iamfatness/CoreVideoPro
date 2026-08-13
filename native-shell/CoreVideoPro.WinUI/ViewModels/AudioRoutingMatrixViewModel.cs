@@ -378,13 +378,18 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
                     }
                     // Staged defaults for brand-new sources, matching the ENGINE
                     // defaults (EnsureDefault*AudioRoutingSends: master, program,
-                    // stream, monitor). "stream" was previously omitted here, so
+                    // stream). "stream" was previously omitted here, so
                     // the grid under-reported what was actually routed until the
                     // core snapshot hydrate (ApplyCoreSends) corrected it.
+                    // "mon" is NOT staged (live meeting 2026-08-09): the monitor
+                    // follows MASTER unless the operator explicitly routes the
+                    // MON column — a default mon crosspoint captured the
+                    // monitor away from the program (see
+                    // StudioViewModel.DefaultSeededBusIds for the full story).
                     // Z1: sources marked DefaultUnrouted (Zoom ISO) stage no sends -
                     // the operator routes them deliberately.
                     else if (!source.DefaultUnrouted &&
-                             bus.Id is "master" or "pgm-l" or "pgm-r" or "stream" or "mon")
+                             bus.Id is "master" or "pgm-l" or "pgm-r" or "stream")
                     {
                         cell.IsRouted = true;
                         cell.GainDb = 0;

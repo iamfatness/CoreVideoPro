@@ -140,7 +140,7 @@ public sealed class RoutingMatrixViewModelTests
     }
 
     [Fact]
-    public void AudioRouting_NewSourcesDefaultToProgramAndMonitor()
+    public void AudioRouting_NewSourcesDefaultToProgramNotMonitor()
     {
         var viewModel = new AudioRoutingMatrixViewModel();
         viewModel.Build(
@@ -154,7 +154,11 @@ public sealed class RoutingMatrixViewModelTests
         // "stream" matches the engine defaults (EnsureDefault*AudioRoutingSends);
         // it was previously omitted, so the grid under-reported real routing.
         Assert.True(FindAudioCell(viewModel, "local-machine-audio", "stream").IsRouted);
-        Assert.True(FindAudioCell(viewModel, "local-machine-audio", "mon").IsRouted);
+        // "mon" is never staged by default (live meeting 2026-08-09): the
+        // monitor follows MASTER unless the operator explicitly routes the MON
+        // column — a default mon crosspoint captured the monitor away from the
+        // program the operator was producing.
+        Assert.False(FindAudioCell(viewModel, "local-machine-audio", "mon").IsRouted);
     }
 
     [Fact]

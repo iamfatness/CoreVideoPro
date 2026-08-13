@@ -3052,6 +3052,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"mixedFrameCount", static_cast<double>(nativeMix.mixedFrameCount)},
           {"monitorEnabled", audioMonitorEnabled_},
           {"monitorStatus", audioMonitorStatus_},
+          {"monitorSource", audioMonitorSource_},
           {"monitorDeviceId", audioMonitorDeviceId_},
           {"monitorDeviceName", audioMonitorDeviceName_},
           {"monitorVolume", audioMonitorVolume_},
@@ -3084,6 +3085,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
         {"monitorEnabled", audioMonitorEnabled_},
         {"monitorStatus", audioMonitorStatus_},
+        {"monitorSource", audioMonitorSource_},
         {"monitorDeviceId", audioMonitorDeviceId_},
         {"monitorDeviceName", audioMonitorDeviceName_},
         {"monitorVolume", audioMonitorVolume_},
@@ -3239,6 +3241,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
       {"monitorEnabled", audioMonitorEnabled_},
       {"monitorStatus", audioMonitorStatus_},
+      {"monitorSource", audioMonitorSource_},
       {"monitorDeviceId", audioMonitorDeviceId_},
       {"monitorDeviceName", audioMonitorDeviceName_},
       {"monitorVolume", audioMonitorVolume_},
@@ -4952,6 +4955,24 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     }
   }
 
+  // Does the console EXPLICITLY route anything at the MON bus — a matrix
+  // crosspoint or an aux/bus output send targeting "mon"? This is TOPOLOGY,
+  // deliberately not "does the mon tap carry PCM this tick": a routed cue bus
+  // whose sources are gated silent this tick must stay silent (measured
+  // silence is silent), and an UNROUTED mon must follow master even while a
+  // silent-PCM source (a muted mic still delivers zero-filled frames) would
+  // have kept a tap-based test "non-empty". Live meeting 2026-08-09 20:06:
+  // the operator muted the Zoom program mix and routed every guest to
+  // master/pgm-l/pgm-r — the monitor kept rendering a mon bus fed only by
+  // default-seeded sends (his own idle mic at the noise floor) and he could
+  // not hear the program he was producing (telemetry: master -11.5dB while
+  // mon read -51.5dB, monitorStatus=playing the whole time).
+  const bool monBusExplicitlyRouted =
+      std::any_of(work.routingSends.begin(), work.routingSends.end(),
+                  [](const auto& send) { return send.busId == "mon"; }) ||
+      std::any_of(work.busSends.begin(), work.busSends.end(),
+                  [](const auto& send) { return send.toBusId == "mon"; });
+
   // Routed-bus matrix mix over the real PCM into a LOCAL bus map (published later).
   {
     std::vector<modules::RoutedAudioSource> routedSources;
@@ -5176,7 +5197,22 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       inheritWhenUnrouted("pgm-l");
       inheritWhenUnrouted("pgm-r");
       inheritWhenUnrouted("stream");
-      inheritWhenUnrouted("mon");
+      // THE MONITOR FOLLOWS MASTER BY DEFAULT (live meeting 2026-08-09 20:06,
+      // "muting the mux and routing all the individual audio to Master as well
+      // as Program L+R — I can't monitor the output"): an UNROUTED mon bus
+      // inherits the processed master, so the operator's headphones carry the
+      // program without needing a parallel set of mon crosspoints. The inherit
+      // is gated on the routing TOPOLOGY, not on this tick's tap: when the
+      // operator has deliberately routed a cue mix at mon, a tick where its
+      // sources are all gated must render the cue mix's real silence — copying
+      // master into those gaps would splice the program into a cue bus at
+      // frame-rate (the mon-vs-master flapping confusion class). Note this
+      // also means an explicit cue send no longer SUMS on top of an inherited
+      // master copy — an explicitly routed mon carries exactly what the
+      // operator routed to it, nothing else.
+      if (!monBusExplicitlyRouted) {
+        inheritWhenUnrouted("mon");
+      }
     }
     // Bus sends pass 2: non-master targets, after the mastering-inherit so a
     // cue/aux send into MON or STREAM is not wiped by the inherit copy.
@@ -5230,26 +5266,47 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       results.monitorStatus = "unavailable";
       results.monitorWarning = "Native audio monitor output device is not open.";
     } else {
-      // PFL/listen: when the operator auditions a specific bus, the monitor
-      // renders THAT bus; empty listen id = the normal MON bus. Falls back to
-      // MON (then the legacy mixer monitor mix) when the listened bus is
-      // silent this tick, so soloing an empty aux never mutes the headphones
-      // into confusion — the status label reports what is actually playing.
+      // THE MONITOR DECISION CHAIN (each leg wins over everything below it;
+      // the incident that forced it explicit: live meeting 2026-08-09 20:06,
+      // "muting the mux and routing all the individual audio to Master as
+      // well as Program L+R — I can't monitor the output"):
+      //
+      //   1. PFL/listen — the operator auditions a specific bus; the monitor
+      //      renders THAT bus. A listened bus that is silent this tick falls
+      //      through to the default chain, so soloing an empty aux never
+      //      mutes the headphones into confusion.
+      //   2. The MON bus tap. Because the mastering-inherit above only copies
+      //      master into an UNROUTED mon (monBusExplicitlyRouted), this tap
+      //      is either (a) the operator's deliberate cue mix, which wins, or
+      //      (b) the inherited MASTER — THE MONITOR FOLLOWS MASTER BY
+      //      DEFAULT. Master is post-fader, post-mute, post-mastering, so the
+      //      headphones hear exactly the program the console is producing;
+      //      manual routes to master never needed a parallel mon column.
+      //   3. Routed console, nothing at mon or master → SILENCE. A ROUTED
+      //      CONSOLE NEVER FALLS BACK TO THE UNMUTED SUM: the legacy
+      //      DevSafeAudioMixer bus is every PCM frame summed with no strips,
+      //      mutes, or routing — falling back here played the raw unmuted mix
+      //      the moment every strip was muted (same live meeting — "muted all
+      //      sources and still hear the output"). Silence is the correct
+      //      sound of an all-muted console.
+      //   4. No routing sends at all (headless validators/scripts that sync
+      //      no console) → the legacy unmuted sum stays, so `node scripts/
+      //      validate-*.mjs` keep hearing audio without building a matrix.
+      //
+      // `monitorSource` publishes which leg actually played — a silent
+      // monitor must be diagnosable from the snapshot, not by ear.
       const auto& listenBus =
           work.monitorListenBusId.empty() ? kEmptyTap : localBusTap(work.monitorListenBusId);
       const auto& routedMonitorBus = !listenBus.empty() ? listenBus : localBusTap("mon");
       const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
-      // A ROUTED CONSOLE NEVER FALLS BACK TO THE UNMUTED SUM. The legacy
-      // DevSafeAudioMixer bus is every PCM frame summed with no strips, mutes,
-      // or routing — a headless-only convenience. When routing sends exist, an
-      // empty/silent mon bus means the operator MUTED things: falling back here
-      // played the raw unmuted mix the moment every strip was muted (live
-      // meeting, 2026-08-09 — "muted all sources and still hear the output").
-      // Silence is the correct sound of an all-muted console.
       const bool consoleRouted = !work.routingSends.empty();
       const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus
                                : consoleRouted     ? kEmptyTap
                                                    : modules_.mixer->monitorBusPcm();
+      results.monitorSource = !listenBus.empty()     ? "listen:" + work.monitorListenBusId
+                              : !hasRoutedMonitorBus ? (consoleRouted ? "silence" : "fallback-sum")
+                              : monBusExplicitlyRouted ? "mon"
+                                                       : "master";
       const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());
       const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
       if (frameCount <= 0) {
@@ -5533,6 +5590,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
   audioCompGainReductionDbBySource_ = std::move(results.compGainReductionDbBySource);
   if (results.monitorTouched) {
     audioMonitorStatus_ = results.monitorStatus;
+    audioMonitorSource_ = results.monitorSource;
     audioMonitorWarning_ = results.monitorWarning;
     audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
     audioMonitorUnderruns_ = results.monitorUnderruns;
