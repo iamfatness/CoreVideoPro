@@ -211,6 +211,17 @@ function Copy-PublishLayout {
   New-Item -ItemType Directory -Path $Destination -Force | Out-Null
   Copy-Item -Path (Join-Path $PublishDir "*") -Destination $Destination -Recurse -Force
 
+  # A developer may have launched the default publish output in place. Never
+  # let recordings, logs, crash reports, or support bundles flow into a fallback
+  # MSIX layout from that mutable directory.
+  foreach ($name in @("Recordings", "Logs", "CrashReports", "SupportBundles")) {
+    $runtimeData = Join-Path $Destination $name
+    if (Test-Path $runtimeData) {
+      Remove-Item $runtimeData -Recurse -Force
+      Write-Host "[pack:native:msix] excluded runtime/user data directory: $name" -ForegroundColor Yellow
+    }
+  }
+
   $builtExe = Join-Path $Destination "CoreVideoPro.WinUI.exe"
   $renamedExe = Join-Path $Destination $productExe
   if (Test-Path $builtExe) {

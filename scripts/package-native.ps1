@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\CoreVideoPro.WinUI.csproj"
+$publishDir = Join-Path $repoRoot "artifacts\native\publish-clean"
 $outDir = Join-Path $repoRoot "artifacts\native\win-unpacked"
 $productExe = "CoreVideoPro.WinUI.exe"
 
@@ -28,21 +29,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[pack:native] publishing WinUI shell (Release, win-x64)..." -ForegroundColor Cyan
-dotnet publish $project -c Release -r win-x64 --self-contained false
+if (Test-Path $publishDir) {
+  Remove-Item $publishDir -Recurse -Force
+}
+dotnet publish $project -c Release -r win-x64 --self-contained false --output $publishDir
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
-$publishDir = Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin\Release\net9.0-windows10.0.19041.0\win-x64\publish"
 if (-not (Test-Path (Join-Path $publishDir "CoreVideoPro.WinUI.dll"))) {
-  $publishDll = Get-ChildItem -Path (Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin") -Recurse -Filter "CoreVideoPro.WinUI.dll" |
-    Where-Object { $_.DirectoryName -match "\\publish$" } |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-  if (-not $publishDll) {
-    throw "Could not find CoreVideoPro.WinUI.dll after dotnet publish."
-  }
-  $publishDir = $publishDll.DirectoryName
+  throw "Could not find CoreVideoPro.WinUI.dll in clean publish output $publishDir."
 }
 
 Write-Host "[pack:native] staging $outDir ..." -ForegroundColor Cyan
@@ -51,6 +47,18 @@ if (Test-Path $outDir) {
 }
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 Copy-Item -Path (Join-Path $publishDir "*") -Destination $outDir -Recurse -Force
+
+# Never distribute runtime/user data that an earlier smoke or recording session
+# may have written beside a development executable. Publishing into a clean,
+# dedicated directory above is the primary protection; this assertion makes a
+# future regression fail loudly before an archive can be created.
+$forbiddenRuntimeDirs = @("Recordings", "Logs", "CrashReports", "SupportBundles")
+foreach ($name in $forbiddenRuntimeDirs) {
+  $forbiddenPath = Join-Path $outDir $name
+  if (Test-Path $forbiddenPath) {
+    throw "Refusing to package runtime/user data: $forbiddenPath"
+  }
+}
 
 # Older publishes could leave a nested publish\ tree; it breaks WinUI resource lookup.
 $nestedPublish = Join-Path $outDir "publish"
