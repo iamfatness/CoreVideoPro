@@ -13,12 +13,14 @@ public static class AudioValidationChecklistBuilder
         NativeMediaCoreRecordingSession? recording = null)
     {
         var captureState = BuildCaptureState(capture);
+        var programHasNativeSignal = HasCurrentProgramSignal(audio);
+        var programState = BuildProgramState(audio, capture, captureState);
         return
         [
             captureState,
-            BuildProgramState(capture, captureState),
-            BuildMonitorState(audio, capture, captureState),
-            BuildStreamState(capture, captureState, outputSenderSession),
+            programState,
+            BuildMonitorState(audio, capture, captureState, programHasNativeSignal),
+            BuildStreamState(capture, captureState, programHasNativeSignal, outputSenderSession),
             BuildRecordingState(capture, captureState, recording)
         ];
     }
@@ -87,14 +89,14 @@ public static class AudioValidationChecklistBuilder
     public static string FindFirstBlockingStage(IReadOnlyList<string> checklist)
     {
         var capture = Find(checklist, "CAPTURE");
-        if (!IsAcceptableCapture(capture))
-        {
-            return FormatBlockingStage("CAPTURE", capture);
-        }
-
         var program = Find(checklist, "PGM");
         if (!IsAcceptableProgram(program))
         {
+            if (!IsAcceptableCapture(capture))
+            {
+                return FormatBlockingStage("CAPTURE", capture);
+            }
+
             return FormatBlockingStage("PGM", program);
         }
 
@@ -127,13 +129,12 @@ public static class AudioValidationChecklistBuilder
         var stream = Find(checklist, "STREAM");
         var record = Find(checklist, "RECORD");
 
-        if (IsAcceptableCapture(capture) &&
-            IsAcceptableProgram(program) &&
+        if (IsAcceptableProgram(program) &&
             IsAcceptableMonitor(monitor) &&
             IsAcceptableStream(stream) &&
             IsAcceptableRecord(record))
         {
-            return FormatValidatedSummary(monitor, stream, record);
+            return FormatValidatedSummary(IsAcceptableCapture(capture), capture, monitor, stream, record);
         }
 
         if (capture.StartsWith("CAPTURE silent", StringComparison.OrdinalIgnoreCase))
@@ -271,9 +272,15 @@ public static class AudioValidationChecklistBuilder
     }
 
     private static string BuildProgramState(
+        NativeMediaCoreAudioMixSession audio,
         NativeMediaCoreCaptureAudioSources capture,
         string captureState)
     {
+        if (HasCurrentProgramSignal(audio))
+        {
+            return $"PGM ok {audio.MixedFrameCount}f";
+        }
+
         if (IsCaptureOk(captureState))
         {
             return capture.RoutedMasterFrames > 0
@@ -310,7 +317,8 @@ public static class AudioValidationChecklistBuilder
     private static string BuildMonitorState(
         NativeMediaCoreAudioMixSession audio,
         NativeMediaCoreCaptureAudioSources capture,
-        string captureState)
+        string captureState,
+        bool programHasNativeSignal)
     {
         var captureOk = IsCaptureOk(captureState);
         if (!audio.MonitorEnabled)
@@ -320,17 +328,18 @@ public static class AudioValidationChecklistBuilder
                 : "MON off";
         }
 
-        if (!captureOk)
+        if (!captureOk && !programHasNativeSignal)
         {
             return capture.CaptureFramesReceived > 0 || capture.RoutedMonitorFrames > 0 || audio.MonitorFramesPlayed > 0
                 ? "MON wait source"
                 : "MON wait route";
         }
 
-        return capture.RoutedMonitorFrames > 0 && audio.MonitorFramesPlayed > 0 && IsMonitorCurrentlyPlaying(audio.MonitorStatus)
+        return (capture.RoutedMonitorFrames > 0 || programHasNativeSignal) &&
+               audio.MonitorFramesPlayed > 0 && IsMonitorCurrentlyPlaying(audio.MonitorStatus)
             ? $"MON ok {audio.MonitorFramesPlayed}f"
-            : capture.RoutedMonitorFrames > 0
-                ? $"MON wait output {capture.RoutedMonitorFrames}f"
+            : capture.RoutedMonitorFrames > 0 || programHasNativeSignal
+                ? $"MON wait output {(capture.RoutedMonitorFrames > 0 ? capture.RoutedMonitorFrames : audio.MixedFrameCount)}f"
                 : "MON wait route";
     }
 
@@ -364,9 +373,19 @@ public static class AudioValidationChecklistBuilder
         item.StartsWith("RECORD ok", StringComparison.OrdinalIgnoreCase) ||
         item.Equals("RECORD idle", StringComparison.OrdinalIgnoreCase);
 
-    private static string FormatValidatedSummary(string monitor, string stream, string record)
+    private static string FormatValidatedSummary(
+        bool captureValidated,
+        string capture,
+        string monitor,
+        string stream,
+        string record)
     {
-        var validated = new List<string> { "capture", "PGM" };
+        var validated = new List<string>();
+        if (captureValidated)
+        {
+            validated.Add("capture");
+        }
+        validated.Add("PGM");
         var idle = new List<string>();
 
         if (monitor.StartsWith("MON ok", StringComparison.OrdinalIgnoreCase))
@@ -397,13 +416,23 @@ public static class AudioValidationChecklistBuilder
         }
 
         var validatedText = string.Join(", ", validated);
+        var localCaptureNote = captureValidated
+            ? string.Empty
+            : $" Local capture is optional and remains unvalidated ({capture}).";
         if (idle.Count == 0)
         {
-            return $"Audio validated: {validatedText} all have current proof.";
+            return $"Audio validated: {validatedText} all have current proof.{localCaptureNote}";
         }
 
-        return $"Audio validated: {validatedText}. {string.Join(", ", idle)} idle.";
+        return $"Audio validated: {validatedText}. {string.Join(", ", idle)} idle.{localCaptureNote}";
     }
+
+    private static bool HasCurrentProgramSignal(NativeMediaCoreAudioMixSession audio) =>
+        audio.MixedFrameCount > 0 &&
+        (audio.MasterLevel > 0 ||
+         audio.Participants.Any(participant =>
+             !participant.Muted &&
+             (participant.InputLevel > 0 || participant.OutputLevel > 0 || participant.PeakDbfs > -90)));
 
     private static bool IsMonitorCurrentlyPlaying(string? status) =>
         status is not null &&
@@ -413,6 +442,7 @@ public static class AudioValidationChecklistBuilder
     private static string BuildStreamState(
         NativeMediaCoreCaptureAudioSources capture,
         string captureState,
+        bool programHasNativeSignal,
         NativeMediaCoreOutputSenderSession? outputSenderSession)
     {
         if (outputSenderSession is not { ActiveSenderCount: > 0 })
@@ -429,6 +459,18 @@ public static class AudioValidationChecklistBuilder
         }
 
         var frames = liveSenders.Sum(sender => sender.AudioFramesSent);
+        if (programHasNativeSignal)
+        {
+            if (frames > 0)
+            {
+                return $"STREAM ok {frames}f";
+            }
+
+            return IsCaptureOk(captureState) && capture.RoutedStreamFrames <= 0
+                ? "STREAM wait route"
+                : "STREAM wait sender";
+        }
+
         if (captureState.StartsWith("CAPTURE silent", StringComparison.OrdinalIgnoreCase))
         {
             return frames > 0
@@ -475,19 +517,26 @@ public static class AudioValidationChecklistBuilder
             return "RECORD idle";
         }
 
+        var proof = recording.Proof;
+        if (proof is null)
+        {
+            return IsCaptureOk(captureState) && capture.RoutedMasterFrames <= 0
+                ? "RECORD wait route"
+                : "RECORD wait proof";
+        }
+
+        var samples = proof.AudioSampleCount;
+        var packets = proof.AudioPacketsObserved;
+        if (proof.AudioPresent && samples > 0)
+        {
+            return $"RECORD ok {samples} samples";
+        }
+
         if (IsCaptureOk(captureState) && capture.RoutedMasterFrames <= 0)
         {
             return "RECORD wait route";
         }
 
-        var proof = recording.Proof;
-        if (proof is null)
-        {
-            return "RECORD wait proof";
-        }
-
-        var samples = proof.AudioSampleCount;
-        var packets = proof.AudioPacketsObserved;
         if (captureState.StartsWith("CAPTURE silent", StringComparison.OrdinalIgnoreCase))
         {
             return samples > 0
@@ -518,9 +567,7 @@ public static class AudioValidationChecklistBuilder
                     : "RECORD wait source";
         }
 
-        return proof.AudioPresent && samples > 0
-            ? $"RECORD ok {samples} samples"
-            : packets > 0
+        return packets > 0
                 ? $"RECORD unverified {packets}pkt"
                 : "RECORD wait writer";
     }

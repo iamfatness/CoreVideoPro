@@ -233,13 +233,32 @@ public sealed class ShowInputsCoordinator
     /// </summary>
     public IReadOnlyList<string> ComputeEligiblePresentIsoSourceIds()
     {
+        var videoBearingZoomParticipantIds = new HashSet<string>(
+            _host.RoomParticipantsForInputs
+                .Where(participant => participant.Health != FeedHealth.VideoOff)
+                .Select(participant => participant.Id)
+                .Where(id => !string.IsNullOrWhiteSpace(id)),
+            StringComparer.Ordinal);
         var list = new List<string>();
         foreach (var editor in ShowInputEditors)
         {
-            if (editor.ShowIsoToggle && !editor.IsSourceMissing && editor.SourceId is { Length: > 0 } id)
+            if (!editor.ShowIsoToggle || editor.IsSourceMissing || editor.SourceId is not { Length: > 0 } id)
             {
-                list.Add(id);
+                continue;
             }
+
+            // An assigned Zoom participant remains available while their camera is off so the
+            // operator's slot binding survives camera churn. That is correct for Sources and
+            // multiview placeholders, but a video-off participant must not consume one of the
+            // finite ISO encoder slots and crowd out a live camera.
+            if (editor.Kind == ShowInputKind.ZoomParticipant &&
+                (editor.ParticipantId is not { Length: > 0 } participantId ||
+                 !videoBearingZoomParticipantIds.Contains(participantId)))
+            {
+                continue;
+            }
+
+            list.Add(id);
         }
 
         return list;

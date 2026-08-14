@@ -136,6 +136,16 @@ public static class ControlActionRegistry
 
         return new List<ControlAction>
         {
+            // ---- Zoom session -----------------------------------------------------------
+            new("zoom.join", "Join Zoom", "Join a Zoom meeting through the embedded Meeting SDK.",
+                new[]
+                {
+                    new ControlParam("meetingUrl", s, true, "Zoom meeting URL or ID"),
+                    new ControlParam("displayName", s, false, "Optional participant display name"),
+                    new ControlParam("webinar", b, false, "Join as a webinar attendee")
+                }),
+            new("zoom.leave", "Leave Zoom", "Leave the current embedded Zoom meeting."),
+
             // ---- Transport --------------------------------------------------------------
             new("transport.take", "Take", "Cut/transition Preview to Program."),
             new("transport.transition.set", "Set transition", "Set the Take transition (cut/fade/dip/wipe).",
@@ -197,6 +207,8 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("graphicId", s, true) }),
 
             // ---- Audio ------------------------------------------------------------------
+            new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",
+                new[] { new ControlParam("mode", s, true, "perGuestIso | programMix") }),
             new("audio.monitor.set", "Audio monitor", "Enable/disable the audio monitor.",
                 new[] { new ControlParam("on", b, true) }),
             new("audio.monitor.volume", "Monitor volume", "Set the audio monitor volume (0.0-1.0).",

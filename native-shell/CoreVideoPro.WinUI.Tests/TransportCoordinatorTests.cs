@@ -16,11 +16,18 @@ namespace CoreVideoPro.WinUI.Tests;
 /// </summary>
 public sealed class TransportCoordinatorTests
 {
-    private static (TransportCoordinator Coordinator, FakeMediaCoreBridge Bridge, FakeTransportHost Host) Build()
+    private static (TransportCoordinator Coordinator, FakeMediaCoreBridge Bridge, FakeTransportHost Host) Build(
+        int recordingSyncRetryAttempts = 120,
+        int recordingSyncRetryDelayMs = 250)
     {
         var bridge = new FakeMediaCoreBridge();
         var host = new FakeTransportHost();
-        var coordinator = new TransportCoordinator(bridge, host, host);
+        var coordinator = new TransportCoordinator(
+            bridge,
+            host,
+            host,
+            recordingSyncRetryAttempts,
+            recordingSyncRetryDelayMs);
         return (coordinator, bridge, host);
     }
 
@@ -105,6 +112,41 @@ public sealed class TransportCoordinatorTests
         Assert.False(host.Recording);                          // health-proof rollback
         Assert.False(coordinator.RecordingToggleInFlight);
         Assert.StartsWith("Recording start failed:", host.OutputStatus);
+    }
+
+    [Fact]
+    public async Task ToggleRecording_StopWaitsForBusyStartAndKeepsCommandGuarded()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 6, recordingSyncRetryDelayMs: 1);
+        host.Recording = true;
+        host.SyncFailuresRemaining = 3;
+
+        var toggle = coordinator.ToggleRecordingAsync();
+
+        Assert.False(host.Recording);                           // stop intent is sticky immediately
+        Assert.True(coordinator.RecordingToggleInFlight);       // second click cannot re-arm
+
+        await toggle;
+
+        Assert.False(host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+        Assert.Equal(4, host.SyncCallCount);
+        Assert.Equal("Recording stopped.", host.OutputStatus);
+    }
+
+    [Fact]
+    public async Task ToggleRecording_StopRetryExhaustionNeverRearmsRecording()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 2, recordingSyncRetryDelayMs: 1);
+        host.Recording = true;
+        host.SyncFailuresRemaining = int.MaxValue;
+
+        await coordinator.ToggleRecordingAsync();
+
+        Assert.False(host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+        Assert.Equal(3, host.SyncCallCount);                    // initial attempt plus two retries
+        Assert.Contains("stop remains armed", host.OutputStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     // ---------------------------------------------------------------- Streaming
@@ -302,6 +344,8 @@ public sealed class TransportCoordinatorTests
 
         public Exception? SyncThrows { get; set; }
 
+        public int SyncFailuresRemaining { get; set; }
+
         public NativeMediaCoreStateSnapshot SyncResult { get; set; } = new();
 
         public bool HasPendingCue { get; set; }
@@ -344,6 +388,12 @@ public sealed class TransportCoordinatorTests
         public async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
         {
             SyncCallCount++;
+            if (SyncFailuresRemaining > 0)
+            {
+                SyncFailuresRemaining--;
+                throw new MediaCoreSyncInFlightException();
+            }
+
             if (HoldSync)
             {
                 _syncGate = new TaskCompletionSource<bool>();

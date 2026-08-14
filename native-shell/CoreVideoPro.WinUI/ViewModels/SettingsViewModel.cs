@@ -771,7 +771,12 @@ public sealed partial class SettingsViewModel : ObservableObject
                 catch (Exception authEx)
                 {
                     LaunchLog.Write($"zoom-join: credential error {authEx.Message}");
-                    SetJoinFailure("Zoom sign-in could not be completed. Sign out, sign in, and try again.");
+                    // EnsureJoinCredentialsAsync clears an invalid/revoked grant so it
+                    // cannot trap the operator in a retry loop. Reflect that cleared
+                    // state immediately instead of leaving the page showing Sign out
+                    // until the next app launch.
+                    await RefreshOAuthStatusAsync().ConfigureAwait(false);
+                    SetJoinFailure("Zoom sign-in expired. Sign in with Zoom and try again.");
                     return;
                 }
             }

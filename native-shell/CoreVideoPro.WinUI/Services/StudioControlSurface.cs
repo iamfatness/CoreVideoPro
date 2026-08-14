@@ -43,6 +43,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     /// <see cref="ControlActionRegistry"/> so a new registry action can't silently be unhandled.</summary>
     public static IReadOnlySet<string> SupportedActionIds { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
+        "zoom.join", "zoom.leave",
         "transport.take", "transport.transition.set",
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
@@ -52,7 +53,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "scene.select", "view.setMode",
         "input.assign", "input.name", "input.inShow.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
-        "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
+        "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
@@ -112,6 +113,32 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     {
         switch (actionId)
         {
+            // ---- Zoom session -------------------------------------------------------
+            case "zoom.join":
+                _vm.Settings.JoinMeetingUrl = Str(args, 0);
+                if (args.Count > 1 && args[1] is string displayName && !string.IsNullOrWhiteSpace(displayName))
+                {
+                    _vm.Settings.DisplayName = displayName;
+                }
+                _vm.Settings.IsWebinar = args.Count > 2 && args[2] is bool webinar && webinar;
+                if (!_vm.Settings.JoinZoomCommand.CanExecute(null))
+                {
+                    return ControlInvokeResult.Fail("Zoom join is unavailable in the current state.");
+                }
+                await _vm.Settings.JoinZoomCommand.ExecuteAsync(null).ConfigureAwait(true);
+                return _vm.Settings.IsInMeeting
+                    ? ControlInvokeResult.Success
+                    : ControlInvokeResult.Fail(_vm.Settings.JoinStatus);
+            case "zoom.leave":
+                if (!_vm.Settings.LeaveZoomCommand.CanExecute(null))
+                {
+                    return ControlInvokeResult.Fail("Zoom leave is unavailable in the current state.");
+                }
+                await _vm.Settings.LeaveZoomCommand.ExecuteAsync(null).ConfigureAwait(true);
+                return !_vm.Settings.IsInMeeting
+                    ? ControlInvokeResult.Success
+                    : ControlInvokeResult.Fail(_vm.Settings.JoinStatus);
+
             // ---- Transport ----------------------------------------------------------
             case "transport.take":
                 if (_vm.TakeCommand.CanExecute(null))
@@ -185,6 +212,21 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
 
             // ---- Audio --------------------------------------------------------------
+            case "audio.zoomMode.set":
+            {
+                var mode = Str(args, 0).Trim();
+                if (string.Equals(mode, ZoomAudioModePreference.PerGuestIsoValue, StringComparison.OrdinalIgnoreCase))
+                {
+                    _vm.SetZoomAudioMode(perGuestIso: true);
+                    return ControlInvokeResult.Success;
+                }
+                if (string.Equals(mode, ZoomAudioModePreference.ProgramMixValue, StringComparison.OrdinalIgnoreCase))
+                {
+                    _vm.SetZoomAudioMode(perGuestIso: false);
+                    return ControlInvokeResult.Success;
+                }
+                return ControlInvokeResult.Fail("mode must be 'perGuestIso' or 'programMix'.");
+            }
             case "audio.monitor.set":
                 _vm.AudioMonitoringEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
@@ -384,6 +426,25 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 editor.SourceId,
                 editor.DisplayName))
             .ToList();
+        var inputNames = inputs
+            .Where(input => !string.IsNullOrWhiteSpace(input.SourceId))
+            .GroupBy(input => input.SourceId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.Ordinal);
+        var audioMix = _vm.AudioMix;
+        var audioSources = audioMix.Participants
+            .Where(source => !string.IsNullOrWhiteSpace(source.ParticipantId))
+            .OrderBy(source => source.ParticipantId, StringComparer.Ordinal)
+            .Select(source => new ControlAudioSourceState(
+                source.ParticipantId,
+                inputNames.GetValueOrDefault(source.ParticipantId) ??
+                    inputNames.GetValueOrDefault($"zoom:{source.ParticipantId}") ??
+                    source.ParticipantId,
+                source.OutputLevel,
+                source.TruePeakDb,
+                source.Lufs,
+                source.Muted || source.SourceMuted,
+                source.Status))
+            .ToList();
 
         return new ControlState
         {
@@ -407,9 +468,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             AutoCaptions = _vm.AutomationCaptionsEnabled,
             AudioMonitorOn = _vm.AudioMonitoringEnabled,
             AudioMonitorVolume = _vm.AudioMonitorVolume,
+            ZoomAudioMode = ZoomAudioModePreference.Format(_vm.ZoomAudioMode),
             MasterLimiterOn = _vm.MasterLimiterEnabled,
             MasteringOn = _vm.MasteringEnabled,
             MasteringTarget = _vm.MasteringTargetIndex,
+            AudioSourceCount = audioSources.Count,
+            ProgramTruePeakDbfs = _vm.MasteringMeterTruePeakDbfs,
+            ProgramLoudnessLufs = audioMix.LoudnessLufs,
+            AudioValidationSummary = _vm.AudioValidationSummary,
             VstHostStatus = _vm.VstHostStatus,
             VstPluginCount = _vm.VstPlugins.Count,
             VstHostSummary = _vm.VstPluginHostSummary,
@@ -417,6 +483,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             VirtualCameraStatus = _vm.VirtualCameraStatusLabel,
             VirtualCameraRawStatus = _vm.VirtualCameraRawStatus,
             Inputs = inputs,
+            AudioSources = audioSources,
         };
     }
 

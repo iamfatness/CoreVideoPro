@@ -2288,7 +2288,7 @@ int main(int argc, char **argv)
             } else if (msg.find(IPC_CMD_STOP_MEDIA) != std::string::npos) {
                 dispatch_async(dispatch_get_main_queue(),
                                ^{ handle_stop_media("manual_stop"); });
-            } else if (msg.find(IPC_CMD_SUBSCRIBE_AUDIO) != std::string::npos) {
+            } else if (ipc_command_is(msg, IPC_CMD_SUBSCRIBE_AUDIO)) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     const std::string uuid = json_str(msg, "source_uuid");
                     if (!is_valid_source_uuid(uuid)) return;
@@ -2301,7 +2301,7 @@ int main(int argc, char **argv)
             // Windows engine has that ordering and gets away with it only because
             // participant_id parses as 0 there, which its subscribe path treats as
             // an unsubscribe — but it never drops the audio target.)
-            } else if (msg.find(IPC_CMD_UNSUBSCRIBE) != std::string::npos) {
+            } else if (ipc_command_is(msg, IPC_CMD_UNSUBSCRIBE)) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     const std::string uuid = json_str(msg, "source_uuid");
                     if (!is_valid_source_uuid(uuid)) return;
@@ -2312,7 +2312,7 @@ int main(int argc, char **argv)
                     share_unsubscribe(uuid);
                     audio_remove(uuid);
                 });
-            } else if (msg.find(IPC_CMD_SUBSCRIBE) != std::string::npos) {
+            } else if (ipc_command_is(msg, IPC_CMD_SUBSCRIBE)) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     const std::string uuid = json_str(msg, "source_uuid");
                     if (!is_valid_source_uuid(uuid)) return;
@@ -2324,9 +2324,6 @@ int main(int argc, char **argv)
                     if (res > 2) res = 1;
                     const uint32_t pid = json_uint(msg, "participant_id");
                     video_subscribe(pid, uuid, res);
-                    audio_init(uuid, pid,
-                               msg.find(R"("isolate_audio":true)") != std::string::npos,
-                               msg.find(R"("audience_audio":true)") != std::string::npos);
                 });
             }
         }

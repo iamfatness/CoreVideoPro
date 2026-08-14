@@ -576,6 +576,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       if (++frames >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        mediaCore_.reportRenderDeadlineMisses(lateFrames);
         std::fprintf(stderr,
                      "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
                      "dropped=%lld  worst=%.1fms  (avg/frame over %lld)\n",

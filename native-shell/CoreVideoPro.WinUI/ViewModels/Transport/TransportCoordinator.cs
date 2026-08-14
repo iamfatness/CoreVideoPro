@@ -26,15 +26,24 @@ public sealed class TransportCoordinator
     private readonly IMediaCoreBridge _bridge;
     private readonly ITransportHost _host;
     private readonly ITransportDispatcher _dispatcher;
+    private readonly int _recordingSyncRetryAttempts;
+    private readonly int _recordingSyncRetryDelayMs;
 
     private bool _recordingToggleInFlight;
     private bool _streamToggleInFlight;
 
-    public TransportCoordinator(IMediaCoreBridge bridge, ITransportHost host, ITransportDispatcher dispatcher)
+    public TransportCoordinator(
+        IMediaCoreBridge bridge,
+        ITransportHost host,
+        ITransportDispatcher dispatcher,
+        int recordingSyncRetryAttempts = 120,
+        int recordingSyncRetryDelayMs = 250)
     {
         _bridge = bridge;
         _host = host;
         _dispatcher = dispatcher;
+        _recordingSyncRetryAttempts = Math.Max(1, recordingSyncRetryAttempts);
+        _recordingSyncRetryDelayMs = Math.Max(1, recordingSyncRetryDelayMs);
     }
 
     /// <summary>In-flight guard for the Record toggle. StudioViewModel's
@@ -237,7 +246,11 @@ public sealed class TransportCoordinator
                 _host.OutputSessionStatus = _host.OutputStatus;
             });
             LaunchLog.Write($"recording: {(starting ? "start" : "stop")} deferred because media core sync is in flight");
-            _ = RetryRecordingSyncAsync(starting);
+            // A multi-ISO start can legitimately hold the core sync for several seconds
+            // while its writers come up. Await the retry so the Record command stays
+            // guarded; fire-and-forget let a second operator click invert the requested
+            // state before the first stop had reached the core.
+            await RetryRecordingSyncAsync(starting).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -246,7 +259,10 @@ public sealed class TransportCoordinator
             LaunchLog.Write($"recording: {action} failed {ex.GetType().Name}: {ex.Message}");
             _dispatcher.RunOnUiThread(() =>
             {
-                _host.Recording = previousRecording;
+                // Starting may safely roll back. Stopping is a safety intent: never
+                // restore Recording=true merely because the core was momentarily busy.
+                // The periodic production sync will continue carrying Recording=false.
+                _host.Recording = starting ? previousRecording : false;
                 _host.RefreshOutputStatus();
                 _host.OutputStatus = failureStatus;
                 _host.OutputSessionStatus = _host.OutputStatus;
@@ -302,9 +318,9 @@ public sealed class TransportCoordinator
 
     private async Task RetryRecordingSyncAsync(bool starting)
     {
-        for (var attempt = 0; attempt < 5; attempt++)
+        for (var attempt = 0; attempt < _recordingSyncRetryAttempts; attempt++)
         {
-            await Task.Delay(150).ConfigureAwait(false);
+            await Task.Delay(_recordingSyncRetryDelayMs).ConfigureAwait(false);
             try
             {
                 var snapshot = await _host.SyncActiveSceneAsync().ConfigureAwait(false);
@@ -338,7 +354,9 @@ public sealed class TransportCoordinator
                 var failureStatus = TransportStatusFormatter.FormatRecordingFailureStatus(starting ? "start" : "stop", ex);
                 _dispatcher.RunOnUiThread(() =>
                 {
-                    _host.Recording = TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(starting);
+                    _host.Recording = starting
+                        ? TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(true)
+                        : false;
                     _host.RefreshOutputStatus();
                     _host.OutputStatus = failureStatus;
                     _host.OutputSessionStatus = _host.OutputStatus;
@@ -352,10 +370,14 @@ public sealed class TransportCoordinator
             }
         }
 
-        var exhaustedStatus = TransportStatusFormatter.FormatRecordingSyncRetryExhaustedStatus(starting);
+        var exhaustedStatus = starting
+            ? TransportStatusFormatter.FormatRecordingSyncRetryExhaustedStatus(true)
+            : "Recording stopping - media core is busy; stop remains armed.";
         _dispatcher.RunOnUiThread(() =>
         {
-            _host.Recording = TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(starting);
+            _host.Recording = starting
+                ? TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(true)
+                : false;
             _host.RefreshOutputStatus();
             _host.OutputStatus = exhaustedStatus;
             _host.OutputSessionStatus = _host.OutputStatus;

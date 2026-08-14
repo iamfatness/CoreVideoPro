@@ -58,6 +58,9 @@ class ZoomEngineProcessClient {
 #if defined(_WIN32)
   void* processHandle_ = nullptr;
   void* threadHandle_ = nullptr;
+  // Kill-on-close job ownership guarantees the Meeting SDK helper cannot
+  // outlive a crashed/force-terminated media core and retain Zoom callbacks.
+  void* jobHandle_ = nullptr;
   void* parentToEngine_ = nullptr;
   void* engineToParent_ = nullptr;
 #else

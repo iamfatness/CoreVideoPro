@@ -53,6 +53,13 @@ int64_t monotonicMs() {
           .count());
 }
 
+int64_t monotonic100ns() {
+  return static_cast<int64_t>(
+      std::chrono::duration_cast<std::chrono::duration<int64_t, std::ratio<1, 10'000'000>>>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
 // Key parameters are normalized: a value outside 0..1 is a caller bug, and
 // clamping keeps the shader's smoothstep well-formed.
 float clampUnit(double value) {
@@ -401,6 +408,7 @@ rpc::Json MediaCore::health() const {
   return rpc::Json::Object{
       {"status", session.active ? "live" : "idle"},
       {"renderer", modules_.compositor->rendererName()},
+      {"renderDeadlineMisses", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
       {"programFrameHealth", lastProgramFrame_.health},
       {"encoder", session.encoderName},
       {"codec", session.codec},
@@ -638,6 +646,14 @@ rpc::Json MediaCore::sessionState() const {
            {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
            {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
            {"warnings", stringArray(lastProgramFrame_.warnings)},
+       }},
+      {"compositor",
+       rpc::Json::Object{
+           {"status", lastProgramFrame_.frameNumber > 0 ? "live" : "idle"},
+           {"renderPlanId", lastProgramFrame_.renderPlanId},
+           {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
+           {"droppedFrameCount", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
+           {"degradedFrameCount", lastProgramFrame_.health == "degraded" ? 1 : 0},
        }},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
@@ -1596,13 +1612,18 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = readIsoSourceIds(command);
   }
-  {
+  const bool recordingOwnsEncoderGeneration = recordingStatus_ == "recording";
+  if (!recordingOwnsEncoderGeneration) {
     // Encoder module mutation: guard against the audio/output worker's concurrent
     // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     configureEncoderRecordingRequest();
     modules_.encoder->start(command.getStringArray("destinations"), recordingIsoParticipantIds_);
   }
+  // start-program-output is a repeated desired-state assertion. Once a recording
+  // owns the encoder generation, restarting here closes and recreates every
+  // Program/ISO writer. Scene, Preview, Take, and roster sync must only update
+  // output routing while the active recording generation keeps running.
   if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
     encoderLifecycleStatus_ = "encoding";
     encoderLastTransition_ = "Program output encoder session started.";
@@ -1702,11 +1723,6 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
   setRecordingTargets(command);
   recordingSessionId_ = command.getString("sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_);
   recordingStartedAtMs_ = command.get("startedAtMs") ? command.get("startedAtMs")->asNumber() : recordingStartedAtMs_;
-  recordingElapsedMs_ = 0;
-  recordingProgramFramesWritten_ = 0;
-  recordingIsoFramesWritten_ = 0;
-  recordingDroppedFrames_ = 0;
-  recordingAudioPacketsObserved_ = 0;
   recordingFailureCount_ = 0;
   recordingRecoveryCount_ = 0;
   recordingStatus_ = "recording";
@@ -3179,8 +3195,16 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"inputLevel", measuredInputLevel},
         {"outputLevel", outputLevel},
         {"gainDb", gainDb},
-        {"rmsDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel)) : deriveRmsDbfs(0)},
-        {"peakDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->peakLevel)) : derivePeakDbfs(0)},
+        // These are OUTPUT meters. A muted strip may still receive non-zero
+        // input PCM, but none of that signal reaches a bus. Publishing the raw
+        // pre-mute measurement made muted microphones appear live in the UI
+        // and control API even while the routed audio was correctly silent.
+        {"rmsDbfs", hasPcm && !channel.muted
+                        ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
+                        : deriveRmsDbfs(0)},
+        {"peakDbfs", hasPcm && !channel.muted
+                         ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
+                         : derivePeakDbfs(0)},
         // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
         // feeds the workspace GR meter.
         {"gainReductionDb",
@@ -3829,6 +3853,8 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
       {"recordingVideoCodec", session.recordingVideoCodec.empty() ? session.codec : session.recordingVideoCodec},
       {"recordingAudioCodec", session.recordingAudioCodec.empty() ? "aac" : session.recordingAudioCodec},
       {"recordingAudioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
+      {"encoderQueueDroppedVideoFrames", static_cast<double>(session.encoderQueueDroppedVideoFrames)},
+      {"encoderQueueDroppedAudioPackets", static_cast<double>(session.encoderQueueDroppedAudioPackets)},
       {"targets", targets},
       {"lifecycle", lifecycle},
       {"warnings", warnings},
@@ -3916,11 +3942,21 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   }
 
   const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
-  const int64_t programFramesWritten = std::max<int64_t>(recordingProgramFramesWritten_, session.recordingVideoFrameCount);
-  const int64_t isoFramesWritten = recordingIsoFramesWritten_ > 0 ? recordingIsoFramesWritten_ : static_cast<int64_t>(isoIds.size()) * programFramesWritten;
-  const double durationMs = std::max(recordingElapsedMs_, static_cast<double>(session.recordingDurationMs));
-  const int64_t audioPacketsObserved = recordingAudioPacketsObserved_;
-  const bool audioPresent = audioPacketsObserved > 0;
+  const int64_t programFramesWritten = session.recordingVideoFrameCount;
+  int64_t isoFramesWritten = 0;
+  int64_t isoBytesWritten = 0;
+  for (const auto& iso : session.isoStreams) {
+    isoFramesWritten += iso.videoFrameCount;
+    isoBytesWritten += iso.bytesWritten;
+  }
+  const double durationMs = static_cast<double>(session.recordingDurationMs);
+  const int64_t audioPacketsObserved = session.recordingAudioPacketCount;
+  const bool audioPresent = session.recordingAudioSampleCount > 0;
+  const int64_t droppedVideoFrames = session.encoderQueueDroppedVideoFrames;
+  const int64_t totalBytesWritten = session.recordingBytesWritten;
+  const int64_t programBytesWritten = session.recordingProgramBytesWritten > 0
+                                          ? session.recordingProgramBytesWritten
+                                          : std::max<int64_t>(0, totalBytesWritten - isoBytesWritten);
   const int recordingWidth = session.recordingWidth > 0 ? session.recordingWidth : lastProgramFrame_.width;
   const int recordingHeight = session.recordingHeight > 0 ? session.recordingHeight : lastProgramFrame_.height;
   const int recordingFps = session.recordingFps > 0 ? session.recordingFps : 30;
@@ -3941,14 +3977,15 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"kind", "program"},
           {"path", programPath},
           {"status", recordingWriterStatus_},
-          {"expectedFrames", static_cast<double>(programFramesWritten + recordingDroppedFrames_)},
+          {"expectedFrames", static_cast<double>(programFramesWritten)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
           {"hasAudio", audioPresent},
+          {"audioSamples", static_cast<double>(session.recordingAudioSampleCount)},
           {"missingFrames", 0},
-          {"droppedFrames", static_cast<double>(recordingDroppedFrames_)},
-          {"bytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, programFramesWritten * 260000))},
+          {"droppedFrames", 0},
+          {"bytesWritten", static_cast<double>(programBytesWritten)},
           {"metadataValid", metadataValid},
       },
   };
@@ -3977,6 +4014,8 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"audioSamples", static_cast<double>(iso.audioSampleCount)},
           {"bytesWritten", static_cast<double>(iso.bytesWritten)},
           {"metadataValid", iso.trackOpen},
+          {"encoderPath", iso.encoderPath},
+          {"fallbackReason", iso.fallbackReason},
       };
       if (!iso.warning.empty()) {
         node.emplace("warning", iso.warning);
@@ -3984,21 +4023,22 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       streams.emplace_back(std::move(node));
     }
   } else {
-    // Stub / non-MF sink: synthesize ISO nodes from the selected ids (no real
-    // per-writer stats available).
+    // A sink without per-writer telemetry must stay explicitly unknown. The old
+    // fallback copied Program counts/bytes into every ISO and made a support
+    // bundle claim successful stems that may never have existed.
     for (const auto& participantId : isoIds) {
       streams.emplace_back(rpc::Json::Object{
           {"kind", "iso"},
           {"participantId", participantId},
           {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
-          {"status", recordingWriterStatus_},
-          {"readiness", "ready"},
-          {"framesWritten", static_cast<double>(programFramesWritten)},
+          {"status", "unreported"},
+          {"readiness", "unknown"},
+          {"framesWritten", 0},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
-          {"hasAudio", audioPresent},
-          {"bytesWritten", static_cast<double>(programFramesWritten * 140000)},
-          {"metadataValid", metadataValid},
+          {"hasAudio", false},
+          {"bytesWritten", 0},
+          {"metadataValid", false},
       });
     }
   }
@@ -4009,7 +4049,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       {"status", recordingStatus_},
       {"writerStatus", recordingWriterStatus_},
       {"startedAtMs", recordingStartedAtMs_},
-      {"elapsedMs", recordingElapsedMs_},
+      {"elapsedMs", durationMs},
       {"targetFolder", recordingTargetFolder_},
       {"filenamePrefix", recordingFilenamePrefix_},
       {"format", recordingFormat_},
@@ -4021,7 +4061,10 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"targetBitrateMbps", session.targetBitrateMbps},
            {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
        }},
-      {"estimatedDiskRateMBps", 4.99},
+      {"estimatedDiskRateMBps", durationMs > 0.0
+                                     ? static_cast<double>(totalBytesWritten) / (1024.0 * 1024.0) /
+                                           (durationMs / 1000.0)
+                                     : 0.0},
       {"programPath", programPath},
       {"streams", streams},
       {"proof",
@@ -4045,10 +4088,12 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"frameRate", recordingFps},
            {"failureCount", recordingFailureCount_},
            {"recoveryCount", recordingRecoveryCount_},
+           {"encoderQueueDroppedVideoFrames", static_cast<double>(session.encoderQueueDroppedVideoFrames)},
+           {"encoderQueueDroppedAudioPackets", static_cast<double>(session.encoderQueueDroppedAudioPackets)},
        }},
       {"totalFramesWritten", static_cast<double>(programFramesWritten + isoFramesWritten)},
-      {"totalDroppedFrames", static_cast<double>(recordingDroppedFrames_)},
-      {"totalBytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, programFramesWritten * 260000 + isoFramesWritten * 140000))},
+      {"totalDroppedFrames", static_cast<double>(droppedVideoFrames)},
+      {"totalBytesWritten", static_cast<double>(totalBytesWritten)},
   };
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);
@@ -4190,6 +4235,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     layer.mediaAssetKind = sceneBackground.mediaAssetKind;
     layer.mediaAssetPath = sceneBackground.mediaAssetPath;
     layer.mediaAssetPlaying = sceneBackground.playing;
+    layer.mediaAssetLoop = true;
     layer.order = -100;
     layer.rect = {0.f, 0.f, 1.f, 1.f};
     layer.fitMode = "fill";
@@ -5340,7 +5386,9 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // (RecordingPtsClock::videoPts) and deduped by frameNumber, so submitting on a
   // separate, faster tick cannot drift the A/V relationship; it just stops
   // dropping ~10 frameNumbers a second. Audio still leaves from this worker.
+  const int64_t videoTimelineTimestamp100ns = monotonic100ns();
   if (!videoOutputTickRunning_.load(std::memory_order_acquire)) {
+    work.programFrame.timelineTimestamp100ns = videoTimelineTimestamp100ns;
     modules_.encoder->submit(work.programFrame);
   }
   // ISO-1: each selected source's OWN video into its own MP4 (rides the same
@@ -5348,9 +5396,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // drop-to-latest under back-pressure, never program A/V). Program above is
   // priority-1 and unaffected by ISO.
   if (!work.isoSources.empty()) {
+    for (auto& source : work.isoSources) {
+      source.timelineTimestamp100ns = videoTimelineTimestamp100ns;
+    }
     modules_.encoder->submitIsoVideo(work.isoSources);
   }
-  const auto session = modules_.encoder->session();
   auto outputDestinations = work.outputDestinations;
   outputDestinations.erase(
       std::remove(outputDestinations.begin(), outputDestinations.end(), std::string("recording")),
@@ -5442,9 +5492,6 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     }
   }
   if (work.recordingActive) {
-    ++results.recordingProgramFramesDelta;
-    const auto isoIds = work.recordingIsoParticipantIds.empty() ? session.isoParticipantIds : work.recordingIsoParticipantIds;
-    results.recordingIsoFramesDelta += static_cast<int64_t>(isoIds.size());
     // Routed console -> record silence when all-muted, never the legacy
     // unmuted sum (monitor note above).
     static const std::vector<float> kEmptyRecordTap;
@@ -5487,10 +5534,15 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
       std::vector<modules::IsoSourceAudio> isoAudio;
       isoAudio.reserve(recordingIsoParticipantIds_.size());
+      // Timestamp the tick on the realtime audio worker, before AsyncEncoderSink
+      // queues it behind up to eight video encoders. Every ISO in this tick uses
+      // the same capture-time boundary so queue latency cannot become silence.
+      const int64_t timelineTimestamp100ns = monotonic100ns();
       for (const auto& rawId : recordingIsoParticipantIds_) {
         const std::string sourceId = normalizeIsoSourceId(rawId);
         modules::IsoSourceAudio stem;
         stem.sourceId = sourceId;
+        stem.timelineTimestamp100ns = timelineTimestamp100ns;
         const auto it = stemByCanonicalId.find(sourceId);
         if (it != stemByCanonicalId.end()) {
           const modules::AudioFrame& frame = *it->second;
@@ -5510,13 +5562,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
     }
     const auto encoderSession = modules_.encoder->session();
-    results.recordingAudioPacketsObserved = encoderSession.recordingAudioPacketCount;
     // Surface the encoder's recording warning (published into recordingWarning_
     // → snapshot recording.warning). Without this an audio WriteSample failure
     // lived only in encoderSession.warnings and the recording section looked
     // healthy while muxing a video-only MP4.
     results.recordingWarning = encoderSession.recordingWarning;
-    results.recordingElapsedMsDelta += static_cast<double>(work.frameIntervalMs);
   }
   return results;
 }
@@ -5539,9 +5589,6 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     audioMonitorFeedbackRisk_ = results.monitorFeedbackRisk;
   }
   if (results.recordingActive) {
-    recordingProgramFramesWritten_ += results.recordingProgramFramesDelta;
-    recordingIsoFramesWritten_ += results.recordingIsoFramesDelta;
-    recordingAudioPacketsObserved_ = results.recordingAudioPacketsObserved;
     if (!results.recordingWarning.empty() && recordingWarning_ != results.recordingWarning) {
       // Encoder-side failure (e.g. dropped program audio) becomes the visible
       // recording warning. Log once per distinct warning — this is the loud
@@ -5549,7 +5596,6 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
       recordingWarning_ = results.recordingWarning;
       std::fprintf(stderr, "[recording] warning: %s\n", recordingWarning_.c_str());
     }
-    recordingElapsedMs_ += results.recordingElapsedMsDelta;
   }
 }
 
@@ -5632,6 +5678,7 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     frame.programNv12Height = latestProgramNv12Height_;
     frame.programNv12 = latestProgramNv12_;
   }
+  frame.timelineTimestamp100ns = monotonic100ns();
   modules_.encoder->submit(frame);
 
   // Network senders: VIDEO on this cadence. Audio is pushed separately by the

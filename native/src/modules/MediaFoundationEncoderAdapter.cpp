@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/IsoEncoderPlacement.h"
 #include "modules/RecordingPtsClock.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
@@ -70,6 +71,17 @@ std::string canonicalVideoCodecName(const std::string& codec) {
 // sources feed NV12 so raw I420 needs no CPU color-convert (spec §2b) — a cheap
 // plane interleave (below) runs on the async encoder thread, never a lock.
 enum class VideoInput { Bgra, Nv12 };
+
+// Zoom raw I420 is requested as full-range BT.709 and the compositor's Windows
+// NV12 tap uses the same matrix/range. Preserve that contract at the MF media
+// type boundary so H.264/HEVC VUI/container metadata is not left unspecified.
+void setBt709FullRange(IMFMediaType* type) {
+  if (type == nullptr) return;
+  type->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+  type->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+  type->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+  type->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255);
+}
 
 // Cheap I420 (planar Y/U/V) -> NV12 (Y plane + interleaved UV) conversion. No
 // color-space math, just a chroma-plane interleave; runs on the async encoder
@@ -189,7 +201,8 @@ std::string jsonEscape(const std::string& in) {
 class Mp4Writer {
  public:
   bool open(const std::filesystem::path& path, int width, int height, int fps, int bitrateMbps,
-            const std::string& codec, std::string& errorOut, VideoInput videoInput = VideoInput::Bgra) {
+            const std::string& codec, std::string& errorOut, VideoInput videoInput = VideoInput::Bgra,
+            bool enableHardwareTransforms = true) {
     // RESET ALL per-session state before configuring the new sink writer. This
     // writer object is REUSED across recording sessions (every encoder start()
     // reopens it), and stream indices / audioConfigured_ describe the PREVIOUS
@@ -200,6 +213,13 @@ class Mp4Writer {
     // 2026-07-13 alpha-blocking zero-audio-recording bug: start-program-output
     // opened generation 1, start-recording-session reopened generation 2).
     sinkWriter_.Reset();
+    mediaSink_.Reset();
+    byteStream_.Reset();
+    videoOutputType_.Reset();
+    videoInputType_.Reset();
+    audioOutputType_.Reset();
+    audioInputType_.Reset();
+    enableHardwareTransforms_ = enableHardwareTransforms;
     open_ = false;
     writing_ = false;
     audioConfigured_ = false;
@@ -219,23 +239,9 @@ class Mp4Writer {
     frameDuration100ns_ = 10'000'000LL / fps_;
     videoCodec_ = canonicalVideoCodecName(codec);
 
-    ComPtr<IMFAttributes> attributes;
-    HRESULT result = MFCreateAttributes(&attributes, 1);
-    if (FAILED(result)) {
-      errorOut = "create Sink Writer attributes: " + hresultString(result);
-      return false;
-    }
-    attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
-
-    result = MFCreateSinkWriterFromURL(path_.wstring().c_str(), nullptr, attributes.Get(), &sinkWriter_);
-    if (FAILED(result)) {
-      errorOut = "create MP4 Sink Writer: " + hresultString(result);
-      return false;
-    }
-
     // ---- Video stream ----
     ComPtr<IMFMediaType> outputType;
-    result = MFCreateMediaType(&outputType);
+    HRESULT result = MFCreateMediaType(&outputType);
     if (FAILED(result)) {
       errorOut = "create video output type: " + hresultString(result);
       return false;
@@ -247,12 +253,11 @@ class Mp4Writer {
     MFSetAttributeSize(outputType.Get(), MF_MT_FRAME_SIZE, static_cast<UINT32>(width_), static_cast<UINT32>(height_));
     MFSetAttributeRatio(outputType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(fps_), 1);
     MFSetAttributeRatio(outputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-
-    result = sinkWriter_->AddStream(outputType.Get(), &videoStreamIndex_);
-    if (FAILED(result)) {
-      errorOut = "add video stream: " + hresultString(result);
-      return false;
+    if (videoInput == VideoInput::Nv12) {
+      setBt709FullRange(outputType.Get());
     }
+
+    videoOutputType_ = outputType;
 
     ComPtr<IMFMediaType> inputType;
     result = MFCreateMediaType(&inputType);
@@ -268,6 +273,7 @@ class Mp4Writer {
       // async encoder thread — no CPU color-convert (spec §2b).
       inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
       inputType->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(width_));
+      setBt709FullRange(inputType.Get());
     } else {
       inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
       // Top-down BGRA: negative stride so row 0 is the top scanline, matching the
@@ -278,11 +284,7 @@ class Mp4Writer {
     MFSetAttributeRatio(inputType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(fps_), 1);
     MFSetAttributeRatio(inputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 
-    result = sinkWriter_->SetInputMediaType(videoStreamIndex_, inputType.Get(), nullptr);
-    if (FAILED(result)) {
-      errorOut = "set video input type: " + hresultString(result);
-      return false;
-    }
+    videoInputType_ = inputType;
 
     open_ = true;
     return true;
@@ -313,11 +315,7 @@ class Mp4Writer {
     outputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, static_cast<UINT32>((audioBitrateKbps_ * 1000) / 8));
     outputType->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29);
 
-    result = sinkWriter_->AddStream(outputType.Get(), &audioStreamIndex_);
-    if (FAILED(result)) {
-      errorOut = "add AAC stream: " + hresultString(result);
-      return false;
-    }
+    audioOutputType_ = outputType;
 
     ComPtr<IMFMediaType> inputType;
     result = MFCreateMediaType(&inputType);
@@ -334,11 +332,7 @@ class Mp4Writer {
     inputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
                          static_cast<UINT32>(audioSampleRate_ * audioChannels_ * 2));
 
-    result = sinkWriter_->SetInputMediaType(audioStreamIndex_, inputType.Get(), nullptr);
-    if (FAILED(result)) {
-      errorOut = "set PCM input type: " + hresultString(result);
-      return false;
-    }
+    audioInputType_ = inputType;
 
     audioConfigured_ = true;
     return true;
@@ -348,7 +342,11 @@ class Mp4Writer {
     if (!open_ || writing_) {
       return open_;
     }
-    const HRESULT result = sinkWriter_->BeginWriting();
+    HRESULT result = createFragmentedSink(errorOut);
+    if (FAILED(result)) {
+      return false;
+    }
+    result = sinkWriter_->BeginWriting();
     if (FAILED(result)) {
       errorOut = "begin MP4 writing: " + hresultString(result);
       return false;
@@ -420,7 +418,7 @@ class Mp4Writer {
       return false;
     }
     ++videoFrameCount_;
-    bytesWritten_ += byteCount;
+    refreshBytesWritten();
     return true;
   }
 
@@ -498,7 +496,7 @@ class Mp4Writer {
       return false;
     }
     ++videoFrameCount_;
-    bytesWritten_ += byteCount;
+    refreshBytesWritten();
     return true;
   }
 
@@ -563,7 +561,7 @@ class Mp4Writer {
     }
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
-    bytesWritten_ += byteCount;
+    refreshBytesWritten();
     return true;
   }
 
@@ -596,13 +594,26 @@ class Mp4Writer {
     return true;
   }
 
-  void finalize() {
+  bool finalize(std::string* errorOut = nullptr) {
+    HRESULT finalizeResult = S_OK;
     if (writing_ && sinkWriter_) {
-      sinkWriter_->Finalize();
+      finalizeResult = sinkWriter_->Finalize();
     }
     writing_ = false;
     open_ = false;
     sinkWriter_.Reset();
+    if (mediaSink_) {
+      (void)mediaSink_->Shutdown();
+    }
+    mediaSink_.Reset();
+    if (byteStream_) {
+      (void)byteStream_->Close();
+    }
+    byteStream_.Reset();
+    videoOutputType_.Reset();
+    videoInputType_.Reset();
+    audioOutputType_.Reset();
+    audioInputType_.Reset();
     // Prefer the on-disk size once the container is finalized.
     if (!path_.empty() && std::filesystem::exists(path_)) {
       std::error_code error;
@@ -611,6 +622,19 @@ class Mp4Writer {
         bytesWritten_ = static_cast<int64_t>(size);
       }
     }
+    if (FAILED(finalizeResult)) {
+      if (errorOut) {
+        *errorOut = "finalize MP4 container: " + hresultString(finalizeResult);
+      }
+      return false;
+    }
+    if ((videoFrameCount_ > 0 || audioPacketCount_ > 0) && bytesWritten_ <= 0) {
+      if (errorOut) {
+        *errorOut = "finalized MP4 is empty despite accepted media samples";
+      }
+      return false;
+    }
+    return true;
   }
 
   bool writing() const { return writing_; }
@@ -629,8 +653,88 @@ class Mp4Writer {
   const std::filesystem::path& path() const { return path_; }
 
  private:
+  void refreshBytesWritten() {
+    // `bytesWritten` is operator-facing on-disk telemetry, not the number of
+    // uncompressed bytes handed to Media Foundation. The old raw-input counter
+    // reported ~1 GB while the live Program file was only 9 MB and every ISO
+    // file was 0 bytes, masking the actual writer failure.
+    QWORD length = 0;
+    if (byteStream_ && SUCCEEDED(byteStream_->GetLength(&length))) {
+      bytesWritten_ = static_cast<int64_t>(length);
+      return;
+    }
+    if (!path_.empty()) {
+      std::error_code error;
+      const auto size = std::filesystem::file_size(path_, error);
+      if (!error) {
+        bytesWritten_ = static_cast<int64_t>(size);
+      }
+    }
+  }
+
+  HRESULT createFragmentedSink(std::string& errorOut) {
+    HRESULT result = MFCreateFile(MF_ACCESSMODE_WRITE, MF_OPENMODE_DELETE_IF_EXIST,
+                                  MF_FILEFLAGS_NONE, path_.wstring().c_str(), &byteStream_);
+    if (FAILED(result)) {
+      errorOut = "create fragmented MP4 byte stream: " + hresultString(result);
+      return result;
+    }
+
+    result = MFCreateFMPEG4MediaSink(byteStream_.Get(), videoOutputType_.Get(),
+                                     audioConfigured_ ? audioOutputType_.Get() : nullptr,
+                                     &mediaSink_);
+    if (FAILED(result)) {
+      errorOut = "create fragmented MP4 media sink: " + hresultString(result);
+      return result;
+    }
+
+    // Keep fragments short enough that a process/power loss sacrifices at most
+    // the in-flight tail. The sink still chooses clean sample boundaries.
+    ComPtr<IMFAttributes> sinkAttributes;
+    if (SUCCEEDED(mediaSink_.As(&sinkAttributes))) {
+      (void)sinkAttributes->SetUINT64(MF_MPEG4SINK_MIN_FRAGMENT_DURATION, 10'000'000ULL);
+    }
+
+    ComPtr<IMFAttributes> writerAttributes;
+    result = MFCreateAttributes(&writerAttributes, 1);
+    if (FAILED(result)) {
+      errorOut = "create fragmented Sink Writer attributes: " + hresultString(result);
+      return result;
+    }
+    (void)writerAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+                                      enableHardwareTransforms_ ? TRUE : FALSE);
+    result = MFCreateSinkWriterFromMediaSink(mediaSink_.Get(), writerAttributes.Get(), &sinkWriter_);
+    if (FAILED(result)) {
+      errorOut = "create Sink Writer from fragmented MP4 sink: " + hresultString(result);
+      return result;
+    }
+
+    videoStreamIndex_ = 0;
+    result = sinkWriter_->SetInputMediaType(videoStreamIndex_, videoInputType_.Get(), nullptr);
+    if (FAILED(result)) {
+      errorOut = "set fragmented video input type: " + hresultString(result);
+      return result;
+    }
+    if (audioConfigured_) {
+      audioStreamIndex_ = 1;
+      result = sinkWriter_->SetInputMediaType(audioStreamIndex_, audioInputType_.Get(), nullptr);
+      if (FAILED(result)) {
+        errorOut = "set fragmented PCM input type: " + hresultString(result);
+        return result;
+      }
+    }
+    return S_OK;
+  }
+
   std::filesystem::path path_;
   ComPtr<IMFSinkWriter> sinkWriter_;
+  ComPtr<IMFMediaSink> mediaSink_;
+  ComPtr<IMFByteStream> byteStream_;
+  ComPtr<IMFMediaType> videoOutputType_;
+  ComPtr<IMFMediaType> videoInputType_;
+  ComPtr<IMFMediaType> audioOutputType_;
+  ComPtr<IMFMediaType> audioInputType_;
+  bool enableHardwareTransforms_ = true;
   DWORD videoStreamIndex_ = 0;
   DWORD audioStreamIndex_ = 0;
   int width_ = kDefaultWidth;
@@ -771,7 +875,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       if (frame.programNv12.empty() || frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
         return;  // async tap had nothing this tick — skip, never downgrade
       }
-      const auto pts = recordingClock_.videoPts(now100ns(), frame.frameNumber);
+      const LONGLONG timelineNow =
+          frame.timelineTimestamp100ns > 0 ? frame.timelineTimestamp100ns : now100ns();
+      const auto pts = recordingClock_.videoPts(timelineNow, frame.frameNumber);
       if (!pts) {
         return;  // already muxed
       }
@@ -820,7 +926,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // composed frame is muxed exactly once, timestamped at the wall time it
     // was submitted — keeping the video timeline aligned with the
     // sample-counted audio track instead of drifting monotonically apart.
-    const auto pts = recordingClock_.videoPts(now100ns(), frame.frameNumber);
+    const LONGLONG timelineNow =
+        frame.timelineTimestamp100ns > 0 ? frame.timelineTimestamp100ns : now100ns();
+    const auto pts = recordingClock_.videoPts(timelineNow, frame.frameNumber);
     if (!pts) {
       return;  // this program frame is already in the file
     }
@@ -927,7 +1035,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       // Per-(sourceId,frameId) dedup on the SHARED program epoch (spec 2c): the
       // audio worker re-submits each source's latest frame every tick; each real
       // decoded frame muxes exactly once, on the program timeline.
-      const auto pts = recordingClock_.videoPtsForSource(now100ns(), src.sourceId, frame.frameId);
+      const LONGLONG timelineNow =
+          src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : now100ns();
+      const auto pts = recordingClock_.videoPtsForSource(timelineNow, src.sourceId, frame.frameId);
       if (!pts) {
         continue;
       }
@@ -950,7 +1060,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         // pure-video capture source (a camera with no paired audio) opens
         // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
         // track. submitIsoAudio then skips it (audioConfigured() stays false).
-        if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input) ||
+        if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input,
+                               entry.encoderPath == IsoEncoderPath::Hardware) ||
             (entry.hasAudio &&
              !entry.writer.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
             !entry.writer.beginWriting(error)) {
@@ -1005,7 +1116,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       }
       const int rate = entry.writer.audioSampleRate();
       const int frameCount = src.frameCount > 0 && !src.pcm.empty() ? src.frameCount : 0;
-      const auto advance = recordingClock_.isoAudioAdvance(now100ns(), src.sourceId, frameCount, rate);
+      const LONGLONG timelineNow =
+          src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : now100ns();
+      const auto advance = recordingClock_.isoAudioAdvance(timelineNow, src.sourceId, frameCount, rate);
       std::string error;
       bool ok = true;
       if (advance.silenceFrames > 0) {
@@ -1108,6 +1221,21 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       isoSel.clear();
     }
 
+    std::vector<std::string> isoSourceIds;
+    isoSourceIds.reserve(isoSel.size());
+    for (const auto& selection : isoSel) {
+      isoSourceIds.push_back(selection.sourceId);
+    }
+    // Program owns the first hardware session. Place ISOs once at arm time:
+    // overflow is forced onto the software MFT before any samples are written,
+    // instead of discovering GPU exhaustion as zero-byte stems mid-show.
+    const auto isoPlacement = planIsoEncoders(
+        isoSourceIds, IsoEncoderMode::Auto,
+        IsoEncoderCapacity{.hardwareSessionLimit = 8,
+                           .reservedHardwareSessions = 1,
+                           .hardwareAvailable = true,
+                           .softwareAvailable = true});
+
     std::string error;
     // NV12 when the compositor supplies the full-resolution program tap (see
     // RecordingSessionRequest::programNv12). It is both correct — the alternative
@@ -1130,6 +1258,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       entry.sourceId = isoSel[i].sourceId;
       entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
       entry.hasAudio = isoSel[i].hasAudio;  // ISO-3: video-only for an unpaired capture source
+      entry.encoderPath = isoPlacement[i].path;
+      entry.encoderReason = isoPlacement[i].reason;
       std::string safe = sanitizeForFilename(entry.displayName, entry.sourceId);
       // Disambiguate duplicate sanitized names within a session.
       if (int& seen = nameCollisions[safe]; ++seen > 1) {
@@ -1223,6 +1353,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       status.audioSampleCount = iso.writer.audioSampleCount();  // ISO-2: silence + real
       status.bytesWritten = iso.writer.bytesWritten();
       status.trackOpen = iso.opened && !iso.failed;
+      status.encoderPath = isoEncoderPathId(iso.encoderPath);
+      status.fallbackReason = iso.encoderReason;
       status.warning = iso.warning;
       session_.isoStreams.push_back(std::move(status));
     }
@@ -1247,6 +1379,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     out << "{\n";
     out << "  \"sessionId\": \"" << jsonEscape(session_.recordingSessionId) << "\",\n";
     out << "  \"epochMs\": " << epochMs << ",\n";
+    out << "  \"containerMode\": \"fragmented-mp4\",\n";
+    out << "  \"crashSafe\": true,\n";
+    out << "  \"targetFragmentDurationMs\": 1000,\n";
     out << "  \"entries\": [\n";
     out << "    { \"sourceId\": \"program\", \"name\": \"Program\", \"path\": \""
         << jsonEscape(programPath.filename().string())
@@ -1259,7 +1394,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
           << jsonEscape(iso.displayName) << "\", \"path\": \""
           << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": "
-          << (iso.hasAudio ? "true" : "false") << " }";
+          << (iso.hasAudio ? "true" : "false") << ", \"encoderPath\": \""
+          << isoEncoderPathId(iso.encoderPath) << "\", \"fallbackReason\": \""
+          << jsonEscape(iso.encoderReason) << "\" }";
     }
     out << "\n  ]\n}\n";
     out.close();
@@ -1267,27 +1404,41 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void updateBytesWritten() {
-    int64_t total = program_.bytesWritten();
+    session_.recordingProgramBytesWritten = program_.bytesWritten();
+    int64_t total = session_.recordingProgramBytesWritten;
     for (const auto& iso : isoWriters_) {
       total += iso.writer.bytesWritten();
     }
     session_.recordingBytesWritten = total;
   }
 
-  // 100ns ticks on the steady clock since sink construction — the time base
-  // RecordingPtsClock anchors its shared epoch to.
+  // Absolute 100ns ticks on the process steady clock. IsoSourceAudio carries
+  // this same clock domain from the realtime submit boundary, so asynchronous
+  // writer latency never leaks into the recorded ISO timeline.
   [[nodiscard]] LONGLONG now100ns() const {
     return std::chrono::duration_cast<std::chrono::duration<LONGLONG, std::ratio<1, 10'000'000>>>(
-               std::chrono::steady_clock::now() - clockOrigin_)
+               std::chrono::steady_clock::now().time_since_epoch())
         .count();
   }
 
   void closeWriters() {
-    program_.finalize();
+    std::string programFinalizeError;
+    const bool programFinalized = program_.finalize(&programFinalizeError);
+    if (!programFinalized && session_.recordingWarning.empty()) {
+      session_.recordingWarning = "Program recording did not finalize: " + programFinalizeError + ".";
+      session_.recordingError = session_.recordingWarning;
+      session_.recordingStatus = "warning";
+    }
     // Each ISO writer finalizes INDEPENDENTLY (its own moov) so a source that
     // dropped mid-show still leaves a playable file, no 0-byte tails (spec §4).
     for (auto& iso : isoWriters_) {
-      iso.writer.finalize();
+      std::string isoFinalizeError;
+      if (!iso.writer.finalize(&isoFinalizeError)) {
+        iso.failed = true;
+        iso.warning = "ISO writer did not finalize for " + iso.displayName + " (" + iso.sourceId +
+                      "): " + isoFinalizeError + ".";
+        raiseIsoWarning(iso.warning);
+      }
     }
     // Refresh the on-disk sizes into the ISO status before clearing.
     refreshIsoStreams();
@@ -1303,9 +1454,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingWarning = message + ": " + detail + ".";
     session_.recordingError = session_.recordingWarning;
     session_.recordingStatus = "warning";
-    program_.finalize();
+    (void)program_.finalize();
     for (auto& iso : isoWriters_) {
-      iso.writer.finalize();
+      (void)iso.writer.finalize();
     }
     isoWriters_.clear();
     isoIndexBySource_.clear();
@@ -1322,6 +1473,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     Mp4Writer writer;
     bool opened = false;
     bool failed = false;
+    IsoEncoderPath encoderPath = IsoEncoderPath::Software;
+    std::string encoderReason = "hardware-unavailable";
     bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
     int64_t videoFrameCount = 0;
     std::string warning;
@@ -1336,11 +1489,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   std::map<std::string, size_t> isoIndexBySource_;
   std::filesystem::path sessionDir_;
   bool sessionDirActive_ = false;
-  // Shared-epoch A/V PTS clock (spec 4.3) + the steady-clock origin its 100ns
-  // tick count is measured from. One clock serves program + ISO writers (they
-  // mux the same frames on the same timeline).
+  // Shared-epoch A/V PTS clock (spec 4.3). One clock serves program + ISO
+  // writers (they mux the same frames on the same timeline).
   RecordingPtsClock recordingClock_;
-  std::chrono::steady_clock::time_point clockOrigin_ = std::chrono::steady_clock::now();
   bool comInitialized_ = false;
   // Has this session ever muxed a FULL-RESOLUTION program frame? Once it has,
   // never fall back to the 320x180 preview (see submit): a mid-file geometry

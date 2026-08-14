@@ -23,14 +23,14 @@ public sealed class ZoomAudioModePreferenceTests
     }
 
     [Fact]
-    public void Parse_FallsBackToProgramMixForAnythingUnrecognized()
+    public void Parse_FallsBackToPerGuestIsoForAnythingUnrecognized()
     {
-        // THE safety property: an absent (v8 file), empty, or corrupted value must
-        // land on the long-standing Z1 topology, never throw and never guess ISO.
-        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse(null));
-        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse(""));
-        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse("   "));
-        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse("chaos"));
+        // v10 product default: ISO stems are independently controllable and
+        // automatically reach Program L/R unless programMix is explicit.
+        Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(null));
+        Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(""));
+        Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse("   "));
+        Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse("chaos"));
     }
 
     [Fact]

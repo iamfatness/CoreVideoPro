@@ -43,7 +43,11 @@ public sealed class ProductionOutputPreferences
     // (9 < 8 is false), and on its next save rewrites Version: 8 with the field
     // dropped. Returning to a v9 build then reads the field absent -> programMix.
     // That is the safe direction, so no downgrade guard is needed.
-    public const int CurrentVersion = 9;
+    // v10 (2026-08-14): per-guest ISO is now the product default. Existing
+    // profiles migrate once from programMix so Zoom ISO sources automatically
+    // reach MASTER + Program L/R through their own faders. The operator can
+    // still explicitly select Zoom program mix after migration.
+    public const int CurrentVersion = 10;
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -138,10 +142,10 @@ public sealed class ProductionOutputPreferences
     // capture: ids are stable across sessions. Not secret-bearing.
     public List<string> IsoRecordingSourceIds { get; set; } = [];
 
-    // v9: the operator's Zoom→program audio topology. Null/absent/unrecognized =
-    // "programMix". Read and written ONLY through ZoomAudioModePreference so the
+    // v10: the operator's Zoom→program audio topology. Null/absent/unrecognized =
+    // "perGuestIso". Read and written ONLY through ZoomAudioModePreference so the
     // wire strings are spelled in exactly one place.
-    public string? ZoomAudioMode { get; set; }
+    public string? ZoomAudioMode { get; set; } = ZoomAudioModePreference.PerGuestIsoValue;
 
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops
@@ -308,6 +312,15 @@ public static class ProductionOutputPreferencesSerializer
             if (preferences.Version < 3)
             {
                 preferences.LocalAudioSourceEnabled = false;
+            }
+
+            if (preferences.Version < 10)
+            {
+                // Product-default migration: old profiles wrote programMix even
+                // when the operator never made a topology choice. Move them once
+                // to independently routed ISO stems; a later explicit switch back
+                // to programMix persists at v10 and is not touched again.
+                preferences.ZoomAudioMode = ZoomAudioModePreference.PerGuestIsoValue;
             }
 
             if (preferences.Version < ProductionOutputPreferences.CurrentVersion)

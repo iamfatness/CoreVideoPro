@@ -29,6 +29,30 @@
 // engine-reported truth instead of assuming the stop_media command worked.
 #define IPC_EVT_RAW_MEDIA_STATUS "raw_media_status"
 
+// Match the JSON command value, not an arbitrary substring. In particular,
+// "unsubscribe" contains "subscribe"; substring dispatch left Windows audio
+// targets alive across participant removal and rejoin.
+inline bool ipc_command_is(const std::string &line, const char *command)
+{
+    if (!command) return false;
+    const auto key = line.find("\"cmd\"");
+    if (key == std::string::npos) return false;
+    auto value = line.find(':', key + 5);
+    if (value == std::string::npos) return false;
+    ++value;
+    while (value < line.size() &&
+           (line[value] == ' ' || line[value] == '\t' ||
+            line[value] == '\r' || line[value] == '\n')) {
+        ++value;
+    }
+    if (value >= line.size() || line[value] != '"') return false;
+    ++value;
+    const std::string expected(command);
+    return line.compare(value, expected.size(), expected) == 0 &&
+           value + expected.size() < line.size() &&
+           line[value + expected.size()] == '"';
+}
+
 // Shared-memory name prefix (no leading slash — added per-platform below)
 #define IPC_SHM_PREFIX "ZoomObsPlugin_"
 

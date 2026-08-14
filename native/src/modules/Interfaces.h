@@ -75,6 +75,10 @@ struct IsoSourceVideoFrame {
   std::string sourceId;
   std::string displayName;
   VideoFrame frame;
+  // Submission time in the same steady-clock/100ns domain as ProgramFrame and
+  // IsoSourceAudio. The async writer must stamp media from capture/submission
+  // time, never from however long this source waited behind other ISO encoders.
+  int64_t timelineTimestamp100ns = 0;
 };
 
 // One selected ISO source's RAW-STEM audio for a single encoder tick (ISO-2).
@@ -92,6 +96,12 @@ struct IsoSourceAudio {
   int frameCount = 0;
   int channels = 0;
   int sampleRate = 48000;
+  // Capture/submission time on std::chrono::steady_clock, expressed as 100ns
+  // ticks since that clock's epoch. The encoder is asynchronous: using the
+  // writer-thread processing time turns queue latency into muxed silence and
+  // makes ISO files longer than Program under multi-encoder load. Zero is
+  // accepted for direct/test callers and makes the sink sample its clock.
+  int64_t timelineTimestamp100ns = 0;
 };
 
 struct AudioFrame {
@@ -246,6 +256,11 @@ struct ProgramFrame {
   ProgramFrameSharedTexture previewSharedTexture;
   int previewWidth = 0;
   int previewHeight = 0;
+  // Submission time on std::chrono::steady_clock, expressed as 100ns ticks.
+  // Kept at the tail to preserve existing positional aggregate initializers.
+  // Recording sinks use it instead of writer-thread time so encoder/disk queue
+  // latency cannot stretch the Program video timeline away from audio.
+  int64_t timelineTimestamp100ns = 0;
 };
 
 struct CompositorLayerRect {
@@ -335,6 +350,10 @@ struct CompositorRenderPlanLayer {
   std::string mediaAssetPath;
   std::string mediaPlaybackKey;
   bool mediaAssetPlaying = false;
+  // Backgrounds are continuous show elements; stingers/clips remain one-shot.
+  // Kept on the shared render layer so SuperSource and Tiles use the same
+  // playback contract rather than inventing independent loop controls.
+  bool mediaAssetLoop = false;
   bool hasColorGrade = false;
   CompositorColorGrade colorGrade;
   // Keying is per-LAYER, not per-participant: the same camera can be keyed in
@@ -386,6 +405,8 @@ struct IsoStreamStatus {
   int64_t audioSampleCount = 0;  // 0 until ISO-2 muxes per-source audio
   int64_t bytesWritten = 0;
   bool trackOpen = false;        // the writer opened + began writing its video track
+  std::string encoderPath;       // "hardware" or "software" placement for this ISO
+  std::string fallbackReason;    // e.g. hardware-capacity-exhausted
   std::string warning;           // per-source open/write failure (empty = healthy)
 };
 
@@ -413,6 +434,7 @@ struct OutputSession {
   std::string recordingQuality;
   std::string recordingArtifactPath;
   int64_t recordingBytesWritten = 0;
+  int64_t recordingProgramBytesWritten = 0;
   int64_t recordingDurationMs = 0;
   int64_t recordingVideoFrameCount = 0;
   int64_t recordingLastFrameNumber = 0;
@@ -430,6 +452,11 @@ struct OutputSession {
   bool recordingMetadataValid = false;
   std::string recordingWarning;
   std::string recordingError;
+  // Truth from the async writer queue. These are cumulative for the encoder
+  // session and let the UI/support bundle surface back-pressure that was
+  // previously visible only in stderr logs.
+  int64_t encoderQueueDroppedVideoFrames = 0;
+  int64_t encoderQueueDroppedAudioPackets = 0;
 };
 
 // One selected ISO source at recording start: the canonical id + the roster

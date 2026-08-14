@@ -21,7 +21,17 @@ public sealed class HttpControlRouterTests
     [Fact]
     public async Task Get_State_ReturnsCamelCaseState()
     {
-        var surface = new FakeControlSurface { State = ControlState.Empty with { Recording = true, ActiveSceneId = "interview" } };
+        var surface = new FakeControlSurface
+        {
+            State = ControlState.Empty with
+            {
+                Recording = true,
+                ActiveSceneId = "interview",
+                ZoomAudioMode = "perGuestIso",
+                ProgramTruePeakDbfs = -8.5,
+                AudioSources = [new ControlAudioSourceState("zoom:p-1", "Host", 82, -6.2, -18.4, false, "native-pcm")]
+            }
+        };
         var router = new HttpControlRouter(surface);
 
         var response = await router.HandleAsync("GET", "/state", null);
@@ -30,6 +40,11 @@ public sealed class HttpControlRouterTests
         using var doc = JsonDocument.Parse(response.Body);
         Assert.True(doc.RootElement.GetProperty("recording").GetBoolean());
         Assert.Equal("interview", doc.RootElement.GetProperty("activeSceneId").GetString());
+        Assert.Equal("perGuestIso", doc.RootElement.GetProperty("zoomAudioMode").GetString());
+        Assert.Equal(-8.5, doc.RootElement.GetProperty("programTruePeakDbfs").GetDouble());
+        var source = Assert.Single(doc.RootElement.GetProperty("audioSources").EnumerateArray());
+        Assert.Equal("zoom:p-1", source.GetProperty("sourceId").GetString());
+        Assert.Equal(-6.2, source.GetProperty("peakDbfs").GetDouble());
     }
 
     [Fact]

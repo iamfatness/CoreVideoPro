@@ -8,6 +8,21 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class MediaCoreSupervisorCrashEventTests
 {
     [Fact]
+    public void ChildProcessEncoding_DoesNotEmitUtf8Bom()
+    {
+        Assert.Empty(MediaCoreSupervisor.ChildProcessEncoding.GetPreamble());
+    }
+
+    [Fact]
+    public void ZoomRecoveryDefaults_AllowSdkTeardownCooldownAndBoundedRetries()
+    {
+        var options = new MediaCoreSupervisorOptions();
+
+        Assert.Equal(3, options.ZoomRecoveryMaxAttempts);
+        Assert.Equal(2500, options.ZoomRecoveryRetryDelayMs);
+    }
+
+    [Fact]
     public async Task ChildExit_IsCapturedAsCrashEventOnHealth()
     {
         // Spawn a child that exits immediately with a known code. MaxRestarts = 0 so

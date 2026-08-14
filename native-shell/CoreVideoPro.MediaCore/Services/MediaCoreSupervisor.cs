@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using CoreVideoPro.MediaCore.Json;
@@ -15,6 +16,8 @@ public sealed class MediaCoreSupervisorOptions
     public int RequestTimeoutMs { get; init; } = 4000;
     public int HandshakeRequestTimeoutMs { get; init; } = 15000;
     public int ZoomJoinRequestTimeoutMs { get; init; } = 60000;
+    public int ZoomRecoveryMaxAttempts { get; init; } = 3;
+    public int ZoomRecoveryRetryDelayMs { get; init; } = 2500;
     public int MaxRestarts { get; init; } = 5;
     // Phase 2 / Increment 1: the "frame drain" ping is a pure liveness heartbeat —
     // video/preview/texture frames pump autonomously on the core's own threads
@@ -27,6 +30,9 @@ public sealed class MediaCoreSupervisorOptions
 
 public sealed class MediaCoreSupervisor : IAsyncDisposable
 {
+    internal static Encoding ChildProcessEncoding { get; } =
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     private readonly object _gate = new();
     private readonly SemaphoreSlim _stdinGate = new(1, 1);
     private readonly MediaCoreSupervisorOptions _options;
@@ -42,15 +48,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private static void PerfLog(string message)
     {
-        try
-        {
-            System.IO.File.AppendAllText(
-                System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "CoreVideoPro", "perf.log"),
-                $"[{DateTimeOffset.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
-        }
-        catch { }
+        BoundedLogFile.Append(
+            System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CoreVideoPro", "perf.log"),
+            $"[{DateTimeOffset.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
     }
     private int _nextId;
     private int _restarts;
@@ -61,6 +63,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private bool _syncInFlight;
     private int _syncFrameNumber;
     private NativeMediaCoreProfile? _profile;
+    private Dictionary<string, object?>? _zoomJoinRecoveryPayload;
+    private bool _zoomRawCapturePaused;
 
     public MediaCoreSupervisor(MediaCoreSupervisorOptions? options = null)
     {
@@ -70,6 +74,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<MediaCoreHealth>? HealthChanged;
     public event Action<string>? StatusChanged;
     public event Action<NativeMediaCoreProfile>? ProfileChanged;
+    public event Action<RawCaptureSnapshot>? ZoomRecovered;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
@@ -144,6 +149,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         {
             _stopped = true;
             _recovering = false;
+            _zoomJoinRecoveryPayload = null;
+            _zoomRawCapturePaused = false;
             StopFrameDrain();
             TeardownChild();
             _profile = null;
@@ -376,6 +383,19 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             var snapshot = CoreProtocolParser.TryParseCaptureSnapshot(response, "zoom-join");
             if (snapshot is not null)
             {
+                if (ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState) == "in_meeting")
+                {
+                    lock (_gate)
+                    {
+                        _zoomJoinRecoveryPayload = new Dictionary<string, object?>(payload, StringComparer.Ordinal);
+                        // A successful join can precede Zoom granting raw-recording
+                        // privilege by a few hundred milliseconds. That transient
+                        // false is not an operator pause; only StopZoomCaptureAsync
+                        // is allowed to set the recovery pause intent.
+                        _zoomRawCapturePaused = false;
+                    }
+                }
+
                 return snapshot;
             }
 
@@ -386,6 +406,14 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     public async Task<RawCaptureSnapshot> LeaveZoomAsync(CancellationToken cancellationToken = default)
     {
+        // Clear the recovery intent before sending the leave. If the core dies during
+        // this request, the operator's explicit leave must win over auto-rejoin.
+        lock (_gate)
+        {
+            _zoomJoinRecoveryPayload = null;
+            _zoomRawCapturePaused = false;
+        }
+
         var response = await SendAsync(
             new Dictionary<string, object?>
             {
@@ -429,6 +457,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             var snapshot = CoreProtocolParser.TryParseCaptureSnapshot(response, "zoom-stop-capture");
             if (snapshot is not null)
             {
+                lock (_gate)
+                {
+                    _zoomRawCapturePaused = snapshot.RawMediaActive != true;
+                }
+
                 return snapshot;
             }
 
@@ -769,6 +802,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private void SpawnChild()
     {
+        // A profile identifies one native-core generation. Keeping the old value
+        // makes HandshakeAsync return before the replacement process is ready and
+        // lets recovery traffic race its bootstrap handshake.
+        _profile = null;
+
         string fileName;
         string arguments;
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -816,6 +854,9 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardInputEncoding = ChildProcessEncoding,
+            StandardOutputEncoding = ChildProcessEncoding,
+            StandardErrorEncoding = ChildProcessEncoding,
             CreateNoWindow = true
         };
 
@@ -871,7 +912,6 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         _frameDispatch?.Writer.TryWrite(action);
     }
 
-    private static readonly object CoreLogGate = new();
     private static string? _coreLogPath;
 
     private static void WriteCoreLog(string line)
@@ -882,16 +922,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
                 "CoreVideoPro",
                 "media-core.log");
-            var dir = System.IO.Path.GetDirectoryName(_coreLogPath);
-            if (!string.IsNullOrEmpty(dir))
-            {
-                System.IO.Directory.CreateDirectory(dir);
-            }
             var stamped = $"[{System.DateTimeOffset.Now:O}] {line}{System.Environment.NewLine}";
-            lock (CoreLogGate)
-            {
-                System.IO.File.AppendAllText(_coreLogPath, stamped);
-            }
+            BoundedLogFile.Append(_coreLogPath, stamped);
         }
         catch
         {
@@ -1097,7 +1129,103 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             SpawnChild();
         }
 
-        _ = HandshakeAsync(CancellationToken.None);
+        _ = RecoverChildAsync();
+    }
+
+    private async Task RecoverChildAsync()
+    {
+        try
+        {
+            await EnsureHandshakeProfileAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Dictionary<string, object?>? joinPayload;
+            bool rawCapturePaused;
+            lock (_gate)
+            {
+                joinPayload = _zoomJoinRecoveryPayload is null
+                    ? null
+                    : new Dictionary<string, object?>(_zoomJoinRecoveryPayload, StringComparer.Ordinal);
+                rawCapturePaused = _zoomRawCapturePaused;
+            }
+
+            if (joinPayload is null)
+            {
+                StatusChanged?.Invoke("Media core recovered");
+                return;
+            }
+
+            var maxAttempts = Math.Max(1, _options.ZoomRecoveryMaxAttempts);
+            RawCaptureSnapshot? snapshot = null;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                if (attempt > 1)
+                {
+                    var delayMs = Math.Max(0, _options.ZoomRecoveryRetryDelayMs);
+                    StatusChanged?.Invoke($"Media core recovered — Zoom rejoin retry {attempt}/{maxAttempts}…");
+                    WriteCoreLog($"[bridge] Zoom recovery retry {attempt}/{maxAttempts} after {delayMs}ms SDK teardown cooldown");
+                    await Task.Delay(delayMs, CancellationToken.None).ConfigureAwait(false);
+                }
+                else
+                {
+                    StatusChanged?.Invoke("Media core recovered — rejoining Zoom…");
+                }
+
+                var response = await SendAsync(
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = NextId(),
+                        ["type"] = "zoom-join",
+                        ["payload"] = joinPayload
+                    },
+                    CancellationToken.None,
+                    _options.ZoomJoinRequestTimeoutMs).ConfigureAwait(false);
+
+                using (response)
+                {
+                    snapshot = CoreProtocolParser.TryParseCaptureSnapshot(response, "zoom-join")
+                        ?? throw new InvalidOperationException(
+                            CoreProtocolParser.DescribeUnexpectedCaptureResponse(response, "zoom-join"));
+                }
+
+                if (ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState) == "in_meeting")
+                {
+                    break;
+                }
+
+                WriteCoreLog($"[bridge] Zoom recovery attempt {attempt}/{maxAttempts} returned meeting state '{snapshot.MeetingState}'");
+            }
+
+            if (snapshot is null || ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState) != "in_meeting")
+            {
+                throw new InvalidOperationException($"Zoom recovery returned meeting state '{snapshot?.MeetingState ?? "unknown"}' after {maxAttempts} attempts.");
+            }
+
+            if (rawCapturePaused)
+            {
+                var stopResponse = await SendAsync(
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = NextId(),
+                        ["type"] = "zoom-stop-capture"
+                    },
+                    CancellationToken.None).ConfigureAwait(false);
+                using (stopResponse)
+                {
+                    snapshot = CoreProtocolParser.TryParseCaptureSnapshot(stopResponse, "zoom-stop-capture")
+                        ?? snapshot;
+                }
+            }
+
+            ZoomRecovered?.Invoke(snapshot);
+            StatusChanged?.Invoke(rawCapturePaused
+                ? "Media core and Zoom recovered — capture remains paused"
+                : "Media core and Zoom recovered");
+        }
+        catch (Exception ex)
+        {
+            WriteCoreLog($"[bridge] recovery failed: {ex.GetType().Name}: {ex.Message}");
+            StatusChanged?.Invoke($"Media core recovered, but Zoom rejoin failed: {ex.Message}");
+        }
     }
 
     private async Task<NativeMediaCoreProfile?> EnsureHandshakeProfileAsync(CancellationToken cancellationToken)

@@ -181,6 +181,50 @@ public sealed class ZoomOAuthServiceTests
         Assert.Null(await store.LoadAsync());
     }
 
+    [Fact]
+    public async Task EnsureJoinCredentials_ClearsRotatedRefreshTokenOnInvalidGrant()
+    {
+        var store = new MemoryZoomTokenStore();
+        await store.SaveAsync(new ZoomOAuthTokens
+        {
+            AccessToken = "expired-access",
+            RefreshToken = "rotated-refresh",
+            ExpiresAt = 500
+        });
+
+        var handler = new StubHttpHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/oauth/refresh", StringComparison.Ordinal) == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent(
+                        """{"error":"invalid_grant","reason":"Invalid refresh token."}""",
+                        Encoding.UTF8,
+                        "application/json")
+                };
+            }
+
+            throw new InvalidOperationException($"Unexpected request {request.RequestUri}");
+        });
+
+        var service = new ZoomOAuthService(
+            store,
+            new ZoomOAuthManifest
+            {
+                BrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start",
+                BrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback",
+                RedirectUri = "corevideo://oauth/callback"
+            },
+            new HttpClient(handler),
+            nowSeconds: () => 1_000);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.EnsureJoinCredentialsAsync());
+        Assert.Contains("Sign in again", error.Message, StringComparison.Ordinal);
+        Assert.Null(await store.LoadAsync());
+        Assert.False((await service.GetStatusAsync()).SignedIn);
+    }
+
     private sealed class MemoryZoomTokenStore : IZoomTokenStore
     {
         private ZoomOAuthTokens? _tokens;

@@ -158,6 +158,7 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
     ++pollCount;
     seenPlaybackKeys.clear();
     seenSourceIds.clear();
+    seenLoops.clear();
     std::vector<corevideo::modules::VideoFrame> frames;
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
@@ -165,6 +166,7 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
       }
       seenPlaybackKeys.push_back(layer.mediaPlaybackKey);
       seenSourceIds.push_back(layer.sourceId);
+      seenLoops.push_back(layer.mediaAssetLoop);
       corevideo::modules::VideoFrame frame;
       frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
       frame.width = kWidth;
@@ -231,6 +233,7 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
   int64_t audioPollCount = 0;
   std::vector<std::string> seenPlaybackKeys;
   std::vector<std::string> seenSourceIds;
+  std::vector<bool> seenLoops;
 };
 
 class CapturingOutputSender final : public corevideo::modules::IOutputSender {
@@ -1351,6 +1354,18 @@ TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
 #endif
 }
 
+TEST(MediaCoreCommand, PublishesCumulativeRenderDeadlineMissesToCompositorTelemetry) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.reportRenderDeadlineMisses(1499);
+  mediaCore.reportRenderDeadlineMisses(3);
+
+  const auto state = mediaCore.sessionState();
+  const auto* compositor = state.get("compositor");
+  ASSERT_NE(compositor, nullptr);
+  EXPECT_EQ(compositor->get("droppedFrameCount")->asNumber(), 1502);
+  EXPECT_EQ(state.get("health")->get("renderDeadlineMisses")->asNumber(), 1502);
+}
+
 TEST(MediaCoreCommand, SessionAndHealthExposeZoomReadinessEvidenceWithoutSdk) {
   corevideo::core::MediaCore mediaCore;
 
@@ -1717,6 +1732,33 @@ TEST(MediaCoreCommand, AudioMixSessionUsesRealPcmMetersForSyncedChannels) {
   EXPECT_TRUE(participant->get("peakDbfs")->asNumber() > -10.0);
 }
 
+TEST(MediaCoreCommand, MutedPcmChannelPublishesSilentOutputMeters) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"channels",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"participantId", "pcm-speaker"},
+               {"inputLevel", 0},
+               {"muted", true},
+           },
+       }},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  const auto* participant = findParticipantMix(*mix, "pcm-speaker");
+  ASSERT_NE(participant, nullptr);
+  EXPECT_TRUE(participant->get("muted")->asBool());
+  EXPECT_EQ(participant->get("outputLevel")->asNumber(), 0);
+  EXPECT_EQ(participant->get("rmsDbfs")->asNumber(), -120.0);
+  EXPECT_EQ(participant->get("peakDbfs")->asNumber(), -120.0);
+}
+
 TEST(AudioDsp, BoundsFramesAndTracksInternalBridgeFaultMetrics) {
   corevideo::modules::AudioFrame frame;
   frame.participantId = "host";
@@ -1881,7 +1923,9 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
   ASSERT_NE(proof, nullptr);
   EXPECT_GE(proof->get("durationMs")->asNumber(), 16);
   EXPECT_GE(proof->get("programFrameCount")->asNumber(), 1);
-  EXPECT_GE(proof->get("isoFrameCount")->asNumber(), 1);
+  // The stub has no per-ISO writer telemetry. Unknown must remain zero instead
+  // of cloning Program's count into a stem that may not exist.
+  EXPECT_EQ(proof->get("isoFrameCount")->asNumber(), 0);
   EXPECT_GE(proof->get("audioPacketsObserved")->asNumber(), 1);
   EXPECT_TRUE(proof->get("audioPresent")->asBool());
   EXPECT_TRUE(proof->get("metadataValid")->asBool());
@@ -1895,6 +1939,7 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
   const auto& programStream = recording->get("streams")->asArray()[0];
   EXPECT_GE(programStream.get("durationMs")->asNumber(), 16);
   EXPECT_TRUE(programStream.get("hasAudio")->asBool());
+  EXPECT_GE(programStream.get("audioSamples")->asNumber(), 1);
   EXPECT_TRUE(programStream.get("metadataValid")->asBool());
 }
 
@@ -3878,6 +3923,9 @@ TEST(MediaCoreCommand, KeepsSceneBackgroundAndProgramMediaRouteFrameSourcesDisti
   ASSERT_TRUE(mediaFramesPtr->seenPlaybackKeys.size() == 2u);
   EXPECT_TRUE(mediaFramesPtr->seenPlaybackKeys[0].empty());
   EXPECT_EQ(mediaFramesPtr->seenPlaybackKeys[1], "program-take:8:media:clip-intro");
+  ASSERT_TRUE(mediaFramesPtr->seenLoops.size() == 2u);
+  EXPECT_TRUE(mediaFramesPtr->seenLoops[0]);
+  EXPECT_FALSE(mediaFramesPtr->seenLoops[1]);
 
   const auto previews = mediaCore.drainProgramFramePreviewEvents();
   ASSERT_FALSE(previews.empty());

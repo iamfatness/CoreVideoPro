@@ -3,7 +3,48 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <wrl/client.h>
+#endif
+
+namespace {
+
+std::size_t fileAsciiCount(const std::filesystem::path& path, const std::string& token) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return 0;
+  }
+  const std::string bytes((std::istreambuf_iterator<char>(input)),
+                          std::istreambuf_iterator<char>());
+  std::size_t count = 0;
+  for (std::size_t offset = 0; (offset = bytes.find(token, offset)) != std::string::npos;
+       offset += token.size()) {
+    ++count;
+  }
+  return count;
+}
+
+bool fileContainsAscii(const std::filesystem::path& path, const std::string& token) {
+  return fileAsciiCount(path, token) > 0;
+}
+
+}  // namespace
 
 TEST(EncoderRecordingSession, StubTracksRequestedProfilePathAndFramesDeterministically) {
   auto encoder = corevideo::modules::createStubRecordingEncoderSink();
@@ -694,6 +735,110 @@ TEST(EncoderRecordingSession, MediaFoundationProgramRecordingMuxesNv12ProgramTap
   fs::remove_all(targetDir, cleanupError);
 }
 
+TEST(EncoderRecordingSession, MediaFoundationFragmentedMp4SurvivesAbruptProcessExit) {
+#if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
+  namespace fs = std::filesystem;
+  constexpr const char* kChildEnv = "COREVIDEO_FMP4_CRASH_CHILD";
+  constexpr const char* kTargetEnv = "COREVIDEO_FMP4_CRASH_TARGET";
+  const char* childMode = std::getenv(kChildEnv);
+  if (childMode != nullptr && std::string(childMode) == "1") {
+    const char* target = std::getenv(kTargetEnv);
+    if (target == nullptr || *target == '\0') {
+      ::TerminateProcess(::GetCurrentProcess(), 78);
+    }
+    auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+    if (!encoder) {
+      ::TerminateProcess(::GetCurrentProcess(), 77);
+    }
+    corevideo::modules::RecordingSessionRequest request;
+    request.sessionId = "fmp4-crash-child";
+    request.targetFolder = target;
+    request.filenamePrefix = "crash-safe";
+    request.format = "mp4";
+    request.width = 320;
+    request.height = 180;
+    request.fps = 30;
+    request.videoCodec = "h264";
+    request.audioCodec = "aac";
+    request.audioBitrateKbps = 96;
+    request.targetBitrateMbps = 2;
+    encoder->configureRecording(request);
+    encoder->start({"recording"}, {});
+
+    corevideo::modules::ProgramFrame frame;
+    frame.width = 320;
+    frame.height = 180;
+    frame.preview.width = 320;
+    frame.preview.height = 180;
+    frame.preview.bgra.assign(320u * 180u * 4u, 0x50);
+    std::vector<float> pcm(1600u * 2u, 0.1f);
+    for (int i = 0; i < 120; ++i) {
+      frame.frameNumber = i + 1;
+      encoder->submit(frame);
+      encoder->submitAudio(pcm.data(), 1600, 2, 48000);
+      std::this_thread::sleep_for(std::chrono::milliseconds(34));
+    }
+    // Deliberately skip stopRecording and every destructor/finalizer.
+    ::TerminateProcess(::GetCurrentProcess(), 99);
+  }
+
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-fmp4-crash-" + std::to_string(::GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+  fs::create_directories(targetDir, ec);
+  ASSERT_FALSE(ec);
+
+  char modulePath[MAX_PATH] = {};
+  ASSERT_TRUE(::GetModuleFileNameA(nullptr, modulePath, MAX_PATH) > 0);
+  ASSERT_TRUE(::SetEnvironmentVariableA(kChildEnv, "1") != FALSE);
+  ASSERT_TRUE(::SetEnvironmentVariableA(kTargetEnv, targetDir.string().c_str()) != FALSE);
+  std::string command = std::string("\"") + modulePath +
+      "\" --gtest_filter=EncoderRecordingSession.MediaFoundationFragmentedMp4SurvivesAbruptProcessExit";
+  std::vector<char> mutableCommand(command.begin(), command.end());
+  mutableCommand.push_back('\0');
+  STARTUPINFOA startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  const BOOL created = ::CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
+                                        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+  (void)::SetEnvironmentVariableA(kChildEnv, nullptr);
+  (void)::SetEnvironmentVariableA(kTargetEnv, nullptr);
+  ASSERT_TRUE(created != FALSE);
+  ASSERT_EQ(::WaitForSingleObject(process.hProcess, 15'000), WAIT_OBJECT_0);
+  DWORD childExit = 0;
+  ASSERT_TRUE(::GetExitCodeProcess(process.hProcess, &childExit) != FALSE);
+  ::CloseHandle(process.hThread);
+  ::CloseHandle(process.hProcess);
+  ASSERT_EQ(childExit, 99u);
+
+  fs::path programPath;
+  for (const auto& entry : fs::recursive_directory_iterator(targetDir)) {
+    if (entry.is_regular_file() && entry.path().filename() == "Program.mp4") {
+      programPath = entry.path();
+      break;
+    }
+  }
+  ASSERT_FALSE(programPath.empty());
+  EXPECT_GT(fs::file_size(programPath, ec), 1024u);
+  EXPECT_TRUE(fileContainsAscii(programPath, "moov"));
+  EXPECT_GE(fileAsciiCount(programPath, "moof"), 2u);
+  ASSERT_TRUE(SUCCEEDED(MFStartup(MF_VERSION)));
+  Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+  const HRESULT openResult = MFCreateSourceReaderFromURL(
+      programPath.wstring().c_str(), nullptr, &reader);
+  EXPECT_TRUE(SUCCEEDED(openResult));
+  if (SUCCEEDED(openResult)) {
+    Microsoft::WRL::ComPtr<IMFMediaType> videoType;
+    EXPECT_TRUE(SUCCEEDED(reader->GetNativeMediaType(
+        MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &videoType)));
+  }
+  reader.Reset();
+  (void)MFShutdown();
+  fs::remove_all(targetDir, ec);
+#endif
+}
+
 namespace {
 // Build a VideoFrame carrying a synthetic I420 payload (a flat mid-gray field),
 // keyed by `sourceId`/`frameId` — the shape the ISO gather hands to the encoder.
@@ -796,6 +941,10 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayabl
   EXPECT_TRUE(fs::exists(dir / "manifest.json"));
   EXPECT_GT(fs::file_size(dir / "ISO-01-Alice.mp4", ec), 0u);
   EXPECT_GT(fs::file_size(dir / "ISO-02-Bob-Jones.mp4", ec), 0u);
+  EXPECT_TRUE(fileContainsAscii(dir / "Program.mp4", "moof"));
+  EXPECT_TRUE(fileContainsAscii(dir / "ISO-01-Alice.mp4", "moof"));
+  EXPECT_TRUE(fileContainsAscii(dir / "manifest.json", "\"containerMode\": \"fragmented-mp4\""));
+  EXPECT_TRUE(fileContainsAscii(dir / "manifest.json", "\"crashSafe\": true"));
   EXPECT_FALSE(session.recordingManifestPath.empty());
 
   encoder.reset();
@@ -945,6 +1094,105 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
   EXPECT_TRUE(fs::exists(bPath));
   EXPECT_GT(fs::file_size(aPath, ec), 0u);
   EXPECT_GT(fs::file_size(bPath, ec), 0u);
+
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+// Live-meeting regression: Program plus eight Zoom ISO A/V writers must arm at
+// the same time. This is the production shape that exposed Media Foundation's
+// finite hardware-encoder capacity: creating every Sink Writer with hardware
+// transforms enabled left the ISO files at zero bytes when the GPU budget was
+// already consumed. Auto placement must keep every stem alive by spilling the
+// overflow to the software H.264 transform.
+TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCapacity) {
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso8-capacity";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso8-capacity";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  for (int source = 0; source < 8; ++source) {
+    request.isoSources.push_back(
+        {"zoom:" + std::to_string(source + 1), "Guest " + std::to_string(source + 1), true});
+  }
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+  std::array<int64_t, 8> sourceFrames{};
+
+  for (int tick = 0; tick < 12; ++tick) {
+    frame.frameNumber = tick + 1;
+    encoder->submit(frame);
+
+    std::vector<corevideo::modules::IsoSourceVideoFrame> isoVideo;
+    std::vector<corevideo::modules::IsoSourceAudio> isoAudio;
+    isoVideo.reserve(8);
+    isoAudio.reserve(8);
+    for (int source = 0; source < 8; ++source) {
+      const std::string sourceId = "zoom:" + std::to_string(source + 1);
+      isoVideo.push_back(makeIsoI420(sourceId, 640, 360, tick,
+                                    static_cast<uint8_t>(40 + source * 20)));
+      isoAudio.push_back(makeIsoTone(sourceId, 960, 1, 180.0 + source * 40.0,
+                                     sourceFrames[static_cast<size_t>(source)]));
+      sourceFrames[static_cast<size_t>(source)] += 960;
+    }
+    encoder->submitIsoVideo(isoVideo);
+    encoder->submitAudio(programPcm.data(), 960, 2, 48000);
+    encoder->submitIsoAudio(isoAudio);
+  }
+
+  const auto session = encoder->session();
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  ASSERT_EQ(session.isoStreams.size(), 8u);
+  int hardwareIsoCount = 0;
+  int softwareIsoCount = 0;
+  for (const auto& iso : session.isoStreams) {
+    EXPECT_TRUE(iso.trackOpen) << iso.sourceId << ": " << iso.warning;
+    EXPECT_TRUE(iso.warning.empty()) << iso.sourceId << ": " << iso.warning;
+    EXPECT_GT(iso.videoFrameCount, 0) << iso.sourceId;
+    EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId;
+    hardwareIsoCount += iso.encoderPath == "hardware" ? 1 : 0;
+    softwareIsoCount += iso.encoderPath == "software" ? 1 : 0;
+  }
+  EXPECT_EQ(hardwareIsoCount, 7);
+  EXPECT_EQ(softwareIsoCount, 1);
+
+  encoder->stopRecording();
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path dir(session.recordingSessionDir);
+  for (int source = 0; source < 8; ++source) {
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "ISO-%02d-Guest-%d.mp4", source + 1, source + 1);
+    const auto path = dir / filename;
+    EXPECT_TRUE(fs::exists(path)) << path.string();
+    if (fs::exists(path)) {
+      EXPECT_GT(fs::file_size(path, ec), 0u) << path.string();
+    }
+  }
 
   encoder.reset();
   fs::remove_all(targetDir, ec);
@@ -1179,7 +1427,80 @@ class RequestCapturingSink final : public corevideo::modules::IEncoderSink {
  private:
   corevideo::modules::OutputSession session_;
 };
+
+class StartCountingEncoderSink final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    session_.recordingSessionId = request.sessionId;
+  }
+
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>& isoParticipantIds) override {
+    ++startCount;
+    session_.active = true;
+    session_.destinations = destinations;
+    session_.isoParticipantIds = isoParticipantIds;
+    const bool startsRecording =
+        std::find(destinations.begin(), destinations.end(), "recording") != destinations.end();
+    if (startsRecording) {
+      ++recordingStartCount;
+      session_.recordingStatus = "recording";
+    }
+    return session_;
+  }
+
+  void submit(const corevideo::modules::ProgramFrame&) override {}
+  corevideo::modules::OutputSession session() const override { return session_; }
+
+  int startCount = 0;
+  int recordingStartCount = 0;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
 }  // namespace
+
+TEST(EncoderRecordingSession, RepeatedProgramSyncDoesNotRestartActiveRecordingWriters) {
+  auto modules = corevideo::modules::createStubModules();
+  auto countingSink = std::make_unique<StartCountingEncoderSink>();
+  auto* encoder = countingSink.get();
+  modules.encoder = std::move(countingSink);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const corevideo::rpc::Json startProgram = corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"recording", "rtmp"}},
+      {"isoSourceIds", corevideo::rpc::Json::Array{"zoom:host", "zoom:guest"}},
+  };
+  const corevideo::rpc::Json setTargets = corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"},
+      {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+      {"filenamePrefix", "idempotent-show"},
+      {"format", "mp4"},
+      {"isoSourceIds", corevideo::rpc::Json::Array{"zoom:host", "zoom:guest"}},
+  };
+  const corevideo::rpc::Json startRecording = corevideo::rpc::Json::Object{
+      {"type", "start-recording-session"},
+      {"sessionId", "idempotent-show-host-guest"},
+      {"isoSourceIds", corevideo::rpc::Json::Array{"zoom:host", "zoom:guest"}},
+  };
+
+  (void)mediaCore.applyCommands(
+      corevideo::rpc::Json::Array{setTargets, startRecording, startProgram});
+  EXPECT_EQ(encoder->recordingStartCount, 1)
+      << "the initial output sync must not open a throwaway recording generation";
+
+  for (int sync = 0; sync < 20; ++sync) {
+    (void)mediaCore.applyCommands(
+        corevideo::rpc::Json::Array{setTargets, startRecording, startProgram});
+  }
+
+  EXPECT_EQ(encoder->recordingStartCount, 1)
+      << "scene/preview sync must leave the active Program and ISO writers untouched";
+  EXPECT_EQ(encoder->startCount, 1)
+      << "the recording writer generation also supplies the Program tap for outputs";
+  EXPECT_EQ(encoder->session().recordingSessionId, "idempotent-show-host-guest");
+}
 
 // ISO-3: MediaCore resolves each ISO source's display name AND its audio-pairing
 // decision. A Zoom participant always has audio; a capture device has audio ONLY
