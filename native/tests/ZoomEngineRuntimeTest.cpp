@@ -182,9 +182,9 @@ TEST(ZoomEngineRuntime, SenderThreadDeliversSpineCommandsInOrderWithDedup) {
     ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
     auto lines = fake->sentLines();
     ASSERT_EQ(lines.size(), 3u);
-    EXPECT_NE(lines[0].find("participant-video-101-active-speaker"), std::string::npos);
+    EXPECT_NE(lines[0].find("participant-video-101-camera"), std::string::npos);
     EXPECT_NE(lines[0].find("\"subscribe\""), std::string::npos);
-    EXPECT_NE(lines[1].find("participant-video-102-multiview"), std::string::npos);
+    EXPECT_NE(lines[1].find("participant-video-102-camera"), std::string::npos);
     EXPECT_NE(lines[2].find("participant-audio-103-mix"), std::string::npos);
     EXPECT_NE(lines[2].find("subscribe_audio"), std::string::npos);
 
@@ -205,7 +205,57 @@ TEST(ZoomEngineRuntime, SenderThreadDeliversSpineCommandsInOrderWithDedup) {
     lines = fake->sentLines();
     ASSERT_EQ(lines.size(), 4u);
     EXPECT_NE(lines[3].find("unsubscribe"), std::string::npos);
-    EXPECT_NE(lines[3].find("participant-video-102-multiview"), std::string::npos);
+    EXPECT_NE(lines[3].find("participant-video-102-camera"), std::string::npos);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, PreviewToProgramKeepsStableVideoSubscriptionIdentity) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+
+    EXPECT_FALSE(runtime.syncSpine(
+        spinePayload(corevideo::rpc::Json::Array{
+            subscriptionRequest("104", "participant-video", "preview"),
+        }), 0.0).isNull());
+    ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
+    auto lines = fake->sentLines();
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_NE(lines[0].find("participant-video-104-camera"), std::string::npos);
+
+    // Preview and Program use the same 720p tier. A Take only changes purpose,
+    // so the warmed subscription and its latest SHM frame stay in place.
+    EXPECT_FALSE(runtime.syncSpine(
+        spinePayload(corevideo::rpc::Json::Array{
+            subscriptionRequest("104", "participant-video", "program"),
+        }), 0.0).isNull());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(fake->sentLines().size(), 1u);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, MeetingMixUsesDedicatedNonIsolatedAudioSubscription) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+
+    const auto payload = spinePayload(corevideo::rpc::Json::Array{
+        subscriptionRequest("101", "meeting-audio", "program"),
+    });
+    EXPECT_FALSE(runtime.syncSpine(payload, 0.0).isNull());
+
+    ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
+    const auto lines = fake->sentLines();
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_NE(lines[0].find("meeting-audio-101-program"), std::string::npos);
+    EXPECT_NE(lines[0].find("subscribe_audio"), std::string::npos);
+    EXPECT_EQ(lines[0].find("isolate_audio"), std::string::npos);
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
@@ -250,8 +300,8 @@ TEST(ZoomEngineRuntime, SyncSpineNeverBlocksOnAWedgedEnginePipe) {
     fake->releaseBlockedSends();
     ASSERT_TRUE(fake->waitForSentLines(2, std::chrono::milliseconds(5000)));
     const auto lines = fake->sentLines();
-    EXPECT_NE(lines[0].find("participant-video-201-multiview"), std::string::npos);
-    EXPECT_NE(lines[1].find("participant-video-202-multiview"), std::string::npos);
+    EXPECT_NE(lines[0].find("participant-video-201-camera"), std::string::npos);
+    EXPECT_NE(lines[1].find("participant-video-202-camera"), std::string::npos);
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
@@ -286,8 +336,8 @@ TEST(ZoomEngineRuntime, ReplacingTheEngineProcessDropsQueuedLinesAndResubscribes
     EXPECT_FALSE(second.isNull());
     ASSERT_TRUE(fakeB->waitForSentLines(2, std::chrono::milliseconds(5000)));
     const auto lines = fakeB->sentLines();
-    EXPECT_NE(lines[0].find("participant-video-301-multiview"), std::string::npos);
-    EXPECT_NE(lines[1].find("participant-video-302-multiview"), std::string::npos);
+    EXPECT_NE(lines[0].find("participant-video-301-camera"), std::string::npos);
+    EXPECT_NE(lines[1].find("participant-video-302-camera"), std::string::npos);
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
@@ -410,7 +460,7 @@ TEST(ZoomEngineRuntime, StopCaptureSendsStopMediaAndRearmsSubscriptionsFromScrat
     ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
     lines = fake->sentLines();
     ASSERT_EQ(lines.size(), 3u);
-    EXPECT_NE(lines[2].find("participant-video-601-active-speaker"), std::string::npos);
+    EXPECT_NE(lines[2].find("participant-video-601-camera"), std::string::npos);
     EXPECT_NE(lines[2].find("\"subscribe\""), std::string::npos);
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
@@ -500,6 +550,63 @@ TEST(ZoomEngineRuntime, IngestsIsoAudioPcmFromSharedMemoryIntoCompositorPoll) {
   });
   ASSERT_TRUE(foundThird != third.end());
   EXPECT_EQ(foundThird->pcm.size(), 4u);
+
+  shm_region_destroy(region);
+}
+
+TEST(ZoomEngineRuntime, IngestsDedicatedMeetingMixPcmAsZoomMix) {
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  corevideo::modules::ZoomEngineRuntime runtime;
+
+  const std::string sourceUuid =
+      "meeting-audio-4242-program-cvp-test-" + std::to_string(
+#if defined(_WIN32)
+          static_cast<unsigned long>(::GetCurrentProcessId())
+#else
+          static_cast<unsigned long>(::getpid())
+#endif
+      );
+  const std::vector<std::int16_t> samples{8192, -8192, 16384, -16384};
+  const auto byteLength = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
+  ShmRegion region{};
+  ASSERT_TRUE(shm_region_create(
+      region,
+      corevideo::modules::zoomEngineAudioSharedMemoryName(sourceUuid),
+      corevideo::modules::zoomEngineAudioRingByteSize()));
+
+  auto* header = static_cast<ShmAudioRingHeader*>(region.ptr);
+  header->magic = kAudioRingMagic;
+  header->slot_count = kAudioRingSlots;
+  header->slot_payload = kAudioRingSlotPayload;
+  auto* slotBase = static_cast<char*>(region.ptr) + sizeof(ShmAudioRingHeader);
+  auto* slot = reinterpret_cast<ShmAudioRingSlot*>(slotBase);
+  slot->sample_rate = 48000;
+  slot->channels = 1;
+  slot->byte_len = byteLength;
+  std::memcpy(slotBase + sizeof(ShmAudioRingSlot), samples.data(), byteLength);
+  slot->seq = 2u;
+  header->write_counter = 1u;
+
+  corevideo::modules::ZoomEngineEvent event;
+  event.kind = corevideo::modules::ZoomEngineEventKind::Audio;
+  event.command = "audio";
+  event.sourceUuid = sourceUuid;
+  event.participantId = 4242;
+  event.byteLength = byteLength;
+  runtime.applyEngineEventForTest(event);
+
+  const auto frames = runtime.pollCompositorAudioFrames(100);
+  const auto found = std::find_if(frames.begin(), frames.end(), [](const corevideo::modules::AudioFrame& frame) {
+    return frame.participantId == "zoom-mix";
+  });
+  ASSERT_TRUE(found != frames.end());
+  EXPECT_EQ(found->sampleRate, 48000);
+  EXPECT_EQ(found->channels, 1);
+  ASSERT_EQ(found->pcm.size(), 4u);
+  EXPECT_EQ(found->pcm[0], 0.25f);
+  EXPECT_EQ(found->pcm[1], -0.25f);
+  EXPECT_EQ(found->pcm[2], 0.5f);
+  EXPECT_EQ(found->pcm[3], -0.5f);
 
   shm_region_destroy(region);
 }

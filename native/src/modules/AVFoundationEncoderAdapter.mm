@@ -399,7 +399,7 @@ class AvfMp4Writer {
 
 class AVFoundationEncoderSink final : public IEncoderSink {
  public:
-  AVFoundationEncoderSink() : origin_(std::chrono::steady_clock::now()) {
+  AVFoundationEncoderSink() {
     session_.encoderName = "videotoolbox";
     session_.codec = "h264";
     session_.hardwareAccelerated = true;
@@ -444,7 +444,9 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       if (!isI420 && !frame.hasPixels()) {
         continue;
       }
-      const auto pts = clock_.videoPtsForSource(now100ns(), source.sourceId, frame.frameId);
+      const int64_t timelineNow =
+          source.timelineTimestamp100ns > 0 ? source.timelineTimestamp100ns : now100ns();
+      const auto pts = clock_.videoPtsForSource(timelineNow, source.sourceId, frame.frameId);
       if (!pts) {
         continue;  // same frame resubmitted this tick
       }
@@ -500,8 +502,10 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       if (!entry.writer->audioConfigured()) {
         continue;  // video-only ISO (hasAudio=false): no fabricated stem
       }
+      const int64_t timelineNow =
+          source.timelineTimestamp100ns > 0 ? source.timelineTimestamp100ns : now100ns();
       const auto advance =
-          clock_.isoAudioAdvance(now100ns(), source.sourceId, source.frameCount, source.sampleRate);
+          clock_.isoAudioAdvance(timelineNow, source.sourceId, source.frameCount, source.sampleRate);
       std::string error;
       if (advance.silenceFrames > 0 &&
           !entry.writer->writeAudioSilence(advance.silenceFrames, advance.silencePts100ns, error)) {
@@ -533,7 +537,9 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     if (src.bgra.empty() || src.width <= 0 || src.height <= 0) {
       return;
     }
-    const auto pts = clock_.videoPts(now100ns(), frame.frameNumber);
+    const int64_t timelineNow =
+        frame.timelineTimestamp100ns > 0 ? frame.timelineTimestamp100ns : now100ns();
+    const auto pts = clock_.videoPts(timelineNow, frame.frameNumber);
     if (!pts) {
       return;  // duplicate frame
     }
@@ -718,7 +724,7 @@ class AVFoundationEncoderSink final : public IEncoderSink {
 
   int64_t now100ns() const {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now() - origin_)
+               std::chrono::steady_clock::now().time_since_epoch())
                .count() /
            100;
   }
@@ -738,7 +744,6 @@ class AVFoundationEncoderSink final : public IEncoderSink {
   AvfMp4Writer writer_;
   std::map<std::string, IsoWriterEntry> isoWriters_;
   RecordingPtsClock clock_;
-  std::chrono::steady_clock::time_point origin_;
   std::atomic<int> audioContentLatencySamples_{0};
   bool recordingArmed_ = false;
 };

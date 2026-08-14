@@ -298,6 +298,10 @@ public sealed class MediaCoreCommandBuilderTests
 
         Assert.Contains(commands, command => command.Type == "prepare-encoder-session");
         Assert.Contains(commands, command => command.Type == "start-encoder-session");
+        Assert.True(
+            commands.ToList().FindIndex(command => command.Type == "start-recording-session") <
+            commands.ToList().FindIndex(command => command.Type == "start-program-output"),
+            "The recording writer must own the first encoder generation in a production sync batch.");
 
         var outputProfile = commands.Single(command => command.Type == "set-output-profile");
         Assert.Equal("canvas-4k60", GetString(outputProfile, "profileId"));

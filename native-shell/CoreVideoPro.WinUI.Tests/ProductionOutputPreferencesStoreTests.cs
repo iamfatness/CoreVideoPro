@@ -132,6 +132,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.False(preferences.VirtualCameraEnabled);
         Assert.False(preferences.VirtualCameraMirror);
         Assert.Null(preferences.VirtualCameraName);
+        Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, preferences.ZoomAudioMode);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, preferences.Version);
     }
 
@@ -195,7 +196,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(9, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(10, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -235,7 +236,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(9, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(10, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.False(migrated.IsoRecordingEnabled);
         Assert.Empty(migrated.IsoRecordingSourceIds);
@@ -261,11 +262,10 @@ public sealed class ProductionOutputPreferencesStoreTests
     }
 
     [Fact]
-    public void Serializer_MigratesV8FileToV9WithProgramMixDefault()
+    public void Serializer_MigratesV8FileToCurrentWithPerGuestIsoDefault()
     {
-        // A v8 file has no ZoomAudioMode field: it migrates to v9 reading as the
-        // long-standing Z1 program-mix topology — behaviour identical to today for
-        // every existing profile.
+        // Product decision v10: older profiles migrate to independently routed
+        // ISO stems so they reach Program L/R automatically.
         const string json = """
             {
               "Version": 8,
@@ -277,11 +277,45 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(9, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(10, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
-        Assert.Null(migrated.ZoomAudioMode);
-        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse(migrated.ZoomAudioMode));
+        Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, migrated.ZoomAudioMode);
+        Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(migrated.ZoomAudioMode));
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
+    }
+
+    [Fact]
+    public void Serializer_MigratesV9ProgramMixProfileToPerGuestIsoOnce()
+    {
+        const string json = """
+            {
+              "Version": 9,
+              "ZoomAudioMode": "programMix"
+            }
+            """;
+
+        var migrated = ProductionOutputPreferencesSerializer.Deserialize(json, out var wasMigrated);
+
+        Assert.NotNull(migrated);
+        Assert.True(wasMigrated);
+        Assert.Equal(10, migrated.Version);
+        Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, migrated.ZoomAudioMode);
+    }
+
+    [Fact]
+    public void Serializer_PreservesExplicitProgramMixInCurrentVersion()
+    {
+        var raw = ProductionOutputPreferencesSerializer.Serialize(new ProductionOutputPreferences
+        {
+            ZoomAudioMode = ZoomAudioModePreference.ProgramMixValue
+        });
+
+        var loaded = ProductionOutputPreferencesSerializer.Deserialize(raw, out var wasMigrated);
+
+        Assert.NotNull(loaded);
+        Assert.False(wasMigrated);
+        Assert.Equal(ZoomAudioModePreference.ProgramMixValue, loaded.ZoomAudioMode);
+        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse(loaded.ZoomAudioMode));
     }
 
     [Fact]
@@ -304,14 +338,14 @@ public sealed class ProductionOutputPreferencesStoreTests
     }
 
     [Fact]
-    public void Serializer_DeserializedCorruptZoomAudioModeParsesToProgramMix()
+    public void Serializer_DeserializedCorruptZoomAudioModeParsesToPerGuestIso()
     {
         // The store also does JSON-level string surgery in ProtectSecretFields, so a
         // corrupt/unrecognized value must survive DESERIALIZATION (not just Parse in
         // isolation) and read as the safe default through the real store type.
         const string json = """
             {
-              "Version": 9,
+              "Version": 10,
               "ZoomAudioMode": "chaos"
             }
             """;
@@ -320,7 +354,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(loaded);
         Assert.Equal("chaos", loaded.ZoomAudioMode);
-        Assert.Equal(ZoomAudioMode.ProgramMix, ZoomAudioModePreference.Parse(loaded.ZoomAudioMode));
+        Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(loaded.ZoomAudioMode));
     }
 
     [Fact]

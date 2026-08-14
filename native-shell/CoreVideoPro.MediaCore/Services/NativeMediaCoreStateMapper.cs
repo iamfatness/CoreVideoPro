@@ -102,22 +102,11 @@ public static class NativeMediaCoreStateMapper
         var audioMixSession = wire.AudioMixSession ?? baseSnapshot.AudioMixSession;
         var audioRoutingMatrix = wire.AudioRoutingMatrix ?? baseSnapshot.AudioRoutingMatrix;
         var captureAudioSources = wire.CaptureAudioSources ?? baseSnapshot.CaptureAudioSources;
-        if (wire.CaptureAudioSources is { } captureAudio)
-        {
-            var captureWarnings = captureAudio.Warnings
-                .Where(warning => !string.IsNullOrWhiteSpace(warning))
-                .Distinct(StringComparer.Ordinal)
-                .ToList();
-            if (captureWarnings.Count > 0)
-            {
-                audioMixSession = CopyAudioMixSession(
-                    audioMixSession,
-                    audioMixSession.Warnings
-                        .Concat(captureWarnings)
-                        .Distinct(StringComparer.Ordinal)
-                        .ToList());
-            }
-        }
+        // Capture-device health is scoped to the source row. Optional local
+        // inputs (for example a silent GoXLR channel) must not poison the Zoom
+        // Program mix or recording proof, which already report their own real
+        // PCM/writer evidence. Required-path failures belong in the native mix
+        // warning itself, not inferred here from an unrelated capture warning.
         var captionTrack = wire.CaptionTrack ?? baseSnapshot.CaptionTrack;
         var brandKit = wire.BrandKit ?? baseSnapshot.BrandKit;
         var overlayState = wire.OverlayState ?? baseSnapshot.OverlayState;
@@ -131,7 +120,7 @@ public static class NativeMediaCoreStateMapper
             .Distinct()
             .ToList();
 
-        var compositor = baseSnapshot.Compositor with
+        var compositor = (wire.Compositor ?? baseSnapshot.Compositor) with
         {
             Status = compositorStatus,
             RenderPlanId = programFrame?.RenderPlanId,

@@ -435,11 +435,12 @@ static std::string zchar_to_utf8(const zchar_t *name)
     int len = WideCharToMultiByte(CP_UTF8, 0, name, -1,
                                   nullptr, 0, nullptr, nullptr);
     if (len <= 0) return {};
-    std::string out(static_cast<size_t>(len - 1), '\0');
-    if (!out.empty()) {
-        WideCharToMultiByte(CP_UTF8, 0, name, -1, &out[0], len,
-                            nullptr, nullptr);
-    }
+    std::string out(static_cast<size_t>(len), '\0');
+    const int written = WideCharToMultiByte(CP_UTF8, 0, name, -1, out.data(), len,
+                                            nullptr, nullptr);
+    if (written <= 0) return {};
+    out.resize(static_cast<size_t>(written));
+    if (!out.empty() && out.back() == '\0') out.pop_back();
     return out;
 #else
     return name;
@@ -1384,7 +1385,7 @@ int main(int argc, char **argv)
         } else if (line.find(IPC_CMD_STOP_MEDIA) != std::string::npos) {
             meeting_event.stop_raw_media("manual_stop");
 
-        } else if (line.find(IPC_CMD_SUBSCRIBE_AUDIO) != std::string::npos) {
+        } else if (ipc_command_is(line, IPC_CMD_SUBSCRIBE_AUDIO)) {
             std::string uuid = json_str(line, "source_uuid");
             uint32_t    pid  = json_uint(line, "participant_id");
             const bool isolate_audio =
@@ -1396,7 +1397,15 @@ int main(int argc, char **argv)
                                              isolate_audio, audience_audio);
             }
 
-        } else if (line.find(IPC_CMD_SUBSCRIBE) != std::string::npos) {
+        } else if (ipc_command_is(line, IPC_CMD_UNSUBSCRIBE)) {
+            std::string uuid = json_str(line, "source_uuid");
+            if (is_valid_source_uuid(uuid)) {
+                video_engine.unsubscribe(uuid);
+                share_engine.unsubscribe(uuid);
+                EngineAudio::instance().remove(uuid);
+            }
+
+        } else if (ipc_command_is(line, IPC_CMD_SUBSCRIBE)) {
             std::string uuid = json_str(line, "source_uuid");
             uint32_t    pid  = json_uint(line, "participant_id");
             uint32_t    res  = json_uint(line, "resolution");
@@ -1411,18 +1420,9 @@ int main(int argc, char **argv)
                     share_engine.subscribe(uuid, e2p);
                 } else {
                     video_engine.subscribe(pid, uuid, e2p, res);
-                    EngineAudio::instance().init(e2p, uuid, pid,
-                                                 isolate_audio, audience_audio);
                 }
             }
 
-        } else if (line.find(IPC_CMD_UNSUBSCRIBE) != std::string::npos) {
-            std::string uuid = json_str(line, "source_uuid");
-            if (is_valid_source_uuid(uuid)) {
-                video_engine.unsubscribe(uuid);
-                share_engine.unsubscribe(uuid);
-                EngineAudio::instance().remove(uuid);
-            }
         }
     }
 

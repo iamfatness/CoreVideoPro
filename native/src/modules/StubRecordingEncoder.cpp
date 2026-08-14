@@ -58,6 +58,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingQuality = request_.quality;
     session_.recordingArtifactPath.clear();
     session_.recordingBytesWritten = 0;
+    session_.recordingProgramBytesWritten = 0;
     session_.recordingDurationMs = 0;
     session_.recordingVideoFrameCount = 0;
     session_.recordingLastFrameNumber = 0;
@@ -105,6 +106,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingWidth = request_.width > 0 ? request_.width : frame.width;
     session_.recordingHeight = request_.height > 0 ? request_.height : frame.height;
     session_.recordingBytesWritten = session_.recordingVideoFrameCount * bytesPerProgramFrame(request_);
+    session_.recordingProgramBytesWritten = session_.recordingBytesWritten;
     session_.recordingMetadataValid = session_.recordingWidth > 0 && session_.recordingHeight > 0 && session_.recordingFps > 0 &&
                                       !session_.recordingContainerFormat.empty() && !session_.recordingVideoCodec.empty() &&
                                       !session_.recordingAudioCodec.empty();
@@ -125,6 +127,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingAudioChannels = channels;
     session_.recordingAudioSampleRate = sampleRate;
     session_.recordingBytesWritten += static_cast<int64_t>(frameCount) * channels * 2;  // 16-bit muxed PCM
+    session_.recordingProgramBytesWritten = session_.recordingBytesWritten;
   }
 
   void stopRecording() override {

@@ -17,12 +17,18 @@
 #include <wincodec.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -70,8 +76,14 @@ std::wstring widenUtf8(const std::string& value) {
   if (count <= 0) {
     return {};
   }
-  std::wstring result(static_cast<size_t>(count - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), count);
+  // `count` includes the trailing NUL. Allocate it before asking Win32 to
+  // write `count` wchar_t values, then remove it from the C++ string. The old
+  // count-1 allocation was a one-wchar heap overwrite on every media path.
+  std::wstring result(static_cast<size_t>(count), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), count) <= 0) {
+    return {};
+  }
+  result.pop_back();
   return result;
 }
 
@@ -102,6 +114,188 @@ std::string mediaLayerPlaybackKey(const CompositorRenderPlanLayer& layer) {
 std::string mediaLayerStateKey(const CompositorRenderPlanLayer& layer) {
   return mediaFrameSourceId(layer) + "|" + normalizeMediaPath(layer.mediaAssetPath) + "|" + mediaLayerPlaybackKey(layer);
 }
+
+std::wstring quoteWindowsArgument(const std::wstring& value) {
+  return L"\"" + value + L"\"";
+}
+
+std::wstring ffmpegExecutablePath() {
+  const auto fromDirectory = [](const char* variable) -> std::wstring {
+    const char* value = std::getenv(variable);
+    if (!value || !*value) {
+      return {};
+    }
+    const auto candidate = std::filesystem::path(value) / L"ffmpeg.exe";
+    std::error_code error;
+    return std::filesystem::exists(candidate, error) ? candidate.wstring() : std::wstring{};
+  };
+  if (auto configured = fromDirectory("COREVIDEO_FFMPEG_BIN_DIR"); !configured.empty()) {
+    return configured;
+  }
+  if (auto configured = fromDirectory("FFMPEG_BIN_DIR"); !configured.empty()) {
+    return configured;
+  }
+
+  wchar_t found[MAX_PATH]{};
+  const DWORD length = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, found, nullptr);
+  return length > 0 && length < MAX_PATH ? std::wstring(found, length) : std::wstring{};
+}
+
+// Media Foundation does not decode common production MOV profiles such as
+// Apple ProRes HQ/4444. This worker is a compatibility decoder behind the same
+// IMediaFrameSource boundary: FFmpeg performs the codec + BT.709 range conversion
+// off the render thread and publishes only the latest 1080p BGRA frame.
+class FfmpegVideoDecoder {
+ public:
+  static constexpr int kOutputWidth = 1920;
+  static constexpr int kOutputHeight = 1080;
+
+  ~FfmpegVideoDecoder() { stop(); }
+  FfmpegVideoDecoder(const FfmpegVideoDecoder&) = delete;
+  FfmpegVideoDecoder& operator=(const FfmpegVideoDecoder&) = delete;
+
+  static std::unique_ptr<FfmpegVideoDecoder> start(const std::string& path,
+                                                   bool posterFrame,
+                                                   bool loop,
+                                                   std::string& error) {
+    auto decoder = std::unique_ptr<FfmpegVideoDecoder>(new FfmpegVideoDecoder());
+    if (!decoder->launch(path, posterFrame, loop, error)) {
+      return nullptr;
+    }
+    return decoder;
+  }
+
+  bool latest(std::shared_ptr<std::vector<std::uint8_t>>& pixels,
+              std::int64_t& frameId, bool& ended) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pixels = latestPixels_;
+    frameId = latestFrameId_;
+    ended = ended_;
+    return static_cast<bool>(pixels);
+  }
+
+ private:
+  FfmpegVideoDecoder() = default;
+
+  bool launch(const std::string& path, bool posterFrame, bool loop, std::string& error) {
+    const auto executable = ffmpegExecutablePath();
+    if (executable.empty()) {
+      error = "FFmpeg was not found in the configured runtime or PATH.";
+      return false;
+    }
+
+    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE childOutputRead = nullptr;
+    HANDLE childOutputWrite = nullptr;
+    if (!CreatePipe(&childOutputRead, &childOutputWrite, &security, 0) ||
+        !SetHandleInformation(childOutputRead, HANDLE_FLAG_INHERIT, 0)) {
+      if (childOutputRead) CloseHandle(childOutputRead);
+      if (childOutputWrite) CloseHandle(childOutputWrite);
+      error = "Could not create the FFmpeg video pipe.";
+      return false;
+    }
+
+    HANDLE nullOutput = CreateFileW(L"NUL", GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = childOutputWrite;
+    startup.hStdError = nullOutput != INVALID_HANDLE_VALUE ? nullOutput : childOutputWrite;
+
+    const std::wstring filter =
+        L"scale=1920:1080:force_original_aspect_ratio=decrease,"
+        L"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black";
+    std::wstring command = quoteWindowsArgument(executable) +
+        L" -nostdin -hide_banner -loglevel error" +
+        (loop && !posterFrame ? L" -stream_loop -1" : L"") +
+        L" -re -i " + quoteWindowsArgument(widenUtf8(path)) +
+        L" -map 0:v:0 -an -sn -dn -vf " + quoteWindowsArgument(filter) +
+        (posterFrame ? L" -frames:v 1" : L"") +
+        L" -pix_fmt bgra -f rawvideo pipe:1";
+    std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+    mutableCommand.push_back(L'\0');
+
+    PROCESS_INFORMATION process{};
+    const BOOL created = CreateProcessW(
+        executable.c_str(), mutableCommand.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+    CloseHandle(childOutputWrite);
+    if (nullOutput != INVALID_HANDLE_VALUE) {
+      CloseHandle(nullOutput);
+    }
+    if (!created) {
+      CloseHandle(childOutputRead);
+      error = "FFmpeg could not be started (Win32 " + std::to_string(GetLastError()) + ").";
+      return false;
+    }
+
+    CloseHandle(process.hThread);
+    process_ = process.hProcess;
+    outputRead_ = childOutputRead;
+    reader_ = std::thread([this] { readLoop(); });
+    return true;
+  }
+
+  void readLoop() {
+    constexpr std::size_t frameBytes =
+        static_cast<std::size_t>(kOutputWidth) * kOutputHeight * 4u;
+    while (!stopRequested_.load(std::memory_order_acquire)) {
+      auto frame = std::make_shared<std::vector<std::uint8_t>>(frameBytes);
+      std::size_t offset = 0;
+      while (offset < frameBytes && !stopRequested_.load(std::memory_order_acquire)) {
+        DWORD read = 0;
+        const DWORD chunk = static_cast<DWORD>((std::min)(frameBytes - offset,
+                                                          static_cast<std::size_t>(1u << 20)));
+        if (!ReadFile(outputRead_, frame->data() + offset, chunk, &read, nullptr) || read == 0) {
+          offset = 0;
+          break;
+        }
+        offset += read;
+      }
+      if (offset != frameBytes) {
+        break;
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      latestPixels_ = std::move(frame);
+      ++latestFrameId_;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    ended_ = !stopRequested_.load(std::memory_order_acquire);
+  }
+
+  void stop() {
+    stopRequested_.store(true, std::memory_order_release);
+    if (process_) {
+      DWORD exitCode = 0;
+      if (GetExitCodeProcess(process_, &exitCode) && exitCode == STILL_ACTIVE) {
+        TerminateProcess(process_, 0);
+      }
+    }
+    if (reader_.joinable()) {
+      reader_.join();
+    }
+    if (outputRead_) {
+      CloseHandle(outputRead_);
+      outputRead_ = nullptr;
+    }
+    if (process_) {
+      CloseHandle(process_);
+      process_ = nullptr;
+    }
+  }
+
+  mutable std::mutex mutex_;
+  std::shared_ptr<std::vector<std::uint8_t>> latestPixels_;
+  std::int64_t latestFrameId_ = 0;
+  bool ended_ = false;
+  std::atomic<bool> stopRequested_{false};
+  HANDLE process_ = nullptr;
+  HANDLE outputRead_ = nullptr;
+  std::thread reader_;
+};
 
 bool copyWicImageToFrame(IWICImagingFactory* factory, const std::string& path, VideoFrame& frame) {
   if (!factory) {
@@ -232,9 +426,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     bool ended = false;
     bool wasPlaying = false;
     bool audioWasPlaying = false;
+    bool loop = false;
     int64_t frameId = 0;
     VideoFrame lastFrame;
     ComPtrLite<IMFSourceReader> reader;
+    std::unique_ptr<FfmpegVideoDecoder> ffmpegVideo;
+    std::int64_t ffmpegPublishedFrameId = 0;
+    std::string videoDecoderError;
     ComPtrLite<IMFSourceReader> audioReader;
     bool audioEnded = false;
     std::string audioPlaybackKey;
@@ -244,9 +442,10 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     const std::string frameSourceId = mediaFrameSourceId(layer);
     auto& state = states_[frameSourceId];
     const auto path = normalizeMediaPath(layer.mediaAssetPath);
-    if (state.path != path) {
+    if (state.path != path || state.loop != layer.mediaAssetLoop) {
       state = {};
       state.path = path;
+      state.loop = layer.mediaAssetLoop;
     }
     const std::string playbackKey = mediaLayerPlaybackKey(layer);
     if (isStillImagePath(path)) {
@@ -266,6 +465,8 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (!layer.mediaAssetPlaying) {
       if (state.playbackKey != playbackKey) {
         state.reader = {};
+        state.ffmpegVideo = {};
+        state.ffmpegPublishedFrameId = 0;
         state.ended = false;
         state.frameId = 0;
         state.lastFrame = {};
@@ -275,8 +476,11 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       // A Preview cue is intentionally paused, but it must still display a
       // real poster frame. Decode exactly one frame and retain it until Take.
       if (!state.lastFrame.hasPixels()) {
-        if (!state.reader && !openVideoReader(path, state)) {
-          warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Preview cueing.");
+        if (!state.reader && !state.ffmpegVideo &&
+            !openVideoReader(path, state, true, layer.mediaAssetLoop)) {
+          warnings_.push_back("Media asset " + layer.mediaAssetId +
+                              " could not be opened for Preview cueing" +
+                              (state.videoDecoderError.empty() ? "." : ": " + state.videoDecoderError));
           return false;
         }
         if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs)) {
@@ -290,14 +494,34 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     }
     if (!state.wasPlaying || state.playbackKey != playbackKey) {
       state.reader = {};
+      state.ffmpegVideo = {};
+      state.ffmpegPublishedFrameId = 0;
       state.ended = false;
       state.frameId = 0;
     }
     state.wasPlaying = true;
     state.playbackKey = playbackKey;
-    if (!state.reader && !openVideoReader(path, state)) {
-      warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Program playback.");
+    if (!state.reader && !state.ffmpegVideo &&
+        !openVideoReader(path, state, false, layer.mediaAssetLoop)) {
+      warnings_.push_back("Media asset " + layer.mediaAssetId +
+                          " could not be opened for Program playback" +
+                          (state.videoDecoderError.empty() ? "." : ": " + state.videoDecoderError));
       return false;
+    }
+    if (state.ended && layer.mediaAssetLoop) {
+      // Media Foundation is the fast path for compatible clips but does not
+      // have FFmpeg's -stream_loop input option. Reopen at EOS while retaining
+      // the last good frame; the replacement decoder can warm without a flash.
+      state.reader = {};
+      state.ffmpegVideo = {};
+      state.ffmpegPublishedFrameId = 0;
+      state.ended = false;
+      if (!openVideoReader(path, state, false, true)) {
+        warnings_.push_back("Media background " + layer.mediaAssetId +
+                            " could not restart its loop" +
+                            (state.videoDecoderError.empty() ? "." : ": " + state.videoDecoderError));
+        return state.lastFrame.hasPixels();
+      }
     }
     if (state.ended) {
       if (state.lastFrame.hasPixels()) {
@@ -344,25 +568,35 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     return frame;
   }
 
-  bool openVideoReader(const std::string& path, AssetState& state) {
+  bool openVideoReader(const std::string& path, AssetState& state,
+                       bool posterFrame, bool loop) {
+    state.videoDecoderError.clear();
     if (!mfStarted_) {
-      return false;
-    }
-    // The source reader normally exposes the decoder's native YUV output.
-    // Enable Media Foundation video processing so our requested RGB32 output
-    // is negotiated through the built-in color converter/scaler.
-    ComPtrLite<IMFAttributes> attributes;
-    if (FAILED(MFCreateAttributes(attributes.put(), 1)) ||
-        FAILED(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE)) ||
-        FAILED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), attributes.get(), state.reader.put()))) {
-      return false;
-    }
-    ComPtrLite<IMFMediaType> mediaType;
-    if (FAILED(MFCreateMediaType(mediaType.put())) ||
-        FAILED(mediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
-        FAILED(mediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32)) ||
-        FAILED(state.reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, mediaType.get()))) {
+      state.videoDecoderError = "Media Foundation is unavailable.";
+    } else {
+      // The source reader normally exposes the decoder's native YUV output.
+      // Enable Media Foundation video processing so our requested RGB32 output
+      // is negotiated through the built-in color converter/scaler.
+      ComPtrLite<IMFAttributes> attributes;
+      if (SUCCEEDED(MFCreateAttributes(attributes.put(), 1)) &&
+          SUCCEEDED(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE)) &&
+          SUCCEEDED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), attributes.get(), state.reader.put()))) {
+        ComPtrLite<IMFMediaType> mediaType;
+        if (SUCCEEDED(MFCreateMediaType(mediaType.put())) &&
+            SUCCEEDED(mediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) &&
+            SUCCEEDED(mediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32)) &&
+            SUCCEEDED(state.reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, mediaType.get()))) {
+          return true;
+        }
+      }
       state.reader = {};
+      state.videoDecoderError = "Media Foundation did not provide a compatible video decoder.";
+    }
+
+    std::string fallbackError;
+    state.ffmpegVideo = FfmpegVideoDecoder::start(path, posterFrame, loop, fallbackError);
+    if (!state.ffmpegVideo) {
+      state.videoDecoderError += " FFmpeg fallback failed: " + fallbackError;
       return false;
     }
     return true;
@@ -372,7 +606,9 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (!mfStarted_) {
       return false;
     }
-    if (FAILED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), nullptr, state.audioReader.put()))) {
+    const HRESULT opened = MFCreateSourceReaderFromURL(
+        widenUtf8(path).c_str(), nullptr, state.audioReader.put());
+    if (FAILED(opened)) {
       return false;
     }
     ComPtrLite<IMFMediaType> mediaType;
@@ -383,8 +619,20 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
         FAILED(mediaType->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2)) ||
         FAILED(mediaType->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32)) ||
         FAILED(mediaType->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 8)) ||
-        FAILED(mediaType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 48000 * 8)) ||
-        FAILED(state.audioReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, mediaType.get()))) {
+        FAILED(mediaType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 48000 * 8))) {
+      state.audioReader = {};
+      return false;
+    }
+    const HRESULT selected = state.audioReader->SetCurrentMediaType(
+        MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, mediaType.get());
+    if (selected == MF_E_INVALIDSTREAMNUMBER) {
+      // Video-only backdrops are normal. Absence of an audio stream is not a
+      // decoder failure and must not alarm the operator every render tick.
+      state.audioReader = {};
+      state.audioEnded = true;
+      return true;
+    }
+    if (FAILED(selected)) {
       state.audioReader = {};
       return false;
     }
@@ -392,6 +640,35 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
   }
 
   bool readNextVideoFrame(const std::string& assetId, const std::string& frameSourceId, AssetState& state, int64_t timestampMs) {
+    if (state.ffmpegVideo) {
+      std::shared_ptr<std::vector<std::uint8_t>> pixels;
+      std::int64_t decodedFrameId = 0;
+      bool ended = false;
+      if (!state.ffmpegVideo->latest(pixels, decodedFrameId, ended)) {
+        state.ended = ended;
+        return state.lastFrame.hasPixels();
+      }
+      if (decodedFrameId == state.ffmpegPublishedFrameId && state.lastFrame.hasPixels()) {
+        state.ended = ended;
+        return true;
+      }
+      VideoFrame decoded;
+      decoded.participantId = frameSourceId;
+      decoded.width = FfmpegVideoDecoder::kOutputWidth;
+      decoded.height = FfmpegVideoDecoder::kOutputHeight;
+      decoded.naturalWidth = decoded.width;
+      decoded.naturalHeight = decoded.height;
+      decoded.timestampMs = timestampMs;
+      decoded.pixelWidth = decoded.width;
+      decoded.pixelHeight = decoded.height;
+      decoded.pixelStride = decoded.width * 4;
+      decoded.frameId = decodedFrameId;
+      decoded.pixels = std::move(pixels);
+      state.lastFrame = std::move(decoded);
+      state.ffmpegPublishedFrameId = decodedFrameId;
+      state.ended = ended;
+      return true;
+    }
     if (!state.reader) {
       return false;
     }

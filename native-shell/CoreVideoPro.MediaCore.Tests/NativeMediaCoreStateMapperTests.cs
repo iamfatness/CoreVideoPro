@@ -440,7 +440,7 @@ public sealed class NativeMediaCoreStateMapperTests
     }
 
     [Fact]
-    public void NativeCaptureAudioWarningsStillPromoteToAudioMixWarnings()
+    public void OptionalCaptureAudioWarningsStayScopedToTheCaptureSource()
     {
         var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
         {
@@ -494,9 +494,7 @@ public sealed class NativeMediaCoreStateMapperTests
             }
         });
 
-        Assert.Contains(
-            "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
-            snapshot.AudioMixSession.Warnings);
+        Assert.Empty(snapshot.AudioMixSession.Warnings);
         Assert.Equal("ready", snapshot.AudioMixSession.PluginHost.Status);
         Assert.Equal("Curves AQ Stereo", Assert.Single(snapshot.AudioMixSession.PluginHost.Plugins).ClassNames[0]);
         Assert.True(snapshot.AudioMixSession.MasteringEnabled);
@@ -504,9 +502,12 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal(-14.6, snapshot.AudioMixSession.MasterMeter.IntegratedLufs);
         Assert.Equal(-1.4, snapshot.AudioMixSession.MasterMeter.TruePeakDbfs);
         Assert.Equal(3000, snapshot.AudioMixSession.MasterMeter.WindowMs);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
             snapshot.Diagnostics.Warnings);
+        Assert.Contains(
+            "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
+            snapshot.Diagnostics.CaptureAudioSources.Warnings);
         Assert.DoesNotContain(
             snapshot.Diagnostics.Warnings,
             warning => warning.StartsWith("Capture audio:", StringComparison.Ordinal));
@@ -607,5 +608,27 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("live", snapshot.VirtualCamera.Status);
         Assert.True(snapshot.VirtualCamera.Enabled);
         Assert.Equal(1280, snapshot.VirtualCamera.Resolution.Width);
+    }
+
+    [Fact]
+    public void CarriesNativeRenderDropsIntoTransportAndSupportTelemetry()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(
+            Commands,
+            3000,
+            12,
+            new NativeMediaCoreWireState
+            {
+                ProgramFrameCount = 120,
+                Compositor = new NativeMediaCoreCompositorState
+                {
+                    Status = "live",
+                    ProgramFrameCount = 120,
+                    DroppedFrameCount = 1499
+                }
+            });
+
+        Assert.Equal(1499, snapshot.Compositor.DroppedFrameCount);
+        Assert.Equal(1499, snapshot.Diagnostics.Compositor.DroppedFrameCount);
     }
 }

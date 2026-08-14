@@ -16,16 +16,17 @@ corevideo::modules::ZoomEngineEvent eventFrom(const std::string& line) {
 TEST(ZoomEngineRuntimeState, MapsEngineEventsToSpineRosterState) {
   corevideo::modules::ZoomEngineRuntimeState state;
 
-  state.apply(eventFrom(R"({"cmd":"ready"})"));
-  state.apply(eventFrom(R"({"cmd":"auth_ok"})"));
-  state.apply(eventFrom(R"({"cmd":"joined"})"));
+  state.apply(eventFrom(R"({"cmd":"ready"})"), 0);
+  state.apply(eventFrom(R"({"cmd":"auth_ok"})"), 0);
+  state.apply(eventFrom(R"({"cmd":"joined"})"), 0);
   state.apply(eventFrom(
-      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia Martinez","has_video":true,"is_talking":false,"is_muted":false,"is_sharing_screen":false},{"id":77,"name":"David Chen","has_video":true,"is_talking":false,"is_muted":true,"is_sharing_screen":true}]})"));
-  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":77})"));
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia Martinez","has_video":true,"is_talking":false,"is_muted":false,"is_sharing_screen":false},{"id":77,"name":"David Chen","has_video":true,"is_talking":false,"is_muted":true,"is_sharing_screen":true}]})"), 0);
+  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":77})"), 100);
 
   const auto snapshot = state.snapshot();
   EXPECT_EQ(snapshot.meetingState, "in-meeting");
-  EXPECT_EQ(snapshot.activeSpeakerId, "77");
+  // Muted challengers cannot displace the stable incumbent.
+  EXPECT_EQ(snapshot.activeSpeakerId, "42");
   EXPECT_EQ(snapshot.screenShareParticipantId, "77");
   ASSERT_TRUE(snapshot.participants.size() == 2u);
   EXPECT_EQ(snapshot.participants[0].id, 42u);
@@ -38,11 +39,68 @@ TEST(ZoomEngineRuntimeState, MapsEngineEventsToSpineRosterState) {
   EXPECT_EQ(participants[0].getString("displayName"), "Sophia Martinez");
   EXPECT_TRUE(participants[0].get("videoOn")->asBool());
   EXPECT_FALSE(participants[0].get("muted")->asBool());
-  EXPECT_FALSE(participants[0].get("talking")->asBool());
+  EXPECT_TRUE(participants[0].get("talking")->asBool());
   EXPECT_EQ(participants[1].getString("sdkUserId"), "77");
   EXPECT_TRUE(participants[1].get("muted")->asBool());
-  EXPECT_TRUE(participants[1].get("talking")->asBool());
+  EXPECT_FALSE(participants[1].get("talking")->asBool());
   EXPECT_TRUE(participants[1].get("sharingScreen")->asBool());
+}
+
+TEST(ZoomEngineRuntimeState, PreservesUtf8ParticipantIdentityAcrossIpcJson) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Elena Kovač — 東京","has_video":true,"is_talking":true,"is_muted":false}]})"),
+      0);
+
+  const auto snapshot = state.snapshot();
+  ASSERT_EQ(snapshot.participants.size(), 1u);
+  EXPECT_EQ(snapshot.participants[0].displayName, "Elena Kovač — 東京");
+  const auto participants = state.participantsJson();
+  ASSERT_EQ(participants.size(), 1u);
+  EXPECT_EQ(participants[0].getString("displayName"), "Elena Kovač — 東京");
+}
+
+TEST(ZoomEngineRuntimeState, DebouncesActiveSpeakerAndHonorsIncumbentHold) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  const auto roster = eventFrom(
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Host","has_video":true,"is_talking":true,"is_muted":false},{"id":77,"name":"Guest","has_video":true,"is_talking":false,"is_muted":false}]})");
+  state.apply(roster, 1'000);
+  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":77})"), 1'100);
+
+  state.advanceActiveSpeaker(1'700);  // sensitivity met, hold not met
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "42");
+
+  state.recordFrameIngestSuccess("participant-video-77-camera", 77, 1280, 720, 1, 1'800.0);
+  state.advanceActiveSpeaker(3'000);  // both windows met
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
+}
+
+TEST(ZoomEngineRuntimeState, RetainsIncumbentUntilChallengerHasAFreshFrame) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  const auto roster = eventFrom(
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Host","has_video":true,"is_talking":true,"is_muted":false},{"id":77,"name":"Guest","has_video":true,"is_talking":false,"is_muted":false}]})");
+  state.apply(roster, 1'000);
+  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":77})"), 1'100);
+
+  state.advanceActiveSpeaker(4'000);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "42");
+
+  state.recordFrameIngestSuccess("participant-video-77-camera", 77, 1280, 720, 1, 4'001.0);
+  state.advanceActiveSpeaker(4'002);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
+}
+
+TEST(ZoomEngineRuntimeState, KeepsIncumbentThroughMuteVideoOffAndBriefRosterLoss) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Host","has_video":true,"is_talking":true,"is_muted":false}]})"), 1'000);
+  state.apply(eventFrom(
+      R"({"cmd":"participants","active_speaker_id":0,"participants":[{"id":42,"name":"Host","has_video":false,"is_talking":false,"is_muted":true}]})"), 2'000);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "42");
+
+  state.apply(eventFrom(R"({"cmd":"participants","active_speaker_id":0,"participants":[]})"), 3'000);
+  state.advanceActiveSpeaker(62'999);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "42");
 }
 
 TEST(ZoomEngineRuntimeState, TracksFrameAudioAndErrorEvidence) {

@@ -91,6 +91,43 @@ function send(type, payload = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function participantsOf(snapshot) {
+  const raw = snapshot?.zoom?.participants ?? snapshot?.participants ?? [];
+  return raw
+    .map((p) => ({
+      id: String(p.userId ?? p.id ?? ""),
+      name: String(p.displayName ?? p.name ?? ""),
+      videoOn: p.videoOn !== false,
+    }))
+    .filter((p) => p.id && p.videoOn);
+}
+
+function buildSpinePayload(participants) {
+  const subscriptions = [
+    {
+      participantId: participants[0].id,
+      kind: "meeting-audio",
+      purpose: "program",
+      priority: 0,
+    },
+    ...participants.map((p, index) => ({
+      participantId: p.id,
+      kind: "participant-video",
+      purpose: index === 0 ? "active-speaker" : "program",
+      priority: 10 + index,
+    })),
+  ];
+  return {
+    readiness: { status: "ready", platform: "windows", sdkVersion: "fake-engine", checks: [], blockers: [], warnings: [], summary: "record-audio validation" },
+    participants: participants.map((p) => ({ sdkUserId: p.id, displayName: p.name, role: "guest", videoOn: true, muted: false, talking: true, audioLevel: 60, networkQuality: "good" })),
+    subscriptions,
+    startCapture: true,
+    blocked: false,
+    warnings: [],
+    summary: `${participants.length} participants, ${subscriptions.length} subscriptions`,
+  };
+}
+
 function recordingState(snapshot) {
   const rec = snapshot?.recording ?? {};
   return {
@@ -197,7 +234,23 @@ try {
     payload: { meetingNumber: "1234567890", displayName: "record-audio-proof" },
   });
   console.log("Joined        : fake engine (deterministic tones)");
-  await sleep(3000);  // engine spin-up + first tones
+  await sleep(1000);
+
+  let participants = [];
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    const snapshot = (await send("zoom-snapshot")).snapshot;
+    participants = participantsOf(snapshot);
+    if (participants.length > 0) {
+      await send("zoom-media-spine-sync", {
+        spinePayload: buildSpinePayload(participants),
+        elapsedMs: Date.now() - startedAt,
+      });
+      break;
+    }
+    await sleep(500);
+  }
+  if (participants.length === 0) throw new Error("fake engine did not present a video participant");
+  await sleep(2000);  // audio/video subscriptions + first ring packets
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
@@ -205,7 +258,7 @@ try {
       {
         type: "load-scene-graph",
         sceneId: "record-audio-validation",
-        routes: [{ routeId: "program", mode: "fixed", audioRole: "mix", participantId: "speaker-1" }],
+        routes: [{ routeId: "program", mode: "fixed", audioRole: "mix", participantId: participants[0].id }],
       },
       {
         type: "sync-audio-routing-matrix",

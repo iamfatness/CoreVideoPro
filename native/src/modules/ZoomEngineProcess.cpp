@@ -119,7 +119,7 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
       nullptr,
       nullptr,
       FALSE,
-      CREATE_NO_WINDOW,
+      CREATE_NO_WINDOW | CREATE_SUSPENDED,
       nullptr,
       workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
       &startupInfo,
@@ -128,8 +128,50 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
     setError(windowsError("CreateProcessA"));
     return false;
   }
+
+  // Put the helper in a private kill-on-close job before it executes any SDK
+  // code. If corevideo-native is force-killed, Windows closes this last job
+  // handle and terminates the helper immediately; otherwise the orphan keeps
+  // Zoom's callback/runtime ownership for several seconds and the replacement
+  // helper fails InitSDK with code 14.
+  HANDLE job = CreateJobObjectA(nullptr, nullptr);
+  if (!job) {
+    const auto error = windowsError("CreateJobObjectA");
+    TerminateProcess(processInfo.hProcess, 1);
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    setError(error);
+    return false;
+  }
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    const auto error = windowsError("SetInformationJobObject");
+    TerminateProcess(processInfo.hProcess, 1);
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    CloseHandle(job);
+    setError(error);
+    return false;
+  }
+  if (!AssignProcessToJobObject(job, processInfo.hProcess)) {
+    const auto error = windowsError("AssignProcessToJobObject");
+    TerminateProcess(processInfo.hProcess, 1);
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    CloseHandle(job);
+    setError(error);
+    return false;
+  }
+
   processHandle_ = processInfo.hProcess;
   threadHandle_ = processInfo.hThread;
+  jobHandle_ = job;
+  if (ResumeThread(processInfo.hThread) == static_cast<DWORD>(-1)) {
+    setError(windowsError("ResumeThread"));
+    stop();
+    return false;
+  }
 #else
   const pid_t pid = fork();
   if (pid < 0) {
@@ -171,6 +213,7 @@ void ZoomEngineProcessClient::stop() {
   }
   closeHandle(threadHandle_);
   closeHandle(processHandle_);
+  closeHandle(jobHandle_);
 #else
   if (processId_ > 0) {
     int status = 0;

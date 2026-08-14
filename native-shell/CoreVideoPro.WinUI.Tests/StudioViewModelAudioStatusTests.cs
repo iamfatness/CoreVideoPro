@@ -10,6 +10,17 @@ namespace CoreVideoPro.WinUI.Tests;
 
 public sealed class StudioViewModelAudioStatusTests
 {
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    public void ResolveEffectiveAudioMute_CombinesSourceAndMixMute(
+        bool sourceMuted,
+        bool mixMuted,
+        bool expected) =>
+        Assert.Equal(expected, StudioViewModel.ResolveEffectiveAudioMute(sourceMuted, mixMuted));
+
     [Fact]
     public void FormatAudioMixerFailureStatus_PreservesLoadFailureDetail()
     {
@@ -2020,7 +2031,8 @@ public sealed class StudioViewModelAudioStatusTests
         // program defaults; operator ISO overrides survive untouched.
         var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(
             [new MediaCoreAudioRoutingSendWire("16778240", "master", -6)],
-            ["16778240", "16785408", "16778240", ""]);
+            ["16778240", "16785408", "16778240", ""],
+            ZoomAudioMode.ProgramMix);
 
         // The deliberate ISO route survives; no OTHER participant sends appear.
         Assert.Contains(sends, send => send.SourceId == "16778240" && send.BusId == "master" && send.GainDb == -6);
@@ -2047,8 +2059,7 @@ public sealed class StudioViewModelAudioStatusTests
                 new MediaCoreAudioRoutingSendWire("zoom-mix", "master", 0),
                 new MediaCoreAudioRoutingSendWire("16778240", "master", -6),  // operator's custom gain
             ],
-            ["16778240", "16785408"],
-            ZoomAudioMode.PerGuestIso);
+            ["16778240", "16785408"]);
 
         Assert.DoesNotContain(sends, send => send.SourceId == "zoom-mix");
         // The operator's deliberate gain survives; the missing buses complete at 0.

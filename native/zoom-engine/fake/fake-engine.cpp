@@ -768,17 +768,6 @@ int main(int argc, char** argv) {
                 g_active_speaker = g_roster.empty() ? 0 : g_roster.front().id;
                 g_joined = true;
                 sync_auto_targets_locked();
-                // Mixed-audio parity: the REAL engine delivers meeting-mix audio
-                // on its active-speaker target without any fake-visible
-                // subscription (soak run 12: the app only subscribes ISO, so a
-                // subscription-dependent mix never formed). Create the ONE mix
-                // stream at join, keyed by a stable active-speaker uuid.
-                {
-                    auto& mixed = g_audioTargets["participant-video-" +
-                                                 std::to_string(g_active_speaker) + "-active-speaker"];
-                    mixed.participant_id = g_active_speaker;
-                    mixed.fixedFreq = 330.0;
-                }
             }
             EngineIpc::write(R"({"cmd":"joined"})");
             { std::lock_guard<std::mutex> lk(g_mtx); send_participants_locked(); }
@@ -804,7 +793,7 @@ int main(int argc, char** argv) {
             EngineIpc::write(R"({"cmd":"debug","stage":"raw_media_stopped","reason":"fake"})");
             EngineIpc::write(R"({"cmd":"raw_media_status","active":false,"reason":"fake"})");
 
-        } else if (line.find(IPC_CMD_SUBSCRIBE_AUDIO) != std::string::npos) {
+        } else if (ipc_command_is(line, IPC_CMD_SUBSCRIBE_AUDIO)) {
             // Z4a: start a deterministic tone stream over the real ring transport.
             std::string uuid = json_str(line, "source_uuid");
             {
@@ -813,9 +802,9 @@ int main(int argc, char** argv) {
                     std::lock_guard<std::mutex> lk(g_mtx);
                     auto& target = g_audioTargets[uuid];
                     target.participant_id = pid;
-                    // The app subscribes MIXED audio on the active-speaker
-                    // target: fixed 330Hz so the mix stream is deterministic.
-                    if (uuid.size() > 15 && uuid.rfind("-active-speaker") == uuid.size() - 15)
+                    // The meeting mix has its own audio-only target: fixed
+                    // 330Hz keeps program-vs-ISO routing measurable in tests.
+                    if (uuid.rfind("meeting-audio-", 0) == 0)
                         target.fixedFreq = 330.0;
                 }
             }
@@ -823,7 +812,7 @@ int main(int argc, char** argv) {
                 R"({"cmd":"debug","stage":"audio_subscribe","source_uuid":")" +
                 json_escape(uuid) + "\"}");
 
-        } else if (line.find(IPC_CMD_SUBSCRIBE) != std::string::npos) {
+        } else if (ipc_command_is(line, IPC_CMD_SUBSCRIBE)) {
             std::string uuid = json_str(line, "source_uuid");
             uint32_t pid = json_uint(line, "participant_id");
             uint32_t res = json_uint(line, "resolution");
@@ -852,13 +841,18 @@ int main(int argc, char** argv) {
                 R"(,"requested":)" + std::to_string(res) +
                 R"(,"mode":")" + json_escape(mode) + "\"}");
 
-        } else if (line.find(IPC_CMD_UNSUBSCRIBE) != std::string::npos) {
+        } else if (ipc_command_is(line, IPC_CMD_UNSUBSCRIBE)) {
             std::string uuid = json_str(line, "source_uuid");
             std::lock_guard<std::mutex> lk(g_mtx);
             auto it = g_targets.find(uuid);
             if (it != g_targets.end()) {
                 shm_region_destroy(it->second.shm);
                 g_targets.erase(it);
+            }
+            auto audioIt = g_audioTargets.find(uuid);
+            if (audioIt != g_audioTargets.end()) {
+                shm_region_destroy(audioIt->second.shm);
+                g_audioTargets.erase(audioIt);
             }
         }
     }

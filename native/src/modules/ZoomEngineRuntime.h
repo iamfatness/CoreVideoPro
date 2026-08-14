@@ -274,6 +274,9 @@ class ZoomEngineRuntime {
     // warning. A silently retrying open is how the resolution-ramp freeze
     // stayed invisible from the core side.
     int regionOpenFailures = 0;
+    // First successfully decoded frame is sampled off-lock so live meetings
+    // tell us whether Zoom honored the requested BT.709 full-range mode.
+    bool lumaRangeProbed = false;
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
   // Three-phase video drain (audio-starvation fix: frame copies + thumbnail

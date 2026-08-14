@@ -56,10 +56,10 @@ TEST(JsonRpcServer, EmitsHandshakeBeforeReadingInput) {
 #endif
 }
 
-TEST(JsonRpcServer, MediaCoreSyncElapsedMsAdvancesRecordingProof) {
+TEST(JsonRpcServer, MediaCoreSyncRecordingProofIsBackedByWriterReportedMedia) {
   corevideo::core::MediaCore mediaCore;
   corevideo::rpc::JsonRpcServer server(mediaCore);
-  const auto response = server.handle(corevideo::rpc::Json::Object{
+  auto response = server.handle(corevideo::rpc::Json::Object{
       {"id", "recording-proof-sync"},
       {"type", "media-core-sync"},
       {"elapsedMs", 1000},
@@ -104,9 +104,22 @@ TEST(JsonRpcServer, MediaCoreSyncElapsedMsAdvancesRecordingProof) {
   EXPECT_EQ(recording->getString("status"), "recording");
   const auto* proof = recording->get("proof");
   ASSERT_NE(proof, nullptr);
-  EXPECT_GE(proof->get("durationMs")->asNumber(), 33);
-  EXPECT_GE(proof->get("programFrameCount")->asNumber(), 1);
-  EXPECT_GE(proof->get("isoFrameCount")->asNumber(), 1);
+  // The portable compositor/writer can synchronously accept its deterministic
+  // placeholder Program frames and generated silence before this snapshot, while
+  // the platform writer may still be pending. Elapsed RPC time is never evidence:
+  // any non-zero duration must be backed by writer-reported video or audio media.
+  const auto durationMs = proof->get("durationMs")->asNumber();
+  const auto audioSampleCount = proof->get("audioSampleCount")->asNumber();
+  const auto programFrameCount = proof->get("programFrameCount")->asNumber();
+  if (programFrameCount > 0 || audioSampleCount > 0) {
+    EXPECT_GT(durationMs, 0);
+  } else {
+    EXPECT_EQ(durationMs, 0);
+  }
+  EXPECT_GE(programFrameCount, 0);
+  EXPECT_EQ(proof->get("isoFrameCount")->asNumber(), 0);
+  // Container/codec metadata can be valid before media arrives; only frame,
+  // duration, and byte counters are evidence of accepted samples.
   EXPECT_TRUE(proof->get("metadataValid")->asBool());
   EXPECT_EQ(proof->getString("containerFormat"), "mp4");
 }

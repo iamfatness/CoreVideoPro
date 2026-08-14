@@ -618,6 +618,8 @@ if(BUILD_TESTING)
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
+    tests/LumaRangeProbeTest.cpp
+    tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/OverlayTileRasterTest.cpp
@@ -626,6 +628,7 @@ if(BUILD_TESTING)
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/EncoderPolicyTest.cpp
+    tests/IsoEncoderPlacementTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
@@ -668,6 +671,10 @@ if(BUILD_TESTING)
     target_include_directories(corevideo-native-tests PRIVATE tests)
   endif()
   if(WIN32)
+    # PluginHostTransport launches this companion executable from beside the
+    # test binary. Keep it protocol-compatible whenever the test target is
+    # rebuilt instead of silently exercising an older host left on disk.
+    add_dependencies(corevideo-native-tests corevideo-plugin-host)
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests.exe")
   else()
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests")

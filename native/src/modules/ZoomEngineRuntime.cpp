@@ -2,6 +2,7 @@
 
 #include "config/ZoomMeetingSdkConfig.h"
 #include "engine-ipc.h"
+#include "modules/LumaRangeProbe.h"
 #include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
@@ -31,6 +32,11 @@ int envInt(const char* name, int fallback) {
 
 std::string participantIdString(std::uint32_t id) {
   return id == 0 ? std::string{} : std::to_string(id);
+}
+
+std::uint64_t monotonicMs() {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 std::string meetingIdFromJoinPayload(const rpc::Json& payload) {
@@ -320,7 +326,16 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       }
       const auto kind = request.getString("kind");
       const auto purpose = request.getString("purpose");
-      command.sourceUuid = kind + "-" + participantId + "-" + purpose;
+      // Video identity must survive Preview -> Program promotion. Including
+      // purpose in the UUID tore down the warmed SHM subscription on every
+      // Take, exactly when the operator needed its retained latest frame.
+      if (kind == "participant-video") {
+        command.sourceUuid = kind + "-" + participantId + "-camera";
+      } else if (kind == "screen-share") {
+        command.sourceUuid = kind + "-" + participantId + "-share";
+      } else {
+        command.sourceUuid = kind + "-" + participantId + "-" + purpose;
+      }
       command.mode = kind == "screen-share" ? "screenshare" : "";
       // Resolution by purpose (0=360P, 1=720P, 2=1080P). TARGET is 1080p60 for EVERY
       // participant (product spec). But N concurrent 1080P raw subscriptions overloaded
@@ -337,7 +352,8 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       }
       // Audio subscriptions have no resolution concept; key them at -1 so a video
       // and an audio subscription for the same source don't alias.
-      const int subscriptionKey = (kind == "participant-audio") ? -1 : command.resolution;
+      const bool isAudioSubscription = kind == "participant-audio" || kind == "meeting-audio";
+      const int subscriptionKey = isAudioSubscription ? -1 : command.resolution;
       desired[command.sourceUuid] = subscriptionKey;
 
       const auto existing = sentSubscriptions_.find(command.sourceUuid);
@@ -349,12 +365,12 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       // slow/wedged engine pipe must never extend that hold. The dedup map is
       // updated at enqueue time; the single FIFO sender preserves order, so
       // "marked sent" still means "delivered exactly once, in order".
-      if (kind == "participant-audio") {
+      if (isAudioSubscription) {
         // ISO audio: each participant's audio target carries THAT participant's
         // one-way stream, so the mixer gets a real per-channel signal (faders,
         // mutes, meters per participant). Without isolate every target receives
         // the same meeting mix N times over.
-        command.isolateAudio = true;
+        command.isolateAudio = kind == "participant-audio";
         enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeAudioCommand(command));
       } else {
         enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeCommand(command));
@@ -804,6 +820,7 @@ std::uint64_t ZoomEngineRuntime::droppedEngineSendCountForTest() const {
 
 rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
   ++fallbackTick_;
+  state_.advanceActiveSpeaker(monotonicMs());
   const auto snapshot = state_.snapshot();
   rpc::Json::Array participants;
   for (const auto& participant : snapshot.participants) {
@@ -838,6 +855,7 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
 }
 
 rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, double elapsedMs) {
+  state_.advanceActiveSpeaker(monotonicMs());
   const auto runtime = state_.snapshot();
   rpc::Json::Array subscriptions;
   const rpc::Json* requested = payload.get("subscriptions");
@@ -969,6 +987,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::uint32_t height = 0;
     std::uint32_t sequence = 0;
     bool buildThumbnail = false;
+    bool probeLumaRange = false;
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -1013,7 +1032,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
                                   nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail});
+                      buildThumbnail, !ref.lumaRangeProbed});
     }
   }
 
@@ -1024,6 +1043,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::optional<ZoomEngineRgbaFrame> frame;
     std::shared_ptr<const std::vector<std::uint8_t>> i420Shared;
     std::chrono::steady_clock::time_point observedAt{};
+    LumaRangeProbe lumaRange;
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
@@ -1043,6 +1063,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     if (result.frame && !result.frame->i420.empty()) {
       result.i420Shared =
           std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
+      if (job.probeLumaRange && result.i420Shared->size() >=
+                                    static_cast<std::size_t>(job.width) * job.height) {
+        result.lumaRange = probeLumaRange(result.i420Shared->data(), job.width, job.height,
+                                          job.width, 8);
+      }
     }
   }
 
@@ -1079,6 +1104,17 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       continue;
     }
     stream->second.lastSequence = result.job.sequence;
+    if (result.job.probeLumaRange && result.lumaRange.sampled > 0) {
+      stream->second.lumaRangeProbed = true;
+      std::fprintf(stderr,
+                   "[zoom-color] source=%s participant=%u requested=bt709-full "
+                   "luma_min=%u luma_max=%u below16=%u above235=%u sampled=%u\n",
+                   result.job.uuid.c_str(), result.job.participantId,
+                   static_cast<unsigned>(result.lumaRange.minimum),
+                   static_cast<unsigned>(result.lumaRange.maximum),
+                   result.lumaRange.below16, result.lumaRange.above235,
+                   result.lumaRange.sampled);
+    }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
                             std::move(result.i420Shared), result.observedAt);
   }
@@ -1167,16 +1203,12 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   //    NOTE Zoom gates these server-side (silence suppression: packets stop
   //    and resume between talk bursts), so they are inherently choppy for
   //    non-active speakers.
-  //  - The MEETING MIX (the engine mirrors mixed audio onto the active-
-  //    speaker video target) - continuous, Zoom-processed program audio.
+  //  - The MEETING MIX ("meeting-audio-*", its own raw-audio target) -
+  //    continuous, Zoom-processed program audio.
   //    Ingested as the dedicated "zoom-mix" source so it gets its own
-  //    mixer row and routing. Other video-target mirrors stay dropped
-  //    (ingesting every mirror would sum the same signal repeatedly).
+  //    mixer row and routing without depending on any video subscription.
   const bool isIso = event.sourceUuid.rfind("participant-audio-", 0) == 0;
-  static const std::string kMixSuffix = "-active-speaker";
-  const bool isMix = event.sourceUuid.size() > kMixSuffix.size() &&
-                     event.sourceUuid.compare(event.sourceUuid.size() - kMixSuffix.size(),
-                                              kMixSuffix.size(), kMixSuffix) == 0;
+  const bool isMix = event.sourceUuid.rfind("meeting-audio-", 0) == 0;
   if (event.participantId == 0 || event.byteLength == 0 || (!isIso && !isMix)) {
     return;
   }
@@ -1186,7 +1218,9 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   // held open - the per-event open/drain/close cycle lost hundreds of
   // packets per source at 500 events/s (soak-measured).
   if (isMix && event.sourceUuid != mixStreamUuid_) {
-    // ONE live mix stream at a time: two concurrent -active-speaker streams
+    // ONE live mix stream at a time: a roster-anchor change can briefly leave
+    // two meeting-audio targets alive while the subscribe/unsubscribe commands
+    // cross the engine pipe. Never interleave them into zoom-mix.
     // draining into pendingAudio_["zoom-mix"] interleave two different
     // signals packet-by-packet (soak run 11: phase chaos at every packet
     // seam). Speaker changes hand the mix over sequentially instead.

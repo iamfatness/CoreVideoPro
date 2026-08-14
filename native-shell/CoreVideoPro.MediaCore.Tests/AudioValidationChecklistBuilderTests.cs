@@ -226,7 +226,7 @@ public sealed class AudioValidationChecklistBuilderTests
     }
 
     [Fact]
-    public void Build_DoesNotPassRecordingFromProofWhenCaptureIsNotVerified()
+    public void Build_PassesRecordingProofWhenOptionalCaptureIsNotVerified()
     {
         var capture = new NativeMediaCoreCaptureAudioSources
         {
@@ -249,9 +249,58 @@ public sealed class AudioValidationChecklistBuilderTests
         var checklist = AudioValidationChecklistBuilder.Build(BasicAudio(), capture, recording: recording);
 
         Assert.Equal("CAPTURE wait no PCM", checklist[0]);
-        Assert.Equal("RECORD wait source 960 samples", checklist[4]);
+        Assert.Equal("RECORD ok 960 samples", checklist[4]);
         Assert.Equal(
             "Audio validation incomplete: add or enable a local/capture audio source, then play signal through it.",
+            AudioValidationChecklistBuilder.SummarizeAcceptance(checklist));
+    }
+
+    [Fact]
+    public void Build_ValidatesZoomProgramAndRecordingWhileOptionalLocalCaptureIsSilent()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Zoom program audio routed",
+            MasterLevel = 54,
+            MixedFrameCount = 480,
+            Participants =
+            [
+                new NativeMediaCoreParticipantAudioChannel
+                {
+                    ParticipantId = "zoom-guest",
+                    InputLevel = 51,
+                    OutputLevel = 59,
+                    PeakDbfs = -9.5,
+                    Status = "balanced"
+                }
+            ]
+        };
+        var capture = RoutedCapture(new NativeMediaCoreCaptureAudioSource
+        {
+            CaptureDeviceId = "local-mic",
+            AudioDeviceName = "Unused local microphone",
+            CaptureStreaming = true,
+            CaptureFramesReceived = 960,
+            SignalPresent = false
+        });
+        var recording = ActiveRecording(new NativeMediaCoreRecordingProof
+        {
+            AudioPacketsObserved = 240,
+            AudioPresent = true,
+            AudioSampleCount = 230400,
+            AudioChannels = 2,
+            AudioSampleRate = 48000
+        });
+
+        var checklist = AudioValidationChecklistBuilder.Build(audio, capture, recording: recording);
+
+        Assert.Equal("CAPTURE silent 960f", checklist[0]);
+        Assert.Equal("PGM ok 480f", checklist[1]);
+        Assert.Equal("RECORD ok 230400 samples", checklist[4]);
+        Assert.Equal("No blocking audio stage detected.", AudioValidationChecklistBuilder.FindFirstBlockingStage(checklist));
+        Assert.Equal(
+            "Audio validated: PGM, recording. monitor, stream idle. Local capture is optional and remains unvalidated (CAPTURE silent 960f).",
             AudioValidationChecklistBuilder.SummarizeAcceptance(checklist));
     }
 

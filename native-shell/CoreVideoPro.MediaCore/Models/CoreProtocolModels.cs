@@ -330,6 +330,7 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
     public NativeMediaCoreMediaPlaybackState? MediaPlayback { get; init; }
     public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }
+    public NativeMediaCoreCompositorState? Compositor { get; init; }
     public NativeMediaCoreProgramSharedTexture? ProgramSharedTexture { get; init; }
     public string? MeetingState { get; init; }
     public string? BreakoutRoomId { get; init; }

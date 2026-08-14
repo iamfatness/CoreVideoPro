@@ -787,9 +787,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // Zoom→program audio topology (owner decision 2026-08-09). Persists via
     // ProductionOutputPreferences.ZoomAudioMode (prefs v9) and is restored into
-    // this backing field by ApplyProductionOutputPreferences; anything absent
-    // or unrecognized reads as the long-standing Z1 program-mix default.
-    private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.ProgramMix;
+    // this backing field by ApplyProductionOutputPreferences; v10 makes
+    // independently routed ISO stems the product default.
+    private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.PerGuestIso;
     public ZoomAudioMode ZoomAudioMode => _zoomAudioMode;
     public bool IsPerGuestIsoAudio => _zoomAudioMode == ZoomAudioMode.PerGuestIso;
 
@@ -1435,11 +1435,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _zoomOAuthCoordinator = new ZoomOAuthAppCoordinator(
             _zoomOAuth,
             Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
-        _zoomOAuthCoordinator.Initialize();
         if (Environment.ProcessPath is { } exePath)
         {
-            _zoomOAuthCoordinator.TryRegisterProtocolHandler(exePath, out _);
+            if (_zoomOAuthCoordinator.TryRegisterProtocolHandler(exePath, out var protocolError))
+            {
+                LaunchLog.Write($"oauth: registered callback protocols for {Path.GetFileName(exePath)}");
+            }
+            else
+            {
+                LaunchLog.Write($"oauth: callback protocol registration failed: {protocolError}");
+            }
         }
+        _zoomOAuthCoordinator.Initialize();
 
         Settings = new SettingsViewModel(
             _bridge,
@@ -4041,7 +4048,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 "local-machine-audio",
                 ResolveLocalAudioRoutingSourceLabel(SelectedLocalAudioCaptureDeviceName)));
         }
-        AddUniqueRoutingSource(sources, new RoutingSource("zoom-mix", "Zoom meeting mix (program default)"));
+        AddUniqueRoutingSource(sources, new RoutingSource(
+            "zoom-mix",
+            "Zoom meeting mix (fallback mode)",
+            DefaultUnrouted: IsPerGuestIsoAudio));
         AddUniqueRoutingSource(sources, new RoutingSource("media", "Media playback"));
         AudioRoutingMatrix.Build(sources);
         RefreshAudioProcessingTargets();
@@ -4053,8 +4063,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         foreach (var input in ShowInputs.Where(IsShowInputAudioSource))
         {
             var sourceId = ResolveAudioRoutingMatrixSourceId(FormatInputSourceId(input.SlotNumber));
-            // Z1: ISO streams default unrouted (the meeting mix is program default).
-            AddUniqueRoutingSource(sources, new RoutingSource(sourceId, $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)} (ISO)", DefaultUnrouted: true));
+            // Product default: each ISO stem reaches Program L/R through its own
+            // strip. In explicit ProgramMix mode the stems stage unrouted so the
+            // Zoom mix is never summed with delayed duplicates of the same voice.
+            AddUniqueRoutingSource(sources, new RoutingSource(
+                sourceId,
+                $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)} (ISO)",
+                DefaultUnrouted: !IsPerGuestIsoAudio));
         }
 
         foreach (var captureDevice in CaptureDevices
@@ -8228,6 +8243,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 existing.TryGetValue(nativeChannel.ParticipantId, out var prior);
+                var sourceMuted = RoomParticipantsForInputs.FirstOrDefault(participant =>
+                    string.Equals(participant.Id, nativeChannel.ParticipantId, StringComparison.Ordinal))?.IsMuted ??
+                    prior?.SourceMuted ?? false;
                 var channel = new ParticipantAudioMix
                 {
                     ParticipantId = nativeChannel.ParticipantId,
@@ -8242,6 +8260,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     // flickering per tick (attack-from-silence at every block seam).
                     // Suppression is operator-only: preserve the prior choice.
                     NoiseSuppression = prior?.NoiseSuppression ?? false,
+                    SourceMuted = sourceMuted,
                     Muted = prior?.Muted ?? nativeChannel.Muted,
                     Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
                     Lufs = nativeChannel.RmsDbfs,
@@ -8304,6 +8323,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Pan = prior?.Pan ?? 0,
             Solo = prior?.Solo ?? false,
             NoiseSuppression = prior?.NoiseSuppression ?? false,
+            SourceMuted = prior?.SourceMuted ?? false,
             Muted = prior?.Muted ?? false,
             Status = "waiting-for-pcm",
             Lufs = -120,
@@ -8319,6 +8339,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (_bridge.LastSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true &&
             _bridge.LastSnapshot.Participants is { Count: > 0 } liveParticipants)
         {
+            var directedSpeakerId = _bridge.LastSnapshot.ActiveSpeakerId;
             participants = liveParticipants
                 .Select(participant => new MediaCoreParticipantWire(
                     participant.UserId,
@@ -8326,8 +8347,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     participant.Role ?? "guest",
                     participant.BreakoutRoomId ?? _currentRoomId,
                     participant.BreakoutRoomName ?? _currentRoomName,
-                    string.Equals(participant.UserId, _bridge.LastSnapshot.ActiveSpeakerId, StringComparison.Ordinal) ||
-                    participant.Talking == true,
+                    !string.IsNullOrWhiteSpace(directedSpeakerId)
+                        ? string.Equals(participant.UserId, directedSpeakerId, StringComparison.Ordinal)
+                        : participant.Talking == true,
                     participant.Muted == true,
                     participant.SharingScreen == true,
                     participant.AudioLevel ?? 0,
@@ -8362,6 +8384,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 OAuthSignedIn = Settings.ZoomOAuthSignedIn,
                 SdkVersion = _bridge.Profile?.Name ?? "zoom-engine",
                 SdkRuntimeReady = !Settings.SdkIsBlocked,
+                ProgramSceneRoutes = syncContext.SceneRoutes,
+                PreviewSceneRoutes = syncContext.PreviewSceneRoutes,
                 Multiview = multiview
             });
     }
@@ -8883,7 +8907,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultZoomAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
         IReadOnlyList<string> zoomParticipantIds,
-        ZoomAudioMode zoomAudioMode = ZoomAudioMode.ProgramMix)
+        ZoomAudioMode zoomAudioMode = ZoomAudioMode.PerGuestIso)
     {
         if (zoomParticipantIds.Count == 0)
         {
@@ -8975,7 +8999,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return new MediaCoreAudioMixChannelWire(
             sourceId,
             Math.Clamp(participant?.AudioLevel ?? mix?.OutputLevel ?? 0, 0, 100),
-            participant?.IsMuted ?? mix?.Muted ?? false,
+            ResolveEffectiveAudioMute(participant?.IsMuted ?? mix?.SourceMuted, mix?.Muted),
             mix?.NoiseSuppression ?? false,
             Math.Abs(manualGain) < 0.05 ? null : manualGain,
             NormalizeMixerPan(mix?.Pan ?? 0),
@@ -8983,6 +9007,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mix?.PluginInserts ?? [],
             mix?.InsertSettings);
     }
+
+    public static bool ResolveEffectiveAudioMute(bool? sourceMuted, bool? mixMuted) =>
+        sourceMuted == true || mixMuted == true;
 
     public static bool IsConfiguredCaptureAudioSource(MediaCoreCaptureAudioSourceWire source) =>
         source.Embedded ||
@@ -10008,7 +10035,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
         ApplyCaptionAndLowerThirdPatch(patch);
 
-        if (patch.Recording is { } recording)
+        // A record/stop command owns the requested state until its production sync
+        // completes.  The core can publish one or more snapshots describing the old
+        // writer state while that sync is back-pressured.  Applying those snapshots
+        // here used to flip Recording back to true during a deferred Stop; the retry
+        // then built a fresh payload with Recording=true and immediately armed a new
+        // recording directory.  Keep the operator's intent sticky for the lifetime of
+        // the guarded command.  Once it completes, normal snapshots resume ownership.
+        if (patch.Recording is { } recording && !_transportCoordinator.RecordingToggleInFlight)
         {
             Recording = recording;
         }
@@ -10396,7 +10430,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     BreakoutRoomName = "Native PCM",
                     Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
                     AudioLevel = mix.OutputLevel,
-                    IsMuted = mix.Muted
+                    IsMuted = mix.Muted || mix.SourceMuted
                 };
 
                 return new AudioParticipantRow
@@ -10405,11 +10439,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Name = participant.Name,
                     Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
                     OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
+                    MeterLevel = AudioMeterScale.ToLevel(mix.TruePeakDb, mix.Muted || mix.SourceMuted),
                     ManualGainDb = NormalizeMixerGain(mix.ManualGainDb),
                     Pan = NormalizeMixerPan(mix.Pan),
                     Lufs = NormalizeMeterDb(mix.Lufs),
                     TruePeakDb = NormalizeMeterDb(mix.TruePeakDb),
                     Muted = mix.Muted,
+                    EffectiveMuted = mix.Muted || mix.SourceMuted,
                     IsSolo = mix.Solo,
                     GainLabel = $"{(NormalizeMixerGain(mix.ManualGainDb) > 0 ? "+" : "")}{NormalizeMixerGain(mix.ManualGainDb):0.0} dB",
                     PanLabel = Math.Abs(NormalizeMixerPan(mix.Pan)) < 0.01
@@ -10424,7 +10460,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                         ? "No inserts"
                         : string.Join(" + ", mix.PluginInserts),
                     MuteButtonLabel = mix.Muted ? "Unmute" : "Mute",
-                    MuteStateLabel = mix.Muted ? "Muted" : "Live",
+                    MuteStateLabel = mix.Muted ? "Muted in mix" : mix.SourceMuted ? "Source muted" : "Live",
                     IsSelected = mix.ParticipantId == SelectedParticipantId
                 };
             })
@@ -10471,7 +10507,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BreakoutRoomName = "Native PCM",
                 Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
                 AudioLevel = mix.OutputLevel,
-                IsMuted = mix.Muted
+                IsMuted = mix.Muted || mix.SourceMuted
             };
         var gain = NormalizeMixerGain(mix.ManualGainDb);
         var pan = NormalizeMixerPan(mix.Pan);
@@ -10484,11 +10520,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Name = participant.Name,
             Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
             OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
+            MeterLevel = AudioMeterScale.ToLevel(truePeak, mix.Muted || mix.SourceMuted),
             ManualGainDb = gain,
             Pan = pan,
             Lufs = lufs,
             TruePeakDb = truePeak,
             Muted = mix.Muted,
+            EffectiveMuted = mix.Muted || mix.SourceMuted,
             IsSolo = mix.Solo,
             GainLabel = $"{(gain > 0 ? "+" : "")}{gain:0.0} dB",
             PanLabel = Math.Abs(pan) < 0.01
@@ -10503,7 +10541,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? "No inserts"
                 : string.Join(" + ", mix.PluginInserts),
             MuteButtonLabel = mix.Muted ? "Unmute" : "Mute",
-            MuteStateLabel = mix.Muted ? "Muted" : "Live",
+            MuteStateLabel = mix.Muted ? "Muted in mix" : mix.SourceMuted ? "Source muted" : "Live",
             IsSelected = mix.ParticipantId == SelectedParticipantId
         });
     }
@@ -10521,11 +10559,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         target.Name = source.Name;
         target.Subtitle = source.Subtitle;
         target.OutputLevel = source.OutputLevel;
+        target.MeterLevel = source.MeterLevel;
         target.ManualGainDb = source.ManualGainDb;
         target.Pan = source.Pan;
         target.Lufs = source.Lufs;
         target.TruePeakDb = source.TruePeakDb;
         target.Muted = source.Muted;
+        target.EffectiveMuted = source.EffectiveMuted;
         target.IsSolo = source.IsSolo;
         target.GainLabel = source.GainLabel;
         target.PanLabel = source.PanLabel;

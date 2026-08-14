@@ -101,6 +101,14 @@ class MediaCore {
   // Wake the video-out tick after a render. MUST be called with coreMutex
   // RELEASED — notifying under it wakes a thread that instantly blocks on it.
   void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
+  // Render pacer telemetry arrives from JsonRpcServer's render thread outside
+  // coreMutex. Keep a monotonic atomic total so UI/support evidence cannot lose
+  // the 120-frame summaries that are printed and then reset in the log loop.
+  void reportRenderDeadlineMisses(int64_t count) {
+    if (count > 0) {
+      renderDeadlineMisses_.fetch_add(count, std::memory_order_relaxed);
+    }
+  }
   void setVideoOutputTickRunning(bool running) {
     videoOutputTickRunning_.store(running, std::memory_order_release);
   }
@@ -473,11 +481,6 @@ class MediaCore {
   // lock. The audio worker's gather picks the selected sources into the ISO work.
   std::map<std::string, modules::VideoFrame> latestIsoSourceFrames_;
   double recordingStartedAtMs_ = 0;
-  double recordingElapsedMs_ = 0;
-  int64_t recordingProgramFramesWritten_ = 0;
-  int64_t recordingIsoFramesWritten_ = 0;
-  int64_t recordingDroppedFrames_ = 0;
-  int64_t recordingAudioPacketsObserved_ = 0;
   int recordingFailureCount_ = 0;
   int recordingRecoveryCount_ = 0;
   std::string recordingError_;
@@ -507,6 +510,7 @@ class MediaCore {
   // True while the senders have destinations. Lets the video tick run one more
   // time after outputs clear, so the stop-carrying sync() is actually delivered.
   std::atomic<bool> senderSyncActive_{false};
+  std::atomic<int64_t> renderDeadlineMisses_{0};
   // The newest program NV12 tap. WRITTEN by renderVideoOutputTick and READ by
   // the audio worker for the network senders — both under audioOutputMutex_.
   // takeVcamNv12 hands out each generation once, so exactly one caller may take.
@@ -691,16 +695,12 @@ class MediaCore {
     // C7b: per-source compressor gain reduction this tick (dB, >0 only).
     std::map<std::string, double> compGainReductionDbBySource;
     bool recordingActive = false;
-    int64_t recordingProgramFramesDelta = 0;
-    int64_t recordingIsoFramesDelta = 0;
-    int64_t recordingAudioPacketsObserved = 0;
     // Encoder-side recording warning (e.g. "Media Foundation dropped program
     // audio: ..."), published into recordingWarning_ so the snapshot's
     // `recording.warning` surfaces encoder failures. Before this, a recording
     // muxing ZERO audio packets showed a clean recording section for its whole
     // duration (2026-07-13 alpha-blocking zero-audio bug).
     std::string recordingWarning;
-    double recordingElapsedMsDelta = 0.0;
   };
   // Gather reads `coreMutex`-domain state (members + zoom/capture/media modules);
   // run touches ONLY `audioOutputMutex_`-domain modules (mixer/monitorOutput/encoder/

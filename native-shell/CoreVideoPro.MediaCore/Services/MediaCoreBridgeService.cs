@@ -16,9 +16,20 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public MediaCoreBridgeService(MediaCoreSupervisor? supervisor = null)
     {
         _supervisor = supervisor ?? new MediaCoreSupervisor();
-        _supervisor.HealthChanged += health => HealthChanged?.Invoke(health);
+        _supervisor.HealthChanged += health =>
+        {
+            if (health.Recovering)
+            {
+                // Do not let the periodic desired-state payload start a new recording
+                // generation against color bars before Zoom has rejoined.
+                StopSpineSync();
+            }
+
+            HealthChanged?.Invoke(health);
+        };
         _supervisor.StatusChanged += status => StatusChanged?.Invoke(status);
         _supervisor.ProfileChanged += profile => ProfileChanged?.Invoke(profile);
+        _supervisor.ZoomRecovered += PublishCaptureSnapshot;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);

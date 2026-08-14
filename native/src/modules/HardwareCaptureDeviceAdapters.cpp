@@ -142,8 +142,11 @@ std::string bstrToUtf8(BSTR value) {
   if (length <= 0) {
     return "";
   }
-  std::string result(static_cast<size_t>(length - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, value, -1, result.data(), length, nullptr, nullptr);
+  std::string result(static_cast<size_t>(length), '\0');
+  const int written = WideCharToMultiByte(CP_UTF8, 0, value, -1, result.data(), length, nullptr, nullptr);
+  if (written <= 0) return {};
+  result.resize(static_cast<size_t>(written));
+  if (!result.empty() && result.back() == '\0') result.pop_back();
   return result;
 }
 

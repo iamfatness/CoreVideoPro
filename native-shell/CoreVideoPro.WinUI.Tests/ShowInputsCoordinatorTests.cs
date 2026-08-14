@@ -283,6 +283,34 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Contains(editor.SourceId!, coordinator.BuildIsoSourceTargets().SourceIds);
     }
 
+    [Fact]
+    public void BuildIsoSourceTargets_VideoOffGuestDoesNotConsumeEightSourceCap()
+    {
+        var (coordinator, host) = Build();
+        host.AutomationAutoAssignInputsEnabled = true;
+        host.IsoRecordingEnabled = true;
+        host.RoomParticipantsForInputs = Enumerable.Range(1, 9)
+            .Select(index => new Participant
+            {
+                Id = $"p{index}",
+                Name = $"Guest {index}",
+                Health = index == 1 ? FeedHealth.VideoOff : FeedHealth.Live
+            })
+            .ToList();
+
+        coordinator.ReapplyShowInputAutoAssign();
+        foreach (var editor in coordinator.ShowInputEditors.Where(editor => editor.Kind == ShowInputKind.ZoomParticipant))
+        {
+            editor.IsoEnabled = true;
+        }
+
+        var targets = coordinator.BuildIsoSourceTargets().SourceIds;
+
+        Assert.Equal(8, targets.Count);
+        Assert.DoesNotContain("zoom:p1", targets);
+        Assert.Equal(Enumerable.Range(2, 8).Select(index => $"zoom:p{index}"), targets);
+    }
+
     // ---------------------------------------------------------------- fakes
 
     private sealed class FakeShowInputsHost : IShowInputsHost

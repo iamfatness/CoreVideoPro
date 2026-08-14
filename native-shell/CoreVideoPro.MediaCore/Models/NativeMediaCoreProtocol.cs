@@ -265,6 +265,8 @@ public sealed class NativeMediaCoreEncoderSession
     public required string Status { get; init; }
     public string? RenderPlanId { get; init; }
     public int ProgramFrameCount { get; init; }
+    public long EncoderQueueDroppedVideoFrames { get; init; }
+    public long EncoderQueueDroppedAudioPackets { get; init; }
     public IReadOnlyList<NativeMediaCoreEncoderTarget> Targets { get; init; } = [];
     public NativeMediaCoreEncoderLifecycle Lifecycle { get; init; } = new() { Status = "idle", LastTransition = "idle" };
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -342,6 +344,8 @@ public sealed class NativeMediaCoreRecordingStream
     public long AudioSamples { get; init; }
     public int DroppedFrames { get; init; }
     public long BytesWritten { get; init; }
+    public string? EncoderPath { get; init; }
+    public string? FallbackReason { get; init; }
     /// <summary>True when this ISO carries an audio track (a paired capture mic / Zoom stem).</summary>
     public bool HasAudio { get; init; }
     public string? Warning { get; init; }
@@ -382,6 +386,8 @@ public sealed class NativeMediaCoreRecordingProof
     public long AudioSampleCount { get; init; }
     public int AudioChannels { get; init; }
     public int AudioSampleRate { get; init; }
+    public long EncoderQueueDroppedVideoFrames { get; init; }
+    public long EncoderQueueDroppedAudioPackets { get; init; }
     public bool MetadataValid { get; init; }
     public string? ContainerFormat { get; init; }
     public string? VideoCodec { get; init; }

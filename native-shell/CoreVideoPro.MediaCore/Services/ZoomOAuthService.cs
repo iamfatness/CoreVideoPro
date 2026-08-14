@@ -395,6 +395,7 @@ public sealed class ZoomOAuthService
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
+                await ClearInvalidGrantAsync(body, cancellationToken).ConfigureAwait(false);
                 throw new InvalidOperationException($"Zoom broker token refresh failed: {OAuthErrorMessage(body, response.ReasonPhrase)}");
             }
 
@@ -412,10 +413,48 @@ public sealed class ZoomOAuthService
         var tokenBody = await tokenResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         if (!tokenResponse.IsSuccessStatusCode)
         {
+            await ClearInvalidGrantAsync(tokenBody, cancellationToken).ConfigureAwait(false);
             throw new InvalidOperationException($"Zoom token refresh failed: {OAuthErrorMessage(tokenBody, tokenResponse.ReasonPhrase)}");
         }
 
         await SaveTokenResponseAsync(tokenBody, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ClearInvalidGrantAsync(string body, CancellationToken cancellationToken)
+    {
+        if (!IsInvalidGrant(body))
+        {
+            return;
+        }
+
+        // A Zoom refresh token is single-use/rotating and can also be revoked.
+        // Retrying invalid_grant with the same stored token can never recover and
+        // leaves the shell claiming the operator is still signed in. Make the
+        // failure terminal and force a clean authorization instead.
+        await _tokenStore.ClearAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool IsInvalidGrant(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.TryGetProperty("error", out var errorElement) &&
+                string.Equals(errorElement.GetString(), "invalid_grant", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // The broker may preserve Zoom's response as a string rather than
+            // promoting its error field to the top-level payload.
+            return root.TryGetProperty("zoom_response", out var responseElement) &&
+                   responseElement.GetString()?.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase) == true;
+        }
+        catch
+        {
+            return body.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private async Task<string> FetchZakAsync(string accessToken, CancellationToken cancellationToken)
@@ -501,6 +540,12 @@ public sealed class ZoomOAuthService
                 string.Equals(errorElement.GetString(), "invalid_client", StringComparison.Ordinal))
             {
                 return "Zoom rejected the OAuth client. Confirm the Marketplace app is configured for Public Client OAuth (PKCE).";
+            }
+
+            if (root.TryGetProperty("error", out var invalidGrantElement) &&
+                string.Equals(invalidGrantElement.GetString(), "invalid_grant", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Zoom sign-in expired or was revoked. Sign in again.";
             }
 
             if (root.TryGetProperty("reason", out var reasonElement) && !string.IsNullOrWhiteSpace(reasonElement.GetString()))

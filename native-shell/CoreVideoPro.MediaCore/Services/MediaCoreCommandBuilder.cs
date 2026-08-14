@@ -63,6 +63,15 @@ public static class MediaCoreCommandBuilder
             {
                 ["reason"] = "Production outputs armed."
             }));
+        }
+
+        // Recording owns the file-writer generation. Arm/finalize it before the
+        // repeated program-output assertion so scene/Preview/Take sync cannot
+        // open a throwaway Program/ISO generation and immediately replace it.
+        commands.AddRange(BuildRecordingCommands(context));
+
+        if (outputCommand is not null)
+        {
             commands.Add(outputCommand);
             commands.Add(Command("start-encoder-session", new Dictionary<string, object?>()));
         }
@@ -73,8 +82,6 @@ public static class MediaCoreCommandBuilder
                 ["reason"] = "Outputs disabled in production state."
             }));
         }
-
-        commands.AddRange(BuildRecordingCommands(context));
         return commands;
     }
 

@@ -602,11 +602,13 @@ public sealed class AudioParticipantRow : ObservableObject
     private string _name = string.Empty;
     private string _subtitle = string.Empty;
     private int _outputLevel;
+    private int _meterLevel;
     private double _manualGainDb;
     private double _pan;
     private double _lufs;
     private double _truePeakDb;
     private bool _muted;
+    private bool _effectiveMuted;
     private bool _isSolo;
     private string _gainLabel = string.Empty;
     private string _panLabel = string.Empty;
@@ -622,11 +624,13 @@ public sealed class AudioParticipantRow : ObservableObject
     public string Name { get => _name; set => SetProperty(ref _name, value); }
     public string Subtitle { get => _subtitle; set => SetProperty(ref _subtitle, value); }
     public int OutputLevel { get => _outputLevel; set => SetProperty(ref _outputLevel, value); }
+    public int MeterLevel { get => _meterLevel; set => SetProperty(ref _meterLevel, value); }
     public double ManualGainDb { get => _manualGainDb; set => SetProperty(ref _manualGainDb, value); }
     public double Pan { get => _pan; set => SetProperty(ref _pan, value); }
     public double Lufs { get => _lufs; set => SetProperty(ref _lufs, value); }
     public double TruePeakDb { get => _truePeakDb; set => SetProperty(ref _truePeakDb, value); }
     public bool Muted { get => _muted; set => SetProperty(ref _muted, value); }
+    public bool EffectiveMuted { get => _effectiveMuted; set => SetProperty(ref _effectiveMuted, value); }
     public bool IsSolo { get => _isSolo; set => SetProperty(ref _isSolo, value); }
     public string GainLabel { get => _gainLabel; set => SetProperty(ref _gainLabel, value); }
     public string PanLabel { get => _panLabel; set => SetProperty(ref _panLabel, value); }
@@ -648,6 +652,9 @@ public sealed class ParticipantAudioMix
     public double Pan { get; set; }
     public bool Solo { get; set; }
     public required bool NoiseSuppression { get; init; }
+    // Upstream source state (for example Zoom's microphone mute). Kept
+    // separate from Muted, which is the operator's console/mix mute.
+    public bool SourceMuted { get; set; }
     public bool Muted { get; set; }
     public required string Status { get; init; }
     public double Lufs { get; set; } = -60;
@@ -1003,6 +1010,7 @@ public static class ProductionStateHelper
                     Pan = prior.Pan,
                     Solo = prior.Solo,
                     NoiseSuppression = prior.NoiseSuppression,
+                    SourceMuted = participant.IsMuted,
                     Muted = prior.Muted,
                     Status = prior.Status,
                     Lufs = -120,
@@ -1024,7 +1032,8 @@ public static class ProductionStateHelper
                 // a flickering gate and processing NOBODY asked for. Channels are
                 // CLEAN by default; the operator adds processing deliberately.
                 NoiseSuppression = false,
-                Muted = participant.IsMuted,
+                SourceMuted = participant.IsMuted,
+                Muted = false,
                 Status = participant.IsMuted ? "muted" : "balanced",
                 Lufs = -120,
                 TruePeakDb = -120,
