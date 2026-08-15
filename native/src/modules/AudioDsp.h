@@ -595,7 +595,57 @@ struct AudioFeedState {
   bool primingRequired = false;
   size_t primeEvents = 0;
   size_t partialBlocksPrevented = 0;
+  // The Zoom callback clock and the program worker clock are both nominally
+  // 48 kHz, but their scheduling phase is independent.  A strict 960-frame
+  // dequeue lets the one-tick reserve random-walk to zero when polls alternate
+  // between 480 and 1440 frames.  We therefore consume a few frames either
+  // side of nominal and resample that tiny window back to one exact output
+  // tick.  This is the same elastic-jitter-buffer principle used by realtime
+  // playout engines: preserve cadence without inserting periodic 20-40 ms
+  // holes.  The correction is bounded to 2.5% per tick.
+  size_t clockCorrectionEvents = 0;
+  size_t clockCorrectionInputFrames = 0;
+  size_t emptyInputTicks = 0;
 };
+
+inline std::vector<float> resampleInterleavedBlockToFrames(
+    const float* input, size_t inputFrames, size_t outputFrames, size_t channels) {
+  std::vector<float> output;
+  if (input == nullptr || inputFrames == 0 || outputFrames == 0 || channels == 0) {
+    return output;
+  }
+  output.resize(outputFrames * channels);
+  if (inputFrames == outputFrames) {
+    std::copy(input, input + inputFrames * channels, output.begin());
+    return output;
+  }
+  if (inputFrames == 1 || outputFrames == 1) {
+    for (size_t frame = 0; frame < outputFrames; ++frame) {
+      for (size_t channel = 0; channel < channels; ++channel) {
+        output[frame * channels + channel] = input[channel];
+      }
+    }
+    return output;
+  }
+
+  // Map the complete input block onto the complete output block.  Adjacent
+  // blocks remain ordered: after this call the FIFO erases exactly inputFrames
+  // and the next block begins at the following source frame.
+  const double scale = static_cast<double>(inputFrames - 1) /
+                       static_cast<double>(outputFrames - 1);
+  for (size_t frame = 0; frame < outputFrames; ++frame) {
+    const double position = static_cast<double>(frame) * scale;
+    const size_t base = static_cast<size_t>(position);
+    const size_t next = (std::min)(base + 1, inputFrames - 1);
+    const float fraction = static_cast<float>(position - static_cast<double>(base));
+    for (size_t channel = 0; channel < channels; ++channel) {
+      const float a = input[base * channels + channel];
+      const float b = input[next * channels + channel];
+      output[frame * channels + channel] = a + (b - a) * fraction;
+    }
+  }
+  return output;
+}
 
 inline void applyResumeFadeIn(AudioFeedState& state, float* interleaved, size_t samples, size_t channels) {
   if (state.fadeInRemaining == 0 || channels == 0 || samples == 0) {
@@ -637,13 +687,18 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       state.primed = false;
     }
     state.primingRequired = state.primingRequired || frame.requiresSteadyFeedPriming;
-    if (!frame.pcm.empty()) {
+    const bool hadInputPcm = !frame.pcm.empty();
+    if (hadInputPcm) {
       state.fifo.insert(state.fifo.end(), frame.pcm.begin(), frame.pcm.end());
+    }
+    if (state.primingRequired) {
+      state.emptyInputTicks = hadInputPcm ? 0 : state.emptyInputTicks + 1;
     }
 
     const size_t tickSamples =
         static_cast<size_t>(frame.sampleRate / ticksPerSecond) * static_cast<size_t>(frame.channels);
     size_t emit = 0;
+    size_t consume = 0;
     if (!state.primingRequired) {
       emit = std::min(state.fifo.size(), tickSamples);
     } else {
@@ -660,13 +715,40 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       }
       if (state.primed && state.fifo.size() >= tickSamples) {
         emit = tickSamples;
+        const size_t channels = static_cast<size_t>(frame.channels);
+        const size_t tickFrames = tickSamples / channels;
+        const size_t availableFrames = state.fifo.size() / channels;
+        const size_t reserveFrames = tickFrames;
+        const size_t desiredFrames = availableFrames > reserveFrames
+                                         ? availableFrames - reserveFrames
+                                         : 0;
+        const size_t maxCorrectionFrames = (std::max)(size_t{1}, tickFrames / 40);
+        const size_t minConsumeFrames = tickFrames > maxCorrectionFrames
+                                            ? tickFrames - maxCorrectionFrames
+                                            : 1;
+        const size_t maxConsumeFrames = tickFrames + maxCorrectionFrames;
+        const size_t consumeFrames = (std::min)(
+            availableFrames,
+            (std::max)(minConsumeFrames, (std::min)(desiredFrames, maxConsumeFrames)));
+        consume = consumeFrames * channels;
       } else if (!state.fifo.empty()) {
         ++state.partialBlocksPrevented;
       }
     }
-    frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    if (!state.primingRequired) {
+      consume = emit;
+    }
+    if (emit > 0 && consume != emit) {
+      frame.pcm = resampleInterleavedBlockToFrames(
+          state.fifo.data(), consume / static_cast<size_t>(frame.channels),
+          emit / static_cast<size_t>(frame.channels), static_cast<size_t>(frame.channels));
+      ++state.clockCorrectionEvents;
+      state.clockCorrectionInputFrames += consume / static_cast<size_t>(frame.channels);
+    } else {
+      frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    }
     frame.sampleCount = static_cast<int>(emit / static_cast<size_t>(frame.channels));
-    state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(consume));
     if (emit > 0 && state.lastEmitted == 0 && state.hasEverEmitted) {
       state.fadeInTotal = static_cast<size_t>(0.005 * frame.sampleRate);
       state.fadeInRemaining = state.fadeInTotal;
@@ -676,7 +758,8 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       state.hasEverEmitted = true;
     }
     state.lastEmitted = emit;
-    if (state.primingRequired && emit == 0 && state.fifo.empty()) {
+    if (state.primingRequired && emit == 0 && state.emptyInputTicks >= 2) {
+      state.fifo.clear();
       state.primed = false;
     }
 
@@ -718,9 +801,12 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     if (seen) {
       continue;
     }
+    if (state.primingRequired) {
+      ++state.emptyInputTicks;
+    }
     if (state.fifo.empty()) {
       state.lastEmitted = 0;  // dry: the NEXT flow onset gets a declick fade
-      if (state.primingRequired) {
+      if (state.primingRequired && state.emptyInputTicks >= 2) {
         state.primed = false;
       }
       continue;
@@ -728,6 +814,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     const size_t tickSamples =
         static_cast<size_t>(state.sampleRate / ticksPerSecond) * static_cast<size_t>(state.channels);
     size_t emit = 0;
+    size_t consume = 0;
     if (!state.primingRequired) {
       emit = std::min(state.fifo.size(), tickSamples);
     } else {
@@ -737,21 +824,52 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       }
       if (state.primed && state.fifo.size() >= tickSamples) {
         emit = tickSamples;
+        const size_t channels = static_cast<size_t>(state.channels);
+        const size_t tickFrames = tickSamples / channels;
+        const size_t availableFrames = state.fifo.size() / channels;
+        const size_t reserveFrames = tickFrames;
+        const size_t desiredFrames = availableFrames > reserveFrames
+                                         ? availableFrames - reserveFrames
+                                         : 0;
+        const size_t maxCorrectionFrames = (std::max)(size_t{1}, tickFrames / 40);
+        const size_t minConsumeFrames = tickFrames > maxCorrectionFrames
+                                            ? tickFrames - maxCorrectionFrames
+                                            : 1;
+        const size_t maxConsumeFrames = tickFrames + maxCorrectionFrames;
+        const size_t consumeFrames = (std::min)(
+            availableFrames,
+            (std::max)(minConsumeFrames, (std::min)(desiredFrames, maxConsumeFrames)));
+        consume = consumeFrames * channels;
       } else {
         ++state.partialBlocksPrevented;
       }
     }
     if (emit == 0) {
       state.lastEmitted = 0;
+      if (state.primingRequired && state.emptyInputTicks >= 2) {
+        state.fifo.clear();
+        state.primed = false;
+      }
       continue;
     }
     AudioFrame fill;
     fill.participantId = sourceId;
     fill.sampleRate = state.sampleRate;
     fill.channels = state.channels;
-    fill.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    if (!state.primingRequired) {
+      consume = emit;
+    }
+    if (consume != emit) {
+      fill.pcm = resampleInterleavedBlockToFrames(
+          state.fifo.data(), consume / static_cast<size_t>(state.channels),
+          emit / static_cast<size_t>(state.channels), static_cast<size_t>(state.channels));
+      ++state.clockCorrectionEvents;
+      state.clockCorrectionInputFrames += consume / static_cast<size_t>(state.channels);
+    } else {
+      fill.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    }
     fill.sampleCount = static_cast<int>(emit / static_cast<size_t>(state.channels));
-    state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(consume));
     if (emit > 0 && state.lastEmitted == 0 && state.hasEverEmitted) {
       state.fadeInTotal = static_cast<size_t>(0.005 * state.sampleRate);
       state.fadeInRemaining = state.fadeInTotal;

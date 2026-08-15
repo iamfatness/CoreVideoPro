@@ -1090,12 +1090,54 @@ TEST(AudioDsp, ZoomSteadyFeedPrimesOneTickAndNeverEmitsPartialBlocks) {
   tick(480);   // 10 ms arrival + cushion still emits one complete tick
   tick(480);
   EXPECT_EQ(emitted.size(), 2880u);
-  for (size_t index = 0; index < emitted.size(); ++index) {
-    EXPECT_EQ(emitted[index], static_cast<float>(index));
+  for (size_t index = 1; index < emitted.size(); ++index) {
+    EXPECT_GE(emitted[index], emitted[index - 1]);
   }
   EXPECT_TRUE(states["zoom-iso"].primed);
   EXPECT_EQ(states["zoom-iso"].primeEvents, 1u);
   EXPECT_GE(states["zoom-iso"].partialBlocksPrevented, 1u);
+  EXPECT_GE(states["zoom-iso"].clockCorrectionEvents, 1u);
+}
+
+TEST(AudioDsp, ZoomSteadyFeedDoesNotReprimeUnderContinuousClockPhaseJitter) {
+  // Live Zoom reproduction (Jamal, 2026-08-15): the SDK supplies 10 ms
+  // packets while the program worker polls every 20 ms. Depending on phase,
+  // a poll sees 480 then 1440 frames even though the source is continuous.
+  // The old strict dequeue drained its reserve and re-primed ~16 times/sec,
+  // inserting an audible hole each time.
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  float sequence = 0.0f;
+  const auto makeFrame = [&sequence](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "jamal";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.requiresSteadyFeedPriming = true;
+    frame.pcm.reserve(static_cast<size_t>(samples));
+    for (int index = 0; index < samples; ++index) {
+      frame.pcm.push_back(sequence++);
+    }
+    frame.sampleCount = samples;
+    return frame;
+  };
+
+  size_t fullBlocks = 0;
+  for (int tick = 0; tick < 2000; ++tick) {
+    // Equal long-term rate (960/tick), deliberately hostile poll phase.
+    const int arrivals[] = {480, 1440, 480, 1440, 960, 960};
+    std::vector<corevideo::modules::AudioFrame> frames;
+    frames.push_back(makeFrame(arrivals[tick % 6]));
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    if (!frames[0].pcm.empty()) {
+      EXPECT_EQ(frames[0].pcm.size(), 960u);
+      ++fullBlocks;
+    }
+  }
+
+  EXPECT_EQ(states["jamal"].primeEvents, 1u);
+  EXPECT_TRUE(states["jamal"].primed);
+  EXPECT_GE(fullBlocks, 1998u);  // only startup priming may be silent
+  EXPECT_GT(states["jamal"].clockCorrectionEvents, 0u);
 }
 
 TEST(AudioDsp, ZoomSteadyFeedReprimesAfterARealGap) {
