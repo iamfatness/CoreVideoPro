@@ -164,6 +164,33 @@ thoroughly it does so, the more convincing the false green.
 The generalization: a new contract creates two populations, conforming and non-conforming. Testing
 only one is a coverage gap that no amount of testing *within* that one repairs.
 
+## 10. A structural test must exercise the structure, not describe it
+
+Three separate times now, a check written to guarantee a property turned out weaker than its name
+claimed — and each time the weakness was the same: **the test described the thing instead of
+driving it.**
+
+- **A loose regex.** `toMatch(/no response/)` guarded an operator diagnostic. A move-only task
+  collapsed `no response after 6500ms with a poll still in flight` to `no response…`; the assertion
+  happily accepted the *less* informative message. It protected the fact that a message existed
+  while abandoning what it said.
+- **A value-based pin.** A whole-shape assertion was supposed to prove a normalizer erased only two
+  snapshot nodes. It only bound where the fixture's value differed from what an eraser writes — so
+  with an empty queue, `page: 0`, and empty `unseated`, three of fifteen nodes stayed unguarded.
+- **A hand-maintained list.** A test asserted an action registry and its dispatch `switch` were a
+  closed 1:1 set. A reviewer deleted a `case` from the switch and the test stayed **green**: a list
+  of names can verify names, but it cannot see whether a `switch` still handles them. The fix was a
+  second test that actually *invokes* every registered id.
+
+The generalization: a test that reads a declaration is testing the declaration. To bind a structural
+property you must **drive the structure through its real entry point** and observe the result —
+invoke every action, mutate every field, assert the exact string. If you can delete the
+implementation of one case and the test still passes, it was documentation with an `expect` in it.
+
+Worth noting who caught these: two of the three were found by *implementers*, mid-mutation-testing,
+about checks the plan or a reviewer had prescribed. Rule 7's mutation requirement is what surfaces
+them — a named mutation that fails to red is the signal that the guard, not the code, is broken.
+
 ---
 
 ## Scorecard, for calibration
