@@ -1227,7 +1227,7 @@ export class ShowEngine {
       capabilities,
       health,
       unseated: this.unseatedPanelists,
-      pagingRefused: this.lookController.refusal()?.message ?? null,
+      pagingRefused: this.pagingRefusal()?.message ?? null,
       restoreWarnings: this.restoreWarnings
     });
   }

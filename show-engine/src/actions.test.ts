@@ -337,6 +337,21 @@ describe("oscAddressFor", () => {
     const addresses = OHG_ACTIONS.map((a) => oscAddressFor(a.id));
     expect(new Set(addresses).size).toBe(addresses.length);
   });
+
+  /**
+   * Fix round 1: `oscAddressFor`'s doc comment claimed byte-for-byte parity
+   * with `OscAddressMap`, but the C# constructor always normalizes `root`
+   * (`NormalizeRoot`, `OscAddressMap.cs:39-53`) and `oscAddressFor` didn't —
+   * so a root missing its leading slash, or carrying a trailing one,
+   * produced an address the host would never actually expose.
+   */
+  it("normalizes root exactly like OscAddressMap.NormalizeRoot", () => {
+    expect(oscAddressFor("ohg.program.cut", "cvp")).toBe("/cvp/ohg/program/cut");
+    expect(oscAddressFor("ohg.program.cut", "/cvp/")).toBe("/cvp/ohg/program/cut");
+    expect(oscAddressFor("ohg.program.cut", "studio/")).toBe("/studio/ohg/program/cut");
+    expect(oscAddressFor("ohg.program.cut", "")).toBe("/cvp/ohg/program/cut");
+    expect(oscAddressFor("ohg.program.cut", "   ")).toBe("/cvp/ohg/program/cut");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -376,10 +391,22 @@ describe("parseProgramSource / formatProgramSource", () => {
     ["look: with an empty id", "look:"],
     ["slot: with a non-digit payload", "slot:abc"],
     ["slot: with a negative payload", "slot:-1"],
+    ["slot: with a ZERO payload (fix round 1: LiveSlots is 1-based, slot 0 never exists)", "slot:0"],
     ["an unknown bare word", "nonsense"],
     ["the empty string", ""]
   ])("returns null for %s ('%s')", (_label, wire) => {
     expect(parseProgramSource(wire)).toBeNull();
+  });
+
+  it("rejects slot:0 through invokeAction too, engine untouched (fix round 1)", () => {
+    const e = engine();
+    const before = snap(e);
+    const result = invokeAction(e, "ohg.program.directCut", ["slot:0"]);
+    expect(result).toEqual({
+      kind: "error",
+      message: expect.stringContaining("not a valid ProgramSource")
+    });
+    expect(snap(e)).toEqual(before);
   });
 });
 
@@ -524,6 +551,118 @@ describe("invokeAction: never throws, never mutates on a rejected invoke", () =>
       result = invokeAction(e, "ohg.gallery.replace", [999, 1]);
     }).not.toThrow();
     expect(result?.kind).toBe("error");
+  });
+
+  /**
+   * Fix round 1 CRITICAL: `bindArgs`'s rejection message used to build with
+   * `JSON.stringify(raw)`, which throws for a `bigint` or a circular
+   * object — and `bindArgs` ran OUTSIDE `invokeAction`'s try/catch, so that
+   * throw reached the caller directly. This is not a contrived input: OSC's
+   * `h` (int64) type tag decodes to a JS `bigint` in common Node OSC
+   * libraries, so a real OSC client sending a 64-bit int to any `int` or
+   * `string` param took this exact path. Fixed by formatting the message
+   * with `typeof`/`String()` (never throws) AND moving `bindArgs` inside
+   * the `try` (so an equivalent mistake anywhere else is caught too).
+   */
+  it("returns an error (never throws) for a bigint argument to an int param, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(e, "ohg.panelist.remove", [10n]);
+    }).not.toThrow();
+    expect(result?.kind).toBe("error");
+    expect(snap(e)).toEqual(before);
+  });
+
+  it("returns an error (never throws) for a bigint argument to a string param, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(e, "ohg.panelist.add", [10n]);
+    }).not.toThrow();
+    expect(result?.kind).toBe("error");
+    expect(snap(e)).toEqual(before);
+  });
+
+  it("returns an error (never throws) for a circular-object argument to a string param, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(e, "ohg.look.set", [circular]);
+    }).not.toThrow();
+    expect(result?.kind).toBe("error");
+    expect(snap(e)).toEqual(before);
+  });
+
+  it("returns an error (never throws) for a circular-object argument to an int param, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(e, "ohg.panelist.remove", [circular]);
+    }).not.toThrow();
+    expect(result?.kind).toBe("error");
+    expect(snap(e)).toEqual(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1: coerceArg widened to genuinely match the host stack's own
+// ControlActionRegistry.TryCoerce for "int"/"bool" (the doc comment claimed
+// parity before this round without it being true). "string" stays strict —
+// the owner's PIN ruling — and is asserted to still reject a bool/number.
+// ---------------------------------------------------------------------------
+
+describe("invokeAction: widened int/bool coercion matches the host stack (string stays strict)", () => {
+  it("accepts an OSC-style 1/0 number for a bool param", async () => {
+    const e = engine();
+    expect(invokeAction(e, "ohg.program.asFollow.set", [1])).toEqual({ kind: "ok" });
+    const on = await e.tick();
+    expect(on.program.activeSpeakerFollow).toBe(true);
+
+    expect(invokeAction(e, "ohg.program.asFollow.set", [0])).toEqual({ kind: "ok" });
+    const off = await e.tick();
+    expect(off.program.activeSpeakerFollow).toBe(false);
+  });
+
+  it("accepts the strings '1'/'0' for a bool param", () => {
+    const e = engine();
+    expect(invokeAction(e, "ohg.gallery.smart.set", ["1"])).toEqual({ kind: "ok" });
+    expect(invokeAction(e, "ohg.gallery.smart.set", ["0"])).toEqual({ kind: "ok" });
+  });
+
+  it("accepts 'True'/'FALSE' case-insensitively for a bool param", () => {
+    const e = engine();
+    expect(invokeAction(e, "ohg.gallery.smart.set", ["True"])).toEqual({ kind: "ok" });
+    expect(invokeAction(e, "ohg.gallery.smart.set", ["FALSE"])).toEqual({ kind: "ok" });
+  });
+
+  it("rounds a float for an int param, matching the host's TryCoerce", async () => {
+    const e = engine();
+    const result = invokeAction(e, "ohg.gallery.replace", [1, 2.6]);
+    expect(result).toEqual({ kind: "ok" });
+    const s = await e.tick();
+    expect(s.gallery[0]).toEqual({ cell: 1, slot: 3 }); // 2.6 rounds to 3
+  });
+
+  it("accepts a boolean for an int param (true=1, false=0), matching the host's TryCoerce", async () => {
+    const e = engine();
+    const result = invokeAction(e, "ohg.gallery.remove", [true]); // cell 1
+    expect(result).toEqual({ kind: "ok" });
+  });
+
+  /** The one DELIBERATE divergence: string stays strict, never coerced from a bool/number. */
+  it("still rejects a boolean/number for a string param — the PIN ruling is unaffected by the widening", () => {
+    const e = engine();
+    expect(invokeAction(e, "ohg.panelist.role.set", [true, "host"]).kind).toBe("error");
+    expect(invokeAction(e, "ohg.panelist.role.set", [42, "host"]).kind).toBe("error");
   });
 });
 
@@ -676,6 +815,45 @@ describe("owner ruling: PINs never lose a leading zero through invokeAction", ()
 
     const p1 = s.slots.find((slot) => slot.panelist?.participantId === "p1")?.panelist;
     expect(p1?.role).toBe("panelist"); // "0042"'s override is gone
+  });
+});
+
+/**
+ * Fix round 1: an empty (or whitespace-only) PIN is never a real person,
+ * but `personKeyForPin("")` is a perfectly well-formed `PersonKey`
+ * (`"pin:"`) — without a guard, all three PIN-consuming actions would
+ * silently write to (role.set/override.set) or delete (override.delete)
+ * an override keyed by that bogus identity instead of refusing.
+ */
+describe("invokeAction: an empty PIN is rejected, never silently accepted", () => {
+  it("ohg.panelist.role.set rejects an empty pin, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    const result = invokeAction(e, "ohg.panelist.role.set", ["", "host"]);
+    expect(result).toEqual({ kind: "error", message: expect.stringContaining("pin must not be empty") });
+    expect(snap(e)).toEqual(before);
+  });
+
+  it("ohg.panelist.role.set rejects a whitespace-only pin", () => {
+    const e = engine();
+    const result = invokeAction(e, "ohg.panelist.role.set", ["   ", "host"]);
+    expect(result.kind).toBe("error");
+  });
+
+  it("ohg.mukana.override.set rejects an empty pin, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    const result = invokeAction(e, "ohg.mukana.override.set", ["", "Name", "Loc", "host"]);
+    expect(result).toEqual({ kind: "error", message: expect.stringContaining("pin must not be empty") });
+    expect(snap(e)).toEqual(before);
+  });
+
+  it("ohg.mukana.override.delete rejects an empty pin, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    const result = invokeAction(e, "ohg.mukana.override.delete", [""]);
+    expect(result).toEqual({ kind: "error", message: expect.stringContaining("pin must not be empty") });
+    expect(snap(e)).toEqual(before);
   });
 });
 

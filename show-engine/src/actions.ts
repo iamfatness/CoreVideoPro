@@ -71,7 +71,7 @@
  */
 
 import type { ShowEngine } from "./showEngine.js";
-import { isRole, type ProgramSource, type Role } from "./contracts.js";
+import { isRole, type ProgramSource } from "./contracts.js";
 import { personKeyForPin } from "./personKey.js";
 
 export type ActionParamType = "string" | "int" | "double" | "bool";
@@ -99,9 +99,18 @@ export type ActionResult =
  * Parse the single prefixed-string wire encoding of a `ProgramSource` (the
  * second owner decision above). Returns `null` for anything that doesn't
  * match one of the five variants exactly — an empty `look:` id, a
- * non-digit or negative `slot:` payload, or an unrecognized bare word — so
- * `invokeAction` can turn that into `{kind:"error"}` without ever
+ * non-digit, negative, or ZERO `slot:` payload, or an unrecognized bare
+ * word — so `invokeAction` can turn that into `{kind:"error"}` without ever
  * constructing a bogus `ProgramSource`.
+ *
+ * `slot:0` is rejected (fix round 1): `LiveSlots` is 1-based and has no
+ * slot 0, so `directCut ["slot:0"]` used to build a `ProgramSource` that
+ * could never resolve to a real seat. An upper bound is deliberately NOT
+ * enforced here — this function has no access to the show's configured
+ * `capacity`, and a slot number too HIGH for this show still resolves
+ * safely (the compositor's own loud-but-safe "no matching frame" path,
+ * `warnUnmatchedCaptureLayer`'s show-engine sibling), unlike slot 0, which
+ * has no valid interpretation under ANY configuration.
  */
 export function parseProgramSource(value: string): ProgramSource | null {
   if (value === "black") return { kind: "black" };
@@ -116,7 +125,8 @@ export function parseProgramSource(value: string): ProgramSource | null {
   if (value.startsWith("slot:")) {
     const raw = value.slice("slot:".length);
     if (!/^\d+$/.test(raw)) return null;
-    return { kind: "slot", slot: Number(raw) };
+    const slot = Number(raw);
+    return slot >= 1 ? { kind: "slot", slot } : null;
   }
 
   return null;
@@ -390,20 +400,32 @@ type CoerceOutcome = { ok: true; value: string | number | boolean } | { ok: fals
 
 /**
  * Validate + coerce one raw arg against its declared `ActionParamType`.
- * `"string"` is deliberately STRICT — no number/boolean is ever turned into
- * a string here, because that is exactly the silent PIN/participant-id
- * corruption the owner decisions above forbid. `"int"`/`"double"`/`"bool"`
- * accept a same-shaped numeric/boolean string too (a plain OSC client may
- * not have distinct wire types), mirroring the host stack's own
- * `ControlActionRegistry.TryCoerce` (`OscAddressMap.cs`'s C# sibling) so a
- * bridge's coercion behavior and this one agree.
+ *
+ * `"string"` is deliberately STRICT and a DELIBERATE DIVERGENCE from the
+ * host stack's own coercion — no number/boolean is ever turned into a
+ * string here, because that is exactly the silent PIN/participant-id
+ * corruption the owner decisions above forbid (a `String()`-coerced number
+ * that started life as a PIN has already lost whatever leading zero made it
+ * a different person). Every other divergence between this and
+ * `ControlActionRegistry.TryCoerce` (`ControlActionRegistry.cs:71-115`) was
+ * a BUG, fixed in this round: `"int"` now also accepts a rounded
+ * non-integer number and a boolean (`true`→1, `false`→0), and `"bool"` now
+ * also accepts a nonzero/zero number and the strings `"1"`/`"0"` (plus
+ * `"true"`/`"false"` case-insensitively) — exactly what the host's `Int`/
+ * `Bool` arms accept, because OSC's `h` (int64) tag and a plain fader's
+ * float both need to reach an `int`/`bool` param without a manual coercion
+ * step at every bridge. `"double"` already matched (any finite number, or a
+ * numeric string) and is unchanged.
  */
 function coerceArg(raw: unknown, type: ActionParamType): CoerceOutcome {
   switch (type) {
     case "string":
       return typeof raw === "string" ? { ok: true, value: raw } : { ok: false };
     case "int": {
-      if (typeof raw === "number" && Number.isInteger(raw)) return { ok: true, value: raw };
+      if (typeof raw === "number" && Number.isFinite(raw)) {
+        return { ok: true, value: Number.isInteger(raw) ? raw : Math.round(raw) };
+      }
+      if (typeof raw === "boolean") return { ok: true, value: raw ? 1 : 0 };
       if (typeof raw === "string" && /^-?\d+$/.test(raw)) return { ok: true, value: Number(raw) };
       return { ok: false };
     }
@@ -416,8 +438,14 @@ function coerceArg(raw: unknown, type: ActionParamType): CoerceOutcome {
     }
     case "bool": {
       if (typeof raw === "boolean") return { ok: true, value: raw };
-      if (raw === "true") return { ok: true, value: true };
-      if (raw === "false") return { ok: true, value: false };
+      if (typeof raw === "number" && Number.isFinite(raw)) return { ok: true, value: raw !== 0 };
+      if (typeof raw === "string") {
+        const normalized = raw.trim().toLowerCase();
+        if (normalized === "true") return { ok: true, value: true };
+        if (normalized === "false") return { ok: true, value: false };
+        if (raw === "1") return { ok: true, value: true };
+        if (raw === "0") return { ok: true, value: false };
+      }
       return { ok: false };
     }
   }
@@ -426,6 +454,34 @@ function coerceArg(raw: unknown, type: ActionParamType): CoerceOutcome {
 /** A well-typed error result, formatted consistently across every validation failure site below. */
 function errorResult(message: string): ActionResult {
   return { kind: "error", message };
+}
+
+/**
+ * Describe a rejected raw arg for an error message WITHOUT EVER THROWING.
+ * `JSON.stringify` throws for a `bigint` (OSC's `h`/int64 tag decodes to
+ * one in common Node OSC libraries, so an `int`/`string` param can receive
+ * a real `bigint` from a conforming OSC client) and for a circular object —
+ * exactly the malformed-packet shapes `invokeAction`'s "never throws"
+ * guarantee exists to survive. `typeof`+`String()` never throws for any JS
+ * value, `bigint`/circular included (`String()` on a circular object falls
+ * back to `Object.prototype.toString`, never walking the structure).
+ */
+function describeArg(raw: unknown): string {
+  return `${typeof raw} ${String(raw)}`;
+}
+
+/**
+ * Reject an empty (or whitespace-only) PIN before it ever reaches
+ * `personKeyForPin` — fix round 1. An empty PIN is never a real person, but
+ * `personKeyForPin("")` is a perfectly well-formed `PersonKey` (`"pin:"`),
+ * so without this guard `ohg.panelist.role.set`/`ohg.mukana.override.set`/
+ * `.delete` would silently write to (or delete) an override keyed by that
+ * bogus identity instead of refusing. Shared by all three PIN-consuming
+ * dispatch cases so the rule can't drift between them. Returns the error
+ * `ActionResult` to return immediately, or `null` when `pin` is fine.
+ */
+function requireNonEmptyPin(id: string, pin: string): ActionResult | null {
+  return pin.trim().length === 0 ? errorResult(`${id}: pin must not be empty`) : null;
 }
 
 /**
@@ -472,7 +528,7 @@ function bindArgs(
       return {
         ok: false,
         result: errorResult(
-          `${id}: argument '${param.name}' must be ${param.type} (got ${JSON.stringify(raw)})`
+          `${id}: argument '${param.name}' must be ${param.type} (got ${describeArg(raw)})`
         )
       };
     }
@@ -518,6 +574,8 @@ function dispatch(engine: ShowEngine, id: string, bound: readonly (string | numb
     case "ohg.panelist.role.set": {
       const pin = bound[0] as string;
       const role = bound[1] as string;
+      const pinError = requireNonEmptyPin(id, pin);
+      if (pinError !== null) return pinError;
       if (!isRole(role)) return errorResult(`${id}: '${role}' is not a known role`);
       engine.setRole(pin, role);
       return { kind: "ok" };
@@ -634,12 +692,16 @@ function dispatch(engine: ShowEngine, id: string, bound: readonly (string | numb
       const name = bound[1] as string;
       const location = bound[2] as string;
       const role = bound[3] as string;
+      const pinError = requireNonEmptyPin(id, pin);
+      if (pinError !== null) return pinError;
       if (!isRole(role)) return errorResult(`${id}: '${role}' is not a known role`);
-      engine.setOverride({ personKey: personKeyForPin(pin), displayName: name, location, role: role as Role });
+      engine.setOverride({ personKey: personKeyForPin(pin), displayName: name, location, role });
       return { kind: "ok" };
     }
     case "ohg.mukana.override.delete": {
       const pin = bound[0] as string;
+      const pinError = requireNonEmptyPin(id, pin);
+      if (pinError !== null) return pinError;
       engine.clearOverride(personKeyForPin(pin));
       return { kind: "ok" };
     }
@@ -650,12 +712,22 @@ function dispatch(engine: ShowEngine, id: string, bound: readonly (string | numb
 
 /**
  * Invoke one `ohg.*` action by id against `engine`. Never throws (see the
- * file-level doc comment's guarantee #1): arity/type validation and
- * `ProgramSource`/`Role` parsing all run before any engine call, and
- * whatever the engine call itself throws is caught here and mapped to
- * `{kind:"error"}` rather than propagated. An unknown `id` is the same
- * `{kind:"error"}` shape as every other rejection — there is no separate
- * "action not found" result kind.
+ * file-level doc comment's guarantee #1): `bindArgs` (arity/type validation
+ * and coercion) and `dispatch` (`ProgramSource`/`Role` parsing, then the
+ * engine call) BOTH run inside the one `try` below, so this function's
+ * "never throws" promise is enforced at a SINGLE boundary rather than
+ * trusting every internal helper to individually never throw. That single
+ * boundary is what closed a real bug (fix round 1): `bindArgs`'s own error
+ * message used to build with `JSON.stringify(raw)`, which throws for a
+ * `bigint` (OSC's `h`/int64 tag decodes to one in common Node OSC
+ * libraries) or a circular object — and `bindArgs` ran OUTSIDE the try, so
+ * that throw reached the caller directly, taking the exact "malformed OSC
+ * packet from a Companion button" path this guarantee exists to survive.
+ * `describeArg` (above) fixed the message itself; moving `bindArgs` inside
+ * `try` means an equivalent mistake anywhere else in this file's validation
+ * path is caught here too, not just at today's one known site. An unknown
+ * `id` is the same `{kind:"error"}` shape as every other rejection — there
+ * is no separate "action not found" result kind.
  */
 export function invokeAction(engine: ShowEngine, id: string, args: readonly unknown[]): ActionResult {
   const def = ACTIONS_BY_ID.get(id);
@@ -663,10 +735,9 @@ export function invokeAction(engine: ShowEngine, id: string, args: readonly unkn
     return errorResult(`ohg action: unknown action id ${JSON.stringify(id)}`);
   }
 
-  const bindResult = bindArgs(id, def, args);
-  if (!bindResult.ok) return bindResult.result;
-
   try {
+    const bindResult = bindArgs(id, def, args);
+    if (!bindResult.ok) return bindResult.result;
     return dispatch(engine, id, bindResult.bound);
   } catch (error) {
     return errorResult(error instanceof Error ? error.message : String(error));
@@ -674,14 +745,31 @@ export function invokeAction(engine: ShowEngine, id: string, args: readonly unkn
 }
 
 /**
+ * `root` normalization, mirroring `OscAddressMap.NormalizeRoot`
+ * (`OscAddressMap.cs:39-53`) exactly: a blank/whitespace-only root falls
+ * back to `/cvp`, a root missing its leading slash gets one, and a
+ * trailing slash is trimmed. Fix round 1: without this, `oscAddressFor(id,
+ * "cvp")` or `oscAddressFor(id, "/cvp/")` produced an address the host
+ * would never actually expose (`OscAddressMap`'s constructor always
+ * normalizes), even though the doc comment below claimed byte-for-byte
+ * parity with the host's rule.
+ */
+function normalizeRoot(root: string): string {
+  const trimmed = root.trim();
+  if (trimmed.length === 0) return "/cvp";
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeadingSlash.replace(/\/+$/, "");
+}
+
+/**
  * The OSC address a host must expose for `id`, by the host stack's own rule
- * (`OscAddressMap.ActionIdToAddress`, `OscAddressMap.cs:19-35`): the root
- * plus the id with every `.` replaced by `/`, no case or word
- * transformation. `ohg.look.box.assign` under the default root becomes
+ * (`OscAddressMap.ActionIdToAddress`, `OscAddressMap.cs:19-35`): the
+ * normalized root plus the id with every `.` replaced by `/`, no case or
+ * word transformation. `ohg.look.box.assign` under the default root becomes
  * `/cvp/ohg/look/box/assign`. Kept byte-for-byte identical to the C# rule —
  * "improving" the casing here would make a bridge's address disagree with
  * the shipped host behavior it must match.
  */
 export function oscAddressFor(id: string, root = "/cvp"): string {
-  return `${root}/${id.replace(/\./g, "/")}`;
+  return `${normalizeRoot(root)}/${id.replace(/\./g, "/")}`;
 }
