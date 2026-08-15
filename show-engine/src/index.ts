@@ -151,3 +151,15 @@ export {
   type ActionParamType,
   type ActionResult
 } from "./actions.js";
+
+/**
+ * The flattened control-state projection (Task 9) — the other half of the
+ * `ohg.*` action registry: what an operator can SEE (a flat map of scalar
+ * feedback fields for a Companion button or an OSC subscriber) rather than
+ * what they can DO.
+ */
+export {
+  projectControlFields,
+  OHG_FIELD_TEMPLATES,
+  type ControlFieldValue
+} from "./controlState.js";
