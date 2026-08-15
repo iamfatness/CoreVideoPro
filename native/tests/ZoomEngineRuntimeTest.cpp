@@ -525,6 +525,7 @@ TEST(ZoomEngineRuntime, IngestsIsoAudioPcmFromSharedMemoryIntoCompositorPoll) {
   EXPECT_EQ(found->sampleRate, 48000);
   EXPECT_EQ(found->channels, 1);
   EXPECT_EQ(found->sampleCount, 4);
+  EXPECT_TRUE(found->requiresSteadyFeedPriming);
   ASSERT_TRUE(found->pcm.size() == 4u);
   EXPECT_EQ(found->pcm[1], 0.5f);
   EXPECT_EQ(found->pcm[2], -0.5f);

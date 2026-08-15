@@ -114,6 +114,12 @@ struct AudioFrame {
   double peakLevel = 0.0;
   double noiseFloorDb = -60.0;
   bool voiceActive = true;
+  // Zoom raw audio arrives as 10 ms SDK packets while the program mixer runs
+  // on a 20 ms clock. Those independent clocks need a permanent one-tick
+  // cushion, just like Zoom video keeps a one-frame sync cushion. Producers
+  // that set this flag opt into full-tick priming in steadyAudioFrameFeed;
+  // local/media/capture sources keep their existing zero-latency behavior.
+  bool requiresSteadyFeedPriming = false;
   // Optional interleaved float PCM payload in full-scale range [-1, 1] with
   // `channels` channels (so `pcm.size()` is `sampleCount * channels` when
   // present). When non-empty, the audio DSP core measures real RMS/peak from

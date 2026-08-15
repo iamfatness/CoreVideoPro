@@ -409,6 +409,12 @@ std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t tim
     drainAudioStreamLocked(uuid, ref);
   }
   auto frames = state_.pollCompositorAudioFrames(timestampMs);
+  for (auto& frame : frames) {
+    // Zoom delivers 10 ms raw packets into a 20 ms program clock. Opt every
+    // Zoom channel (meeting mix and participant ISO) into the full-tick feed
+    // cushion; other audio producers keep their zero-latency behavior.
+    frame.requiresSteadyFeedPriming = true;
+  }
   // Overlay real decoded PCM: a participant with pending audio gets ONE
   // coalesced PCM frame (all samples ingested since the last poll), replacing
   // the metadata-only placeholder the state emits from packet counters.
@@ -424,6 +430,7 @@ std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t tim
     frame.channels = pending.channels;
     frame.timestampMs = timestampMs;
     frame.sampleCount = static_cast<int>(pending.pcm.size() / static_cast<std::size_t>(pending.channels));
+    frame.requiresSteadyFeedPriming = true;
     frame.pcm = std::move(pending.pcm);
     pending.pcm.clear();  // defined-empty after the move
     const auto existing = std::find_if(frames.begin(), frames.end(), [&](const AudioFrame& candidate) {

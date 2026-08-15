@@ -57,6 +57,8 @@ inline std::vector<AudioFrame> coalescePcmAudioFramesBySource(std::vector<AudioF
     if (found != pcmIndexBySource.end()) {
       auto& target = coalesced[found->second];
       if (target.sampleRate == frame.sampleRate && target.channels == frame.channels) {
+        target.requiresSteadyFeedPriming =
+            target.requiresSteadyFeedPriming || frame.requiresSteadyFeedPriming;
         target.pcm.insert(target.pcm.end(), frame.pcm.begin(), frame.pcm.end());
         target.sampleCount = static_cast<int>(target.pcm.size() / static_cast<std::size_t>(target.channels));
         continue;
@@ -585,6 +587,14 @@ struct AudioFeedState {
   // 3.1% vs video before the pacer catch-up fix, silently).
   size_t shedSamples = 0;
   size_t shedEvents = 0;
+  // Zoom's SDK packet clock is 10 ms while the program worker is 20 ms. Prime
+  // to TWO complete worker ticks before the first emission, then retain the
+  // remaining tick as the same permanent cushion used by the video frame sync.
+  // Non-Zoom producers do not opt in and remain pass-through.
+  bool primed = false;
+  bool primingRequired = false;
+  size_t primeEvents = 0;
+  size_t partialBlocksPrevented = 0;
 };
 
 inline void applyResumeFadeIn(AudioFeedState& state, float* interleaved, size_t samples, size_t channels) {
@@ -604,11 +614,12 @@ inline void applyResumeFadeIn(AudioFeedState& state, float* interleaved, size_t 
   state.fadeInRemaining -= fadeFrames;
 }
 
-// Block RESHAPER, zero added latency: whatever arrives is emitted immediately
-// up to ONE tick of samples; any surplus (a tick that caught two packets)
-// carries forward and fills the next short/empty tick. This converts the
-// observed 480/1440/480 arrival jitter into steady full ticks without holding
-// audio hostage (single bursts — and unit tests — pass straight through).
+// Block reshaper. Ordinary sources retain zero-added-latency pass-through.
+// Zoom sources opt into a permanent one-tick reserve: wait until two ticks are
+// buffered, emit one exact tick, and leave one in reserve. This converts the
+// observed 480/1440/480 arrival jitter into full 960-frame blocks without a
+// 10 ms hole reaching the bus. A real starvation disarms the source so its next
+// talk spurt re-primes instead of leaking another partial block.
 inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
                                  std::map<std::string, AudioFeedState>& states,
                                  double ticksPerSecond = 50.0) {
@@ -623,14 +634,36 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       state.fifo.clear();  // format change: restart at the new layout
       state.sampleRate = frame.sampleRate;
       state.channels = frame.channels;
+      state.primed = false;
     }
+    state.primingRequired = state.primingRequired || frame.requiresSteadyFeedPriming;
     if (!frame.pcm.empty()) {
       state.fifo.insert(state.fifo.end(), frame.pcm.begin(), frame.pcm.end());
     }
 
     const size_t tickSamples =
         static_cast<size_t>(frame.sampleRate / ticksPerSecond) * static_cast<size_t>(frame.channels);
-    const size_t emit = std::min(state.fifo.size(), tickSamples);
+    size_t emit = 0;
+    if (!state.primingRequired) {
+      emit = std::min(state.fifo.size(), tickSamples);
+    } else {
+      if (!state.primed && state.fifo.size() >= tickSamples * 2) {
+        state.primed = true;
+        ++state.primeEvents;
+        if (state.primeEvents == 1 || state.primeEvents % 100 == 0) {
+          std::fprintf(stderr,
+                       "[audio] steady feed primed %s at %zu frames (%zu event%s)\n",
+                       frame.participantId.c_str(),
+                       state.fifo.size() / static_cast<size_t>(frame.channels),
+                       state.primeEvents, state.primeEvents == 1 ? "" : "s");
+        }
+      }
+      if (state.primed && state.fifo.size() >= tickSamples) {
+        emit = tickSamples;
+      } else if (!state.fifo.empty()) {
+        ++state.partialBlocksPrevented;
+      }
+    }
     frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     frame.sampleCount = static_cast<int>(emit / static_cast<size_t>(frame.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
@@ -643,6 +676,9 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       state.hasEverEmitted = true;
     }
     state.lastEmitted = emit;
+    if (state.primingRequired && emit == 0 && state.fifo.empty()) {
+      state.primed = false;
+    }
 
     // Cap runaway accumulation (device clock slightly fast): keep at most
     // 6 ticks buffered by dropping the OLDEST audio. The drop MUST be frame-
@@ -684,11 +720,31 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     }
     if (state.fifo.empty()) {
       state.lastEmitted = 0;  // dry: the NEXT flow onset gets a declick fade
+      if (state.primingRequired) {
+        state.primed = false;
+      }
       continue;
     }
     const size_t tickSamples =
         static_cast<size_t>(state.sampleRate / ticksPerSecond) * static_cast<size_t>(state.channels);
-    const size_t emit = std::min(state.fifo.size(), tickSamples);
+    size_t emit = 0;
+    if (!state.primingRequired) {
+      emit = std::min(state.fifo.size(), tickSamples);
+    } else {
+      if (!state.primed && state.fifo.size() >= tickSamples * 2) {
+        state.primed = true;
+        ++state.primeEvents;
+      }
+      if (state.primed && state.fifo.size() >= tickSamples) {
+        emit = tickSamples;
+      } else {
+        ++state.partialBlocksPrevented;
+      }
+    }
+    if (emit == 0) {
+      state.lastEmitted = 0;
+      continue;
+    }
     AudioFrame fill;
     fill.participantId = sourceId;
     fill.sampleRate = state.sampleRate;

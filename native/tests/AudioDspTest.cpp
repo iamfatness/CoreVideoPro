@@ -1052,6 +1052,90 @@ TEST(AudioDsp, SteadyFeedReshapesJitteryPacketsWithoutHoldingAudio) {
   }
 }
 
+TEST(AudioDsp, ZoomSteadyFeedPrimesOneTickAndNeverEmitsPartialBlocks) {
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  float sequence = 0.0f;
+  const auto makeFrame = [&sequence](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "zoom-iso";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.requiresSteadyFeedPriming = true;
+    for (int index = 0; index < samples; ++index) {
+      frame.pcm.push_back(sequence++);
+    }
+    frame.sampleCount = samples;
+    return frame;
+  };
+
+  std::vector<float> emitted;
+  const auto tick = [&](int packetSamples) {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    if (packetSamples > 0) {
+      frames.push_back(makeFrame(packetSamples));
+    }
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    for (const auto& frame : frames) {
+      if (!frame.pcm.empty()) {
+        EXPECT_EQ(frame.pcm.size(), 960u);
+        emitted.insert(emitted.end(), frame.pcm.begin(), frame.pcm.end());
+      }
+    }
+  };
+
+  tick(480);   // first 10 ms SDK packet is held, never sent as a short bus
+  EXPECT_TRUE(emitted.empty());
+  tick(1440);  // two ticks buffered: emit 20 ms and retain a 20 ms cushion
+  EXPECT_EQ(emitted.size(), 960u);
+  tick(480);   // 10 ms arrival + cushion still emits one complete tick
+  tick(480);
+  EXPECT_EQ(emitted.size(), 2880u);
+  for (size_t index = 0; index < emitted.size(); ++index) {
+    EXPECT_EQ(emitted[index], static_cast<float>(index));
+  }
+  EXPECT_TRUE(states["zoom-iso"].primed);
+  EXPECT_EQ(states["zoom-iso"].primeEvents, 1u);
+  EXPECT_GE(states["zoom-iso"].partialBlocksPrevented, 1u);
+}
+
+TEST(AudioDsp, ZoomSteadyFeedReprimesAfterARealGap) {
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  const auto makeFrame = [](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "zoom-iso";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.requiresSteadyFeedPriming = true;
+    frame.pcm.assign(static_cast<size_t>(samples), 0.25f);
+    frame.sampleCount = samples;
+    return frame;
+  };
+  const auto tick = [&](int samples) {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    frames.push_back(makeFrame(samples));
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    return frames;
+  };
+
+  (void)tick(960);                 // held for the cushion
+  auto out = tick(960);            // first exact block
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  out = tick(0);                   // drain the reserve
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  out = tick(0);                   // genuinely dry: disarm
+  EXPECT_TRUE(out[0].pcm.empty());
+  EXPECT_FALSE(states["zoom-iso"].primed);
+
+  out = tick(480);                 // resumed half-block is held
+  EXPECT_TRUE(out[0].pcm.empty());
+  out = tick(1440);                // re-prime to two ticks, then emit exactly one
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  EXPECT_TRUE(states["zoom-iso"].primed);
+  EXPECT_EQ(states["zoom-iso"].primeEvents, 2u);
+  EXPECT_LT(out[0].pcm[0], 0.02f);  // existing 5 ms resume fade still applies
+  EXPECT_EQ(out[0].pcm[400], 0.25f);
+}
+
 TEST(SpscRing, PushPopWrapFullAndDryProperties) {
   corevideo::modules::SpscRing ring(8);  // tiny capacity to force wrap + full
   float in[16];
