@@ -32,6 +32,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -228,8 +229,14 @@ class Mp4Writer {
     videoFrameCount_ = 0;
     audioPacketCount_ = 0;
     audioSampleCount_ = 0;
+    muxAudioSampleCount_ = 0;
     audioWriteFailureCount_ = 0;
     bytesWritten_ = 0;
+    lastVideoBuffer_.Reset();
+    lastVideoPts100ns_ = -1;
+    lastVideoEnd100ns_ = 0;
+    lastAudioEnd100ns_ = 0;
+    maxAudioPtsEnd100ns_ = 0;
     path_ = path;
     videoInput_ = videoInput;
     // NV12 requires even luma dimensions; floor to even (Zoom I420 is already even).
@@ -397,6 +404,40 @@ class Mp4Writer {
     buffer->Unlock();
     buffer->SetCurrentLength(byteCount);
 
+    // The fragmented MF sink rebases each track to its own first sample even
+    // when callers provide a shared epoch. Pin video to that epoch explicitly:
+    // if the first camera frame arrives late, hold that real frame from t=0
+    // until its actual capture PTS instead of letting MF erase the offset.
+    if (videoFrameCount_ == 0 && pts100ns > frameDuration100ns_) {
+      ComPtr<IMFMediaBuffer> black;
+      result = MFCreateMemoryBuffer(byteCount, &black);
+      BYTE* blackPixels = nullptr;
+      DWORD blackMax = 0;
+      DWORD blackLength = 0;
+      if (FAILED(result) || FAILED(black->Lock(&blackPixels, &blackMax, &blackLength))) {
+        errorOut = "allocate video pre-roll buffer: " + hresultString(result);
+        return false;
+      }
+      std::memset(blackPixels, 0, byteCount);
+      black->Unlock();
+      black->SetCurrentLength(byteCount);
+      ComPtr<IMFSample> preroll;
+      result = MFCreateSample(&preroll);
+      if (FAILED(result)) {
+        errorOut = "create video pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      preroll->AddBuffer(black.Get());
+      preroll->SetSampleTime(0);
+      preroll->SetSampleDuration(frameDuration100ns_);
+      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      if (FAILED(result)) {
+        errorOut = "write video pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      ++videoFrameCount_;
+    }
+
     ComPtr<IMFSample> sample;
     result = MFCreateSample(&sample);
     if (FAILED(result)) {
@@ -417,6 +458,9 @@ class Mp4Writer {
       errorOut = "write video sample: " + hresultString(result);
       return false;
     }
+    lastVideoBuffer_ = buffer;
+    lastVideoPts100ns_ = pts100ns;
+    lastVideoEnd100ns_ = pts100ns + frameDuration100ns_;
     ++videoFrameCount_;
     refreshBytesWritten();
     return true;
@@ -480,6 +524,40 @@ class Mp4Writer {
     buffer->Unlock();
     buffer->SetCurrentLength(byteCount);
 
+    // See the BGRA path above: pin a late-opening Zoom ISO video stream to the
+    // recording epoch so MF cannot independently rebase it and destroy sync
+    // with the ISO audio stem's leading silence.
+    if (videoFrameCount_ == 0 && pts100ns > frameDuration100ns_) {
+      ComPtr<IMFMediaBuffer> black;
+      result = MFCreateMemoryBuffer(byteCount, &black);
+      BYTE* blackPixels = nullptr;
+      DWORD blackMax = 0;
+      DWORD blackLength = 0;
+      if (FAILED(result) || FAILED(black->Lock(&blackPixels, &blackMax, &blackLength))) {
+        errorOut = "allocate NV12 pre-roll buffer: " + hresultString(result);
+        return false;
+      }
+      std::memset(blackPixels, 0, static_cast<size_t>(dstY));
+      std::memset(blackPixels + dstY, 128, static_cast<size_t>(dstUv));
+      black->Unlock();
+      black->SetCurrentLength(byteCount);
+      ComPtr<IMFSample> preroll;
+      result = MFCreateSample(&preroll);
+      if (FAILED(result)) {
+        errorOut = "create NV12 pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      preroll->AddBuffer(black.Get());
+      preroll->SetSampleTime(0);
+      preroll->SetSampleDuration(frameDuration100ns_);
+      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      if (FAILED(result)) {
+        errorOut = "write NV12 pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      ++videoFrameCount_;
+    }
+
     ComPtr<IMFSample> sample;
     result = MFCreateSample(&sample);
     if (FAILED(result)) {
@@ -495,6 +573,9 @@ class Mp4Writer {
       errorOut = "write NV12 sample: " + hresultString(result);
       return false;
     }
+    lastVideoBuffer_ = buffer;
+    lastVideoPts100ns_ = pts100ns;
+    lastVideoEnd100ns_ = pts100ns + frameDuration100ns_;
     ++videoFrameCount_;
     refreshBytesWritten();
     return true;
@@ -504,6 +585,23 @@ class Mp4Writer {
   bool writeAudio(const float* interleaved, int frameCount, LONGLONG pts100ns, std::string& errorOut) {
     if (!writing_ || !audioConfigured_ || interleaved == nullptr || frameCount <= 0) {
       return false;
+    }
+    // Pin audio to the same epoch too. Program audio may intentionally start
+    // after video because of measured DSP/plugin content latency; without this
+    // silence MF rebases the first real packet to zero and shortens the track.
+    if (audioPacketCount_ == 0 && pts100ns > 0) {
+      const int64_t rate = std::max(1, audioSampleRate_);
+      const int64_t leadingFrames =
+          (pts100ns * rate + 10'000'000LL - 1) / 10'000'000LL;
+      if (leadingFrames > 0) {
+        const int64_t submittedSamplesBeforePreroll = audioSampleCount_;
+        if (!writeAudioSilence(leadingFrames, 0, errorOut)) {
+          return false;
+        }
+        // Operator telemetry counts submitted Program samples, not synthetic
+        // epoch padding. Keep the mux endpoint but preserve that public meaning.
+        audioSampleCount_ = submittedSamplesBeforePreroll;
+      }
     }
     pcm16_.resize(static_cast<size_t>(frameCount) * audioChannels_);
     for (size_t i = 0; i < pcm16_.size(); ++i) {
@@ -561,6 +659,14 @@ class Mp4Writer {
     }
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
+    muxAudioSampleCount_ += frameCount;
+    // Media Foundation's AAC transform emits one continuous sample-counted
+    // stream (including synthetic silence) even when input PTS are sparse.
+    // This cumulative endpoint therefore matches the finalized container;
+    // pts+duration did not, especially for ISO silence-fill.
+    lastAudioEnd100ns_ =
+        muxAudioSampleCount_ * 10'000'000LL / std::max(1, audioSampleRate_);
+    maxAudioPtsEnd100ns_ = std::max(maxAudioPtsEnd100ns_, pts100ns + duration100ns);
     refreshBytesWritten();
     return true;
   }
@@ -594,14 +700,103 @@ class Mp4Writer {
     return true;
   }
 
+  // Bring both tracks to one common endpoint before Finalize. Zoom camera
+  // delivery is intentionally bursty (a quiet/static participant may not hand
+  // us a fresh frame for hundreds of milliseconds), while Program audio/video
+  // traverse independently bounded queues. Without an explicit close-time
+  // reconcile, valid live takes ended with 0.4-1.7s A/V duration deltas.
+  // Preserve content: pad a short audio tail with silence, or hold the last
+  // real video buffer to the audio endpoint. No speech or real frame is cut.
+  bool reconcileTail(std::string& errorOut) {
+    if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0 ||
+        !lastVideoBuffer_) {
+      return true;
+    }
+
+    const LONGLONG targetEnd100ns = std::max(lastVideoEnd100ns_, lastAudioEnd100ns_);
+    std::fprintf(stderr,
+                 "[recording] reconcile file=%s videoEnd=%.3fs audioEnd=%.3fs "
+                 "audioPtsEnd=%.3fs muxAudioSamples=%lld rate=%d target=%.3fs\n",
+                 path_.filename().string().c_str(), lastVideoEnd100ns_ / 10'000'000.0,
+                 lastAudioEnd100ns_ / 10'000'000.0, maxAudioPtsEnd100ns_ / 10'000'000.0,
+                 static_cast<long long>(muxAudioSampleCount_), audioSampleRate_,
+                 targetEnd100ns / 10'000'000.0);
+    if (lastAudioEnd100ns_ < targetEnd100ns) {
+      const LONGLONG delta = targetEnd100ns - lastAudioEnd100ns_;
+      const int64_t rate = std::max(1, audioSampleRate_);
+      const int64_t frames =
+          (delta * rate + 10'000'000LL - 1) / 10'000'000LL;  // ceil to one PCM frame
+      if (!writeAudioSilence(frames, lastAudioEnd100ns_, errorOut)) {
+        return false;
+      }
+    }
+
+    if (lastVideoEnd100ns_ < targetEnd100ns) {
+      // One held sample is sufficient for VFR MP4: its PTS makes the previous
+      // real frame persist through the delivery gap, and its nominal duration
+      // lands the video endpoint on the shared audio endpoint.
+      const LONGLONG pts =
+          std::max(lastVideoPts100ns_ + 1, targetEnd100ns - frameDuration100ns_);
+      ComPtr<IMFSample> sample;
+      HRESULT result = MFCreateSample(&sample);
+      if (FAILED(result)) {
+        errorOut = "create held-tail video sample: " + hresultString(result);
+        return false;
+      }
+      sample->AddBuffer(lastVideoBuffer_.Get());
+      sample->SetSampleTime(pts);
+      sample->SetSampleDuration(frameDuration100ns_);
+      result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+      if (FAILED(result)) {
+        errorOut = "write held-tail video sample: " + hresultString(result);
+        return false;
+      }
+      lastVideoPts100ns_ = pts;
+      lastVideoEnd100ns_ = pts + frameDuration100ns_;
+      ++videoFrameCount_;
+      refreshBytesWritten();
+    }
+    return true;
+  }
+
   bool finalize(std::string* errorOut = nullptr) {
     HRESULT finalizeResult = S_OK;
     if (writing_ && sinkWriter_) {
+      // Finalize is documented to place end-of-segment markers itself, but
+      // several concurrent hardware H.264 transforms returned files whose
+      // processed video timestamp lagged the last accepted input by up to one
+      // second. Signal EOS explicitly and give the transform a bounded chance
+      // to drain before asking the fragmented MP4 sink to close its moov.
+      const HRESULT eosResult = sinkWriter_->NotifyEndOfSegment(MF_SINK_WRITER_ALL_STREAMS);
+      if (SUCCEEDED(eosResult)) {
+        MF_SINK_WRITER_STATISTICS stats{};
+        stats.cb = sizeof(stats);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do {
+          stats = {};
+          stats.cb = sizeof(stats);
+          if (FAILED(sinkWriter_->GetStatistics(videoStreamIndex_, &stats)) ||
+              stats.qwNumSamplesProcessed >= stats.qwNumSamplesReceived) {
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (std::chrono::steady_clock::now() < deadline);
+        std::fprintf(stderr,
+                     "[recording] drain file=%s received=%llu encoded=%llu processed=%llu "
+                     "lastReceived=%.3fs lastProcessed=%.3fs\n",
+                     path_.filename().string().c_str(),
+                     static_cast<unsigned long long>(stats.qwNumSamplesReceived),
+                     static_cast<unsigned long long>(stats.qwNumSamplesEncoded),
+                     static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
+                     stats.llLastTimestampReceived / 10'000'000.0,
+                     stats.llLastTimestampProcessed / 10'000'000.0);
+      }
       finalizeResult = sinkWriter_->Finalize();
     }
     writing_ = false;
     open_ = false;
     sinkWriter_.Reset();
+    lastVideoBuffer_.Reset();
     if (mediaSink_) {
       (void)mediaSink_->Shutdown();
     }
@@ -734,6 +929,10 @@ class Mp4Writer {
   ComPtr<IMFMediaType> videoInputType_;
   ComPtr<IMFMediaType> audioOutputType_;
   ComPtr<IMFMediaType> audioInputType_;
+  // Retain only the newest immutable input buffer. It can be referenced by a
+  // new IMFSample at Finalize to freeze the actual last frame without another
+  // full-resolution CPU copy on every live frame.
+  ComPtr<IMFMediaBuffer> lastVideoBuffer_;
   bool enableHardwareTransforms_ = true;
   DWORD videoStreamIndex_ = 0;
   DWORD audioStreamIndex_ = 0;
@@ -748,8 +947,13 @@ class Mp4Writer {
   int64_t videoFrameCount_ = 0;
   int64_t audioPacketCount_ = 0;
   int64_t audioSampleCount_ = 0;
+  int64_t muxAudioSampleCount_ = 0;
   int64_t audioWriteFailureCount_ = 0;
   int64_t bytesWritten_ = 0;
+  LONGLONG lastVideoPts100ns_ = -1;
+  LONGLONG lastVideoEnd100ns_ = 0;
+  LONGLONG lastAudioEnd100ns_ = 0;
+  LONGLONG maxAudioPtsEnd100ns_ = 0;
   bool open_ = false;
   bool writing_ = false;
   bool audioConfigured_ = false;
@@ -1422,6 +1626,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void closeWriters() {
+    std::string programReconcileError;
+    if (!program_.reconcileTail(programReconcileError) && session_.recordingWarning.empty()) {
+      session_.recordingWarning =
+          "Program recording could not align its A/V tail: " + programReconcileError + ".";
+      session_.recordingStatus = "warning";
+    }
     std::string programFinalizeError;
     const bool programFinalized = program_.finalize(&programFinalizeError);
     if (!programFinalized && session_.recordingWarning.empty()) {
@@ -1432,6 +1642,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Each ISO writer finalizes INDEPENDENTLY (its own moov) so a source that
     // dropped mid-show still leaves a playable file, no 0-byte tails (spec §4).
     for (auto& iso : isoWriters_) {
+      std::string isoReconcileError;
+      if (!iso.writer.reconcileTail(isoReconcileError)) {
+        iso.warning = "ISO writer could not align its A/V tail for " + iso.displayName + " (" +
+                      iso.sourceId + "): " + isoReconcileError + ".";
+        raiseIsoWarning(iso.warning);
+      }
       std::string isoFinalizeError;
       if (!iso.writer.finalize(&isoFinalizeError)) {
         iso.failed = true;

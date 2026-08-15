@@ -50,7 +50,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
-        "scene.select", "view.setMode",
+        "scene.select", "scene.dynamicGallery.create", "view.setMode",
         "input.assign", "input.name", "input.inShow.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
@@ -177,6 +177,9 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             // ---- Scenes / view ------------------------------------------------------
             case "scene.select":
                 _vm.SelectSceneCommand.Execute(Str(args, 0));
+                return ControlInvokeResult.Success;
+            case "scene.dynamicGallery.create":
+                _vm.NewDynamicGalleryCommand.Execute(null);
                 return ControlInvokeResult.Success;
             case "view.setMode":
                 _vm.SetViewModeCommand.Execute(Str(args, 0));

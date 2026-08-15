@@ -58,6 +58,16 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
   {
     std::lock_guard<std::mutex> lock(state_->queueMutex);
 
+    // Re-check the recording gate while holding the same mutex used by the
+    // Stop barrier. A producer may have observed active=true immediately before
+    // Stop acquired the mutex; without this check that stale submission could
+    // land after Finalize and leak into the next recording generation.
+    const bool media = item.kind == Kind::Video || item.kind == Kind::IsoVideo ||
+                       item.kind == Kind::Audio || item.kind == Kind::IsoAudio;
+    if (media && !state_->active.load(std::memory_order_acquire)) {
+      return 0;
+    }
+
     // Suppress held-frame re-submissions before they consume queue capacity.
     // This is deliberately producer-side: downstream RecordingPtsClock dedup is
     // too late to prevent starvation and misleading drop telemetry.
@@ -257,28 +267,18 @@ void AsyncEncoderSink::stopRecording() {
   item.kind = Kind::StopRecording;
   {
     std::lock_guard<std::mutex> lock(state_->queueMutex);
+    // Close the producer gate under queueMutex, then append a FIFO control
+    // barrier. Every media item accepted before this point is written before
+    // Finalize; every racing or later submission is rejected by enqueue().
+    // The old implementation erased the pending tail here, which produced the
+    // measured ~400ms Program/ISO A/V duration mismatch at every stop.
+    state_->active.store(false, std::memory_order_release);
     item.seq = state_->nextSeq++;
-
-    // STOP IS A CONTROL BARRIER, not one more item behind minutes of obsolete
-    // media. Discard every pending media submission; the writer may finish the
-    // single item it is currently applying, then it reaches Finalize next. Keep
-    // Configure/Start controls in FIFO order so a rapid next take still starts
-    // only after the previous container is closed.
-    for (auto it = state_->queue.begin(); it != state_->queue.end();) {
-      const bool video = it->kind == Kind::Video || it->kind == Kind::IsoVideo;
-      const bool audio = it->kind == Kind::Audio || it->kind == Kind::IsoAudio;
-      if (!video && !audio) {
-        ++it;
-        continue;
-      }
-      if (video) {
-        state_->droppedVideo.fetch_add(1);
-      } else {
-        state_->droppedAudio.fetch_add(1);
-      }
-      it = state_->queue.erase(it);
-    }
     state_->queue.push_back(std::move(item));
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_->snapshotMutex);
+    state_->snapshot.active = false;
   }
   state_->queueCv.notify_one();
 }
@@ -397,6 +397,13 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
     OutputSession fresh;
     if (state->inner) {
       fresh = state->inner->session();
+    }
+    if (item.kind == Kind::StopRecording) {
+      // Some concrete sinks retain their last-session metadata after Finalize,
+      // including active=true. The async decorator owns the producer gate, so
+      // its public snapshot must reflect the stopped state immediately and
+      // must not be revived by that retained inner snapshot.
+      fresh.active = false;
     }
     {
       std::lock_guard<std::mutex> lock(state->snapshotMutex);

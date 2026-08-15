@@ -1,5 +1,6 @@
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.MediaCore.Models;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -66,5 +67,41 @@ public class ProductionRoleTests
     {
         var route = SceneRoutingService.BuildAddedSourceRoute("scene-1", 0, "role:guest-2");
         Assert.Equal("guest-2", route.Clone().ProductionRoleId);
+    }
+
+    [Fact]
+    public void FeedHealthCarriesPerParticipantZoomSubscriptionEvidence()
+    {
+        var rows = ProductionStateHelper.BuildFeedHealthRows(
+            [new Participant { Id = "42", Name = "Guest", Health = FeedHealth.Live }],
+            subscriptions:
+            [
+                new ZoomMediaSpineSubscription
+                {
+                    ParticipantId = "42",
+                    Kind = "participant-video",
+                    Status = "subscribed",
+                    LastResultCode = "ok",
+                    DeliveredWidth = 1280,
+                    DeliveredHeight = 720,
+                    DeliveredFps = 30,
+                    FramesReceived = 900,
+                    FrameFresh = true
+                },
+                new ZoomMediaSpineSubscription
+                {
+                    ParticipantId = "42",
+                    Kind = "participant-audio",
+                    Status = "subscribed",
+                    AudioPacketsReceived = 1500
+                }
+            ]);
+
+        var row = Assert.Single(rows);
+        Assert.Equal("1280x720 @ 30fps", row.DeliveredVideo);
+        Assert.Equal(900, row.VideoFramesReceived);
+        Assert.Equal(1500, row.AudioPacketsReceived);
+        Assert.Contains("Video subscribed", row.DiagnosticSummary);
+        Assert.False(row.HasRecommendedAction);
     }
 }

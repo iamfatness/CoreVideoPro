@@ -316,7 +316,7 @@ TEST(AsyncEncoderSink, HeldProgramAndIsoFramesDoNotFloodTheQueueOrCountAsDrops) 
       << "held frames were reported as encoder capacity drops";
 }
 
-TEST(AsyncEncoderSink, StopDropsQueuedMediaAndFinalizesBeforeTheBacklog) {
+TEST(AsyncEncoderSink, StopDrainsAcceptedMediaBeforeFinalizingAndRejectsLateMedia) {
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
   raw->blockSubmit->store(true);
@@ -330,24 +330,31 @@ TEST(AsyncEncoderSink, StopDropsQueuedMediaAndFinalizesBeforeTheBacklog) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   ASSERT_TRUE(raw->submitEntered.load());
-  for (int frame = 2; frame <= 200; ++frame) {
+  for (int frame = 2; frame <= 5; ++frame) {
     sink.submit(videoFrame(frame));
   }
   const float pcm[4] = {0.1f, -0.1f, 0.2f, -0.2f};
-  for (int packet = 0; packet < 200; ++packet) {
+  for (int packet = 0; packet < 5; ++packet) {
     sink.submitAudio(pcm, 2, 2, 48000);
   }
 
   sink.stopRecording();
+  // Stop closes the producer gate synchronously. These must not be accepted
+  // behind the Finalize barrier or contaminate a rapid next take.
+  sink.submit(videoFrame(99));
+  sink.submitAudio(pcm, 2, 2, 48000);
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
 
   EXPECT_EQ(raw->stopCount.load(), 1);
-  EXPECT_EQ(raw->submitCount.load(), 1)
-      << "pending program frames were encoded after the operator pressed Stop";
-  EXPECT_EQ(raw->audioCount.load(), 0)
-      << "pending audio packets were encoded after the operator pressed Stop";
+  EXPECT_EQ(raw->submitCount.load(), 5)
+      << "accepted program frames were discarded from the recording tail";
+  EXPECT_EQ(raw->lastFrameNumber.load(), 5)
+      << "a post-Stop frame crossed the Finalize barrier";
+  EXPECT_EQ(raw->audioCount.load(), 5)
+      << "accepted audio packets were discarded from the recording tail";
   EXPECT_EQ(sink.session().recordingStatus, "stopped");
+  EXPECT_FALSE(sink.session().active);
 }
 
 TEST(AsyncEncoderSink, TeardownIsBoundedWhenWriterIsStuck) {

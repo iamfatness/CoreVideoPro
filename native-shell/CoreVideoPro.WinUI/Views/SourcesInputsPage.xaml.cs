@@ -146,25 +146,45 @@ public sealed partial class SourcesInputsPage : UserControl
             return;
         }
 
+        SyncProductionRoleCombo(combo, row);
+    }
+
+    private void OnFeedHealthElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
+    {
+        if (args.Element is not FrameworkElement root ||
+            FindDescendant<ComboBox>(root, "ProductionRoleCombo") is not { } combo ||
+            combo.Tag is not FeedHealthRow row)
+        {
+            return;
+        }
+
+        SyncProductionRoleCombo(combo, row);
+    }
+
+    private void SyncProductionRoleCombo(ComboBox combo, FeedHealthRow row)
+    {
         try
         {
-            var options = combo.ItemsSource as IEnumerable<RouteSelectOption>;
-            if (options is null)
-            {
-                return;  // ItemsSource binding has not resolved yet
-            }
+            // ElementName bindings inside a recycled ItemsRepeater template are
+            // not guaranteed to resolve before Loaded. Make the page view-model
+            // authoritative and suppress write-back while rebinding the row.
+            var options = ViewModel?.ProductionRoleAssignmentOptions;
+            if (options is null) return;
+
+            combo.SelectionChanged -= OnProductionRoleChanged;
+            combo.ItemsSource = options;
             var roleId = row.ProductionRoleId ?? string.Empty;
             if (!options.Any(option => option.Value == roleId))
             {
-                return;  // stale/unknown role: leave the box alone rather than throw
+                roleId = string.Empty;
             }
-            if (!Equals(combo.SelectedValue, roleId))
-            {
-                combo.SelectedValue = roleId;
-            }
+            combo.SelectedValue = roleId;
+            combo.SelectionChanged += OnProductionRoleChanged;
         }
         catch (Exception ex)
         {
+            combo.SelectionChanged -= OnProductionRoleChanged;
+            combo.SelectionChanged += OnProductionRoleChanged;
             LaunchLog.Write($"sources: production-role selection skipped ({ex.GetType().Name}: {ex.Message})");
         }
     }

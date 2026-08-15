@@ -1085,7 +1085,9 @@ TEST(AudioDsp, ZoomSteadyFeedPrimesOneTickAndNeverEmitsPartialBlocks) {
 
   tick(480);   // first 10 ms SDK packet is held, never sent as a short bus
   EXPECT_TRUE(emitted.empty());
-  tick(1440);  // two ticks buffered: emit 20 ms and retain a 20 ms cushion
+  tick(1440);  // two ticks buffered: still building the transparent cushion
+  EXPECT_TRUE(emitted.empty());
+  tick(960);   // three ticks buffered: emit 20 ms and retain a 40 ms cushion
   EXPECT_EQ(emitted.size(), 960u);
   tick(480);   // 10 ms arrival + cushion still emits one complete tick
   tick(480);
@@ -1096,7 +1098,7 @@ TEST(AudioDsp, ZoomSteadyFeedPrimesOneTickAndNeverEmitsPartialBlocks) {
   EXPECT_TRUE(states["zoom-iso"].primed);
   EXPECT_EQ(states["zoom-iso"].primeEvents, 1u);
   EXPECT_GE(states["zoom-iso"].partialBlocksPrevented, 1u);
-  EXPECT_GE(states["zoom-iso"].clockCorrectionEvents, 1u);
+  EXPECT_EQ(states["zoom-iso"].clockCorrectionEvents, 0u);
 }
 
 TEST(AudioDsp, ZoomSteadyFeedDoesNotReprimeUnderContinuousClockPhaseJitter) {
@@ -1136,8 +1138,8 @@ TEST(AudioDsp, ZoomSteadyFeedDoesNotReprimeUnderContinuousClockPhaseJitter) {
 
   EXPECT_EQ(states["jamal"].primeEvents, 1u);
   EXPECT_TRUE(states["jamal"].primed);
-  EXPECT_GE(fullBlocks, 1998u);  // only startup priming may be silent
-  EXPECT_GT(states["jamal"].clockCorrectionEvents, 0u);
+  EXPECT_GE(fullBlocks, 1996u);  // only startup priming may be silent
+  EXPECT_EQ(states["jamal"].clockCorrectionEvents, 0u);
 }
 
 TEST(AudioDsp, ZoomSteadyFeedReprimesAfterARealGap) {
@@ -1160,9 +1162,12 @@ TEST(AudioDsp, ZoomSteadyFeedReprimesAfterARealGap) {
   };
 
   (void)tick(960);                 // held for the cushion
+  (void)tick(960);                 // second reserve tick
   auto out = tick(960);            // first exact block
   ASSERT_EQ(out[0].pcm.size(), 960u);
-  out = tick(0);                   // drain the reserve
+  out = tick(0);                   // drain the first reserve tick
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  out = tick(0);                   // drain the second reserve tick
   ASSERT_EQ(out[0].pcm.size(), 960u);
   out = tick(0);                   // genuinely dry: disarm
   EXPECT_TRUE(out[0].pcm.empty());
@@ -1170,7 +1175,9 @@ TEST(AudioDsp, ZoomSteadyFeedReprimesAfterARealGap) {
 
   out = tick(480);                 // resumed half-block is held
   EXPECT_TRUE(out[0].pcm.empty());
-  out = tick(1440);                // re-prime to two ticks, then emit exactly one
+  out = tick(1440);                // two ticks: still restoring the cushion
+  EXPECT_TRUE(out[0].pcm.empty());
+  out = tick(960);                 // re-prime to three ticks, then emit exactly one
   ASSERT_EQ(out[0].pcm.size(), 960u);
   EXPECT_TRUE(states["zoom-iso"].primed);
   EXPECT_EQ(states["zoom-iso"].primeEvents, 2u);

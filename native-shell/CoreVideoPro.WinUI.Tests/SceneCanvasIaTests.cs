@@ -636,6 +636,47 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void Layer_SyncFromRoute_RebindsEditsToTheNewTemplateRoute()
+    {
+        var first = new SourceRoute
+        {
+            Id = "first-1",
+            Mode = SourceRouteMode.Fixed,
+            ParticipantId = "p1",
+            BorderStyle = "solid",
+            BorderThickness = 1
+        };
+        var second = new SourceRoute
+        {
+            Id = "second-1",
+            Mode = SourceRouteMode.Fixed,
+            ParticipantId = "p2",
+            BorderStyle = "solid",
+            BorderThickness = 4
+        };
+        var participants = new List<Participant>
+        {
+            new() { Id = "p1", Name = "Host" },
+            new() { Id = "p2", Name = "Guest" }
+        };
+        var layer = new SceneCanvasLayerViewModel(
+            0,
+            first,
+            participants,
+            captureDevices: [],
+            showInputs: [],
+            mediaAssets: [],
+            _ => { });
+
+        layer.SyncFromRoute(second, participants, [], [], []);
+        layer.BorderThickness = 7;
+
+        Assert.Equal(1, first.BorderThickness);
+        Assert.Equal(7, second.BorderThickness);
+        Assert.Equal("p2", layer.ParticipantId);
+    }
+
+    [Fact]
     public void Layer_SourcePickerListsMediaAssetsAsCanvasSources()
     {
         var route = new SourceRoute

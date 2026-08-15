@@ -588,21 +588,17 @@ struct AudioFeedState {
   size_t shedSamples = 0;
   size_t shedEvents = 0;
   // Zoom's SDK packet clock is 10 ms while the program worker is 20 ms. Prime
-  // to TWO complete worker ticks before the first emission, then retain the
-  // remaining tick as the same permanent cushion used by the video frame sync.
+  // to THREE complete worker ticks before the first emission, then retain two
+  // ticks as a scheduling cushion. This absorbs callback/poll phase jitter
+  // without continuously time-warping speech.
   // Non-Zoom producers do not opt in and remain pass-through.
   bool primed = false;
   bool primingRequired = false;
   size_t primeEvents = 0;
   size_t partialBlocksPrevented = 0;
-  // The Zoom callback clock and the program worker clock are both nominally
-  // 48 kHz, but their scheduling phase is independent.  A strict 960-frame
-  // dequeue lets the one-tick reserve random-walk to zero when polls alternate
-  // between 480 and 1440 frames.  We therefore consume a few frames either
-  // side of nominal and resample that tiny window back to one exact output
-  // tick.  This is the same elastic-jitter-buffer principle used by realtime
-  // playout engines: preserve cadence without inserting periodic 20-40 ms
-  // holes.  The correction is bounded to 2.5% per tick.
+  // Actual device-clock drift is corrected only at the FIFO guard rails and
+  // only one input frame per 20 ms block (about 0.1%). The prior ±2.5% control
+  // followed harmless callback phase and audibly pitch-modulated voices.
   size_t clockCorrectionEvents = 0;
   size_t clockCorrectionInputFrames = 0;
   size_t emptyInputTicks = 0;
@@ -702,7 +698,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     if (!state.primingRequired) {
       emit = std::min(state.fifo.size(), tickSamples);
     } else {
-      if (!state.primed && state.fifo.size() >= tickSamples * 2) {
+      if (!state.primed && state.fifo.size() >= tickSamples * 3) {
         state.primed = true;
         ++state.primeEvents;
         if (state.primeEvents == 1 || state.primeEvents % 100 == 0) {
@@ -718,18 +714,13 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
         const size_t channels = static_cast<size_t>(frame.channels);
         const size_t tickFrames = tickSamples / channels;
         const size_t availableFrames = state.fifo.size() / channels;
-        const size_t reserveFrames = tickFrames;
-        const size_t desiredFrames = availableFrames > reserveFrames
-                                         ? availableFrames - reserveFrames
-                                         : 0;
-        const size_t maxCorrectionFrames = (std::max)(size_t{1}, tickFrames / 40);
-        const size_t minConsumeFrames = tickFrames > maxCorrectionFrames
-                                            ? tickFrames - maxCorrectionFrames
-                                            : 1;
-        const size_t maxConsumeFrames = tickFrames + maxCorrectionFrames;
-        const size_t consumeFrames = (std::min)(
-            availableFrames,
-            (std::max)(minConsumeFrames, (std::min)(desiredFrames, maxConsumeFrames)));
+        size_t consumeFrames = tickFrames;
+        if (availableFrames > tickFrames * 5) {
+          consumeFrames = tickFrames + 1;
+        } else if (availableFrames < tickFrames * 2 && tickFrames > 1) {
+          consumeFrames = tickFrames - 1;
+        }
+        consumeFrames = (std::min)(availableFrames, consumeFrames);
         consume = consumeFrames * channels;
       } else if (!state.fifo.empty()) {
         ++state.partialBlocksPrevented;
@@ -818,7 +809,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     if (!state.primingRequired) {
       emit = std::min(state.fifo.size(), tickSamples);
     } else {
-      if (!state.primed && state.fifo.size() >= tickSamples * 2) {
+      if (!state.primed && state.fifo.size() >= tickSamples * 3) {
         state.primed = true;
         ++state.primeEvents;
       }
@@ -827,18 +818,13 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
         const size_t channels = static_cast<size_t>(state.channels);
         const size_t tickFrames = tickSamples / channels;
         const size_t availableFrames = state.fifo.size() / channels;
-        const size_t reserveFrames = tickFrames;
-        const size_t desiredFrames = availableFrames > reserveFrames
-                                         ? availableFrames - reserveFrames
-                                         : 0;
-        const size_t maxCorrectionFrames = (std::max)(size_t{1}, tickFrames / 40);
-        const size_t minConsumeFrames = tickFrames > maxCorrectionFrames
-                                            ? tickFrames - maxCorrectionFrames
-                                            : 1;
-        const size_t maxConsumeFrames = tickFrames + maxCorrectionFrames;
-        const size_t consumeFrames = (std::min)(
-            availableFrames,
-            (std::max)(minConsumeFrames, (std::min)(desiredFrames, maxConsumeFrames)));
+        size_t consumeFrames = tickFrames;
+        if (availableFrames > tickFrames * 5) {
+          consumeFrames = tickFrames + 1;
+        } else if (availableFrames < tickFrames * 2 && tickFrames > 1) {
+          consumeFrames = tickFrames - 1;
+        }
+        consumeFrames = (std::min)(availableFrames, consumeFrames);
         consume = consumeFrames * channels;
       } else {
         ++state.partialBlocksPrevented;

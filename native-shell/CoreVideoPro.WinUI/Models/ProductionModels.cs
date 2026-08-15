@@ -85,6 +85,52 @@ public sealed class Scene
     public string Layout { get; init; } = string.Empty;
     public string Automation { get; init; } = string.Empty;
     public string DurationLabel { get; init; } = "—";
+    public DynamicGallerySettings? DynamicGallery { get; init; }
+}
+
+/// <summary>
+/// First-class settings for a CoreVideo Tiles scene. Keeping these values on
+/// the scene lets the wall reflow when the Zoom roster changes without losing
+/// the operator's styling choices.
+/// </summary>
+public sealed class DynamicGallerySettings
+{
+    public bool AutoFill { get; set; } = true;
+    public int MaxTiles { get; set; } = 16;
+    public string TileAspect { get; set; } = "16:9";
+    public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
+    public double GutterPercent { get; set; } = 0.741;
+    public double MarginPercent { get; set; } = 0.741;
+    public string BorderShape { get; set; } = "square";
+    public string BorderColor { get; set; } = "#000000";
+    public double BorderThickness { get; set; }
+    public double CornerRadius { get; set; } = 16;
+    public string GlowColor { get; set; } = "#FFFFFF";
+    public double GlowSize { get; set; }
+    public double GlowIntensity { get; set; } = 100;
+    public double GlowSoftness { get; set; }
+    public bool AnimateLayout { get; set; }
+    public int AnimationDurationMs { get; set; } = 350;
+
+    public DynamicGallerySettings Clone() => new()
+    {
+        AutoFill = AutoFill,
+        MaxTiles = MaxTiles,
+        TileAspect = TileAspect,
+        CustomAspectRatio = CustomAspectRatio,
+        GutterPercent = GutterPercent,
+        MarginPercent = MarginPercent,
+        BorderShape = BorderShape,
+        BorderColor = BorderColor,
+        BorderThickness = BorderThickness,
+        CornerRadius = CornerRadius,
+        GlowColor = GlowColor,
+        GlowSize = GlowSize,
+        GlowIntensity = GlowIntensity,
+        GlowSoftness = GlowSoftness,
+        AnimateLayout = AnimateLayout,
+        AnimationDurationMs = AnimationDurationMs
+    };
 }
 
 public enum StudioViewMode
@@ -153,6 +199,18 @@ public sealed class FeedHealthRow
     public required string BadgeColor { get; init; }
     public string? Detail { get; init; }
     public bool NeedsAttention { get; init; }
+    public string VideoSubscriptionStatus { get; init; } = "not-requested";
+    public string VideoResultCode { get; init; } = "pending";
+    public string DeliveredVideo { get; init; } = "No frames";
+    public int VideoFramesReceived { get; init; }
+    public string AudioSubscriptionStatus { get; init; } = "not-requested";
+    public int AudioPacketsReceived { get; init; }
+    public double LastFrameAgeMs { get; init; } = -1;
+    public int StaleFrameCount { get; init; }
+    public int MalformedFrameCount { get; init; }
+    public string DiagnosticSummary { get; init; } = "No Zoom subscription evidence yet.";
+    public string RecommendedAction { get; init; } = string.Empty;
+    public bool HasRecommendedAction => !string.IsNullOrWhiteSpace(RecommendedAction);
 }
 
 public sealed class CaptureDeviceInput
@@ -826,7 +884,8 @@ public static class ProductionStateHelper
 
     public static IReadOnlyList<FeedHealthRow> BuildFeedHealthRows(
         IReadOnlyList<Participant> participants,
-        IReadOnlyDictionary<string, string>? productionRoles = null) =>
+        IReadOnlyDictionary<string, string>? productionRoles = null,
+        IReadOnlyList<ZoomMediaSpineSubscription>? subscriptions = null) =>
         participants.Select(p =>
         {
             var (label, color, detail, attention) = p.Health switch
@@ -845,6 +904,30 @@ public static class ProductionStateHelper
                 ? assigned
                 : null;
 
+            var participantSubscriptions = (subscriptions ?? [])
+                .Where(subscription => string.Equals(subscription.ParticipantId, p.Id, StringComparison.Ordinal))
+                .ToList();
+            var video = participantSubscriptions.FirstOrDefault(subscription =>
+                subscription.Kind is "participant-video" or "screen-share");
+            var audio = participantSubscriptions.FirstOrDefault(subscription =>
+                subscription.Kind == "participant-audio");
+            var deliveredVideo = video is { DeliveredWidth: > 0, DeliveredHeight: > 0 }
+                ? $"{video.DeliveredWidth}x{video.DeliveredHeight} @ {video.DeliveredFps}fps"
+                : "No frames";
+            var videoStatus = video?.Status ?? "not-requested";
+            var videoResult = video?.LastResultCode ?? "pending";
+            var action = video switch
+            {
+                { Warning.Length: > 0 } => video.Warning,
+                { Status: "failed" } => $"Reassign or resubscribe this source ({videoResult}).",
+                { FramesReceived: 0 } when p.Health != FeedHealth.VideoOff => "Capture is on but no video frame has arrived; verify Zoom recording permission and resubscribe.",
+                { FrameFresh: false, FramesReceived: > 0 } => "The last Zoom frame is stale; resubscribe or reduce requested feed load.",
+                _ => string.Empty
+            };
+            var diagnosticSummary =
+                $"Video {videoStatus} · {deliveredVideo} · {video?.FramesReceived ?? 0} frames · " +
+                $"Audio {audio?.Status ?? "not-requested"} · {audio?.AudioPacketsReceived ?? 0} packets";
+
             return new FeedHealthRow
             {
                 ParticipantId = p.Id,
@@ -854,7 +937,18 @@ public static class ProductionStateHelper
                 StatusLabel = label,
                 BadgeColor = color,
                 Detail = detail,
-                NeedsAttention = attention
+                NeedsAttention = attention || !string.IsNullOrWhiteSpace(action),
+                VideoSubscriptionStatus = videoStatus,
+                VideoResultCode = videoResult,
+                DeliveredVideo = deliveredVideo,
+                VideoFramesReceived = video?.FramesReceived ?? 0,
+                AudioSubscriptionStatus = audio?.Status ?? "not-requested",
+                AudioPacketsReceived = audio?.AudioPacketsReceived ?? 0,
+                LastFrameAgeMs = video?.LastFrameAgeMs ?? -1,
+                StaleFrameCount = video?.StaleFrameCount ?? 0,
+                MalformedFrameCount = video?.MalformedFrameCount ?? 0,
+                DiagnosticSummary = diagnosticSummary,
+                RecommendedAction = action ?? string.Empty
             };
         }).ToList();
 

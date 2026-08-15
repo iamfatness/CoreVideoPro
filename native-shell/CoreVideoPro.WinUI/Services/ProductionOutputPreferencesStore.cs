@@ -207,7 +207,28 @@ public sealed class PersistedScene
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Layout { get; set; } = string.Empty;
+    public PersistedDynamicGallerySettings? DynamicGallery { get; set; }
     public List<PersistedSceneRoute> Routes { get; set; } = [];
+}
+
+public sealed class PersistedDynamicGallerySettings
+{
+    public bool AutoFill { get; set; } = true;
+    public int MaxTiles { get; set; } = 16;
+    public string TileAspect { get; set; } = "16:9";
+    public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
+    public double GutterPercent { get; set; } = 0.741;
+    public double MarginPercent { get; set; } = 0.741;
+    public string BorderShape { get; set; } = "square";
+    public string BorderColor { get; set; } = "#000000";
+    public double BorderThickness { get; set; }
+    public double CornerRadius { get; set; } = 16;
+    public string GlowColor { get; set; } = "#FFFFFF";
+    public double GlowSize { get; set; }
+    public double GlowIntensity { get; set; } = 100;
+    public double GlowSoftness { get; set; }
+    public bool AnimateLayout { get; set; }
+    public int AnimationDurationMs { get; set; } = 350;
 }
 
 public sealed class PersistedSceneRoute

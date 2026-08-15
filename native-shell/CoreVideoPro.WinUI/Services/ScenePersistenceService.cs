@@ -15,7 +15,29 @@ public static class ScenePersistenceService
             Id = scene.Id,
             Name = scene.Name,
             Layout = scene.Layout,
+            DynamicGallery = scene.DynamicGallery is null ? null : ToPersisted(scene.DynamicGallery),
             Routes = routes.Select(ToPersisted).ToList()
+        };
+
+    public static PersistedDynamicGallerySettings ToPersisted(DynamicGallerySettings settings) =>
+        new()
+        {
+            AutoFill = settings.AutoFill,
+            MaxTiles = settings.MaxTiles,
+            TileAspect = settings.TileAspect,
+            CustomAspectRatio = settings.CustomAspectRatio,
+            GutterPercent = settings.GutterPercent,
+            MarginPercent = settings.MarginPercent,
+            BorderShape = settings.BorderShape,
+            BorderColor = settings.BorderColor,
+            BorderThickness = settings.BorderThickness,
+            CornerRadius = settings.CornerRadius,
+            GlowColor = settings.GlowColor,
+            GlowSize = settings.GlowSize,
+            GlowIntensity = settings.GlowIntensity,
+            GlowSoftness = settings.GlowSoftness,
+            AnimateLayout = settings.AnimateLayout,
+            AnimationDurationMs = settings.AnimationDurationMs
         };
 
     public static PersistedSceneRoute ToPersisted(SourceRoute route) =>
@@ -49,7 +71,29 @@ public static class ScenePersistenceService
             Id = persisted.Id,
             Name = persisted.Name,
             Layout = string.IsNullOrWhiteSpace(persisted.Layout) ? "host-focus" : persisted.Layout,
-            Automation = "Custom canvas"
+            Automation = persisted.DynamicGallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
+            DynamicGallery = persisted.DynamicGallery is null ? null : FromPersisted(persisted.DynamicGallery)
+        };
+
+    public static DynamicGallerySettings FromPersisted(PersistedDynamicGallerySettings persisted) =>
+        new()
+        {
+            AutoFill = persisted.AutoFill,
+            MaxTiles = Math.Clamp(persisted.MaxTiles, 1, 64),
+            TileAspect = DynamicGalleryLayoutService.NormalizeAspectPreset(persisted.TileAspect),
+            CustomAspectRatio = Math.Clamp(persisted.CustomAspectRatio, 0.25, 4),
+            GutterPercent = Math.Clamp(persisted.GutterPercent, 0, 10),
+            MarginPercent = Math.Clamp(persisted.MarginPercent, 0, 20),
+            BorderShape = persisted.BorderShape is "rounded" ? "rounded" : "square",
+            BorderColor = SceneRoutingService.NormalizeBorderColor(persisted.BorderColor),
+            BorderThickness = Math.Clamp(persisted.BorderThickness, 0, 32),
+            CornerRadius = Math.Clamp(persisted.CornerRadius, 0, 100),
+            GlowColor = SceneRoutingService.NormalizeBorderColor(persisted.GlowColor),
+            GlowSize = Math.Clamp(persisted.GlowSize, 0, 64),
+            GlowIntensity = Math.Clamp(persisted.GlowIntensity, 0, 100),
+            GlowSoftness = Math.Clamp(persisted.GlowSoftness, 0, 100),
+            AnimateLayout = persisted.AnimateLayout,
+            AnimationDurationMs = Math.Clamp(persisted.AnimationDurationMs, 100, 2000)
         };
 
     public static SourceRoute FromPersisted(PersistedSceneRoute persisted)

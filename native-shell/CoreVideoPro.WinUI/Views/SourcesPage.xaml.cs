@@ -96,7 +96,9 @@ public sealed partial class SourcesPage : UserControl
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(StudioViewModel.PreviewCanvasLayers)
-            or nameof(StudioViewModel.HasPreviewSlotEditors))
+            or nameof(StudioViewModel.HasPreviewSlotEditors)
+            or nameof(StudioViewModel.PreviewSceneBackgroundAsset)
+            or nameof(StudioViewModel.PreviewSceneId))
         {
             RefreshSceneCanvasEditor();
         }
@@ -119,6 +121,7 @@ public sealed partial class SourcesPage : UserControl
     private void RefreshSceneCanvasEditor()
     {
         var layers = ViewModel?.PreviewCanvasLayers.ToList();
+        SceneCanvasEditor.SetBackground(ViewModel?.PreviewSceneBackgroundAsset);
         SceneCanvasEditor.SetLayers(layers, layers?.FirstOrDefault());
     }
 
