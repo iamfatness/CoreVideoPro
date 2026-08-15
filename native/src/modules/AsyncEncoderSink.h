@@ -40,9 +40,9 @@ namespace corevideo::modules {
 //     writer's queue drain each tick. Ordering (container open ahead of frames)
 //     is preserved by the single FIFO queue; start() returns an optimistic
 //     active snapshot the writer reconciles with the wrapped session shortly.
-//   - stopRecording: NON-BLOCKING. The caller holds coreMutex, so it only enqueues
-//     the stop and returns instantly (the operator's stop must never stall under
-//     load); the writer finalizes the container asynchronously. The bounded
+//   - stopRecording: NON-BLOCKING. The caller holds coreMutex, so it closes the
+//     producer gate and enqueues a FIFO barrier. Already-accepted media drains
+//     before asynchronous Finalize, preserving the take's A/V tail. The bounded
 //     finalize GRACE is enforced at teardown (destructor), where no lock is held.
 //   - session(): returns a thread-safe snapshot the writer refreshes after every
 //     applied item (eventually consistent within a few frames — fine for the

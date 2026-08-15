@@ -156,12 +156,19 @@ Troubleshooting:
 
 1. Ensure sign-in from step 8 (required for external-account meetings).
 2. Enter meeting URL (and passcode if needed) in the join UI.
-3. After join, verify:
+3. Wait for **Zoom Live**, then turn **Capture** on. Joining establishes the
+   Meeting SDK session; Capture is the separate control that subscribes and
+   forwards raw participant video/audio into CoreVideo Pro.
+4. Verify Capture is genuinely running before evaluating the show:
+   - `engineOn` is `true` in control state / diagnostics.
+   - Participant `video_frame_received` counters advance for every expected feed.
+   - Expected participant audio callbacks and meters advance when each guest speaks.
+5. After join and Capture On, verify:
    - **Participants** roster populates (not empty / not stale stub).
    - **Program** tile shows video (GPU/full-res if D3D11 interop works, else CPU/BGRA preview).
    - **Breakout room** name updates when you move rooms.
    - Diagnostics show live Zoom capabilities when the dev SDK path is active (`zoom-raw-video`, `zoom-raw-audio`).
-4. **Leave** meeting; roster clears, meeting state returns to idle.
+6. **Leave** meeting; roster clears, meeting state returns to idle.
 
 ## 10. Headless live Zoom harness (optional)
 

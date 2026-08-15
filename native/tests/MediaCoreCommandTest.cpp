@@ -1195,7 +1195,7 @@ TEST(MediaCoreCommand, ChromaKeyDisabledRendersIdenticallyToNoKeyAtAll) {
 // carries on the wire (missing, "none", or an explicit "accent"), the composed
 // feed is identical: the old "accent" default baked a studio-green frame into
 // the program, which the virtual camera, recordings, and streams all inherit.
-TEST(MediaCoreCommand, RouteBordersNeverCompositeIntoProgram) {
+TEST(MediaCoreCommand, ExplicitSceneRouteBordersCompositeIntoProgram) {
   const auto loadScene = [](const char* borderStyle) {
     auto route = corevideo::rpc::Json::Object{
         {"routeId", "a"},
@@ -1229,7 +1229,7 @@ TEST(MediaCoreCommand, RouteBordersNeverCompositeIntoProgram) {
   const auto accentSignature = signatureOf(accented.applyCommands(loadScene("accent")));
 
   EXPECT_EQ(defaultSignature, noneSignature);
-  EXPECT_EQ(defaultSignature, accentSignature);
+  EXPECT_NE(defaultSignature, accentSignature);
 }
 
 // The compositor must be ALWAYS ON: even with no scene graph, no Zoom input frames,

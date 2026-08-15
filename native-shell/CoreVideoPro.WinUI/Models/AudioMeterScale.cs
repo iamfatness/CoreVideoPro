@@ -23,4 +23,46 @@ public static class AudioMeterScale
         var normalized = (dbfs - MinimumDbfs) / (MaximumDbfs - MinimumDbfs);
         return Math.Clamp((int)Math.Round(normalized * 100), 0, 100);
     }
+
+    /// <summary>
+    /// Fits a segmented vertical meter to its current viewport. Full-size
+    /// consoles keep the requested resolution and grow the segment bodies;
+    /// compact windows reduce the segment count only when 2 px bodies no
+    /// longer fit. The returned stack always occupies the available height.
+    /// </summary>
+    public static AudioMeterSegmentLayout FitVerticalSegments(double availableHeight, int requestedCount)
+    {
+        var count = Math.Clamp(requestedCount, 8, 48);
+        if (!double.IsFinite(availableHeight) || availableHeight <= 0)
+        {
+            return new AudioMeterSegmentLayout(count, 7, 2);
+        }
+
+        const double minimumSegmentSize = 2;
+        var spacing = availableHeight / count >= 5 ? 2d : 1d;
+        var segmentSize = (availableHeight - spacing * (count - 1)) / count;
+
+        if (segmentSize < minimumSegmentSize)
+        {
+            spacing = 1;
+            count = Math.Min(count, Math.Max(1,
+                (int)Math.Floor((availableHeight + spacing) / (minimumSegmentSize + spacing))));
+
+            if (count == 1)
+            {
+                spacing = 0;
+            }
+
+            segmentSize = Math.Max(0,
+                (availableHeight - spacing * (count - 1)) / count);
+        }
+
+        return new AudioMeterSegmentLayout(count, segmentSize, spacing);
+    }
+}
+
+public readonly record struct AudioMeterSegmentLayout(int SegmentCount, double SegmentSize, double Spacing)
+{
+    public double OccupiedSize =>
+        SegmentCount * SegmentSize + Math.Max(0, SegmentCount - 1) * Spacing;
 }

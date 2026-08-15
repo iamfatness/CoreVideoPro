@@ -25,9 +25,17 @@ public sealed class ZoomMediaSpineSubscription
     public string LastResultCode { get; init; } = "ok";
     public int FramesReceived { get; init; }
     public int AudioPacketsReceived { get; init; }
+    public int DeliveredWidth { get; init; }
+    public int DeliveredHeight { get; init; }
+    public int DeliveredFps { get; init; }
     public double FirstFrameAtMs { get; init; } = -1;
     public double FirstFrameDelayMs { get; init; } = -1;
     public double LastFrameAtMs { get; init; } = -1;
+    public double LastFrameAgeMs { get; init; } = -1;
+    public int LastFrameId { get; init; }
+    public bool FrameFresh { get; init; }
+    public int StaleFrameCount { get; init; }
+    public int MalformedFrameCount { get; init; }
     public string? Warning { get; init; }
 }
 

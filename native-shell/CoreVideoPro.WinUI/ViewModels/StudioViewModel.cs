@@ -97,6 +97,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _previewSceneId = "speaker-slides";
 
+    // ItemsSource replacement briefly drives the WinUI ComboBox's two-way
+    // SelectedValue to null. Keep the last stable scene key so that transient
+    // selection loss never invalidates the view model or recursively rebuilds
+    // SceneItems until the native stack overflows.
+    private string _lastValidPreviewSceneId = "speaker-slides";
+    private bool _previewSceneSelectionRestoreScheduled;
+
     [ObservableProperty]
     private string _sceneBuilderName = "Speaker + Slides";
 
@@ -1532,6 +1539,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<SceneDisplayItem> SceneItems { get; private set; } = [];
 
+    public IReadOnlyList<RouteSelectOption> GalleryTileAspectOptions { get; } =
+    [
+        new() { Value = "16:9", Label = "16:9" },
+        new() { Value = "4:3", Label = "4:3" },
+        new() { Value = "5:4", Label = "5:4" },
+        new() { Value = "1:1", Label = "Square" },
+        new() { Value = "3:4", Label = "Portrait 3:4" },
+        new() { Value = "9:16", Label = "Portrait 9:16" },
+        new() { Value = "custom", Label = "Custom" }
+    ];
+
+    public IReadOnlyList<RouteSelectOption> GalleryBorderShapeOptions { get; } =
+    [
+        new() { Value = "square", Label = "Square" },
+        new() { Value = "rounded", Label = "Rounded" }
+    ];
+
+    public bool IsPreviewDynamicGallery => PreviewScene.DynamicGallery is not null;
+    public double GalleryMaxTiles { get => PreviewScene.DynamicGallery?.MaxTiles ?? 16; set => UpdateGallery(s => s.MaxTiles = (int)Math.Clamp(Math.Round(value), 1, 64)); }
+    public string GalleryTileAspect { get => PreviewScene.DynamicGallery?.TileAspect ?? "16:9"; set => UpdateGallery(s => s.TileAspect = DynamicGalleryLayoutService.NormalizeAspectPreset(value)); }
+    public double GalleryCustomAspectRatio { get => PreviewScene.DynamicGallery?.CustomAspectRatio ?? 16.0 / 9.0; set => UpdateGallery(s => s.CustomAspectRatio = Math.Clamp(value, 0.25, 4)); }
+    public double GalleryGutterPercent { get => PreviewScene.DynamicGallery?.GutterPercent ?? 0.741; set => UpdateGallery(s => s.GutterPercent = Math.Clamp(value, 0, 10)); }
+    public double GalleryMarginPercent { get => PreviewScene.DynamicGallery?.MarginPercent ?? 0.741; set => UpdateGallery(s => s.MarginPercent = Math.Clamp(value, 0, 20)); }
+    public string GalleryBorderShape { get => PreviewScene.DynamicGallery?.BorderShape ?? "square"; set => UpdateGallery(s => s.BorderShape = value == "rounded" ? "rounded" : "square"); }
+    public string GalleryBorderColor { get => PreviewScene.DynamicGallery?.BorderColor ?? "#000000"; set => UpdateGallery(s => s.BorderColor = SceneRoutingService.NormalizeBorderColor(value)); }
+    public double GalleryBorderThickness { get => PreviewScene.DynamicGallery?.BorderThickness ?? 0; set => UpdateGallery(s => s.BorderThickness = Math.Clamp(value, 0, 32)); }
+    public string GalleryGlowColor { get => PreviewScene.DynamicGallery?.GlowColor ?? "#FFFFFF"; set => UpdateGallery(s => s.GlowColor = SceneRoutingService.NormalizeBorderColor(value)); }
+    public double GalleryGlowSize { get => PreviewScene.DynamicGallery?.GlowSize ?? 0; set => UpdateGallery(s => s.GlowSize = Math.Clamp(value, 0, 64)); }
+    public double GalleryGlowIntensity { get => PreviewScene.DynamicGallery?.GlowIntensity ?? 100; set => UpdateGallery(s => s.GlowIntensity = Math.Clamp(value, 0, 100)); }
+    public double GalleryGlowSoftness { get => PreviewScene.DynamicGallery?.GlowSoftness ?? 0; set => UpdateGallery(s => s.GlowSoftness = Math.Clamp(value, 0, 100)); }
+    public bool GalleryAnimateLayout { get => PreviewScene.DynamicGallery?.AnimateLayout ?? false; set => UpdateGallery(s => s.AnimateLayout = value); }
+    public double GalleryAnimationDurationMs { get => PreviewScene.DynamicGallery?.AnimationDurationMs ?? 350; set => UpdateGallery(s => s.AnimationDurationMs = (int)Math.Clamp(Math.Round(value), 100, 2000)); }
+
     public IReadOnlyList<Participant> RoomVideoParticipants { get; private set; }
 
     // All in-room participants (incl. video-off) for the Sources/Inputs picker.
@@ -1541,7 +1581,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public Scene ProgramScene => Scenes.First(s => s.Id == ActiveSceneId);
 
-    public Scene PreviewScene => Scenes.First(s => s.Id == PreviewSceneId);
+    public Scene PreviewScene =>
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, _lastValidPreviewSceneId, StringComparison.Ordinal)) ??
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, ActiveSceneId, StringComparison.Ordinal)) ??
+        Scenes.First();
 
     [ObservableProperty]
     private string _currentRoomLabel;
@@ -3536,10 +3580,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnPreviewSceneIdChanged(string value)
     {
+        // Replacing SceneItems briefly drives the bound ComboBox selection to
+        // null. Never run scene refresh against that transient invalid key.
+        if (string.IsNullOrWhiteSpace(value) ||
+            !_scenes.Any(scene => string.Equals(scene.Id, value, StringComparison.Ordinal)))
+        {
+            SchedulePreviewSceneSelectionRestore();
+            return;
+        }
+
+        _lastValidPreviewSceneId = value;
         // S2b: cueing a different scene abandons any uncommitted edits to the
         // live scene (the draft belongs to the previously cued scene).
         DiscardLivePreviewDraft();
         SceneBuilderName = PreviewScene.Name;
+        NotifyDynamicGalleryPropertiesChanged();
         RefreshSceneItems();
         RefreshSceneBackgroundSelection();
         OnPropertyChanged(nameof(PreviewScene));
@@ -3556,6 +3611,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             _ = SyncPreviewSceneChangeAsync();
         }
+    }
+
+    private void SchedulePreviewSceneSelectionRestore()
+    {
+        if (_previewSceneSelectionRestoreScheduled)
+        {
+            return;
+        }
+
+        _previewSceneSelectionRestoreScheduled = true;
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
+        {
+            _previewSceneSelectionRestoreScheduled = false;
+            if (_scenes.Any(scene => string.Equals(scene.Id, PreviewSceneId, StringComparison.Ordinal)))
+            {
+                return;
+            }
+
+            var fallback = _scenes.FirstOrDefault(scene =>
+                    string.Equals(scene.Id, _lastValidPreviewSceneId, StringComparison.Ordinal)) ??
+                _scenes.FirstOrDefault(scene =>
+                    string.Equals(scene.Id, ActiveSceneId, StringComparison.Ordinal)) ??
+                _scenes.FirstOrDefault();
+            if (fallback is not null)
+            {
+                PreviewSceneId = fallback.Id;
+            }
+        }, "scene-selection.restore");
     }
 
     private async Task SyncPreviewSceneChangeAsync()
@@ -3823,6 +3906,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private void NewDynamicGallery()
+    {
+        var newId = NewCustomSceneId();
+        var galleryNumber = _scenes.Count(scene => scene.DynamicGallery is not null) + 1;
+        var scene = new Scene
+        {
+            Id = newId,
+            Name = galleryNumber == 1 ? "CoreVideo Tiles" : $"CoreVideo Tiles {galleryNumber}",
+            Layout = "dynamic-gallery",
+            Automation = "Auto-reflow Zoom gallery",
+            DynamicGallery = new DynamicGallerySettings()
+        };
+
+        _scenes.Add(scene);
+        _sceneRoutes[newId] = [];
+        ReconcileDynamicGalleryRoutes(scene, _sceneRoutes[newId]);
+        RefreshSceneItems();
+        PreviewSceneId = newId;
+        ActiveTab = StudioTab.Sources;
+        CommandStatus = $"{scene.Name} created with {RoomVideoParticipants.Count} live Zoom sources";
+        SchedulePreviewRoutingRefresh();
+        SaveProductionOutputPreferences();
+    }
+
+    [RelayCommand]
     private void DuplicateScene(string? sceneId)
     {
         var source = _scenes.FirstOrDefault(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
@@ -3837,7 +3945,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Id = newId,
             Name = ScenePersistenceService.MakeUniqueSceneName($"{source.Name} copy", _scenes.Select(s => s.Name)),
             Layout = source.Layout,
-            Automation = "Custom canvas"
+            Automation = source.DynamicGallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
+            DynamicGallery = source.DynamicGallery?.Clone()
         };
 
         _scenes.Add(scene);
@@ -3881,7 +3990,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Id = newId,
             Name = trimmed ?? $"Saved scene {sceneNumber}",
             Layout = PreviewScene.Layout,
-            Automation = "Custom canvas"
+            Automation = PreviewScene.DynamicGallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
+            DynamicGallery = PreviewScene.DynamicGallery?.Clone()
         };
 
         _scenes.Add(scene);
@@ -3957,7 +4067,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Name = name,
             Layout = scene.Layout,
             Automation = scene.Automation,
-            DurationLabel = scene.DurationLabel
+            DurationLabel = scene.DurationLabel,
+            DynamicGallery = scene.DynamicGallery
         };
 
         OnPropertyChanged(nameof(ProgramScene));
@@ -4563,7 +4674,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void SetParticipantProductionRole(string participantId, string? roleId)
     {
-        var participant = RoomVideoParticipants.FirstOrDefault(item =>
+        var participant = RoomParticipantsForInputs.FirstOrDefault(item =>
             string.Equals(item.Id, participantId, StringComparison.Ordinal));
         if (participant is null)
         {
@@ -7169,8 +7280,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Scenes,
             AutomationPreferScreenShare,
             (int)Math.Round(AutomationPanelParticipantThreshold));
-        FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(RoomVideoParticipants, _participantProductionRoles);
-        FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
+        FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(
+            RoomParticipantsForInputs,
+            _participantProductionRoles,
+            _bridge.LastSnapshot?.ZoomSubscriptions);
+        FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomParticipantsForInputs);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
         AutoProductionReadout = MagicScene.BuildAutoProductionReadout();
@@ -11736,7 +11850,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             PreviewSceneBackgroundAssetId = SceneBackgroundSelectionService.ResolveSelectedAssetId(
-                PreviewSceneId,
+                PreviewScene.Id,
                 _sceneBackgroundAssetIds,
                 FindMediaAsset,
                 IsVisualMediaAsset);
@@ -12371,13 +12485,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // Preview may be editing a draft of the on-air scene. Refreshing from the
         // stored program routes here silently erased newly added overlay layers.
         var mutableRoutes = isPreview ? GetPreviewEditableRoutes() : GetMutableRoutes(sceneId);
+        if (scene.DynamicGallery is not null)
+        {
+            ReconcileDynamicGalleryRoutes(scene, mutableRoutes);
+        }
         var defaults = SceneRoutingService.GetRouteDefaults(
             scene,
             mutableRoutes,
             RoomVideoParticipants);
 
-        ReconcileRoutes(mutableRoutes, defaults);
-        SceneCanvasLayoutService.EnsureCanvasRects(mutableRoutes, scene.Layout);
+        if (scene.DynamicGallery is null)
+        {
+            ReconcileRoutes(mutableRoutes, defaults);
+            SceneCanvasLayoutService.EnsureCanvasRects(mutableRoutes, scene.Layout);
+        }
         var workingRoutes = mutableRoutes.Select(ResolveRouteFromShowInput).ToList();
 
         if (isPreview)
@@ -12398,6 +12519,103 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(StudioLowerThirdToolTip));
             UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(workingRoutes));
         }
+    }
+
+    private void ReconcileDynamicGalleryRoutes(Scene scene, List<SourceRoute> routes)
+    {
+        var settings = scene.DynamicGallery;
+        if (settings is null || _canvasInteractionActive)
+        {
+            return;
+        }
+
+        var participants = RoomVideoParticipants
+            .Where(participant => participant.Health != FeedHealth.VideoOff)
+            .Take(Math.Clamp(settings.MaxTiles, 1, 64))
+            .ToList();
+        var participantIds = participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal);
+        var retained = routes
+            .Where(route => route.Mode == SourceRouteMode.Fixed &&
+                            route.ParticipantId is { Length: > 0 } participantId &&
+                            participantIds.Contains(participantId))
+            .GroupBy(route => route.ParticipantId!, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        var retainedIds = retained.Select(route => route.ParticipantId!).ToHashSet(StringComparer.Ordinal);
+
+        foreach (var participant in participants)
+        {
+            if (retainedIds.Add(participant.Id))
+            {
+                retained.Add(new SourceRoute
+                {
+                    Id = $"{scene.Id}-tile-{participant.Id}",
+                    Mode = SourceRouteMode.Fixed,
+                    ParticipantId = participant.Id,
+                    AudioRole = SourceAudioRole.Isolated,
+                    FitMode = "fill"
+                });
+            }
+        }
+
+        retained = retained.Take(Math.Clamp(settings.MaxTiles, 1, 64)).ToList();
+        var rects = DynamicGalleryLayoutService.BuildRects(
+            retained.Count,
+            tileAspectPreset: settings.TileAspect,
+            customAspectRatio: settings.CustomAspectRatio,
+            gutterPercent: settings.GutterPercent,
+            marginPercent: settings.MarginPercent);
+
+        for (var index = 0; index < retained.Count; index++)
+        {
+            var route = retained[index];
+            route.CanvasRect = rects[index].Clone();
+            route.ZIndex = index;
+            route.BorderStyle = settings.BorderThickness > 0 ? "solid" : "none";
+            route.BorderColor = settings.BorderColor;
+            route.BorderThickness = Math.Clamp(settings.BorderThickness, 0, 12);
+        }
+
+        routes.Clear();
+        routes.AddRange(retained);
+    }
+
+    private void UpdateGallery(Action<DynamicGallerySettings> update)
+    {
+        if (PreviewScene.DynamicGallery is not { } settings)
+        {
+            return;
+        }
+
+        update(settings);
+        var routes = GetPreviewEditableRoutes();
+        ReconcileDynamicGalleryRoutes(PreviewScene, routes);
+        NotifyDynamicGalleryPropertiesChanged();
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(PreviewScene, routes.Select(ResolveRouteFromShowInput).ToList());
+        CommandStatus = $"{PreviewScene.Name} gallery updated on Preview";
+        SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
+        SaveProductionOutputPreferences();
+    }
+
+    private void NotifyDynamicGalleryPropertiesChanged()
+    {
+        OnPropertyChanged(nameof(IsPreviewDynamicGallery));
+        OnPropertyChanged(nameof(GalleryMaxTiles));
+        OnPropertyChanged(nameof(GalleryTileAspect));
+        OnPropertyChanged(nameof(GalleryCustomAspectRatio));
+        OnPropertyChanged(nameof(GalleryGutterPercent));
+        OnPropertyChanged(nameof(GalleryMarginPercent));
+        OnPropertyChanged(nameof(GalleryBorderShape));
+        OnPropertyChanged(nameof(GalleryBorderColor));
+        OnPropertyChanged(nameof(GalleryBorderThickness));
+        OnPropertyChanged(nameof(GalleryGlowColor));
+        OnPropertyChanged(nameof(GalleryGlowSize));
+        OnPropertyChanged(nameof(GalleryGlowIntensity));
+        OnPropertyChanged(nameof(GalleryGlowSoftness));
+        OnPropertyChanged(nameof(GalleryAnimateLayout));
+        OnPropertyChanged(nameof(GalleryAnimationDurationMs));
     }
 
     // NOT force: forcing re-ran the full building-out -> building-in slide on EVERY
@@ -12769,7 +12987,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             for (var index = 0; index < routes.Count; index++)
             {
-                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs, VisualMediaAssets);
+                PreviewCanvasLayers[index].SyncFromRoute(
+                    routes[index],
+                    RoomVideoParticipants,
+                    CaptureDevices,
+                    ShowInputs,
+                    VisualMediaAssets);
                 PreviewCanvasLayers[index].SetSurface(ResolveLayerSurface(routes[index], index));
             }
 
@@ -13529,7 +13752,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Name = scene.Name,
             Layout = layout,
             Automation = scene.Automation,
-            DurationLabel = scene.DurationLabel
+            DurationLabel = scene.DurationLabel,
+            DynamicGallery = scene.DynamicGallery
         };
 
         OnPropertyChanged(nameof(ProgramScene));
@@ -13553,7 +13777,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         layer.ApplyRoute();
         SceneRoutingService.ApplyNormalizeRouteUpdate(routes[layer.LayerIndex], RoomVideoParticipants);
         ApplyKnownColorGradeToRoute(routes[layer.LayerIndex]);
-        layer.SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs, VisualMediaAssets);
+        layer.SyncFromRoute(
+            routes[layer.LayerIndex],
+            RoomVideoParticipants,
+            CaptureDevices,
+            ShowInputs,
+            VisualMediaAssets);
         layer.SetSurface(ResolveLayerSurface(routes[layer.LayerIndex], layer.LayerIndex));
 
         CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";

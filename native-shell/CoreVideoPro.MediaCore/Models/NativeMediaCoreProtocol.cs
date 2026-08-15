@@ -818,6 +818,10 @@ public sealed record NativeMediaCoreStateSnapshot
     /// <summary>Live Zoom roster from media-core sync when the engine is connected.</summary>
     public string? ActiveSpeakerId { get; init; }
     public IReadOnlyList<RawParticipantEvent> Participants { get; init; } = [];
+    /// <summary>Latest per-source Zoom SDK subscription evidence, retained for
+    /// operator-facing source diagnostics instead of being collapsed into only
+    /// aggregate frame counters.</summary>
+    public IReadOnlyList<ZoomMediaSpineSubscription> ZoomSubscriptions { get; init; } = [];
 }
 
 public sealed class NativeMediaCoreValidation

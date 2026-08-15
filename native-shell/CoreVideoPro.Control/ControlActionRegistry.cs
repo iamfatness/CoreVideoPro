@@ -170,6 +170,8 @@ public static class ControlActionRegistry
             // ---- Scenes / view ----------------------------------------------------------
             new("scene.select", "Select scene", "Cue a scene to Preview by id.",
                 new[] { new ControlParam("sceneId", s, true) }),
+            new("scene.dynamicGallery.create", "Create CoreVideo Tiles",
+                "Create a dynamic CoreVideo Tiles scene and cue it to Preview."),
             new("view.setMode", "Set view mode", "Set the operator view (program/preview/programPreview/multiview).",
                 new[] { new ControlParam("mode", s, true) }),
 

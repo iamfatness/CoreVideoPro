@@ -10,7 +10,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     private const string CaptureValuePrefix = "capture:";
     private const string MediaValuePrefix = "media:";
     private readonly Action<SceneCanvasLayerViewModel> _onChanged;
-    private readonly SourceRoute _route;
+    private SourceRoute _route;
     private IReadOnlyList<Participant> _participants;
     private IReadOnlyList<CaptureDevice> _captureDevices;
     private IReadOnlyList<ShowInputSlot> _showInputs;
@@ -233,6 +233,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     }
 
     public void SyncFromRoute(
+        SourceRoute route,
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
         IReadOnlyList<ShowInputSlot> showInputs,
@@ -241,6 +242,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _suppressChangeNotification = true;
         try
         {
+            _route = route;
             _participants = participants;
             _captureDevices = captureDevices;
             _showInputs = showInputs;

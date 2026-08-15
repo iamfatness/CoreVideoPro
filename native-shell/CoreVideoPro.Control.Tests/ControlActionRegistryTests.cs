@@ -67,6 +67,7 @@ public sealed class ControlActionRegistryTests
         foreach (var id in new[]
         {
             "zoom.join", "zoom.leave", "transport.take", "transport.record.toggle", "transport.stream.set", "scene.select",
+            "scene.dynamicGallery.create",
             "input.assign", "input.name", "graphics.lowerThird.toggle", "audio.zoomMode.set", "audio.monitor.set",
             "multiview.layout.set", "automation.autoAssignInputs.set"
         })

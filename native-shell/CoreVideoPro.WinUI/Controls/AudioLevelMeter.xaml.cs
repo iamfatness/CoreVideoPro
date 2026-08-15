@@ -253,25 +253,39 @@ public sealed partial class AudioLevelMeter : UserControl
         double segMain = IsVertical ? 7 : 4;
         if (availableMain > 0)
         {
-            if ((segMain + spacing) * count > availableMain)
+            if (IsVertical)
             {
-                spacing = 1;
-            }
-            var perSegment = (availableMain - spacing * (count - 1)) / count;
-            if (perSegment < segMain)
-            {
-                segMain = Math.Max(2, Math.Floor(perSegment));
-            }
-            var fits = (int)Math.Floor((availableMain + spacing) / (segMain + spacing));
-            if (fits < count && fits >= 4)
-            {
-                // Too small even at 2px segments: re-quantize onto fewer segments
-                // so the meter stays proportional instead of clipping.
-                count = fits;
+                // Keep the segment bar and the dB scale on the same responsive
+                // height instead of pinning a fixed-size bar to the bottom.
+                var layout = Models.AudioMeterScale.FitVerticalSegments(availableMain, count);
+                count = layout.SegmentCount;
+                segMain = layout.SegmentSize;
+                spacing = layout.Spacing;
                 activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
                 peakSegment = _peakLevel > 0
                     ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
                     : -1;
+            }
+            else
+            {
+                if ((segMain + spacing) * count > availableMain)
+                {
+                    spacing = 1;
+                }
+                var perSegment = (availableMain - spacing * (count - 1)) / count;
+                if (perSegment < segMain)
+                {
+                    segMain = Math.Max(2, Math.Floor(perSegment));
+                }
+                var fits = (int)Math.Floor((availableMain + spacing) / (segMain + spacing));
+                if (fits < count && fits >= 4)
+                {
+                    count = fits;
+                    activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
+                    peakSegment = _peakLevel > 0
+                        ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
+                        : -1;
+                }
             }
         }
 

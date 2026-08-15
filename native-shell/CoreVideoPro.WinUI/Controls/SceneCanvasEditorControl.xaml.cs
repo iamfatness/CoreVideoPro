@@ -43,6 +43,26 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     public bool IsInteracting => _dragLayer is not null;
 
+    public void SetBackground(MediaAsset? asset)
+    {
+        if (asset is null)
+        {
+            BackgroundPreview.Visibility = Visibility.Collapsed;
+            BackgroundPreview.FilePath = null;
+            BackgroundPreview.Kind = null;
+            BackgroundPreview.IsPlaying = false;
+            BackgroundPreview.PlaybackKey = null;
+            return;
+        }
+
+        BackgroundPreview.FilePath = asset.FilePath;
+        BackgroundPreview.Kind = asset.Kind;
+        BackgroundPreview.PlaybackKey = $"scene-background:{asset.Id}";
+        BackgroundPreview.IsLooping = true;
+        BackgroundPreview.IsPlaying = asset.Kind.Equals("video", StringComparison.OrdinalIgnoreCase);
+        BackgroundPreview.Visibility = Visibility.Visible;
+    }
+
     private void OnEditorSizeChanged(object sender, SizeChangedEventArgs e) =>
         ResizeCanvasViewport();
 

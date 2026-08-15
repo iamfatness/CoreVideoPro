@@ -41,7 +41,8 @@
                     <TextBlock Text="Zoom feed health" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.FeedHealthSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.FeedHealthRows, Mode=OneWay}">
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.FeedHealthRows, Mode=OneWay}"
+                                   ElementPrepared="OnFeedHealthElementPrepared">
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:FeedHealthRow">
                                 <Grid ColumnSpacing="8" Padding="0,4">
@@ -49,6 +50,10 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
                                     <StackPanel Spacing="2">
                                         <TextBlock Text="{x:Bind Name}" FontSize="12" FontWeight="SemiBold" />
                                         <!-- R1: assign a production role (session-only). Role-targeted
@@ -60,7 +65,8 @@
                                              container can be re-bound while its ItemsSource binding is still
                                              resolving, and selecting a value the ComboBox does not have yet
                                              throws. Tag carries the whole row so the handler has both ids. -->
-                                        <ComboBox ItemsSource="{Binding ViewModel.ProductionRoleAssignmentOptions, ElementName=SourcesInputsRoot}"
+                                        <ComboBox x:Name="ProductionRoleCombo"
+                                                  ItemsSource="{Binding ViewModel.ProductionRoleAssignmentOptions, ElementName=SourcesInputsRoot}"
                                                   SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
                                                   Tag="{x:Bind}"
@@ -75,6 +81,19 @@
                                                    Foreground="{StaticResource StudioMutedBrush}"
                                                    Visibility="{x:Bind NeedsAttention, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                                     </StackPanel>
+                                    <Border Grid.Row="1" Grid.ColumnSpan="2" Margin="0,5,0,0"
+                                            Background="#0C1118" BorderBrush="#22303A"
+                                            BorderThickness="1" CornerRadius="4" Padding="7,5">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{x:Bind DiagnosticSummary}" FontSize="10"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
+                                            <TextBlock Text="{x:Bind RecommendedAction}" FontSize="10"
+                                                       Foreground="#F0A85C"
+                                                       TextWrapping="WrapWholeWords"
+                                                       Visibility="{x:Bind HasRecommendedAction, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </Border>
                                 </Grid>
                             </DataTemplate>
                         </ItemsRepeater.ItemTemplate>
