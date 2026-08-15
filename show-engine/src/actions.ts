@@ -712,30 +712,39 @@ function dispatch(engine: ShowEngine, id: string, bound: readonly (string | numb
 
 /**
  * Invoke one `ohg.*` action by id against `engine`. Never throws (see the
- * file-level doc comment's guarantee #1): `bindArgs` (arity/type validation
- * and coercion) and `dispatch` (`ProgramSource`/`Role` parsing, then the
- * engine call) BOTH run inside the one `try` below, so this function's
- * "never throws" promise is enforced at a SINGLE boundary rather than
- * trusting every internal helper to individually never throw. That single
- * boundary is what closed a real bug (fix round 1): `bindArgs`'s own error
- * message used to build with `JSON.stringify(raw)`, which throws for a
- * `bigint` (OSC's `h`/int64 tag decodes to one in common Node OSC
- * libraries) or a circular object — and `bindArgs` ran OUTSIDE the try, so
- * that throw reached the caller directly, taking the exact "malformed OSC
- * packet from a Companion button" path this guarantee exists to survive.
- * `describeArg` (above) fixed the message itself; moving `bindArgs` inside
- * `try` means an equivalent mistake anywhere else in this file's validation
- * path is caught here too, not just at today's one known site. An unknown
+ * file-level doc comment's guarantee #1): the `id` lookup, `bindArgs`
+ * (arity/type validation and coercion), and `dispatch` (`ProgramSource`/
+ * `Role` parsing, then the engine call) ALL run inside the one `try` below,
+ * so this function's "never throws" promise is enforced at a SINGLE
+ * boundary rather than trusting every internal step to individually never
+ * throw. That single boundary is what closed a real bug (fix round 1):
+ * `bindArgs`'s own error message used to build with `JSON.stringify(raw)`,
+ * which throws for a `bigint` (OSC's `h`/int64 tag decodes to one in common
+ * Node OSC libraries) or a circular object — and `bindArgs` ran OUTSIDE the
+ * try, so that throw reached the caller directly, taking the exact
+ * "malformed OSC packet from a Companion button" path this guarantee
+ * exists to survive.
+ *
+ * Fix round 2 closed the SAME bug class at this function's very first line:
+ * the unknown-`id` branch also built its message with `JSON.stringify(id)`
+ * and, unlike `bindArgs`'s message, ran BEFORE any `try` existed here at
+ * all — so `invokeAction(engine, aBigint, [])` or a circular `id` threw
+ * directly. `id`'s TS type (`string`) does not protect this: the actual
+ * caller in production is a JS OSC bridge, an untyped boundary, which is
+ * exactly the threat model this guarantee exists for. Now inside the try
+ * AND described with `describeArg` (never throws) rather than
+ * `JSON.stringify`, so both the "how was this rejected" message-building
+ * step and the lookup itself are covered by the one boundary. An unknown
  * `id` is the same `{kind:"error"}` shape as every other rejection — there
  * is no separate "action not found" result kind.
  */
 export function invokeAction(engine: ShowEngine, id: string, args: readonly unknown[]): ActionResult {
-  const def = ACTIONS_BY_ID.get(id);
-  if (def === undefined) {
-    return errorResult(`ohg action: unknown action id ${JSON.stringify(id)}`);
-  }
-
   try {
+    const def = ACTIONS_BY_ID.get(id);
+    if (def === undefined) {
+      return errorResult(`ohg action: unknown action id ${describeArg(id)}`);
+    }
+
     const bindResult = bindArgs(id, def, args);
     if (!bindResult.ok) return bindResult.result;
     return dispatch(engine, id, bindResult.bound);

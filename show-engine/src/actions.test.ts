@@ -563,6 +563,17 @@ describe("invokeAction: never throws, never mutates on a rejected invoke", () =>
    * `string` param took this exact path. Fixed by formatting the message
    * with `typeof`/`String()` (never throws) AND moving `bindArgs` inside
    * the `try` (so an equivalent mistake anywhere else is caught too).
+   *
+   * Fix round 2: these four assertions now PIN the exact message via
+   * `toEqual`, not just `kind === "error"`. Reviewer proof that the loose
+   * form was insufficient: reverting ONLY the `describeArg` half (restoring
+   * `JSON.stringify(raw)` in the message, leaving `bindArgs` inside the
+   * `try`) left the full suite green — the `try` swallows the resulting
+   * `TypeError` and returns `{kind:"error", message: "Do not know how to
+   * serialize a BigInt"}`, which still satisfies `kind === "error"` and
+   * `.not.toThrow()`. Only a message assertion can tell the operator
+   * diagnostic ("argument 'slot' must be int (got bigint 10)") apart from
+   * a swallowed engine `TypeError` — the exact regression this pins shut.
    */
   it("returns an error (never throws) for a bigint argument to an int param, engine untouched", () => {
     const e = engine();
@@ -571,7 +582,10 @@ describe("invokeAction: never throws, never mutates on a rejected invoke", () =>
     expect(() => {
       result = invokeAction(e, "ohg.panelist.remove", [10n]);
     }).not.toThrow();
-    expect(result?.kind).toBe("error");
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg.panelist.remove: argument 'slot' must be int (got bigint 10)"
+    });
     expect(snap(e)).toEqual(before);
   });
 
@@ -582,7 +596,10 @@ describe("invokeAction: never throws, never mutates on a rejected invoke", () =>
     expect(() => {
       result = invokeAction(e, "ohg.panelist.add", [10n]);
     }).not.toThrow();
-    expect(result?.kind).toBe("error");
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg.panelist.add: argument 'participantId' must be string (got bigint 10)"
+    });
     expect(snap(e)).toEqual(before);
   });
 
@@ -595,7 +612,10 @@ describe("invokeAction: never throws, never mutates on a rejected invoke", () =>
     expect(() => {
       result = invokeAction(e, "ohg.look.set", [circular]);
     }).not.toThrow();
-    expect(result?.kind).toBe("error");
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg.look.set: argument 'name' must be string (got object [object Object])"
+    });
     expect(snap(e)).toEqual(before);
   });
 
@@ -608,7 +628,51 @@ describe("invokeAction: never throws, never mutates on a rejected invoke", () =>
     expect(() => {
       result = invokeAction(e, "ohg.panelist.remove", [circular]);
     }).not.toThrow();
-    expect(result?.kind).toBe("error");
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg.panelist.remove: argument 'slot' must be int (got object [object Object])"
+    });
+    expect(snap(e)).toEqual(before);
+  });
+
+  /**
+   * Fix round 2: the SAME bug class survived at `invokeAction`'s very
+   * first line — the unknown-`id` branch built its message with
+   * `JSON.stringify(id)` and ran BEFORE any `try` existed there at all.
+   * `id`'s TS type (`string`) does not protect this at runtime: the real
+   * caller is a JS OSC bridge, an untyped boundary. Pinned exact, same
+   * reasoning as above (a loose `kind === "error"` check cannot distinguish
+   * the clean "unknown action id" message from a swallowed `TypeError`).
+   */
+  it("returns an error (never throws) for a bigint action id, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    let result: ActionResult | undefined;
+    expect(() => {
+      // `id`'s declared type is `string`; an untyped JS caller (the real
+      // OSC-bridge threat model) is under no obligation to honor that.
+      result = invokeAction(e, 10n as unknown as string, []);
+    }).not.toThrow();
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg action: unknown action id bigint 10"
+    });
+    expect(snap(e)).toEqual(before);
+  });
+
+  it("returns an error (never throws) for a circular-object action id, engine untouched", () => {
+    const e = engine();
+    const before = snap(e);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(e, circular as unknown as string, []);
+    }).not.toThrow();
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg action: unknown action id object [object Object]"
+    });
     expect(snap(e)).toEqual(before);
   });
 });
