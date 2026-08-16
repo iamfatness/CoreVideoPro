@@ -50,6 +50,79 @@ void loadWall(MediaCore& core, const std::vector<std::string>& members) {
                   {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
 }
 
+// Same shape as loadWall(), but the scene ALSO carries ordinary routes. Used
+// to characterise the routes+wall interleave (see the test below); the shell
+// no longer produces this shape (BuildProductionSyncContext serializes an
+// empty route list for a gallery scene, by construction), but the core wire
+// accepts it from anything, so the behaviour is pinned rather than latent.
+void loadWallWithRoutes(MediaCore& core,
+                        const std::vector<std::string>& members,
+                        const std::vector<int>& routeZIndexes) {
+  corevideo::rpc::Json::Array memberJson;
+  for (const auto& member : members) {
+    memberJson.push_back(corevideo::rpc::Json{member});
+  }
+  corevideo::rpc::Json::Array routeJson;
+  for (size_t i = 0; i < routeZIndexes.size(); ++i) {
+    routeJson.push_back(corevideo::rpc::Json{corevideo::rpc::Json::Object{
+        {"routeId", corevideo::rpc::Json{"r" + std::to_string(i)}},
+        {"mode", corevideo::rpc::Json{"fixed"}},
+        {"participantId", corevideo::rpc::Json{"route-p" + std::to_string(i)}},
+        {"zIndex", corevideo::rpc::Json{static_cast<double>(routeZIndexes[i])}},
+        // hasRect is what makes the core honour zIndex as the layer order
+        // (buildRenderPlanForScene: `if (route.hasRect) layer.order = route.zIndex`).
+        {"rect", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+            {"x", corevideo::rpc::Json{0.0}},
+            {"y", corevideo::rpc::Json{0.0}},
+            {"width", corevideo::rpc::Json{0.5}},
+            {"height", corevideo::rpc::Json{0.5}}}}}}});
+  }
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"load-scene-graph"}},
+          {"sceneId", corevideo::rpc::Json{"s"}},
+          {"routes", corevideo::rpc::Json{routeJson}},
+          {"tiles", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+              {"layerId", corevideo::rpc::Json{"tiles:s"}},
+              {"members", corevideo::rpc::Json{memberJson}},
+              {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
+}
+
+// Captures what the core actually handed the compositor on the last render
+// tick — BOTH the render plan and how many video frames the gather produced.
+//
+// `MediaCore::lastRenderPlan_` (lastRenderPlanForTest) is deliberately cached
+// ONLY while a PROGRAM wall is configured, so it cannot answer "what does a
+// no-wall scene's plan look like" or "did the frame gather actually produce
+// frames" at all. This stub answers both from the real production tick,
+// without adding a test-only seam to MediaCore.
+class RecordingCompositor final : public corevideo::modules::ICompositor {
+ public:
+  std::string rendererName() const override { return "recording-test"; }
+
+  corevideo::modules::ProgramFrame render(
+      const corevideo::modules::CompositorRenderPlan& renderPlan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    lastPlan = renderPlan;
+    lastFrameCount = frames.size();
+    ++renderCount;
+    corevideo::modules::ProgramFrame frame;
+    frame.width = renderPlan.width;
+    frame.height = renderPlan.height;
+    frame.layerCount = static_cast<int>(renderPlan.layers.size());
+    frame.frameNumber = renderCount;
+    frame.renderPlanId = renderPlan.renderPlanId;
+    frame.renderer = "recording-test";
+    frame.health = "live";
+    return frame;
+  }
+
+  corevideo::modules::CompositorRenderPlan lastPlan;
+  size_t lastFrameCount = 0;
+  int64_t renderCount = 0;
+};
+
 // C1 fix vehicle: a capture device that is ALWAYS connected and delivers a
 // real-pixel frame keyed "capture:frozen-1" every poll, with a controllable
 // frameId. Used by the I4 test to reproduce the frozen-but-subscribed-guest
@@ -182,11 +255,124 @@ TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
   EXPECT_GT(findLayer(soloPlan, "tile:zoom:1")->rect.width, pairedWidth);
 }
 
+// Whole-branch review fix: this test used to call `loadWall(core, {})` and read
+// lastRenderPlanForTest(). An empty-members tiles node fails MediaCore's
+// `tilesLayer_.present && !tilesLayer_.members.empty()` assignment gate, so
+// lastRenderPlan_ was never written and the test inspected a DEFAULT-CONSTRUCTED
+// plan — zero tiles-background layers is true of an empty struct, so it could
+// not fail for any reason. It now drives a real no-wall scene WITH routes
+// through the production tick and reads the plan the compositor was actually
+// handed, so both halves of "leaves the ordinary route plan untouched" are
+// genuinely asserted.
 TEST(TilesRenderPlan, NoTilesLayerLeavesTheOrdinaryRoutePlanUntouched) {
-  MediaCore core;
-  loadWall(core, {});
-  const auto plan = core.lastRenderPlanForTest();
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  MediaCore core(std::move(modules));
+
+  // A scene with routes and NO tiles node at all.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"load-scene-graph"}},
+          {"sceneId", corevideo::rpc::Json{"no-wall"}},
+          {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{
+              corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"routeId", corevideo::rpc::Json{"r0"}},
+                  {"mode", corevideo::rpc::Json{"fixed"}},
+                  {"participantId", corevideo::rpc::Json{"p-1"}}}},
+              corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"routeId", corevideo::rpc::Json{"r1"}},
+                  {"mode", corevideo::rpc::Json{"fixed"}},
+                  {"participantId", corevideo::rpc::Json{"p-2"}}}}}}}}}});
+
+  const auto& plan = compositor->lastPlan;
+  ASSERT_GE(compositor->renderCount, 1) << "no render tick ran — nothing was under test";
   EXPECT_EQ(countLayersOfKind(plan, "tiles-background"), 0);
+  // The ordinary route plan is present and UNTOUCHED — that is the half a
+  // default-constructed plan could never have shown.
+  ASSERT_NE(findLayer(plan, "route:r0"), nullptr);
+  ASSERT_NE(findLayer(plan, "route:r1"), nullptr);
+  for (const auto& layer : plan.layers) {
+    EXPECT_NE(layer.layerId.rfind("tile:", 0), 0u)
+        << "no-wall scene emitted a tile layer: " << layer.layerId;
+    EXPECT_NE(layer.layerId.rfind("tiles-bg:", 0), 0u)
+        << "no-wall scene emitted a wall background: " << layer.layerId;
+  }
+}
+
+// CRITICAL (on-air). A wall whose members are ALL stale must still emit its
+// background, so the plan is never empty.
+//
+// This is not a cosmetic preference. All three compositors
+// (D3D11CompositorAdapter::resolveLayers, ProgramFramePreview's
+// buildProgramFramePreview, MetalCompositorAdapter::resolveLayers) treat an
+// EMPTY `renderPlan.layers` as "improvise a grid of every decoded frame", and
+// buildRenderPlanForScene deliberately suppresses the legacy full-canvas
+// fallback while a wall is active — so an empty plan under a Tiles scene put a
+// grid of arbitrary decoded sources (including the very members the staleness
+// veto had just rejected) onto PROGRAM, and thus into the virtual camera,
+// recordings and streams. Transient on EVERY Tiles take, permanent once every
+// member freezes. Asserting non-emptiness is therefore the whole point of the
+// test, not a formality.
+TEST(TilesRenderPlan, AnAllStaleWallStillEmitsItsBackground) {
+  MediaCore core;
+  loadWall(core, {"zoom:1", "zoom:2"});
+  core.setTilesMemberFrameAgesForTest(
+      {{"zoom:1", true, corevideo::compositor::kTilesStaleFrameMs + 1},
+       {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
+
+  const auto plan = core.lastRenderPlanForTest();
+  ASSERT_FALSE(plan.layers.empty())
+      << "an empty plan makes all three compositors improvise a grid of every decoded frame onto PROGRAM";
+  std::vector<std::string> layerIds;
+  for (const auto& layer : plan.layers) {
+    layerIds.push_back(layer.layerId);
+  }
+  EXPECT_EQ(layerIds, (std::vector<std::string>{"tiles-bg:tiles:s"}));
+  EXPECT_EQ(countLayersOfKind(plan, "participant-video"), 0);
+
+  const auto* background = findLayer(plan, "tiles-bg:tiles:s");
+  ASSERT_NE(background, nullptr);
+  EXPECT_TRUE(background->hasFillColor);
+  EXPECT_EQ(background->fillColor, "#101418");
+}
+
+// Characterization (whole-branch review): routes and a wall arriving in ONE
+// scene share a single order namespace, so they INTERLEAVE. tiles-bg takes
+// wall.order and tile #i takes wall.order + 1 + i, while a route with an
+// explicit rect takes its own zIndex — so a route at zIndex 2 lands exactly on
+// top of the second tile's order and sorts between the wall's own layers.
+//
+// The shell can no longer produce this shape (BuildProductionSyncContext
+// serializes an EMPTY route list for a gallery scene, by construction — see
+// its comment there), but the core's wire accepts routes+tiles from any
+// producer. Pinning it here means the interleave is a KNOWN, tested property
+// rather than a latent surprise for whoever gives the wall its own order
+// namespace or its own sub-plan later.
+TEST(TilesRenderPlan, RoutesAndAWallShareOneOrderNamespace) {
+  MediaCore core;
+  loadWallWithRoutes(core, {"zoom:1", "zoom:2"}, {2});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+
+  const auto plan = core.lastRenderPlanForTest();
+  const auto* background = findLayer(plan, "tiles-bg:tiles:s");
+  const auto* tile1 = findLayer(plan, "tile:zoom:1");
+  const auto* tile2 = findLayer(plan, "tile:zoom:2");
+  const auto* route = findLayer(plan, "route:r0");
+  ASSERT_NE(background, nullptr);
+  ASSERT_NE(tile1, nullptr);
+  ASSERT_NE(tile2, nullptr);
+  ASSERT_NE(route, nullptr) << "the route survived onto the same plan as the wall";
+
+  // wall.order defaults to 0 (no "order" key sent).
+  EXPECT_EQ(background->order, 0);
+  EXPECT_EQ(tile1->order, 1);
+  EXPECT_EQ(tile2->order, 2);
+  // THE INTERLEAVE: the route's zIndex is resolved in the SAME namespace, so
+  // it collides with tile #2 rather than sitting above or below the wall.
+  EXPECT_EQ(route->order, 2);
+  EXPECT_GT(route->order, tile1->order);
 }
 
 // C1: a capture-class member must keep its FULL scheme-qualified id as
@@ -221,13 +407,35 @@ TEST(TilesRenderPlan, ACaptureMemberKeepsItsFullSchemeQualifiedParticipantId) {
 // Zoom source's two synthetic placeholder frames actually flow through
 // videoFrames, reproducing the exact shape that used to leak through.
 TEST(TilesRenderPlan, AConfiguredWallSuppressesTheLegacyFullCanvasFallback) {
-  MediaCore core;
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  MediaCore core(std::move(modules));
   loadWall(core, {"zoom:1"});
   // One more ordinary tick (no commands), same real-frame-gather path as the
   // one already run inside loadWall()'s applyCommands.
   (void)core.applyCommands(corevideo::rpc::Json::Array{});
 
+  // PRECONDITION (whole-branch review fix). Post-CRITICAL-fix, `admitted` is
+  // empty on these ticks (the wall's member has no real frame, so the
+  // freshness gate rejects it) and the plan holds only `tiles-bg:*` — so both
+  // EXPECT_NEs below iterate a list that cannot contain a fallback layer, and
+  // the test would assert absence over a near-empty list. It could then stay
+  // GREEN if the plan emptied for a completely unrelated reason, which is
+  // exactly the failure mode this test exists to catch.
+  //
+  // Assert the frame gather ACTUALLY PRODUCED FRAMES: the stub Zoom source's
+  // two synthetic placeholder participants are what the legacy
+  // "no routes -> show whatever frames arrived" branch would expand into
+  // full-canvas layers if the wall did not suppress it. With zero frames
+  // there is nothing to leak and nothing under test.
+  ASSERT_GE(compositor->lastFrameCount, 2u)
+      << "the frame gather produced no frames — the suppressed fallback had no input, "
+         "so this test would pass vacuously";
+
   const auto plan = core.lastRenderPlanForTest();
+  ASSERT_FALSE(plan.layers.empty()) << "an active wall must always emit at least its background";
   for (const auto& layer : plan.layers) {
     EXPECT_NE(layer.layerId, "zoom:synthetic-speaker-1");
     EXPECT_NE(layer.layerId, "zoom:synthetic-speaker-2");

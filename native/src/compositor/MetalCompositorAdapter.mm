@@ -805,7 +805,32 @@ class MetalCompositor final : public ICompositor {
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(frameSourceId, frames);
           }
-        } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
+        }
+        // ── KNOWN GAP, DELIBERATELY NAMED: no `hasFillColor` branch here ──
+        //
+        // The D3D11 twin (D3D11CompositorAdapter.cpp, resolveLayers) and the
+        // CPU preview path (ProgramFramePreview.cpp, buildProgramFramePreview)
+        // both carry an `else if (layer.plan.hasFillColor)` branch that paints
+        // `CompositorRenderPlanLayer::fillColor` for a DELIBERATELY SOURCELESS
+        // solid layer — the shape the CoreVideo Tiles wall background uses
+        // (MediaCore::buildRenderPlanForScene emits `tiles-bg:<layerId>` with
+        // hasFillColor=true and no participantId/mediaAssetId).
+        //
+        // This adapter has no such branch, so that layer falls through to the
+        // default mid-grey `ResolvedLayer::color` and the wall background
+        // renders as a DARK-GREY SLAB on macOS instead of the operator's
+        // configured backgroundColor. Program is inherited by the virtual
+        // camera, recordings and streams, so this is visible on air — it is
+        // not a preview-only cosmetic.
+        //
+        // OWNER: docs/corevideo-tiles-iso-scaling-plan.md, "Implementation
+        // slices" §3 ("GPU effects: Rounded mask, border, and outer-glow
+        // passes in D3D11, followed by Metal parity"). The fix is a
+        // `hasFillColor` branch mirroring D3D11CompositorAdapter.cpp's, plus
+        // the corresponding solid-quad draw. It is NOT in the T1 core-wall
+        // branch on purpose (T1 is Windows-first); this comment exists so the
+        // gap is greppable in this file rather than silent.
+        else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
           layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
           if (frameHasContent(fallbackFrame)) {

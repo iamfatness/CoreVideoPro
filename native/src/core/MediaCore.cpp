@@ -4469,6 +4469,50 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   // above to suppress the legacy fallback (C2) — a `tiles` node with zero
   // members must render exactly like no wall at all.
   if (wallActive) {
+    const int tilesBaseOrder = wall.order;
+
+    // Whole-branch review fix (CRITICAL, on-air): the background layer is
+    // emitted for EVERY active wall — BEFORE the admitted-members gate below,
+    // never inside it.
+    //
+    // This block used to sit inside `if (!admitted.empty())`, so a wall whose
+    // members were ALL stale (or whose first frames had simply not landed yet
+    // — true transiently on every single Tiles take) produced an EMPTY render
+    // plan: the legacy full-canvas fallback above is deliberately suppressed
+    // while a wall is active, and nothing else contributed a layer. An empty
+    // `renderPlan.layers` is not "draw nothing" to any of the three
+    // compositors — D3D11CompositorAdapter::resolveLayers,
+    // ProgramFramePreview's buildProgramFramePreview, and
+    // MetalCompositorAdapter::resolveLayers each carry their OWN
+    // `layers.empty()` fallback that improvises one full-canvas grid cell per
+    // DECODED FRAME. PROGRAM would then show a grid of whatever the core
+    // happened to be decoding — sources that are not on the wall at all, or
+    // exactly the frozen members the staleness veto had just rejected — and
+    // PROGRAM is inherited by the virtual camera, every recording and every
+    // stream. An active wall must therefore ALWAYS put at least its own
+    // background on the plan, so the plan is never empty and those three
+    // fallbacks can never fire under a wall.
+    // Regression test: TilesRenderPlan.AnAllStaleWallStillEmitsItsBackground.
+    modules::CompositorRenderPlanLayer background;
+    background.layerId = "tiles-bg:" + wall.layerId;
+    background.kind = "tiles-background";
+    background.sourceId = background.layerId;
+    background.order = tilesBaseOrder;
+    background.rect = wall.rect;
+    background.fitMode = "fill";
+    // Task 4 review fix (I5): borderColor is NEVER read as a fill — with
+    // borderStyle="none"/thickness 0 nothing draws it, and a layer with no
+    // matching frame (this one has neither participantId nor mediaAssetId)
+    // renders the compositor's default mid-grey ResolvedLayer::color
+    // instead. hasFillColor/fillColor are the field both the D3D11 path and
+    // the CPU preview path actually read for a sourceless solid layer.
+    background.hasFillColor = true;
+    background.fillColor = wall.style.backgroundColor;
+    background.borderColor = wall.style.backgroundColor;
+    background.borderStyle = "none";
+    background.borderThickness = 0.f;
+    renderPlan.layers.push_back(std::move(background));
+
     const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
     if (!admitted.empty()) {
       const double canvasAspect = outputHeight_ > 0
@@ -4487,27 +4531,6 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
           static_cast<int>(admitted.size()), wallAspect, wall.style.tileAspect,
           wall.style.customAspectRatio, wall.style.gutterPercent,
           wall.style.marginPercent);
-
-      const int tilesBaseOrder = wall.order;
-      modules::CompositorRenderPlanLayer background;
-      background.layerId = "tiles-bg:" + wall.layerId;
-      background.kind = "tiles-background";
-      background.sourceId = background.layerId;
-      background.order = tilesBaseOrder;
-      background.rect = wall.rect;
-      background.fitMode = "fill";
-      // Task 4 review fix (I5): borderColor is NEVER read as a fill — with
-      // borderStyle="none"/thickness 0 nothing draws it, and a layer with no
-      // matching frame (this one has neither participantId nor mediaAssetId)
-      // renders the compositor's default mid-grey ResolvedLayer::color
-      // instead. hasFillColor/fillColor are the field both the D3D11 path and
-      // the CPU preview path actually read for a sourceless solid layer.
-      background.hasFillColor = true;
-      background.fillColor = wall.style.backgroundColor;
-      background.borderColor = wall.style.backgroundColor;
-      background.borderStyle = "none";
-      background.borderThickness = 0.f;
-      renderPlan.layers.push_back(std::move(background));
 
       for (size_t index = 0; index < admitted.size() && index < rects.size(); ++index) {
         modules::CompositorRenderPlanLayer layer;
