@@ -18,13 +18,25 @@ T1 is the first of five plans. Each produces working, shippable software:
 
 | Plan | Delivers | Working software at the end |
 |---|---|---|
-| **T1 (this)** | tiles layer kind, wire, C++ solver, frame-reality veto, fill-crop, background colour, pixel oracle | Today's wall, rendered by the core, judged on pixels |
+| **T1 (this)** | tiles layer kind, wire, C++ solver, frame-reality veto, fill-crop, background colour, pixel oracle | Today's wall, rendered by the core, judged on pixels — **with one known interim regression, see below** |
 | T2 | borders, corner radius, glow shaders | The plugin's look |
 | T3 | animation clock, per-tile overrides, editor over the core texture | Animated reflow + draggable pinned tiles |
 | T4 | manual fill, never-show, background source, per-tile crop, prefs v10 | The plugin's full control set |
 | T5 | `MetalCompositorAdapter` parity | Tiles on the Mac port |
 
 Do not start T2 before T1's oracle is green — T2's whole job is drawing, and it needs a judge that looks at pixels.
+
+**Known interim regression, T1 → T3 (recorded 2026-08-15, Task 5 review).** T1 makes
+a gallery scene emit no scene routes — the wall is the `tiles` node now — which
+means the Scenes-tab canvas editor has nothing to draw for a Tiles scene: its
+route list is permanently empty. The replacement (the editor rendering the
+core's wall texture with handles positioned from the published rects) is **T3's**
+scope, not T1's. Building it here would duplicate T3.
+
+So the honest statement of T1's deliverable: the wall renders correctly on
+PROGRAM, PREVIEW, recordings, the virtual camera and every stream, and is judged
+on pixels — but a Tiles scene is **not editable on the canvas** between T1 and T3.
+Do not ship the branch to an operator in that window without saying so.
 
 ## Global Constraints
 
