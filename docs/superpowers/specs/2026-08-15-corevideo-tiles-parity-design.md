@@ -155,14 +155,33 @@ not from the previous target, so a join during a reflow bends the motion rather
 than snapping it.
 
 Two behaviours ported from the plugin: a newcomer fades in at its final slot rather
-than travelling across the wall, and a departure reflows immediately rather than
-holding the leaving tile on screen.
+than travelling across the wall, and a departure reflows immediately. **Exits are
+never drawn** — a departing tile is removed on the frame it goes absent. The plugin
+designed an exit animation and a 250 ms settle window, then deleted both: the
+settle window placed two tiles on two different grid generations and let them
+overlap while both were at rest, and five variants of that bug were found and
+individually fixed before it was removed entirely. The shipped rule is one
+unconditional line — every tile retargets to its solved rect every frame. Do not
+reintroduce a settle window.
+
+**Adoption is an explicit latched flag, never inferred from an empty tile map.**
+The plugin inferred it from "the container is empty" and consequently popped the
+first participant of the meeting on at full opacity, because an animator running on
+an empty wall treated the first arrival as an adoption rather than an entry. Its
+commit history records this as the *fourth* defect on that branch with the same
+shape — an empty container standing in for a state. Pro carries the flag explicitly.
 
 At rest the interpolator is bypassed and tiles draw through the pixel-exact,
 even-snapped path — a stationary wall must be byte-identical to the un-animated
-path, and only a tile actually in motion takes the sub-pixel path, returning to the
-exact one as soon as it settles. The precise snapping rule comes from the
-behavioural contract (§6 of `docs/obs-plugin-tiles-behavioral-contract.md`).
+path, and only a tile in motion takes the sub-pixel path. The snapping rule is:
+
+```
+even_floor_px(v) = uint32(v + 0.05) & ~1
+```
+
+The `0.05` is the animator's rest epsilon and is load-bearing, not slop. Without it
+a tile that has finished growing to 1064 px draws 1062 for every frame between
+arriving and the wall settling — it hits 5 of 11 reflow counts at 1080p.
 
 With `animateLayout` off, the animator never runs. As in the plugin, this is a
 different render path, not a cosmetic setting.
@@ -176,8 +195,23 @@ Three passes per wall, per frame:
    tiles. A background source that is missing, deleted, or would render itself
    (the wall, or a scene containing it) falls back to colour.
 2. **Glow** — drawn behind the tiles, so adjacent tiles' glows do not paint over
-   each other's content. Falloff is defined by the behavioural contract (§5) and
-   must match the plugin's shipped `.effect`, not merely resemble it.
+   each other's content. It is **not a blur**: no kernel, no ping-pong, no texture
+   read. It is an analytic signed-distance falloff on an expanded quad drawn with a
+   null texture:
+
+   ```
+   t     = saturate( rounded_rect_sd(p, tile_half, radius) / glow_size )
+   alpha = saturate( (1-t)^2 * (1 + k*t) ) * glow_intensity
+   k     = softness_percent * 0.02          // so k ∈ [0, 2]
+   ```
+
+   The `k ≤ 2` ceiling is derived, not taste. `d(alpha)/dt = (1-t)[(k-2) - 3kt]`,
+   which is ≤ 0 across [0,1) exactly when `0 ≤ k ≤ 2`; above it the halo brightens
+   *outside* the tile and draws a visible ring. The `(1-t)^2` factor makes both the
+   value and its slope reach zero at the outer edge for every in-range setting.
+   Note the consequence for anyone comparing against a Gaussian: softness never
+   moves the peak. The halo is at full intensity *at* the tile edge, where a
+   Gaussian glow would sit near 50% because half its kernel falls inside the shape.
 3. **Tiles** — each tile's source rect computed for fill-never-letterbox (crop the
    sides rather than bar the edges), composed with any per-tile crop percentages;
    then the border drawn inset from the tile edge, clamped so a width past half the
@@ -186,6 +220,30 @@ Three passes per wall, per frame:
 
 The solved rects are published in the snapshot so the shell can position editor
 handles over the pixels.
+
+### Three traps that fail silently
+
+Each of these was extracted from the plugin's shipped implementation. All three
+produce output that looks approximately right, which is what makes them expensive.
+
+1. **Spacing uses the divisor form.** `spacing_px = h / (100/pct)`, *not*
+   `h * pct / 100`. The divisor form round-trips exactly to the historic
+   `canvas_height / 135.0`; the multiplicative form disagrees in the last bit at
+   canvas heights in the hundreds.
+2. **Crop UVs derive from the truncated integer crop rect**, the same one handed to
+   the sprite draw — never from the doubles it was computed from. Using the doubles
+   misregisters the border on every tile and leaves a sliver of neutral canvas along
+   two edges.
+3. **The even-snap epsilon is load-bearing** — see the animation section above.
+
+### Colour range — do not copy the constant
+
+The plugin's shader hardcodes **full-range BT.709**. That is the same hardcode
+recorded as a measured defect in Pro (2026-08-11: our full-range conversion applied
+to possibly limited-range Zoom frames, washed out against mimoLive), and it is an
+open P0 in the real-meeting parity audit pending live black/white chart evidence.
+Porting the plugin's shader must not port this constant. Tiles consumes whatever
+range/matrix decision the Zoom ingest path lands on; it does not make its own.
 
 ## Shell
 
@@ -281,10 +339,30 @@ be written a second time in `MetalCompositorAdapter` or the Mac port ships witho
 Tiles. That work is part of this spec's definition of done, tracked explicitly and
 sequenced after Windows — not deferred silently and discovered later.
 
+## An opportunity the plugin left on the table
+
+The plugin's own 2026-08-09 design specified a presentation clock — `T = now − L`,
+per-feed ring buffers, `frameAt(T)`, adaptive latency, per-participant audio delay
+lines — so that every tile on the wall shows the *same instant*. **It was never
+built.** Those modules do not exist in the shipped plugin; the renderer takes each
+feed's newest frame every graphics tick, so tiles can be showing moments that are
+tens of milliseconds apart. Only a Phase-0 timebase probe survives, wired to a test
+and nothing else, with no recorded verdict on whether Zoom's frame timestamps even
+share a timebase.
+
+This is not a parity gap — matching the plugin means matching what ships, and what
+ships has no clock. It is recorded here because the superset bar makes it a
+candidate: Pro already runs a frame synchroniser on Zoom ingest with a measured
+one-frame cushion and 99% delivery, which is most of the hard part. Whether a wall
+of mutually time-aligned tiles is worth the added latency is a product decision,
+not a parity one. **Explicitly out of scope for this spec**; raise it separately.
+
 ## Dependencies
 
-- `docs/obs-plugin-tiles-behavioral-contract.md` — the extracted contract from the
-  plugin's shipped implementation. This spec depends on it for two formulas it does
-  not restate: the glow falloff (§5 of that document) and the at-rest pixel-snapping
-  rule (§6). Both must match the shipped plugin shader, and the implementation plan
-  cannot close those items without it.
+- `docs/obs-plugin-tiles-behavioral-contract.md` — the behavioural contract
+  extracted from the plugin's shipped implementation (note: the Tiles source is
+  `src/zoom-supersource.cpp`; the name is historical and there is no `zoom-tiles*`
+  file). Written 2026-08-15. The two formulas this spec previously deferred to it —
+  the glow falloff and the at-rest snapping rule — are now stated inline above; the
+  contract remains the reference for everything not restated here, and its §14
+  records what could not be determined from source and must not be inferred.

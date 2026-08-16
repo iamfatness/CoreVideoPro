@@ -135,9 +135,19 @@ silently.
 
 ## Open items
 
-- The exact glow falloff and the at-rest pixel-snapping rule are being extracted
-  from the plugin's shipped shader into
-  `obs-plugin-tiles-behavioral-contract.md`. The T spec depends on that document
-  for those two formulas and states so where it does.
+- ~~The exact glow falloff and the at-rest pixel-snapping rule~~ — **resolved
+  2026-08-15**. Both extracted from the plugin's shipped shader into
+  `obs-plugin-tiles-behavioral-contract.md` and stated inline in the T spec. Glow
+  is an analytic SDF falloff, not a blur.
+- **Tile time alignment is an open product question, not a parity gap.** The
+  plugin designed a presentation clock so every tile shows the same instant and
+  never built it; the shipped renderer takes each feed's newest frame. Pro's Zoom
+  frame synchroniser already does most of the hard part. Whether to spend latency
+  on a time-aligned wall is a decision to raise on its own, and it is out of scope
+  for group T.
+- **Do not port the plugin's colour-range constant.** Its Tiles shader hardcodes
+  full-range BT.709 — the same hardcode recorded as a measured defect in Pro on
+  2026-08-11 and still an open P0 in the real-meeting audit pending live chart
+  evidence.
 - The TCP/OSC command-by-command diff (group O) has not been done. The inventory
   above records that both servers exist, not that their vocabularies match.
