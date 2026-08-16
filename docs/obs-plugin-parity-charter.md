@@ -94,6 +94,7 @@ Design spec: `superpowers/specs/2026-08-15-corevideo-tiles-parity-design.md`.
 | Cancel-recovery stop path | Absent | same search |
 | Per-output health vocabulary (waiting-for-speaker vs stale vs missing) | Partial | Pro has health states; the plugin's specific discrimination is unverified |
 | TCP/OSC command vocabulary parity | Partial | both servers exist; command-by-command diff not yet done |
+| Scene canvas editor shows live video per layer | **Broken for most source classes, and never worked via GPU** | `VideoSurfaceHost.OnLoaded` presents a shared texture only for keys `program`/`preview`/`multiview`; `ResolveLayerSurface` gives every layer key `scene-layer-N:*` kind `Multiview`, matching none. Editor layers are CPU-BGRA only: media assets live, bridge webcams live, Zoom guests 640×360 @ ~2 fps, and native-UVC / WGC / browser / SRT placeholder forever. Proven by `SceneCanvasLayerSurfaceTests` (2026-08-15). Fix is the single-composited-texture pattern, not a key whitelist — see the T spec's editor section. |
 
 ## Explicitly out of scope
 

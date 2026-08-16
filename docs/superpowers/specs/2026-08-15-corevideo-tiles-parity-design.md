@@ -266,10 +266,37 @@ labels, and selection chrome from the solved rects in the snapshot. Dragging a t
 writes an override; clearing the override returns it to the grid on the next solve.
 
 This also means the wall shows live video in the editor by construction — one
-surface with one key, rather than N per-layer surfaces under synthesised keys. That
-is the same single-texture pattern that fixed the multiview when per-tile swap
-chains were fail-fasting. It fixes the wall only; non-tile scene layers keep
-today's path and are being investigated separately.
+surface, rather than N per-layer surfaces. That is the same single-texture pattern
+that fixed the multiview when per-tile swap chains were fail-fasting.
+
+**This is now known to matter more than it first appeared.** A separate
+investigation (2026-08-15, characterisation tests in
+`SceneCanvasLayerSurfaceTests`) proved the editor's per-layer video **never had a
+GPU path at all**. `VideoSurfaceHost.OnLoaded` early-returns unless the surface key
+is `program`/`preview`/`multiview` or the kind is `Program`/`Preview`
+(`Controls/VideoSurfaceHost.xaml.cs:299`), and `ResolveLayerSurface` hands every
+layer the key `scene-layer-N:<tileKey>` with kind `Multiview`, which matches no
+clause. The core *does* export a per-source keyed-mutex texture for exactly this
+consumer (`D3D11CompositorAdapter::exportParticipantTextures`) and the shell
+receives the handle — the editor holds it and drops it. So editor layers render CPU
+BGRA only, which is why the result depends entirely on source class: media assets
+are always live (separate host), bridge webcams are live and smooth, Zoom guests
+are 640×360 at ~2 fps thumbnails, and native-UVC, WGC screen capture, browser
+sources, and SRT ingest are placeholder forever because they are decoded core-side
+and never produce shell CPU pixels.
+
+The naive repair — whitelisting `scene-layer` keys — is the wrong fix twice over:
+it creates N swap chains destroyed and rebuilt on route churn, the retired pattern
+that fail-fasts with `0xc000027b`, and the per-source export is single-consumer
+keyed-mutex already claimed by the preview host, so a second simultaneous consumer
+contends on it.
+
+The correct fix is the one this spec already takes for the wall, generalised: **the
+editor presents a core-composited texture on one stable swap chain, with XAML boxes
+as overlay chrome.** For a Tiles scene that is the wall texture and it comes with
+this work. For hand-built scenes it is the preview composite, and it is a separate
+change against the same pattern — tracked in charter group O, not silently inherited
+by this spec.
 
 A drag that begins while the wall is animating either snaps to the animation's end
 state or cancels the animation — it does not track a moving target.
