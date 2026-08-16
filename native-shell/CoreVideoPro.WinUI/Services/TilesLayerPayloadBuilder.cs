@@ -35,7 +35,7 @@ public static class TilesLayerPayloadBuilder
         // Deciding it twice is how the two ends drift.
         var members = roomVideoParticipants
             .Where(participant => participant.Health != FeedHealth.VideoOff)
-            .Select(participant => participant.Id)
+            .Select(participant => QualifySourceId(participant.Id))
             .Distinct(StringComparer.Ordinal)
             .Take(Math.Clamp(settings.MaxTiles, 1, 64))
             .ToList();
@@ -51,6 +51,28 @@ public static class TilesLayerPayloadBuilder
                 MarginPercent: settings.MarginPercent,
                 BackgroundColor: "#000000"));
     }
+
+    /// <summary>
+    /// Fix (coordinator review, 2026-08-15): <c>StudioViewModel.RoomVideoParticipants</c>
+    /// carries BARE Zoom SDK ids (<c>LiveProductionSync.MapRawParticipants</c> sets
+    /// <c>Id = participant.UserId.Trim()</c> — no scheme prefix — and
+    /// <c>ParticipantMapper.ToParticipant</c> carries that straight through), but the wire
+    /// contract's `members` entries must be scheme-qualified
+    /// (<c>"zoom:&lt;pid&gt;" | "capture:&lt;id&gt;"</c>): the core's frame-age matcher
+    /// (<c>MediaCore.cpp</c> ~line 4864) only pairs a Zoom frame's bare participantId against a
+    /// member spelled EXACTLY <c>"zoom:"+pid</c> — an unqualified member never matches, so it's
+    /// silently never admitted and the wall renders with no guests on it.
+    ///
+    /// Mirrors <c>MediaCore::normalizeIsoSourceId</c> (MediaCore.cpp:1936-1941): a member that
+    /// already carries a scheme (contains ':') passes through unchanged — do NOT blindly
+    /// prepend, or a <c>capture:&lt;id&gt;</c> member becomes <c>zoom:capture:&lt;id&gt;</c> and
+    /// matches nothing either. Delegates the actual "zoom:" prefix to
+    /// <see cref="ShowInputRosterService.ZoomSourceId"/> — the same helper
+    /// <c>BuildMultiviewLayoutSources</c> uses for the analogous <c>SourceId</c> field — rather
+    /// than writing a third copy of the scheme string.
+    /// </summary>
+    private static string QualifySourceId(string id) =>
+        id.Contains(':') ? id : ShowInputRosterService.ZoomSourceId(id);
 }
 
 public sealed record TilesLayerPayload(
