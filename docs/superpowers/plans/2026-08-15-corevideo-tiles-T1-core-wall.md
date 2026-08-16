@@ -88,6 +88,10 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 
 Create `native/tests/TilesLayerTest.cpp`:
 
+**`loadSceneGraph` is PRIVATE** (`MediaCore.h:164`). Drive it the way
+`MediaCoreCommandTest` already does — `applyCommands` with a `load-scene-graph`
+command — which also exercises the real dispatch path rather than a back door.
+
 ```cpp
 #include "core/MediaCore.h"
 #include "rpc/Json.h"
@@ -99,6 +103,13 @@ Create `native/tests/TilesLayerTest.cpp`:
 namespace {
 
 using corevideo::MediaCore;
+
+// Drive the real command path, matching MediaCoreCommandTest's pattern.
+void loadScene(MediaCore& core, const char* json) {
+  corevideo::rpc::Json command = corevideo::rpc::Json::parse(json);
+  command.set("type", corevideo::rpc::Json{"load-scene-graph"});
+  (void)core.applyCommands(corevideo::rpc::Json::Array{command});
+}
 
 // A minimal load-scene-graph command carrying one tiles layer.
 const char* kSceneWithTiles = R"({
@@ -120,7 +131,7 @@ const char* kSceneWithTiles = R"({
 
 TEST(TilesLayer, LoadSceneGraphParsesMembersAndStyleInOrder) {
   MediaCore core;
-  core.loadSceneGraph(corevideo::rpc::Json::parse(kSceneWithTiles));
+  loadScene(core, kSceneWithTiles);
 
   const auto& tiles = core.tilesLayerForTest();
   ASSERT_TRUE(tiles.present);
@@ -135,7 +146,7 @@ TEST(TilesLayer, LoadSceneGraphParsesMembersAndStyleInOrder) {
 
 TEST(TilesLayer, AbsentTilesNodeLeavesTheLayerUnset) {
   MediaCore core;
-  core.loadSceneGraph(corevideo::rpc::Json::parse(R"({"sceneId":"s","routes":[]})"));
+  loadScene(core, R"({"sceneId":"s","routes":[]})");
   EXPECT_FALSE(core.tilesLayerForTest().present);
 }
 
@@ -143,9 +154,9 @@ TEST(TilesLayer, AbsentTilesNodeLeavesTheLayerUnset) {
 // it — stale walls are the respawn/one-shot failure class in miniature.
 TEST(TilesLayer, ReloadWithoutTilesClearsThePreviousWall) {
   MediaCore core;
-  core.loadSceneGraph(corevideo::rpc::Json::parse(kSceneWithTiles));
+  loadScene(core, kSceneWithTiles);
   ASSERT_TRUE(core.tilesLayerForTest().present);
-  core.loadSceneGraph(corevideo::rpc::Json::parse(R"({"sceneId":"s2","routes":[]})"));
+  loadScene(core, R"({"sceneId":"s2","routes":[]})");
   EXPECT_FALSE(core.tilesLayerForTest().present);
 }
 
@@ -153,11 +164,11 @@ TEST(TilesLayer, ReloadWithoutTilesClearsThePreviousWall) {
 // than guess, and say so.
 TEST(TilesLayer, UnknownAspectFallsBackTo16x9AndWarns) {
   MediaCore core;
-  core.loadSceneGraph(corevideo::rpc::Json::parse(R"({
+  loadScene(core, R"({
     "sceneId": "s",
     "routes": [],
     "tiles": {"members": ["zoom:1"], "style": {"tileAspect": "banana"}}
-  })"));
+  })");
   EXPECT_EQ(core.tilesLayerForTest().style.tileAspect, "16:9");
   EXPECT_FALSE(core.sceneValidationWarningsForTest().empty());
 }
@@ -824,29 +835,29 @@ const corevideo::modules::CompositorRenderPlanLayer* findLayer(
   return nullptr;
 }
 
-MediaCore makeCoreWithWall(const std::string& members) {
-  MediaCore core;
-  core.loadSceneGraph(corevideo::rpc::Json::parse(
+void loadWall(MediaCore& core, const std::string& members) {
+  corevideo::rpc::Json command = corevideo::rpc::Json::parse(
       R"({"sceneId":"s","routes":[],"tiles":{"layerId":"tiles:s","members":)" + members +
-      R"(,"style":{"backgroundColor":"#101418"}}})"));
-  return core;
+      R"(,"style":{"backgroundColor":"#101418"}}})");
+  command.set("type", corevideo::rpc::Json{"load-scene-graph"});
+  (void)core.applyCommands(corevideo::rpc::Json::Array{command});
 }
 
 TEST(TilesRenderPlan, EachAdmittedMemberBecomesOneTileLayer) {
-  MediaCore core = makeCoreWithWall(R"(["zoom:1","zoom:2","zoom:3"])");
+  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2","zoom:3"])");
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}, {"zoom:3", true, 0}});
 
-  const auto plan = core.buildRenderPlanForTest();
+  const auto plan = core.lastRenderPlanForTest();
   EXPECT_EQ(countLayersOfKind(plan, "participant-video"), 3);
   ASSERT_NE(findLayer(plan, "tile:zoom:2"), nullptr);
   EXPECT_EQ(findLayer(plan, "tile:zoom:2")->sourceId, "zoom:2");
 }
 
 TEST(TilesRenderPlan, TheWallDrawsABackgroundBeneathEveryTile) {
-  MediaCore core = makeCoreWithWall(R"(["zoom:1"])");
+  MediaCore core; loadWall(core, R"(["zoom:1"])");
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
 
-  const auto plan = core.buildRenderPlanForTest();
+  const auto plan = core.lastRenderPlanForTest();
   const auto* background = findLayer(plan, "tiles-bg:tiles:s");
   ASSERT_NE(background, nullptr);
   EXPECT_EQ(background->kind, "tiles-background");
@@ -861,10 +872,10 @@ TEST(TilesRenderPlan, TheWallDrawsABackgroundBeneathEveryTile) {
 // Fill, never letterbox — a wall of mixed cameras stays even because tiles crop
 // their sides rather than growing bars.
 TEST(TilesRenderPlan, EveryTileFillsRatherThanFits) {
-  MediaCore core = makeCoreWithWall(R"(["zoom:1","zoom:2"])");
+  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2"])");
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
 
-  for (const auto& layer : core.buildRenderPlanForTest().layers) {
+  for (const auto& layer : core.lastRenderPlanForTest().layers) {
     if (layer.kind == "participant-video") {
       EXPECT_EQ(layer.fitMode, "fill");
     }
@@ -874,10 +885,10 @@ TEST(TilesRenderPlan, EveryTileFillsRatherThanFits) {
 // T1 ships no styling: a border here would composite chrome into PROGRAM, the
 // virtual camera, and every recording. T2 adds it deliberately.
 TEST(TilesRenderPlan, TilesCarryNoBorderBeforeStylingShips) {
-  MediaCore core = makeCoreWithWall(R"(["zoom:1"])");
+  MediaCore core; loadWall(core, R"(["zoom:1"])");
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
 
-  for (const auto& layer : core.buildRenderPlanForTest().layers) {
+  for (const auto& layer : core.lastRenderPlanForTest().layers) {
     if (layer.kind == "participant-video") {
       EXPECT_EQ(layer.borderStyle, "none");
       EXPECT_FLOAT_EQ(layer.borderThickness, 0.f);
@@ -886,14 +897,14 @@ TEST(TilesRenderPlan, TilesCarryNoBorderBeforeStylingShips) {
 }
 
 TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
-  MediaCore core = makeCoreWithWall(R"(["zoom:1","zoom:2"])");
+  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2"])");
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
-  const auto twoUp = core.buildRenderPlanForTest();
+  const auto twoUp = core.lastRenderPlanForTest();
   const float pairedWidth = findLayer(twoUp, "tile:zoom:1")->rect.width;
 
   core.setTilesMemberFrameAgesForTest(
       {{"zoom:1", true, 0}, {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
-  const auto soloPlan = core.buildRenderPlanForTest();
+  const auto soloPlan = core.lastRenderPlanForTest();
 
   EXPECT_EQ(countLayersOfKind(soloPlan, "participant-video"), 1);
   EXPECT_GT(findLayer(soloPlan, "tile:zoom:1")->rect.width, pairedWidth);
@@ -901,8 +912,8 @@ TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
 
 TEST(TilesRenderPlan, NoTilesLayerLeavesTheOrdinaryRoutePlanUntouched) {
   MediaCore core;
-  core.loadSceneGraph(corevideo::rpc::Json::parse(R"({"sceneId":"s","routes":[]})"));
-  const auto plan = core.buildRenderPlanForTest();
+  loadWall(core, "[]");
+  const auto plan = core.lastRenderPlanForTest();
   EXPECT_EQ(countLayersOfKind(plan, "tiles-background"), 0);
 }
 
@@ -918,7 +929,7 @@ Run:
 cmake --build native\build-dev --config Release --target corevideo-native-tests
 native\build-dev\corevideo-native-tests.exe --gtest_filter=TilesRenderPlan.*
 ```
-Expected: FAIL to compile — `setTilesMemberFrameAgesForTest` and `buildRenderPlanForTest` do not exist.
+Expected: FAIL to compile — `setTilesMemberFrameAgesForTest` and `lastRenderPlanForTest` do not exist.
 
 - [ ] **Step 3: Add the test seams and the expansion**
 
@@ -928,9 +939,11 @@ In `MediaCore.h`, add to the public section:
   void setTilesMemberFrameAgesForTest(std::vector<compositor::TilesMemberFrameAge> ages) {
     tilesMemberFrameAges_ = std::move(ages);
   }
-  modules::CompositorRenderPlan buildRenderPlanForTest() {
-    return buildRenderPlanForScene(sceneId_, routeCount_, overlayCount_, sceneBackground_,
-                                   sceneRoutes_, {});
+  // buildRenderPlanForScene takes 10+ arguments (MediaCore.cpp:4206) — do NOT
+  // try to call it from a test. Cache what the render tick actually built and
+  // expose THAT, so the test observes the production path's own output.
+  const modules::CompositorRenderPlan& lastRenderPlanForTest() const {
+    return lastRenderPlan_;
   }
 ```
 
@@ -938,7 +951,20 @@ and to the private section:
 
 ```cpp
   std::vector<compositor::TilesMemberFrameAge> tilesMemberFrameAges_;
+  modules::CompositorRenderPlan lastRenderPlan_;
 ```
+
+Assign `lastRenderPlan_ = plan;` at the `buildRenderPlanForScene` call site
+(`MediaCore.cpp:4164`) so the seam always reflects the real render tick. The
+tests drive it by applying a `load-scene-graph` command, which reaches that call
+site through the ordinary path — no back door.
+
+**Also publish the solved wall in `sessionState()`** so downstream consumers can
+see what the core actually drew. Add a `tiles` node carrying `{layerId,
+members: [{sourceId, rect:{x,y,width,height}}]}` built from the same expansion.
+Task 6's oracle reads it to know where to sample, and T3's canvas editor reads it
+to position drag handles. Without it the oracle would have to re-derive rects
+with the solver it is supposed to be judging.
 
 Include `compositor/TilesLayout.h` and `compositor/TilesMembership.h` in `MediaCore.cpp`.
 
