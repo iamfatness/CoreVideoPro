@@ -1579,7 +1579,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<Participant> SceneParticipants => RoomVideoParticipants;
 
-    public Scene ProgramScene => Scenes.First(s => s.Id == ActiveSceneId);
+    // Mirrors PreviewScene's fallback chain below. This was a bare
+    // Scenes.First(predicate), which throws InvalidOperationException the moment
+    // ActiveSceneId names a scene that is not in the list — the same failure
+    // shape that put "Sequence contains no matching element" in launch.log on
+    // 2026-08-15. PreviewScene was hardened against it; this was not, and it is
+    // a property read from XAML, so the throw surfaces as an unhandled crash on
+    // a binding thread. The final Scenes.First() keeps the non-null contract.
+    public Scene ProgramScene =>
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, ActiveSceneId, StringComparison.Ordinal)) ??
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
+        Scenes.First();
 
     public Scene PreviewScene =>
         Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
@@ -12419,11 +12429,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private List<SourceRoute> GetMutableRoutes(string sceneId)
+    // TOTAL BY CONSTRUCTION — this had TWO ways to kill the process, and both
+    // have been observed in the wild:
+    //   * a null sceneId  -> Dictionary.TryGetValue THROWS ArgumentNullException
+    //     (it does not return false, unlike what the non-nullable parameter
+    //     suggests). Crash 2026-08-16 07:18: changing an SRT ingest Mode fires
+    //     OnSrtIngestSourcePropertyChanged -> RefreshPreviewRoutingState ->
+    //     RefreshSceneCompositionState -> here, with no preview scene selected.
+    //   * an UNKNOWN sceneId -> Scenes.First throws InvalidOperationException
+    //     ("Sequence contains no matching element"), which is the 2026-08-15
+    //     14:05 unhandled entry in launch.log.
+    // A caller asking for the routes of no scene, or of a scene that is gone,
+    // gets an empty list — that is the honest answer and it cannot take the app
+    // down. Nothing is cached for those cases, so a scene appearing later still
+    // builds its defaults normally.
+    private List<SourceRoute> GetMutableRoutes(string? sceneId)
     {
+        if (string.IsNullOrEmpty(sceneId))
+        {
+            return [];
+        }
+
         if (!_sceneRoutes.TryGetValue(sceneId, out var routes))
         {
-            var scene = Scenes.First(item => item.Id == sceneId);
+            var scene = Scenes.FirstOrDefault(item => item.Id == sceneId);
+            if (scene is null)
+            {
+                return [];
+            }
+
             routes = SceneRoutingService
                 .GetRouteDefaults(scene, existingRoutes: null, RoomVideoParticipants)
                 .Select(route => route.Clone())
