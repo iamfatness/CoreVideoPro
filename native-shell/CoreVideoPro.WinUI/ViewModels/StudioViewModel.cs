@@ -8676,9 +8676,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ActiveSceneId = ActiveSceneId,
             SceneRoutes = sceneRoutes,
             SceneBackground = BuildSceneBackgroundWire(ActiveSceneId),
+            // T1 core wall: the shell sends WHO is eligible for a tile (membership
+            // policy only, TilesLayerPayloadBuilder), never a solved rect — the core
+            // owns layout. Built from the SAME ProgramScene/PreviewScene + roster the
+            // route wires above are resolved from, so the wall and the rest of the
+            // scene-sync command agree on which scene/roster generation they carry.
+            TilesLayer = BuildTilesLayerWire(ProgramScene),
             PreviewSceneId = PreviewSceneId,
             PreviewSceneRoutes = previewSceneRoutes,
             PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId),
+            PreviewTilesLayer = BuildTilesLayerWire(PreviewScene),
             PreviewColorGrade = new MediaCoreColorGradeWire(
                 ColorGrade.Lut,
                 ColorGrade.Exposure,
@@ -12521,63 +12528,50 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // T1 core wall: the core now solves the tile grid itself every frame
+    // (compositor::expandTilesLayer, MediaCore.cpp parseTilesLayer/expandTilesLayer)
+    // from the "tiles" node (TilesLayerPayloadBuilder — membership policy: roster +
+    // video-off filter + max-tiles cap, in roster order). A gallery scene therefore
+    // contributes NO scene routes at all; the core suppresses its legacy full-canvas
+    // fallback whenever a wall is present, so leaving old per-participant tile routes
+    // behind here would double-draw. This method's only remaining job is enforcing
+    // that a DynamicGallery scene's route list stays empty — it used to ALSO solve
+    // rects (DynamicGalleryLayoutService.BuildRects) and mint one SourceRoute per
+    // participant; that logic moved into the core and TilesLayerPayloadBuilder.
+    // DynamicGalleryLayoutService itself is UNCHANGED and stays live as the reference
+    // implementation the C++ port (buildTilesGrid) is tested against — do not delete it.
     private void ReconcileDynamicGalleryRoutes(Scene scene, List<SourceRoute> routes)
     {
-        var settings = scene.DynamicGallery;
-        if (settings is null || _canvasInteractionActive)
+        if (scene.DynamicGallery is null || _canvasInteractionActive)
         {
             return;
         }
 
-        var participants = RoomVideoParticipants
-            .Where(participant => participant.Health != FeedHealth.VideoOff)
-            .Take(Math.Clamp(settings.MaxTiles, 1, 64))
-            .ToList();
-        var participantIds = participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal);
-        var retained = routes
-            .Where(route => route.Mode == SourceRouteMode.Fixed &&
-                            route.ParticipantId is { Length: > 0 } participantId &&
-                            participantIds.Contains(participantId))
-            .GroupBy(route => route.ParticipantId!, StringComparer.Ordinal)
-            .Select(group => group.First())
-            .ToList();
-        var retainedIds = retained.Select(route => route.ParticipantId!).ToHashSet(StringComparer.Ordinal);
-
-        foreach (var participant in participants)
-        {
-            if (retainedIds.Add(participant.Id))
-            {
-                retained.Add(new SourceRoute
-                {
-                    Id = $"{scene.Id}-tile-{participant.Id}",
-                    Mode = SourceRouteMode.Fixed,
-                    ParticipantId = participant.Id,
-                    AudioRole = SourceAudioRole.Isolated,
-                    FitMode = "fill"
-                });
-            }
-        }
-
-        retained = retained.Take(Math.Clamp(settings.MaxTiles, 1, 64)).ToList();
-        var rects = DynamicGalleryLayoutService.BuildRects(
-            retained.Count,
-            tileAspectPreset: settings.TileAspect,
-            customAspectRatio: settings.CustomAspectRatio,
-            gutterPercent: settings.GutterPercent,
-            marginPercent: settings.MarginPercent);
-
-        for (var index = 0; index < retained.Count; index++)
-        {
-            var route = retained[index];
-            route.CanvasRect = rects[index].Clone();
-            route.ZIndex = index;
-            route.BorderStyle = settings.BorderThickness > 0 ? "solid" : "none";
-            route.BorderColor = settings.BorderColor;
-            route.BorderThickness = Math.Clamp(settings.BorderThickness, 0, 12);
-        }
-
         routes.Clear();
-        routes.AddRange(retained);
+    }
+
+    /// <summary>
+    /// Flattens <see cref="TilesLayerPayloadBuilder"/>'s output into the MediaCore-project
+    /// wire record <see cref="MediaCoreTilesLayerWire"/> for a scene-sync command. Null for
+    /// any non-gallery scene (TilesLayerPayloadBuilder.Build returns null).
+    /// </summary>
+    private MediaCoreTilesLayerWire? BuildTilesLayerWire(Scene scene)
+    {
+        var payload = TilesLayerPayloadBuilder.Build(scene, RoomVideoParticipants);
+        if (payload is null)
+        {
+            return null;
+        }
+
+        return new MediaCoreTilesLayerWire(
+            payload.LayerId,
+            payload.Order,
+            payload.Members,
+            payload.Style.TileAspect,
+            payload.Style.CustomAspectRatio,
+            payload.Style.GutterPercent,
+            payload.Style.MarginPercent,
+            payload.Style.BackgroundColor);
     }
 
     private void UpdateGallery(Action<DynamicGallerySettings> update)
