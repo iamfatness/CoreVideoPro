@@ -507,17 +507,39 @@ function describeThrown(error: unknown): string {
 }
 
 /**
- * Reject an empty (or whitespace-only) PIN before it ever reaches
- * `personKeyForPin` — fix round 1. An empty PIN is never a real person, but
+ * Normalize one PIN param at the boundary: trim it, and reject it outright
+ * when nothing is left. Returns either the TRIMMED pin every downstream
+ * caller must use, or the error `ActionResult` to return immediately.
+ *
+ * The empty check is fix round 1. An empty PIN is never a real person, but
  * `personKeyForPin("")` is a perfectly well-formed `PersonKey` (`"pin:"`),
  * so without this guard `ohg.panelist.role.set`/`ohg.mukana.override.set`/
  * `.delete` would silently write to (or delete) an override keyed by that
- * bogus identity instead of refusing. Shared by all three PIN-consuming
- * dispatch cases so the rule can't drift between them. Returns the error
- * `ActionResult` to return immediately, or `null` when `pin` is fine.
+ * bogus identity instead of refusing.
+ *
+ * Returning the trimmed value is the final fix round (I3), and it is the
+ * same silent-success defect one step down: this function TRIMMED for its
+ * check but handed the raw string on, so `ohg.panelist.role.set
+ * [" 1001 ", "host"]` returned `{kind:"ok"}` while seating nobody —
+ * `personKeyForPin(" 1001 ")` is `"pin: 1001 "`, an identity the Mukana
+ * registry and `buildPanelistDb` will never match, so the write landed in
+ * the persisted override table as junk and the operator got a green result
+ * for a no-op. That is exactly the class Task 10 called an upstream defect
+ * and fixed for `box.clear`. OSC and Companion string params routinely
+ * carry padding, and the pre-existing `.trim()` in the check was itself the
+ * tell that whitespace was known to be possible.
+ *
+ * Trimming (rather than rejecting a padded PIN) is the friendlier of the
+ * two consistent options: a padded PIN unambiguously means the person it
+ * spells, and a bridge that pads is not making an error worth refusing a
+ * live operator over. Shared by all three PIN-consuming dispatch cases so
+ * the rule cannot drift between them.
  */
-function requireNonEmptyPin(id: string, pin: string): ActionResult | null {
-  return pin.trim().length === 0 ? errorResult(`${id}: pin must not be empty`) : null;
+type PinBinding = { ok: true; pin: string } | { ok: false; result: ActionResult };
+
+function requirePin(id: string, raw: string): PinBinding {
+  const pin = raw.trim();
+  return pin.length === 0 ? { ok: false, result: errorResult(`${id}: pin must not be empty`) } : { ok: true, pin };
 }
 
 /**
@@ -608,12 +630,11 @@ function dispatch(engine: ShowEngine, id: string, bound: readonly (string | numb
       return { kind: "ok" };
     }
     case "ohg.panelist.role.set": {
-      const pin = bound[0] as string;
       const role = bound[1] as string;
-      const pinError = requireNonEmptyPin(id, pin);
-      if (pinError !== null) return pinError;
+      const pin = requirePin(id, bound[0] as string);
+      if (!pin.ok) return pin.result;
       if (!isRole(role)) return errorResult(`${id}: '${role}' is not a known role`);
-      engine.setRole(pin, role);
+      engine.setRole(pin.pin, role);
       return { kind: "ok" };
     }
     case "ohg.panelist.syncAll": {
@@ -724,21 +745,19 @@ function dispatch(engine: ShowEngine, id: string, bound: readonly (string | numb
       return { kind: "ok" };
     }
     case "ohg.mukana.override.set": {
-      const pin = bound[0] as string;
       const name = bound[1] as string;
       const location = bound[2] as string;
       const role = bound[3] as string;
-      const pinError = requireNonEmptyPin(id, pin);
-      if (pinError !== null) return pinError;
+      const pin = requirePin(id, bound[0] as string);
+      if (!pin.ok) return pin.result;
       if (!isRole(role)) return errorResult(`${id}: '${role}' is not a known role`);
-      engine.setOverride({ personKey: personKeyForPin(pin), displayName: name, location, role });
+      engine.setOverride({ personKey: personKeyForPin(pin.pin), displayName: name, location, role });
       return { kind: "ok" };
     }
     case "ohg.mukana.override.delete": {
-      const pin = bound[0] as string;
-      const pinError = requireNonEmptyPin(id, pin);
-      if (pinError !== null) return pinError;
-      engine.clearOverride(personKeyForPin(pin));
+      const pin = requirePin(id, bound[0] as string);
+      if (!pin.ok) return pin.result;
+      engine.clearOverride(personKeyForPin(pin.pin));
       return { kind: "ok" };
     }
     default:

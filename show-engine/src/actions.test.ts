@@ -993,6 +993,65 @@ describe("invokeAction: an empty PIN is rejected, never silently accepted", () =
   });
 });
 
+/**
+ * Final fix round, I3 — the other half of the same guard. `requireNonEmptyPin`
+ * TRIMMED for its emptiness check and then handed the RAW string on, so a
+ * padded PIN passed the guard and keyed the write on an identity nothing
+ * would ever match: `" 1001 "` returned `{kind:"ok"}`, seated nobody, and
+ * left junk in the persisted override table. That is the silent-success
+ * class Task 10 already declared an upstream defect and fixed for
+ * `box.clear`. OSC and Companion string params routinely carry padding.
+ *
+ * The rule is now one trim at the boundary, applied at all three PIN sites:
+ * a padded PIN does exactly what the same PIN unpadded does.
+ */
+describe("invokeAction: a padded PIN is trimmed, never silently accepted as a different person", () => {
+  it("ohg.panelist.role.set seats the same person for ' 0042 ' as for '0042'", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann | 0042"));
+    e.onZoomEvent(joined("p2", "Bo | 4200"));
+    await e.tick();
+
+    expect(invokeAction(e, "ohg.panelist.role.set", ["  0042  ", "host"])).toEqual({ kind: "ok" });
+    const s = await e.tick();
+
+    const p1 = s.slots.find((slot) => slot.panelist?.participantId === "p1")?.panelist;
+    const p2 = s.slots.find((slot) => slot.panelist?.participantId === "p2")?.panelist;
+    expect(p1?.role).toBe("host"); // the reported success is a real one
+    expect(p2?.role).toBe("panelist");
+  });
+
+  it("ohg.mukana.override.set writes under the trimmed PIN's key", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann | 0042"));
+    await e.tick();
+
+    expect(invokeAction(e, "ohg.mukana.override.set", ["\t0042 ", "Ann", "Nowhere", "reader"])).toEqual({
+      kind: "ok"
+    });
+    const s = await e.tick();
+    expect(s.slots.find((slot) => slot.panelist?.participantId === "p1")?.panelist?.role).toBe("reader");
+  });
+
+  /**
+   * The delete side, and the one that proves the two sites agree: the
+   * override is written with a CLEAN pin and removed with a padded one. If
+   * either site kept the raw string, the padded key and the clean key would
+   * be different identities and the override would survive.
+   */
+  it("ohg.mukana.override.delete removes the override written under the clean PIN", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann | 0042"));
+    await e.tick();
+    e.setRole("0042", "host");
+    await e.tick();
+
+    expect(invokeAction(e, "ohg.mukana.override.delete", [" 0042 "])).toEqual({ kind: "ok" });
+    const s = await e.tick();
+    expect(s.slots.find((slot) => slot.panelist?.participantId === "p1")?.panelist?.role).toBe("panelist");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // One happy-path test per action — "Task 8 exercises every action."
 // ---------------------------------------------------------------------------
