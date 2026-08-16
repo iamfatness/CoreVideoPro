@@ -135,18 +135,49 @@ describe("projectControlFields — global fields", () => {
     expect(fields["ohg/queue/current"]).toBeNull();
   });
 
-  it("publishes the Mukana registry (panelists endpoint) health state", () => {
-    const fields = projectControlFields(fixture());
+  it("publishes ok for the Mukana health lamp when every endpoint is healthy", () => {
+    const snapshot = fixture();
+    snapshot.health = {
+      panelists: { state: "ok", consecutiveFailures: 0, detail: null },
+      hands: { state: "ok", consecutiveFailures: 0, detail: null },
+      question: { state: "ok", consecutiveFailures: 0, detail: null }
+    };
+    const fields = projectControlFields(snapshot);
     expect(fields["ohg/health/mukana"]).toBe("ok");
   });
 
-  it("reflects a degraded Mukana registry", () => {
+  /**
+   * The load-bearing case (fix round 1 owner ruling): a single health lamp
+   * must mean "is Mukana OK", not "is the panelist registry OK". The
+   * panelist-registry endpoint is perfectly healthy here — only `hands` is
+   * down — and the lamp must still read `failing`, because an operator
+   * glancing at one indicator must never see green while the hands feed is
+   * dead.
+   */
+  it("reads failing when only the hands endpoint is down, even though the panelist registry is ok", () => {
     const snapshot = fixture();
     snapshot.health = {
-      ...snapshot.health,
-      panelists: { state: "failing", consecutiveFailures: 5, detail: "connection refused" }
+      panelists: { state: "ok", consecutiveFailures: 0, detail: null },
+      hands: { state: "failing", consecutiveFailures: 4, detail: "connection refused" },
+      question: { state: "ok", consecutiveFailures: 0, detail: null }
     };
     const fields = projectControlFields(snapshot);
+    expect(fields["ohg/health/mukana"]).toBe("failing");
+  });
+
+  it("reads dormant when the worst endpoint is dormant and none are failing", () => {
+    const snapshot = fixture();
+    snapshot.health = {
+      panelists: { state: "ok", consecutiveFailures: 0, detail: null },
+      hands: { state: "ok", consecutiveFailures: 0, detail: null },
+      question: { state: "dormant", consecutiveFailures: 0, detail: "outside show hours" }
+    };
+    const fields = projectControlFields(snapshot);
+    expect(fields["ohg/health/mukana"]).toBe("dormant");
+  });
+
+  it("reads failing on the fixture's own mixed health (ok / failing / dormant) — worst wins over any single endpoint", () => {
+    const fields = projectControlFields(fixture());
     expect(fields["ohg/health/mukana"]).toBe("failing");
   });
 
@@ -182,11 +213,20 @@ describe("projectControlFields — purity", () => {
 const SLOT_FIELD_TEMPLATES = OHG_FIELD_TEMPLATES.filter((template) => template.includes("{slot}"));
 const GLOBAL_FIELD_TEMPLATES = OHG_FIELD_TEMPLATES.filter((template) => !template.includes("{slot}"));
 
-/** Strip a produced per-slot key back to its `{slot}` template shape, or null if it isn't one. */
+/**
+ * Strip a produced per-slot key back to its `{slot}` template shape, or
+ * null if it isn't one. Derives the legal suffix set from
+ * `SLOT_FIELD_TEMPLATES` itself (fix round 1, Minor) rather than a
+ * separately hardcoded `(name|role|tally)` alternation — the old version
+ * needed a second edit site for every new `{slot}` field added to both the
+ * templates and `projectSlot`, and would fail the forward test for an
+ * otherwise-correct implementation until that second edit landed.
+ */
 function templateShapeOf(key: string): string | null {
-  const match = /^ohg\/slot\/(\d+)\/(name|role|tally)$/.exec(key);
+  const match = /^ohg\/slot\/(\d+)\/(.+)$/.exec(key);
   if (match === null) return null;
-  return `ohg/slot/{slot}/${match[2]}`;
+  const shape = `ohg/slot/{slot}/${match[2]}`;
+  return SLOT_FIELD_TEMPLATES.includes(shape) ? shape : null;
 }
 
 describe("OHG_FIELD_TEMPLATES / projectControlFields coverage", () => {
