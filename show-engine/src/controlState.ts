@@ -53,6 +53,7 @@ export const OHG_FIELD_TEMPLATES: readonly string[] = [
   "ohg/slot/{slot}/tally",
   "ohg/program/mode",
   "ohg/queue/current",
+  "ohg/gallery/smart",
   "ohg/health/mukana",
   "ohg/capabilities/registry/state",
   "ohg/capabilities/handsQueue/state",
@@ -126,6 +127,13 @@ export function projectControlFields(snapshot: ShowSnapshot): Record<string, Con
 
   fields["ohg/program/mode"] = formatProgramSource(snapshot.program.program);
   fields["ohg/queue/current"] = snapshot.queue.current;
+  // The readback for `ohg.gallery.smart.set` (final fix round, I4). The
+  // key is written as a literal here and declared as a separate literal in
+  // `OHG_FIELD_TEMPLATES` — same rule as the capability fields: the two
+  // sides of the coverage cross-check must not derive from one source, or
+  // dropping the field shrinks both and the check compares a shrunk list
+  // against itself.
+  fields["ohg/gallery/smart"] = snapshot.smartGallery;
   fields["ohg/health/mukana"] = worstMukanaHealth(snapshot.health);
 
   // `Object.keys`, not a shared name-list constant (fix round 1) — see

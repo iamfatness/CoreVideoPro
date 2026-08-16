@@ -803,6 +803,7 @@ const DISTINCTIVE_SNAPSHOT: ShowSnapshot = buildSnapshot({
     hands: { state: "failing", consecutiveFailures: 9, detail: "HTTP 503 from hands" },
     question: { state: "ok", consecutiveFailures: 0, detail: "still a detail" }
   },
+  smartGallery: true,
   unseated: [distinctivePanelist("pB", "5555")],
   pagingRefused: "paging refused: distinctive reason",
   restoreWarnings: ["distinctive restore warning"]

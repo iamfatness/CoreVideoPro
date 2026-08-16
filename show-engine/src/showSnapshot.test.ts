@@ -83,6 +83,7 @@ function input() {
       hands: { state: "ok" as const, consecutiveFailures: 0, detail: null },
       question: { state: "ok" as const, consecutiveFailures: 0, detail: null }
     },
+    smartGallery: true,
     unseated: [panelist("p9", "Cy")],
     restoreWarnings: ["persisted look \"gone\" is not defined in this show's configuration"]
   };

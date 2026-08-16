@@ -1267,6 +1267,27 @@ describe("ShowEngine gallery operator controls (Task 7)", () => {
  */
 describe("ShowEngine smart gallery (Task 7)", () => {
   /**
+   * Final fix round, I4: the toggle must be READABLE, not just settable.
+   * `setSmartGallery` had exactly two readers in the whole package — its
+   * own setter and `tick()`'s guard — so `ohg.gallery.smart.set` was an
+   * action with no readback at all, and the three host panels (thin state
+   * renderers, by spec) could not show an operator whether it was on.
+   * Asserted through the PUBLIC snapshot, off a tick and after one, and in
+   * both directions so a hardcoded value reds.
+   */
+  it("publishes the smart-gallery toggle on the snapshot, both ways", async () => {
+    const e = engine();
+    expect(e.snapshot().smartGallery).toBe(false);
+
+    e.setSmartGallery(true);
+    expect(e.snapshot().smartGallery).toBe(true);
+    expect((await e.tick()).smartGallery).toBe(true);
+
+    e.setSmartGallery(false);
+    expect((await e.tick()).smartGallery).toBe(false);
+  });
+
+  /**
    * Mutation target named in the brief: applying the smart order while
    * the toggle is off. `resetGalleryFromSlots` seeds a known baseline
    * (p1 at cell 1, p2 at cell 2); an active-speaker event for p2 alone

@@ -126,6 +126,7 @@ describe("control-state projection exports", () => {
         hands: { state: "ok", consecutiveFailures: 0, detail: null },
         question: { state: "ok", consecutiveFailures: 0, detail: null }
       },
+      smartGallery: false,
       unseated: [],
       pagingRefused: null,
       restoreWarnings: []

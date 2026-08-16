@@ -79,6 +79,7 @@ function fixture(): ShowSnapshot {
       hands: { state: "failing", consecutiveFailures: 3, detail: "timed out" },
       question: { state: "dormant", consecutiveFailures: 0, detail: "outside show hours" }
     },
+    smartGallery: true,
     unseated: [],
     pagingRefused: null,
     restoreWarnings: []
@@ -179,6 +180,23 @@ describe("projectControlFields — global fields", () => {
   it("reads failing on the fixture's own mixed health (ok / failing / dormant) — worst wins over any single endpoint", () => {
     const fields = projectControlFields(fixture());
     expect(fields["ohg/health/mukana"]).toBe("failing");
+  });
+
+  /**
+   * Final fix round, I4. `ohg.gallery.smart.set` was an action with NO
+   * readback of any kind — absent from the snapshot and from these fields —
+   * so the three host panels, which spec §4.3 defines as thin state
+   * renderers ("every displayed value comes from the `ohg` state node"),
+   * each had to keep a private copy of the toggle and all three would
+   * disagree with the engine. Both states are asserted so a projection
+   * hardcoding either one reds.
+   */
+  it("publishes whether smart gallery is on, distinguishing both states", () => {
+    expect(projectControlFields(fixture())["ohg/gallery/smart"]).toBe(true);
+
+    const off = fixture();
+    off.smartGallery = false;
+    expect(projectControlFields(off)["ohg/gallery/smart"]).toBe(false);
   });
 
   it("publishes every capability's state under its own field, distinguishing all three states", () => {

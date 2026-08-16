@@ -162,7 +162,14 @@ export class ShowEngine {
    */
   private readonly recencyScores = new RecencyScores();
 
-  /** Reorder the gallery by speaker recency every tick when true. Set by `setSmartGallery`; off by default; purely in-memory, not part of `PersistedShowState`. */
+  /**
+   * Reorder the gallery by speaker recency every tick when true. Set by
+   * `setSmartGallery`; off by default; purely in-memory, not part of
+   * `PersistedShowState`. PUBLISHED on `ShowSnapshot.smartGallery` (final
+   * fix round, I4) so the three host panels — thin state renderers, by
+   * spec — can render the toggle from state instead of each keeping a
+   * private copy that disagrees with the engine.
+   */
   private smartGalleryOn = false;
 
   private tickRevision = 0;
@@ -603,7 +610,21 @@ export class ShowEngine {
     this.pendingPersist = true;
   }
 
-  /** Toggle smart gallery ordering (see the gate step and derived-layers step in `tick()`). Not part of `PersistedShowState` — an in-memory preference that always starts OFF after a restart. */
+  /**
+   * Toggle smart gallery ordering (see the gate step and derived-layers
+   * step in `tick()`). Not part of `PersistedShowState` — an in-memory
+   * preference that always starts OFF after a restart — but the CURRENT
+   * value is published on `ShowSnapshot.smartGallery` and projected to the
+   * `ohg/gallery/smart` feedback field, so an operator surface can show
+   * whether it is on (final fix round, I4).
+   *
+   * **Turning it ON is destructive to manual cell placement.**
+   * `GalleryDirector.applyOrder` rewrites EVERY occupied cell from the
+   * recency order, so an operator's hand-placed arrangement is discarded
+   * the moment this flips true — and, because the reordered arrangement is
+   * what the next persist writes, that discard survives a restart even
+   * though this flag does not.
+   */
   setSmartGallery(on: boolean): void {
     this.smartGalleryOn = on;
   }
@@ -1240,6 +1261,7 @@ export class ShowEngine {
       overlays: this.overlayDirector.state(),
       capabilities,
       health,
+      smartGallery: this.smartGalleryOn,
       unseated: this.unseatedPanelists,
       pagingRefused: this.pagingRefusal()?.message ?? null,
       restoreWarnings: this.restoreWarnings

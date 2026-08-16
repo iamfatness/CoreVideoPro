@@ -728,6 +728,11 @@ const ACTION_CASES: Record<string, ActionCase> = {
     drives: ({ before, after }) => {
       expect(galleryCellSlot(before, 1)).toBe(1);
       expect(galleryCellSlot(after, 1)).toBe(5);
+      // And the toggle is READABLE (final fix round, I4): the three host
+      // panels render from the snapshot, so a settable-but-unpublished
+      // toggle leaves every one of them guessing.
+      expect(before.smartGallery).toBe(false);
+      expect(after.smartGallery).toBe(true);
     }
   },
   "ohg.gfx.headline.in": {
@@ -1179,6 +1184,7 @@ function expectedFields(snapshot: ShowSnapshot): Record<string, ControlFieldValu
         ? `slot:${program.slot}`
         : program.kind;
   fields["ohg/queue/current"] = snapshot.queue.current;
+  fields["ohg/gallery/smart"] = snapshot.smartGallery;
 
   const rank: Record<MukanaHealth["state"], number> = { ok: 0, dormant: 1, failing: 2 };
   const states = [snapshot.health.panelists, snapshot.health.hands, snapshot.health.question];
