@@ -2664,6 +2664,46 @@ describe("ShowEngine Mukana polling", () => {
     expect(fetches.length).toBeGreaterThan(afterFirst);
   });
 
+  /**
+   * Final fix round, C1 — the on-air reproduction. An operator reaches for
+   * "sync now" exactly when a feed feels slow, i.e. precisely when a fetch
+   * is most likely to be outstanding. While `forceDue()` and the hung-poll
+   * detector shared one field, that press computed `Infinity`ms outstanding
+   * for the in-flight hands poll and degraded a healthy feed mid-show:
+   * `health.hands` → `failing` (with the literal string `Infinityms` shown
+   * to the operator), `capabilities.handsQueue` → `unavailable`, guest
+   * boxes fell back to manual fill, and paging started refusing.
+   *
+   * The hands fetch here NEVER settles across the sync — which is what no
+   * other `syncAll` fixture in this package does.
+   */
+  it("syncAll leaves an endpoint whose poll is still in flight healthy", async () => {
+    const { e, advance, flush, setHandsBody, hangHands } = mukanaEngine();
+    setHandsBody("4242,5555\n1383\nNONE");
+    advance(10_000);
+    await e.tick();
+    await flush();
+    const healthy = await e.tick();
+    await flush();
+    expect(healthy.capabilities.handsQueue.state).toBe("available");
+    expect(healthy.health.hands.state).toBe("ok");
+
+    hangHands();
+    advance(10_000);
+    await e.tick(); // starts the hands fetch that never settles
+    await flush();
+
+    e.syncAll(); // the operator presses "sync now" with that fetch outstanding
+    const afterSync = await e.tick();
+    await flush();
+
+    expect(afterSync.health.hands.state).toBe("ok");
+    expect(afterSync.health.hands.detail).toBeNull();
+    expect(afterSync.capabilities.handsQueue.state).toBe("available");
+    // Nothing downstream degraded either: the last good queue is intact.
+    expect(afterSync.queue.current).toBe("1383");
+  });
+
   /** A show with no Mukana client has nothing to force; `syncAll` degrades to a no-op rather than throwing. */
   it("syncAll is a no-op for a show with no Mukana client", () => {
     expect(() => engine().syncAll()).not.toThrow();

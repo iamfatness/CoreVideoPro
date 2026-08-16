@@ -67,13 +67,31 @@ export class MukanaPoller {
   private readonly integrations: ShowIntegrationsConfig;
 
   /**
-   * Wall-clock time (per the injected `Clock`) each endpoint's poll was last
-   * STARTED, keyed so `nextDelayMs`'s own interval/backoff math (which this
-   * poller deliberately adds no policy on top of) is checked against a fresh
+   * The DUE-CHECK ANCHOR: wall-clock time (per the injected `Clock`) each
+   * endpoint's poll was last started, as far as `isMukanaPollDue` is
+   * concerned. `nextDelayMs`'s own interval/backoff math (which this poller
+   * deliberately adds no policy on top of) is checked against a fresh
    * anchor every time a fetch is kicked off — never against when it
    * SETTLED, since a poll that's still in flight must not look perpetually
    * "not due yet" once its interval has genuinely elapsed. `-Infinity`
-   * makes every endpoint due on the very first `poll()` call.
+   * makes every endpoint due on the very first `poll()` call, and is also
+   * what `forceDue()` writes.
+   *
+   * **This field is an OPERATOR-WRITABLE SCHEDULING HINT, not a record of
+   * when a fetch actually started, and nothing outside the due-check may
+   * read it** (final fix round, C1). `forceDue()` — behind the operator's
+   * "sync now" button — rewrites it to `-Infinity` for every endpoint,
+   * including one whose fetch is mid-flight. `detectHungEndpoints` used to
+   * measure staleness from this same field, so one press of "sync now"
+   * while a fetch was outstanding computed `now - (-Infinity)` = `Infinity`
+   * ms outstanding and marked a perfectly healthy endpoint hung: the hands
+   * capability went `unavailable`, the active look degraded to manual box
+   * fill mid-show, paging started refusing, the health lamp went red, and
+   * the hysteresis hold then charged two settled polls to come back — all
+   * from a button an operator reaches for precisely when a feed feels slow,
+   * i.e. exactly when a fetch is most likely to be in flight. The "when did
+   * this poll start" fact now lives in `pollInFlightSince` below, which no
+   * control surface can rewrite.
    */
   private readonly lastMukanaPollAt: Record<MukanaEndpoint, number> = {
     panelists: Number.NEGATIVE_INFINITY,
@@ -82,9 +100,17 @@ export class MukanaPoller {
   };
 
   /**
-   * Whether a fetch for this endpoint is currently in flight — gates
-   * starting a NEW one in `poll`. Set the moment a fetch starts, cleared in
-   * that SAME fetch's `.then()`/rejection handler, never anywhere else.
+   * When this endpoint's in-flight fetch STARTED, or `null` when no fetch
+   * for it is outstanding. One field carries both facts on purpose: "a
+   * fetch is in flight" and "it started at T" can never disagree, because
+   * there is no way to express one without the other — which is what keeps
+   * `detectHungEndpoints`'s `outstandingMs` a real elapsed time (always
+   * finite, always measured from a genuine `Clock` reading) rather than a
+   * subtraction against whatever the due-check anchor currently holds.
+   * Written the moment a fetch starts, cleared in that SAME fetch's
+   * `.then()`/rejection handler, never anywhere else.
+   *
+   * Non-null also GATES starting a NEW fetch in `poll` — the busy gate.
    * This is what makes "one in-flight promise per endpoint" a real
    * invariant rather than a comment: without it, a slow or hung endpoint
    * gets a fresh overlapping fetch every time its interval elapses
@@ -96,10 +122,10 @@ export class MukanaPoller {
    * healthy-but-slow endpoint gets hit; this bounds the COUNT in flight at
    * once to exactly one, which backoff alone does not.
    */
-  private readonly mukanaPollBusy: Record<MukanaEndpoint, boolean> = {
-    panelists: false,
-    hands: false,
-    question: false
+  private readonly pollInFlightSince: Record<MukanaEndpoint, number | null> = {
+    panelists: null,
+    hands: null,
+    question: null
   };
 
   /**
@@ -172,54 +198,54 @@ export class MukanaPoller {
 
     if (
       this.integrations.registry &&
-      !this.mukanaPollBusy.panelists &&
+      this.pollInFlightSince.panelists === null &&
       this.isMukanaPollDue("panelists", now)
     ) {
       this.lastMukanaPollAt.panelists = now;
-      this.mukanaPollBusy.panelists = true;
+      this.pollInFlightSince.panelists = now;
       client.fetchPanelists().then(
         (outcome) => {
-          this.mukanaPollBusy.panelists = false;
+          this.pollInFlightSince.panelists = null;
           this.panelistsPollSettled = outcome;
         },
         (error: unknown) => {
-          this.mukanaPollBusy.panelists = false;
+          this.pollInFlightSince.panelists = null;
           this.panelistsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
         }
       );
     }
     if (
       this.integrations.handsQueue &&
-      !this.mukanaPollBusy.hands &&
+      this.pollInFlightSince.hands === null &&
       this.isMukanaPollDue("hands", now)
     ) {
       this.lastMukanaPollAt.hands = now;
-      this.mukanaPollBusy.hands = true;
+      this.pollInFlightSince.hands = now;
       client.fetchHands().then(
         (outcome) => {
-          this.mukanaPollBusy.hands = false;
+          this.pollInFlightSince.hands = null;
           this.handsPollSettled = outcome;
         },
         (error: unknown) => {
-          this.mukanaPollBusy.hands = false;
+          this.pollInFlightSince.hands = null;
           this.handsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
         }
       );
     }
     if (
       this.integrations.questionFeed &&
-      !this.mukanaPollBusy.question &&
+      this.pollInFlightSince.question === null &&
       this.isMukanaPollDue("question", now)
     ) {
       this.lastMukanaPollAt.question = now;
-      this.mukanaPollBusy.question = true;
+      this.pollInFlightSince.question = now;
       client.fetchQuestion().then(
         (outcome) => {
-          this.mukanaPollBusy.question = false;
+          this.pollInFlightSince.question = null;
           this.questionPollSettled = outcome;
         },
         (error: unknown) => {
-          this.mukanaPollBusy.question = false;
+          this.pollInFlightSince.question = null;
           this.questionPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
         }
       );
@@ -278,8 +304,14 @@ export class MukanaPoller {
     const now = this.clock.now();
     const hung: HungMukanaPoll[] = [];
     for (const endpoint of MUKANA_ENDPOINTS) {
-      if (!this.mukanaPollBusy[endpoint]) continue;
-      const outstandingMs = now - this.lastMukanaPollAt[endpoint];
+      // `pollInFlightSince`, NEVER `lastMukanaPollAt` (final fix round, C1):
+      // the due-check anchor is rewritten by `forceDue()` behind an operator
+      // button, and measuring staleness from it reported an in-flight poll
+      // as `Infinity`ms outstanding the instant someone pressed "sync now".
+      // See both fields' doc comments.
+      const startedAt = this.pollInFlightSince[endpoint];
+      if (startedAt === null) continue;
+      const outstandingMs = now - startedAt;
       if (outstandingMs < this.client.nextDelayMs(endpoint) * MUKANA_HUNG_POLL_INTERVALS) continue;
       this.client.markHung(endpoint, outstandingMs);
       hung.push({ endpoint, outstandingMs });
@@ -304,6 +336,14 @@ export class MukanaPoller {
    * busy gate in `poll()` still refuses a second overlapping fetch for it;
    * a forced sync on a hung endpoint takes effect the moment its current
    * fetch finally settles and `poll()` next runs.
+   *
+   * It writes `lastMukanaPollAt` and NOTHING ELSE, and that separation is
+   * load-bearing (final fix round, C1): `pollInFlightSince` — the field
+   * `detectHungEndpoints` measures staleness from — is deliberately left
+   * alone, so pressing "sync now" while a fetch is outstanding cannot make
+   * that fetch look like it has been hanging forever. When the two facts
+   * shared one field, this method degraded a healthy on-air feed to
+   * `failing`/`unavailable` on the very next health read.
    */
   forceDue(): void {
     for (const endpoint of MUKANA_ENDPOINTS) {

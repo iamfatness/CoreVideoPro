@@ -441,6 +441,56 @@ describe("MukanaPoller hung-poll threshold pinning (Task 3, fix round 2 obligati
     });
     expect(handsCapability(rig.client)).toBe("unavailable");
   });
+
+  /**
+   * Final fix round, C1. `forceDue()` (the operator's "sync now") rewrites
+   * the DUE-CHECK anchor for every endpoint, including one whose fetch is
+   * currently outstanding. While `detectHungEndpoints` measured staleness
+   * from that same field, this sequence reported a perfectly healthy
+   * in-flight poll as `Infinity`ms outstanding and marked it hung —
+   * `capabilities.handsQueue` went `unavailable`, the active look degraded
+   * to manual box fill, paging refused, and the recovery hysteresis then
+   * charged two settled polls to come back. Every existing `forceDue`
+   * fixture in this package settles its fetch immediately, which is why
+   * nothing saw it; this one holds the fetch open across the sync, which is
+   * the whole point.
+   *
+   * The tail half is deliberate too: it pins that the fix separated the two
+   * FACTS rather than neutering the control. A "fix" that made `forceDue`
+   * skip in-flight endpoints would satisfy the health assertions above and
+   * fail here, because the forced sync would no longer be pending when the
+   * outstanding fetch finally settles.
+   */
+  it("keeps an in-flight poll healthy when a forced sync lands while it is outstanding", async () => {
+    const rig = realHandsRig(2000);
+    rig.poller.poll();
+    rig.settleHealthy();
+    await flush();
+    expect(handsCapability(rig.client)).toBe("available");
+
+    rig.clock.advance(2000); // due
+    rig.poller.poll();
+    expect(rig.pendingCount()).toBe(1); // a hands fetch is genuinely in flight
+    rig.clock.advance(500); // 0.25x the interval — nowhere near the hung threshold
+
+    rig.poller.forceDue(); // the operator presses "sync now"
+
+    expect(rig.poller.detectHungEndpoints()).toEqual([]);
+    expect(rig.client.healthFor("hands")).toEqual({
+      state: "ok",
+      consecutiveFailures: 0,
+      detail: null
+    });
+    expect(handsCapability(rig.client)).toBe("available");
+
+    // The sync still takes effect the moment the outstanding fetch settles:
+    // the next `poll()` starts a fresh one with NO further clock advance,
+    // which the endpoint's own 2000ms interval would otherwise forbid.
+    rig.settleHealthy();
+    await flush();
+    rig.poller.poll();
+    expect(rig.pendingCount()).toBe(1);
+  });
 });
 
 describe("MukanaClient hang-recovery hysteresis (Task 3, fix round 2 obligation 1)", () => {
