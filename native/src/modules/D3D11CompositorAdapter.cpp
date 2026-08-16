@@ -32,6 +32,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -703,6 +705,62 @@ class D3D11Compositor final : public ICompositor {
     context_->Draw(3, 0);
   }
 
+  // Diagnostic tracer for the border pass — see the call site in drawBorderPass.
+  // OFF unless COREVIDEO_BORDER_TRACE=1. Reports, per layer, the rect the border
+  // is actually stroked around and the resulting stroke in CANVAS PIXELS.
+  //
+  // Note what this will show even on a healthy build: `stroke` is computed from
+  // min(rect.width, rect.height) in NORMALIZED units, then applied to both axes —
+  // but normalized X and Y map to different pixel scales on a 16:9 canvas, so the
+  // left/right edges come out ~1.78x thicker than the top/bottom ones. That is a
+  // real asymmetry in the existing math, not a misplacement; the trace prints both
+  // so the two can be told apart.
+  void traceBorderPass(
+      const ResolvedLayer& layer,
+      const compositor::LayerRect& rect,
+      const compositor::BorderFraming& border,
+      float strokeX,
+      float strokeY) {
+    static const bool enabled = [] {
+      const char* v = std::getenv("COREVIDEO_BORDER_TRACE");
+      return v != nullptr && v[0] == '1';
+    }();
+    if (!enabled) {
+      return;
+    }
+    static std::mutex traceMutex;
+    static std::map<std::string, std::chrono::steady_clock::time_point> lastLogged;
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(traceMutex);
+      auto it = lastLogged.find(layer.plan.layerId);
+      if (it != lastLogged.end() &&
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second).count() < 2000) {
+        return;
+      }
+      lastLogged[layer.plan.layerId] = now;
+    }
+    std::fprintf(
+        stderr,
+        "[border-trace] layer=%s kind=%s style=%s thicknessRaw=%.2f "
+        "rect=[%.4f %.4f %.4f %.4f] rectPx=[%.1f %.1f %.1fx%.1f] "
+        "strokePx=[x=%.1f y=%.1f] color=%08x\n",
+        layer.plan.layerId.c_str(),
+        layer.plan.kind.c_str(),
+        layer.plan.borderStyle.c_str(),
+        static_cast<double>(layer.plan.borderThickness),
+        static_cast<double>(rect.x), static_cast<double>(rect.y),
+        static_cast<double>(rect.width), static_cast<double>(rect.height),
+        static_cast<double>(rect.x) * targetWidth_,
+        static_cast<double>(rect.y) * targetHeight_,
+        static_cast<double>(rect.width) * targetWidth_,
+        static_cast<double>(rect.height) * targetHeight_,
+        static_cast<double>(strokeX) * targetWidth_,
+        static_cast<double>(strokeY) * targetHeight_,
+        border.colorRgba);
+    std::fflush(stderr);
+  }
+
   // Strokes a border around `rect` by drawing its four edge quads.
   void drawBorderPass(
       const ResolvedLayer& layer,
@@ -719,6 +777,11 @@ class D3D11Compositor final : public ICompositor {
     const float strokeX = std::min(stroke, rect.width * 0.5f);
     const float strokeY = std::min(stroke, rect.height * 0.5f);
     const uint32_t color = border.colorRgba;
+    // Diagnostic, opt-in via COREVIDEO_BORDER_TRACE=1 (silent otherwise).
+    // Prints what each border ACTUALLY strokes, so a "the tally border is in the
+    // wrong place" report becomes a measurement instead of pixel-archaeology.
+    // Rate-limited per layerId so a 60Hz wall cannot flood the log.
+    traceBorderPass(layer, rect, border, strokeX, strokeY);
     const float borderAlpha = std::clamp(alpha * (static_cast<float>((color >> 24) & 0xff) / 255.f), 0.f, 1.f);
     drawSolidQuad(layer, renderPlan, {rect.x, rect.y, rect.width, strokeY}, color, borderAlpha);
     drawSolidQuad(layer, renderPlan, {rect.x, rect.y + rect.height - strokeY, rect.width, strokeY}, color, borderAlpha);
