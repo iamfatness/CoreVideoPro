@@ -8539,9 +8539,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 resolvedSceneProgramRoutes,
                 _onAirBrowserOverlayIds)
             .ToList();
-        var sceneRoutes = resolvedProgramRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
-            .ToList();
+        // T1 core wall (whole-branch review fix): a CoreVideo Tiles (dynamic-gallery)
+        // scene contributes an EMPTY route list AT SERIALIZATION TIME, by construction.
+        //
+        // The core emits route layers and the wall into ONE shared order namespace
+        // (tiles-bg at wall.order, tile #i at wall.order + 1 + i), so a surviving
+        // gallery route at order 2 sorts BETWEEN tile 1 and tile 3 and composites a
+        // full-canvas cell over individual wall tiles — on PROGRAM, and therefore in
+        // the virtual camera, every recording and every stream.
+        // ReconcileDynamicGalleryRoutes() empties the route list too, but it cannot be
+        // the guarantee: it runs on a COALESCED Low-priority dispatch (so
+        // OnPreviewSceneIdChanged only SCHEDULES it before firing the sync
+        // immediately), persisted pre-T1 scenes restore `<sceneId>-tile-<pid>` routes
+        // verbatim at load, and it self-suppresses while `_canvasInteractionActive`
+        // — which does NOT gate BuildTilesLayerWire, so the wall still ships. Dropping
+        // the routes HERE, where the wire is built, makes the invariant hold for every
+        // one of those paths without depending on a UI refresh pass having run.
+        // Core-side characterization of what the interleave WOULD be:
+        // TilesRenderPlan.RoutesAndAWallShareOneOrderNamespace.
+        var sceneRoutes = ProgramScene.DynamicGallery is not null
+            ? new List<MediaCoreSceneRouteWire>()
+            : resolvedProgramRoutes
+                .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
+                .ToList();
 
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
@@ -8554,9 +8574,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 resolvedScenePreviewRoutes,
                 _previewBrowserOverlayIds)
             .ToList();
-        var previewSceneRoutes = resolvedPreviewRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
-            .ToList();
+        // Same by-construction rule as the program routes above — the preview bus is
+        // composited from its own scene graph and interleaves identically.
+        var previewSceneRoutes = PreviewScene.DynamicGallery is not null
+            ? new List<MediaCoreSceneRouteWire>()
+            : resolvedPreviewRoutes
+                .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
+                .ToList();
 
         var participants = RoomVideoParticipants
             .Select(participant => new MediaCoreParticipantWire(
@@ -12540,6 +12564,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // participant; that logic moved into the core and TilesLayerPayloadBuilder.
     // DynamicGalleryLayoutService itself is UNCHANGED and stays live as the reference
     // implementation the C++ port (buildTilesGrid) is tested against — do not delete it.
+    //
+    // NOT THE GUARANTEE (whole-branch review): this is a UI-side tidy-up that runs on a
+    // coalesced Low-priority dispatch and self-suppresses while `_canvasInteractionActive`,
+    // so it cannot be what keeps gallery routes off the wire. The wire-level invariant
+    // ("a gallery scene serializes an empty route list") is enforced by construction in
+    // BuildProductionSyncContext, where the route wires are actually built.
     private void ReconcileDynamicGalleryRoutes(Scene scene, List<SourceRoute> routes)
     {
         if (scene.DynamicGallery is null || _canvasInteractionActive)

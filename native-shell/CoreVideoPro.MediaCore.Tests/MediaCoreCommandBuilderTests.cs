@@ -881,6 +881,148 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("corevideo-recording-capture-cam0-zoom-p2", GetString(recording, "sessionId"));
     }
 
+    // ── T1 core wall: the "tiles" wire node ───────────────────────────────────
+    //
+    // MediaCoreCommandBuilder.SerializeTilesLayer INVENTS every key name and the
+    // nested `style` block, and the C++ side reads them with getString/getNumber
+    // defaults — so a mismatch is COMPLETELY SILENT: a mistyped `gutterPercent`
+    // key leaves the wall pinned at the C++ default (0.741) forever, with no
+    // warning on either side. These tests are the only thing standing between a
+    // rename here and a wall that quietly ignores the operator's style.
+    //
+    // The expected key names below were read directly out of
+    // `parseTilesLayer` (native/src/core/MediaCore.cpp):
+    //     node.getString("layerId")
+    //     node.getNumber("order", 0.0)
+    //     node.get("rect")            -> {x, y, w, h}   (NOT sent — see below)
+    //     node.get("members")         -> array of strings
+    //     node.get("style")           -> object, read with:
+    //         style->getString("tileAspect")
+    //         style->getNumber("customAspectRatio", 16.0/9.0)
+    //         style->getNumber("gutterPercent", 0.741)
+    //         style->getNumber("marginPercent", 0.741)
+    //         style->getString("backgroundColor")
+    // Do not "fix" a failure here by editing the expectation — check the C++
+    // parser first; whichever side moved is the side that is wrong.
+    private static readonly MediaCoreTilesLayerWire GalleryWall = new(
+        LayerId: "tiles:gallery",
+        Order: 7,
+        Members: ["zoom:p1", "zoom:p2", "capture:cam0"],
+        TileAspect: "4:3",
+        CustomAspectRatio: 1.25,
+        GutterPercent: 6.0,
+        MarginPercent: 4.5,
+        BackgroundColor: "#101418");
+
+    private static IReadOnlyList<NativeMediaCoreCommand> BuildWithWall(MediaCoreTilesLayerWire? wall) =>
+        MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "gallery",
+            SceneRoutes = [],
+            PreviewSceneId = "gallery-preview",
+            PreviewSceneRoutes = [],
+            Participants = Participants,
+            TilesLayer = wall,
+            PreviewTilesLayer = wall
+        });
+
+    [Fact]
+    public void TilesNodeRidesLoadSceneGraphWithEveryConfiguredValue()
+    {
+        var sceneGraph = BuildWithWall(GalleryWall).Single(command => command.Type == "load-scene-graph");
+        var tiles = GetObject(sceneGraph, "tiles");
+
+        Assert.Equal("tiles:gallery", tiles.GetProperty("layerId").GetString());
+        Assert.Equal(7, tiles.GetProperty("order").GetInt32());
+        Assert.Equal(
+            ["zoom:p1", "zoom:p2", "capture:cam0"],
+            tiles.GetProperty("members").EnumerateArray().Select(m => m.GetString()!).ToArray());
+
+        var style = tiles.GetProperty("style");
+        Assert.Equal("4:3", style.GetProperty("tileAspect").GetString());
+        Assert.Equal(1.25, style.GetProperty("customAspectRatio").GetDouble());
+        Assert.Equal(6.0, style.GetProperty("gutterPercent").GetDouble());
+        Assert.Equal(4.5, style.GetProperty("marginPercent").GetDouble());
+        Assert.Equal("#101418", style.GetProperty("backgroundColor").GetString());
+    }
+
+    [Fact]
+    public void TilesNodeRidesSetPreviewSceneToo()
+    {
+        // The PREVIEW bus composites its own scene graph in the core, so a wall
+        // that only rode load-scene-graph would show on PROGRAM and be missing
+        // from the operator's preview monitor.
+        var preview = BuildWithWall(GalleryWall).Single(command => command.Type == "set-preview-scene");
+        var tiles = GetObject(preview, "tiles");
+
+        Assert.Equal("tiles:gallery", tiles.GetProperty("layerId").GetString());
+        Assert.Equal(7, tiles.GetProperty("order").GetInt32());
+        Assert.Equal(
+            ["zoom:p1", "zoom:p2", "capture:cam0"],
+            tiles.GetProperty("members").EnumerateArray().Select(m => m.GetString()!).ToArray());
+        Assert.Equal("#101418", tiles.GetProperty("style").GetProperty("backgroundColor").GetString());
+    }
+
+    [Fact]
+    public void ANonGallerySceneSendsANullTilesNodeOnBothSceneCommands()
+    {
+        // A null `tiles` is what makes the core RESET tilesLayer_ (loadSceneGraph
+        // clears it every load): an omitted-or-null node is how a scene says
+        // "no wall", and the core's own wallActive gate then leaves the ordinary
+        // route plan alone.
+        var commands = BuildWithWall(null);
+
+        foreach (var type in new[] { "load-scene-graph", "set-preview-scene" })
+        {
+            var command = commands.Single(c => c.Type == type);
+            Assert.NotNull(command.ExtensionData);
+            Assert.True(command.ExtensionData!.TryGetValue("tiles", out var tiles), $"{type} has no tiles key");
+            Assert.Equal(JsonValueKind.Null, tiles.ValueKind);
+        }
+    }
+
+    [Fact]
+    public void TilesStyleIsNestedNotFlattened()
+    {
+        // parseTilesLayer only reads the style fields through
+        // `node.get("style")` — flattening them onto the tiles node would leave
+        // EVERY style value at its C++ default, silently, with the wall still
+        // rendering (at the wrong spacing/aspect/colour).
+        var sceneGraph = BuildWithWall(GalleryWall).Single(command => command.Type == "load-scene-graph");
+        var tiles = GetObject(sceneGraph, "tiles");
+
+        Assert.Equal(JsonValueKind.Object, tiles.GetProperty("style").ValueKind);
+        foreach (var styleKey in new[]
+                 {
+                     "tileAspect", "customAspectRatio", "gutterPercent", "marginPercent", "backgroundColor"
+                 })
+        {
+            Assert.False(
+                tiles.TryGetProperty(styleKey, out _),
+                $"'{styleKey}' is flattened onto the tiles node; parseTilesLayer only reads it under \"style\"");
+        }
+    }
+
+    [Fact]
+    public void TilesWireKeyNamesMatchTheCppParser()
+    {
+        var sceneGraph = BuildWithWall(GalleryWall).Single(command => command.Type == "load-scene-graph");
+        var tiles = GetObject(sceneGraph, "tiles");
+
+        var tilesKeys = tiles.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        // No "rect": the shell deliberately sends no canvas subregion, so the
+        // core's rect defaults (x=0,y=0,w=1,h=1) apply. If a later task adds
+        // one, parseTilesLayer reads "w"/"h" here — NOT "width"/"height" like a
+        // scene route's rect.
+        Assert.Equal(["layerId", "members", "order", "style"], tilesKeys);
+
+        var styleKeys = tiles.GetProperty("style").EnumerateObject()
+            .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        Assert.Equal(
+            ["backgroundColor", "customAspectRatio", "gutterPercent", "marginPercent", "tileAspect"],
+            styleKeys);
+    }
+
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)
     {
         if (command.ExtensionData is null ||
