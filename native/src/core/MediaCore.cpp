@@ -1407,11 +1407,19 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
                   static_cast<float>(rect->getNumber("h", 1.0))};
   }
   if (const rpc::Json* members = node.get("members"); members && members->isArray()) {
+    int memberIndex = 0;
     for (const auto& member : members->asArray()) {
       const std::string id = member.asString();
       if (!id.empty()) {
         tiles.members.push_back(id);
+      } else if (!member.isString()) {
+        warnings->push_back("Tiles layer member " + std::to_string(memberIndex) +
+                             " is not a string; dropping it.");
+      } else {
+        warnings->push_back("Tiles layer member " + std::to_string(memberIndex) +
+                             " is an empty string; dropping it.");
       }
+      ++memberIndex;
     }
   }
   if (const rpc::Json* style = node.get("style"); style && style->isObject()) {

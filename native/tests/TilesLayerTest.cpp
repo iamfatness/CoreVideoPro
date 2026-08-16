@@ -53,6 +53,24 @@ Json sceneWithTilesCommand() {
   };
 }
 
+// Same shape as sceneWithTilesCommand, but as a set-preview-scene command (the
+// second parse site, MediaCore.cpp's applyPreviewScene -- driven by an actual
+// scene id so the signature-fold dedup doesn't treat it as a repeat).
+Json previewSceneWithTilesCommand(const char* sceneId) {
+  return Json::Object{
+      {"type", "set-preview-scene"},
+      {"sceneId", sceneId},
+      {"routes", Json::Array{}},
+      {"tiles",
+       Json::Object{
+           {"layerId", "tiles:preview"},
+           {"order", 0},
+           {"rect", Json::Object{{"x", 0.0}, {"y", 0.0}, {"w", 1.0}, {"h", 1.0}}},
+           {"members", Json::Array{"zoom:201"}},
+       }},
+  };
+}
+
 }  // namespace
 
 TEST(TilesLayer, LoadSceneGraphParsesMembersAndStyleInOrder) {
@@ -103,4 +121,45 @@ TEST(TilesLayer, UnknownAspectFallsBackTo16x9AndWarns) {
                    });
   EXPECT_EQ(core.tilesLayerForTest().style.tileAspect, "16:9");
   EXPECT_FALSE(core.sceneValidationWarningsForTest().empty());
+}
+
+// A rejected member is a dropped entry, not a silently-shrunk list -- the
+// binding constraint is "a rejected member ... emits a warning; it never
+// disappears quietly." A non-string element (number, null) and a genuinely
+// empty string must all drop AND warn; the well-formed member must survive.
+TEST(TilesLayer, InvalidMembersAreDroppedWithWarnings) {
+  MediaCore core;
+  loadScene(core, Json::Object{
+                       {"type", "load-scene-graph"},
+                       {"sceneId", "s"},
+                       {"routes", Json::Array{}},
+                       {"tiles", Json::Object{
+                                     {"members", Json::Array{"zoom:1", 42, nullptr, ""}},
+                                 }},
+                   });
+  const auto& tiles = core.tilesLayerForTest();
+  ASSERT_EQ(tiles.members.size(), 1u);
+  EXPECT_EQ(tiles.members[0], "zoom:1");
+  EXPECT_FALSE(core.sceneValidationWarningsForTest().empty());
+}
+
+// The second parse site (applyPreviewScene, driven by set-preview-scene / the
+// zoom-media-spine-sync `previewScene` object) needs the identical guarantee
+// as ReloadWithoutTilesClearsThePreviousWall above: a preview scene that
+// previously carried a wall must not keep it once a resync's `tiles` node is
+// gone. This is the literal failure mode the plan names -- "a wall works on
+// load and vanishes on the next preview sync" -- covering the signature-fold
+// reset design (tilesLayer_ is only committed alongside the other locals when
+// the computed signature changes; folding tiles into that signature is what
+// keeps a tiles-only change from being mistaken for "unchanged").
+TEST(TilesLayer, PreviewSceneReloadWithoutTilesClearsThePreviousWall) {
+  MediaCore core;
+  loadScene(core, previewSceneWithTilesCommand("preview-1"));
+  ASSERT_TRUE(core.tilesLayerForTest().present);
+  loadScene(core, Json::Object{
+                       {"type", "set-preview-scene"},
+                       {"sceneId", "preview-2"},
+                       {"routes", Json::Array{}},
+                   });
+  EXPECT_FALSE(core.tilesLayerForTest().present);
 }
