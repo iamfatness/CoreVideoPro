@@ -1380,6 +1380,59 @@ void MediaCore::setOutputProfile(const rpc::Json& command) {
   }
 }
 
+namespace {
+
+// Tiles style tokens the wall understands. An unrecognised token is a legal
+// string we did not expect, so fall back loudly rather than guess a shape.
+std::string normalizeTileAspect(const std::string& value, bool* fellBack) {
+  static const char* kKnown[] = {"16:9", "4:3", "5:4", "1:1", "3:4", "9:16", "custom"};
+  for (const char* known : kKnown) {
+    if (value == known) {
+      return value;
+    }
+  }
+  *fellBack = !value.empty();
+  return "16:9";
+}
+
+TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>* warnings) {
+  TilesLayerState tiles;
+  tiles.present = true;
+  tiles.layerId = node.getString("layerId");
+  tiles.order = static_cast<int>(node.getNumber("order", 0.0));
+  if (const rpc::Json* rect = node.get("rect"); rect && rect->isObject()) {
+    tiles.rect = {static_cast<float>(rect->getNumber("x", 0.0)),
+                  static_cast<float>(rect->getNumber("y", 0.0)),
+                  static_cast<float>(rect->getNumber("w", 1.0)),
+                  static_cast<float>(rect->getNumber("h", 1.0))};
+  }
+  if (const rpc::Json* members = node.get("members"); members && members->isArray()) {
+    for (const auto& member : members->asArray()) {
+      const std::string id = member.asString();
+      if (!id.empty()) {
+        tiles.members.push_back(id);
+      }
+    }
+  }
+  if (const rpc::Json* style = node.get("style"); style && style->isObject()) {
+    bool aspectFellBack = false;
+    tiles.style.tileAspect = normalizeTileAspect(style->getString("tileAspect"), &aspectFellBack);
+    if (aspectFellBack) {
+      warnings->push_back("Tiles layer requested an unknown tile aspect; using 16:9.");
+    }
+    tiles.style.customAspectRatio = style->getNumber("customAspectRatio", 16.0 / 9.0);
+    tiles.style.gutterPercent = style->getNumber("gutterPercent", 0.741);
+    tiles.style.marginPercent = style->getNumber("marginPercent", 0.741);
+    const std::string background = style->getString("backgroundColor");
+    if (!background.empty()) {
+      tiles.style.backgroundColor = background;
+    }
+  }
+  return tiles;
+}
+
+}  // namespace
+
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
@@ -1389,6 +1442,10 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
   }
   sceneRoutes_.clear();
   sceneBackground_ = {};
+  // T1: reset every load — a scene that previously carried a wall must not
+  // keep it when this sync omits the `tiles` node (the stale-state class
+  // this codebase has been bitten by before; see the one-shot/respawn rule).
+  tilesLayer_ = {};
   if (const rpc::Json* background = command.get("background"); background && background->isObject()) {
     sceneBackground_.mediaAssetId = background->getString("mediaAssetId");
     sceneBackground_.mediaAssetName = background->getString("mediaAssetName");
@@ -1481,6 +1538,9 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     sceneValidationWarnings_.push_back("Scene graph routes must be an array.");
   }
   routeCount_ = static_cast<int>(sceneRoutes_.size());
+  if (const rpc::Json* tiles = command.get("tiles"); tiles && tiles->isObject()) {
+    tilesLayer_ = parseTilesLayer(*tiles, &sceneValidationWarnings_);
+  }
   syncStillMediaDesired();
 }
 
@@ -2660,6 +2720,28 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
     }
   }
 
+  // T1: parsed like a local (mirroring routes/background/overlays above) --
+  // NOT written into tilesLayer_ directly here -- so a re-send of an
+  // unchanged preview scene stays a no-op via the signature check below, and
+  // its content folds into the signature so a `tiles`-only change is never
+  // mistaken for "unchanged". Reset-then-parse: a preview scene that
+  // previously had a wall must not keep it once a sync's `tiles` node is gone
+  // -- same stale-state class as the load-scene-graph reset above.
+  TilesLayerState tiles;
+  if (const rpc::Json* tilesNode = previewScene.get("tiles"); tilesNode && tilesNode->isObject()) {
+    tiles = parseTilesLayer(*tilesNode, &sceneValidationWarnings_);
+  }
+  signature += "tiles:" + std::to_string(tiles.present) + ":" + tiles.layerId + ":" +
+               std::to_string(tiles.order) + ":" + std::to_string(tiles.rect.x) + "," +
+               std::to_string(tiles.rect.y) + "," + std::to_string(tiles.rect.width) + "," +
+               std::to_string(tiles.rect.height) + ":" + tiles.style.tileAspect + ":" +
+               std::to_string(tiles.style.gutterPercent) + "," + std::to_string(tiles.style.marginPercent) +
+               "," + std::to_string(tiles.style.customAspectRatio) + ":" + tiles.style.backgroundColor + ":";
+  for (const auto& member : tiles.members) {
+    signature += member + ",";
+  }
+  signature += ";";
+
   if (previewSceneActive_ && signature == previewSceneSignature_) {
     return false;  // Unchanged â€” do not churn preview state.
   }
@@ -2672,6 +2754,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   previewOverlayAssets_ = std::move(overlays);
   previewRouteCount_ = static_cast<int>(previewSceneRoutes_.size());
   previewOverlayCount_ = static_cast<int>(previewOverlayAssets_.size());
+  tilesLayer_ = std::move(tiles);
   previewSceneActive_ = true;
   // A preview-scene change is structural; force the next render's event re-emit.
   previewStructureEmitted_ = false;

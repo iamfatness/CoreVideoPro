@@ -25,6 +25,34 @@
 
 namespace corevideo::core {
 
+// Tiles wall layer (T1, docs/2026-08-15-corevideo-tiles-T1-core-wall):
+// declared at namespace scope (NOT nested in MediaCore, unlike SceneRouteState)
+// because MediaCore::tilesLayerForTest() returns a const reference to it from
+// the public section, which needs the type complete at that point in the
+// single-pass class parse — a nested definition further down (beside
+// SceneRouteState) would still be an incomplete type there and fail to compile.
+struct TilesStyle {
+  std::string tileAspect = "16:9";     // 16:9|4:3|5:4|1:1|3:4|9:16|custom
+  double customAspectRatio = 16.0 / 9.0;
+  double gutterPercent = 0.741;
+  double marginPercent = 0.741;
+  std::string backgroundColor = "#000000";
+};
+
+struct TilesLayerState {
+  bool present = false;
+  std::string layerId;
+  int order = 0;
+  // NOTE the namespace: MediaCore.h is in `corevideo::core`, the rect type is
+  // in `corevideo::modules`. Both CompositorLayerRect and the compositor's
+  // LayerRect are {x, y, width, height} floats with identical layout, so
+  // braced conversion between them in Task 4 is safe — but the qualification
+  // is not optional and will not compile without it.
+  modules::CompositorLayerRect rect{0.f, 0.f, 1.f, 1.f};
+  std::vector<std::string> members;   // ordered "zoom:<pid>" / "capture:<id>"
+  TilesStyle style;
+};
+
 class MediaCore {
  public:
   explicit MediaCore(modules::ModuleSet modules = modules::createDefaultModules());
@@ -140,6 +168,14 @@ class MediaCore {
   void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+
+  // T1: the tiles wall parsed off the scene-sync command, and the scene
+  // validation warnings a bad/unrecognised value gets recorded into (loud,
+  // never silent — see parseTilesLayer in MediaCore.cpp).
+  const TilesLayerState& tilesLayerForTest() const { return tilesLayer_; }
+  const std::vector<std::string>& sceneValidationWarningsForTest() const {
+    return sceneValidationWarnings_;
+  }
 
   // A2 (round-2 PR 2): param bridge + state persistence commands, called by
   // JsonRpcServer's dedicated routes (hence public). All control-plane — they
@@ -343,6 +379,10 @@ class MediaCore {
   std::string sceneId_ = "unloaded";
   std::vector<SceneRouteState> sceneRoutes_;
   SceneBackgroundState sceneBackground_;
+  // T1: the parsed tiles wall layer (present==false when the current scene
+  // carries none — reset every load-scene-graph/preview-scene sync so a
+  // wall from a PRIOR scene can never survive a sync that omits it).
+  TilesLayerState tilesLayer_;
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;

@@ -633,6 +633,7 @@ if(BUILD_TESTING)
     tests/SrtFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
+    tests/TilesLayerTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/VstHostAbiTest.cpp
     tests/VstLatencyCompensationTest.cpp
