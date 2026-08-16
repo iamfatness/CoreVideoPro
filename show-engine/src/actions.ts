@@ -416,6 +416,25 @@ type CoerceOutcome = { ok: true; value: string | number | boolean } | { ok: fals
  * float both need to reach an `int`/`bool` param without a manual coercion
  * step at every bridge. `"double"` already matched (any finite number, or a
  * numeric string) and is unchanged.
+ *
+ * **"Exactly what the host accepts" is not literally exact, and the final
+ * fix round corrects the claim rather than the code** — two residual
+ * divergences, both deliberate, neither reachable by any param on this
+ * surface:
+ *
+ * - **Midpoint rounding differs.** `Math.round` rounds half AWAY FROM ZERO;
+ *   C#'s `(int)Math.Round(d)` is BANKER'S rounding (half to even). `2.5`
+ *   → 3 here, 2 on the host; `-1.5` → -1 here, -2 there; `1.5` → 2 on both.
+ *   Matching banker's rounding would be the more surprising behavior for an
+ *   operator, and this only bites an EXACT midpoint from a float source — no
+ *   `int` param in `OHG_ACTIONS` is fader-driven (they are slot, box, and
+ *   cell numbers), so nothing on this surface can reach it.
+ * - **`int`-from-string is stricter here.** `/^-?\\d+$/` rejects surrounding
+ *   whitespace and a leading `+`, both of which C#'s `int.TryParse` with
+ *   `NumberStyles.Integer` accepts; conversely it accepts values outside
+ *   Int32 range, which `TryParse` rejects. Stricter-is-safer in every case
+ *   but the range one, and an out-of-Int32 slot number is rejected by the
+ *   engine's own bounds checks a line later.
  */
 function coerceArg(raw: unknown, type: ActionParamType): CoerceOutcome {
   switch (type) {

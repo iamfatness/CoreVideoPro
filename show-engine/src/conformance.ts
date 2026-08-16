@@ -11,6 +11,39 @@
  * thrown `Error` with an operator-readable message, which every runner in
  * every one of those languages already knows how to report.
  *
+ * **WHAT THIS SUITE DOES NOT PROVE — read this before trusting it (final
+ * fix round).** Spec §6 calls it "the mechanism that keeps CVP-Windows,
+ * CVP-Mac, and OBS semantically identical", and its NAME is wider than its
+ * REACH. What it genuinely binds is the **engine → host CALL contract**: it
+ * asserts on what a recording facade RECEIVED, and it fails a host that
+ * drops a call. That is real and it is worth running. But:
+ *
+ * 1. **A wrong adapter can pass.** Nothing here verifies the facade
+ *    forwards, or that the real implementation honours what it forwarded.
+ *    An adapter that receives `scenePreset` and ignores it, or binds
+ *    `hostSlot` to the wrong window, is conformant by these cases. The
+ *    suite keeps the three shells RECEIVING identical instructions; it does
+ *    not keep them RENDERING identically. Adapter-behaviour conformance is
+ *    per-shell work each of Plans 7-9 still owes.
+ * 2. **`capabilities()` is taken on trust.** A host declaring
+ *    `hasPreviewBus: true` with no preview bus passes the transport case's
+ *    rich branch.
+ * 3. **The control surface itself has ZERO coverage here.**
+ *    `projectControlFields`, `OHG_FIELD_TEMPLATES`, `oscAddressFor`, and
+ *    the action manifest — the artifacts a bridge is actually built from —
+ *    appear in no case, and only 9 of the 28 `ohg.*` actions are ever
+ *    invoked (`panelist.role.set`, `panelist.remove`, `program.preview`,
+ *    `program.cut`, `look.set`, `look.box.assign`, `look.box.clear`,
+ *    `gallery.resetFromSlots`, `gallery.remove`). Those are covered by this
+ *    package's own tests, not by anything a host runner executes.
+ * 4. **`flush` is structurally unexercised** — see the runner contract's
+ *    point 3 below.
+ * 5. **`ConformanceHost` does not extend `HostAdapter`**, so nothing
+ *    type-enforces that the recorder passed as `host` is the same object
+ *    the engine was constructed with. Case 1 would catch a disconnected
+ *    recorder; case 6 ("a tick that changes nothing sends nothing") would
+ *    pass vacuously against one.
+ *
  * **What a case may touch.** Each case drives the engine through public
  * actions only — `invokeAction` (the `ohg.*` registry), the handful of
  * public `ShowEngine` intake methods a host process must call anyway
