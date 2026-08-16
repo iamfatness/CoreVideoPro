@@ -39,6 +39,14 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 - **Do not port the plugin's colour-range constant.** Its shader hardcodes full-range BT.709; that is an open defect on our side. Tiles consumes whatever the Zoom ingest path decides.
 - **Verify pixels, not proxies.** A test that asserts "N rects exist" does not prove the wall renders. See Task 6.
 - Spacing math uses the divisor form `h / (100/pct)`, never `h * pct / 100`.
+  **Scope correction (2026-08-15, from Task 2's review):** this constraint binds
+  at PIXEL conversion, not in the normalized solver. In normalized `[0,1]` space
+  — where the gutter is a fraction, not pixels — `1.0/(100.0/0.741)` and
+  `0.741/100.0` are bit-identical doubles; the discrepancy only appears at pixel
+  magnitudes (~1.8e-15 at h=1080), below every tolerance in the suite. Keep the
+  divisor form for consistency with the C# reference, but do not write a test in
+  the solver claiming to pin it — there is nothing to pin at that layer. The
+  guard belongs wherever normalized rects become pixels, which is T2's draw code.
 
 **Codebase API facts, verified 2026-08-15 during Task 1** — the plan's earlier
 code samples got several of these wrong, so trust this block over any snippet:
