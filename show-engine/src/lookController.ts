@@ -201,24 +201,58 @@ export class LookController {
    * than getting a typed `refusal()`-style response. When no look is
    * selected yet there is no range to validate against, so only a
    * non-positive-integer box number is rejected.
+   *
+   * `slot` is validated too (Task 10, scenario 2 — it previously was not
+   * validated AT ALL). `resolveLook` renders a manual box whose assigned
+   * slot holds nobody as EMPTY, so `assignBox(1, -5)` or `assignBox(1, 2.5)`
+   * used to be accepted, persisted, and then silently render a blank box —
+   * an operator action reporting success while doing nothing, the exact
+   * silence `nextGuest`'s typed refusal exists to avoid. The rule is
+   * `GalleryDirector.assertSlot`'s verbatim (`galleryDirector.ts`), for the
+   * same reason it is that rule there: **`0` is legal and means "blank this
+   * box"** (the same convention a blank gallery cell uses), a negative or
+   * fractional slot never is. No upper bound is enforced here — this
+   * controller does not know the show's capacity, and a slot number too
+   * HIGH still resolves safely to an empty box, exactly as
+   * `parseProgramSource` reasons about `slot:<n>`.
    */
   assignBox(box: number, slot: number): void {
-    const look = this.selected();
-    if (!Number.isInteger(box) || box < 1 || (look !== null && box > look.boxes)) {
+    this.assertBox("assignBox", box);
+    if (!Number.isInteger(slot) || slot < 0) {
       throw new Error(
-        look === null
-          ? `ShowEngine.assignBox: box ${box} is invalid: box must be a positive integer`
-          : `ShowEngine.assignBox: box ${box} is out of range for look ${JSON.stringify(look.id)} (1..${look.boxes})`
+        `ShowEngine.assignBox: slot ${slot} is invalid: slot must be an integer >= 0 (0 blanks the box)`
       );
     }
     this.manualBoxAssignments = { ...this.manualBoxAssignments, [box]: slot };
   }
 
-  /** Remove one manual box assignment, leaving the rest untouched. */
+  /**
+   * Remove one manual box assignment, leaving the rest untouched.
+   *
+   * Validates `box` exactly as `assignBox` does (Task 10, scenario 2 — it
+   * previously validated NOTHING). `delete` on a key that cannot exist is a
+   * silent no-op, so `ohg.look.box.clear 0` and `ohg.look.box.clear 9` on a
+   * two-box look both answered `{kind:"ok"}` to a Companion button while
+   * changing nothing. The two halves of the same operator control must
+   * agree on what a box number is.
+   */
   clearBox(box: number): void {
+    this.assertBox("clearBox", box);
     const next = { ...this.manualBoxAssignments };
     delete next[box];
     this.manualBoxAssignments = next;
+  }
+
+  /** The shared box-number rule for `assignBox`/`clearBox` — one definition so the two can never disagree. */
+  private assertBox(method: "assignBox" | "clearBox", box: number): void {
+    const look = this.selected();
+    if (!Number.isInteger(box) || box < 1 || (look !== null && box > look.boxes)) {
+      throw new Error(
+        look === null
+          ? `ShowEngine.${method}: box ${box} is invalid: box must be a positive integer`
+          : `ShowEngine.${method}: box ${box} is out of range for look ${JSON.stringify(look.id)} (1..${look.boxes})`
+      );
+    }
   }
 
   /**

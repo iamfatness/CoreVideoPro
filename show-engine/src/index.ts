@@ -26,6 +26,7 @@ export {
   type Capability,
   type CapabilityState,
   type GalleryCell,
+  type Headline,
   type Identity,
   type LookDefinition,
   type MukanaDb,
@@ -163,3 +164,32 @@ export {
   OHG_FIELD_TEMPLATES,
   type ControlFieldValue
 } from "./controlState.js";
+
+/**
+ * The two carved-out orchestrator collaborators (Tasks 1-2). `ShowEngine`
+ * owns them, but a host process that wants to test its own polling cadence
+ * or paging affordances against the real types needs to be able to NAME
+ * them — and Plans 7-9's adapters are built entirely against this barrel.
+ */
+export {
+  MukanaPoller,
+  type HungMukanaPoll,
+  type PollOutcomes
+} from "./mukanaPoller.js";
+export { LookController, type PagingRefusalKind } from "./lookController.js";
+
+/**
+ * The host conformance suite (Task 10) — spec §6's mechanism for keeping
+ * CVP-Windows, CVP-Mac, and OBS semantically identical. Exported as DATA so
+ * each host's own test runner enumerates and executes the same cases
+ * against its real adapter; `conformance.ts`'s header states the contract a
+ * runner owes each case.
+ */
+export {
+  HOST_CONFORMANCE_CASES,
+  CONFORMANCE_CONFIG,
+  CONFORMANCE_LOOK_ID,
+  CONFORMANCE_SCENE_PRESET,
+  type ConformanceCase,
+  type ConformanceHost
+} from "./conformance.js";
