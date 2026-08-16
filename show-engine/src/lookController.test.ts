@@ -1,7 +1,9 @@
 // show-engine/src/lookController.test.ts
 import { describe, expect, it } from "vitest";
 import { LookController } from "./lookController.js";
-import type { Capability, LookDefinition, QueueState } from "./contracts.js";
+import { resolveLook, type ManualBoxAssignments } from "./lookDirector.js";
+import { resolvePersonKey } from "./personKey.js";
+import type { Capability, LookDefinition, Panelist, QueueState, Slot } from "./contracts.js";
 
 /** A 2-box, queue-fill look — the default fixture for most tests below. */
 function lookDef(overrides: Partial<LookDefinition> = {}): LookDefinition {
@@ -36,6 +38,33 @@ const FIVE_PIN_QUEUE = queueWith(["1001", "1002", "1003", "1004", "1005"]);
 function controller(looks: readonly LookDefinition[] = [TEATIME, BANTER]): LookController {
   return new LookController({ looks });
 }
+
+/** One seated panelist, enough for `resolveLook` to tell an occupied slot from an empty one. */
+function panelist(participantId: string, pin: string): Panelist {
+  const rawName = `Name ${participantId} | ${pin} | Somewhere`;
+  return {
+    participantId,
+    rawName,
+    online: true,
+    videoOn: true,
+    audioOn: true,
+    handRaised: false,
+    zoomRole: 0,
+    displayName: `Name ${participantId}`,
+    location: "Somewhere",
+    pin,
+    hasMukana: false,
+    role: "panelist",
+    personKey: resolvePersonKey({ participantId, rawName })
+  };
+}
+
+/** Slots 1-3, with only slot 3 occupied — so "slot 3" resolves to a real seat and every other number does not. */
+const SEATED_SLOTS: readonly Slot[] = [
+  { slot: 1, panelist: null },
+  { slot: 2, panelist: null },
+  { slot: 3, panelist: panelist("p3", "1003") }
+];
 
 describe("LookController.select", () => {
   it("rejects an unknown look id", () => {
@@ -155,5 +184,112 @@ describe("LookController.assignBox", () => {
     c.select("teatime"); // 2 boxes
     expect(() => c.assignBox(3, 1)).toThrow(/out of range/);
     expect(() => c.assignBox(0, 1)).toThrow();
+  });
+});
+
+/**
+ * The `slot` rule (Task 10 fix round 1). `assignBox` did not validate
+ * `slot` at ALL before Task 10, and the fix's own stated invariant — that
+ * `0` legally BLANKS a box, `GalleryDirector.assertSlot`'s rule verbatim —
+ * was asserted by nothing: tightening the guard from `slot < 0` to
+ * `slot < 1` left the entire suite green, because the only coverage was a
+ * list of arguments expected to be REJECTED. These are the positive cases,
+ * and they resolve the assignment through `resolveLook` so "blank" means
+ * what it renders, not just what the map holds.
+ */
+describe("LookController.assignBox: the slot rule", () => {
+  /** A one-box, manual-fill look resolved against a roster where slot 3 is really occupied. */
+  function resolveBanterWith(manualBoxes: ManualBoxAssignments) {
+    return resolveLook(BANTER, {
+      queue: queueWith([]),
+      slots: SEATED_SLOTS,
+      page: 0,
+      manualBoxes
+    });
+  }
+
+  /** Non-vacuity for the two cases below: this fixture CAN render a filled box. */
+  it("renders a filled box for a slot that is really occupied", () => {
+    const c = controller();
+    c.select("banter");
+    c.assignBox(1, 3);
+    expect(resolveBanterWith(c.manualBoxes()).boxes).toEqual([{ box: 1, slot: 3 }]);
+  });
+
+  it("accepts slot 0 and renders that box blank", () => {
+    const c = controller();
+    c.select("banter");
+    expect(() => c.assignBox(1, 0)).not.toThrow();
+    expect(c.manualBoxes()).toEqual({ 1: 0 });
+    expect(resolveBanterWith(c.manualBoxes()).boxes).toEqual([{ box: 1, slot: null }]);
+  });
+
+  /**
+   * Deliberately NO upper bound: this controller does not know the show's
+   * capacity, and a too-high slot resolves safely to an empty box (the same
+   * reasoning `parseProgramSource` applies to `slot:<n>`). Pinned so that
+   * adding a capacity check here — which would reject a legitimate
+   * assignment made before the roster grew — reds instead of shipping.
+   */
+  it("accepts a slot number above the current roster and resolves it to an empty box", () => {
+    const c = controller();
+    c.select("banter");
+    expect(() => c.assignBox(1, 99)).not.toThrow();
+    expect(c.manualBoxes()).toEqual({ 1: 99 });
+    expect(resolveBanterWith(c.manualBoxes()).boxes).toEqual([{ box: 1, slot: null }]);
+  });
+
+  it("rejects a negative slot, which no configuration can ever mean", () => {
+    const c = controller();
+    c.select("banter");
+    expect(() => c.assignBox(1, -1)).toThrow(/slot/);
+    expect(c.manualBoxes()).toEqual({});
+  });
+
+  /**
+   * A DIRECT-CALLER guard only: `coerceArg` rounds a fractional number for
+   * an `int` param, so `2.5` reaches this method as `3` and can never
+   * arrive through `ohg.look.box.assign`. Kept because this class is public
+   * API and in-process callers do not go through that coercion.
+   */
+  it("rejects a fractional slot from a direct caller", () => {
+    const c = controller();
+    c.select("banter");
+    expect(() => c.assignBox(1, 2.5)).toThrow(/slot/);
+    expect(c.manualBoxes()).toEqual({});
+  });
+});
+
+/**
+ * `clearBox` validated NOTHING before Task 10 — `delete` on a key that
+ * cannot exist is a silent no-op, so `ohg.look.box.clear 0` and
+ * `ohg.look.box.clear 9` on a two-box look both answered `{kind:"ok"}` to a
+ * Companion button while changing nothing. It now shares `assignBox`'s box
+ * rule, so the two halves of one operator control cannot disagree about
+ * what a box number is.
+ */
+describe("LookController.clearBox", () => {
+  it("clears one assignment and leaves the rest untouched", () => {
+    const c = controller();
+    c.select("teatime"); // 2 boxes
+    c.assignBox(1, 3);
+    c.assignBox(2, 4);
+    c.clearBox(1);
+    expect(c.manualBoxes()).toEqual({ 2: 4 });
+  });
+
+  it("rejects a box number outside the active look's range, exactly as assignBox does", () => {
+    const c = controller();
+    c.select("teatime"); // 2 boxes
+    expect(() => c.clearBox(3)).toThrow(/out of range/);
+    expect(() => c.clearBox(0)).toThrow();
+    expect(() => c.clearBox(1.5)).toThrow();
+  });
+
+  it("rejects a non-positive box number even with no look selected", () => {
+    const c = controller();
+    expect(() => c.clearBox(0)).toThrow(/positive integer/);
+    // With no look there is no range, so a high box number is not an error.
+    expect(() => c.clearBox(9)).not.toThrow();
   });
 });

@@ -262,6 +262,34 @@ function galleryCellSlot(snapshot: ShowSnapshot, cell: number): number | null {
 // The exported conformance suite, run against this package's own MockHost.
 // ---------------------------------------------------------------------------
 
+/** Rebuild `value` with its object keys in REVERSE order, recursively; arrays keep their order. */
+function reorderKeys<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(reorderKeys) as unknown as T;
+  if (value === null || typeof value !== "object") return value;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, entry]) => [key, reorderKeys(entry)] as const)
+    .reverse();
+  return Object.fromEntries(entries) as T;
+}
+
+/**
+ * A stand-in for a Plan 7-9 recording facade: it records the same calls
+ * with the same fields, written in a different order — which is all a
+ * hand-written recorder in another codebase would differ by. See the
+ * key-order guard at the bottom of this describe block.
+ */
+class KeyReorderingHost extends MockHost {
+  override calls(): readonly HostCall[] {
+    return super.calls().map((call) => reorderKeys(call));
+  }
+
+  override callsOfKind<K extends HostCall["kind"]>(
+    kind: K
+  ): ReadonlyArray<Extract<HostCall, { kind: K }>> {
+    return super.callsOfKind(kind).map((call) => reorderKeys(call));
+  }
+}
+
 function conformanceEngine(host: MockHost): ShowEngine {
   return new ShowEngine({
     config: CONFORMANCE_CONFIG,
@@ -346,6 +374,43 @@ describe("HOST_CONFORMANCE_CASES", () => {
     const host: ConformanceHost = new MockHost();
     expect(host.capabilities().hasPreviewBus).toBe(true);
     expect(host.calls()).toEqual([]);
+  });
+
+  /**
+   * The key-order regression (fix round 1). The suite compares recorded
+   * calls by serialized shape, and `JSON.stringify` preserves INSERTION
+   * order — so a Plan 7-9 recording facade that appends
+   * `{lookId, kind, …}` where `MockHost` appends `{kind, lookId, …}` used
+   * to fail the look case with every single field equal:
+   *
+   *   expected {"kind":…,"lookId":…}, got {"lookId":…,"kind":…}
+   *
+   * That facade is exactly what widening `ConformanceHost` to a structural
+   * `Pick` was FOR, so the suite was handing a spurious failure to its one
+   * intended consumer. `canonicalize` in `conformance.ts` fixed it; this is
+   * the committed guard, and it runs the WHOLE suite against a host whose
+   * recorded objects have their keys reversed at every level.
+   */
+  for (const conformanceCase of HOST_CONFORMANCE_CASES) {
+    it(`passes against a key-reordered recording facade: ${conformanceCase.name}`, async () => {
+      const host = new KeyReorderingHost();
+      await conformanceCase.run(conformanceEngine(host), host, flush);
+    });
+  }
+
+  it("the reordering facade really does reorder (the guard above is not vacuous)", async () => {
+    const host = new KeyReorderingHost();
+    const engine = conformanceEngine(host);
+    engine.onZoomEvent(joined("c1", "Cara Ames | 1001 | Oslo"));
+    await engine.tick();
+
+    const recorded = host.calls()[0];
+    expect(recorded).toBeDefined();
+    // Same fields, different insertion order from `MockHost`'s own.
+    expect(Object.keys(recorded ?? {})).toEqual(["participantId", "slot", "kind"]);
+    expect(JSON.stringify(recorded)).not.toBe(
+      JSON.stringify({ kind: "assignSlot", slot: 1, participantId: "c1" })
+    );
   });
 });
 
@@ -1234,6 +1299,25 @@ describe("scenario 4: the projection tracks the engine", () => {
 // The barrel — the names Task 10 owes, resolved through `./index.js`.
 // ---------------------------------------------------------------------------
 
+/**
+ * These resolve names through `./index.js` — the **SOURCE** barrel — which
+ * proves an export line exists and is spelled right, and NOTHING about
+ * whether the name survives compilation into `dist/index.js` /
+ * `dist/index.d.ts`. That distinction is not academic: a previous plan's
+ * final task found several names unreachable from `dist` despite having
+ * export lines written.
+ *
+ * The `dist` half is covered by **`npm run verify:barrel`**
+ * (`scripts/verify-dist-barrel.mjs`), which builds, resolves every runtime
+ * name from `dist/index.js`, compiles a generated file that uses every
+ * type-only name against `dist/index.d.ts`, and EXECUTES the conformance
+ * suite from `dist` against three host shapes. It is a script rather than a
+ * test here on purpose (fix round 1): `npm test` does not build, so a test
+ * importing `dist` would either fail on a clean checkout or skip itself
+ * when `dist` is missing — a guard that looks like coverage and isn't.
+ * Known gap, stated rather than papered over: `npm test` alone does not run
+ * that script, so the dist guard is only as good as its CI wiring.
+ */
 describe("package barrel: the control surface", () => {
   it("exports every runtime value a host bridge needs", () => {
     expect(OHG_ACTIONS.length).toBeGreaterThan(0);

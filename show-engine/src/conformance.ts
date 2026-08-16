@@ -25,7 +25,13 @@
  * 1. A **fresh** `ShowEngine` that has never been ticked, constructed with
  *    `CONFORMANCE_CONFIG` (below) and with `host` as its `HostAdapter`.
  *    Cases assert on first-tick emission, so a pre-ticked engine fails them
- *    for the wrong reason.
+ *    for the wrong reason. **Give it an in-memory `StateFs`.**
+ *    `CONFORMANCE_CONFIG.statePath` is `/conformance/show-state.json` — a
+ *    path at the filesystem ROOT, deliberately not anywhere real. There is
+ *    no silent default (`StateStore` requires an injected `StateFs`), but a
+ *    runner that wires a real filesystem will try to `mkdir /conformance`
+ *    and fail on a permission error that has nothing to do with its
+ *    adapter. Nothing in this suite asserts on persistence.
  * 2. A `host` that records every call it receives. `MockHost` is that
  *    recorder for this package; a real adapter passes a thin recording
  *    facade that forwards to its own implementation and appends the same
@@ -37,6 +43,13 @@
  * 3. A `flush` that drains pending microtasks. Every case awaits it after
  *    every `tick()` — the discipline this package adopted after a retention
  *    test passed vacuously by reading before an outcome had settled.
+ *    **Currently unexercised, and say so rather than implying otherwise
+ *    (fix round 1):** these cases configure no integrations, so there is
+ *    nothing asynchronous in flight for a drain to wait on, and the suite
+ *    passes 6/6 from `dist` with a no-op `flush`. It is in the signature
+ *    because an adapter whose own emission path is async, or a future case
+ *    with a live feed, will need it — not because any case here depends on
+ *    it today. A runner may pass `async () => {}` and be conformant.
  *
  * **`CONFORMANCE_CONFIG` configures NO integrations on purpose.** A host
  * adapter author must be able to run this suite with no Mukana server, no
@@ -145,14 +158,58 @@ type CaseContext = {
   /** Invoke one `ohg.*` action and require it to succeed. */
   act(id: string, args?: readonly unknown[]): void;
   assert(condition: boolean, message: string): void;
-  /** Structural equality by JSON shape — enough for the scalar/array/record values a `HostCall` carries. */
+  /**
+   * Structural equality, **independent of object key order** — enough for
+   * the scalar/array/record values a `HostCall` carries. See
+   * `canonicalize` for why the key-order part is load-bearing.
+   */
   assertEqual(actual: unknown, expected: unknown, message: string): void;
 };
 
+/**
+ * Recursively sort object keys so two records with the same fields compare
+ * equal regardless of the order they were WRITTEN in.
+ *
+ * This is not tidiness — it is the difference between the suite serving its
+ * consumers and lying to them (fix round 1). `assertEqual` compares
+ * serialized values, and `JSON.stringify` preserves insertion order, so a
+ * Plan 7-9 recording facade that appends `{lookId, kind, …}` where
+ * `MockHost` appends `{kind, lookId, …}` FAILED the look case with every
+ * single field equal:
+ *
+ *   expected {"kind":…,"lookId":…}, got {"lookId":…,"kind":…}
+ *
+ * A facade over a real adapter is exactly what `ConformanceHost` was
+ * widened to allow, so an order-sensitive comparison hands a spurious
+ * failure to the one consumer this suite exists for. Arrays keep their
+ * order (`assignSlot` emission order and gallery cell order are both real
+ * assertions); only object KEYS are normalized.
+ */
+function canonicalize(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (value === null || typeof value !== "object") return value;
+  // A cycle would recurse forever; report it rather than blowing the stack.
+  if (seen.has(value)) return "[circular]";
+  seen.add(value);
+
+  if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, seen));
+  if (value instanceof Map) {
+    return [...value.entries()].map((entry) => canonicalize(entry, seen));
+  }
+
+  const record = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    sorted[key] = canonicalize(record[key], seen);
+  }
+  return sorted;
+}
+
 function describeValue(value: unknown): string {
   try {
-    return JSON.stringify(value) ?? String(value);
+    return JSON.stringify(canonicalize(value)) ?? String(value);
   } catch {
+    // A circular structure (or anything else `JSON.stringify` refuses) still
+    // has to produce a message rather than a second failure.
     return String(value);
   }
 }

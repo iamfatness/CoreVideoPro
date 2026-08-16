@@ -204,17 +204,26 @@ export class LookController {
    *
    * `slot` is validated too (Task 10, scenario 2 — it previously was not
    * validated AT ALL). `resolveLook` renders a manual box whose assigned
-   * slot holds nobody as EMPTY, so `assignBox(1, -5)` or `assignBox(1, 2.5)`
-   * used to be accepted, persisted, and then silently render a blank box —
-   * an operator action reporting success while doing nothing, the exact
-   * silence `nextGuest`'s typed refusal exists to avoid. The rule is
-   * `GalleryDirector.assertSlot`'s verbatim (`galleryDirector.ts`), for the
-   * same reason it is that rule there: **`0` is legal and means "blank this
-   * box"** (the same convention a blank gallery cell uses), a negative or
-   * fractional slot never is. No upper bound is enforced here — this
-   * controller does not know the show's capacity, and a slot number too
-   * HIGH still resolves safely to an empty box, exactly as
+   * slot holds nobody as EMPTY, so `assignBox(1, -5)` used to be accepted,
+   * persisted, and then silently render a blank box — an operator action
+   * reporting success while doing nothing, the exact silence `nextGuest`'s
+   * typed refusal exists to avoid. The rule is `GalleryDirector.assertSlot`'s
+   * verbatim (`galleryDirector.ts`), for the same reason it is that rule
+   * there: **`0` is legal and means "blank this box"** (the same convention
+   * a blank gallery cell uses), a negative slot never is. No upper bound is
+   * enforced here — this controller does not know the show's capacity, and a
+   * slot number too HIGH still resolves safely to an empty box, exactly as
    * `parseProgramSource` reasons about `slot:<n>`.
+   *
+   * Scope of the two halves, stated because it is not symmetric (fix round
+   * 1): the NEGATIVE guard is reachable from a Companion/OSC button
+   * (`ohg.look.box.assign -1` arrives as `-1`), while the
+   * NON-INTEGER guard is a **direct-caller guard only** — `coerceArg`
+   * rounds a fractional number for an `int` param (`actions.ts`), so `2.5`
+   * reaches this method as `3` and a fractional slot can never arrive
+   * through the action layer at all. Both are kept: this class is public
+   * API, and `restoreManualBoxes` and future in-process callers do not go
+   * through `coerceArg`.
    */
   assignBox(box: number, slot: number): void {
     this.assertBox("assignBox", box);

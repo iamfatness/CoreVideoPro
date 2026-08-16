@@ -403,13 +403,27 @@ export class ShowEngine {
    * than getting a typed refusal response. When no look is selected yet
    * there is no range to validate against, so only a non-positive-integer
    * box number is rejected. Forwards to `LookController.assignBox`.
+   *
+   * **Also throws for an invalid `slot`** (Task 10 fix): a slot must be an
+   * integer `>= 0`, where `0` BLANKS the box — `GalleryDirector.assertSlot`'s
+   * rule verbatim, since a blank box and a blank gallery cell are the same
+   * idea. A negative slot used to be accepted, persisted, and then silently
+   * rendered as an empty box. No upper bound is enforced (this layer knows
+   * no capacity; a too-high slot resolves safely to an empty box).
    */
   assignBox(box: number, slot: number): void {
     this.lookController.assignBox(box, slot);
     this.pendingPersist = true;
   }
 
-  /** Remove one manual box assignment, leaving the rest untouched. Forwards to `LookController.clearBox`. */
+  /**
+   * Remove one manual box assignment, leaving the rest untouched. Forwards
+   * to `LookController.clearBox`, which validates `box` **exactly as
+   * `assignBox` does** and therefore THROWS for a box outside the active
+   * look's `1..boxes` range (Task 10 fix — it previously validated nothing,
+   * so clearing a box that cannot exist reported success while doing
+   * nothing).
+   */
   clearBox(box: number): void {
     this.lookController.clearBox(box);
     this.pendingPersist = true;
