@@ -274,8 +274,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     }
 
     private bool IsProgramSurface =>
-        string.Equals(SurfaceKey, "program", StringComparison.Ordinal) ||
-        SurfaceState?.Kind == VideoSurfaceKind.Program;
+        VideoSurfacePresentationRules.IsProgramSurface(SurfaceKey, SurfaceState?.Kind);
 
     // Surfaces that present a GPU shared texture directly through the SwapChainPanel:
     // PROGRAM, PREVIEW, and MULTIVIEW each present the core's single composite texture
@@ -285,11 +284,15 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     // 0xc000027b). When a surface only carries CPU BGRA pixels (no valid shared handle),
     // the GPU present is a no-op and the CPU BGRA preview (PreviewImage, above the
     // SwapChainPanel in the visual tree) renders instead — safe with or without a handle.
+    // NOTE (2026-08-15 investigation): the scene canvas editor's per-layer surfaces
+    // ("scene-layer-N:<tileKey>", Kind=Multiview) match NONE of these clauses, so
+    // OnLoaded below early-returns: no swap chain is attached, no per-vsync present
+    // loop is hooked, and the core's per-source GPU export
+    // (D3D11CompositorAdapter::exportParticipantTextures) is never presented there.
+    // Those layers can only ever show CPU BGRA pixels. The pure rule lives in
+    // VideoSurfacePresentationRules (see SceneCanvasLayerSurfaceTests).
     private bool UsesGpuSharedTexture =>
-        IsProgramSurface ||
-        string.Equals(SurfaceKey, "preview", StringComparison.Ordinal) ||
-        SurfaceState?.Kind == VideoSurfaceKind.Preview ||
-        string.Equals(SurfaceKey, "multiview", StringComparison.Ordinal);
+        VideoSurfacePresentationRules.UsesGpuSharedTexture(SurfaceKey, SurfaceState?.Kind);
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
