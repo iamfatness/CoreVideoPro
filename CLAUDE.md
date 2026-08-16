@@ -228,6 +228,26 @@ comment at the code site; this is the index.
 
 ## Other gotchas
 
+- **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
+  (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
+  "layer boxes show live video inconsistently". `VideoSurfaceHost` attaches a
+  SwapChainPanel (and hooks its per-vsync present) ONLY when the surface key is
+  `program`/`preview`/`multiview` or the kind is Program/Preview
+  (`VideoSurfacePresentationRules.UsesGpuSharedTexture`). `StudioViewModel.ResolveLayerSurface`
+  hands each layer a surface rewritten to key `scene-layer-N:<tileKey>` + kind
+  **Multiview** — matching no clause — so `OnLoaded` early-returns and the core's
+  per-source keyed-mutex export (`D3D11CompositorAdapter::exportParticipantTextures`,
+  built expressly for this intermittent consumer) is DROPPED. The PREVIEW monitor works
+  off the SAME tile only because `ResolvePreviewPrimarySurface` rewrites it to key
+  `preview`/kind Preview. Net: editor layers render CPU BGRA only, so —
+  media assets: always live (own player); Zoom guests: the 640x360 thumbnail at ~2/s
+  (`kThumbnailEmitIntervalMs = 500`) and nothing while capture is unsubscribed;
+  managed-bridge UVC cameras: smooth; **native-UVC / screen (WGC) / browser / SRT-ingest:
+  placeholder forever** (only `CaptureDeviceFrameReaderService` fills
+  `CaptureDeviceSurfaces`). Do NOT "fix" it by whitelisting `scene-layer` keys — that is
+  N per-layer swap chains, the retired 0xc000027b pattern, and the per-source export is
+  single-consumer keyed-mutex already claimed by the preview host. Characterization
+  tests: `SceneCanvasLayerSurfaceTests`.
 - **Borders are MULTIVIEW-ONLY — they NEVER composite into program/preview
   (owner rule, 2026-07-31).** Borders exist to separate tiles in the multiview
   (which sets its own explicit accent/program tally borders in

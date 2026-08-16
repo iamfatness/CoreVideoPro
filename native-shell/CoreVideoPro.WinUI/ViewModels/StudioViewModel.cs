@@ -13072,17 +13072,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var tilesByParticipant = MultiviewTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
         if (ResolveRouteTile(resolved, tilesByParticipant, isProgramScene: false) is { } tile)
         {
-            return tile.Surface with
-            {
-                SurfaceKey = $"scene-layer-{index + 1}:{tile.Surface.SurfaceKey}",
-                Kind = VideoSurfaceKind.Multiview,
-                Title = $"{index + 1}. {tile.Participant.Name}"
-            };
+            return VideoSurfacePresentationRules.ToSceneLayerSurface(
+                tile.Surface,
+                index,
+                $"{index + 1}. {tile.Participant.Name}");
         }
 
         return VideoSurfaceState.Waiting(
             VideoSurfaceKind.Multiview,
-            $"scene-layer-{index + 1}",
+            VideoSurfacePresentationRules.SceneLayerPlaceholderKey(index),
             $"Source {index + 1}") with
             {
                 DetailLine = resolved.Mode switch
