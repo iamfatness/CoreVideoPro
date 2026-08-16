@@ -1,5 +1,6 @@
 #pragma once
 
+#include "compositor/TilesMembership.h"
 #include "core/Director.h"
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
@@ -175,6 +176,31 @@ class MediaCore {
   const TilesLayerState& tilesLayerForTest() const { return tilesLayer_; }
   const std::vector<std::string>& sceneValidationWarningsForTest() const {
     return sceneValidationWarnings_;
+  }
+  // Task 4: injects the per-member frame-age snapshot the wall expansion
+  // consults to decide who is drawn (compositor::admitTilesMembers). In
+  // production this is populated from the live videoFrames gather each render
+  // tick (see renderSyntheticTick); tests drive it directly since a unit test
+  // has no real decoded frames to age.
+  //
+  // Also refreshes lastRenderPlanForTest()'s cached plan. A full render tick
+  // (renderSyntheticTick) would immediately re-derive tilesMemberFrameAges_
+  // from the live videoFrames gather and overwrite what this call just set
+  // (empty in a bare test core, with no real source) before the plan is even
+  // built -- so this calls buildCompositorRenderPlan directly, the same
+  // production builder the tick uses, without going through that gather.
+  // Tests call this AFTER loading the scene and expect lastRenderPlanForTest()
+  // to reflect it immediately, with no further command in between.
+  void setTilesMemberFrameAgesForTest(std::vector<compositor::TilesMemberFrameAge> ages) {
+    tilesMemberFrameAges_ = std::move(ages);
+    lastRenderPlan_ = buildCompositorRenderPlan({});
+  }
+  // buildRenderPlanForScene takes 10+ arguments (MediaCore.cpp) — do NOT try to
+  // call it directly from a test. This exposes what the render tick actually
+  // built (assigned at the buildCompositorRenderPlan call site), so the test
+  // observes the production path's own output rather than a fabricated call.
+  const modules::CompositorRenderPlan& lastRenderPlanForTest() const {
+    return lastRenderPlan_;
   }
 
   // A2 (round-2 PR 2): param bridge + state persistence commands, called by
@@ -383,6 +409,16 @@ class MediaCore {
   // carries none — reset every load-scene-graph/preview-scene sync so a
   // wall from a PRIOR scene can never survive a sync that omits it).
   TilesLayerState tilesLayer_;
+  // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
+  // every render tick from the live videoFrames gather (renderSyntheticTick,
+  // under coreMutex — geometry bookkeeping, not pixel work).
+  std::vector<compositor::TilesMemberFrameAge> tilesMemberFrameAges_;
+  // Task 4: the render plan the render tick actually built, cached for
+  // lastRenderPlanForTest() and for the sessionState() `tiles` node — both
+  // read the CORE's own produced layers rather than re-deriving with the
+  // solver, so a test/consumer can never observe a plan the compositor did
+  // not also receive.
+  modules::CompositorRenderPlan lastRenderPlan_;
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;

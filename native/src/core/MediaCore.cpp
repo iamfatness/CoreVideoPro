@@ -1,6 +1,8 @@
 ﻿#include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
+#include "compositor/TilesLayout.h"
+#include "compositor/TilesMembership.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "modules/AudioDsp.h"
@@ -715,6 +717,34 @@ rpc::Json MediaCore::sessionState() const {
                                       {"layerCount", previewPlanLayers},
                                       {"composite", hasPreviewScene()},
                                   });
+  }
+  // T1 (Task 4): publish the solved wall so downstream consumers see what the
+  // core actually drew, not a re-derivation with the solver they are meant to
+  // be judging (this repo has shipped that "proxy that survives the bug"
+  // failure twice — see the loudness-meter and recording-fps history above).
+  // Reads lastRenderPlan_ directly — the SAME layers the compositor just
+  // rendered — so a later pixel oracle knows exactly where to sample and the
+  // canvas editor can position drag handles without recomputing anything.
+  if (tilesLayer_.present && !tilesLayer_.members.empty()) {
+    rpc::Json::Array memberNodes;
+    for (const auto& layer : lastRenderPlan_.layers) {
+      if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) {
+        continue;
+      }
+      memberNodes.push_back(rpc::Json{rpc::Json::Object{
+          {"sourceId", rpc::Json{layer.sourceId}},
+          {"rect", rpc::Json{rpc::Json::Object{
+              {"x", rpc::Json{static_cast<double>(layer.rect.x)}},
+              {"y", rpc::Json{static_cast<double>(layer.rect.y)}},
+              {"width", rpc::Json{static_cast<double>(layer.rect.width)}},
+              {"height", rpc::Json{static_cast<double>(layer.rect.height)}},
+          }}},
+      }});
+    }
+    state.emplace("tiles", rpc::Json::Object{
+                               {"layerId", tilesLayer_.layerId},
+                               {"members", rpc::Json{memberNodes}},
+                           });
   }
   // The multiviewer config the core is ACTUALLY running — always published, even
   // at defaults. `configure-multiviewer` is a ONE-SHOT the shell sends at app
@@ -4403,6 +4433,78 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     }
   }
 
+  // T1: expand the tiles wall into per-tile render-plan layers, once per
+  // render tick (buildRenderPlanForScene runs every tick already; this adds
+  // no new frequency). This is deliberate — it is what lets a later task
+  // animate the wall: the rects simply differ each frame, with no new command
+  // required. N layers inside ONE composited texture is the multiview
+  // pattern already established in this codebase; it is NOT the retired
+  // per-tile-XAML-swap-chain pattern (CoreMessagingXP 0xc000027b).
+  //
+  // Gate on a non-empty member list, not just tilesLayer_.present: a scene
+  // sync can carry a `tiles` node with zero members (wall configured, no one
+  // in it yet), and that must render exactly like no wall at all — the
+  // `sceneId` this function is called for otherwise stays identical to a
+  // non-tiles scene's ordinary route plan.
+  if (tilesLayer_.present && !tilesLayer_.members.empty()) {
+    const auto admitted = compositor::admitTilesMembers(tilesLayer_.members, tilesMemberFrameAges_);
+    if (!admitted.empty()) {
+      const double canvasAspect = outputHeight_ > 0
+          ? static_cast<double>(outputWidth_) / static_cast<double>(outputHeight_)
+          : 16.0 / 9.0;
+      const auto rects = compositor::solveTilesLayout(
+          static_cast<int>(admitted.size()), canvasAspect, tilesLayer_.style.tileAspect,
+          tilesLayer_.style.customAspectRatio, tilesLayer_.style.gutterPercent,
+          tilesLayer_.style.marginPercent);
+
+      const int tilesBaseOrder = tilesLayer_.order;
+      modules::CompositorRenderPlanLayer background;
+      background.layerId = "tiles-bg:" + tilesLayer_.layerId;
+      background.kind = "tiles-background";
+      background.sourceId = background.layerId;
+      background.order = tilesBaseOrder;
+      background.rect = tilesLayer_.rect;
+      background.fitMode = "fill";
+      // The background colour rides borderColor until a later task gives the
+      // wall its own style block on the layer; the compositor reads it as a
+      // solid fill.
+      background.borderColor = tilesLayer_.style.backgroundColor;
+      background.borderStyle = "none";
+      background.borderThickness = 0.f;
+      renderPlan.layers.push_back(std::move(background));
+
+      for (size_t index = 0; index < admitted.size() && index < rects.size(); ++index) {
+        modules::CompositorRenderPlanLayer layer;
+        layer.layerId = "tile:" + admitted[index];
+        layer.kind = "participant-video";
+        layer.sourceId = admitted[index];
+        // Tile rects are solved in the WALL's own normalized space; map them
+        // into canvas space so a wall can occupy part of the canvas beside
+        // other layers (tilesLayer_.rect defaults to the full canvas).
+        layer.rect = {tilesLayer_.rect.x + rects[index].x * tilesLayer_.rect.width,
+                      tilesLayer_.rect.y + rects[index].y * tilesLayer_.rect.height,
+                      rects[index].width * tilesLayer_.rect.width,
+                      rects[index].height * tilesLayer_.rect.height};
+        layer.order = tilesBaseOrder + 1 + static_cast<int>(index);
+        // Fill, never letterbox — keeps a wall of mixed-aspect cameras even;
+        // a tile narrower than its camera crops the sides instead of adding bars.
+        layer.fitMode = "fill";
+        // Tiles carry NO border in this task. Scene borders composite into
+        // PROGRAM, and PROGRAM is inherited by the virtual camera, every
+        // recording, and every stream — a border here puts chrome on air.
+        // Styling arrives in a later task deliberately.
+        layer.borderStyle = "none";
+        layer.borderThickness = 0.f;
+        if (const size_t colon = admitted[index].find(':'); colon != std::string::npos) {
+          layer.participantId = admitted[index].substr(colon + 1);
+        } else {
+          layer.participantId = admitted[index];
+        }
+        renderPlan.layers.push_back(std::move(layer));
+      }
+    }
+  }
+
   // Emit overlay layers from the captured overlay assets in stable insertion
   // order, carrying their real text/image/keyer payload + animated key phase so
   // the compositor can raster them. Overlays with no captured asset (legacy
@@ -4675,7 +4777,44 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // reaches the mixer in the same tick as their video.
   advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
 
+  // T1 (Task 4): refresh the wall's per-member frame-age snapshot from the SAME
+  // videoFrames gather the render plan is about to consult, immediately before
+  // building the plan. Mirrors the ISO source-key convention just above
+  // (capture:/browser: frames already carry their scheme; a bare Zoom
+  // participantId becomes "zoom:<pid>"). Geometry bookkeeping under the same
+  // lock scope as the rest of this tick — no pixel work. A departed member
+  // simply stops appearing here and ages out of the wall on its own on the
+  // NEXT tick (kTilesStaleFrameMs), never sticking around from a prior snapshot.
+  if (tilesLayer_.present && !tilesLayer_.members.empty()) {
+    tilesMemberFrameAges_.clear();
+    tilesMemberFrameAges_.reserve(tilesLayer_.members.size());
+    for (const auto& member : tilesLayer_.members) {
+      compositor::TilesMemberFrameAge age;
+      age.sourceId = member;
+      for (const auto& frame : videoFrames) {
+        const std::string& pid = frame.participantId;
+        const std::string key = pid.find(':') != std::string::npos ? pid : "zoom:" + pid;
+        if (key != member) {
+          continue;
+        }
+        if (frame.hasPixels() || frame.hasI420()) {
+          age.hasFrame = true;
+          age.lastFrameAgeMs = std::max<int64_t>(0, frameTimestampMs - frame.timestampMs);
+        }
+        break;
+      }
+      tilesMemberFrameAges_.push_back(age);
+    }
+  } else if (!tilesMemberFrameAges_.empty()) {
+    tilesMemberFrameAges_.clear();
+  }
+
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
+  // and the sessionState() `tiles` node both read THIS, so a consumer can never
+  // observe a wall the compositor did not also receive (see modules_.compositor->
+  // render(renderPlan, videoFrames) below, which takes this same renderPlan).
+  lastRenderPlan_ = renderPlan;
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
   // needed on screen, and the per-frame CPU Map otherwise caps the render rate.
