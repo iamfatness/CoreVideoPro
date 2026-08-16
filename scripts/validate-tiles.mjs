@@ -367,13 +367,24 @@ function marginSample(rects) {
   return candidates[0];
 }
 
-// Finds the widest inter-tile gutter and returns BOTH a simple midpoint
-// sample (for the background-colour check) and the two boundary edges +
-// scan axis (for assertEdgeTransition's geometry check). Returns null only
-// when tiles genuinely touch/overlap with no gap at all on either axis —
-// callers decide whether that is itself a failure for their layout.
+// Finds the widest inter-tile gutter on EACH axis independently and returns
+// BOTH a simple midpoint sample (for the background-colour check) and the
+// two boundary edges (for measureEdgeTransition's geometry check).
+//
+// Compares candidate gaps in PIXELS, not normalized units, and returns the
+// best x-axis AND the best y-axis candidate (not just an overall "widest").
+// `gutterX = gutterY / canvasAspect` (TilesLayout.h) means a y-axis gap and
+// an x-axis gap of the SAME pixel width are UNEQUAL in normalized units on a
+// 16:9 canvas (0.060 vs 0.0338 for this fixture's 6% setting) — comparing
+// normalized gaps directly always picked the y-axis pair, so every prior
+// transcript read "axis=y" and a width-only shrink (an x-axis-only defect)
+// was never scanned by anything. Returns null for an axis with no usable
+// pair on it (not necessarily a defect — a single-row or single-column
+// layout genuinely has no gutter on one axis); callers decide whether a
+// specific missing axis is itself a failure for their layout.
 function gutterSample(rects) {
-  let best = null;
+  let bestX = null;
+  let bestY = null;
   for (let i = 0; i < rects.length; i += 1) {
     for (let j = 0; j < rects.length; j += 1) {
       if (i === j) continue;
@@ -382,22 +393,24 @@ function gutterSample(rects) {
       const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
       if (overlapY > 0.3 * Math.min(a.height, b.height) && b.x > a.x + a.width) {
         const gap = b.x - (a.x + a.width);
+        const gapPx = gap * canvasWidth;
         const midY = Math.max(a.y, b.y) + overlapY / 2;
         const midX = a.x + a.width + gap / 2;
-        const cand = { axis: "x", gap, midX, midY, edgeNear: a.x + a.width, edgeFar: b.x, perp: midY };
-        if (!best || cand.gap > best.gap) best = cand;
+        const cand = { axis: "x", gap, gapPx, midX, midY, edgeNear: a.x + a.width, edgeFar: b.x, perp: midY };
+        if (!bestX || cand.gapPx > bestX.gapPx) bestX = cand;
       }
       const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
       if (overlapX > 0.3 * Math.min(a.width, b.width) && b.y > a.y + a.height) {
         const gap = b.y - (a.y + a.height);
+        const gapPx = gap * canvasHeight;
         const midX = Math.max(a.x, b.x) + overlapX / 2;
         const midY = a.y + a.height + gap / 2;
-        const cand = { axis: "y", gap, midX, midY, edgeNear: a.y + a.height, edgeFar: b.y, perp: midX };
-        if (!best || cand.gap > best.gap) best = cand;
+        const cand = { axis: "y", gap, gapPx, midX, midY, edgeNear: a.y + a.height, edgeFar: b.y, perp: midX };
+        if (!bestY || cand.gapPx > bestY.gapPx) bestY = cand;
       }
     }
   }
-  return best;
+  return { x: bestX, y: bestY };
 }
 
 // Walks a scanline across BOTH edges of a gutter pair (the near tile's far
@@ -409,22 +422,73 @@ function gutterSample(rects) {
 // never see a uniformly-shrunk or offset wall, because a shrunk tile's
 // centre is still deep inside real content and a shrunk gutter's centre is
 // still deep inside real background.
+// Structural invariants, imported from validate-multiview.mjs's discipline:
+// every published rect is inside the canvas, and no two published rects
+// overlap. These say nothing about pixels — they are cheap, purely-geometric
+// sanity checks over whatever the snapshot claims, independent of anything
+// else this oracle measures. Without them, "the solver itself produced wrong
+// geometry" (as opposed to "the plan and the pixels disagree") stays
+// invisible: since solver output and the compositor's draw move together
+// today, a bad SOLVE would sail through identity/background/boundary checks
+// that all ultimately trust the published rect as their frame of reference.
+function rectInCanvas(r, eps = 1e-3) {
+  return r.width > 0 && r.height > 0 &&
+    r.x >= -eps && r.y >= -eps && r.x + r.width <= 1 + eps && r.y + r.height <= 1 + eps;
+}
+function rectsOverlap(a, b, eps = 1e-3) {
+  return a.x < b.x + b.width - eps && b.x < a.x + a.width - eps &&
+    a.y < b.y + b.height - eps && b.y < a.y + a.height - eps;
+}
+function structuralInvariantProblems(label, rects) {
+  const problems = [];
+  for (let i = 0; i < rects.length; i += 1) {
+    if (!rectInCanvas(rects[i])) {
+      problems.push(`${label}: tile #${i} out of canvas (x=${rects[i].x.toFixed(3)} y=${rects[i].y.toFixed(3)} w=${rects[i].width.toFixed(3)} h=${rects[i].height.toFixed(3)})`);
+    }
+  }
+  for (let i = 0; i < rects.length; i += 1) {
+    for (let j = i + 1; j < rects.length; j += 1) {
+      if (rectsOverlap(rects[i], rects[j])) problems.push(`${label}: tiles #${i} and #${j} overlap`);
+    }
+  }
+  return problems;
+}
+
+// ── GLOW WARNING (read this before touching tolPx below) ──────────────────
+// T2 will legitimately push the real content<->background pixel transition
+// OUTWARD past a tile's published edge (glow is an analytic SDF falloff on
+// an EXPANDED quad, per the T2 notes in task-6-brief.md) — so once glow
+// ships, a correctly-glowing wall will correctly FAIL this assertion at
+// today's tolPx. That is not this assertion going stale; it means T2 must
+// EXTEND it to expect the transition at (published edge + computed glow
+// extent), not delete it or widen tolPx to paper over glow. Widening the
+// tolerance defeats the entire reason this assertion exists (see the task-6
+// report: it is the one check that catches wrong tile SIZE/POSITION, which
+// glow's own extended-quad math is exactly the kind of change that could get
+// wrong). If you are here because this assertion started failing after
+// adding glow, extend it — do not loosen it.
 function measureEdgeTransition(videoPath, tSeconds, gutter) {
   const stripThicknessPx = 6;
   const axisSpanPx = gutter.axis === "x" ? canvasWidth : canvasHeight;
   const windowPx = Math.max(14, Math.min(30, Math.floor(gutter.gap * axisSpanPx * 0.4)));
+  // NOTE: ffmpegRawCrop clamps its origin to >= 0 internally. foundPx must be
+  // computed from that SAME clamped origin, not the raw (possibly negative)
+  // one — otherwise a scan window that clips against x=0/y=0 (an outer wall
+  // edge, not any gutter this fixture currently exercises) would silently
+  // mis-report every found index by |unclamped origin|. Inert for an
+  // interior gutter (never negative there) but correct either way.
   const measureOne = (edgeFrac) => {
     if (gutter.axis === "x") {
       const edgePx = edgeFrac * canvasWidth;
       const yPx = Math.max(0, Math.round(gutter.perp * canvasHeight - stripThicknessPx / 2));
-      const x0 = Math.round(edgePx - windowPx);
+      const x0 = Math.max(0, Math.round(edgePx - windowPx));
       const cols = sampleColumnMedians(videoPath, tSeconds, x0, yPx, windowPx * 2, stripThicknessPx);
       const idx = findTransitionIndex(cols, 24);
       return { edgePx, foundPx: idx == null ? null : x0 + idx };
     }
     const edgePx = edgeFrac * canvasHeight;
     const xPx = Math.max(0, Math.round(gutter.perp * canvasWidth - stripThicknessPx / 2));
-    const y0 = Math.round(edgePx - windowPx);
+    const y0 = Math.max(0, Math.round(edgePx - windowPx));
     const rows = sampleRowMedians(videoPath, tSeconds, xPx, y0, stripThicknessPx, windowPx * 2);
     const idx = findTransitionIndex(rows, 24);
     return { edgePx, foundPx: idx == null ? null : y0 + idx };
@@ -841,42 +905,88 @@ try {
     bgOk = false;
     bgDetails.push("no usable margin band found");
   }
-  // A gutter is REQUIRED here, not optional: this fixture's 6% spacing with
-  // participantCount tiles solves to a multi-row/column grid (verified for
-  // N=3: 2x2), so a missing gutter means tiles are packed edge-to-edge or
-  // overlapping — a real defect, not a benign "single row" layout. A wall
-  // shaped so no gutter can ever exist would need a different check; this
-  // fixture is not that shape.
-  if (gutterA && gutterA.gap > 0.01) {
-    const patch = Math.max(4, Math.min(20, Math.floor(Math.min(gutterA.gap * canvasWidth, gutterA.gap * canvasHeight) * 0.5)));
-    const rgb = samplePatchMedianRgb(programAbs, phaseA.tOffsetSec, gutterA.midX * canvasWidth, gutterA.midY * canvasHeight, patch);
-    const ok = colorClose(rgb, bgRgb, 24);
-    bgOk = bgOk && ok;
-    bgDetails.push(`gutter=rgb(${rgb.r},${rgb.g},${rgb.b}) vs bg(${bgRgb.r},${bgRgb.g},${bgRgb.b}) -> ${ok ? "match" : "MISMATCH"}`);
-  } else if (countOkA) {
-    bgOk = false;
-    bgDetails.push("no usable inter-tile gutter found — expected one at this fixture's spacing/count (tiles touching or overlapping?)");
+  // A gutter is REQUIRED on BOTH axes here, not optional: this fixture's 6%
+  // spacing with participantCount tiles solves to a 2x2-ish grid (verified
+  // for N=3), so a missing gutter on EITHER axis means tiles are packed
+  // edge-to-edge or overlapping on that axis — a real defect, not a benign
+  // "single row/column" layout. Sampling only the wider-in-pixels axis (the
+  // old behaviour) meant an x-axis-only defect at this fixture's spacing was
+  // never checked at all.
+  for (const axis of ["x", "y"]) {
+    const g = gutterA ? gutterA[axis] : null;
+    if (g && g.gapPx > 2) {
+      const patch = Math.max(4, Math.min(20, Math.floor(g.gapPx * 0.5)));
+      const rgb = samplePatchMedianRgb(programAbs, phaseA.tOffsetSec, g.midX * canvasWidth, g.midY * canvasHeight, patch);
+      const ok = colorClose(rgb, bgRgb, 24);
+      bgOk = bgOk && ok;
+      bgDetails.push(`gutter[${axis}]=rgb(${rgb.r},${rgb.g},${rgb.b}) vs bg(${bgRgb.r},${bgRgb.g},${bgRgb.b}) -> ${ok ? "match" : "MISMATCH"}`);
+    } else if (countOkA) {
+      bgOk = false;
+      bgDetails.push(`no usable inter-tile gutter found on the ${axis}-axis — expected one at this fixture's spacing/count (tiles touching or overlapping?)`);
+    }
   }
   assertTrue("background colour (6% fixture)", bgOk, bgDetails.join("; "));
 
   // ================= Assertion: tile boundary matches published rect =================
-  // Geometry check, not identity or colour: walks a scanline across the SAME
-  // gutter pair used above and asserts the content<->background transition
-  // is within tolerance of the rect edges the snapshot published. Catches a
-  // tile that is the right colour in the right place but the wrong SIZE.
-  if (countOkA && gutterA && gutterA.gap > 0.01) {
+  // Geometry check, not identity or colour: walks a scanline across BOTH the
+  // x-axis and y-axis gutter pairs (see gutterSample — comparing gaps in
+  // pixels means neither axis is silently skipped) and asserts the real
+  // content<->background transition is within tolerance of the rect edges
+  // the snapshot published on EACH axis. A width-only (or height-only) size
+  // regression only ever moves ONE axis's transition — scanning a single
+  // axis (previously always y, an artifact of comparing gaps in normalized
+  // units) could never have caught the other.
+  //
+  // GLOW WARNING: see the comment block above measureEdgeTransition. T2 will
+  // correctly push this transition outward once glow ships — extend this
+  // assertion for glow's computed extent then; do not widen tolPx to make a
+  // then-correct failure go away.
+  {
     const tolPx = 10;
-    const edgeMeasure = measureEdgeTransition(programAbs, phaseA.tOffsetSec, gutterA);
-    const nearErr = edgeMeasure.near.foundPx == null ? Infinity : Math.abs(edgeMeasure.near.foundPx - edgeMeasure.near.edgePx);
-    const farErr = edgeMeasure.far.foundPx == null ? Infinity : Math.abs(edgeMeasure.far.foundPx - edgeMeasure.far.edgePx);
+    let boundaryOk = countOkA;
+    const boundaryDetails = [];
+    for (const axis of ["x", "y"]) {
+      const g = gutterA ? gutterA[axis] : null;
+      if (!countOkA) {
+        boundaryDetails.push(`${axis}-axis: skipped (tile count wrong)`);
+        continue;
+      }
+      if (!g || g.gapPx <= 2) {
+        boundaryOk = false;
+        boundaryDetails.push(`${axis}-axis: no gutter pair available to scan`);
+        continue;
+      }
+      const edgeMeasure = measureEdgeTransition(programAbs, phaseA.tOffsetSec, g);
+      const nearErr = edgeMeasure.near.foundPx == null ? Infinity : Math.abs(edgeMeasure.near.foundPx - edgeMeasure.near.edgePx);
+      const farErr = edgeMeasure.far.foundPx == null ? Infinity : Math.abs(edgeMeasure.far.foundPx - edgeMeasure.far.edgePx);
+      const axisOk = nearErr <= tolPx && farErr <= tolPx;
+      boundaryOk = boundaryOk && axisOk;
+      boundaryDetails.push(
+        `${axis}-axis near: published=${edgeMeasure.near.edgePx.toFixed(1)}px found=${edgeMeasure.near.foundPx == null ? "none" : edgeMeasure.near.foundPx.toFixed(1) + "px"} err=${nearErr.toFixed(1)}px; ` +
+        `far: published=${edgeMeasure.far.edgePx.toFixed(1)}px found=${edgeMeasure.far.foundPx == null ? "none" : edgeMeasure.far.foundPx.toFixed(1) + "px"} err=${farErr.toFixed(1)}px`,
+      );
+    }
+    assertTrue("tile boundary matches published rect", boundaryOk, `${boundaryDetails.join("; ")} (tol ${tolPx}px)`);
+  }
+
+  // ================= Assertion: structural invariants (in-canvas, non-overlapping) =================
+  // Independent of any published RECT VALUE this oracle otherwise reads (it
+  // checks the rects' own internal consistency, not their content) — imported
+  // from validate-multiview.mjs's discipline so this oracle is a strict
+  // superset of the structural validator it replaces, not merely a pixel
+  // check bolted on beside it.
+  {
+    const structuralProblems = [
+      ...structuralInvariantProblems("phaseA", phaseA.tiles.map((m) => m.rect)),
+      ...structuralInvariantProblems("phaseB", phaseB.tiles.map((m) => m.rect)),
+      ...structuralInvariantProblems("phaseC", phaseC.tiles.map((m) => m.rect)),
+      ...structuralInvariantProblems("phaseD", phaseD.tiles.map((m) => m.rect)),
+    ];
     assertTrue(
-      "tile boundary matches published rect",
-      nearErr <= tolPx && farErr <= tolPx,
-      `axis=${gutterA.axis} near: published=${edgeMeasure.near.edgePx.toFixed(1)}px found=${edgeMeasure.near.foundPx == null ? "none" : edgeMeasure.near.foundPx.toFixed(1) + "px"} err=${nearErr.toFixed(1)}px; ` +
-        `far: published=${edgeMeasure.far.edgePx.toFixed(1)}px found=${edgeMeasure.far.foundPx == null ? "none" : edgeMeasure.far.foundPx.toFixed(1) + "px"} err=${farErr.toFixed(1)}px (tol ${tolPx}px)`,
+      "structural invariants (in-canvas, non-overlapping)",
+      structuralProblems.length === 0,
+      structuralProblems.length === 0 ? "all published rects across all 4 phases in-canvas and pairwise non-overlapping" : structuralProblems.join("; "),
     );
-  } else {
-    assertTrue("tile boundary matches published rect", false, "no gutter pair available to scan (see background-colour assertion)");
   }
 
   // ================= Assertion: fill, not letterbox (all four edges) =================
@@ -908,10 +1018,20 @@ try {
   };
   const edgeIsBg = Object.fromEntries(Object.entries(edgeSamples).map(([k, v]) => [k, colorClose(v, bgRgb, 20)]));
   const anyBar = Object.values(edgeIsBg).some(Boolean);
+  // Phase B configured tileAspect:"1:1" — but the edge samples above only
+  // prove "content reaches the edges of WHATEVER rect came back." If a
+  // regression made the solver ignore tileAspect entirely and hand back a
+  // 16:9 rect, a 16:9 source fills a 16:9 rect edge-to-edge under `fill`
+  // trivially (nothing to crop), and the four-edge check above would print
+  // PASS on a wall that never actually exercised a mismatched-aspect fill at
+  // all. Assert the published rect's OWN aspect matches what was configured.
+  const probeAspect = (probeRect.width * canvasWidth) / (probeRect.height * canvasHeight);
+  const aspectOk = Math.abs(probeAspect - 1.0) <= 0.05;
   assertTrue(
     "fill, not letterbox (all four edges)",
-    !anyBar,
-    `1:1 tile vs 16:9 source: ${Object.entries(edgeSamples).map(([k, v]) => `${k}=rgb(${v.r},${v.g},${v.b})${edgeIsBg[k] ? " BAR" : ""}`).join(", ")} (bg~=(${bgRgb.r},${bgRgb.g},${bgRgb.b}))`,
+    aspectOk && !anyBar,
+    `published rect aspect=${probeAspect.toFixed(3)} (configured tileAspect="1:1", expect ~1.0) -> ${aspectOk ? "ok" : "MISMATCH — solver may have ignored tileAspect"}; ` +
+      `1:1 tile vs 16:9 source: ${Object.entries(edgeSamples).map(([k, v]) => `${k}=rgb(${v.r},${v.g},${v.b})${edgeIsBg[k] ? " BAR" : ""}`).join(", ")} (bg~=(${bgRgb.r},${bgRgb.g},${bgRgb.b}))`,
   );
 
   // ================= Assertion: reflow after (genuine) staleness =================
@@ -944,12 +1064,22 @@ try {
     }
     console.log(`  ${reflowDetails.join("\n  ")}`);
   }
+  // Lower bound, not just "dropped within the 6s poll deadline": printing
+  // the elapsed time without asserting a floor let a regression that drops
+  // the member IMMEDIATELY (e.g. a future "no subscription => ineligible"
+  // rule, which is a DIFFERENT, simpler code path than the frameId-freshness
+  // tracker this phase exists to exercise) still print PASS — the ~1.5s
+  // delay is the only signal distinguishing the genuine staleness path from
+  // that trivial one. 1000ms floor: comfortably below the measured
+  // 1511-1523ms (kTilesStaleFrameMs=1500 + the 200ms poll grid), comfortably
+  // above "instant".
+  const staleWasGenuinelyDelayed = staleElapsedMs != null && staleElapsedMs >= 1000;
   assertTrue(
     "reflow after departure (genuine staleness)",
-    countOkC && reflowLarger && reflowIdentity && staleElapsedMs != null,
+    countOkC && reflowLarger && reflowIdentity && staleWasGenuinelyDelayed,
     countOkC
       ? `${orderedC.length} tiles remain (${droppedMemberId} went stale, never removed from tiles.members); ` +
-        `dropped after ${staleElapsedMs ?? "never"}ms (budget ${kTilesStaleFrameMs}ms); ` +
+        `dropped after ${staleElapsedMs ?? "never"}ms (budget ${kTilesStaleFrameMs}ms, floor 1000ms) -> ${staleWasGenuinelyDelayed ? "genuinely delayed" : "TOO FAST — looks like immediate exclusion, not staleness"}; ` +
         `${reflowLarger ? "all grew" : "did NOT grow"}; identity ${reflowIdentity ? "held" : "broke"}`
       : `expected ${expectedRemaining} tiles after staleness, got ${phaseC.tiles.length} (staleElapsedMs=${staleElapsedMs})`,
   );
@@ -958,11 +1088,23 @@ try {
   const rectsD = phaseD.tiles.map((m) => m.rect);
   const countOkD = phaseD.tiles.length === expectedRemaining;
   const marginD = countOkD ? marginSample(rectsD) : null;
-  const gutterD = countOkD ? gutterSample(rectsD) : null;
+  const gutterDBoth = countOkD ? gutterSample(rectsD) : null;
+  // Phase D's 2-remaining-tile layout is expected side-by-side (a single
+  // row — verified for this fixture), so only ONE axis genuinely has a
+  // gutter; unlike phase A (a known multi-row/column grid) this does not
+  // hard-require both axes, it just uses whichever axis actually has one.
+  const gutterD = gutterDBoth
+    ? (gutterDBoth.x && gutterDBoth.y
+        ? (gutterDBoth.x.gapPx >= gutterDBoth.y.gapPx ? gutterDBoth.x : gutterDBoth.y)
+        : (gutterDBoth.x || gutterDBoth.y))
+    : null;
   let bgOkD = countOkD;
   const bgDetailsD = [];
   if (!countOkD) bgDetailsD.push(`skipped — phase D tile count was ${phaseD.tiles.length}, expected ${expectedRemaining}`);
-  if (marginD) {
+  // `size > 0.005` guard restored — phase A has always had it (a degenerate
+  // near-zero margin band would otherwise throw an ffmpeg crop exception
+  // instead of failing this assertion by name); phase D was missing it.
+  if (marginD && marginD.size > 0.005) {
     const patch = Math.max(3, Math.min(10, Math.floor(marginD.size * canvasHeight * 0.5)));
     const rgb = samplePatchMedianRgb(programAbs, phaseD.tOffsetSec, marginD.x * canvasWidth, marginD.y * canvasHeight, patch);
     const ok = colorClose(rgb, bgRgb, 24);
@@ -972,13 +1114,12 @@ try {
     bgOkD = false;
     bgDetailsD.push("no usable margin band found at default spacing");
   }
-  if (gutterD && gutterD.gap > 0) {
-    const gapPx = gutterD.gap * (gutterD.axis === "x" ? canvasWidth : canvasHeight);
-    const patch = Math.max(3, Math.min(10, Math.floor(gapPx * 0.5)));
+  if (gutterD && gutterD.gapPx > 2) {
+    const patch = Math.max(3, Math.min(10, Math.floor(gutterD.gapPx * 0.5)));
     const rgb = samplePatchMedianRgb(programAbs, phaseD.tOffsetSec, gutterD.midX * canvasWidth, gutterD.midY * canvasHeight, patch);
     const ok = colorClose(rgb, bgRgb, 24);
     bgOkD = bgOkD && ok;
-    bgDetailsD.push(`gutter(${gapPx.toFixed(1)}px)=rgb(${rgb.r},${rgb.g},${rgb.b}) -> ${ok ? "match" : "MISMATCH"}`);
+    bgDetailsD.push(`gutter[${gutterD.axis}](${gutterD.gapPx.toFixed(1)}px)=rgb(${rgb.r},${rgb.g},${rgb.b}) -> ${ok ? "match" : "MISMATCH"}`);
   } else if (countOkD) {
     bgOkD = false;
     bgDetailsD.push("no usable inter-tile gutter found at default spacing");
