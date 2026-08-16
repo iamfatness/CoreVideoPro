@@ -515,6 +515,11 @@ class D3D11Compositor final : public ICompositor {
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(frameSourceId, frames);
           }
+        } else if (layer.plan.hasFillColor) {
+          // A deliberately sourceless layer (e.g. the tiles wall background) —
+          // never resolves to a frame; paints the parsed configured colour
+          // instead of the default mid-grey ResolvedLayer::color.
+          layer.color = compositor::parseHexColorRgba(layer.plan.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
           layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);

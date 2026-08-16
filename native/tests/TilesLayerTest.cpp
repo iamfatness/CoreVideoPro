@@ -152,14 +152,38 @@ TEST(TilesLayer, InvalidMembersAreDroppedWithWarnings) {
 // reset design (tilesLayer_ is only committed alongside the other locals when
 // the computed signature changes; folding tiles into that signature is what
 // keeps a tiles-only change from being mistaken for "unchanged").
+// Task 4 review fix (C3): this originally asserted against tilesLayerForTest()
+// (the PROGRAM field) because Task 1's applyPreviewScene wrote its wall into
+// that SAME shared field. That was a live-show bug in its own right, not just
+// a test-seam quirk: applyPreviewScene rides the frequent spine sync (not
+// just an operator action), so the first preview sync carrying no `tiles`
+// silently wiped the LIVE PROGRAM wall mid-show. previewTilesLayer_ is now
+// the preview bus's own field; this test asserts the identical reset
+// guarantee against previewTilesLayerForTest() instead.
 TEST(TilesLayer, PreviewSceneReloadWithoutTilesClearsThePreviousWall) {
   MediaCore core;
   loadScene(core, previewSceneWithTilesCommand("preview-1"));
-  ASSERT_TRUE(core.tilesLayerForTest().present);
+  ASSERT_TRUE(core.previewTilesLayerForTest().present);
   loadScene(core, Json::Object{
                        {"type", "set-preview-scene"},
                        {"sceneId", "preview-2"},
                        {"routes", Json::Array{}},
                    });
-  EXPECT_FALSE(core.tilesLayerForTest().present);
+  EXPECT_FALSE(core.previewTilesLayerForTest().present);
+}
+
+// Task 4 review fix (C3), the regression this whole split exists to prevent:
+// a PROGRAM wall must survive an unrelated PREVIEW-bus sync that carries no
+// `tiles` node — proving the two buses no longer share one field.
+TEST(TilesLayer, APreviewSyncWithNoWallNeverTouchesTheLiveProgramWall) {
+  MediaCore core;
+  loadScene(core, sceneWithTilesCommand());
+  ASSERT_TRUE(core.tilesLayerForTest().present);
+  loadScene(core, Json::Object{
+                       {"type", "set-preview-scene"},
+                       {"sceneId", "preview-1"},
+                       {"routes", Json::Array{}},
+                   });
+  EXPECT_TRUE(core.tilesLayerForTest().present);
+  EXPECT_EQ(core.tilesLayerForTest().layerId, "tiles:scene-1");
 }

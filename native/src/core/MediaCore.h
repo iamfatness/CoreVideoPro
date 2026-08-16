@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -170,10 +171,15 @@ class MediaCore {
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
 
-  // T1: the tiles wall parsed off the scene-sync command, and the scene
-  // validation warnings a bad/unrecognised value gets recorded into (loud,
-  // never silent — see parseTilesLayer in MediaCore.cpp).
+  // T1: the PROGRAM-bus tiles wall parsed off the load-scene-graph command,
+  // and the scene validation warnings a bad/unrecognised value gets recorded
+  // into (loud, never silent — see parseTilesLayer in MediaCore.cpp).
   const TilesLayerState& tilesLayerForTest() const { return tilesLayer_; }
+  // Task 4 review fix (C3): the PREVIEW bus's own wall (applyPreviewScene),
+  // now a SEPARATE field from tilesLayer_ above — see previewTilesLayer_'s
+  // declaration for why sharing one field was a live-show bug, not just a
+  // test-seam gap.
+  const TilesLayerState& previewTilesLayerForTest() const { return previewTilesLayer_; }
   const std::vector<std::string>& sceneValidationWarningsForTest() const {
     return sceneValidationWarnings_;
   }
@@ -405,14 +411,48 @@ class MediaCore {
   std::string sceneId_ = "unloaded";
   std::vector<SceneRouteState> sceneRoutes_;
   SceneBackgroundState sceneBackground_;
-  // T1: the parsed tiles wall layer (present==false when the current scene
-  // carries none — reset every load-scene-graph/preview-scene sync so a
-  // wall from a PRIOR scene can never survive a sync that omits it).
+  // T1: the parsed PROGRAM-bus tiles wall layer (present==false when the
+  // current scene carries none — reset every load-scene-graph sync so a wall
+  // from a PRIOR scene can never survive a sync that omits it).
+  //
+  // Task 4 review fix (C3): this used to be ALSO written by applyPreviewScene
+  // — a single field shared by both buses, read unconditionally by
+  // buildRenderPlanForScene. Since applyPreviewScene rides the frequent spine
+  // sync (not just an operator action), the first preview sync carrying no
+  // `tiles` silently wiped the live PROGRAM wall mid-show, and one carrying a
+  // DIFFERENT wall put a preview-only wall on air. previewTilesLayer_ below is
+  // now the preview bus's own copy; buildRenderPlanForScene takes the wall to
+  // expand as an explicit parameter (mirroring sceneRoutes), so each bus can
+  // only ever see its own.
   TilesLayerState tilesLayer_;
+  // Task 4 review fix (C3): the PREVIEW bus's own tiles wall, parsed by
+  // applyPreviewScene. See tilesLayer_ above for why this must be a SEPARATE
+  // field rather than shared.
+  TilesLayerState previewTilesLayer_;
   // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
   // every render tick from the live videoFrames gather (renderSyntheticTick,
-  // under coreMutex — geometry bookkeeping, not pixel work).
+  // under coreMutex — geometry bookkeeping, not pixel work). Covers members of
+  // EITHER bus's wall (sourceIds are globally unique, so sharing this list is
+  // safe and avoids computing it twice).
   std::vector<compositor::TilesMemberFrameAge> tilesMemberFrameAges_;
+  // Task 4 review fix (I4): per-sourceId "when did this member's frame last
+  // ACTUALLY change" bookkeeping, keyed off frameId rather than a producer's
+  // re-stamped timestampMs (every frame producer in this codebase re-stamps
+  // `timestampMs` with the current tick's clock even when re-serving a held/
+  // frozen frame — see ZoomEngineRuntime.cpp and the capture adapters — so
+  // `frameTimestampMs - frame.timestampMs` is ~0 for ANY live-but-frozen
+  // source and the staleness filter (Task 3) could never actually fire). A
+  // frameId only advances on a genuinely new frame (the ISO dedup relies on
+  // the same property), so this is the source of truth for "is this member's
+  // picture actually moving." Erased when a member stops appearing in
+  // videoFrames at all, so a later return starts fresh rather than replaying
+  // stale history.
+  struct TilesFrameFreshness {
+    bool everSeen = false;
+    int64_t lastFrameId = -1;
+    int64_t lastChangedTickMs = 0;
+  };
+  std::unordered_map<std::string, TilesFrameFreshness> tilesFrameFreshness_;
   // Task 4: the render plan the render tick actually built, cached for
   // lastRenderPlanForTest() and for the sessionState() `tiles` node — both
   // read the CORE's own produced layers rather than re-deriving with the
@@ -469,7 +509,12 @@ class MediaCore {
       bool captionEnabled,
       const std::string& captionText,
       const std::string& captionSpeaker,
-      const std::vector<modules::VideoFrame>& videoFrames) const;
+      const std::vector<modules::VideoFrame>& videoFrames,
+      // Task 4 review fix (C3): explicit per-bus wall, mirroring how `routes`
+      // is already per-bus rather than a shared member. The PROGRAM caller
+      // passes tilesLayer_, the PREVIEW caller passes previewTilesLayer_ —
+      // never the same field for both.
+      const TilesLayerState& wall) const;
   // Builds the render plan for the PREVIEW scene from the preview-scene members,
   // mirroring buildCompositorRenderPlan for the program scene.
   [[nodiscard]] modules::CompositorRenderPlan buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;

@@ -377,6 +377,12 @@ void fillSyntheticProgramFramePreview(
           color = compositor::colorFromParticipantId("media:" + layer.mediaAssetId);
           const std::string frameSourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
           frameForLayer = findFrameForParticipant(frames, frameSourceId);
+        } else if (layer.hasFillColor) {
+          // Mirrors the D3D11 resolveLayers branch: a deliberately sourceless
+          // layer (the tiles wall background) paints its configured colour
+          // instead of the default placeholder grey. frameForLayer stays
+          // null, so the synthetic-fill branch below paints `color`.
+          color = compositor::parseHexColorRgba(layer.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
           color = compositor::colorFromParticipantId(frameForLayer->participantId);
