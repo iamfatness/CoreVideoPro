@@ -1321,8 +1321,11 @@ describe("scenario 4: the projection tracks the engine", () => {
  * test here on purpose (fix round 1): `npm test` does not build, so a test
  * importing `dist` would either fail on a clean checkout or skip itself
  * when `dist` is missing — a guard that looks like coverage and isn't.
- * Known gap, stated rather than papered over: `npm test` alone does not run
- * that script, so the dist guard is only as good as its CI wiring.
+ * `npm test` alone still does not run that script — it is a separate step
+ * on the `show-engine` CI job (`.github/workflows/ci.yml`) and in the root
+ * `test:gate`, wired in the final fix round. Until then it ran only when
+ * someone typed the command, which made the one guard aimed at Plans 7-9's
+ * consumption path the one guard nothing ever executed.
  */
 describe("package barrel: the control surface", () => {
   it("exports every runtime value a host bridge needs", () => {

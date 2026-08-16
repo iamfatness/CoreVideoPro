@@ -54,7 +54,14 @@ const RUNTIME_NAMES = [
   "StateStore"
 ];
 
-/** Type-only names, each used in a type position by the generated file below. */
+/**
+ * Type-only names, each used in a type position by the generated file below.
+ *
+ * `HostAdapter`/`HostCapabilities`/`ShowSnapshot` were added in the final
+ * fix round (I5): the PORT three adapters implement, the shape they declare
+ * to the engine, and the type they feed to `projectControlFields` were all
+ * unguarded here, which is exactly the surface this script exists for.
+ */
 const TYPE_CHECK_SOURCE = `
 import {
   type ActionDefinition,
@@ -65,8 +72,15 @@ import {
   type ConformanceHost,
   type ControlFieldValue,
   type Headline,
-  type LookPlacement
+  type HostAdapter,
+  type HostCapabilities,
+  type LookPlacement,
+  type ShowSnapshot
 } from "DIST_SPECIFIER";
+
+const capabilities: HostCapabilities = { hasPreviewBus: true, maxGalleryCells: 16, transitions: ["cut"] };
+declare const adapter: HostAdapter;
+declare const snapshot: ShowSnapshot;
 
 const paramType: ActionParamType = "string";
 const param: ActionParam = { name: "n", type: paramType, required: true, description: "" };
@@ -84,7 +98,18 @@ const placement: LookPlacement = {
 declare const conformanceCase: ConformanceCase;
 declare const host: ConformanceHost;
 
-export const used = [definition, result, field, headline, placement, conformanceCase.name, host.calls()];
+export const used = [
+  definition,
+  result,
+  field,
+  headline,
+  placement,
+  conformanceCase.name,
+  host.calls(),
+  capabilities.maxGalleryCells,
+  adapter.capabilities(),
+  snapshot.smartGallery
+];
 `;
 
 function fail(message) {
