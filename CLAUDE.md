@@ -244,12 +244,34 @@ comment at the code site; this is the index.
   least one layer.** The wall's background `push_back` now sits above the admission
   gate; regression test `TilesRenderPlan.AnAllStaleWallStillEmitsItsBackground`
   asserts the plan is non-empty, not just that the tiles are absent.
+  **And the gate deciding "is a wall active" is `wall.present` ALONE — never
+  `present && !members.empty()`.** `TilesLayerPayloadBuilder.Build` sends
+  `members: []` whenever every guest is video-off or the roster is momentarily empty
+  (an ORDINARY meeting state), so a members-aware gate re-opened the identical
+  on-air hole one level up: no background AND no fallback suppression, i.e. an
+  improvised grid on PROGRAM the moment all cameras went off. A configured wall
+  with nobody live shows its BACKGROUND. The same `.present` gate is used by the
+  `lastRenderPlan_` cache and the snapshot `tiles` node so they can never disagree
+  (and so the all-cameras-off state stays OBSERVABLE — a node that vanishes in the
+  case worth detecting is the multiviewer mistake again). The wall also **counts as
+  a layer in `hasPreviewScene()`**: that tally was routes + background + overlays
+  only, so a Tiles preview scene with no media background and no overlay scored
+  ZERO, the third composite never ran, the preview shared-texture handle was
+  cleared, and the operator's preview monitor silently fell back to the
+  single-source path — never showing the wall it was about to take. Tests:
+  `AMemberLessWallStillOwnsTheSceneAndEmitsItsBackground`,
+  `APreviewSceneCarryingOnlyAWallStillComposites`.
   Related, same family: **routes and the wall share ONE order namespace** (tiles-bg at
   `wall.order`, tile #i at `wall.order + 1 + i`), so a surviving gallery route at order
   2 composites between tiles. The shell keeps that impossible **by construction** —
   `StudioViewModel.BuildProductionSyncContext` serializes an EMPTY route list for a
   `DynamicGallery` scene, at the point the wire is built, never relying on the
-  coalesced UI reconcile pass (`ReconcileDynamicGalleryRoutes`) having run.
+  coalesced UI reconcile pass (`ReconcileDynamicGalleryRoutes`) having run. The
+  core still ACCEPTS routes+wall from any producer, so both scene parse sites now
+  push a deduped `sceneValidationWarnings_` entry when they arrive together —
+  audible drift, not latent. (Dedupe matters: `applyPreviewScene` rides the
+  REPEATING spine sync and does NOT clear that vector, so an unconditional push
+  there grows without bound on a scene-flip loop.)
   And **Metal has no `hasFillColor` branch** — the wall background renders as a
   dark-grey slab on macOS; named in a comment at the site, owned by
   `docs/corevideo-tiles-iso-scaling-plan.md` implementation slice 3 (Metal parity).

@@ -118,9 +118,24 @@ class RecordingCompositor final : public corevideo::modules::ICompositor {
     return frame;
   }
 
+  // The PREVIEW bus's own composite (the "third composite"), which the core
+  // runs only when hasPreviewScene() says the preview scene has a layer.
+  // Recording it here proves a wall-only preview scene actually COMPOSITES,
+  // rather than trusting the `previewScene.composite` telemetry that reports
+  // the same predicate.
+  corevideo::modules::ProgramFrameSharedTexture renderPreview(
+      const corevideo::modules::CompositorRenderPlan& renderPlan,
+      const std::vector<corevideo::modules::VideoFrame>&) override {
+    lastPreviewPlan = renderPlan;
+    ++previewRenderCount;
+    return {};
+  }
+
   corevideo::modules::CompositorRenderPlan lastPlan;
+  corevideo::modules::CompositorRenderPlan lastPreviewPlan;
   size_t lastFrameCount = 0;
   int64_t renderCount = 0;
+  int64_t previewRenderCount = 0;
 };
 
 // C1 fix vehicle: a capture device that is ALWAYS connected and delivers a
@@ -336,6 +351,115 @@ TEST(TilesRenderPlan, AnAllStaleWallStillEmitsItsBackground) {
   ASSERT_NE(background, nullptr);
   EXPECT_TRUE(background->hasFillColor);
   EXPECT_EQ(background->fillColor, "#101418");
+}
+
+// Re-review finding A (Important, ON-AIR). A wall whose MEMBERS LIST IS EMPTY
+// still owns the scene: it emits its background, and it still suppresses the
+// legacy full-canvas fallback.
+//
+// `TilesLayerPayloadBuilder.Build` sends `members: []` whenever every guest is
+// video-off or the roster is momentarily empty — an ordinary meeting state. The
+// old `wallActive = present && !members.empty()` gate turned that into "no wall
+// at all": no background AND no fallback suppression, so PROGRAM showed an
+// improvised full-canvas grid of every decoded source (here, the stub Zoom
+// source's two synthetic speakers), inherited by the virtual camera, every
+// recording and every stream. Drives the REAL tick so those frames actually
+// exist, and asserts they did — otherwise the fallback has no input and the
+// test passes vacuously.
+TEST(TilesRenderPlan, AMemberLessWallStillOwnsTheSceneAndEmitsItsBackground) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  MediaCore core(std::move(modules));
+
+  // A wall configured with NOBODY on it — every camera off.
+  loadWall(core, {});
+  (void)core.applyCommands(corevideo::rpc::Json::Array{});
+
+  ASSERT_GE(compositor->lastFrameCount, 2u)
+      << "the frame gather produced no frames — the fallback this test guards against "
+         "had no input, so the test would pass vacuously";
+
+  const auto plan = core.lastRenderPlanForTest();
+  ASSERT_FALSE(plan.layers.empty())
+      << "a members-less wall emitted an EMPTY plan — all three compositors then improvise "
+         "a grid of every decoded frame onto PROGRAM";
+  std::vector<std::string> layerIds;
+  for (const auto& layer : plan.layers) {
+    layerIds.push_back(layer.layerId);
+  }
+  EXPECT_EQ(layerIds, (std::vector<std::string>{"tiles-bg:tiles:s"}));
+  EXPECT_EQ(countLayersOfKind(plan, "participant-video"), 0);
+  // The legacy full-canvas fallback stays suppressed: no layer for either
+  // synthetic speaker the gather just produced.
+  for (const auto& layer : plan.layers) {
+    EXPECT_NE(layer.layerId, "zoom:synthetic-speaker-1");
+    EXPECT_NE(layer.layerId, "zoom:synthetic-speaker-2");
+  }
+}
+
+// Re-review finding B (Important). A PREVIEW scene carrying ONLY a wall — no
+// media background, no overlay, and (by construction, since the shell now
+// serialises an empty route list for a gallery scene) no routes — must run the
+// dedicated preview composite.
+//
+// hasPreviewScene() used to tally routes + background + overlays only, so a
+// Tiles preview scored ZERO layers: the third composite never ran, the preview
+// shared-texture handle was cleared, and the shell fell back to the
+// single-source preview path — the operator never saw the wall they were about
+// to take. Asserts the composite REALLY RAN (the stub records renderPreview)
+// and that what it composited is the wall, not an empty plan.
+TEST(TilesRenderPlan, APreviewSceneCarryingOnlyAWallStillComposites) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  MediaCore core(std::move(modules));
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"set-preview-scene"}},
+          {"sceneId", corevideo::rpc::Json{"pvw-gallery"}},
+          {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+          {"tiles", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+              {"layerId", corevideo::rpc::Json{"tiles:pvw"}},
+              {"members", corevideo::rpc::Json{corevideo::rpc::Json::Array{
+                  corevideo::rpc::Json{"zoom:1"}}}},
+              {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
+  (void)core.applyCommands(corevideo::rpc::Json::Array{});
+
+  ASSERT_GE(compositor->previewRenderCount, 1)
+      << "the preview bus never composited a scene whose only layer is the wall";
+  const auto& previewPlan = compositor->lastPreviewPlan;
+  ASSERT_FALSE(previewPlan.layers.empty());
+  ASSERT_NE(findLayer(previewPlan, "tiles-bg:tiles:pvw"), nullptr)
+      << "the preview composite ran but did not carry the wall's background";
+}
+
+// Re-review (reviewer's cheap suggestion): routes + a wall in ONE scene is
+// accepted silently by the wire. Make it AUDIBLE — the characterization test
+// below pins WHAT happens; this pins that we SAY something.
+TEST(TilesRenderPlan, ASceneCarryingBothRoutesAndAWallWarnsLoudly) {
+  MediaCore core;
+  loadWallWithRoutes(core, {"zoom:1"}, {2});
+
+  const auto warnings = core.sceneValidationWarningsForTest();
+  const bool warned = std::any_of(warnings.begin(), warnings.end(), [](const std::string& warning) {
+    return warning.find("tiles wall") != std::string::npos &&
+           warning.find("route") != std::string::npos;
+  });
+  EXPECT_TRUE(warned) << "routes + wall in one scene passed without a validation warning";
+
+  // A wall-only scene (the shape the shell actually sends) must stay quiet —
+  // a warning that fires on the healthy path is noise and gets ignored.
+  MediaCore quiet;
+  loadWall(quiet, {"zoom:1"});
+  for (const auto& warning : quiet.sceneValidationWarningsForTest()) {
+    EXPECT_EQ(warning.find("tiles wall"), std::string::npos)
+        << "wall-only scene warned about a route collision: " << warning;
+  }
 }
 
 // Characterization (whole-branch review): routes and a wall arriving in ONE
