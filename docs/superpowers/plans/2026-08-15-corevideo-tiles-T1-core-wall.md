@@ -716,6 +716,16 @@ TEST(TilesMembership, AnOrdinaryFrameGapKeepsTheMemberOnTheWall) {
   EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u);
 }
 
+// The boundary itself, not just either side of it: with only the +/-1 cases a
+// `<` implementation passes unchanged, so the inclusive semantics would not
+// actually be pinned. Inclusive is the conservative direction — "exactly at the
+// limit" stays live, erring toward wall stability rather than toward dropping a
+// tile on ordinary jitter.
+TEST(TilesMembership, AMemberExactlyAtTheThresholdIsStillAdmitted) {
+  const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesStaleFrameMs}};
+  EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u);
+}
+
 TEST(TilesMembership, AStaleFeedLeavesTheWall) {
   const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesStaleFrameMs + 1}};
   EXPECT_TRUE(admitTilesMembers({"zoom:1"}, ages).empty());
