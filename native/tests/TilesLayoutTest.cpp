@@ -2,152 +2,98 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <cmath>
 
 namespace {
 
-using corevideo::compositor::TilesLayout;
 using corevideo::compositor::LayerRect;
+using corevideo::compositor::resolveTileAspectRatio;
+using corevideo::compositor::solveTilesLayout;
 
-// LayoutIsBoundedUniformAndUsesRequestedAspect tests that:
-// - All rects are within normalized [0, 1] bounds
-// - All rects have uniform width and height
-// - Tiles respect the requested aspect ratio
-TEST(TilesLayout, LayoutIsBoundedUniformAndUsesRequestedAspect_1) {
-  int count = 1;
-  auto rects = TilesLayout::BuildRects(count, 16.0 / 9.0, "4:3");
+constexpr double kTol = 1e-9;
 
-  ASSERT_EQ(count, static_cast<int>(rects.size()));
-  auto first = rects[0];
-  for (const auto& rect : rects) {
-    EXPECT_GE(rect.x, 0.0f);
-    EXPECT_LE(rect.x, 1.0f);
-    EXPECT_GE(rect.y, 0.0f);
-    EXPECT_LE(rect.y, 1.0f);
-    EXPECT_GE(rect.x + rect.width, 0.0f);
-    EXPECT_LE(rect.x + rect.width, 1.000001f);
-    EXPECT_GE(rect.y + rect.height, 0.0f);
-    EXPECT_LE(rect.y + rect.height, 1.000001f);
-    EXPECT_NEAR(first.width, rect.width, 1e-6);
-    EXPECT_NEAR(first.height, rect.height, 1e-6);
-    double aspect = rect.width * (16.0 / 9.0) / rect.height;
-    EXPECT_NEAR(4.0 / 3.0, aspect, 1e-5);
-  }
+std::vector<LayerRect> solve(int n) {
+  return solveTilesLayout(n, 16.0 / 9.0, "16:9", 16.0 / 9.0, 0.741, 0.741);
 }
 
-TEST(TilesLayout, LayoutIsBoundedUniformAndUsesRequestedAspect_2) {
-  int count = 2;
-  auto rects = TilesLayout::BuildRects(count, 16.0 / 9.0, "4:3");
-
-  ASSERT_EQ(count, static_cast<int>(rects.size()));
-  auto first = rects[0];
-  for (const auto& rect : rects) {
-    EXPECT_GE(rect.x, 0.0f);
-    EXPECT_LE(rect.x, 1.0f);
-    EXPECT_GE(rect.y, 0.0f);
-    EXPECT_LE(rect.y, 1.0f);
-    EXPECT_GE(rect.x + rect.width, 0.0f);
-    EXPECT_LE(rect.x + rect.width, 1.000001f);
-    EXPECT_GE(rect.y + rect.height, 0.0f);
-    EXPECT_LE(rect.y + rect.height, 1.000001f);
-    EXPECT_NEAR(first.width, rect.width, 1e-6);
-    EXPECT_NEAR(first.height, rect.height, 1e-6);
-    double aspect = rect.width * (16.0 / 9.0) / rect.height;
-    EXPECT_NEAR(4.0 / 3.0, aspect, 1e-5);
-  }
+TEST(TilesLayout, ZeroTilesProducesNoRects) {
+  EXPECT_TRUE(solve(0).empty());
+  EXPECT_TRUE(solve(-3).empty());
 }
 
-TEST(TilesLayout, LayoutIsBoundedUniformAndUsesRequestedAspect_5) {
-  int count = 5;
-  auto rects = TilesLayout::BuildRects(count, 16.0 / 9.0, "4:3");
-
-  ASSERT_EQ(count, static_cast<int>(rects.size()));
-  auto first = rects[0];
-  for (const auto& rect : rects) {
-    EXPECT_GE(rect.x, 0.0f);
-    EXPECT_LE(rect.x, 1.0f);
-    EXPECT_GE(rect.y, 0.0f);
-    EXPECT_LE(rect.y, 1.0f);
-    EXPECT_GE(rect.x + rect.width, 0.0f);
-    EXPECT_LE(rect.x + rect.width, 1.000001f);
-    EXPECT_GE(rect.y + rect.height, 0.0f);
-    EXPECT_LE(rect.y + rect.height, 1.000001f);
-    EXPECT_NEAR(first.width, rect.width, 1e-6);
-    EXPECT_NEAR(first.height, rect.height, 1e-6);
-    double aspect = rect.width * (16.0 / 9.0) / rect.height;
-    EXPECT_NEAR(4.0 / 3.0, aspect, 1e-5);
-  }
+TEST(TilesLayout, OneTileIsCentered) {
+  const auto rects = solve(1);
+  ASSERT_EQ(rects.size(), 1u);
+  EXPECT_NEAR(rects[0].x + rects[0].width / 2.0, 0.5, 1e-6);
+  EXPECT_NEAR(rects[0].y + rects[0].height / 2.0, 0.5, 1e-6);
 }
 
-TEST(TilesLayout, LayoutIsBoundedUniformAndUsesRequestedAspect_8) {
-  int count = 8;
-  auto rects = TilesLayout::BuildRects(count, 16.0 / 9.0, "4:3");
-
-  ASSERT_EQ(count, static_cast<int>(rects.size()));
-  auto first = rects[0];
-  for (const auto& rect : rects) {
-    EXPECT_GE(rect.x, 0.0f);
-    EXPECT_LE(rect.x, 1.0f);
-    EXPECT_GE(rect.y, 0.0f);
-    EXPECT_LE(rect.y, 1.0f);
-    EXPECT_GE(rect.x + rect.width, 0.0f);
-    EXPECT_LE(rect.x + rect.width, 1.000001f);
-    EXPECT_GE(rect.y + rect.height, 0.0f);
-    EXPECT_LE(rect.y + rect.height, 1.000001f);
-    EXPECT_NEAR(first.width, rect.width, 1e-6);
-    EXPECT_NEAR(first.height, rect.height, 1e-6);
-    double aspect = rect.width * (16.0 / 9.0) / rect.height;
-    EXPECT_NEAR(4.0 / 3.0, aspect, 1e-5);
-  }
-}
-
-TEST(TilesLayout, LayoutIsBoundedUniformAndUsesRequestedAspect_16) {
-  int count = 16;
-  auto rects = TilesLayout::BuildRects(count, 16.0 / 9.0, "4:3");
-
-  ASSERT_EQ(count, static_cast<int>(rects.size()));
-  auto first = rects[0];
-  for (const auto& rect : rects) {
-    EXPECT_GE(rect.x, 0.0f);
-    EXPECT_LE(rect.x, 1.0f);
-    EXPECT_GE(rect.y, 0.0f);
-    EXPECT_LE(rect.y, 1.0f);
-    EXPECT_GE(rect.x + rect.width, 0.0f);
-    EXPECT_LE(rect.x + rect.width, 1.000001f);
-    EXPECT_GE(rect.y + rect.height, 0.0f);
-    EXPECT_LE(rect.y + rect.height, 1.000001f);
-    EXPECT_NEAR(first.width, rect.width, 1e-6);
-    EXPECT_NEAR(first.height, rect.height, 1e-6);
-    double aspect = rect.width * (16.0 / 9.0) / rect.height;
-    EXPECT_NEAR(4.0 / 3.0, aspect, 1e-5);
-  }
-}
-
-TEST(TilesLayout, ShortFinalRowIsCentered) {
-  auto rects = TilesLayout::BuildRects(5);
-
-  float lastRowY = rects[0].y;
-  for (const auto& rect : rects) {
-    lastRowY = std::max(lastRowY, rect.y);
-  }
-
-  std::vector<LayerRect> lastRow;
-  for (const auto& rect : rects) {
-    if (std::abs(rect.y - lastRowY) < 0.000001f) {
-      lastRow.push_back(rect);
+TEST(TilesLayout, EveryTileIsTheSameSize) {
+  for (int n = 1; n <= 16; ++n) {
+    const auto rects = solve(n);
+    ASSERT_EQ(rects.size(), static_cast<size_t>(n)) << "n=" << n;
+    for (const auto& rect : rects) {
+      EXPECT_NEAR(rect.width, rects[0].width, kTol) << "n=" << n;
+      EXPECT_NEAR(rect.height, rects[0].height, kTol) << "n=" << n;
     }
   }
-
-  ASSERT_EQ(2, static_cast<int>(lastRow.size()));
-  float leftMargin = lastRow[0].x;
-  float rightMargin = 1.0f - (lastRow.back().x + lastRow.back().width);
-  EXPECT_NEAR(leftMargin, rightMargin, 1e-6);
 }
 
-TEST(TilesLayout, EmptyGalleryProducesNoRects) {
-  auto rects = TilesLayout::BuildRects(0);
-  EXPECT_TRUE(rects.empty());
+TEST(TilesLayout, NoTileEscapesTheCanvas) {
+  for (int n = 1; n <= 16; ++n) {
+    for (const auto& rect : solve(n)) {
+      EXPECT_GE(rect.x, -kTol) << "n=" << n;
+      EXPECT_GE(rect.y, -kTol) << "n=" << n;
+      EXPECT_LE(rect.x + rect.width, 1.0 + kTol) << "n=" << n;
+      EXPECT_LE(rect.y + rect.height, 1.0 + kTol) << "n=" << n;
+    }
+  }
+}
+
+TEST(TilesLayout, NoTwoTilesOverlap) {
+  for (int n = 2; n <= 12; ++n) {
+    const auto rects = solve(n);
+    for (size_t a = 0; a < rects.size(); ++a) {
+      for (size_t b = a + 1; b < rects.size(); ++b) {
+        const bool disjoint =
+            rects[a].x + rects[a].width <= rects[b].x + kTol ||
+            rects[b].x + rects[b].width <= rects[a].x + kTol ||
+            rects[a].y + rects[a].height <= rects[b].y + kTol ||
+            rects[b].y + rects[b].height <= rects[a].y + kTol;
+        EXPECT_TRUE(disjoint) << "n=" << n << " a=" << a << " b=" << b;
+      }
+    }
+  }
+}
+
+// A short last row is centered, not left-aligned — five tiles is 3+2 with the
+// pair centered under the trio.
+TEST(TilesLayout, ShortLastRowIsCentered) {
+  const auto rects = solve(5);
+  ASSERT_EQ(rects.size(), 5u);
+  const double topRowCenter = (rects[0].x + rects[2].x + rects[2].width) / 2.0;
+  const double lastRowCenter = (rects[3].x + rects[4].x + rects[4].width) / 2.0;
+  EXPECT_NEAR(topRowCenter, lastRowCenter, 1e-6);
+  EXPECT_NEAR(lastRowCenter, 0.5, 1e-6);
+}
+
+TEST(TilesLayout, AspectPresetsResolve) {
+  EXPECT_NEAR(resolveTileAspectRatio("16:9", 1.0), 16.0 / 9.0, kTol);
+  EXPECT_NEAR(resolveTileAspectRatio("1:1", 1.0), 1.0, kTol);
+  EXPECT_NEAR(resolveTileAspectRatio("9:16", 1.0), 9.0 / 16.0, kTol);
+  EXPECT_NEAR(resolveTileAspectRatio("custom", 2.5), 2.5, kTol);
+  EXPECT_NEAR(resolveTileAspectRatio("banana", 1.0), 16.0 / 9.0, kTol);
+  // Custom ratios are clamped to the same [0.25, 4] band as the shell.
+  EXPECT_NEAR(resolveTileAspectRatio("custom", 99.0), 4.0, kTol);
+  EXPECT_NEAR(resolveTileAspectRatio("custom", 0.01), 0.25, kTol);
+}
+
+// Spacing uses the DIVISOR form. h / (100/pct) round-trips exactly to the
+// historic canvas_height/135.0; h * pct / 100 disagrees in the last bit.
+TEST(TilesLayout, GutterUsesTheDivisorForm) {
+  const double pct = 0.741;
+  const double h = 1080.0;
+  EXPECT_NEAR(h / (100.0 / pct), 8.0028, 1e-9);
 }
 
 }  // namespace
