@@ -34,7 +34,7 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 - **No pixel work under `coreMutex` or on a hot tick.** Solving geometry is fine; touching pixel buffers is not.
 - **Never replace a bound WinUI collection at frame rate.** Sync in place or diff. This is the `CoreMessagingXP 0xc000027b` fail-fast class.
 - **A one-shot command is silently lost on core respawn.** Everything in T1 rides the repeating scene-sync channel; do not add a launch-time one-shot.
-- **Protocol changes move in THREE mirrors in lockstep:** `native/src/rpc/Protocol.h` (capability), `native-core/src/protocol.ts` (types), and the core parser in `MediaCore.cpp`.
+- **Protocol changes move in FOUR mirrors in lockstep:** `native/src/core/Protocol.h` (capability), `native-core/src/protocol.ts` (types), `src/engine/nativeMediaCoreProtocol.ts` (the legacy TS engine's capability union), and the core parser in `MediaCore.cpp`. **There are FOUR mirrors, not three** — corrected 2026-08-15 after the Task 1 implementer found the fourth. `native/src/rpc/Protocol.h` does not exist; the header lives under `core/`.
 - **Failures are loud, never silent.** A rejected member, a clamped value, or a truncated list emits a warning; it never disappears quietly.
 - **Do not port the plugin's colour-range constant.** Its shader hardcodes full-range BT.709; that is an open defect on our side. Tiles consumes whatever the Zoom ingest path decides.
 - **Verify pixels, not proxies.** A test that asserts "N rects exist" does not prove the wall renders. See Task 6.
@@ -47,7 +47,8 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 **Files:**
 - Modify: `native/src/core/MediaCore.h` (add `TilesLayerState`, `tilesLayer_`, near `SceneRouteState` ~line 302)
 - Modify: `native/src/core/MediaCore.cpp:1403` (the `load-scene-graph` routes parse) and `:2584` (the preview-scene/spine parse)
-- Modify: `native/src/rpc/Protocol.h` (capability list)
+- Modify: `native/src/core/Protocol.h` (capability list)
+- Modify: `src/engine/nativeMediaCoreProtocol.ts` (legacy TS capability union)
 - Modify: `native-core/src/protocol.ts` (wire types)
 - Test: `native/tests/TilesLayerTest.cpp` (create)
 - Modify: `native/CMakeLists.txt:595` (register the test file)
@@ -276,7 +277,7 @@ Apply the identical reset-then-parse at the preview-scene parse site (`:2584`), 
 
 - [ ] **Step 4: Mirror the protocol**
 
-In `native/src/rpc/Protocol.h`, add `"tiles-layer"` to the advertised capability list beside `"iso-recording"`.
+In `native/src/core/Protocol.h`, add `"tiles-layer"` to the advertised capability list beside `"iso-recording"`.
 
 In `native-core/src/protocol.ts`, add beside the scene-graph types:
 
@@ -319,7 +320,8 @@ Expected: 0 failures. Record the total; it is the baseline for later tasks.
 
 ```bash
 git add native/src/core/MediaCore.h native/src/core/MediaCore.cpp \
-        native/src/rpc/Protocol.h native-core/src/protocol.ts \
+        native/src/core/Protocol.h native-core/src/protocol.ts \
+        src/engine/nativeMediaCoreProtocol.ts \
         native/tests/TilesLayerTest.cpp native/CMakeLists.txt
 git commit -m "feat(tiles): the core parses a tiles layer off the scene sync"
 ```
