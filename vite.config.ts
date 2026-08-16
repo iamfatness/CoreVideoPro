@@ -19,6 +19,16 @@ export default defineConfig({
     exclude: [
       "**/node_modules/**",
       "**/dist/**",
+      // Git worktrees live under .claude/ and contain a FULL copy of the repo,
+      // tests included — but no node_modules. Without this, vitest collects
+      // every worktree's copy of every test and runs the suite once per
+      // worktree: 1235 files / 17k tests locally against 26 real files, with
+      // the native-core specs failing because they resolve
+      // node_modules/tsx/dist/cli.mjs against their own workspace root. CI
+      // never sees it (no worktrees there), so it looks like a local-only
+      // mystery. Note "native-core/**" below is anchored at the repo root and
+      // does NOT match .claude/worktrees/<name>/native-core/**.
+      "**/.claude/**",
       "native-core/**",
       "tests/e2e/**",
       "src/App.test.tsx"
