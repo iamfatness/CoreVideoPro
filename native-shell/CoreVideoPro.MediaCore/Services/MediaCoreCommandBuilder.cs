@@ -16,12 +16,13 @@ public static class MediaCoreCommandBuilder
             BuildZoomSourceRosterCommand(context.Participants),
             BuildActiveSpeakerCommand(context.Participants),
             BuildScreenShareCommand(context.Participants),
-            BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes, context.SceneBackground),
+            BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes, context.SceneBackground, context.TilesLayer),
             BuildPreviewSceneCommand(
                 context.PreviewSceneId ?? context.ActiveSceneId,
                 context.PreviewSceneRoutes,
                 context.PreviewSceneBackground,
-                context.PreviewColorGrade),
+                context.PreviewColorGrade,
+                context.PreviewTilesLayer),
             BuildMultiviewLayoutCommand(
                 context.MultiviewSources,
                 context.MultiviewCanvasWidth,
@@ -88,12 +89,14 @@ public static class MediaCoreCommandBuilder
     public static NativeMediaCoreCommand BuildSceneGraphCommand(
         string sceneId,
         IReadOnlyList<MediaCoreSceneRouteWire> routes,
-        MediaCoreSceneBackgroundWire? background = null) =>
+        MediaCoreSceneBackgroundWire? background = null,
+        MediaCoreTilesLayerWire? tiles = null) =>
         Command("load-scene-graph", new Dictionary<string, object?>
         {
             ["sceneId"] = sceneId,
             ["background"] = SerializeSceneBackground(background),
-            ["routes"] = routes.Select(SerializeSceneRoute).ToList()
+            ["routes"] = routes.Select(SerializeSceneRoute).ToList(),
+            ["tiles"] = SerializeTilesLayer(tiles)
         });
 
     /// <summary>
@@ -106,7 +109,8 @@ public static class MediaCoreCommandBuilder
         string sceneId,
         IReadOnlyList<MediaCoreSceneRouteWire> routes,
         MediaCoreSceneBackgroundWire? background = null,
-        MediaCoreColorGradeWire? colorGrade = null) =>
+        MediaCoreColorGradeWire? colorGrade = null,
+        MediaCoreTilesLayerWire? tiles = null) =>
         Command("set-preview-scene", new Dictionary<string, object?>
         {
             ["sceneId"] = sceneId,
@@ -121,8 +125,35 @@ public static class MediaCoreCommandBuilder
                     ["saturation"] = colorGrade.Saturation,
                     ["temperature"] = colorGrade.Temperature
                 },
-            ["routes"] = routes.Select(SerializeSceneRoute).ToList()
+            ["routes"] = routes.Select(SerializeSceneRoute).ToList(),
+            ["tiles"] = SerializeTilesLayer(tiles)
         });
+
+    /// <summary>
+    /// T1 core wall: the "tiles" node (layerId/order/members/style — see
+    /// <c>MediaCoreTilesLayerWire</c>). Deliberately carries NO rect — the shell no longer
+    /// solves tile layout, so the core's rect defaults (full canvas) apply. Field names
+    /// here (w/h would live under "rect" if ever added) must match
+    /// MediaCore.cpp's parseTilesLayer exactly; a mismatch is silent (an unparsed field
+    /// just takes its C++ default).
+    /// </summary>
+    private static Dictionary<string, object?>? SerializeTilesLayer(MediaCoreTilesLayerWire? tiles) =>
+        tiles is null
+            ? null
+            : new Dictionary<string, object?>
+            {
+                ["layerId"] = tiles.LayerId,
+                ["order"] = tiles.Order,
+                ["members"] = tiles.Members,
+                ["style"] = new Dictionary<string, object?>
+                {
+                    ["tileAspect"] = tiles.TileAspect,
+                    ["customAspectRatio"] = tiles.CustomAspectRatio,
+                    ["gutterPercent"] = tiles.GutterPercent,
+                    ["marginPercent"] = tiles.MarginPercent,
+                    ["backgroundColor"] = tiles.BackgroundColor
+                }
+            };
 
     private static Dictionary<string, object?>? SerializeSceneBackground(MediaCoreSceneBackgroundWire? background) =>
         background is null

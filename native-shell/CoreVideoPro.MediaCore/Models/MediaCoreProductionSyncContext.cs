@@ -53,6 +53,27 @@ public sealed record MediaCoreMultiviewLayout(
     int Rows,
     IReadOnlyList<MediaCoreMultiviewSourceWire> Sources);
 
+/// <summary>
+/// T1 core wall: the "tiles" node carried on load-scene-graph/set-preview-scene for a
+/// CoreVideo Tiles (dynamic-gallery) scene. Mirrors <c>TilesLayerPayload</c>
+/// (<c>TilesLayerPayloadBuilder</c>, WinUI project — membership policy only) flattened
+/// for the wire; the core solves the grid layout itself every frame from
+/// <c>Members</c>+<c>Style</c> (MediaCore.cpp parseTilesLayer). No Rect field: the shell
+/// does not solve/send a canvas subregion, so the core's rect defaults apply
+/// (x=0,y=0,w=1,h=1 — full canvas). NOTE the wire key is "w"/"h" here, NOT "width"/
+/// "height" like a scene route's rect (MediaCoreSceneRouteWire) — an easy copy-paste
+/// trap if a later task adds a Rect to this record.
+/// </summary>
+public sealed record MediaCoreTilesLayerWire(
+    string LayerId,
+    int Order,
+    IReadOnlyList<string> Members,
+    string TileAspect,
+    double CustomAspectRatio,
+    double GutterPercent,
+    double MarginPercent,
+    string BackgroundColor);
+
 public sealed record MediaCoreSceneBackgroundWire(
     string MediaAssetId,
     string MediaAssetName,
@@ -225,6 +246,8 @@ public sealed record MediaCoreProductionSyncContext
     public required string ActiveSceneId { get; init; }
     public IReadOnlyList<MediaCoreSceneRouteWire> SceneRoutes { get; init; } = [];
     public MediaCoreSceneBackgroundWire? SceneBackground { get; init; }
+    /// <summary>T1 core wall membership for the PROGRAM scene; null when it isn't a gallery scene.</summary>
+    public MediaCoreTilesLayerWire? TilesLayer { get; init; }
 
     /// <summary>
     /// The PREVIEW scene graph (routes + background + grade), synced via set-preview-scene so the
@@ -235,6 +258,8 @@ public sealed record MediaCoreProductionSyncContext
     public IReadOnlyList<MediaCoreSceneRouteWire> PreviewSceneRoutes { get; init; } = [];
     public MediaCoreSceneBackgroundWire? PreviewSceneBackground { get; init; }
     public MediaCoreColorGradeWire? PreviewColorGrade { get; init; }
+    /// <summary>T1 core wall membership for the PREVIEW scene; null when it isn't a gallery scene.</summary>
+    public MediaCoreTilesLayerWire? PreviewTilesLayer { get; init; }
 
     /// <summary>
     /// Ordered Show Input roster that drives the core-composited GPU multiview (set-multiview-layout).

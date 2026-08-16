@@ -1579,7 +1579,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<Participant> SceneParticipants => RoomVideoParticipants;
 
-    public Scene ProgramScene => Scenes.First(s => s.Id == ActiveSceneId);
+    // Mirrors PreviewScene's fallback chain below. This was a bare
+    // Scenes.First(predicate), which throws InvalidOperationException the moment
+    // ActiveSceneId names a scene that is not in the list — the same failure
+    // shape that put "Sequence contains no matching element" in launch.log on
+    // 2026-08-15. PreviewScene was hardened against it; this was not, and it is
+    // a property read from XAML, so the throw surfaces as an unhandled crash on
+    // a binding thread. The final Scenes.First() keeps the non-null contract.
+    public Scene ProgramScene =>
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, ActiveSceneId, StringComparison.Ordinal)) ??
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
+        Scenes.First();
 
     public Scene PreviewScene =>
         Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
@@ -8539,9 +8549,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 resolvedSceneProgramRoutes,
                 _onAirBrowserOverlayIds)
             .ToList();
-        var sceneRoutes = resolvedProgramRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
-            .ToList();
+        // T1 core wall (whole-branch review fix): a CoreVideo Tiles (dynamic-gallery)
+        // scene contributes an EMPTY route list AT SERIALIZATION TIME, by construction.
+        //
+        // The core emits route layers and the wall into ONE shared order namespace
+        // (tiles-bg at wall.order, tile #i at wall.order + 1 + i), so a surviving
+        // gallery route at order 2 sorts BETWEEN tile 1 and tile 3 and composites a
+        // full-canvas cell over individual wall tiles — on PROGRAM, and therefore in
+        // the virtual camera, every recording and every stream.
+        // ReconcileDynamicGalleryRoutes() empties the route list too, but it cannot be
+        // the guarantee: it runs on a COALESCED Low-priority dispatch (so
+        // OnPreviewSceneIdChanged only SCHEDULES it before firing the sync
+        // immediately), persisted pre-T1 scenes restore `<sceneId>-tile-<pid>` routes
+        // verbatim at load, and it self-suppresses while `_canvasInteractionActive`
+        // — which does NOT gate BuildTilesLayerWire, so the wall still ships. Dropping
+        // the routes HERE, where the wire is built, makes the invariant hold for every
+        // one of those paths without depending on a UI refresh pass having run.
+        // Core-side characterization of what the interleave WOULD be:
+        // TilesRenderPlan.RoutesAndAWallShareOneOrderNamespace.
+        var sceneRoutes = ProgramScene.DynamicGallery is not null
+            ? new List<MediaCoreSceneRouteWire>()
+            : resolvedProgramRoutes
+                .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
+                .ToList();
 
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
@@ -8554,9 +8584,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 resolvedScenePreviewRoutes,
                 _previewBrowserOverlayIds)
             .ToList();
-        var previewSceneRoutes = resolvedPreviewRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
-            .ToList();
+        // Same by-construction rule as the program routes above — the preview bus is
+        // composited from its own scene graph and interleaves identically.
+        var previewSceneRoutes = PreviewScene.DynamicGallery is not null
+            ? new List<MediaCoreSceneRouteWire>()
+            : resolvedPreviewRoutes
+                .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
+                .ToList();
 
         var participants = RoomVideoParticipants
             .Select(participant => new MediaCoreParticipantWire(
@@ -8676,9 +8710,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ActiveSceneId = ActiveSceneId,
             SceneRoutes = sceneRoutes,
             SceneBackground = BuildSceneBackgroundWire(ActiveSceneId),
+            // T1 core wall: the shell sends WHO is eligible for a tile (membership
+            // policy only, TilesLayerPayloadBuilder), never a solved rect — the core
+            // owns layout. Built from the SAME ProgramScene/PreviewScene + roster the
+            // route wires above are resolved from, so the wall and the rest of the
+            // scene-sync command agree on which scene/roster generation they carry.
+            TilesLayer = BuildTilesLayerWire(ProgramScene),
             PreviewSceneId = PreviewSceneId,
             PreviewSceneRoutes = previewSceneRoutes,
             PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId),
+            PreviewTilesLayer = BuildTilesLayerWire(PreviewScene),
             PreviewColorGrade = new MediaCoreColorGradeWire(
                 ColorGrade.Lut,
                 ColorGrade.Exposure,
@@ -11825,8 +11866,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
     }
 
-    private MediaAsset? ResolveSceneBackgroundAsset(string sceneId)
+    // sceneId is NULLABLE in practice even though the callers' properties are not:
+    // the Sources-page scene ComboBox two-way-binds SelectedValue to PreviewSceneId,
+    // and WinUI reports SelectedValue == null for an instant while ItemsSource is
+    // being replaced (RefreshSceneItems). That null is written straight back into
+    // PreviewSceneId, whose setter refreshes the canvas editor, which lands here —
+    // and Dictionary.TryGetValue(null) THROWS ArgumentNullException like an indexer,
+    // it does not return false. Crash repro: click "Tiles" on the Scenes tab.
+    // Same family as the SourcesInputsPage role-ComboBox crash (see CLAUDE.md).
+    // This guard stops the crash; the real fix is to stop the two-way binding
+    // writing null into PreviewSceneId at all.
+    private MediaAsset? ResolveSceneBackgroundAsset(string? sceneId)
     {
+        if (string.IsNullOrEmpty(sceneId))
+        {
+            return null;
+        }
+
         if (!_sceneBackgroundAssetIds.TryGetValue(sceneId, out var assetId))
         {
             return null;
@@ -12373,11 +12429,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private List<SourceRoute> GetMutableRoutes(string sceneId)
+    // TOTAL BY CONSTRUCTION — this had TWO ways to kill the process, and both
+    // have been observed in the wild:
+    //   * a null sceneId  -> Dictionary.TryGetValue THROWS ArgumentNullException
+    //     (it does not return false, unlike what the non-nullable parameter
+    //     suggests). Crash 2026-08-16 07:18: changing an SRT ingest Mode fires
+    //     OnSrtIngestSourcePropertyChanged -> RefreshPreviewRoutingState ->
+    //     RefreshSceneCompositionState -> here, with no preview scene selected.
+    //   * an UNKNOWN sceneId -> Scenes.First throws InvalidOperationException
+    //     ("Sequence contains no matching element"), which is the 2026-08-15
+    //     14:05 unhandled entry in launch.log.
+    // A caller asking for the routes of no scene, or of a scene that is gone,
+    // gets an empty list — that is the honest answer and it cannot take the app
+    // down. Nothing is cached for those cases, so a scene appearing later still
+    // builds its defaults normally.
+    private List<SourceRoute> GetMutableRoutes(string? sceneId)
     {
+        if (string.IsNullOrEmpty(sceneId))
+        {
+            return [];
+        }
+
         if (!_sceneRoutes.TryGetValue(sceneId, out var routes))
         {
-            var scene = Scenes.First(item => item.Id == sceneId);
+            var scene = Scenes.FirstOrDefault(item => item.Id == sceneId);
+            if (scene is null)
+            {
+                return [];
+            }
+
             routes = SceneRoutingService
                 .GetRouteDefaults(scene, existingRoutes: null, RoomVideoParticipants)
                 .Select(route => route.Clone())
@@ -12521,72 +12601,100 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // T1 core wall: the core now solves the tile grid itself every frame
+    // (compositor::expandTilesLayer, MediaCore.cpp parseTilesLayer/expandTilesLayer)
+    // from the "tiles" node (TilesLayerPayloadBuilder — membership policy: roster +
+    // video-off filter + max-tiles cap, in roster order). A gallery scene therefore
+    // contributes NO scene routes at all; the core suppresses its legacy full-canvas
+    // fallback whenever a wall is present, so leaving old per-participant tile routes
+    // behind here would double-draw. This method's only remaining job is enforcing
+    // that a DynamicGallery scene's route list stays empty — it used to ALSO solve
+    // rects (DynamicGalleryLayoutService.BuildRects) and mint one SourceRoute per
+    // participant; that logic moved into the core and TilesLayerPayloadBuilder.
+    // DynamicGalleryLayoutService itself is UNCHANGED and stays live as the reference
+    // implementation the C++ port (buildTilesGrid) is tested against — do not delete it.
+    //
+    // NOT THE GUARANTEE (whole-branch review): this is a UI-side tidy-up that runs on a
+    // coalesced Low-priority dispatch and self-suppresses while `_canvasInteractionActive`,
+    // so it cannot be what keeps gallery routes off the wire. The wire-level invariant
+    // ("a gallery scene serializes an empty route list") is enforced by construction in
+    // BuildProductionSyncContext, where the route wires are actually built.
     private void ReconcileDynamicGalleryRoutes(Scene scene, List<SourceRoute> routes)
     {
-        var settings = scene.DynamicGallery;
-        if (settings is null || _canvasInteractionActive)
+        if (scene.DynamicGallery is null || _canvasInteractionActive)
         {
             return;
         }
 
-        var participants = RoomVideoParticipants
-            .Where(participant => participant.Health != FeedHealth.VideoOff)
-            .Take(Math.Clamp(settings.MaxTiles, 1, 64))
-            .ToList();
-        var participantIds = participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal);
-        var retained = routes
-            .Where(route => route.Mode == SourceRouteMode.Fixed &&
-                            route.ParticipantId is { Length: > 0 } participantId &&
-                            participantIds.Contains(participantId))
-            .GroupBy(route => route.ParticipantId!, StringComparer.Ordinal)
-            .Select(group => group.First())
-            .ToList();
-        var retainedIds = retained.Select(route => route.ParticipantId!).ToHashSet(StringComparer.Ordinal);
-
-        foreach (var participant in participants)
-        {
-            if (retainedIds.Add(participant.Id))
-            {
-                retained.Add(new SourceRoute
-                {
-                    Id = $"{scene.Id}-tile-{participant.Id}",
-                    Mode = SourceRouteMode.Fixed,
-                    ParticipantId = participant.Id,
-                    AudioRole = SourceAudioRole.Isolated,
-                    FitMode = "fill"
-                });
-            }
-        }
-
-        retained = retained.Take(Math.Clamp(settings.MaxTiles, 1, 64)).ToList();
-        var rects = DynamicGalleryLayoutService.BuildRects(
-            retained.Count,
-            tileAspectPreset: settings.TileAspect,
-            customAspectRatio: settings.CustomAspectRatio,
-            gutterPercent: settings.GutterPercent,
-            marginPercent: settings.MarginPercent);
-
-        for (var index = 0; index < retained.Count; index++)
-        {
-            var route = retained[index];
-            route.CanvasRect = rects[index].Clone();
-            route.ZIndex = index;
-            route.BorderStyle = settings.BorderThickness > 0 ? "solid" : "none";
-            route.BorderColor = settings.BorderColor;
-            route.BorderThickness = Math.Clamp(settings.BorderThickness, 0, 12);
-        }
-
         routes.Clear();
-        routes.AddRange(retained);
     }
+
+    /// <summary>
+    /// Flattens <see cref="TilesLayerPayloadBuilder"/>'s output into the MediaCore-project
+    /// wire record <see cref="MediaCoreTilesLayerWire"/> for a scene-sync command. Null for
+    /// any non-gallery scene (TilesLayerPayloadBuilder.Build returns null).
+    /// </summary>
+    private MediaCoreTilesLayerWire? BuildTilesLayerWire(Scene scene)
+    {
+        var payload = TilesLayerPayloadBuilder.Build(scene, RoomVideoParticipants);
+        if (payload is null)
+        {
+            return null;
+        }
+
+        return new MediaCoreTilesLayerWire(
+            payload.LayerId,
+            payload.Order,
+            payload.Members,
+            payload.Style.TileAspect,
+            payload.Style.CustomAspectRatio,
+            payload.Style.GutterPercent,
+            payload.Style.MarginPercent,
+            payload.Style.BackgroundColor);
+    }
+
+    // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
+    // repro 2026-08-16: a live meeting, Sources tab, a Tiles scene selected;
+    // dump CoreVideoPro.WinUI.exe.38368.dmp is c00000fd STACK OVERFLOW with
+    // RECURRING_STACK across Update_ViewModel_GalleryTileAspect →
+    // Selector.set_SelectedValue → the setter → here).
+    // The cycle: a Gallery* setter calls UpdateGallery, which raises
+    // PropertyChanged for EVERY gallery property; XAML pushes the value into the
+    // ComboBox's SelectedValue; that binding is Mode=TwoWay, so it writes the
+    // value straight back into the setter, which calls UpdateGallery again.
+    // WinUI does not short-circuit the echo, so nothing terminates it.
+    // Dropping the re-entrant write is correct: it is the binding echoing back a
+    // value the model already holds.
+    // Third instance of the Selector.SelectedValue + x:Bind family in this
+    // codebase (SourcesInputsPage role ComboBox; the scene ComboBox writing null
+    // into PreviewSceneId). See CLAUDE.md.
+    private bool _updatingGallery;
 
     private void UpdateGallery(Action<DynamicGallerySettings> update)
     {
+        if (_updatingGallery)
+        {
+            return;
+        }
+
         if (PreviewScene.DynamicGallery is not { } settings)
         {
             return;
         }
 
+        _updatingGallery = true;
+        try
+        {
+            UpdateGalleryCore(settings, update);
+        }
+        finally
+        {
+            _updatingGallery = false;
+        }
+    }
+
+    private void UpdateGalleryCore(DynamicGallerySettings settings, Action<DynamicGallerySettings> update)
+    {
         update(settings);
         var routes = GetPreviewEditableRoutes();
         ReconcileDynamicGalleryRoutes(PreviewScene, routes);
@@ -13072,17 +13180,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var tilesByParticipant = MultiviewTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
         if (ResolveRouteTile(resolved, tilesByParticipant, isProgramScene: false) is { } tile)
         {
-            return tile.Surface with
-            {
-                SurfaceKey = $"scene-layer-{index + 1}:{tile.Surface.SurfaceKey}",
-                Kind = VideoSurfaceKind.Multiview,
-                Title = $"{index + 1}. {tile.Participant.Name}"
-            };
+            return VideoSurfacePresentationRules.ToSceneLayerSurface(
+                tile.Surface,
+                index,
+                $"{index + 1}. {tile.Participant.Name}");
         }
 
         return VideoSurfaceState.Waiting(
             VideoSurfaceKind.Multiview,
-            $"scene-layer-{index + 1}",
+            VideoSurfacePresentationRules.SceneLayerPlaceholderKey(index),
             $"Source {index + 1}") with
             {
                 DetailLine = resolved.Mode switch

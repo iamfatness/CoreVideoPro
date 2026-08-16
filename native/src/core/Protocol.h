@@ -5,7 +5,7 @@
 
 namespace corevideo::core {
 
-inline constexpr std::array<std::string_view, 16> kNativeMediaCoreCapabilities = {
+inline constexpr std::array<std::string_view, 17> kNativeMediaCoreCapabilities = {
     "zoom-raw-video",
     "zoom-raw-audio",
     "gpu-compositor",
@@ -18,6 +18,7 @@ inline constexpr std::array<std::string_view, 16> kNativeMediaCoreCapabilities =
     "audio-monitor-output",
     "program-recording",
     "iso-recording",
+    "tiles-layer",
     "rtmp-output",
     "ndi-output",
     "srt-output",

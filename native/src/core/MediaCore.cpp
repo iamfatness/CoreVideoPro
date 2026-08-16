@@ -1,6 +1,8 @@
 ﻿#include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
+#include "compositor/TilesLayout.h"
+#include "compositor/TilesMembership.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "modules/AudioDsp.h"
@@ -716,6 +718,39 @@ rpc::Json MediaCore::sessionState() const {
                                       {"composite", hasPreviewScene()},
                                   });
   }
+  // T1 (Task 4): publish the solved wall so downstream consumers see what the
+  // core actually drew, not a re-derivation with the solver they are meant to
+  // be judging (this repo has shipped that "proxy that survives the bug"
+  // failure twice — see the loudness-meter and recording-fps history above).
+  // Reads lastRenderPlan_ directly — the SAME layers the compositor just
+  // rendered — so a later pixel oracle knows exactly where to sample and the
+  // canvas editor can position drag handles without recomputing anything.
+  // `.present` alone (re-review finding A), matching the plan-cache gate and
+  // buildRenderPlanForScene's wallActive: a configured wall with NOBODY live
+  // is exactly the state worth publishing (`members: []`), not the state to
+  // hide. A node that disappears in the case worth detecting is the
+  // "multiviewer node that only appears once configured" mistake again.
+  if (tilesLayer_.present) {
+    rpc::Json::Array memberNodes;
+    for (const auto& layer : lastRenderPlan_.layers) {
+      if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) {
+        continue;
+      }
+      memberNodes.push_back(rpc::Json{rpc::Json::Object{
+          {"sourceId", rpc::Json{layer.sourceId}},
+          {"rect", rpc::Json{rpc::Json::Object{
+              {"x", rpc::Json{static_cast<double>(layer.rect.x)}},
+              {"y", rpc::Json{static_cast<double>(layer.rect.y)}},
+              {"width", rpc::Json{static_cast<double>(layer.rect.width)}},
+              {"height", rpc::Json{static_cast<double>(layer.rect.height)}},
+          }}},
+      }});
+    }
+    state.emplace("tiles", rpc::Json::Object{
+                               {"layerId", tilesLayer_.layerId},
+                               {"members", rpc::Json{memberNodes}},
+                           });
+  }
   // The multiviewer config the core is ACTUALLY running — always published, even
   // at defaults. `configure-multiviewer` is a ONE-SHOT the shell sends at app
   // launch; when the core respawns under a live shell nothing re-sent it, so the
@@ -1380,6 +1415,106 @@ void MediaCore::setOutputProfile(const rpc::Json& command) {
   }
 }
 
+namespace {
+
+// Tiles style tokens the wall understands. An unrecognised token is a legal
+// string we did not expect, so fall back loudly rather than guess a shape.
+std::string normalizeTileAspect(const std::string& value, bool* fellBack) {
+  static const char* kKnown[] = {"16:9", "4:3", "5:4", "1:1", "3:4", "9:16", "custom"};
+  for (const char* known : kKnown) {
+    if (value == known) {
+      return value;
+    }
+  }
+  *fellBack = !value.empty();
+  return "16:9";
+}
+
+// Appends `message` only if it is not already present. `sceneValidationWarnings_`
+// is cleared per load-scene-graph but NOT per applyPreviewScene, and
+// applyPreviewScene rides the REPEATING spine sync — so a warning pushed there
+// unconditionally would grow without bound on a scene-flip loop (Magic Scene
+// runs at ~1/s). Dedupe makes every warning site idempotent regardless of which
+// path reaches it.
+void pushSceneWarningOnce(std::vector<std::string>& warnings, std::string message) {
+  if (std::find(warnings.begin(), warnings.end(), message) != warnings.end()) {
+    return;
+  }
+  warnings.push_back(std::move(message));
+}
+
+// A scene carrying BOTH ordinary routes and a tiles wall interleaves them: the
+// core emits route layers and the wall into ONE shared order namespace
+// (tiles-bg at wall.order, tile #i at wall.order + 1 + i), so a route at order
+// 2 sorts between tile 1 and tile 3 and composites a full-canvas cell over
+// individual wall tiles — on PROGRAM, and therefore in the virtual camera,
+// every recording and every stream.
+//
+// The shell cannot produce this shape any more (BuildProductionSyncContext
+// serialises an EMPTY route list for a DynamicGallery scene, by construction),
+// and the behaviour is pinned by TilesRenderPlan.RoutesAndAWallShareOneOrder
+// Namespace — but the WIRE still accepts it from any producer, silently. Say
+// so out loud, so future drift is audible instead of latent.
+void warnIfRoutesAndWallCollide(bool wallPresent,
+                                size_t routeCount,
+                                const char* busLabel,
+                                std::vector<std::string>& warnings) {
+  if (!wallPresent || routeCount == 0) {
+    return;
+  }
+  pushSceneWarningOnce(
+      warnings,
+      std::string("Scene carries BOTH ") + std::to_string(routeCount) + " route(s) and a tiles wall on the " +
+          busLabel + " bus; they share one layer-order namespace and will interleave. "
+          "A gallery scene should contribute no routes.");
+}
+
+TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>* warnings) {
+  TilesLayerState tiles;
+  tiles.present = true;
+  tiles.layerId = node.getString("layerId");
+  tiles.order = static_cast<int>(node.getNumber("order", 0.0));
+  if (const rpc::Json* rect = node.get("rect"); rect && rect->isObject()) {
+    tiles.rect = {static_cast<float>(rect->getNumber("x", 0.0)),
+                  static_cast<float>(rect->getNumber("y", 0.0)),
+                  static_cast<float>(rect->getNumber("w", 1.0)),
+                  static_cast<float>(rect->getNumber("h", 1.0))};
+  }
+  if (const rpc::Json* members = node.get("members"); members && members->isArray()) {
+    int memberIndex = 0;
+    for (const auto& member : members->asArray()) {
+      const std::string id = member.asString();
+      if (!id.empty()) {
+        tiles.members.push_back(id);
+      } else if (!member.isString()) {
+        warnings->push_back("Tiles layer member " + std::to_string(memberIndex) +
+                             " is not a string; dropping it.");
+      } else {
+        warnings->push_back("Tiles layer member " + std::to_string(memberIndex) +
+                             " is an empty string; dropping it.");
+      }
+      ++memberIndex;
+    }
+  }
+  if (const rpc::Json* style = node.get("style"); style && style->isObject()) {
+    bool aspectFellBack = false;
+    tiles.style.tileAspect = normalizeTileAspect(style->getString("tileAspect"), &aspectFellBack);
+    if (aspectFellBack) {
+      warnings->push_back("Tiles layer requested an unknown tile aspect; using 16:9.");
+    }
+    tiles.style.customAspectRatio = style->getNumber("customAspectRatio", 16.0 / 9.0);
+    tiles.style.gutterPercent = style->getNumber("gutterPercent", 0.741);
+    tiles.style.marginPercent = style->getNumber("marginPercent", 0.741);
+    const std::string background = style->getString("backgroundColor");
+    if (!background.empty()) {
+      tiles.style.backgroundColor = background;
+    }
+  }
+  return tiles;
+}
+
+}  // namespace
+
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
@@ -1389,6 +1524,10 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
   }
   sceneRoutes_.clear();
   sceneBackground_ = {};
+  // T1: reset every load — a scene that previously carried a wall must not
+  // keep it when this sync omits the `tiles` node (the stale-state class
+  // this codebase has been bitten by before; see the one-shot/respawn rule).
+  tilesLayer_ = {};
   if (const rpc::Json* background = command.get("background"); background && background->isObject()) {
     sceneBackground_.mediaAssetId = background->getString("mediaAssetId");
     sceneBackground_.mediaAssetName = background->getString("mediaAssetName");
@@ -1481,6 +1620,10 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     sceneValidationWarnings_.push_back("Scene graph routes must be an array.");
   }
   routeCount_ = static_cast<int>(sceneRoutes_.size());
+  if (const rpc::Json* tiles = command.get("tiles"); tiles && tiles->isObject()) {
+    tilesLayer_ = parseTilesLayer(*tiles, &sceneValidationWarnings_);
+  }
+  warnIfRoutesAndWallCollide(tilesLayer_.present, sceneRoutes_.size(), "program", sceneValidationWarnings_);
   syncStillMediaDesired();
 }
 
@@ -2660,6 +2803,35 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
     }
   }
 
+  // T1: parsed like a local (mirroring routes/background/overlays above) --
+  // NOT written into previewTilesLayer_ directly here -- so a re-send of an
+  // unchanged preview scene stays a no-op via the signature check below, and
+  // its content folds into the signature so a `tiles`-only change is never
+  // mistaken for "unchanged". Reset-then-parse: a preview scene that
+  // previously had a wall must not keep it once a sync's `tiles` node is gone
+  // -- same stale-state class as the load-scene-graph reset above. Task 4
+  // review fix (C3): this used to parse into the SAME field load-scene-graph
+  // writes (tilesLayer_) -- a single field shared by both buses; it now
+  // assigns previewTilesLayer_ below, the preview bus's own copy.
+  TilesLayerState tiles;
+  if (const rpc::Json* tilesNode = previewScene.get("tiles"); tilesNode && tilesNode->isObject()) {
+    tiles = parseTilesLayer(*tilesNode, &sceneValidationWarnings_);
+  }
+  // Deduped (pushSceneWarningOnce) — this runs on the REPEATING spine sync,
+  // before the signature early-return below, so an unconditional push would
+  // grow sceneValidationWarnings_ without bound.
+  warnIfRoutesAndWallCollide(tiles.present, routes.size(), "preview", sceneValidationWarnings_);
+  signature += "tiles:" + std::to_string(tiles.present) + ":" + tiles.layerId + ":" +
+               std::to_string(tiles.order) + ":" + std::to_string(tiles.rect.x) + "," +
+               std::to_string(tiles.rect.y) + "," + std::to_string(tiles.rect.width) + "," +
+               std::to_string(tiles.rect.height) + ":" + tiles.style.tileAspect + ":" +
+               std::to_string(tiles.style.gutterPercent) + "," + std::to_string(tiles.style.marginPercent) +
+               "," + std::to_string(tiles.style.customAspectRatio) + ":" + tiles.style.backgroundColor + ":";
+  for (const auto& member : tiles.members) {
+    signature += member + ",";
+  }
+  signature += ";";
+
   if (previewSceneActive_ && signature == previewSceneSignature_) {
     return false;  // Unchanged â€” do not churn preview state.
   }
@@ -2672,6 +2844,13 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   previewOverlayAssets_ = std::move(overlays);
   previewRouteCount_ = static_cast<int>(previewSceneRoutes_.size());
   previewOverlayCount_ = static_cast<int>(previewOverlayAssets_.size());
+  // Task 4 review fix (C3): this used to write the SAME field
+  // load-scene-graph writes (tilesLayer_), and applyPreviewScene rides the
+  // frequent spine sync — so the first preview sync carrying no `tiles` wiped
+  // the live PROGRAM wall mid-show, and one carrying a different wall put a
+  // preview-only wall on PROGRAM air. previewTilesLayer_ is the preview bus's
+  // own field; buildRenderPlanForScene is handed the right one per bus.
+  previewTilesLayer_ = std::move(tiles);
   previewSceneActive_ = true;
   // A preview-scene change is structural; force the next render's event re-emit.
   previewStructureEmitted_ = false;
@@ -4163,7 +4342,7 @@ void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
 modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   auto plan = buildRenderPlanForScene(sceneId_, routeCount_, overlayCount_, sceneBackground_, sceneRoutes_,
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
-                                      videoFrames);
+                                      videoFrames, tilesLayer_);
   plan.warnings = sceneValidationWarnings_;
   return plan;
 }
@@ -4174,7 +4353,7 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
   auto plan = buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
                                       previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
                                       previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
-                                      videoFrames);
+                                      videoFrames, previewTilesLayer_);
   // Program and Preview may hold the same asset at different playback positions.
   // Give Preview its own frame-source namespace so its held cue frame cannot be
   // replaced by Program's moving decoder (or vice versa).
@@ -4198,8 +4377,26 @@ bool MediaCore::hasPreviewScene() const {
   if (!previewSceneActive_) {
     return false;
   }
+  // Re-review finding B: the wall COUNTS as a layer. This tally used to be
+  // routes + background + overlays only, so a CoreVideo Tiles preview scene
+  // was invisible to it — and with gallery routes now guaranteed empty at
+  // serialization time (BuildProductionSyncContext), a Tiles preview with no
+  // media background and no overlay scored ZERO. The third composite never
+  // ran, the preview shared-texture handle was cleared, and the shell fell
+  // back to the single-source preview path: the operator's preview monitor
+  // simply never showed the wall it was about to take. That is the gap
+  // MediaCoreCommandBuilderTests.TilesNodeRidesSetPreviewSceneToo believes it
+  // is protecting — the node was arriving; nothing composited it.
+  //
+  // `.present`, not `present && !members.empty()`, deliberately — the same
+  // gate as buildRenderPlanForScene's wallActive (finding A). A configured
+  // wall ALWAYS emits at least its background layer, so it always contributes
+  // exactly one layer here; using the members-aware form would make the
+  // preview go dark in precisely the all-cameras-off state finding A exists
+  // to fix, and would put the two gates back out of agreement.
+  const int wallLayers = previewTilesLayer_.present ? 1 : 0;
   const int layerCount = previewRouteCount_ + (previewSceneBackground_.enabled ? 1 : 0) +
-                         static_cast<int>(previewOverlayAssets_.size());
+                         static_cast<int>(previewOverlayAssets_.size()) + wallLayers;
   return layerCount >= 1;
 }
 
@@ -4214,7 +4411,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     bool captionEnabled,
     const std::string& captionText,
     const std::string& captionSpeaker,
-    const std::vector<modules::VideoFrame>& videoFrames) const {
+    const std::vector<modules::VideoFrame>& videoFrames,
+    const TilesLayerState& wall) const {
   modules::CompositorRenderPlan renderPlan;
   renderPlan.renderPlanId = sceneId + ":" + std::to_string(routeCount) + ":" + std::to_string(overlayCount);
   renderPlan.sceneId = sceneId;
@@ -4222,6 +4420,28 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   renderPlan.height = outputHeight_;
   renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade;
+
+  // A CONFIGURED WALL OWNS THIS SCENE'S VIDEO LAYERS — with or without members.
+  //
+  // This used to read `wall.present && !wall.members.empty()`, on the theory
+  // that a members-less `tiles` node should "render exactly like no wall".
+  // That is wrong, and wrong in the on-air direction (re-review finding A,
+  // same family as the empty-plan defect below).
+  // `TilesLayerPayloadBuilder.Build` emits `members: []` whenever every guest
+  // is video-off or the roster is momentarily empty — an ORDINARY meeting
+  // state, not an edge case. With the old gate, a live Tiles scene where all
+  // cameras go off stopped suppressing the legacy full-canvas fallback AND
+  // stopped emitting its background, so PROGRAM (and therefore the virtual
+  // camera, every recording and every stream) showed an improvised grid of
+  // every decoded source. The shell can no longer accidentally mask it either:
+  // a gallery scene now serialises an EMPTY route list by construction, so
+  // `sceneRoutes` is empty and the fallback branch is exactly what runs.
+  //
+  // A configured wall with nobody live shows its BACKGROUND. That is the rule
+  // the background-above-the-admission-gate fix established; `wall.present` is
+  // the gate that actually expresses it.
+  // Regression test: TilesRenderPlan.AMemberLessWallStillOwnsTheSceneAndEmitsItsBackground.
+  const bool wallActive = wall.present;
 
   int videoLayerIndex = 0;
   const int videoLayerCount = routeCount > 0 ? routeCount : static_cast<int>(videoFrames.size());
@@ -4297,7 +4517,17 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }
-  } else if (!videoFrames.empty()) {
+  } else if (!videoFrames.empty() && !wallActive) {
+    // Task 4 review fix (C2): this legacy "no routes -> show whatever frames
+    // arrived" fallback pre-dates the tiles wall and used to fire regardless
+    // of it. With `routes:[]` + `tiles` (the exact shape the wall's own
+    // scene-sync helper sends, and what T5 is specced to produce), it emitted
+    // one full-canvas layer per decoded frame at order 0..N-1, which
+    // interleaves with the wall's own tiles-bg(order 0)/tile:*(1..N) layers
+    // after sortCompositorRenderPlan — full-canvas cells compositing OVER
+    // individual wall tiles. A configured wall (`wall.present`, regardless of
+    // members or current admission — see wallActive above) now owns this
+    // scene's video layers exclusively.
     renderPlan.layers.reserve(videoFrames.size());
     for (size_t index = 0; index < videoFrames.size(); ++index) {
       modules::CompositorRenderPlanLayer layer;
@@ -4309,6 +4539,146 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       const auto layout = compositor::gridCell(static_cast<int>(videoFrames.size()), static_cast<int>(index));
       layer.rect = {layout.x, layout.y, layout.width, layout.height};
       renderPlan.layers.push_back(std::move(layer));
+    }
+  }
+
+  // T1: expand the tiles wall into per-tile render-plan layers, once per
+  // render tick (buildRenderPlanForScene runs every tick already; this adds
+  // no new frequency). This is deliberate — it is what lets a later task
+  // animate the wall: the rects simply differ each frame, with no new command
+  // required. N layers inside ONE composited texture is the multiview
+  // pattern already established in this codebase; it is NOT the retired
+  // per-tile-XAML-swap-chain pattern (CoreMessagingXP 0xc000027b).
+  //
+  // wallActive is `wall.present` — the SAME gate that suppresses the legacy
+  // fallback above, so the two can never disagree. A members-less wall falls
+  // through to the background-only plan below (finding A); it must never fall
+  // back to "render exactly like no wall", which is what put an improvised
+  // grid on air.
+  if (wallActive) {
+    const int tilesBaseOrder = wall.order;
+    // A SCENE MEDIA BACKGROUND WINS OVER THE WALL'S SOLID COLOUR (owner report,
+    // live meeting 2026-08-16: "supersource background doesn't load on tiles
+    // scene"). The scene background is emitted above at order -100; the wall's
+    // background is an OPAQUE solid at order 0 across wall.rect, which defaults
+    // to the whole canvas — so it sorted on top and painted the operator's
+    // SuperSource backdrop out entirely. Before T1 a gallery scene emitted no
+    // such layer, so this is a T1 regression, not a pre-existing gap.
+    //
+    // When the scene carries a background, IT is the wall's ground and the
+    // configured colour is not painted. That matches the reference product,
+    // where the background source draws over the background colour.
+    //
+    // The CRITICAL "a wallActive wall never emits an empty plan" rule still
+    // holds either way: with a scene background the media-background layer is
+    // in the plan, without one the tiles background below is.
+    const bool wallPaintsItsOwnBackground = !sceneBackground.enabled;
+
+    // Whole-branch review fix (CRITICAL, on-air): the background layer is
+    // emitted for EVERY active wall — BEFORE the admitted-members gate below,
+    // never inside it.
+    //
+    // This block used to sit inside `if (!admitted.empty())`, so a wall whose
+    // members were ALL stale (or whose first frames had simply not landed yet
+    // — true transiently on every single Tiles take) produced an EMPTY render
+    // plan: the legacy full-canvas fallback above is deliberately suppressed
+    // while a wall is active, and nothing else contributed a layer. An empty
+    // `renderPlan.layers` is not "draw nothing" to any of the three
+    // compositors — D3D11CompositorAdapter::resolveLayers,
+    // ProgramFramePreview's buildProgramFramePreview, and
+    // MetalCompositorAdapter::resolveLayers each carry their OWN
+    // `layers.empty()` fallback that improvises one full-canvas grid cell per
+    // DECODED FRAME. PROGRAM would then show a grid of whatever the core
+    // happened to be decoding — sources that are not on the wall at all, or
+    // exactly the frozen members the staleness veto had just rejected — and
+    // PROGRAM is inherited by the virtual camera, every recording and every
+    // stream. An active wall must therefore ALWAYS put at least its own
+    // background on the plan, so the plan is never empty and those three
+    // fallbacks can never fire under a wall.
+    // Regression test: TilesRenderPlan.AnAllStaleWallStillEmitsItsBackground.
+    if (wallPaintsItsOwnBackground) {
+    modules::CompositorRenderPlanLayer background;
+    background.layerId = "tiles-bg:" + wall.layerId;
+    background.kind = "tiles-background";
+    background.sourceId = background.layerId;
+    background.order = tilesBaseOrder;
+    background.rect = wall.rect;
+    background.fitMode = "fill";
+    // Task 4 review fix (I5): borderColor is NEVER read as a fill — with
+    // borderStyle="none"/thickness 0 nothing draws it, and a layer with no
+    // matching frame (this one has neither participantId nor mediaAssetId)
+    // renders the compositor's default mid-grey ResolvedLayer::color
+    // instead. hasFillColor/fillColor are the field both the D3D11 path and
+    // the CPU preview path actually read for a sourceless solid layer.
+    background.hasFillColor = true;
+    background.fillColor = wall.style.backgroundColor;
+    background.borderColor = wall.style.backgroundColor;
+    background.borderStyle = "none";
+    background.borderThickness = 0.f;
+    renderPlan.layers.push_back(std::move(background));
+    }
+
+    const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
+    if (!admitted.empty()) {
+      const double canvasAspect = outputHeight_ > 0
+          ? static_cast<double>(outputWidth_) / static_cast<double>(outputHeight_)
+          : 16.0 / 9.0;
+      // Task 4 review fix (M9): the solver's canvasAspectRatio describes the
+      // space the RESULT rects live in — the wall's own rect, not the full
+      // canvas. Handing it the raw canvas aspect is only correct while the
+      // wall rect happens to BE the full canvas (today's only configuration);
+      // a partial wall rect (a future task) would otherwise solve tiles for
+      // the wrong aspect and squash them once mapped into the narrower rect.
+      const double wallAspect = wall.rect.height > 0.f
+          ? canvasAspect * static_cast<double>(wall.rect.width) / static_cast<double>(wall.rect.height)
+          : canvasAspect;
+      const auto rects = compositor::solveTilesLayout(
+          static_cast<int>(admitted.size()), wallAspect, wall.style.tileAspect,
+          wall.style.customAspectRatio, wall.style.gutterPercent,
+          wall.style.marginPercent);
+
+      for (size_t index = 0; index < admitted.size() && index < rects.size(); ++index) {
+        modules::CompositorRenderPlanLayer layer;
+        layer.layerId = "tile:" + admitted[index];
+        layer.kind = "participant-video";
+        layer.sourceId = admitted[index];
+        // Tile rects are solved in the WALL's own normalized space; map them
+        // into canvas space so a wall can occupy part of the canvas beside
+        // other layers (wall.rect defaults to the full canvas).
+        layer.rect = {wall.rect.x + rects[index].x * wall.rect.width,
+                      wall.rect.y + rects[index].y * wall.rect.height,
+                      rects[index].width * wall.rect.width,
+                      rects[index].height * wall.rect.height};
+        layer.order = tilesBaseOrder + 1 + static_cast<int>(index);
+        // Fill, never letterbox — keeps a wall of mixed-aspect cameras even;
+        // a tile narrower than its camera crops the sides instead of adding bars.
+        layer.fitMode = "fill";
+        // Tiles carry NO border in this task. Scene borders composite into
+        // PROGRAM, and PROGRAM is inherited by the virtual camera, every
+        // recording, and every stream — a border here puts chrome on air.
+        // Styling arrives in a later task deliberately.
+        layer.borderStyle = "none";
+        layer.borderThickness = 0.f;
+        // Task 4 review fix (C1): strip ONLY a leading "zoom:" — capture:/
+        // browser: members keep their FULL scheme-qualified id as
+        // participantId, matching how the route path builds it
+        // (`layer.participantId = "capture:" + route.captureDeviceId;`
+        // above) and how capture/browser producers stamp VideoFrame::
+        // participantId (WinUiCaptureDeviceAdapter.cpp / BrowserSourceHost
+        // Adapter.cpp both set it to the full "capture:<id>"). The compositor
+        // matches layers to frames by EXACT participantId
+        // (frameForParticipant); stripping everything before the first colon
+        // turned "capture:dev-1" into "dev-1", which matches nothing —
+        // drawing a permanent solid placeholder — and silently, because
+        // warnUnmatchedCaptureLayer only fires for keys starting "capture:"/
+        // "media:", and "dev-1" starts with neither.
+        if (admitted[index].rfind("zoom:", 0) == 0) {
+          layer.participantId = admitted[index].substr(5);
+        } else {
+          layer.participantId = admitted[index];
+        }
+        renderPlan.layers.push_back(std::move(layer));
+      }
     }
   }
 
@@ -4584,7 +4954,114 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // reaches the mixer in the same tick as their video.
   advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
 
+  // T1 (Task 4): refresh the wall's per-member frame-age snapshot from the SAME
+  // videoFrames gather the render plan is about to consult, immediately before
+  // building the plan. Geometry bookkeeping under the same lock scope as the
+  // rest of this tick — no pixel work. Covers members of EITHER bus's wall
+  // (sourceIds are globally unique, so one combined pass is cheaper and
+  // simpler than computing it twice).
+  const bool anyWallActive = (tilesLayer_.present && !tilesLayer_.members.empty()) ||
+                             (previewTilesLayer_.present && !previewTilesLayer_.members.empty());
+  if (anyWallActive) {
+    std::vector<std::string> combinedMembers;
+    std::unordered_set<std::string> seenMembers;
+    combinedMembers.reserve(tilesLayer_.members.size() + previewTilesLayer_.members.size());
+    for (const auto& member : tilesLayer_.members) {
+      if (seenMembers.insert(member).second) {
+        combinedMembers.push_back(member);
+      }
+    }
+    for (const auto& member : previewTilesLayer_.members) {
+      if (seenMembers.insert(member).second) {
+        combinedMembers.push_back(member);
+      }
+    }
+    tilesMemberFrameAges_.clear();
+    tilesMemberFrameAges_.reserve(combinedMembers.size());
+    for (const auto& member : combinedMembers) {
+      compositor::TilesMemberFrameAge age;
+      age.sourceId = member;
+      // Task 4 review fix (M7): compare in place instead of building a fresh
+      // "zoom:"+pid std::string per (member, frame) pair — this ran up to
+      // ~(member count * frame count) allocations every tick under coreMutex.
+      // capture:/browser: frames already carry their scheme in participantId
+      // (mirrors the ISO source-key convention above); a bare Zoom
+      // participantId is compared against member's "zoom:" prefix + tail.
+      const modules::VideoFrame* matched = nullptr;
+      for (const auto& frame : videoFrames) {
+        const std::string& pid = frame.participantId;
+        const bool matches = pid.find(':') != std::string::npos
+            ? pid == member
+            : member.size() == pid.size() + 5 && member.compare(0, 5, "zoom:") == 0 &&
+                  member.compare(5, std::string::npos, pid) == 0;
+        if (matches) {
+          matched = &frame;
+          break;
+        }
+      }
+      if (matched != nullptr && (matched->hasPixels() || matched->hasI420())) {
+        age.hasFrame = true;
+        // Task 4 review fix (I4): every frame producer in this codebase
+        // re-stamps VideoFrame::timestampMs with the CURRENT tick's clock even
+        // when re-serving a held/frozen frame (see ZoomEngineRuntime.cpp,
+        // the capture adapters), so `frameTimestampMs - frame.timestampMs`
+        // was ~0 for anything that has EVER decoded — the staleness filter
+        // (Task 3) could never actually fire, and a frozen-but-subscribed
+        // guest would keep a frozen tile on the wall forever. frameId only
+        // advances on a genuinely NEW frame (the ISO dedup a few lines above
+        // relies on the same property), so age is tracked from the tick at
+        // which this member's frameId last actually CHANGED, not from the
+        // frame's own (unreliable) timestamp.
+        auto& freshness = tilesFrameFreshness_[member];
+        if (!freshness.everSeen || freshness.lastFrameId != matched->frameId) {
+          freshness.everSeen = true;
+          freshness.lastFrameId = matched->frameId;
+          freshness.lastChangedTickMs = frameTimestampMs;
+        }
+        age.lastFrameAgeMs = std::max<int64_t>(0, frameTimestampMs - freshness.lastChangedTickMs);
+      } else {
+        age.hasFrame = false;
+        // The member has no real-content frame at all this tick (departed or
+        // never arrived) — forget its freshness history so a LATER return
+        // starts fresh at age 0 rather than replaying a stale frameId's
+        // elapsed time.
+        tilesFrameFreshness_.erase(member);
+      }
+      tilesMemberFrameAges_.push_back(age);
+    }
+  } else {
+    if (!tilesMemberFrameAges_.empty()) {
+      tilesMemberFrameAges_.clear();
+    }
+    if (!tilesFrameFreshness_.empty()) {
+      tilesFrameFreshness_.clear();
+    }
+  }
+
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
+  // and the sessionState() `tiles` node both read THIS, so a consumer can never
+  // observe a wall the compositor did not also receive (see modules_.compositor->
+  // render(renderPlan, videoFrames) below, which takes this same renderPlan).
+  //
+  // Task 4 review fix (I6): this used to run unconditionally — a full deep
+  // copy of every layer (13 std::strings + overlay/grade/chroma payload each)
+  // under coreMutex, every tick, for the ~100% of scenes with no PROGRAM wall.
+  // Gated on the PROGRAM wall specifically (not anyWallActive above): every
+  // reader of lastRenderPlan_ (lastRenderPlanForTest, the sessionState()
+  // `tiles` node) is ITSELF gated on tilesLayer_.present, so a stale cached
+  // plan from a since-removed wall is never observed by anything.
+  //
+  // Re-review finding A: the gate is `.present` ALONE, matching
+  // buildRenderPlanForScene's wallActive. A members-less wall still emits a
+  // real plan (its background), and caching it is what makes that plan
+  // observable — with the old `&& !members.empty()` gate, the exact state the
+  // finding is about (every camera off) would have been invisible to
+  // lastRenderPlanForTest() and to the snapshot. The copy still only happens
+  // for a Tiles scene, so the perf rationale is unchanged.
+  if (tilesLayer_.present) {
+    lastRenderPlan_ = renderPlan;
+  }
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
   // needed on screen, and the per-frame CPU Map otherwise caps the render rate.

@@ -374,6 +374,16 @@ struct CompositorRenderPlanLayer {
   // layers use this so animated overlays cannot escape their monitor cell.
   bool hasClipRect = false;
   CompositorLayerRect clipRect;
+  // Explicit solid-fill colour for a layer with no source frame at all (e.g.
+  // the tiles wall background). Both the D3D11 compositor (resolveLayers) and
+  // the CPU preview path (buildProgramFramePreview) honor this when set,
+  // parsing it with the same compositor::parseHexColorRgba() used for
+  // brand/border colors elsewhere. A layer with a real participant/media
+  // source ignores this and uses its frame (or the colorFromParticipantId()
+  // debug placeholder) instead — this is ONLY for layers that are
+  // deliberately sourceless.
+  bool hasFillColor = false;
+  std::string fillColor = "#808080";
 };
 
 struct CompositorRenderPlan {
