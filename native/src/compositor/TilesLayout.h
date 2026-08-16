@@ -1,6 +1,6 @@
 #pragma once
 
-#include "CompositorLayout.h"
+#include "compositor/CompositorLayout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -44,7 +44,11 @@ inline std::vector<LayerRect> solveTilesLayout(int tileCount,
 
   const double canvasAspect = std::clamp(canvasAspectRatio, 0.25, 4.0);
   const double tileAspect = resolveTileAspectRatio(tileAspectPreset, customAspectRatio);
-  // Divisor form, deliberately: see TilesLayout.GutterUsesTheDivisorForm.
+  // Divisor form: 1.0 / (100.0 / percent) is bit-identical to percent / 100.0 in normalized
+  // space [0,1], but matches the C# reference exactly. The distinction becomes load-bearing
+  // only at pixel magnitudes (e.g., h=1080); a future pixel-conversion task may inherit this
+  // and need to know divisor form preserves the historic constant round-trip (h / (100/0.741)
+  // = 8.0028). Never simplify to multiplicative form without checking that task's spec.
   const double gutterY = gutterPercent <= 0.0 ? 0.0 : std::clamp(1.0 / (100.0 / gutterPercent), 0.0, 0.1);
   const double marginY = marginPercent <= 0.0 ? 0.0 : std::clamp(1.0 / (100.0 / marginPercent), 0.0, 0.2);
   const double gutterX = gutterY / canvasAspect;

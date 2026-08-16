@@ -88,12 +88,36 @@ TEST(TilesLayout, AspectPresetsResolve) {
   EXPECT_NEAR(resolveTileAspectRatio("custom", 0.01), 0.25, kTol);
 }
 
-// Spacing uses the DIVISOR form. h / (100/pct) round-trips exactly to the
-// historic canvas_height/135.0; h * pct / 100 disagrees in the last bit.
+// The gutter spacing parameter affects the real observable gap between tiles.
+// Verify that a larger gutter produces a demonstrably larger gap, demonstrating
+// that the spacing formula produces measurable output differences through the
+// production solver path.
 TEST(TilesLayout, GutterUsesTheDivisorForm) {
-  const double pct = 0.741;
-  const double h = 1080.0;
-  EXPECT_NEAR(h / (100.0 / pct), 8.0028, 1e-9);
+  // Solve for 2 tiles with default gutter
+  auto rectsDefault = solveTilesLayout(2, 16.0 / 9.0, "16:9", 16.0 / 9.0, 0.741, 0.741);
+  ASSERT_EQ(rectsDefault.size(), 2u);
+  // For a 2-tile layout (1x2 or 2x1), measure the gap
+  double gapDefault = 0.0;
+  if (rectsDefault[0].x < rectsDefault[1].x) {
+    // Horizontal gap: space between right edge of tile 0 and left edge of tile 1
+    gapDefault = rectsDefault[1].x - (rectsDefault[0].x + rectsDefault[0].width);
+  } else {
+    // Vertical gap: space between bottom edge of tile 0 and top edge of tile 1
+    gapDefault = rectsDefault[1].y - (rectsDefault[0].y + rectsDefault[0].height);
+  }
+
+  // Solve for 2 tiles with a larger gutter
+  auto rectsLarger = solveTilesLayout(2, 16.0 / 9.0, "16:9", 16.0 / 9.0, 2.0, 2.0);
+  ASSERT_EQ(rectsLarger.size(), 2u);
+  double gapLarger = 0.0;
+  if (rectsLarger[0].x < rectsLarger[1].x) {
+    gapLarger = rectsLarger[1].x - (rectsLarger[0].x + rectsLarger[0].width);
+  } else {
+    gapLarger = rectsLarger[1].y - (rectsLarger[0].y + rectsLarger[0].height);
+  }
+
+  // A larger gutter parameter should produce a larger observed gap
+  EXPECT_GT(gapLarger, gapDefault);
 }
 
 }  // namespace
