@@ -40,6 +40,15 @@ TEST(TilesMembership, AStaleFeedLeavesTheWall) {
   EXPECT_TRUE(admitTilesMembers({"zoom:1"}, ages).empty());
 }
 
+// Lock the inclusive boundary: a member at EXACTLY the threshold is still live.
+// The threshold exists to prevent reflow on ordinary frame gaps, so treating "exactly
+// at the limit" as still-live is the conservative direction — it errs toward stability
+// rather than toward dropping a tile.
+TEST(TilesMembership, AMemberExactlyAtTheThresholdIsStillAdmitted) {
+  const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesStaleFrameMs}};
+  EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u);
+}
+
 // Re-admission is immediate: one fresh frame puts the guest back, in their
 // original slot order.
 TEST(TilesMembership, AReturningFeedIsReadmittedInOriginalOrder) {
