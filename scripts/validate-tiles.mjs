@@ -328,6 +328,40 @@ function sortReadingOrder(members) {
   return out;
 }
 
+// Groups plain rects into row-bands (same epsilon/technique as
+// sortReadingOrder, but operating on bare {x,y,width,height} rects) and
+// reports whether the layout genuinely HAS a y-axis gap (>=2 row bands) and/
+// or an x-axis gap (some row band has >=2 tiles side by side).
+//
+// This is an OBSERVATION of the published rects' own structure, not a
+// re-derivation of solveTilesLayout's decision — it never predicts columns/
+// rows/area, it only counts how many distinct row-bands and how many tiles
+// share a row, which is a fact about the data already on hand. It exists
+// because requiring both axes UNCONDITIONALLY breaks at N=2 (a fixture-legal
+// `--participants` value): 2 tiles at this 6% spacing solve to 2 columns x 1
+// row (single row, wider than 1x2 by area), so there is no y-axis gap AT
+// ALL, and demanding one is demanding something the correct layout cannot
+// have — not "the widest overall" (which reintroduces the exact axis
+// blindness the pixel-based gutterSample fix exists to close), but "only
+// require an axis the grid could genuinely produce."
+function detectGridShape(rects) {
+  const eps = 0.03;
+  const rows = [];
+  for (const r of rects) {
+    let row = rows.find((row) => Math.abs(row.y - r.y) < eps);
+    if (!row) {
+      row = { y: r.y, items: [] };
+      rows.push(row);
+    }
+    row.items.push(r);
+  }
+  return {
+    hasYAxis: rows.length >= 2,
+    hasXAxis: rows.some((row) => row.items.length >= 2),
+    rowCount: rows.length,
+  };
+}
+
 // Sample point: tile centre.
 //
 // An off-centre (25%/25%) sample point was tried first, on the theory that
@@ -905,14 +939,24 @@ try {
     bgOk = false;
     bgDetails.push("no usable margin band found");
   }
-  // A gutter is REQUIRED on BOTH axes here, not optional: this fixture's 6%
-  // spacing with participantCount tiles solves to a 2x2-ish grid (verified
-  // for N=3), so a missing gutter on EITHER axis means tiles are packed
-  // edge-to-edge or overlapping on that axis — a real defect, not a benign
-  // "single row/column" layout. Sampling only the wider-in-pixels axis (the
-  // old behaviour) meant an x-axis-only defect at this fixture's spacing was
-  // never checked at all.
+  // A gutter is required on an axis ONLY WHEN the solved grid actually has a
+  // gap on that axis — determined by observing the published rects'
+  // row/column structure (detectGridShape), never by re-deriving what
+  // solveTilesLayout SHOULD have produced. At this fixture's 6% spacing,
+  // N=3 solves to 2x2 (both axes present, verified) but N=2 solves to 2
+  // columns x 1 row (NO y-axis gap at all — demanding one would fail a
+  // correct build). Unconditionally requiring both axes was itself a bug:
+  // it broke `--participants 2`. This is NOT a reversion to "widest overall"
+  // (which is what made the boundary check axis-blind in the first place) —
+  // every axis the grid DOES have is still required and checked in pixels.
+  const shapeA = countOkA ? detectGridShape(rectsA) : { hasXAxis: false, hasYAxis: false, rowCount: 0 };
   for (const axis of ["x", "y"]) {
+    const axisExpected = axis === "x" ? shapeA.hasXAxis : shapeA.hasYAxis;
+    if (!countOkA) continue;
+    if (!axisExpected) {
+      bgDetails.push(`${axis}-axis: no gap expected at this layout (rowCount=${shapeA.rowCount}) — not checked`);
+      continue;
+    }
     const g = gutterA ? gutterA[axis] : null;
     if (g && g.gapPx > 2) {
       const patch = Math.max(4, Math.min(20, Math.floor(g.gapPx * 0.5)));
@@ -920,9 +964,9 @@ try {
       const ok = colorClose(rgb, bgRgb, 24);
       bgOk = bgOk && ok;
       bgDetails.push(`gutter[${axis}]=rgb(${rgb.r},${rgb.g},${rgb.b}) vs bg(${bgRgb.r},${bgRgb.g},${bgRgb.b}) -> ${ok ? "match" : "MISMATCH"}`);
-    } else if (countOkA) {
+    } else {
       bgOk = false;
-      bgDetails.push(`no usable inter-tile gutter found on the ${axis}-axis — expected one at this fixture's spacing/count (tiles touching or overlapping?)`);
+      bgDetails.push(`no usable inter-tile gutter found on the ${axis}-axis — expected one at this layout (tiles touching or overlapping?)`);
     }
   }
   assertTrue("background colour (6% fixture)", bgOk, bgDetails.join("; "));
@@ -946,14 +990,19 @@ try {
     let boundaryOk = countOkA;
     const boundaryDetails = [];
     for (const axis of ["x", "y"]) {
+      const axisExpected = axis === "x" ? shapeA.hasXAxis : shapeA.hasYAxis;
       const g = gutterA ? gutterA[axis] : null;
       if (!countOkA) {
         boundaryDetails.push(`${axis}-axis: skipped (tile count wrong)`);
         continue;
       }
+      if (!axisExpected) {
+        boundaryDetails.push(`${axis}-axis: no gap expected at this layout (rowCount=${shapeA.rowCount}) — not scanned`);
+        continue;
+      }
       if (!g || g.gapPx <= 2) {
         boundaryOk = false;
-        boundaryDetails.push(`${axis}-axis: no gutter pair available to scan`);
+        boundaryDetails.push(`${axis}-axis: no gutter pair available to scan (expected one at this layout)`);
         continue;
       }
       const edgeMeasure = measureEdgeTransition(programAbs, phaseA.tOffsetSec, g);
@@ -1114,7 +1163,16 @@ try {
     bgOkD = false;
     bgDetailsD.push("no usable margin band found at default spacing");
   }
-  if (gutterD && gutterD.gapPx > 2) {
+  // A gutter can only exist with >=2 tiles to have a gap BETWEEN — same
+  // shape-observation discipline as phase A's fix above. With N=2 and one
+  // participant gone stale by phase D, only 1 tile remains and there is
+  // NOTHING to have a gutter against; demanding one there would repeat
+  // exactly the bug just fixed in phase A, one phase later.
+  const shapeD = countOkD ? detectGridShape(rectsD) : { hasXAxis: false, hasYAxis: false, rowCount: 0 };
+  const gutterExpectedD = shapeD.hasXAxis || shapeD.hasYAxis;
+  if (!gutterExpectedD) {
+    if (countOkD) bgDetailsD.push(`no gutter expected at default spacing (${rectsD.length} tile(s) remaining) — not checked`);
+  } else if (gutterD && gutterD.gapPx > 2) {
     const patch = Math.max(3, Math.min(10, Math.floor(gutterD.gapPx * 0.5)));
     const rgb = samplePatchMedianRgb(programAbs, phaseD.tOffsetSec, gutterD.midX * canvasWidth, gutterD.midY * canvasHeight, patch);
     const ok = colorClose(rgb, bgRgb, 24);
@@ -1122,7 +1180,7 @@ try {
     bgDetailsD.push(`gutter[${gutterD.axis}](${gutterD.gapPx.toFixed(1)}px)=rgb(${rgb.r},${rgb.g},${rgb.b}) -> ${ok ? "match" : "MISMATCH"}`);
   } else if (countOkD) {
     bgOkD = false;
-    bgDetailsD.push("no usable inter-tile gutter found at default spacing");
+    bgDetailsD.push("no usable inter-tile gutter found at default spacing (expected one)");
   }
   assertTrue("background colour (shipping default spacing)", bgOkD, bgDetailsD.join("; "));
 
