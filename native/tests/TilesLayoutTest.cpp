@@ -88,15 +88,27 @@ TEST(TilesLayout, AspectPresetsResolve) {
   EXPECT_NEAR(resolveTileAspectRatio("custom", 0.01), 0.25, kTol);
 }
 
-// The gutter spacing parameter affects the real observable gap between tiles.
-// Verify that a larger gutter produces a demonstrably larger gap, demonstrating
-// that the spacing formula produces measurable output differences through the
-// production solver path.
-TEST(TilesLayout, GutterUsesTheDivisorForm) {
-  // Solve for 2 tiles with default gutter
-  auto rectsDefault = solveTilesLayout(2, 16.0 / 9.0, "16:9", 16.0 / 9.0, 0.741, 0.741);
+// The gutter spacing parameter produces an exact observable gap between tiles.
+// For a 2-tile layout, the gap equals gutterX = gutterY / canvasAspect.
+// Verify both the absolute value and that a larger gutter produces a larger gap.
+TEST(TilesLayout, LargerGutterProducesLargerGap) {
+  const double canvasAspect = 16.0 / 9.0;
+  const double pctDefault = 0.741;
+  const double pctLarger = 2.0;
+
+  // Compute expected gaps using the divisor form, matching solveTilesLayout
+  const double gutterYDefault = 1.0 / (100.0 / pctDefault);
+  const double gutterXDefault = gutterYDefault / canvasAspect;
+
+  const double gutterYLarger = 1.0 / (100.0 / pctLarger);
+  const double gutterXLarger = gutterYLarger / canvasAspect;
+
+  // Solve for 2 tiles with default gutter (gutter only, fixed margin)
+  auto rectsDefault =
+      solveTilesLayout(2, canvasAspect, "16:9", 16.0 / 9.0, pctDefault, 0.741);
   ASSERT_EQ(rectsDefault.size(), 2u);
-  // For a 2-tile layout (1x2 or 2x1), measure the gap
+
+  // For a 2-tile layout (1x2 or 2x1), measure the actual gap
   double gapDefault = 0.0;
   if (rectsDefault[0].x < rectsDefault[1].x) {
     // Horizontal gap: space between right edge of tile 0 and left edge of tile 1
@@ -106,9 +118,11 @@ TEST(TilesLayout, GutterUsesTheDivisorForm) {
     gapDefault = rectsDefault[1].y - (rectsDefault[0].y + rectsDefault[0].height);
   }
 
-  // Solve for 2 tiles with a larger gutter
-  auto rectsLarger = solveTilesLayout(2, 16.0 / 9.0, "16:9", 16.0 / 9.0, 2.0, 2.0);
+  // Solve for 2 tiles with larger gutter (gutter only, same margin)
+  auto rectsLarger =
+      solveTilesLayout(2, canvasAspect, "16:9", 16.0 / 9.0, pctLarger, 0.741);
   ASSERT_EQ(rectsLarger.size(), 2u);
+
   double gapLarger = 0.0;
   if (rectsLarger[0].x < rectsLarger[1].x) {
     gapLarger = rectsLarger[1].x - (rectsLarger[0].x + rectsLarger[0].width);
@@ -116,7 +130,11 @@ TEST(TilesLayout, GutterUsesTheDivisorForm) {
     gapLarger = rectsLarger[1].y - (rectsLarger[0].y + rectsLarger[0].height);
   }
 
-  // A larger gutter parameter should produce a larger observed gap
+  // Verify the absolute value for the default case matches the expected formula
+  // (within floating-point tolerance after all the solver math)
+  EXPECT_NEAR(gapDefault, gutterXDefault, 1e-6);
+
+  // Verify a larger gutter parameter produces a demonstrably larger gap
   EXPECT_GT(gapLarger, gapDefault);
 }
 
