@@ -82,7 +82,19 @@ const argValue = (name, fallback) => {
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
 const buildDir = resolve(argValue("build-dir", buildDirDefault));
-const participantCount = Math.max(2, Math.min(6, Number(argValue("participants", 3))));
+// Clamped to 2..3 ON PURPOSE (was 2..6). Only N=2 and N=3 are reasoned about
+// anywhere in this script: N=3 solves to a 2x2 grid (both gutter axes present)
+// and N=2 to 2 columns x 1 row (x-axis only), and every "is this axis expected"
+// decision below is written against those two shapes. N=4..6 fall into
+// sortReadingOrder/detectGridShape's `eps = 0.03` row-banding, which is
+// UNTESTED at those tile heights — and its failure direction is SILENT: a row
+// band that mis-merges makes detectGridShape report one fewer row, which turns
+// a genuinely-expected axis into "no gap expected at this layout — not checked"
+// and quietly skips an assertion instead of failing it. To widen this you must
+// first make row-banding derive its epsilon from the measured tile height (not
+// a fixed 0.03) and prove it on a 3x2 wall, then extend the fixture's
+// expected-axis reasoning to cover the extra shapes.
+const participantCount = Math.max(2, Math.min(3, Number(argValue("participants", 3))));
 const phaseSeconds = Math.max(1.5, Number(argValue("phase-seconds", 3)));
 const keepArtifacts = args.includes("--keep-artifacts");
 
@@ -154,7 +166,19 @@ function rgbToYuv({ r, g, b }) {
 // ceiling. maxDist/minMargin are set from this script's own measured healthy
 // separations (correct matches: dist 0.0-3.2; cross-participant separation:
 // 18.1-37.2) with real margin to spare on both sides.
-function identifyParticipant(sampleUv, candidatePids, chromaOf, { maxDist = 8, minMargin = 6 } = {}) {
+// The classifier's two thresholds and this script's own measured round-trip
+// error, named so the fingerprint-separation floor below can be DERIVED from
+// them instead of being an independent magic number that can silently drift
+// out of agreement with them.
+const kIdentifyMaxDist = 8;      // a match must be within this of its fingerprint
+const kIdentifyMinMargin = 6;    // ...and beat the runner-up by at least this
+const kMaxSampleError = 3.2;     // measured healthy correct-match distance (0.0-3.2)
+function identifyParticipant(
+  sampleUv,
+  candidatePids,
+  chromaOf,
+  { maxDist = kIdentifyMaxDist, minMargin = kIdentifyMinMargin } = {},
+) {
   let best = null;
   let bestDist = Infinity;
   let secondDist = Infinity;
@@ -401,9 +425,21 @@ function marginSample(rects) {
   return candidates[0];
 }
 
-// Finds the widest inter-tile gutter on EACH axis independently and returns
-// BOTH a simple midpoint sample (for the background-colour check) and the
-// two boundary edges (for measureEdgeTransition's geometry check).
+// Finds the inter-tile gutter on EACH axis independently and returns BOTH a
+// simple midpoint sample (for the background-colour check) and the two
+// boundary edges (for measureEdgeTransition's geometry check).
+//
+// PER AXIS IT TAKES THE SMALLEST POSITIVE GAP, not the largest. The pair loop
+// below considers EVERY ordered pair that shares a band, including
+// NON-ADJACENT ones: in a row of three tiles, tile 0 and tile 2 satisfy
+// `b.x > a.x + a.width` with a "gap" of tile1.width + 2*gutter. Taking the
+// widest therefore returned 683.20px for a 64.80px gutter on the 3-up 1:1
+// phase — measured, not theorised. In a uniform grid every x-gap is
+// k*(tileWidth + gutter) - tileWidth for some k >= 1, so k=1 (the real
+// adjacent gutter) is always the SMALLEST, and the minimum is exactly the
+// gutter with no adjacency bookkeeping. This is unchanged for any layout with
+// at most two tiles per band (the 2x2 fixture phase A), where adjacent and
+// widest are the same pair.
 //
 // Compares candidate gaps in PIXELS, not normalized units, and returns the
 // best x-axis AND the best y-axis candidate (not just an overall "widest").
@@ -431,7 +467,7 @@ function gutterSample(rects) {
         const midY = Math.max(a.y, b.y) + overlapY / 2;
         const midX = a.x + a.width + gap / 2;
         const cand = { axis: "x", gap, gapPx, midX, midY, edgeNear: a.x + a.width, edgeFar: b.x, perp: midY };
-        if (!bestX || cand.gapPx > bestX.gapPx) bestX = cand;
+        if (!bestX || cand.gapPx < bestX.gapPx) bestX = cand;
       }
       const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
       if (overlapX > 0.3 * Math.min(a.width, b.width) && b.y > a.y + a.height) {
@@ -440,7 +476,7 @@ function gutterSample(rects) {
         const midX = Math.max(a.x, b.x) + overlapX / 2;
         const midY = a.y + a.height + gap / 2;
         const cand = { axis: "y", gap, gapPx, midX, midY, edgeNear: a.y + a.height, edgeFar: b.y, perp: midX };
-        if (!bestY || cand.gapPx > bestY.gapPx) bestY = cand;
+        if (!bestY || cand.gapPx < bestY.gapPx) bestY = cand;
       }
     }
   }
@@ -648,13 +684,36 @@ function buildSpinePayload(participants, excludeVideoId = null) {
   };
 }
 
+// The two spacing configurations this oracle exercises, named so the spacing
+// assertion can compare the MEASURED pixels against the percentages that were
+// actually CONFIGURED (rather than printing them and throwing them away).
+// kShippingStyle mirrors parseTilesLayer's defaults in MediaCore.cpp — the
+// values an omitted style field resolves to, i.e. what the product ships.
+const kFixtureStyle = { gutterPercent: 6, marginPercent: 6 };
+const kShippingStyle = { gutterPercent: 0.741, marginPercent: 0.741 };
+
+// Mirrors compositor::resolveTileAspectRatio (native/src/compositor/TilesLayout.h).
+// This is the CONFIGURED contract, not a re-implementation of the solver: it
+// turns the preset string this script SENT into the width/height ratio the
+// published rects must have. Anything the parser does not recognise falls back
+// to 16:9, exactly as normalizeTileAspectPreset does.
+function tileAspectRatioOf(preset) {
+  if (preset === "4:3") return 4 / 3;
+  if (preset === "5:4") return 5 / 4;
+  if (preset === "1:1") return 1;
+  if (preset === "3:4") return 3 / 4;
+  if (preset === "9:16") return 9 / 16;
+  return 16 / 9;
+}
+
 // styleOverrides defaults to a generous 6% gutter/margin (~65px at 1080p) —
 // the wall ships at 0.741% (~8px), too thin to sample reliably against h264
 // compression bleed at tile boundaries. This does not change what "correct"
-// means for any assertion, it just gives the oracle room to sample. Pass {}
-// to get the REAL shipping defaults (used by the dedicated default-spacing
-// phase below, so the thin-gutter case is exercised too, not just the fixture).
-function tilesWallCommand(sceneId, memberIds, tileAspect, styleOverrides = { gutterPercent: 6, marginPercent: 6 }) {
+// means for any assertion, it just gives the oracle room to sample. Pass
+// kShippingStyle to get the REAL shipping defaults (used by the dedicated
+// default-spacing phase below, so the thin-gutter case is exercised too, not
+// just the fixture).
+function tilesWallCommand(sceneId, memberIds, tileAspect, styleOverrides = kFixtureStyle) {
   return {
     type: "load-scene-graph",
     sceneId,
@@ -758,7 +817,7 @@ try {
   await send("media-core-sync", { elapsedMs: elapsed(), commands: [tilesWallCommand("tiles-validate-a", memberIds, "16:9")] });
   await sleep(phaseSeconds * 1000);
   let snap = (await send("media-core-sync", { elapsedMs: elapsed(), commands: [] })).snapshot;
-  const phaseA = { tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
+  const phaseA = { name: "phaseA", tileAspect: "16:9", style: kFixtureStyle, tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
   console.log(`Phase A tiles : ${phaseA.tiles.length} member(s) @ t=${phaseA.tOffsetSec.toFixed(2)}s`);
 
   // ── Phase B: SAME members, tileAspect switched to 1:1 (mismatched vs the
@@ -766,7 +825,7 @@ try {
   await send("media-core-sync", { elapsedMs: elapsed(), commands: [tilesWallCommand("tiles-validate-b", memberIds, "1:1")] });
   await sleep(phaseSeconds * 1000);
   snap = (await send("media-core-sync", { elapsedMs: elapsed(), commands: [] })).snapshot;
-  const phaseB = { tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
+  const phaseB = { name: "phaseB", tileAspect: "1:1", style: kFixtureStyle, tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
   console.log(`Phase B tiles : ${phaseB.tiles.length} member(s) (1:1) @ t=${phaseB.tOffsetSec.toFixed(2)}s`);
 
   // ── Phase C: reflow after a GENUINE STALENESS departure. Back to 16:9,
@@ -806,7 +865,7 @@ try {
   // is comfortably inside the post-reflow state, not right at the edge.
   await sleep(800);
   snap = (await send("media-core-sync", { elapsedMs: elapsed(), commands: [] })).snapshot;
-  const phaseC = { tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
+  const phaseC = { name: "phaseC", tileAspect: "16:9", style: kFixtureStyle, tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
   console.log(`Phase C tiles : ${phaseC.tiles.length} member(s) (${droppedMemberId} stale) @ t=${phaseC.tOffsetSec.toFixed(2)}s`);
 
   // ── Phase D: SAME staleness state (member never re-subscribed), but at the
@@ -817,7 +876,11 @@ try {
   await send("media-core-sync", { elapsedMs: elapsed(), commands: [tilesWallCommand("tiles-validate-d", memberIds, "16:9", {})] });
   await sleep(phaseSeconds * 1000);
   snap = (await send("media-core-sync", { elapsedMs: elapsed(), commands: [] })).snapshot;
-  const phaseD = { tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
+  // style: kShippingStyle is the EXPECTATION, not what was sent — phase D sends
+  // `{}` so the style keys are OMITTED and the C++ parseTilesLayer defaults
+  // apply. Comparing the result against kShippingStyle therefore pins the core's
+  // own defaults as well as the spacing they produce.
+  const phaseD = { name: "phaseD", tileAspect: "16:9", style: kShippingStyle, tOffsetSec: (Date.now() - recordStartMs) / 1000 - 0.25, tiles: tilesNodeOf(snap) };
   console.log(`Phase D tiles : ${phaseD.tiles.length} member(s) (default spacing) @ t=${phaseD.tOffsetSec.toFixed(2)}s`);
 
   const stopSnap = (await send("media-core-sync", { elapsedMs: elapsed(), commands: [{ type: "stop-recording-session", reason: "tiles pixel oracle complete" }] })).snapshot;
@@ -869,7 +932,20 @@ try {
         problems.push(`fingerprint[${pid}] reads as background: rgb=(${fp.rgb.r},${fp.rgb.g},${fp.rgb.b})`);
       }
     }
-    const minSeparation = 12;
+    // DERIVED from the classifier, not picked. A flat 12 was wrong and could
+    // fail a HEALTHY build: identifyParticipant accepts a match only when it
+    // beats the runner-up by >= kIdentifyMinMargin (6), and each of the two
+    // distances it compares carries up to kMaxSampleError (3.2, this script's
+    // own measured healthy correct-match error) of round-trip noise — the two
+    // can err in OPPOSITE directions, so a fingerprint pair whose true
+    // separation is S can present a margin as low as S - 2*kMaxSampleError. A
+    // pair admitted here at exactly 12.0 could therefore yield margin 5.6 < 6
+    // downstream and be REJECTED, failing "per-tile identity" on correct code.
+    // Floor = kIdentifyMinMargin + 2*kMaxSampleError = 6 + 6.4 = 12.4, rounded
+    // up to a whole unit. A gate that flakes gets switched off, and then it
+    // guards nothing — so the gate has to be self-consistent with the
+    // classifier it is protecting.
+    const minSeparation = Math.ceil(kIdentifyMinMargin + 2 * kMaxSampleError); // = 13
     for (let i = 0; i < pids.length; i += 1) {
       for (let j = i + 1; j < pids.length; j += 1) {
         const a = fingerprints.get(pids[i]).uv, b = fingerprints.get(pids[j]).uv;
@@ -1024,6 +1100,11 @@ try {
   // from validate-multiview.mjs's discipline so this oracle is a strict
   // superset of the structural validator it replaces, not merely a pixel
   // check bolted on beside it.
+  //
+  // The other half of that superset claim is validate-multiview's per-tile
+  // ASPECT check, which lives in its own assertion below ("per-tile aspect
+  // matches configured tileAspect"). Until that was added the superset claim
+  // was false: aspect was only ever checked on phase B's first tile.
   {
     const structuralProblems = [
       ...structuralInvariantProblems("phaseA", phaseA.tiles.map((m) => m.rect)),
@@ -1035,6 +1116,135 @@ try {
       "structural invariants (in-canvas, non-overlapping)",
       structuralProblems.length === 0,
       structuralProblems.length === 0 ? "all published rects across all 4 phases in-canvas and pairwise non-overlapping" : structuralProblems.join("; "),
+    );
+  }
+
+  // ================= Assertion: per-tile aspect matches the configured tileAspect =================
+  // The header claims this oracle is a strict SUPERSET of the structural
+  // validator it replaces (validate-multiview.mjs). That claim was FALSE:
+  // validate-multiview asserts every tile is 16:9 within 0.02, while this
+  // script only ever checked aspect on phase B's FIRST tile. A solver that
+  // ignored tileAspect entirely, or that emitted NON-UNIFORM tiles (one tile a
+  // different shape from its neighbours), passed here and would have failed
+  // the validator being retired.
+  //
+  // Why the expectation is exact: solveTilesLayout computes
+  // `height = width * canvasAspect / tileAspect` in NORMALIZED units, so in
+  // PIXELS the ratio is (width*W)/(height*H) = tileAspect exactly, for every
+  // tile in the grid (bestWidth/bestHeight are shared by all of them). Checking
+  // every rect against the configured value therefore also covers uniformity —
+  // a single odd tile fails its own comparison.
+  {
+    const aspectTolerance = 0.02; // validate-multiview.mjs's own tolerance
+    const aspectProblems = [];
+    const aspectNotes = [];
+    let aspectChecked = 0;
+    for (const phase of [phaseA, phaseB, phaseC, phaseD]) {
+      const expected = tileAspectRatioOf(phase.tileAspect);
+      if (phase.tiles.length === 0) {
+        aspectProblems.push(`${phase.name}: published no tiles`);
+        continue;
+      }
+      const measured = phase.tiles.map((m) => (m.rect.width * canvasWidth) / (m.rect.height * canvasHeight));
+      aspectChecked += measured.length;
+      aspectNotes.push(
+        `${phase.name} (${phase.tileAspect}, expect ${expected.toFixed(3)}): ${measured.map((a) => a.toFixed(3)).join(", ")}`,
+      );
+      measured.forEach((a, i) => {
+        if (Math.abs(a - expected) > aspectTolerance) {
+          aspectProblems.push(
+            `${phase.name} tile #${i} aspect=${a.toFixed(4)} vs configured tileAspect="${phase.tileAspect}" (${expected.toFixed(4)})`,
+          );
+        }
+      });
+    }
+    if (aspectChecked === 0) aspectProblems.push("no tiles published in any phase — nothing was checked");
+    assertTrue(
+      "per-tile aspect matches configured tileAspect (every rect, every phase)",
+      aspectProblems.length === 0,
+      aspectProblems.length === 0
+        ? `${aspectChecked} rect(s) across 4 phases within ${aspectTolerance} — ${aspectNotes.join(" | ")}`
+        : aspectProblems.join("; "),
+    );
+  }
+
+  // ================= Assertion: measured spacing matches the configured percentages =================
+  // The oracle CONFIGURES gutterPercent/marginPercent (6% for the fixture
+  // phases, the core's own defaults for phase D) and then measured those
+  // values in pixels only to PRINT them — the sole gate was `gapPx > 2`. So a
+  // core that ignored or clamped the whole style block still passed an
+  // assertion literally named "background colour (shipping default spacing)".
+  // Compare the measurements against what was asked for.
+  //
+  // Two facts from solveTilesLayout (TilesLayout.h) make this exact:
+  //  - gutterY = gutterPercent/100 (normalized in Y) and gutterX = gutterY /
+  //    canvasAspect, so BOTH axes' gutters are the SAME width in PIXELS:
+  //    gutterX*W == gutterY*H == (gutterPercent/100)*canvasHeight.
+  //  - the grid is CENTRED (`top = (1-gridHeight)/2`, `left = (1-rowWidth)/2`),
+  //    so only the BINDING axis sits at exactly the configured margin and the
+  //    other is >= it. The TIGHTEST of the four outer bands is therefore the
+  //    configured margin, and is what gets compared.
+  {
+    const spacingTolPx = 1.5;
+    const spacingProblems = [];
+    const spacingNotes = [];
+    for (const phase of [phaseA, phaseB, phaseC, phaseD]) {
+      const rects = phase.tiles.map((m) => m.rect);
+      if (rects.length === 0) {
+        spacingProblems.push(`${phase.name}: published no tiles`);
+        continue;
+      }
+      const expectedGutterPx = (phase.style.gutterPercent / 100) * canvasHeight;
+      const expectedMarginPx = (phase.style.marginPercent / 100) * canvasHeight;
+      const g = gutterSample(rects);
+      const shape = detectGridShape(rects);
+      for (const axis of ["x", "y"]) {
+        const axisExpected = axis === "x" ? shape.hasXAxis : shape.hasYAxis;
+        if (!axisExpected) {
+          spacingNotes.push(`${phase.name} gutter[${axis}]: no gap at this layout (rowCount=${shape.rowCount}) — not checked`);
+          continue;
+        }
+        const cand = g[axis];
+        if (!cand) {
+          spacingProblems.push(`${phase.name}: expected a ${axis}-axis gutter at this layout, found none`);
+          continue;
+        }
+        const err = Math.abs(cand.gapPx - expectedGutterPx);
+        spacingNotes.push(
+          `${phase.name} gutter[${axis}]=${cand.gapPx.toFixed(2)}px vs configured ${phase.style.gutterPercent}% (${expectedGutterPx.toFixed(2)}px) err=${err.toFixed(2)}px`,
+        );
+        if (err > spacingTolPx) {
+          spacingProblems.push(
+            `${phase.name} gutter[${axis}] measured ${cand.gapPx.toFixed(2)}px, configured ${phase.style.gutterPercent}% = ${expectedGutterPx.toFixed(2)}px (err ${err.toFixed(2)}px > ${spacingTolPx}px)`,
+          );
+        }
+      }
+      const minX = Math.min(...rects.map((r) => r.x));
+      const minY = Math.min(...rects.map((r) => r.y));
+      const maxX = Math.max(...rects.map((r) => r.x + r.width));
+      const maxY = Math.max(...rects.map((r) => r.y + r.height));
+      const tightestBandPx = Math.min(
+        minX * canvasWidth,
+        (1 - maxX) * canvasWidth,
+        minY * canvasHeight,
+        (1 - maxY) * canvasHeight,
+      );
+      const marginErr = Math.abs(tightestBandPx - expectedMarginPx);
+      spacingNotes.push(
+        `${phase.name} margin(tightest of 4)=${tightestBandPx.toFixed(2)}px vs configured ${phase.style.marginPercent}% (${expectedMarginPx.toFixed(2)}px) err=${marginErr.toFixed(2)}px`,
+      );
+      if (marginErr > spacingTolPx) {
+        spacingProblems.push(
+          `${phase.name} margin measured ${tightestBandPx.toFixed(2)}px, configured ${phase.style.marginPercent}% = ${expectedMarginPx.toFixed(2)}px (err ${marginErr.toFixed(2)}px > ${spacingTolPx}px)`,
+        );
+      }
+    }
+    assertTrue(
+      "gutter and margin match the configured percentages",
+      spacingProblems.length === 0,
+      spacingProblems.length === 0
+        ? `within ${spacingTolPx}px across all 4 phases — ${spacingNotes.join(" | ")}`
+        : `${spacingProblems.join("; ")} [all measurements: ${spacingNotes.join(" | ")}]`,
     );
   }
 
