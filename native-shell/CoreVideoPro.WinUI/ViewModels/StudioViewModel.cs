@@ -11856,8 +11856,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
     }
 
-    private MediaAsset? ResolveSceneBackgroundAsset(string sceneId)
+    // sceneId is NULLABLE in practice even though the callers' properties are not:
+    // the Sources-page scene ComboBox two-way-binds SelectedValue to PreviewSceneId,
+    // and WinUI reports SelectedValue == null for an instant while ItemsSource is
+    // being replaced (RefreshSceneItems). That null is written straight back into
+    // PreviewSceneId, whose setter refreshes the canvas editor, which lands here —
+    // and Dictionary.TryGetValue(null) THROWS ArgumentNullException like an indexer,
+    // it does not return false. Crash repro: click "Tiles" on the Scenes tab.
+    // Same family as the SourcesInputsPage role-ComboBox crash (see CLAUDE.md).
+    // This guard stops the crash; the real fix is to stop the two-way binding
+    // writing null into PreviewSceneId at all.
+    private MediaAsset? ResolveSceneBackgroundAsset(string? sceneId)
     {
+        if (string.IsNullOrEmpty(sceneId))
+        {
+            return null;
+        }
+
         if (!_sceneBackgroundAssetIds.TryGetValue(sceneId, out var assetId))
         {
             return null;
