@@ -184,22 +184,52 @@ type CaseContext = {
  * failure to the one consumer this suite exists for. Arrays keep their
  * order (`assignSlot` emission order and gallery cell order are both real
  * assertions); only object KEYS are normalized.
+ *
+ * **`ancestors` tracks the PATH being walked, not every value ever seen
+ * (final fix round, I2).** It started as a set that only ever grew, which
+ * detects *repeated references* rather than cycles: a diamond — one object
+ * reached twice by two different paths, with no cycle anywhere — came out
+ * as `{"left":{"a":1},"right":"[circular]"}` while the structurally
+ * identical version built from two separate literals came out in full, so
+ * the two compared UNEQUAL. That is the key-order bug's exact class, biting
+ * its exact victim: `ConformanceHost` is a structural `Pick` so a Plan 7-9
+ * adapter can pass a recording facade, and a facade that interns or
+ * memoises any repeated value (a shared empty-box tuple, one cached
+ * capabilities record folded into every call) got a spurious failure whose
+ * message says `[circular]` about a structure with no cycle. Removing each
+ * value on the way back out means a reference is only "circular" when it is
+ * genuinely an ancestor of itself.
+ *
+ * Exported (deliberately NOT re-exported from the package barrel, which
+ * lists its names one by one) so this property has a direct regression test
+ * in `conformance.test.ts`: no shipped case compares a value that contains
+ * a shared sub-object, so a test driven only through `HOST_CONFORMANCE_CASES`
+ * would pass either way.
  */
-function canonicalize(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+export function canonicalize(value: unknown, ancestors: WeakSet<object> = new WeakSet()): unknown {
   if (value === null || typeof value !== "object") return value;
   // A cycle would recurse forever; report it rather than blowing the stack.
-  if (seen.has(value)) return "[circular]";
-  seen.add(value);
+  if (ancestors.has(value)) return "[circular]";
+  ancestors.add(value);
 
-  if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, seen));
+  const canonical = canonicalizeChildren(value, ancestors);
+
+  // Off the path again: a LATER sibling that happens to reference this same
+  // object is a diamond, not a cycle, and must serialize in full.
+  ancestors.delete(value);
+  return canonical;
+}
+
+function canonicalizeChildren(value: object, ancestors: WeakSet<object>): unknown {
+  if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, ancestors));
   if (value instanceof Map) {
-    return [...value.entries()].map((entry) => canonicalize(entry, seen));
+    return [...value.entries()].map((entry) => canonicalize(entry, ancestors));
   }
 
   const record = value as Record<string, unknown>;
   const sorted: Record<string, unknown> = {};
   for (const key of Object.keys(record).sort()) {
-    sorted[key] = canonicalize(record[key], seen);
+    sorted[key] = canonicalize(record[key], ancestors);
   }
   return sorted;
 }
