@@ -635,6 +635,7 @@ if(BUILD_TESTING)
     tests/StillMediaFrameCacheTest.cpp
     tests/TilesLayoutTest.cpp
     tests/TilesLayerTest.cpp
+    tests/TilesMembershipTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/VstHostAbiTest.cpp
     tests/VstLatencyCompensationTest.cpp
