@@ -40,6 +40,28 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 - **Verify pixels, not proxies.** A test that asserts "N rects exist" does not prove the wall renders. See Task 6.
 - Spacing math uses the divisor form `h / (100/pct)`, never `h * pct / 100`.
 
+**Codebase API facts, verified 2026-08-15 during Task 1** — the plan's earlier
+code samples got several of these wrong, so trust this block over any snippet:
+
+- `MediaCore` is in namespace **`corevideo::core`**, not `corevideo`
+  (`MediaCore.h:26`). `LayerRect` and the tiles helpers are in
+  `corevideo::compositor`; render-plan types are in `corevideo::modules`.
+- **`rpc::Json` has no `.set()`**, and `Json::parse` returns
+  **`std::optional<Json>`** (`Json.h:48`). Build commands with the
+  `Json::Object` / `Json::Array` literal pattern used throughout
+  `native/tests/MediaCoreCommandTest.cpp` — copy that file's style rather than
+  inventing one.
+- **`EXPECT_DOUBLE_EQ` does not exist in this repo's vendored gtest.** Use
+  `EXPECT_NEAR` with an explicit tolerance, or `EXPECT_EQ` where the arithmetic
+  is genuinely exact. There is a comment recording this at
+  `native/tests/AudioMasteringTest.cpp:350`.
+- New structs used by `MediaCore`'s public test accessors go at **namespace
+  scope above `class MediaCore`**, not nested beside `SceneRouteState`.
+- `Protocol.h` is at `native/src/core/Protocol.h`. The capability string that
+  `ContractParityTest` actually checks lives in
+  `src/engine/nativeMediaCoreProtocol.ts`; `native-core/src/protocol.ts` carries
+  types only and has no capability array.
+
 ---
 
 ### Task 1: Parse the `tiles` layer into core state
@@ -87,7 +109,10 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 
 - [ ] **Step 1: Write the failing test**
 
-Create `native/tests/TilesLayerTest.cpp`:
+Create `native/tests/TilesLayerTest.cpp`. The snippet below is illustrative of
+the assertions required; build the command objects with the `Json::Object` /
+`Json::Array` literal style from `MediaCoreCommandTest.cpp` and mind the API
+facts in Global Constraints.
 
 **`loadSceneGraph` is PRIVATE** (`MediaCore.h:164`). Drive it the way
 `MediaCoreCommandTest` already does — `applyCommands` with a `load-scene-graph`
@@ -103,13 +128,15 @@ command — which also exercises the real dispatch path rather than a back door.
 
 namespace {
 
-using corevideo::MediaCore;
+using corevideo::core::MediaCore;
 
 // Drive the real command path, matching MediaCoreCommandTest's pattern.
-void loadScene(MediaCore& core, const char* json) {
-  corevideo::rpc::Json command = corevideo::rpc::Json::parse(json);
-  command.set("type", corevideo::rpc::Json{"load-scene-graph"});
-  (void)core.applyCommands(corevideo::rpc::Json::Array{command});
+// Json has no .set() and Json::parse returns std::optional<Json>; build the
+// command with the Json::Object/Json::Array literals MediaCoreCommandTest uses.
+void loadScene(MediaCore& core, corevideo::rpc::Json::Object fields) {
+  fields.emplace("type", corevideo::rpc::Json{"load-scene-graph"});
+  (void)core.applyCommands(
+      corevideo::rpc::Json::Array{corevideo::rpc::Json{std::move(fields)}});
 }
 
 // A minimal load-scene-graph command carrying one tiles layer.
@@ -141,7 +168,7 @@ TEST(TilesLayer, LoadSceneGraphParsesMembersAndStyleInOrder) {
   EXPECT_EQ(tiles.members[0], "zoom:101");
   EXPECT_EQ(tiles.members[2], "capture:cam-a");
   EXPECT_EQ(tiles.style.tileAspect, "4:3");
-  EXPECT_DOUBLE_EQ(tiles.style.gutterPercent, 1.5);
+  EXPECT_NEAR(tiles.style.gutterPercent, 1.5, 1e-9);
   EXPECT_EQ(tiles.style.backgroundColor, "#101418");
 }
 
@@ -454,7 +481,7 @@ TEST(TilesLayout, AspectPresetsResolve) {
 TEST(TilesLayout, GutterUsesTheDivisorForm) {
   const double pct = 0.741;
   const double h = 1080.0;
-  EXPECT_DOUBLE_EQ(h / (100.0 / pct), 8.0028);
+  EXPECT_NEAR(h / (100.0 / pct), 8.0028, 1e-9);
 }
 
 }  // namespace
@@ -818,7 +845,7 @@ Create `native/tests/TilesRenderPlanTest.cpp`:
 
 namespace {
 
-using corevideo::MediaCore;
+using corevideo::core::MediaCore;
 
 int countLayersOfKind(const corevideo::modules::CompositorRenderPlan& plan,
                       const std::string& kind) {
@@ -837,16 +864,28 @@ const corevideo::modules::CompositorRenderPlanLayer* findLayer(
   return nullptr;
 }
 
-void loadWall(MediaCore& core, const std::string& members) {
-  corevideo::rpc::Json command = corevideo::rpc::Json::parse(
-      R"({"sceneId":"s","routes":[],"tiles":{"layerId":"tiles:s","members":)" + members +
-      R"(,"style":{"backgroundColor":"#101418"}}})");
-  command.set("type", corevideo::rpc::Json{"load-scene-graph"});
-  (void)core.applyCommands(corevideo::rpc::Json::Array{command});
+// Build the command with the Json::Object/Json::Array literal pattern used
+// throughout MediaCoreCommandTest.cpp. Json has no .set(), and Json::parse
+// returns std::optional<Json> — see the API facts in Global Constraints.
+void loadWall(MediaCore& core, const std::vector<std::string>& members) {
+  corevideo::rpc::Json::Array memberJson;
+  for (const auto& member : members) {
+    memberJson.push_back(corevideo::rpc::Json{member});
+  }
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"load-scene-graph"}},
+          {"sceneId", corevideo::rpc::Json{"s"}},
+          {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+          {"tiles", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+              {"layerId", corevideo::rpc::Json{"tiles:s"}},
+              {"members", corevideo::rpc::Json{memberJson}},
+              {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
 }
 
 TEST(TilesRenderPlan, EachAdmittedMemberBecomesOneTileLayer) {
-  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2","zoom:3"])");
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2", "zoom:3"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}, {"zoom:3", true, 0}});
 
   const auto plan = core.lastRenderPlanForTest();
@@ -856,7 +895,7 @@ TEST(TilesRenderPlan, EachAdmittedMemberBecomesOneTileLayer) {
 }
 
 TEST(TilesRenderPlan, TheWallDrawsABackgroundBeneathEveryTile) {
-  MediaCore core; loadWall(core, R"(["zoom:1"])");
+  MediaCore core; loadWall(core, {"zoom:1"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
 
   const auto plan = core.lastRenderPlanForTest();
@@ -874,7 +913,7 @@ TEST(TilesRenderPlan, TheWallDrawsABackgroundBeneathEveryTile) {
 // Fill, never letterbox — a wall of mixed cameras stays even because tiles crop
 // their sides rather than growing bars.
 TEST(TilesRenderPlan, EveryTileFillsRatherThanFits) {
-  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2"])");
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
 
   for (const auto& layer : core.lastRenderPlanForTest().layers) {
@@ -887,7 +926,7 @@ TEST(TilesRenderPlan, EveryTileFillsRatherThanFits) {
 // T1 ships no styling: a border here would composite chrome into PROGRAM, the
 // virtual camera, and every recording. T2 adds it deliberately.
 TEST(TilesRenderPlan, TilesCarryNoBorderBeforeStylingShips) {
-  MediaCore core; loadWall(core, R"(["zoom:1"])");
+  MediaCore core; loadWall(core, {"zoom:1"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
 
   for (const auto& layer : core.lastRenderPlanForTest().layers) {
@@ -899,7 +938,7 @@ TEST(TilesRenderPlan, TilesCarryNoBorderBeforeStylingShips) {
 }
 
 TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
-  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2"])");
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
   const auto twoUp = core.lastRenderPlanForTest();
   const float pairedWidth = findLayer(twoUp, "tile:zoom:1")->rect.width;
@@ -914,7 +953,7 @@ TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
 
 TEST(TilesRenderPlan, NoTilesLayerLeavesTheOrdinaryRoutePlanUntouched) {
   MediaCore core;
-  loadWall(core, "[]");
+  loadWall(core, {});
   const auto plan = core.lastRenderPlanForTest();
   EXPECT_EQ(countLayersOfKind(plan, "tiles-background"), 0);
 }
