@@ -675,6 +675,78 @@ describe("invokeAction: never throws, never mutates on a rejected invoke", () =>
     });
     expect(snap(e)).toEqual(before);
   });
+
+  /**
+   * Final fix round, I1 — the same class again, and it needed no `Proxy`.
+   * `describeArg` claimed `typeof`+`String()` "never throws for any JS
+   * value"; that is false twice over. `String(raw)` runs `raw`'s own
+   * `toString`, so a PLAIN OBJECT LITERAL with a throwing `toString`
+   * escapes, and the thrown value (`Object.create(null)`) then defeated the
+   * catch's own `String(error)` a second time — an uncaught `TypeError` out
+   * of the function whose headline guarantee is that it never propagates
+   * one.
+   *
+   * Pinned by message, not just `kind`, for the same reason the four
+   * `bigint`/circular tests above are: a swallowed `TypeError` also reads
+   * `{kind:"error"}`, so only the message distinguishes "described the bad
+   * argument" from "the describer blew up and the catch tidied it away".
+   */
+  it("returns an error (never throws) for an argument whose toString throws", () => {
+    const e = engine();
+    const before = snap(e);
+    const hostile = {
+      toString(): string {
+        throw Object.create(null) as unknown;
+      }
+    };
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(e, "ohg.panelist.remove", [hostile]);
+    }).not.toThrow();
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg.panelist.remove: argument 'slot' must be int (got object <undescribable value>)"
+    });
+    expect(snap(e)).toEqual(before);
+  });
+
+  /** The other half of the same hole: a value with no primitive conversion at all. */
+  it("returns an error (never throws) for a null-prototype object argument", () => {
+    const e = engine();
+    const before = snap(e);
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(e, "ohg.look.set", [Object.create(null) as unknown]);
+    }).not.toThrow();
+    expect(result).toEqual({
+      kind: "error",
+      message: "ohg.look.set: argument 'name' must be string (got object <undescribable value>)"
+    });
+    expect(snap(e)).toEqual(before);
+  });
+
+  /**
+   * Final fix round, I1, the second reachable shape: an ENGINE METHOD that
+   * throws a non-`Error`, non-primitive-coercible value. Every engine throw
+   * in this package today is `new Error`, which is what kept this
+   * unreachable from a real bridge — but the guarantee is stated
+   * absolutely, and the catch is the one boundary enforcing it, so it is
+   * pinned against a stand-in engine rather than left to the day someone
+   * adds a `throw {code: …}`.
+   */
+  it("returns an error (never throws) when an engine method throws a non-Error value", () => {
+    const hostileEngine = {
+      removePanelist(): void {
+        throw Object.create(null) as unknown;
+      }
+    } as unknown as ShowEngine;
+
+    let result: ActionResult | undefined;
+    expect(() => {
+      result = invokeAction(hostileEngine, "ohg.panelist.remove", [3]);
+    }).not.toThrow();
+    expect(result).toEqual({ kind: "error", message: "object <undescribable value>" });
+  });
 });
 
 // ---------------------------------------------------------------------------

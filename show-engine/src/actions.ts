@@ -462,12 +462,48 @@ function errorResult(message: string): ActionResult {
  * one in common Node OSC libraries, so an `int`/`string` param can receive
  * a real `bigint` from a conforming OSC client) and for a circular object —
  * exactly the malformed-packet shapes `invokeAction`'s "never throws"
- * guarantee exists to survive. `typeof`+`String()` never throws for any JS
- * value, `bigint`/circular included (`String()` on a circular object falls
- * back to `Object.prototype.toString`, never walking the structure).
+ * guarantee exists to survive. `typeof`+`String()` covers those two.
+ *
+ * It does NOT cover every JS value, which is why the `try` is here (final
+ * fix round, I1). `String(raw)` invokes `raw`'s own `toString`/`valueOf`,
+ * and two ordinary (non-`Proxy`) shapes make that throw: an object literal
+ * whose `toString` throws, and an object with NO primitive conversion at
+ * all (`Object.create(null)` — `String()` on it raises "Cannot convert
+ * object to primitive value"). Either one turned a rejected argument into a
+ * propagated exception from a function whose headline promise is that it
+ * never propagates one. The fallback names the `typeof` — which is computed
+ * without touching the value — so the operator diagnostic degrades rather
+ * than disappearing.
  */
 function describeArg(raw: unknown): string {
-  return `${typeof raw} ${String(raw)}`;
+  const kind = typeof raw;
+  try {
+    return `${kind} ${String(raw)}`;
+  } catch {
+    return `${kind} <undescribable value>`;
+  }
+}
+
+/**
+ * Describe a caught throw for an `{kind:"error"}` message, never throwing
+ * (final fix round, I1). `invokeAction`'s catch used to do
+ * `String(error)` directly, which re-threw for the very values this
+ * function exists to describe: the null-prototype object raised by a
+ * throwing `toString` on a rejected argument (see `describeArg`), and any
+ * engine method that throws a non-`Error`, non-primitive-coercible value.
+ * Both escaped the one boundary the whole guarantee rests on.
+ *
+ * `error.message` is read inside the `try` as well: an `Error` subclass
+ * with a throwing `message` getter is the same class of value, and this
+ * catch is the LAST line of defense — there is nowhere left to fall
+ * through to.
+ */
+function describeThrown(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : describeArg(error);
+  } catch {
+    return "ohg action: threw a value that could not be described";
+  }
 }
 
 /**
@@ -737,6 +773,14 @@ function dispatch(engine: ShowEngine, id: string, bound: readonly (string | numb
  * step and the lookup itself are covered by the one boundary. An unknown
  * `id` is the same `{kind:"error"}` shape as every other rejection — there
  * is no separate "action not found" result kind.
+ *
+ * The final fix round closed the last hole in the same class, this time in
+ * the catch ITSELF: it formatted its message with `String(error)`, which
+ * throws for a value with no primitive conversion — so an argument whose
+ * `toString` throws (a plain object literal; no `Proxy` needed) escaped
+ * here, as would any engine method throwing such a value. Both the arg
+ * describer and the catch's describer are now total; see `describeArg` and
+ * `describeThrown`.
  */
 export function invokeAction(engine: ShowEngine, id: string, args: readonly unknown[]): ActionResult {
   try {
@@ -749,7 +793,7 @@ export function invokeAction(engine: ShowEngine, id: string, args: readonly unkn
     if (!bindResult.ok) return bindResult.result;
     return dispatch(engine, id, bindResult.bound);
   } catch (error) {
-    return errorResult(error instanceof Error ? error.message : String(error));
+    return errorResult(describeThrown(error));
   }
 }
 
