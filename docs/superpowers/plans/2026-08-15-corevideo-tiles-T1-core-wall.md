@@ -18,13 +18,25 @@ T1 is the first of five plans. Each produces working, shippable software:
 
 | Plan | Delivers | Working software at the end |
 |---|---|---|
-| **T1 (this)** | tiles layer kind, wire, C++ solver, frame-reality veto, fill-crop, background colour, pixel oracle | Today's wall, rendered by the core, judged on pixels |
+| **T1 (this)** | tiles layer kind, wire, C++ solver, frame-reality veto, fill-crop, background colour, pixel oracle | Today's wall, rendered by the core, judged on pixels — **with one known interim regression, see below** |
 | T2 | borders, corner radius, glow shaders | The plugin's look |
 | T3 | animation clock, per-tile overrides, editor over the core texture | Animated reflow + draggable pinned tiles |
 | T4 | manual fill, never-show, background source, per-tile crop, prefs v10 | The plugin's full control set |
 | T5 | `MetalCompositorAdapter` parity | Tiles on the Mac port |
 
 Do not start T2 before T1's oracle is green — T2's whole job is drawing, and it needs a judge that looks at pixels.
+
+**Known interim regression, T1 → T3 (recorded 2026-08-15, Task 5 review).** T1 makes
+a gallery scene emit no scene routes — the wall is the `tiles` node now — which
+means the Scenes-tab canvas editor has nothing to draw for a Tiles scene: its
+route list is permanently empty. The replacement (the editor rendering the
+core's wall texture with handles positioned from the published rects) is **T3's**
+scope, not T1's. Building it here would duplicate T3.
+
+So the honest statement of T1's deliverable: the wall renders correctly on
+PROGRAM, PREVIEW, recordings, the virtual camera and every stream, and is judged
+on pixels — but a Tiles scene is **not editable on the canvas** between T1 and T3.
+Do not ship the branch to an operator in that window without saying so.
 
 ## Global Constraints
 
@@ -34,11 +46,41 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 - **No pixel work under `coreMutex` or on a hot tick.** Solving geometry is fine; touching pixel buffers is not.
 - **Never replace a bound WinUI collection at frame rate.** Sync in place or diff. This is the `CoreMessagingXP 0xc000027b` fail-fast class.
 - **A one-shot command is silently lost on core respawn.** Everything in T1 rides the repeating scene-sync channel; do not add a launch-time one-shot.
-- **Protocol changes move in THREE mirrors in lockstep:** `native/src/rpc/Protocol.h` (capability), `native-core/src/protocol.ts` (types), and the core parser in `MediaCore.cpp`.
+- **Protocol changes move in FOUR mirrors in lockstep:** `native/src/core/Protocol.h` (capability), `native-core/src/protocol.ts` (types), `src/engine/nativeMediaCoreProtocol.ts` (the legacy TS engine's capability union), and the core parser in `MediaCore.cpp`. **There are FOUR mirrors, not three** — corrected 2026-08-15 after the Task 1 implementer found the fourth. `native/src/rpc/Protocol.h` does not exist; the header lives under `core/`.
 - **Failures are loud, never silent.** A rejected member, a clamped value, or a truncated list emits a warning; it never disappears quietly.
 - **Do not port the plugin's colour-range constant.** Its shader hardcodes full-range BT.709; that is an open defect on our side. Tiles consumes whatever the Zoom ingest path decides.
 - **Verify pixels, not proxies.** A test that asserts "N rects exist" does not prove the wall renders. See Task 6.
 - Spacing math uses the divisor form `h / (100/pct)`, never `h * pct / 100`.
+  **Scope correction (2026-08-15, from Task 2's review):** this constraint binds
+  at PIXEL conversion, not in the normalized solver. In normalized `[0,1]` space
+  — where the gutter is a fraction, not pixels — `1.0/(100.0/0.741)` and
+  `0.741/100.0` are bit-identical doubles; the discrepancy only appears at pixel
+  magnitudes (~1.8e-15 at h=1080), below every tolerance in the suite. Keep the
+  divisor form for consistency with the C# reference, but do not write a test in
+  the solver claiming to pin it — there is nothing to pin at that layer. The
+  guard belongs wherever normalized rects become pixels, which is T2's draw code.
+
+**Codebase API facts, verified 2026-08-15 during Task 1** — the plan's earlier
+code samples got several of these wrong, so trust this block over any snippet:
+
+- `MediaCore` is in namespace **`corevideo::core`**, not `corevideo`
+  (`MediaCore.h:26`). `LayerRect` and the tiles helpers are in
+  `corevideo::compositor`; render-plan types are in `corevideo::modules`.
+- **`rpc::Json` has no `.set()`**, and `Json::parse` returns
+  **`std::optional<Json>`** (`Json.h:48`). Build commands with the
+  `Json::Object` / `Json::Array` literal pattern used throughout
+  `native/tests/MediaCoreCommandTest.cpp` — copy that file's style rather than
+  inventing one.
+- **`EXPECT_DOUBLE_EQ` does not exist in this repo's vendored gtest.** Use
+  `EXPECT_NEAR` with an explicit tolerance, or `EXPECT_EQ` where the arithmetic
+  is genuinely exact. There is a comment recording this at
+  `native/tests/AudioMasteringTest.cpp:350`.
+- New structs used by `MediaCore`'s public test accessors go at **namespace
+  scope above `class MediaCore`**, not nested beside `SceneRouteState`.
+- `Protocol.h` is at `native/src/core/Protocol.h`. The capability string that
+  `ContractParityTest` actually checks lives in
+  `src/engine/nativeMediaCoreProtocol.ts`; `native-core/src/protocol.ts` carries
+  types only and has no capability array.
 
 ---
 
@@ -47,7 +89,8 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 **Files:**
 - Modify: `native/src/core/MediaCore.h` (add `TilesLayerState`, `tilesLayer_`, near `SceneRouteState` ~line 302)
 - Modify: `native/src/core/MediaCore.cpp:1403` (the `load-scene-graph` routes parse) and `:2584` (the preview-scene/spine parse)
-- Modify: `native/src/rpc/Protocol.h` (capability list)
+- Modify: `native/src/core/Protocol.h` (capability list)
+- Modify: `src/engine/nativeMediaCoreProtocol.ts` (legacy TS capability union)
 - Modify: `native-core/src/protocol.ts` (wire types)
 - Test: `native/tests/TilesLayerTest.cpp` (create)
 - Modify: `native/CMakeLists.txt:595` (register the test file)
@@ -86,7 +129,10 @@ Copied from the spec and CLAUDE.md. Every task's requirements implicitly include
 
 - [ ] **Step 1: Write the failing test**
 
-Create `native/tests/TilesLayerTest.cpp`:
+Create `native/tests/TilesLayerTest.cpp`. The snippet below is illustrative of
+the assertions required; build the command objects with the `Json::Object` /
+`Json::Array` literal style from `MediaCoreCommandTest.cpp` and mind the API
+facts in Global Constraints.
 
 **`loadSceneGraph` is PRIVATE** (`MediaCore.h:164`). Drive it the way
 `MediaCoreCommandTest` already does — `applyCommands` with a `load-scene-graph`
@@ -102,13 +148,15 @@ command — which also exercises the real dispatch path rather than a back door.
 
 namespace {
 
-using corevideo::MediaCore;
+using corevideo::core::MediaCore;
 
 // Drive the real command path, matching MediaCoreCommandTest's pattern.
-void loadScene(MediaCore& core, const char* json) {
-  corevideo::rpc::Json command = corevideo::rpc::Json::parse(json);
-  command.set("type", corevideo::rpc::Json{"load-scene-graph"});
-  (void)core.applyCommands(corevideo::rpc::Json::Array{command});
+// Json has no .set() and Json::parse returns std::optional<Json>; build the
+// command with the Json::Object/Json::Array literals MediaCoreCommandTest uses.
+void loadScene(MediaCore& core, corevideo::rpc::Json::Object fields) {
+  fields.emplace("type", corevideo::rpc::Json{"load-scene-graph"});
+  (void)core.applyCommands(
+      corevideo::rpc::Json::Array{corevideo::rpc::Json{std::move(fields)}});
 }
 
 // A minimal load-scene-graph command carrying one tiles layer.
@@ -140,7 +188,7 @@ TEST(TilesLayer, LoadSceneGraphParsesMembersAndStyleInOrder) {
   EXPECT_EQ(tiles.members[0], "zoom:101");
   EXPECT_EQ(tiles.members[2], "capture:cam-a");
   EXPECT_EQ(tiles.style.tileAspect, "4:3");
-  EXPECT_DOUBLE_EQ(tiles.style.gutterPercent, 1.5);
+  EXPECT_NEAR(tiles.style.gutterPercent, 1.5, 1e-9);
   EXPECT_EQ(tiles.style.backgroundColor, "#101418");
 }
 
@@ -276,7 +324,7 @@ Apply the identical reset-then-parse at the preview-scene parse site (`:2584`), 
 
 - [ ] **Step 4: Mirror the protocol**
 
-In `native/src/rpc/Protocol.h`, add `"tiles-layer"` to the advertised capability list beside `"iso-recording"`.
+In `native/src/core/Protocol.h`, add `"tiles-layer"` to the advertised capability list beside `"iso-recording"`.
 
 In `native-core/src/protocol.ts`, add beside the scene-graph types:
 
@@ -319,7 +367,8 @@ Expected: 0 failures. Record the total; it is the baseline for later tasks.
 
 ```bash
 git add native/src/core/MediaCore.h native/src/core/MediaCore.cpp \
-        native/src/rpc/Protocol.h native-core/src/protocol.ts \
+        native/src/core/Protocol.h native-core/src/protocol.ts \
+        src/engine/nativeMediaCoreProtocol.ts \
         native/tests/TilesLayerTest.cpp native/CMakeLists.txt
 git commit -m "feat(tiles): the core parses a tiles layer off the scene sync"
 ```
@@ -452,7 +501,7 @@ TEST(TilesLayout, AspectPresetsResolve) {
 TEST(TilesLayout, GutterUsesTheDivisorForm) {
   const double pct = 0.741;
   const double h = 1080.0;
-  EXPECT_DOUBLE_EQ(h / (100.0 / pct), 8.0028);
+  EXPECT_NEAR(h / (100.0 / pct), 8.0028, 1e-9);
 }
 
 }  // namespace
@@ -679,6 +728,16 @@ TEST(TilesMembership, AnOrdinaryFrameGapKeepsTheMemberOnTheWall) {
   EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u);
 }
 
+// The boundary itself, not just either side of it: with only the +/-1 cases a
+// `<` implementation passes unchanged, so the inclusive semantics would not
+// actually be pinned. Inclusive is the conservative direction — "exactly at the
+// limit" stays live, erring toward wall stability rather than toward dropping a
+// tile on ordinary jitter.
+TEST(TilesMembership, AMemberExactlyAtTheThresholdIsStillAdmitted) {
+  const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesStaleFrameMs}};
+  EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u);
+}
+
 TEST(TilesMembership, AStaleFeedLeavesTheWall) {
   const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesStaleFrameMs + 1}};
   EXPECT_TRUE(admitTilesMembers({"zoom:1"}, ages).empty());
@@ -816,7 +875,7 @@ Create `native/tests/TilesRenderPlanTest.cpp`:
 
 namespace {
 
-using corevideo::MediaCore;
+using corevideo::core::MediaCore;
 
 int countLayersOfKind(const corevideo::modules::CompositorRenderPlan& plan,
                       const std::string& kind) {
@@ -835,16 +894,28 @@ const corevideo::modules::CompositorRenderPlanLayer* findLayer(
   return nullptr;
 }
 
-void loadWall(MediaCore& core, const std::string& members) {
-  corevideo::rpc::Json command = corevideo::rpc::Json::parse(
-      R"({"sceneId":"s","routes":[],"tiles":{"layerId":"tiles:s","members":)" + members +
-      R"(,"style":{"backgroundColor":"#101418"}}})");
-  command.set("type", corevideo::rpc::Json{"load-scene-graph"});
-  (void)core.applyCommands(corevideo::rpc::Json::Array{command});
+// Build the command with the Json::Object/Json::Array literal pattern used
+// throughout MediaCoreCommandTest.cpp. Json has no .set(), and Json::parse
+// returns std::optional<Json> — see the API facts in Global Constraints.
+void loadWall(MediaCore& core, const std::vector<std::string>& members) {
+  corevideo::rpc::Json::Array memberJson;
+  for (const auto& member : members) {
+    memberJson.push_back(corevideo::rpc::Json{member});
+  }
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"load-scene-graph"}},
+          {"sceneId", corevideo::rpc::Json{"s"}},
+          {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+          {"tiles", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+              {"layerId", corevideo::rpc::Json{"tiles:s"}},
+              {"members", corevideo::rpc::Json{memberJson}},
+              {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
 }
 
 TEST(TilesRenderPlan, EachAdmittedMemberBecomesOneTileLayer) {
-  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2","zoom:3"])");
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2", "zoom:3"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}, {"zoom:3", true, 0}});
 
   const auto plan = core.lastRenderPlanForTest();
@@ -854,7 +925,7 @@ TEST(TilesRenderPlan, EachAdmittedMemberBecomesOneTileLayer) {
 }
 
 TEST(TilesRenderPlan, TheWallDrawsABackgroundBeneathEveryTile) {
-  MediaCore core; loadWall(core, R"(["zoom:1"])");
+  MediaCore core; loadWall(core, {"zoom:1"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
 
   const auto plan = core.lastRenderPlanForTest();
@@ -872,7 +943,7 @@ TEST(TilesRenderPlan, TheWallDrawsABackgroundBeneathEveryTile) {
 // Fill, never letterbox — a wall of mixed cameras stays even because tiles crop
 // their sides rather than growing bars.
 TEST(TilesRenderPlan, EveryTileFillsRatherThanFits) {
-  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2"])");
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
 
   for (const auto& layer : core.lastRenderPlanForTest().layers) {
@@ -885,7 +956,7 @@ TEST(TilesRenderPlan, EveryTileFillsRatherThanFits) {
 // T1 ships no styling: a border here would composite chrome into PROGRAM, the
 // virtual camera, and every recording. T2 adds it deliberately.
 TEST(TilesRenderPlan, TilesCarryNoBorderBeforeStylingShips) {
-  MediaCore core; loadWall(core, R"(["zoom:1"])");
+  MediaCore core; loadWall(core, {"zoom:1"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
 
   for (const auto& layer : core.lastRenderPlanForTest().layers) {
@@ -897,7 +968,7 @@ TEST(TilesRenderPlan, TilesCarryNoBorderBeforeStylingShips) {
 }
 
 TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
-  MediaCore core; loadWall(core, R"(["zoom:1","zoom:2"])");
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
   const auto twoUp = core.lastRenderPlanForTest();
   const float pairedWidth = findLayer(twoUp, "tile:zoom:1")->rect.width;
@@ -912,7 +983,7 @@ TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
 
 TEST(TilesRenderPlan, NoTilesLayerLeavesTheOrdinaryRoutePlanUntouched) {
   MediaCore core;
-  loadWall(core, "[]");
+  loadWall(core, {});
   const auto plan = core.lastRenderPlanForTest();
   EXPECT_EQ(countLayersOfKind(plan, "tiles-background"), 0);
 }

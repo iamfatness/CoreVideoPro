@@ -354,6 +354,45 @@ distinct animated I420 per participant. It must assert:
 6. A departure reflows and settles within `animationDurationMs`.
 7. An extreme border width or corner radius degrades rather than inverting a tile.
 
+### What the T1 oracle proves — and what T2 must add
+
+T1's `validate-tiles.mjs` shipped with eight assertions and two mutation tests
+behind it. It proves **tile placement**: that the right participant is in the
+right box, that the box is where the core says it is (verified by shrinking the
+compositor's own draw quad while leaving the published rect stationary), that
+gutters and margins carry the background colour on both axes, that tiles fill
+rather than letterbox, and that a genuinely stale feed reflows the wall after
+the intended ~1.5s rather than immediately.
+
+It does **not** prove tile *decoration*, and T2 must not assume otherwise. Every
+geometric probe samples an edge or tile **midpoint**, which means:
+
+- **Rounded corners are entirely invisible to it.** No radius, a wrong radius, or
+  a radius applied on only one compositor path passes every existing assertion
+  unchanged. T2 owes a corner probe — sample the diagonal inset at each corner and
+  assert background where the radius cuts.
+- **Borders are unverified.** `computeBorderFraming` normalizes thickness as
+  `px/200` and strokes inside the rect, so at thickness 2 on a typical tile the
+  inset is ~4–8px — under the boundary assertion's 10px tolerance. A dark border
+  within the classifier's 24-unit background tolerance shifts the measured
+  transition and still passes. Nothing samples border colour or thickness.
+- **Glow needs a defined threshold, not just an extent.** `findTransitionIndex`
+  classifies by distance from the background colour, so a smooth SDF falloff
+  crosses that threshold at a point set by its *intensity curve*, not only its
+  geometric reach. "Extend the assertion by the computed glow extent" is
+  insufficient on its own — T2 must pin the threshold to a defined point on the
+  falloff, or the assertion decays into a drifting tolerance knob under a new name.
+
+**The standing rule, written at the code site as well as here: glow will
+legitimately push the transition past `tolPx`. Extend the assertion. Never widen
+the tolerance to get green.**
+
+Two further coverage notes for T2: boundary geometry is currently checked only at
+the 6% test fixture, never at the 0.741% (~8px) shipping default where a
+border/glow/radius interaction with a thin gutter is most likely to break; and
+phase B does not assert its tile *count*, so a regression dropping a tile at a
+non-16:9 aspect would go unnoticed.
+
 Unit-level, alongside: the C++ solver reproduces `DynamicGalleryLayoutServiceTests`
 case-for-case; override placement leaves the remaining tiles solving into the
 correct residual space; the frame-reality veto admits and drops on the intended
