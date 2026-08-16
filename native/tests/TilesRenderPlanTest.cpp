@@ -50,6 +50,30 @@ void loadWall(MediaCore& core, const std::vector<std::string>& members) {
                   {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
 }
 
+// Same shape as loadWall(), but the scene ALSO carries a media background — the
+// SuperSource backdrop an operator sets on the scene.
+void loadWallWithSceneBackground(MediaCore& core, const std::vector<std::string>& members) {
+  corevideo::rpc::Json::Array memberJson;
+  for (const auto& member : members) {
+    memberJson.push_back(corevideo::rpc::Json{member});
+  }
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"load-scene-graph"}},
+          {"sceneId", corevideo::rpc::Json{"s"}},
+          {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+          {"background", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+              {"mediaAssetId", corevideo::rpc::Json{"bg-1"}},
+              {"mediaAssetName", corevideo::rpc::Json{"Backdrop"}},
+              {"mediaAssetKind", corevideo::rpc::Json{"image"}},
+              {"mediaAssetPath", corevideo::rpc::Json{"C:/backdrops/stage.png"}}}}},
+          {"tiles", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+              {"layerId", corevideo::rpc::Json{"tiles:s"}},
+              {"members", corevideo::rpc::Json{memberJson}},
+              {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
+}
+
 // Same shape as loadWall(), but the scene ALSO carries ordinary routes. Used
 // to characterise the routes+wall interleave (see the test below); the shell
 // no longer produces this shape (BuildProductionSyncContext serializes an
@@ -593,4 +617,37 @@ TEST(TilesRenderPlan, AFrozenFrameIdAgesTheMemberOutEvenAsTimestampKeepsAdvancin
     }
   }
   EXPECT_TRUE(leftTheWall);
+}
+
+// A SuperSource backdrop on the scene must survive a Tiles wall. The wall's
+// background is an OPAQUE solid at order 0 across the whole canvas, while the
+// scene background sits at order -100 — so emitting both painted the operator's
+// backdrop out entirely (owner report, live meeting 2026-08-16). This is a T1
+// regression: before the wall existed, a gallery scene emitted no such layer.
+// The CRITICAL never-empty-plan rule still has to hold, and here it is the
+// media background that satisfies it.
+TEST(TilesRenderPlan, ASceneBackgroundSurvivesTheWallAndSuppressesItsSolidFill) {
+  MediaCore core;
+  loadWallWithSceneBackground(core, {"zoom:1"});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+
+  const auto plan = core.lastRenderPlanForTest();
+  EXPECT_FALSE(plan.layers.empty());
+  EXPECT_EQ(findLayer(plan, "tiles-bg:tiles:s"), nullptr)
+      << "the wall must not paint its solid colour over a scene background";
+  ASSERT_NE(findLayer(plan, "background:bg-1"), nullptr)
+      << "the scene background is what keeps the plan non-empty here";
+  EXPECT_EQ(findLayer(plan, "background:bg-1")->kind, "media-background");
+}
+
+// The complement: with NO scene background the wall still paints its own, which
+// is what the never-empty-plan rule depends on in that case.
+TEST(TilesRenderPlan, WithNoSceneBackgroundTheWallStillPaintsItsOwn) {
+  MediaCore core;
+  loadWall(core, {"zoom:1"});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+
+  const auto plan = core.lastRenderPlanForTest();
+  EXPECT_FALSE(plan.layers.empty());
+  EXPECT_NE(findLayer(plan, "tiles-bg:tiles:s"), nullptr);
 }

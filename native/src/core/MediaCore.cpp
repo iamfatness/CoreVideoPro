@@ -4557,6 +4557,22 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   // grid on air.
   if (wallActive) {
     const int tilesBaseOrder = wall.order;
+    // A SCENE MEDIA BACKGROUND WINS OVER THE WALL'S SOLID COLOUR (owner report,
+    // live meeting 2026-08-16: "supersource background doesn't load on tiles
+    // scene"). The scene background is emitted above at order -100; the wall's
+    // background is an OPAQUE solid at order 0 across wall.rect, which defaults
+    // to the whole canvas — so it sorted on top and painted the operator's
+    // SuperSource backdrop out entirely. Before T1 a gallery scene emitted no
+    // such layer, so this is a T1 regression, not a pre-existing gap.
+    //
+    // When the scene carries a background, IT is the wall's ground and the
+    // configured colour is not painted. That matches the reference product,
+    // where the background source draws over the background colour.
+    //
+    // The CRITICAL "a wallActive wall never emits an empty plan" rule still
+    // holds either way: with a scene background the media-background layer is
+    // in the plan, without one the tiles background below is.
+    const bool wallPaintsItsOwnBackground = !sceneBackground.enabled;
 
     // Whole-branch review fix (CRITICAL, on-air): the background layer is
     // emitted for EVERY active wall — BEFORE the admitted-members gate below,
@@ -4580,6 +4596,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     // background on the plan, so the plan is never empty and those three
     // fallbacks can never fire under a wall.
     // Regression test: TilesRenderPlan.AnAllStaleWallStillEmitsItsBackground.
+    if (wallPaintsItsOwnBackground) {
     modules::CompositorRenderPlanLayer background;
     background.layerId = "tiles-bg:" + wall.layerId;
     background.kind = "tiles-background";
@@ -4599,6 +4616,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     background.borderStyle = "none";
     background.borderThickness = 0.f;
     renderPlan.layers.push_back(std::move(background));
+    }
 
     const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
     if (!admitted.empty()) {
