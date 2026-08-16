@@ -12619,13 +12619,48 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             payload.Style.BackgroundColor);
     }
 
+    // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
+    // repro 2026-08-16: a live meeting, Sources tab, a Tiles scene selected;
+    // dump CoreVideoPro.WinUI.exe.38368.dmp is c00000fd STACK OVERFLOW with
+    // RECURRING_STACK across Update_ViewModel_GalleryTileAspect →
+    // Selector.set_SelectedValue → the setter → here).
+    // The cycle: a Gallery* setter calls UpdateGallery, which raises
+    // PropertyChanged for EVERY gallery property; XAML pushes the value into the
+    // ComboBox's SelectedValue; that binding is Mode=TwoWay, so it writes the
+    // value straight back into the setter, which calls UpdateGallery again.
+    // WinUI does not short-circuit the echo, so nothing terminates it.
+    // Dropping the re-entrant write is correct: it is the binding echoing back a
+    // value the model already holds.
+    // Third instance of the Selector.SelectedValue + x:Bind family in this
+    // codebase (SourcesInputsPage role ComboBox; the scene ComboBox writing null
+    // into PreviewSceneId). See CLAUDE.md.
+    private bool _updatingGallery;
+
     private void UpdateGallery(Action<DynamicGallerySettings> update)
     {
+        if (_updatingGallery)
+        {
+            return;
+        }
+
         if (PreviewScene.DynamicGallery is not { } settings)
         {
             return;
         }
 
+        _updatingGallery = true;
+        try
+        {
+            UpdateGalleryCore(settings, update);
+        }
+        finally
+        {
+            _updatingGallery = false;
+        }
+    }
+
+    private void UpdateGalleryCore(DynamicGallerySettings settings, Action<DynamicGallerySettings> update)
+    {
         update(settings);
         var routes = GetPreviewEditableRoutes();
         ReconcileDynamicGalleryRoutes(PreviewScene, routes);
