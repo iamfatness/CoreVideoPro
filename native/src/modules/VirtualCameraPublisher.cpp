@@ -6,7 +6,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
@@ -98,8 +101,15 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     status_.enabled = true;
     status_.state = "live";
     status_.warning.clear();
+    {
+      std::lock_guard<std::mutex> queueLock(publishQueueMutex_);
+      publishWorkerStop_ = false;
+      pendingNv12_.reset();
+    }
+    acceptNv12_.store(true, std::memory_order_release);
+    publishThread_ = std::thread([this] { publishLoop(); });
     std::fprintf(stderr, "[virtualcam] started %dx%d@%d '%s' (create+start ok)\n", width, height,
-                 fps, status_.deviceName.c_str());
+                  fps, status_.deviceName.c_str());
     return true;
   }
 
@@ -162,41 +172,37 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   // so this stays cheap on the audio/output worker.
   void publishNv12(const std::uint8_t* nv12, int width, int height) override {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!started_ || header_ == nullptr || view_ == nullptr || nv12 == nullptr) {
-      return;
+    publishNv12Locked(nv12, width, height);
+  }
+
+  void publishNv12Shared(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+                         int width, int height) override {
+    // Latest-frame handoff: never make the compositor tap wait for a file-backed
+    // SHM write or for Frame Server activity. If the camera writer falls behind,
+    // replace its pending frame instead of building latency or starving stream.
+    if (!nv12 || !acceptNv12_.load(std::memory_order_acquire)) return;
+    {
+      std::lock_guard<std::mutex> lock(publishQueueMutex_);
+      if (publishWorkerStop_ || !acceptNv12_.load(std::memory_order_relaxed)) return;
+      pendingNv12_ = std::move(nv12);
+      pendingWidth_ = width;
+      pendingHeight_ = height;
     }
-    const int w = status_.width & ~1;
-    const int h = status_.height & ~1;
-    if (width != w || height != h) {
-      return;  // must match the DLL's fixed media type, else the DLL rejects it
-    }
-    const std::size_t bytes = nv12FrameSize(w, h);
-    if (bytes == 0 || bytes > kVirtualCameraMaxPayload) {
-      return;
-    }
-    auto* payload = static_cast<std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
-    header_->seq = header_->seq + 1;  // odd
-    if (mirror_) {
-      // Mirroring needs a scratch buffer it can flip in place before publishing.
-      nv12_.assign(nv12, nv12 + bytes);
-      mirrorNv12InPlace(nv12_.data(), w, h);
-      std::memcpy(payload, nv12_.data(), bytes);
-    } else {
-      // Straight into the mapped payload: the staging copy was pure overhead.
-      // This runs per frame on the tap thread now (60Hz, not the old 50Hz poll),
-      // so the second 3MB copy was ~180MB/s of memory bandwidth for nothing.
-      // Safe inside the seqlock: readers retry while seq is odd.
-      std::memcpy(payload, nv12, bytes);
-    }
-    header_->width = w;
-    header_->height = h;
-    header_->byteLen = static_cast<std::uint32_t>(bytes);
-    header_->frameNumber = header_->frameNumber + 1;
-    header_->seq = header_->seq + 1;  // even = complete
-    ++status_.framesPublished;
+    publishQueueCv_.notify_one();
   }
 
   void stop() override {
+    // Stop and join the SHM writer before releasing its mapped view. Do not hold
+    // mutex_ while joining: the writer takes it around the actual seqlock write.
+    acceptNv12_.store(false, std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> queueLock(publishQueueMutex_);
+      publishWorkerStop_ = true;
+      pendingNv12_.reset();
+    }
+    publishQueueCv_.notify_all();
+    if (publishThread_.joinable()) publishThread_.join();
+
     std::lock_guard<std::mutex> lock(mutex_);
     if (camera_ != nullptr) {
       camera_->Stop();
@@ -247,6 +253,50 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   }
 
  private:
+  void publishLoop() {
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    for (;;) {
+      std::shared_ptr<const std::vector<std::uint8_t>> frame;
+      int width = 0;
+      int height = 0;
+      {
+        std::unique_lock<std::mutex> lock(publishQueueMutex_);
+        publishQueueCv_.wait(lock, [this] { return publishWorkerStop_ || pendingNv12_; });
+        if (publishWorkerStop_) return;
+        frame = std::move(pendingNv12_);
+        width = pendingWidth_;
+        height = pendingHeight_;
+      }
+      if (!frame) continue;
+      std::lock_guard<std::mutex> lock(mutex_);
+      publishNv12Locked(frame->data(), width, height);
+    }
+  }
+
+  void publishNv12Locked(const std::uint8_t* nv12, int width, int height) {
+    if (!started_ || header_ == nullptr || view_ == nullptr || nv12 == nullptr) return;
+    const int w = status_.width & ~1;
+    const int h = status_.height & ~1;
+    if (width != w || height != h) return;
+    const std::size_t bytes = nv12FrameSize(w, h);
+    if (bytes == 0 || bytes > kVirtualCameraMaxPayload) return;
+    auto* payload = static_cast<std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
+    header_->seq = header_->seq + 1;
+    if (mirror_) {
+      nv12_.assign(nv12, nv12 + bytes);
+      mirrorNv12InPlace(nv12_.data(), w, h);
+      std::memcpy(payload, nv12_.data(), bytes);
+    } else {
+      std::memcpy(payload, nv12, bytes);
+    }
+    header_->width = w;
+    header_->height = h;
+    header_->byteLen = static_cast<std::uint32_t>(bytes);
+    header_->frameNumber = header_->frameNumber + 1;
+    header_->seq = header_->seq + 1;
+    ++status_.framesPublished;
+  }
+
   void fail(const std::string& message) {
     status_.state = "failed";
     status_.warning = message;
@@ -254,6 +304,14 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   }
 
   mutable std::mutex mutex_;
+  std::atomic<bool> acceptNv12_{false};
+  std::mutex publishQueueMutex_;
+  std::condition_variable publishQueueCv_;
+  bool publishWorkerStop_ = true;
+  std::shared_ptr<const std::vector<std::uint8_t>> pendingNv12_;
+  int pendingWidth_ = 0;
+  int pendingHeight_ = 0;
+  std::thread publishThread_;
   bool started_ = false;
   bool mirror_ = false;
   HANDLE shmFile_ = INVALID_HANDLE_VALUE;
@@ -279,6 +337,10 @@ class NoopVirtualCameraPublisher final : public IVirtualCameraPublisher {
     return true;
   }
   void publish(const ProgramFrame&) override { ++status_.framesPublished; }
+  void publishNv12Shared(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+                         int, int) override {
+    if (nv12) ++status_.framesPublished;
+  }
   void stop() override {
     status_.enabled = false;
     status_.state = "off";

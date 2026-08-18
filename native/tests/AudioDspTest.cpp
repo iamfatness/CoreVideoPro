@@ -1142,6 +1142,33 @@ TEST(AudioDsp, ZoomSteadyFeedDoesNotReprimeUnderContinuousClockPhaseJitter) {
   EXPECT_EQ(states["jamal"].clockCorrectionEvents, 0u);
 }
 
+TEST(AudioDsp, SteadyFeedRetainsBoundedWorkerRecoveryWithoutSheddingSpeech) {
+  // A 500 ms worker stall is recoverable by the audio pacer's immediate ticks.
+  // The feed must retain that burst instead of applying the old 120 ms cap and
+  // permanently cutting most of a spoken phrase.
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  corevideo::modules::AudioFrame burst;
+  burst.participantId = "jamal";
+  burst.sampleRate = 48000;
+  burst.channels = 1;
+  burst.requiresSteadyFeedPriming = true;
+  burst.pcm.assign(25u * 960u, 0.25f);
+  burst.sampleCount = static_cast<int>(burst.pcm.size());
+
+  std::vector<corevideo::modules::AudioFrame> frames{burst};
+  corevideo::modules::steadyAudioFrameFeed(frames, states);
+  EXPECT_EQ(states["jamal"].shedSamples, 0u);
+  EXPECT_TRUE(states["jamal"].primed);
+
+  // Immediate catch-up ticks drain the retained FIFO with no new source packet.
+  for (int tick = 0; tick < 30; ++tick) {
+    std::vector<corevideo::modules::AudioFrame> catchup;
+    corevideo::modules::steadyAudioFrameFeed(catchup, states);
+  }
+  EXPECT_EQ(states["jamal"].shedSamples, 0u);
+  EXPECT_TRUE(states["jamal"].fifo.empty());
+}
+
 TEST(AudioDsp, ZoomSteadyFeedReprimesAfterARealGap) {
   std::map<std::string, corevideo::modules::AudioFeedState> states;
   const auto makeFrame = [](int samples) {

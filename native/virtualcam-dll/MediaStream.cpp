@@ -179,7 +179,9 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);
-    lastGood_.assign(scratch_.begin(), scratch_.end());  // cache for miss recovery
+    // Keep the current frame for miss recovery without a third 3 MB memcpy.
+    // scratch_ receives the previous reusable allocation for the next read.
+    lastGood_.swap(scratch_);
     missStreak_ = 0;
     return S_OK;
   }

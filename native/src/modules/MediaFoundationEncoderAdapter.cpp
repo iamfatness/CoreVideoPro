@@ -1076,7 +1076,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // same tap the virtual camera and RTMP consume). The writer was opened with
     // a matching NV12 media type when the request asked for it.
     if (programWritesNv12_) {
-      if (frame.programNv12.empty() || frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
+      const auto& programNv12 = frame.programNv12Bytes();
+      if (programNv12.empty() || frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
         return;  // async tap had nothing this tick — skip, never downgrade
       }
       const LONGLONG timelineNow =
@@ -1086,7 +1087,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         return;  // already muxed
       }
       std::string nv12Error;
-      if (!program_.writeVideoNv12(frame.programNv12.data(), frame.programNv12Width,
+      if (!program_.writeVideoNv12(programNv12.data(), frame.programNv12Width,
                                    frame.programNv12Height, *pts, nv12Error)) {
         setRecordingFailure("Media Foundation could not write program video", nv12Error);
         return;
@@ -1104,7 +1105,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // the show). The result is the 320x180 preview in the corner of the frame —
     // the very defect #372/#373 fixed for 1080p — so say so instead of shipping a
     // silently broken file. Once per session.
-    if (!programWritesNv12_ && !frame.programNv12.empty() && !nv12MismatchWarned_) {
+    if (!programWritesNv12_ && !frame.programNv12Bytes().empty() && !nv12MismatchWarned_) {
       nv12MismatchWarned_ = true;
       session_.recordingWarning =
           "Program recording is muxing the low-resolution preview: the full-resolution program "

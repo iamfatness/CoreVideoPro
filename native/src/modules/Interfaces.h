@@ -245,6 +245,14 @@ struct ProgramFrame {
   int programNv12Width = 0;
   int programNv12Height = 0;
   std::vector<uint8_t> programNv12;
+  // Zero-copy ownership path for the Windows program tap. ProgramFrame is copied
+  // into recorder and sender queues every frame; sharing this immutable 1080p
+  // buffer avoids several redundant ~3 MB copies per output. The vector above
+  // remains as the compatibility and test path.
+  std::shared_ptr<const std::vector<uint8_t>> programNv12Shared;
+  [[nodiscard]] const std::vector<uint8_t>& programNv12Bytes() const noexcept {
+    return programNv12Shared ? *programNv12Shared : programNv12;
+  }
   ProgramFrameSharedTexture sharedTexture;
   std::vector<ParticipantSharedTexture> participantSharedTextures;
   // Core-composited multiview grid: one keyed-mutex DXGI shared texture holding
@@ -698,6 +706,16 @@ class ICompositor {
     (void)height;
     return false;
   }
+  // Ownership-preserving output fan-out. D3D11 returns its immutable tap buffer
+  // directly so recorder, stream and virtual camera can share it. Older
+  // compositors bridge through their existing copy-out implementation.
+  virtual bool takeVcamNv12Shared(std::shared_ptr<const std::vector<uint8_t>>& outNv12,
+                                  int& width, int& height) {
+    std::vector<uint8_t> copy;
+    if (!takeVcamNv12(copy, width, height)) return false;
+    outNv12 = std::make_shared<const std::vector<uint8_t>>(std::move(copy));
+    return true;
+  }
   // Composites the multiview grid into a second keyed-mutex DXGI shared texture
   // (the whole grid in one texture, the OBS/broadcast-multiviewer model) and
   // returns its handle/dimensions. Defaulted to an empty texture so the
@@ -749,7 +767,12 @@ class ICompositor {
   // holding NO compositor lock. The callee must be cheap and must not block on
   // the render thread. Setting or clearing the sink waits for any in-flight
   // call, so clear it before the callee is destroyed.
-  using VcamFrameSink = std::function<void(const std::uint8_t* nv12, int width, int height)>;
+  // Ownership is shared so the tap can hand the same immutable NV12 frame to
+  // multiple outputs without a 3 MB memcpy on its cadence. In particular, the
+  // virtual-camera publisher queues this buffer to its own latest-frame worker;
+  // a slow Windows Frame Server consumer must never pace streaming/recording.
+  using VcamFrameBuffer = std::shared_ptr<const std::vector<std::uint8_t>>;
+  using VcamFrameSink = std::function<void(VcamFrameBuffer nv12, int width, int height)>;
   virtual void setVcamFrameSink(VcamFrameSink /*sink*/) {}
   // Does this compositor push frames to that sink? When it does, MediaCore must
   // NOT also publish from the output worker or every frame is published twice.

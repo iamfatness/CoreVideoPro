@@ -366,7 +366,7 @@ class NdiOutputSender final : public IOutputSender {
       return snapshot();
     }
     const bool hasProgramPixels =
-        (!frame->programNv12.empty() && frame->programNv12Width > 0 && frame->programNv12Height > 0) ||
+        (!frame->programNv12Bytes().empty() && frame->programNv12Width > 0 && frame->programNv12Height > 0) ||
         (!frame->programFullBgra.bgra.empty() && frame->programFullBgra.width > 0) ||
         (!frame->preview.bgra.empty() && frame->preview.width > 0 && frame->preview.height > 0);
     if (!hasProgramPixels) {
@@ -475,9 +475,10 @@ class NdiOutputSender final : public IOutputSender {
   void submitProgramVideo(const ProgramFrame& frame) {
     int width = 0;
     int height = 0;
-    if (!frame.programNv12.empty() && frame.programNv12Width > 0 && frame.programNv12Height > 0 &&
-        nv12ToUyvy(frame.programNv12.data(), frame.programNv12Width, frame.programNv12Height,
-                   frame.programNv12.size(), uyvyBuffer_)) {
+    const auto& programNv12 = frame.programNv12Bytes();
+    if (!programNv12.empty() && frame.programNv12Width > 0 && frame.programNv12Height > 0 &&
+        nv12ToUyvy(programNv12.data(), frame.programNv12Width, frame.programNv12Height,
+                   programNv12.size(), uyvyBuffer_)) {
       width = frame.programNv12Width;
       height = frame.programNv12Height;
       videoSourceDetail_ = "program-nv12";

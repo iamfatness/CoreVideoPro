@@ -2139,20 +2139,20 @@ class D3D11Compositor final : public ICompositor {
       // Read back the two small stagings into the publish buffer: Y plane rows,
       // then interleaved UV rows (NV12 layout), honoring each RowPitch. The Map
       // blocks until the draws/copies above complete.
-      std::vector<uint8_t> nv12(nv12FrameSize(w, h));
+      auto nv12 = std::make_shared<std::vector<uint8_t>>(nv12FrameSize(w, h));
       bool ok = false;
       D3D11_MAPPED_SUBRESOURCE mapY{};
       if (SUCCEEDED(ctx->Map(vcamStagY2_.get(), 0, D3D11_MAP_READ, 0, &mapY))) {
         const auto* srcY = static_cast<const uint8_t*>(mapY.pData);
         for (int row = 0; row < h; ++row) {
-          std::memcpy(nv12.data() + static_cast<size_t>(row) * w,
+          std::memcpy(nv12->data() + static_cast<size_t>(row) * w,
                       srcY + static_cast<size_t>(row) * mapY.RowPitch,
                       static_cast<size_t>(w));
         }
         ctx->Unmap(vcamStagY2_.get(), 0);
         D3D11_MAPPED_SUBRESOURCE mapUV{};
         if (SUCCEEDED(ctx->Map(vcamStagUV2_.get(), 0, D3D11_MAP_READ, 0, &mapUV))) {
-          uint8_t* dstUV = nv12.data() + static_cast<size_t>(w) * static_cast<size_t>(h);
+          uint8_t* dstUV = nv12->data() + static_cast<size_t>(w) * static_cast<size_t>(h);
           const auto* srcUV = static_cast<const uint8_t*>(mapUV.pData);
           for (int row = 0; row < h / 2; ++row) {
             std::memcpy(dstUV + static_cast<size_t>(row) * w,
@@ -2172,13 +2172,13 @@ class D3D11Compositor final : public ICompositor {
         {
           std::lock_guard<std::mutex> sinkLock(vcamSinkMutex_);
           if (vcamSink_) {
-            vcamSink_(nv12.data(), w, h);
+            vcamSink_(nv12, w, h);
           }
         }
         std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
         vcamLatestW_ = w;
         vcamLatestH_ = h;
-        vcamLatestNv12_.swap(nv12);
+        vcamLatestNv12_ = std::move(nv12);
         ++vcamLatestGen_;
       } else if (!vcamTapErrorLogged_) {
         // Device removed / driver reset / TDR: skip frames (never crash, never
@@ -2242,14 +2242,22 @@ class D3D11Compositor final : public ICompositor {
   [[nodiscard]] bool publishesVcamFrames() const override { return true; }
 
   bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& w, int& h) override {
+    std::shared_ptr<const std::vector<uint8_t>> shared;
+    if (!takeVcamNv12Shared(shared, w, h)) return false;
+    outNv12 = *shared;
+    return true;
+  }
+
+  bool takeVcamNv12Shared(std::shared_ptr<const std::vector<uint8_t>>& outNv12,
+                          int& w, int& h) override {
     std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
-    if (vcamLatestNv12_.empty() || vcamLatestGen_ == vcamLastTakenGen_) {
+    if (!vcamLatestNv12_ || vcamLatestNv12_->empty() || vcamLatestGen_ == vcamLastTakenGen_) {
       return false;
     }
     vcamLastTakenGen_ = vcamLatestGen_;
     w = vcamLatestW_;
     h = vcamLatestH_;
-    outNv12 = vcamLatestNv12_;  // copy out (caller owns it)
+    outNv12 = vcamLatestNv12_;
     return true;
   }
 
@@ -2320,7 +2328,7 @@ class D3D11Compositor final : public ICompositor {
   // with vcamNv12Mutex_) so a publish never blocks the polled handoff.
   std::mutex vcamSinkMutex_;
   VcamFrameSink vcamSink_;
-  std::vector<uint8_t> vcamLatestNv12_;
+  std::shared_ptr<const std::vector<uint8_t>> vcamLatestNv12_;
   int vcamLatestW_ = 0;
   int vcamLatestH_ = 0;
   uint64_t vcamLatestGen_ = 0;

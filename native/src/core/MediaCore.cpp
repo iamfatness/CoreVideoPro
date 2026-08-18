@@ -346,9 +346,9 @@ MediaCore::MediaCore(modules::ModuleSet modules)
     compositorPublishesVcam_ = true;
     auto* publisher = virtualCamera_.get();
     modules_.compositor->setVcamFrameSink(
-        [publisher](const std::uint8_t* nv12, int width, int height) {
+        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height) {
           try {
-            publisher->publishNv12(nv12, width, height);
+            publisher->publishNv12Shared(std::move(nv12), width, height);
           } catch (...) {
           }
         });
@@ -5843,14 +5843,24 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // THE TAP IS TAKEN BY THE VIDEO TICK, NOT HERE. takeVcamNv12 yields each tap
   // generation exactly ONCE, so two callers would starve each other; the 60Hz
   // renderVideoOutputTick owns the take and leaves the newest frame in
-  // latestProgramNv12_ (both run under audioOutputMutex_, so this is a plain
-  // read). The senders below still need it on work.programFrame.
+  // latestProgramNv12_. The tiny tap-reference lock is independent of DSP and
+  // output I/O, so video can never hold the audio worker's scheduling lock.
   bool hasNewProgramNv12 = false;
-  if (!latestProgramNv12_.empty() && latestProgramNv12Width_ > 0 && latestProgramNv12Height_ > 0) {
+  std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12;
+  int latestProgramNv12Width = 0;
+  int latestProgramNv12Height = 0;
+  {
+    std::lock_guard<std::mutex> tapLock(programNv12Mutex_);
+    latestProgramNv12 = latestProgramNv12_;
+    latestProgramNv12Width = latestProgramNv12Width_;
+    latestProgramNv12Height = latestProgramNv12Height_;
+  }
+  if (latestProgramNv12 && !latestProgramNv12->empty() &&
+      latestProgramNv12Width > 0 && latestProgramNv12Height > 0) {
     hasNewProgramNv12 = true;
-    work.programFrame.programNv12Width = latestProgramNv12Width_;
-    work.programFrame.programNv12Height = latestProgramNv12Height_;
-    work.programFrame.programNv12 = latestProgramNv12_;
+    work.programFrame.programNv12Width = latestProgramNv12Width;
+    work.programFrame.programNv12Height = latestProgramNv12Height;
+    work.programFrame.programNv12Shared = latestProgramNv12;
   }
 
   // PROGRAM VIDEO IS SUBMITTED BY THE VIDEO TICK when one is running. This
@@ -5960,8 +5970,8 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // never run alongside them or every frame is published twice.
   if (virtualCameraEnabled_ && hasNewProgramNv12 && !compositorPublishesVcam_) {
     try {
-      virtualCamera_->publishNv12(latestProgramNv12_.data(), latestProgramNv12Width_,
-                                  latestProgramNv12Height_);
+      virtualCamera_->publishNv12(latestProgramNv12->data(), latestProgramNv12Width,
+                                  latestProgramNv12Height);
     } catch (...) {
     }
   }
@@ -6084,11 +6094,10 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
 // 60fps program at ~51fps in recordings. Raising that worker to 60Hz would break
 // the audio block contract, so video gets its own tick.
 //
-// Lock discipline is unchanged: coreMutex (brief snapshot) THEN audioOutputMutex_
-// (encoder), never both held at once, never reversed — the same order the audio
-// worker uses, so the two serialise on audioOutputMutex_ rather than deadlock.
-// That lock is held ~13% of the time by the audio worker (measured work=2.6ms per
-// 20ms tick), so contention here is rare.
+// Lock discipline: coreMutex (brief snapshot), then videoOutputMutex_ for video
+// fan-out. Video never takes audioOutputMutex_: even a slow encoder/sender queue
+// cannot steal a 20 ms audio deadline. The async sinks provide their own queue
+// synchronization for concurrent audio/video submissions.
 void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   // Block until the compositor publishes a new program frame. The bounded wait
   // is a liveness floor, not a cadence: it lets the tick re-evaluate output
@@ -6140,17 +6149,25 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     // tap still submits exactly what the old path submitted.
     frame = lastProgramFrame_;
   }
-  std::lock_guard<std::mutex> lock(audioOutputMutex_);
+  std::lock_guard<std::mutex> lock(videoOutputMutex_);
   int tapWidth = 0;
   int tapHeight = 0;
-  if (modules_.compositor->takeVcamNv12(latestProgramNv12_, tapWidth, tapHeight)) {
+  std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12;
+  if (modules_.compositor->takeVcamNv12Shared(latestProgramNv12, tapWidth, tapHeight)) {
+    std::lock_guard<std::mutex> tapLock(programNv12Mutex_);
+    latestProgramNv12_ = latestProgramNv12;
     latestProgramNv12Width_ = tapWidth;
     latestProgramNv12Height_ = tapHeight;
+  } else {
+    std::lock_guard<std::mutex> tapLock(programNv12Mutex_);
+    latestProgramNv12 = latestProgramNv12_;
+    tapWidth = latestProgramNv12Width_;
+    tapHeight = latestProgramNv12Height_;
   }
-  if (!latestProgramNv12_.empty() && latestProgramNv12Width_ > 0 && latestProgramNv12Height_ > 0) {
-    frame.programNv12Width = latestProgramNv12Width_;
-    frame.programNv12Height = latestProgramNv12Height_;
-    frame.programNv12 = latestProgramNv12_;
+  if (latestProgramNv12 && !latestProgramNv12->empty() && tapWidth > 0 && tapHeight > 0) {
+    frame.programNv12Width = tapWidth;
+    frame.programNv12Height = tapHeight;
+    frame.programNv12Shared = latestProgramNv12;
   }
   frame.timelineTimestamp100ns = monotonic100ns();
   modules_.encoder->submit(frame);
@@ -6187,8 +6204,9 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     // learning it later means a restart, and a restarted SRT caller is refused
     // by a listener that already accepted one.
     const int declaredChannels = senderExpectsAudio ? 2 : 0;
-    const int declaredSampleRate =
-        senderExpectsAudio ? modules_.mixer->monitorBusSampleRate() : 0;
+    // Program buses are canonical 48 kHz. Reading the mutable mixer from the
+    // independent video thread would reintroduce an audio-domain data race.
+    const int declaredSampleRate = senderExpectsAudio ? 48000 : 0;
     modules_.outputSender->sync(senderDestinations, &frame, outputElapsedMs, senderSettings,
                                 nullptr, declaredChannels, declaredSampleRate);
   } catch (const std::exception& ex) {

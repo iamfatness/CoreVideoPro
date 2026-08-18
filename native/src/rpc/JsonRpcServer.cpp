@@ -20,6 +20,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <avrt.h>
 #include <timeapi.h>
 #endif
 
@@ -678,6 +679,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // takes coreMutex only briefly (gather/publish) and audioOutputMutex_ for the long
   // DSP/IO span, NEVER both at once, so the render thread is never blocked by it.
   std::thread audioOutputThread([&] {
+#ifdef _WIN32
+    // The worker is the program audio clock, not background application work.
+    // MMCSS protects its 20 ms deadline from render/UI/build pressure without
+    // using an unbounded time-critical priority.
+    DWORD audioTaskIndex = 0;
+    HANDLE audioMmcss = ::AvSetMmThreadCharacteristicsW(L"Pro Audio", &audioTaskIndex);
+    if (audioMmcss != nullptr) {
+      (void)::AvSetMmThreadPriority(audioMmcss, AVRT_PRIORITY_HIGH);
+    }
+#endif
     constexpr long long kAudioBudgetUs = 20000;  // 50Hz
     long long ticks = 0;
     long long workUs = 0;
@@ -694,16 +705,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // re-anchored the grid to now on every blown deadline, on the premise that
     // "audio sources are drained whole, so skipped grid slots carry no lost
     // samples". That premise is false downstream: steadyAudioFrameFeed emits
-    // at most ONE tick of samples per tick and sheds its FIFO past 6 ticks, so
+    // at most ONE tick of samples per tick and used to shed its FIFO past 6 ticks, so
     // every skipped slot permanently loses 20ms of real-time audio. Measured on
     // the recording mux: ~48.2 ticks/s → the MP4 audio track ran 3.1% short of
     // video (925ms drift over a 30s recording). Now a blown deadline runs the
     // next tick IMMEDIATELY (no sleep) until the grid is regained — each
     // catch-up tick still drains exactly one 960-frame block, so the spec-4.2
     // fixed block size (and every DSP invariant behind it) is untouched. Only
-    // when hopelessly behind (> 5 ticks ≈ 100ms, still inside the 6-tick feed
-    // FIFO) re-anchor and accept the shed — that path now logs, rate-capped.
-    constexpr long long kMaxCatchupBehindUs = kAudioBudgetUs * 5;
+    // Only re-anchor after 500 ms. The feed now retains 640 ms, allowing ordinary
+    // control/render stalls to run catch-up ticks and preserve every PCM block.
+    constexpr long long kMaxCatchupBehindUs = kAudioBudgetUs * 25;
     long long reanchors = 0;
     auto lastReanchorLog = std::chrono::steady_clock::now();
     auto deadline = std::chrono::steady_clock::now();
@@ -730,7 +741,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           ++reanchors;
           if (now - lastReanchorLog > std::chrono::seconds(5)) {
             std::fprintf(stderr,
-                         "[audioOut] pacer re-anchored %lld time(s): worker >100ms behind, real-time audio shed\n",
+                         "[audioOut] pacer re-anchored %lld time(s): worker >500ms behind, real-time audio shed\n",
                          reanchors);
             lastReanchorLog = now;
             reanchors = 0;
@@ -741,6 +752,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         std::this_thread::sleep_until(deadline);
       }
     }
+#ifdef _WIN32
+    if (audioMmcss != nullptr) {
+      ::AvRevertMmThreadCharacteristics(audioMmcss);
+    }
+#endif
   });
 
   // Dedicated PROGRAM VIDEO OUT worker. Everything leaving the app used to be

@@ -754,12 +754,14 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       state.primed = false;
     }
 
-    // Cap runaway accumulation (device clock slightly fast): keep at most
-    // 6 ticks buffered by dropping the OLDEST audio. The drop MUST be frame-
+    // Cap runaway accumulation while retaining enough runway for the worker's
+    // bounded 500 ms deadline recovery. The former 6-tick/120 ms cap converted
+    // ordinary UI/render stalls directly into permanent speech cuts.
+    // The drop MUST be frame-
     // aligned: an odd-count erase on interleaved stereo flips L into R for
     // every sample thereafter (owner-heard: left/right out of sync + comb
     // warble on the bursty Zoom streams that hit this cap).
-    const size_t cap = tickSamples * 6;
+    const size_t cap = tickSamples * 32;  // 640 ms at the canonical 50 Hz grid
     if (state.fifo.size() > cap) {
       size_t drop = state.fifo.size() - cap;
       drop -= drop % static_cast<size_t>(frame.channels);

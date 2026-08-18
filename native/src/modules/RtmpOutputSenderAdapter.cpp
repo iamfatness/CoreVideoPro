@@ -858,7 +858,7 @@ class RtmpOutputSender final : public IOutputSender {
     }
     const auto required = static_cast<size_t>(frame.programNv12Width) *
                           static_cast<size_t>(frame.programNv12Height) * 3 / 2;
-    return frame.programNv12.size() >= required;
+    return frame.programNv12Bytes().size() >= required;
   }
 
   // Full-res BGRA tap (the Metal GPU tap on macOS; fills whenever output is
@@ -893,7 +893,7 @@ class RtmpOutputSender final : public IOutputSender {
 
   static const std::vector<uint8_t>& videoFrameBytes(const ProgramFrame& frame) {
     if (hasProgramNv12(frame)) {
-      return frame.programNv12;
+      return frame.programNv12Bytes();
     }
     return hasProgramFullBgra(frame) ? frame.programFullBgra.bgra : frame.preview.bgra;
   }

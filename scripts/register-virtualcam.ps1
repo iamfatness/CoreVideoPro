@@ -30,8 +30,9 @@ if (-not $dll) {
 # No elevation needed - DllRegisterServer writes a per-user HKCU CLSID key.
 $action = if ($Unregister) { "Unregistering" } else { "Registering" }
 Write-Host "$action $dll ..."
-$args = if ($Unregister) { @("/s", "/u", $dll) } else { @("/s", $dll) }
-$proc = Start-Process -FilePath "regsvr32.exe" -ArgumentList $args -Wait -PassThru
+$quotedDll = '"' + $dll + '"'
+$registerArgs = if ($Unregister) { @("/s", "/u", $quotedDll) } else { @("/s", $quotedDll) }
+$proc = Start-Process -FilePath "regsvr32.exe" -ArgumentList $registerArgs -Wait -PassThru
 if ($proc.ExitCode -ne 0) {
   Write-Error "regsvr32 failed with exit code $($proc.ExitCode)."
   exit $proc.ExitCode

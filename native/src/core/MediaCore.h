@@ -632,8 +632,10 @@ class MediaCore {
   // time after outputs clear, so the stop-carrying sync() is actually delivered.
   std::atomic<bool> senderSyncActive_{false};
   std::atomic<int64_t> renderDeadlineMisses_{0};
-  // The newest program NV12 tap. WRITTEN by renderVideoOutputTick and READ by
-  // the audio worker for the network senders — both under audioOutputMutex_.
+  // The newest program NV12 tap. Video owns output submission independently of
+  // audio; this small mutex protects only the shared immutable tap reference and
+  // dimensions, never DSP, encoder or sender work.
+  mutable std::mutex programNv12Mutex_;
   // takeVcamNv12 hands out each generation once, so exactly one caller may take.
   // Edge-trigger state for the video tick (coreMutex-guarded): the last program
   // frame it published, so a tick with nothing new costs one comparison instead
@@ -649,7 +651,7 @@ class MediaCore {
   std::condition_variable videoOutCv_;
   std::mutex videoOutWaitMutex_;
   uint64_t lastVideoOutPublishSeq_ = 0;
-  std::vector<std::uint8_t> latestProgramNv12_;
+  std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12_;
   int latestProgramNv12Width_ = 0;
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
@@ -834,6 +836,10 @@ class MediaCore {
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,
   // outputSender) + the BS.1770 loudness accumulators. Lock order: coreMutex → this.
   mutable std::mutex audioOutputMutex_;
+  // Video encoder/sender submission must never make the 20 ms audio worker wait.
+  // The concrete sinks are asynchronous/thread-safe; this lock only serializes
+  // video ticks with each other.
+  mutable std::mutex videoOutputMutex_;
   // Set once (before threads start) when a dedicated worker drives the audio/output
   // tick; flips the command-thread path to video-only. Plain bool: written before the
   // worker/render/command threads exist, then only read.

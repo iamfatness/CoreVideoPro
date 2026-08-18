@@ -41,6 +41,13 @@ class IVirtualCameraPublisher {
   virtual void publishNv12(const std::uint8_t* nv12, int width, int height) {
     (void)nv12; (void)width; (void)height;
   }
+  // Ownership-preserving fast path used by the D3D tap. Implementations may
+  // queue the immutable frame and return immediately, preventing camera SHM I/O
+  // from pacing the compositor or the streaming/recording video tick.
+  virtual void publishNv12Shared(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+                                 int width, int height) {
+    if (nv12) publishNv12(nv12->data(), width, height);
+  }
   // Remove the OS virtual camera and release the slot. Idempotent.
   virtual void stop() = 0;
   virtual VirtualCameraStatus status() const = 0;
