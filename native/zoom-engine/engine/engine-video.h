@@ -65,6 +65,16 @@ private:
     std::atomic<bool> m_stopping{false};
     mutable std::mutex m_targets_mtx;
     std::unordered_map<std::string, std::unique_ptr<SourceTarget>> m_targets;
+    // Scratch for the limited-range correction (see i420-range-expand.h). Only
+    // allocated for a participant that actually delivers a limited frame, and
+    // touched solely on the SDK raw-data thread inside onRawDataFrameReceived,
+    // so it needs no lock of its own.
+    std::vector<uint8_t> m_range_buf;
+    // The flash is ~1 frame in 1000, so it is invisible without a tally. These
+    // make the correction OBSERVABLE: a defect you cannot count is a defect you
+    // cannot prove you fixed. SDK raw-data thread only, like m_range_buf.
+    uint64_t m_frames_seen = 0;
+    uint64_t m_limited_frames = 0;
 };
 
 class EngineVideo {

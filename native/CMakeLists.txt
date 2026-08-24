@@ -611,6 +611,7 @@ if(BUILD_TESTING)
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp
+    tests/I420RangeExpandTest.cpp
     tests/MetalCompositorTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp

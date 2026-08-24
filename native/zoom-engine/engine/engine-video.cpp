@@ -1,5 +1,6 @@
 #include "engine-video.h"
 #include "engine-writer.h"
+#include "i420-range-expand.h"
 #if __has_include(<rawdata/zoom_rawdata_api.h>)
 #include <rawdata/zoom_rawdata_api.h>
 #else
@@ -207,6 +208,43 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
         return;
     }
 
+    // The engine requests VideoRawdataColorspace_BT709_F (main.cpp) and every
+    // consumer declares these frames FULL range -- ZoomEngineClient.cpp converts
+    // with unity luma scale, and VideoFrame::i420FullRange defaults true so the
+    // GPU shader skips its expansion branch. The SDK does not always honour the
+    // request. A limited frame rendered as full lifts blacks and crushes whites
+    // for exactly one frame: the "gamma flash". IsLimitedI420() reports it per
+    // frame and was never called anywhere in this codebase. Normalise ONCE here,
+    // before the target loop, so every target inherits the corrected pixels and
+    // the full-range declaration downstream is true for every frame.
+    const uint8_t *src_y = reinterpret_cast<const uint8_t *>(data->GetYBuffer());
+    const uint8_t *src_u = reinterpret_cast<const uint8_t *>(data->GetUBuffer());
+    const uint8_t *src_v = reinterpret_cast<const uint8_t *>(data->GetVBuffer());
+    const size_t c_len = y_len / 4;
+    ++m_frames_seen;
+    if (data->IsLimitedI420()) {
+        ++m_limited_frames;
+        // Loud on the FIRST one, then rate-limited: this is the evidence that
+        // the SDK ignores our full-range request, and the ratio is how we
+        // confirm the correction is actually running in a live show.
+        if (m_limited_frames == 1 || m_limited_frames % 25 == 0) {
+            EngineIpc::write(
+                R"({"cmd":"debug","stage":"video_limited_range_corrected","participant_id":)" +
+                std::to_string(m_participant_id) + R"(,"limited":)" +
+                std::to_string(m_limited_frames) + R"(,"seen":)" +
+                std::to_string(m_frames_seen) + "}");
+        }
+        // The common full-range path never reaches here and never copies.
+        if (m_range_buf.size() < y_len + c_len * 2) m_range_buf.resize(y_len + c_len * 2);
+        uint8_t *dst_y = m_range_buf.data();
+        uint8_t *dst_u = dst_y + y_len;
+        uint8_t *dst_v = dst_u + c_len;
+        corevideo::i420_expand_limited_to_full(src_y, src_u, src_v, dst_y, dst_u, dst_v, y_len);
+        src_y = dst_y;
+        src_u = dst_u;
+        src_v = dst_v;
+    }
+
     std::lock_guard<std::mutex> lock(m_targets_mtx);
     // Re-check under the lock: the destructor may have set the flag between the
     // early check and this acquisition; past this point it drains behind us.
@@ -242,9 +280,9 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
         hdr->height = h;
         hdr->y_len = static_cast<uint32_t>(y_len);
 
-        std::memcpy(pixels,                   data->GetYBuffer(), y_len);
-        std::memcpy(pixels + y_len,           data->GetUBuffer(), y_len / 4);
-        std::memcpy(pixels + y_len + y_len/4, data->GetVBuffer(), y_len / 4);
+        std::memcpy(pixels,                   src_y, y_len);
+        std::memcpy(pixels + y_len,           src_u, c_len);
+        std::memcpy(pixels + y_len + c_len,   src_v, c_len);
         std::atomic_thread_fence(std::memory_order_release);
         hdr->sequence = seq + 1;
 

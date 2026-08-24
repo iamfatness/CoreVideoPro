@@ -404,6 +404,40 @@ comment at the code site; this is the index.
   (`kCompositorYuvPixelShader`, BT.709 full-range). Zoom frames carry I420
   (`hasI420()`), NOT BGRA — any frame merge/match must check `hasI420()` too or Zoom
   renders blank (see the `renderSyntheticTick` engine-roster merge).
+- **THE SDK IGNORES OUR FULL-RANGE REQUEST — ON EVERY FRAME (2026-08-23).** The
+  engine asks for `VideoRawdataColorspace_BT709_F` (`zoom-engine/engine/main.cpp`
+  :856 and :1367) and EVERY consumer then declares those frames full-range:
+  `ZoomEngineClient.cpp` converts with unity luma scale and no −16 offset, and
+  `VideoFrame::i420FullRange` (`Interfaces.h`) defaults **true**, so the GPU
+  shader skips its own expansion branch. `YUVRawDataI420::IsLimitedI420()` reports
+  the truth per frame and **had never been called anywhere in this codebase**.
+  Measured live on an 8-guest meeting: **100% of frames, every participant, came
+  back LIMITED** — so every Zoom pixel this product has ever shown was rendered
+  with lifted blacks and crushed whites. (The OBS plugin hit the same defect at
+  ~0.1%, where it presents as the intermittent one-frame "gamma flash"; here it is
+  total and constant, which is why program measured washed out against mimoLive.)
+  `zoom-engine/shared/i420-range-expand.h` now normalises the pixels ONCE per
+  frame, before the target loop, so the full-range declaration downstream is true;
+  `engine-video.cpp` emits a rate-limited `video_limited_range_corrected` debug
+  event carrying the limited/seen tally, because a defect you cannot count is one
+  you cannot prove you fixed. Tests: `tests/I420RangeExpandTest.cpp` (studio
+  endpoints open, superblack/superwhite CLAMP rather than wrap, neutral chroma
+  survives at exactly 128 so the correction cannot tint, monotonicity, round trip
+  within one code).
+  **Verify with PIXELS, not the flag:** map the engine's SHM region read-only
+  (`ZoomObsPlugin_<ipc-token>_<source_uuid>`, `ShmFrameHeader` then the Y plane) and
+  histogram luma. An expanded limited source shows a **comb — ~37 empty codes**
+  between min and max (219 levels stretched over 256); rig-measured 35–36. Natively
+  full-range video has no comb. That signature is what separates "we corrected it"
+  from "we crushed it".
+  **Two things this does NOT do.** It cannot restore precision — 219 levels
+  stretched to 256 is mild banding, so the real win would be making the SDK honour
+  the request in the first place. And because the limited path is now taken on
+  EVERY frame (not the ~0.1% the plugin's design assumed), the per-frame expansion
+  copy sits on the hot path; measured no ingest-stage regression (0.41–0.47ms, same
+  as before), but the cheaper home for this is the GPU — the shader ALREADY has the
+  `if (!frame->i420FullRange)` branch, so threading a real range flag through the
+  SHM header would make the correction free. Revisit if ingest cost ever matters.
 - Audio/output no longer rides the render lock — **Phase 2 shipped**: a dedicated
   ~50Hz worker (`JsonRpcServer` `audioOutputThread`) runs
   `MediaCore::renderAudioOutputTick` with a strict two-lock discipline: `coreMutex`
