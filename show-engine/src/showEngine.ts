@@ -13,7 +13,9 @@
  * questions. The diffing itself lives in `hostCommands.ts` — this file only
  * sequences WHEN each `emit*` call runs and WHAT this tick's already-
  * resolved values are; it holds none of the "did this actually change"
- * logic. The polling loop is Task 9+.
+ * logic. The polling loop is Task 9+. Also here: the gallery operator
+ * controls and `setSmartGallery` (`RecencyScores`'s first consumer, gated
+ * through the same active-speaker gate as the position assigner).
  *
  * The one rule every reviewer of this file must re-verify: `clampPage` and
  * `resolveLook` are called together, exactly once per tick, and always
@@ -26,12 +28,12 @@
 import type { Clock } from "./clock.js";
 import type { HostAdapter } from "./hostAdapter.js";
 import type { PositionAssigner } from "./speakerRecency.js";
-import { FiloAssigner } from "./speakerRecency.js";
+import { FiloAssigner, RecencyScores } from "./speakerRecency.js";
 import { shouldFollowSpeaker } from "./speakerGate.js";
 import type { ShowEngineConfig } from "./config.js";
-import { MUKANA_ENDPOINTS } from "./mukanaClient.js";
 import type { MukanaClient, MukanaEndpoint, MukanaHealth } from "./mukanaClient.js";
 import { MukanaRegistry, type DormantOutcome, type MukanaOutcome, type QuestionOutcome } from "./mukanaParse.js";
+import { MukanaPoller } from "./mukanaPoller.js";
 import { LiveSlots } from "./liveSlots.js";
 import { GalleryDirector } from "./galleryDirector.js";
 import { OverrideDb, type OverrideRecord } from "./overrideDb.js";
@@ -44,19 +46,12 @@ import { deriveTally } from "./tallyPublisher.js";
 import { resolveCapabilities } from "./capabilities.js";
 import { buildSnapshot, type ShowSnapshot } from "./showSnapshot.js";
 import { StateStore, STATE_VERSION, type PersistedShowState } from "./persistence.js";
-import {
-  clampPage,
-  effectiveBoxFill,
-  findChairSlots,
-  pageCountFor,
-  resolveLook,
-  type LookResolution,
-  type ManualBoxAssignments
-} from "./lookDirector.js";
+import { clampPage, findChairSlots, resolveLook, type LookResolution } from "./lookDirector.js";
+import { LookController, type PagingRefusalKind } from "./lookController.js";
 import { stripChairs, type HandsOutcome } from "./handsQueue.js";
 import {
   EXCLUSIVE_ROLES,
-  type LookDefinition,
+  type Headline,
   type MukanaQuestion,
   type Panelist,
   type ProgramSource,
@@ -65,7 +60,7 @@ import {
   type ShowCapabilities,
   type Slot
 } from "./contracts.js";
-import type { PersonKey } from "./personKey.js";
+import { personKeyForPin, type PersonKey } from "./personKey.js";
 
 /**
  * Minimum time between persisted saves, enforced against the injected
@@ -76,30 +71,6 @@ import type { PersonKey } from "./personKey.js";
  * long since the last actual write.
  */
 const SAVE_DEBOUNCE_MS = 1000;
-
-/**
- * How many of an endpoint's OWN poll intervals a single in-flight fetch may
- * be outstanding before this engine stops believing that endpoint's last
- * reported health (final review, I1).
- *
- * `MukanaClient` writes health only when a request settles, so an endpoint
- * that answered once and then hung would otherwise keep reporting `ok` —
- * and therefore `available` — over a feed that has been frozen for the rest
- * of the show. The engine cannot cancel the fetch (no timers, spec §2: time
- * enters only through the injected `Clock`), and the one-in-flight-per-
- * endpoint gate means no newer fetch will ever contradict the stale record.
- * What the engine CAN do is refuse to keep asserting usability it has no
- * current evidence for: past this many intervals the endpoint is reported
- * `failing`, which resolves to `unavailable` and engages the same manual
- * fallback a 503 would.
- *
- * Three rather than one: `nextDelayMs` is the interval between poll STARTS,
- * so a response that merely takes a little longer than one interval is
- * ordinary slowness on a live network, not a hang. This is a report-only
- * downgrade — it never cancels the fetch, never starts a competing one, and
- * is withdrawn the moment that fetch settles and writes real health.
- */
-const MUKANA_HUNG_POLL_INTERVALS = 3;
 
 /** True for the two roles `OverrideDb.assignExclusiveRole` knows how to enforce. */
 function isExclusiveOverrideRole(role: Role): role is "host" | "reader" {
@@ -123,18 +94,6 @@ function pinAtSlot(slots: readonly Slot[], slotNumber: number | null): string | 
   if (slotNumber === null) return null;
   const entry = slots.find((candidate) => candidate.slot === slotNumber);
   return entry?.panelist?.pin ?? null;
-}
-
-/**
- * Turn a rejection reason from a Mukana fetch promise into the same
- * `string` shape `MukanaClient.fail` uses for a caught transport error —
- * `pollMukana`'s rejection handlers use this so a rejected fetch (a
- * contract-violating `FetchLike`, or anything else outside what
- * `MukanaClient.request`'s own try/catch covers) still records an ordinary
- * `invalid` outcome instead of an unhandled promise rejection.
- */
-function mukanaRejectionReason(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export type ShowEngineDeps = {
@@ -178,6 +137,7 @@ export class ShowEngine {
   private readonly clock: Clock;
   private readonly store: StateStore;
   private readonly mukanaClient: MukanaClient | undefined;
+  private readonly mukanaPoller: MukanaPoller | undefined;
   private readonly assigner: PositionAssigner;
   private readonly galleryCellCount: number;
 
@@ -187,15 +147,33 @@ export class ShowEngine {
   private readonly programBus: ProgramBus;
   private readonly overlayDirector: OverlayDirector;
   private readonly hostCommands: HostCommandEmitter;
+  private readonly lookController: LookController;
 
   private liveSlots: LiveSlots;
   private gallery: GalleryDirector;
 
+  /**
+   * Speaker-recency ordering for the gallery — shipped and unused since
+   * Plan 2, this class its first consumer. Orders CANDIDATES, never
+   * places them (see its own doc comment), so every read here pairs with
+   * `GalleryDirector.applyOrder`, the actual placement. Fed only through
+   * the SAME gate that guards `this.assigner` (the gate step in
+   * `tick()`) — an interpreter must never reorder the gallery either.
+   */
+  private readonly recencyScores = new RecencyScores();
+
+  /**
+   * Reorder the gallery by speaker recency every tick when true. Set by
+   * `setSmartGallery`; off by default; purely in-memory, not part of
+   * `PersistedShowState`. PUBLISHED on `ShowSnapshot.smartGallery` (final
+   * fix round, I4) so the three host panels — thin state renderers, by
+   * spec — can render the toggle from state instead of each keeping a
+   * private copy that disagrees with the engine.
+   */
+  private smartGalleryOn = false;
+
   private tickRevision = 0;
-  private selectedLookId: string | null = null;
   private currentLook: LookResolution | null = null;
-  private page = 0;
-  private manualBoxes: ManualBoxAssignments = {};
   private queue: QueueState = emptyQueue();
   private unseatedPanelists: Panelist[] = [];
 
@@ -212,15 +190,24 @@ export class ShowEngine {
   private questionVisible = false;
 
   /**
-   * Why the last `nextGuest`/`prevGuest` call did not move the page, or
-   * `null` when the last paging attempt (if any) succeeded. Written by
-   * `nextGuest`/`prevGuest`, and cleared early by `tick()` and `setLook`
-   * for the two causes that can go stale on their own (see
-   * `pagingRefusedKind` below) — Fix round 1, Finding 4. A refusal recorded
-   * between ticks is otherwise visible on the snapshot the following tick
-   * publishes.
+   * The operator-set headline, or `null` before one is ever typed. Unlike a
+   * nameplate, nothing derives this from the roster or the resolved look —
+   * see `Headline`'s own doc comment. Not part of `PersistedShowState`
+   * (mirrors `question`/`questionVisible`, which aren't either): it is
+   * live-show scratch state, not something a restart should resurrect. Set
+   * by `setHeadline`; fed to `OverlayDirector.update` every tick alongside
+   * `headlineVisible`.
    */
-  private pagingRefused: string | null = null;
+  private headline: Headline | null = null;
+
+  /**
+   * Whether the operator currently wants the headline on screen. Set by
+   * `setHeadlineVisible`, independently of `headline` itself —
+   * `OverlayDirector` retains the text across a visibility toggle (see its
+   * own doc comment), so hiding then re-showing restores the same content
+   * without the operator retyping it.
+   */
+  private headlineVisible = false;
 
   /**
    * What the last `restore()` had to discard from the persisted document,
@@ -231,25 +218,6 @@ export class ShowEngine {
    * loaded. See `ShowSnapshot.restoreWarnings`.
    */
   private restoreWarnings: string[] = [];
-
-  /**
-   * WHY `pagingRefused` was set, tracked separately from the human-readable
-   * string so `tick()` can decide which refusals it's allowed to clear
-   * without parsing its own message. `"fill"` (the active look's boxes
-   * aren't currently filling from the queue) and `"no-look"` (no look was
-   * selected at all) are both facts about CURRENT state that a later tick
-   * can independently re-check and clear once no longer true — a dead
-   * hands feed recovering, or a look finally getting selected. `"range"`
-   * (the attempted move ran off the end of the current page window) is
-   * NOT auto-cleared by `tick()`: it was true about a specific attempted
-   * move, not a standing condition, and clearing it merely because the
-   * look still fills from the queue (the ONLY fill strategy under which an
-   * out-of-range move is even possible) would wipe it out on the very next
-   * tick — before an operator polling on any normal cadence could ever see
-   * it. Only a subsequent `nextGuest`/`prevGuest` (success or another
-   * refusal) or `setLook` clears a `"range"` refusal.
-   */
-  private pagingRefusedKind: "no-look" | "fill" | "range" | null = null;
 
   /**
    * Whether `overlayDirector.update()` reported a change on the most recent
@@ -308,62 +276,6 @@ export class ShowEngine {
    */
   private pendingSpeakerId: string | null = null;
 
-  /**
-   * Wall-clock time (per the injected `Clock`) each endpoint's poll was last
-   * STARTED, keyed so `nextDelayMs`'s own interval/backoff math (which the
-   * engine deliberately adds no policy on top of) is checked against a fresh
-   * anchor every time a fetch is kicked off — never against when it
-   * SETTLED, since a poll that's still in flight must not look perpetually
-   * "not due yet" once its interval has genuinely elapsed. `-Infinity`
-   * makes every endpoint due on the very first tick that reaches it.
-   */
-  private readonly lastMukanaPollAt: Record<MukanaEndpoint, number> = {
-    panelists: Number.NEGATIVE_INFINITY,
-    hands: Number.NEGATIVE_INFINITY,
-    question: Number.NEGATIVE_INFINITY
-  };
-
-  /**
-   * Whether a fetch for this endpoint is currently in flight — gates
-   * starting a NEW one in `pollMukana`. Set the moment a fetch starts,
-   * cleared in that SAME fetch's `.then()`/rejection handler, never
-   * anywhere else. This is what makes "one in-flight promise per endpoint"
-   * a real invariant rather than a comment: without it, a slow or hung
-   * endpoint gets a fresh overlapping fetch every time its interval elapses
-   * (unbounded concurrent requests against an already-struggling registry,
-   * and — because outcomes are applied in SETTLE order, not START order — a
-   * later-settling but earlier-started fetch can overwrite a fresher one
-   * with stale data, e.g. the hands queue jumping backwards to an older
-   * guest). `nextDelayMs`'s backoff-after-failure ceiling bounds the RATE a
-   * healthy-but-slow endpoint gets hit; this bounds the COUNT in flight at
-   * once to exactly one, which backoff alone does not.
-   */
-  private readonly mukanaPollBusy: Record<MukanaEndpoint, boolean> = {
-    panelists: false,
-    hands: false,
-    question: false
-  };
-
-  /**
-   * The outcome of a hands/question fetch that has settled since it was
-   * started, waiting for the next `tick()` to notice and apply it — `null`
-   * once applied, or while no fetch for that endpoint has settled yet.
-   * `tick()` never `await`s the fetch itself (spec §2: no external
-   * integration failure may block a tick); a background `.then()` attached
-   * the moment the fetch is started writes here as its ONLY job, so writing
-   * it can never race `tick()`'s own synchronous read-and-clear at the top
-   * of the next `tick()` call — both run on the same single JS thread, and
-   * a `.then()` callback body itself never runs concurrently with `tick()`'s
-   * own execution. Panelists outcomes reuse the existing `onMukanaPanelists`
-   * apply path instead of a slot like this one, because that path also has
-   * to flip `otherInputsChanged`/`pendingPersist`, which must happen before
-   * `tick()` captures `otherInputsChanged` for this tick's seat-step
-   * decision — see the top of `tick()`.
-   */
-  private panelistsPollSettled: MukanaOutcome | null = null;
-  private handsPollSettled: HandsOutcome | DormantOutcome | null = null;
-  private questionPollSettled: QuestionOutcome | null = null;
-
   constructor(deps: ShowEngineDeps) {
     if (deps.mukana !== undefined && deps.config.mukana === null) {
       throw new Error(
@@ -377,6 +289,14 @@ export class ShowEngine {
     this.clock = deps.clock;
     this.store = deps.store;
     this.mukanaClient = deps.mukana;
+    this.mukanaPoller =
+      deps.mukana === undefined
+        ? undefined
+        : new MukanaPoller({
+            client: deps.mukana,
+            clock: deps.clock,
+            integrations: deps.config.integrations
+          });
     this.assigner = deps.assigner ?? new FiloAssigner({ capacity: deps.config.capacity });
 
     this.galleryCellCount = Math.min(deps.config.galleryCells, deps.host.capabilities().maxGalleryCells);
@@ -387,6 +307,7 @@ export class ShowEngine {
     this.programBus = new ProgramBus({ skipRoles: deps.config.skipRoles });
     this.overlayDirector = new OverlayDirector();
     this.hostCommands = new HostCommandEmitter(deps.host);
+    this.lookController = new LookController({ looks: deps.config.looks });
 
     this.liveSlots = new LiveSlots({
       capacity: deps.config.capacity,
@@ -405,21 +326,7 @@ export class ShowEngine {
    * resolve-against-the-roster/clamp-the-page work happens in `tick()`.
    */
   setLook(lookId: string): void {
-    const look = this.config.looks.find((candidate) => candidate.id === lookId);
-    if (look === undefined) {
-      throw new Error(`ShowEngine.setLook: unknown look id ${JSON.stringify(lookId)}`);
-    }
-    if (this.selectedLookId !== lookId) {
-      this.manualBoxes = {};
-    }
-    this.selectedLookId = lookId;
-    // A paging refusal recorded against the PREVIOUS look (or against no
-    // look at all) has nothing to say about this one — Fix round 1,
-    // Finding 4: it must not survive a look change and read as a stale,
-    // misattributed reason once the new look's own paging (or lack of it)
-    // is what's actually in effect.
-    this.pagingRefused = null;
-    this.pagingRefusedKind = null;
+    this.lookController.select(lookId);
     this.pendingPersist = true;
     this.otherInputsChanged = true;
   }
@@ -428,18 +335,15 @@ export class ShowEngine {
    * Test-only escape hatch: writes the pending page directly, with **no**
    * clamping. Production code should never call this — operator paging
    * goes through `nextGuest`/`prevGuest`, and `tick()`'s own `clampPage`
-   * step is what keeps `this.page` sane between ticks, deriving the valid
+   * step is what keeps the page sane between ticks, deriving the valid
    * range from the current capability state and queue every time. This
    * exists so a property test can plant a page the way a *stale* one would
    * actually arrive at the top of a tick — e.g. left over from a
    * fill-strategy flip or a look change — and prove `tick()` survives it
-   * rather than throwing.
+   * rather than throwing. Forwards to `LookController.setPage`.
    */
   setPage(page: number): void {
-    if (!Number.isInteger(page)) {
-      throw new Error(`ShowEngine.setPage: page ${page} is invalid: page must be an integer`);
-    }
-    this.page = page;
+    this.lookController.setPage(page);
   }
 
   /**
@@ -451,13 +355,19 @@ export class ShowEngine {
    * current page range: `lookDirector.ts`'s own docs are explicit that
    * clamping a direct operator move "would silently swallow a 'next' that
    * ran off the end, which is exactly the silence an operator control must
-   * not produce" (Fix round 1, Finding 3 — the pre-fix version let
-   * `this.page` walk past the end here and relied on `tick()`'s
-   * `clampPage` to quietly pull it back, which is precisely that silence:
-   * the operator got no signal their "next" didn't do anything new). Either
-   * refusal reason — wrong fill strategy, or off the end — is recorded in
-   * `pagingRefused` instead of throwing or silently doing nothing (spec
-   * §4). `this.page` itself is left untouched by a refused move.
+   * not produce" (Fix round 1, Finding 3 — the pre-fix version let the page
+   * walk past the end here and relied on `tick()`'s `clampPage` to quietly
+   * pull it back, which is precisely that silence: the operator got no
+   * signal their "next" didn't do anything new). Either refusal reason —
+   * wrong fill strategy, or off the end — is recorded on
+   * `LookController.refusal()` instead of throwing or silently doing
+   * nothing (spec §4). The page itself is left untouched by a refused move.
+   *
+   * `LookController.adjustPage` only tracks selection/paging state; it does
+   * not resolve capabilities or strip the queue itself, so both are
+   * resolved fresh here — the SAME shape `tick()`'s own `clampPage`/
+   * `resolveLook` pair would use, but resolved independently since a direct
+   * operator move can land between ticks.
    */
   nextGuest(): void {
     this.adjustPage(1);
@@ -468,36 +378,26 @@ export class ShowEngine {
     this.adjustPage(-1);
   }
 
+  /**
+   * Forward `LookController.refusal()` verbatim — message AND kind — for a
+   * caller that needs to know WHY the last `nextGuest`/`prevGuest` did not
+   * move, not just that it didn't. The published snapshot only ever needed
+   * the message (`buildSnapshotFrom`'s `pagingRefused`), so that forwarder
+   * drops `kind` on the floor; this one doesn't. Added for Task 8's `ohg.*`
+   * action registry (`ohg.look.nextGuest`/`prevGuest` report a refusal as a
+   * first-class `ActionResult`, carrying the engine's own refusal text) —
+   * carried over from Task 2's note that this decision belonged here rather
+   * than being rediscovered mid-task. `null` when the last attempted move
+   * (if any) succeeded, exactly mirroring `LookController.refusal()` itself.
+   */
+  pagingRefusal(): { message: string; kind: PagingRefusalKind } | null {
+    return this.lookController.refusal();
+  }
+
   private adjustPage(delta: number): void {
-    const look = this.lookById(this.selectedLookId);
-    if (look === null) {
-      this.pagingRefused = "paging refused: no look is selected";
-      this.pagingRefusedKind = "no-look";
-      return;
-    }
-
     const caps = resolveCapabilities(this.config, this.mukanaHealth());
-    const fill = effectiveBoxFill(look, caps.handsQueue);
-    if (fill !== "queue") {
-      this.pagingRefused = `paging refused: box fill is ${fill}, not queue-driven`;
-      this.pagingRefusedKind = "fill";
-      return;
-    }
-
-    const slots = this.liveSlots.slots();
-    const strippedQueue = this.stripQueueAgainstSeatedChairs(slots);
-    const pageCount = pageCountFor(look, strippedQueue);
-    const target = this.page + delta;
-
-    if (target < 0 || target >= pageCount) {
-      this.pagingRefused = `paging refused: page ${target} is out of range (this look has ${pageCount} page(s))`;
-      this.pagingRefusedKind = "range";
-      return;
-    }
-
-    this.pagingRefused = null;
-    this.pagingRefusedKind = null;
-    this.page = target;
+    const strippedQueue = this.stripQueueAgainstSeatedChairs(this.liveSlots.slots());
+    this.lookController.adjustPage(delta, strippedQueue, caps.handsQueue);
   }
 
   /**
@@ -507,34 +407,53 @@ export class ShowEngine {
    * the operator may be setting it up in advance of a fill-strategy switch.
    * Throws for a box number outside the ACTIVE look's `1..boxes` range —
    * caller error, not a state-changed-under-me refusal, so it throws rather
-   * than getting a typed `pagingRefused`-style response. When no look is
-   * selected yet there is no range to validate against, so only a
-   * non-positive-integer box number is rejected.
+   * than getting a typed refusal response. When no look is selected yet
+   * there is no range to validate against, so only a non-positive-integer
+   * box number is rejected. Forwards to `LookController.assignBox`.
+   *
+   * **Also throws for an invalid `slot`** (Task 10 fix): a slot must be an
+   * integer `>= 0`, where `0` BLANKS the box — `GalleryDirector.assertSlot`'s
+   * rule verbatim, since a blank box and a blank gallery cell are the same
+   * idea. A negative slot used to be accepted, persisted, and then silently
+   * rendered as an empty box. No upper bound is enforced (this layer knows
+   * no capacity; a too-high slot resolves safely to an empty box).
    */
   assignBox(box: number, slot: number): void {
-    const look = this.lookById(this.selectedLookId);
-    if (!Number.isInteger(box) || box < 1 || (look !== null && box > look.boxes)) {
-      throw new Error(
-        look === null
-          ? `ShowEngine.assignBox: box ${box} is invalid: box must be a positive integer`
-          : `ShowEngine.assignBox: box ${box} is out of range for look ${JSON.stringify(look.id)} (1..${look.boxes})`
-      );
-    }
-    this.manualBoxes = { ...this.manualBoxes, [box]: slot };
+    this.lookController.assignBox(box, slot);
     this.pendingPersist = true;
   }
 
-  /** Remove one manual box assignment, leaving the rest untouched. */
+  /**
+   * Remove one manual box assignment, leaving the rest untouched. Forwards
+   * to `LookController.clearBox`, which validates `box` **exactly as
+   * `assignBox` does** and therefore THROWS for a box outside the active
+   * look's `1..boxes` range (Task 10 fix — it previously validated nothing,
+   * so clearing a box that cannot exist reported success while doing
+   * nothing).
+   */
   clearBox(box: number): void {
-    const next = { ...this.manualBoxes };
-    delete next[box];
-    this.manualBoxes = next;
+    this.lookController.clearBox(box);
     this.pendingPersist = true;
   }
 
   /** Toggle whether the audience question overlay should render. Forwarded to `OverlayDirector.update` every tick. */
   setQuestionVisible(on: boolean): void {
     this.questionVisible = on;
+  }
+
+  /**
+   * Set (or clear, with `null`) the operator headline's text. Visibility is
+   * a separate control (`setHeadlineVisible`) — setting the text alone does
+   * not put it on screen, matching `Headline`'s "operator-driven, not
+   * derived" design (contracts.ts).
+   */
+  setHeadline(headline: Headline | null): void {
+    this.headline = headline;
+  }
+
+  /** Toggle whether the headline overlay should render. Forwarded to `OverlayDirector.update` every tick; no gating of its own. */
+  setHeadlineVisible(on: boolean): void {
+    this.headlineVisible = on;
   }
 
   /**
@@ -605,6 +524,112 @@ export class ShowEngine {
   }
 
   /**
+   * Seat `participantId` into `slot`, or the first empty slot when `slot` is
+   * omitted. This is one of the operator's explicit seat controls the
+   * file-level doc comment on this class refers to — the reason a Zoom
+   * departure never vacates a seat (owner ruling, 2026-08-06): clearing or
+   * changing a seat is always this kind of explicit call, never an
+   * automatic consequence of a connection blip. Looks `participantId` up in
+   * the current published panelist join (`requirePanelist` — the same Zoom
+   * x Mukana x overrides join `tick()`'s seat step and `buildSnapshotFrom`
+   * build fresh every time), so the seated record carries this show's
+   * resolved name/role, never a bare id; throws for a participant this show
+   * has not published.
+   *
+   * An explicit occupied `slot` is refused — thrown, never silently
+   * overwritten. `replacePanelist` is the verb for that; an operator who
+   * meant to add and hit an occupied slot must find out, not have their
+   * intent silently reinterpreted. An out-of-range `slot` is left to
+   * `LiveSlots.replace`'s own `assertSlot` rather than duplicated here.
+   */
+  addPanelist(participantId: string, slot?: number): number | null {
+    const panelist = this.requirePanelist(participantId);
+
+    if (slot === undefined) {
+      const seated = this.liveSlots.add(panelist);
+      if (seated !== null) this.markSeatingDirty();
+      return seated;
+    }
+
+    const occupant = this.liveSlots.slots().find((candidate) => candidate.slot === slot)?.panelist;
+    if (occupant !== undefined && occupant !== null) {
+      throw new Error(
+        `addPanelist: slot ${slot} is already occupied by ${occupant.participantId} — use replacePanelist to overwrite it`
+      );
+    }
+    this.liveSlots.replace(slot, panelist);
+    this.markSeatingDirty();
+    return slot;
+  }
+
+  /**
+   * Clear a seat. THE explicit operator action the file-level doc comment
+   * refers to: a Zoom departure never reaches this path — it only flips a
+   * seated panelist's `online`/`videoOn` (`LiveSlots.refresh`, driven from
+   * `tick()`'s seat step) — so only an operator calling this ever vacates a
+   * slot.
+   */
+  removePanelist(slot: number): void {
+    this.liveSlots.removeSlot(slot);
+    this.markSeatingDirty();
+  }
+
+  /**
+   * Overwrite whoever holds `slot` with `participantId`, regardless of
+   * whether it was occupied — the explicit verb `addPanelist` refuses to
+   * be. Resolves `participantId` the same way `addPanelist` does; throws
+   * for an unknown participant or an out-of-range slot.
+   */
+  replacePanelist(slot: number, participantId: string): void {
+    const panelist = this.requirePanelist(participantId);
+    this.liveSlots.replace(slot, panelist);
+    this.markSeatingDirty();
+  }
+
+  /** Compact the gallery from current seating (blanks skipped, cell 1 = first occupied seat). The operator's "start fresh" control. Forwards to `GalleryDirector.resetFromSlots`. */
+  resetGalleryFromSlots(): void {
+    this.gallery.resetFromSlots(this.liveSlots.slots());
+    this.pendingPersist = true;
+  }
+
+  /** Put roster `slot` in gallery `cell`, overwriting whatever was there. Forwards to `GalleryDirector.replace` (throws for an out-of-range `cell`/`slot`). */
+  replaceGalleryCell(cell: number, slot: number): void {
+    this.gallery.replace(cell, slot);
+    this.pendingPersist = true;
+  }
+
+  /** Blank one gallery cell, leaving every other cell untouched. Forwards to `GalleryDirector.remove`. */
+  removeGalleryCell(cell: number): void {
+    this.gallery.remove(cell);
+    this.pendingPersist = true;
+  }
+
+  /** Blank every gallery cell. Forwards to `GalleryDirector.empty`. */
+  emptyGallery(): void {
+    this.gallery.empty();
+    this.pendingPersist = true;
+  }
+
+  /**
+   * Toggle smart gallery ordering (see the gate step and derived-layers
+   * step in `tick()`). Not part of `PersistedShowState` — an in-memory
+   * preference that always starts OFF after a restart — but the CURRENT
+   * value is published on `ShowSnapshot.smartGallery` and projected to the
+   * `ohg/gallery/smart` feedback field, so an operator surface can show
+   * whether it is on (final fix round, I4).
+   *
+   * **Turning it ON is destructive to manual cell placement.**
+   * `GalleryDirector.applyOrder` rewrites EVERY occupied cell from the
+   * recency order, so an operator's hand-placed arrangement is discarded
+   * the moment this flips true — and, because the reordered arrangement is
+   * what the next persist writes, that discard survives a restart even
+   * though this flag does not.
+   */
+  setSmartGallery(on: boolean): void {
+    this.smartGalleryOn = on;
+  }
+
+  /**
    * Apply one Mukana panelists fetch outcome. Only a `"data"` outcome
    * carries anything to merge — `dormant` (off-hours) and `invalid`
    * (transport failure) outcomes are health information the `MukanaClient`
@@ -625,13 +650,13 @@ export class ShowEngine {
    * prior holder, so it runs right after `set` whenever the written role is
    * exclusive. A registry-less show passes an empty registry, which is
    * `assignExclusiveRole`'s documented "enforce across the override table
-   * alone" case.
+   * alone" case. Shares its `set` → `assignExclusiveRole` sequence with
+   * `setRole` via `applyOverride` (fix round 1: the two used to duplicate
+   * this sequence verbatim, which is exactly the kind of hand-kept-in-sync
+   * logic that hides a Critical) — the two must never diverge.
    */
   setOverride(record: OverrideRecord): void {
-    this.overrideDb.set(record);
-    if (isExclusiveOverrideRole(record.role)) {
-      this.overrideDb.assignExclusiveRole(record.personKey, record.role, this.mukanaRegistry.current());
-    }
+    this.applyOverride(record);
     this.pendingPersist = true;
     this.otherInputsChanged = true;
   }
@@ -641,6 +666,58 @@ export class ShowEngine {
     this.overrideDb.delete(personKey);
     this.pendingPersist = true;
     this.otherInputsChanged = true;
+  }
+
+  /**
+   * The PIN-keyed twin of `setOverride` (spec §4.2's `ohg.panelist.role.set`,
+   * a `Role` narrower than `setOverride`'s free-form `OverrideRecord`).
+   * Takes the **PIN**, never a `PersonKey` — resolved through
+   * `personKeyForPin`, the one sanctioned way to reach a PIN-tier key from a
+   * raw PIN (`personKey.ts`). Never build the key any other way: a
+   * `PersonKey` is opaque and must not be taken apart to recover or rebuild
+   * one, the exact mistake that module's doc comment calls out.
+   *
+   * `displayName`/`location` are pulled from the Mukana registry entry for
+   * this PIN when one exists, else from whatever override this person
+   * already carries (so re-assigning a role never blanks a name an earlier
+   * override recorded), else left empty — the same fallback
+   * `OverrideDb.assignExclusiveRole` already uses for a demoted holder, and
+   * just as harmless here: `buildPanelistDb`'s `pick` treats an empty
+   * override field as absent and falls through to the Mukana/Zoom-parsed
+   * name, so this never blanks what is actually shown on screen.
+   *
+   * For an exclusive role (`"host"`/`"reader"`), `OverrideDb.set` alone
+   * would happily leave two hosts — `assignExclusiveRole` is the only thing
+   * that demotes a prior holder. Shares that exact sequence with
+   * `setOverride` via `applyOverride` rather than repeating it here — see
+   * that method's own doc comment.
+   */
+  setRole(pin: string, role: Role): void {
+    const personKey = personKeyForPin(pin);
+    const registryRecord = this.mukanaRegistry.current()[pin];
+    const priorRecord = this.overrideDb.entries()[personKey];
+    this.applyOverride({
+      personKey,
+      displayName: registryRecord?.displayName ?? priorRecord?.displayName ?? "",
+      location: registryRecord?.location ?? priorRecord?.location ?? "",
+      role
+    });
+    this.markSeatingDirty();
+  }
+
+  /**
+   * Force every configured Mukana endpoint to poll on the very next tick,
+   * without waiting out its interval or backoff — the operator's "sync now"
+   * control (spec §4.2's `ohg.panelist.syncAll`/`ohg.mukana.sync`). A show
+   * with no Mukana client (`this.mukanaPoller` undefined) has nothing to
+   * force; this degrades to a no-op rather than an error, matching how
+   * every other Mukana-facing method on this class treats a registry-less
+   * show. Forwards to `MukanaPoller.forceDue` — see its own doc comment for
+   * the mechanism (it starts nothing itself; it only clears the due-check's
+   * anchor for the NEXT `poll()`, which `tick()` always calls).
+   */
+  syncAll(): void {
+    this.mukanaPoller?.forceDue();
   }
 
   /**
@@ -749,40 +826,31 @@ export class ShowEngine {
     // A look that is no longer in this configuration cannot be adopted: it
     // would resolve to nothing, forever, and be written straight back to
     // disk on the next save (final review, I3). Dropped and reported.
-    const persistedLookId =
-      persisted.lookId !== null && this.lookById(persisted.lookId) === null
-        ? null
-        : persisted.lookId;
-    if (persistedLookId === null && persisted.lookId !== null) {
-      warnings.push(
-        `persisted look ${JSON.stringify(persisted.lookId)} is not defined in this show's configuration; ` +
-          `it was discarded along with the manual box assignments that belonged to it, and no look is selected`
-      );
+    // `LookController.adoptRestored` also carries Fix round 1's "also fix":
+    // before that method existed, `persisted.lookId` was write-only —
+    // nothing ever read it back — so a genuine cold restart (`restore()`
+    // with no `setLook()` first) resolved no look at all until an operator
+    // re-selected one. But a `setLook()` issued BEFORE `restore()` is a
+    // deliberate choice made after the process came back up, and must win
+    // over whatever was on disk — the same ordering contract
+    // `restoreManualBoxes` below already depends on (see the restore tests:
+    // `setLook("teatime")` then `restore()` from a file whose `lookId`
+    // differs must still leave "teatime" selected).
+    const lookWarning = this.lookController.adoptRestored(persisted.lookId);
+    if (lookWarning !== null) {
+      warnings.push(lookWarning);
     }
-
-    // Adopt the persisted look selection — but ONLY when nothing has
-    // explicitly selected one yet (`selectedLookId` is still its field-init
-    // `null`). Fix round 1, "also fix": before this line, `persisted.lookId`
-    // was write-only — nothing ever read it back — so a genuine cold
-    // restart (`restore()` with no `setLook()` first) resolved no look at
-    // all until an operator re-selected one. But a `setLook()` issued
-    // BEFORE `restore()` is a deliberate choice made after the process came
-    // back up, and must win over whatever was on disk — the same ordering
-    // contract `manualBoxes` below already depends on (see the restore
-    // tests: `setLook("teatime")` then `restore()` from a file whose
-    // `lookId` differs must still leave "teatime" selected).
-    this.selectedLookId = this.selectedLookId ?? persistedLookId;
 
     // A restored assignment set belongs to whatever look was selected when
     // it was saved. Applying it under a different look would put whoever
     // the operator put in box 1 of one arrangement into box 1 of another,
-    // which is not the same seat — discard rather than inherit. Compared
-    // against `this.selectedLookId` AFTER the adoption above, so a cold
-    // restart (which just adopted `persisted.lookId` verbatim) always
-    // matches and restores its own manual boxes, while an explicit
-    // pre-restore `setLook()` to a different look still discards them.
-    this.manualBoxes =
-      persisted.lookId === this.selectedLookId ? { ...persisted.manualBoxes } : {};
+    // which is not the same seat — discard rather than inherit.
+    // `restoreManualBoxes` compares `persisted.lookId` against whatever
+    // `adoptRestored` just selected, so a cold restart (which just adopted
+    // `persisted.lookId` verbatim) always matches and restores its own
+    // manual boxes, while an explicit pre-restore `setLook()` to a
+    // different look still discards them.
+    this.lookController.restoreManualBoxes(persisted.manualBoxes, persisted.lookId);
 
     this.restoreWarnings = warnings;
     if (warnings.length > 0) {
@@ -816,27 +884,34 @@ export class ShowEngine {
    *
    * **This promise can reject, and the host's tick loop must handle it.**
    * No external integration can make it reject — that is the whole point of
-   * `pollMukana` being await-free — but the injected `StateFs` can: a full
-   * or read-only disk fails the debounced save and that failure propagates
-   * deliberately, because silently continuing would mean a show whose state
-   * has stopped persisting with nothing saying so. The engine stays usable
-   * (the dirty flag is restored, so the next tick past the debounce retries),
-   * but an unhandled rejection here kills the process under Node's defaults.
-   * A host must wrap its tick call and surface the failure to the operator.
+   * `MukanaPoller.poll` being await-free — but the injected `StateFs` can: a
+   * full or read-only disk fails the debounced save and that failure
+   * propagates deliberately, because silently continuing would mean a show
+   * whose state has stopped persisting with nothing saying so. The engine
+   * stays usable (the dirty flag is restored, so the next tick past the
+   * debounce retries), but an unhandled rejection here kills the process
+   * under Node's defaults. A host must wrap its tick call and surface the
+   * failure to the operator.
    */
   async tick(): Promise<ShowSnapshot> {
-    // Mukana polling (Task 9) runs FIRST, before anything else this tick
-    // reads. A settled panelists outcome applies through the existing
+    // Mukana polling (Task 9, carved into `MukanaPoller` in Task 1) runs
+    // FIRST, before anything else this tick reads: `poll()` starts any due,
+    // non-busy fetch, then `drain()` returns whatever settled since the last
+    // tick. A settled panelists outcome applies through the existing
     // `onMukanaPanelists`, which flips `otherInputsChanged`/`pendingPersist`
     // — those must be set before `otherChanged` is captured immediately
     // below, or a registry update that just landed would not affect the
     // seat step until a tick later than it actually could. Hands/question
     // outcomes replace `this.queue`/`this.question` directly, which the
     // derived-layers step further down reads — so this must also run
-    // before that. See `pollMukana`'s own doc comment for the scheduling
-    // and non-blocking rules themselves.
-    if (this.mukanaClient !== undefined) {
-      this.pollMukana(this.mukanaClient);
+    // before that. See `MukanaPoller.poll`'s own doc comment for the
+    // scheduling and non-blocking rules themselves.
+    if (this.mukanaPoller !== undefined) {
+      this.mukanaPoller.poll();
+      const outcomes = this.mukanaPoller.drain();
+      if (outcomes.panelists !== null) this.onMukanaPanelists(outcomes.panelists);
+      if (outcomes.hands !== null) this.applyHandsOutcome(outcomes.hands);
+      if (outcomes.question !== null) this.applyQuestionOutcome(outcomes.question);
     }
 
     const rosterCommitted = this.zoomIngest.commit();
@@ -942,19 +1017,19 @@ export class ShowEngine {
       );
       const role = speakerPanelists.get(pendingSpeaker)?.role ?? null;
       if (shouldFollowSpeaker(role, this.config.skipRoles)) {
-        // DEFERRED, deliberately (final review, Minor): the assigner's
-        // returned `PlacementChange[]` is discarded and `positions()` has no
-        // caller anywhere in the package, so nothing downstream of this gate
-        // observes the speaker pool. The Plan 3 obligation is discharged AT
-        // THIS BOUNDARY — a skipped role never reaches the assigner, which
-        // is what the property in `speakerGateDispatch.test.ts` proves — but
-        // the visible half of the original defect ("an ASL interpreter sorts
-        // to the front of the gallery") cannot manifest OR be prevented yet,
-        // because no gallery or slot state is driven from recency. Wiring
-        // recency into the gallery is Plan 6's call; until it exists, the
-        // assigner is a correctly-gated pool nobody reads.
+        // The Plan 3 obligation (a skipped role never reaches the
+        // assigner) is discharged AT THIS BOUNDARY — proven by the
+        // property in `speakerGateDispatch.test.ts`. `recencyScores`
+        // (`RecencyScores`'s first consumer) sits on the SAME side of the
+        // SAME gate, for the identical reason: an interpreter must never
+        // sort to the front of the gallery either. Its ordering becomes
+        // gallery cells in the derived-layers step below, gated on
+        // `this.smartGalleryOn`. `this.assigner`'s returned
+        // `PlacementChange[]` remains discarded — that half of Plan 3 is
+        // still deferred.
         this.assigner.onActiveSpeaker(pendingSpeaker);
         this.programBus.onActiveSpeaker(pendingSpeaker, role);
+        this.recencyScores.onActiveSpeaker(pendingSpeaker);
       }
     }
 
@@ -983,18 +1058,18 @@ export class ShowEngine {
     const slots = this.liveSlots.slots();
     const strippedQueue = this.stripQueueAgainstSeatedChairs(slots);
 
-    const look = this.lookById(this.selectedLookId);
+    const look = this.lookController.selected();
     const previousLookId = this.currentLook?.lookId ?? null;
     let resolution: LookResolution | null = null;
 
     if (look !== null) {
-      this.page = clampPage(look, strippedQueue, this.page, caps.handsQueue);
+      this.lookController.setPage(clampPage(look, strippedQueue, this.lookController.page(), caps.handsQueue));
       resolution = resolveLook(look, {
         queue: strippedQueue,
         slots,
-        page: this.page,
+        page: this.lookController.page(),
         handsQueue: caps.handsQueue,
-        manualBoxes: this.manualBoxes
+        manualBoxes: this.lookController.manualBoxes()
       });
     }
 
@@ -1012,28 +1087,56 @@ export class ShowEngine {
     // (clearing "no-look"), or its boxes are ACTUALLY filling from the
     // queue again (hands feed recovered, clearing "fill"), a refusal
     // recorded while that wasn't true is stale and must not keep
-    // publishing. `nextGuest`/`prevGuest` are the only other writers of
-    // `pagingRefused`, and neither runs every tick, so nothing else would
-    // clear it otherwise. A `"range"` refusal is deliberately NOT cleared
-    // here — see `pagingRefusedKind`'s doc comment for why (it would wipe
-    // out on the very next tick, since queue fill is the only strategy an
-    // out-of-range move can even happen under).
-    const noLookRefusalResolved = this.pagingRefusedKind === "no-look" && resolution !== null;
-    const fillRefusalResolved =
-      this.pagingRefusedKind === "fill" && resolution !== null && resolution.boxFill === "queue";
-    if (noLookRefusalResolved || fillRefusalResolved) {
-      this.pagingRefused = null;
-      this.pagingRefusedKind = null;
+    // publishing. `nextGuest`/`prevGuest` are the only other writers of a
+    // refusal, and neither runs every tick, so nothing else would clear it
+    // otherwise. A `"range"` refusal is deliberately NOT cleared here — see
+    // `LookController.clearStaleRefusal`'s doc comment for why (it would
+    // wipe out on the very next tick, since queue fill is the only strategy
+    // an out-of-range move can even happen under). Only called when a look
+    // actually resolved this tick — `clearStaleRefusal` treats being called
+    // at all as proof a look is selected, matching the `resolution !== null`
+    // guard both refusal kinds required here before the carve-out.
+    if (resolution !== null) {
+      this.lookController.clearStaleRefusal(resolution.boxFill);
     }
 
     // Overlays: re-derive every tick and keep the change flag for Task 8.
     // No `ShowEngine` input sets `question` yet, so it is always `null`
-    // today (see the field's own doc comment).
+    // today (see the field's own doc comment). `headline`/`headlineVisible`
+    // are the operator's own state, written by `setHeadline`/
+    // `setHeadlineVisible`.
     this.overlaysChanged = this.overlayDirector.update({
       look: resolution,
       question: this.question,
-      questionVisible: this.questionVisible
+      questionVisible: this.questionVisible,
+      headline: this.headline,
+      headlineVisible: this.headlineVisible
     });
+
+    // Smart gallery: while on, reorder the gallery's occupied cells by
+    // speaker recency every tick (most recent first; never-ranked ids
+    // compact in after, in original slot order — `RecencyScores.order`'s
+    // documented tail). This is the one call site turning that ordering
+    // into actual cells via `GalleryDirector.applyOrder`. Runs every tick
+    // unconditionally, cheaply, so a quiet gallery still reflects current
+    // seating. NOT marked dirty for persistence — mirrors look
+    // resolution/overlays above: derived state recomputed fresh each
+    // tick, not an operator edit to remember.
+    if (this.smartGalleryOn) {
+      const seated = slots.flatMap((entry) =>
+        entry.panelist === null
+          ? []
+          : [{ participantId: entry.panelist.participantId, slot: entry.slot }]
+      );
+      const ordered = this.recencyScores.order(seated.map((entry) => entry.participantId));
+      const slotByParticipantId = new Map<string, number>(
+        seated.map((entry) => [entry.participantId, entry.slot])
+      );
+      const slotOrder = ordered
+        .map((participantId) => slotByParticipantId.get(participantId))
+        .filter((slot): slot is number => slot !== undefined);
+      this.gallery.applyOrder(slotOrder);
+    }
 
     // Tally has no state of its own to advance here — the final snapshot
     // build below already derives it fresh from `this.currentLook` (now
@@ -1152,14 +1255,15 @@ export class ShowEngine {
       queue: this.queue,
       program,
       look: this.currentLook,
-      page: this.page,
-      manualBoxes: this.manualBoxes,
+      page: this.lookController.page(),
+      manualBoxes: this.lookController.manualBoxes(),
       tally,
       overlays: this.overlayDirector.state(),
       capabilities,
       health,
+      smartGallery: this.smartGalleryOn,
       unseated: this.unseatedPanelists,
-      pagingRefused: this.pagingRefused,
+      pagingRefused: this.pagingRefusal()?.message ?? null,
       restoreWarnings: this.restoreWarnings
     });
   }
@@ -1171,133 +1275,9 @@ export class ShowEngine {
       slots: this.liveSlots.toJSON(),
       overrides: this.overrideDb.entries(),
       gallery: this.gallery.toJSON(),
-      manualBoxes: this.manualBoxes,
-      lookId: this.selectedLookId
+      manualBoxes: this.lookController.manualBoxes(),
+      lookId: this.lookController.selected()?.id ?? null
     };
-  }
-
-  /**
-   * Mukana polling (Task 9, corrected in fix round 1): apply whatever
-   * settled since the previous tick, then start any endpoint whose poll is
-   * due AND not already in flight.
-   *
-   * Non-blocking by construction, never by discipline someone could get
-   * wrong later: this method contains no `await` at all. Every fetch is
-   * started and immediately `.then()`-attached without awaiting the
-   * returned promise, so a hung registry can only ever delay when its OWN
-   * outcome gets applied — never delay this or any other tick from
-   * returning (spec §2, normative).
-   *
-   * `mukanaPollBusy[endpoint]` gates starting a NEW fetch while one is
-   * still outstanding — see that field's own doc comment for what breaks
-   * without it (unbounded concurrent requests to a hung endpoint, and
-   * settle-order-not-start-order data landing stale-over-fresh). An earlier
-   * revision of this method shipped WITHOUT the gate, reasoning that
-   * settling a fetch takes several real microtask turns and each `tick()`
-   * call is itself only one or two of those turns, so a busy gate could
-   * leave an endpoint marked busy across ticks whose clock delta alone
-   * would call it due. That reasoning was fitted to the test rig, not to
-   * production: it measured true only because the ORIGINAL test rig never
-   * let the microtask queue drain between `tick()` calls. In real time a
-   * fetch settles in milliseconds against a multi-second polling interval —
-   * millions of microtask turns of headroom — so the busy flag is cleared
-   * long before the next poll is ever due. The rig now drains explicitly
-   * (`flush()` in `showEngine.test.ts`) instead of the engine papering over
-   * a fixture gap with a correctness gap of its own.
-   *
-   * A rejected fetch — a `FetchLike` that resolves `text()` to something
-   * other than a string, or any other contract violation `MukanaClient`
-   * doesn't already catch internally — must never become an unhandled
-   * promise rejection (spec §2's whole point: a broken third-party
-   * integration cannot be allowed to take the process down). Every
-   * `.then()` below supplies BOTH handlers; the rejection handler clears
-   * `mukanaPollBusy` exactly like the success path and records an
-   * `invalid` outcome so a rejecting endpoint still surfaces as a normal
-   * failure rather than silently going quiet or crashing the show.
-   *
-   * Endpoint gating mirrors `config.integrations`: an endpoint whose
-   * integration is off is never polled, matching the rest of this
-   * package's rule that an unconfigured integration must never silently
-   * reach a URL nobody set (`config.ts`'s own `parseMukana` doc comment).
-   */
-  private pollMukana(client: MukanaClient): void {
-    if (this.panelistsPollSettled !== null) {
-      const outcome = this.panelistsPollSettled;
-      this.panelistsPollSettled = null;
-      this.onMukanaPanelists(outcome);
-    }
-    if (this.handsPollSettled !== null) {
-      const outcome = this.handsPollSettled;
-      this.handsPollSettled = null;
-      this.applyHandsOutcome(outcome);
-    }
-    if (this.questionPollSettled !== null) {
-      const outcome = this.questionPollSettled;
-      this.questionPollSettled = null;
-      this.applyQuestionOutcome(outcome);
-    }
-
-    const now = this.clock.now();
-
-    if (
-      this.config.integrations.registry &&
-      !this.mukanaPollBusy.panelists &&
-      this.isMukanaPollDue("panelists", now, client)
-    ) {
-      this.lastMukanaPollAt.panelists = now;
-      this.mukanaPollBusy.panelists = true;
-      client.fetchPanelists().then(
-        (outcome) => {
-          this.mukanaPollBusy.panelists = false;
-          this.panelistsPollSettled = outcome;
-        },
-        (error: unknown) => {
-          this.mukanaPollBusy.panelists = false;
-          this.panelistsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
-        }
-      );
-    }
-    if (
-      this.config.integrations.handsQueue &&
-      !this.mukanaPollBusy.hands &&
-      this.isMukanaPollDue("hands", now, client)
-    ) {
-      this.lastMukanaPollAt.hands = now;
-      this.mukanaPollBusy.hands = true;
-      client.fetchHands().then(
-        (outcome) => {
-          this.mukanaPollBusy.hands = false;
-          this.handsPollSettled = outcome;
-        },
-        (error: unknown) => {
-          this.mukanaPollBusy.hands = false;
-          this.handsPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
-        }
-      );
-    }
-    if (
-      this.config.integrations.questionFeed &&
-      !this.mukanaPollBusy.question &&
-      this.isMukanaPollDue("question", now, client)
-    ) {
-      this.lastMukanaPollAt.question = now;
-      this.mukanaPollBusy.question = true;
-      client.fetchQuestion().then(
-        (outcome) => {
-          this.mukanaPollBusy.question = false;
-          this.questionPollSettled = outcome;
-        },
-        (error: unknown) => {
-          this.mukanaPollBusy.question = false;
-          this.questionPollSettled = { kind: "invalid", reason: mukanaRejectionReason(error) };
-        }
-      );
-    }
-  }
-
-  /** Whether `endpoint`'s next poll is due: `nextDelayMs` already folds interval + backoff; this adds no policy of its own. */
-  private isMukanaPollDue(endpoint: MukanaEndpoint, now: number, client: MukanaClient): boolean {
-    return now - this.lastMukanaPollAt[endpoint] >= client.nextDelayMs(endpoint);
   }
 
   /**
@@ -1325,43 +1305,94 @@ export class ShowEngine {
   }
 
   /**
+   * Look `participantId` up in the current published panelist join — the
+   * same Zoom x Mukana registry x overrides join `tick()`'s seat step and
+   * `buildSnapshotFrom` build fresh every time, never a stale one carried
+   * from an earlier call. Shared by `addPanelist`/`replacePanelist`. Throws
+   * for a participant this show has never published (a stale or mistyped id
+   * from an operator control): seating a synthetic stand-in would be worse
+   * than refusing outright.
+   */
+  private requirePanelist(participantId: string): Panelist {
+    const panelist = buildPanelistDb(
+      this.zoomIngest.snapshot(),
+      this.mukanaRegistry.current(),
+      this.overrideDb.entries()
+    ).get(participantId);
+    if (panelist === undefined) {
+      throw new Error(`unknown participant id ${JSON.stringify(participantId)}`);
+    }
+    return panelist;
+  }
+
+  /**
+   * Write `record` to `overrideDb` and, for an exclusive role
+   * (`"host"`/`"reader"`), demote whatever prior holder `assignExclusiveRole`
+   * finds — the ONE sequence that keeps an exclusive role single-holder,
+   * shared verbatim by `setOverride` and `setRole` (fix round 1: those two
+   * used to repeat this sequence at each call site by hand, which is
+   * exactly the kind of duplicated invariant that can drift silently — one
+   * call site gets a fix or a refactor and the other doesn't). Neither
+   * caller's own dirty-flag bookkeeping lives here: `setOverride` sets
+   * `pendingPersist`/`otherInputsChanged` directly, `setRole` goes through
+   * `markSeatingDirty` — this method only ever touches `overrideDb`.
+   */
+  private applyOverride(record: OverrideRecord): void {
+    this.overrideDb.set(record);
+    if (isExclusiveOverrideRole(record.role)) {
+      this.overrideDb.assignExclusiveRole(record.personKey, record.role, this.mukanaRegistry.current());
+    }
+  }
+
+  /**
+   * Mark both the seat-step-rerun and persisted-state dirty flags together
+   * — shared by every explicit seat control above (`addPanelist`/
+   * `removePanelist`/`replacePanelist`/`setRole`). Unlike `assignBox`/
+   * `clearBox`, which set only `pendingPersist` (see that field's own doc
+   * comment), a direct `LiveSlots` mutation or an override change can leave
+   * other seats' displayed data stale until the seat step's `refresh` next
+   * runs, so both flags always go together here.
+   */
+  private markSeatingDirty(): void {
+    this.pendingPersist = true;
+    this.otherInputsChanged = true;
+  }
+
+  /**
    * The current Mukana health snapshot, or the all-failing stand-in when
    * there is no client at all — with one engine-side correction the client
    * cannot make for itself: an endpoint whose in-flight poll has been
-   * outstanding for `MUKANA_HUNG_POLL_INTERVALS` of its own intervals is
-   * reported `failing` regardless of what its last settled response said
-   * (final review, I1 — see that constant's doc comment for why, and
-   * `FetchLike`'s for the timeout obligation this backstops).
+   * outstanding beyond the hung threshold reads `failing` regardless of what
+   * its last settled response said (final review, I1 — see `MukanaPoller`'s
+   * own doc comment for why, and `FetchLike`'s for the timeout obligation
+   * this backstops).
    *
-   * Safe to mutate in place: `MukanaClient.health` builds a fresh object
-   * with fresh per-endpoint records on every read. The registry-less
-   * `NO_REGISTRY_HEALTH` branch returns the shared module constant by
-   * reference and is deliberately left untouched — there is no client, so
-   * nothing can be in flight.
+   * That correction is applied by CALLING `detectHungEndpoints()` for its
+   * side effect and then reading `client.health` fresh, rather than reading
+   * `client.health` first and overriding entries from its return value (fix
+   * round 1, Minor 2): `detectHungEndpoints()` already writes any hung
+   * endpoint's health directly, via `MukanaClient.markHung` — building a
+   * SECOND copy of that same override here was redundant the moment it
+   * gained that side effect, and worse, ORDER-DEPENDENT: reading
+   * `client.health` before calling `detectHungEndpoints()` only happened to
+   * work because the override loop below unconditionally stomped whatever
+   * stale snapshot it read. Calling it first means there is exactly ONE
+   * place this state is ever written, and this method cannot silently stop
+   * doing anything by a reordering.
+   *
+   * Safe to return directly: `MukanaClient.health` builds a fresh object
+   * with fresh per-endpoint records on every read, so nothing here can be
+   * mutated out from under a caller. The registry-less `NO_REGISTRY_HEALTH`
+   * branch returns the shared module constant by reference and is
+   * deliberately left untouched — there is no client, so nothing can be in
+   * flight.
    */
   private mukanaHealth(): Record<MukanaEndpoint, MukanaHealth> {
     const client = this.mukanaClient;
-    if (client === undefined) return NO_REGISTRY_HEALTH;
+    if (client === undefined || this.mukanaPoller === undefined) return NO_REGISTRY_HEALTH;
 
-    const health = client.health;
-    const now = this.clock.now();
-    for (const endpoint of MUKANA_ENDPOINTS) {
-      if (!this.mukanaPollBusy[endpoint]) continue;
-      const outstandingMs = now - this.lastMukanaPollAt[endpoint];
-      if (outstandingMs < client.nextDelayMs(endpoint) * MUKANA_HUNG_POLL_INTERVALS) continue;
-      health[endpoint] = {
-        state: "failing",
-        consecutiveFailures: health[endpoint].consecutiveFailures,
-        detail: `no response after ${outstandingMs}ms with a poll still in flight`
-      };
-    }
-    return health;
-  }
-
-  /** Look up a `LookDefinition` by id, or `null` for a `null` id. Never throws — `setLook` is the validating gate. */
-  private lookById(lookId: string | null): LookDefinition | null {
-    if (lookId === null) return null;
-    return this.config.looks.find((candidate) => candidate.id === lookId) ?? null;
+    this.mukanaPoller.detectHungEndpoints();
+    return client.health;
   }
 
   /**

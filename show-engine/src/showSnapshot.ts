@@ -39,6 +39,23 @@ export type ShowSnapshot = {
   overlays: OverlayState;
   capabilities: ShowCapabilities;
   health: Record<MukanaEndpoint, MukanaHealth>;
+  /**
+   * Whether smart gallery (speaker-recency reordering of the gallery's
+   * occupied cells) is currently ON — the readback for
+   * `ohg.gallery.smart.set`.
+   *
+   * Published because the three host panels are specified as THIN STATE
+   * RENDERERS: every displayed value comes from the `ohg` state node, so a
+   * toggle that is settable but not readable forces each of the three to
+   * keep a private copy, and all three then disagree with the engine (final
+   * fix round, I4). `controlState.ts` projects it to `ohg/gallery/smart`.
+   *
+   * Deliberately NOT persisted (see `ShowEngine.setSmartGallery`): this
+   * publishes the CURRENT value, and a restart still starts it off. That
+   * carry is recorded in the plan ledger, not fixed here — persisting it is
+   * a `STATE_VERSION` question.
+   */
+  smartGallery: boolean;
   /** Panelists the live roster did not have a seat for, e.g. capacity overflow on `rebuild`. */
   unseated: Panelist[];
   /**
@@ -79,6 +96,8 @@ export type BuildSnapshotInput = {
   overlays: OverlayState;
   capabilities: ShowCapabilities;
   health: Record<MukanaEndpoint, MukanaHealth>;
+  /** REQUIRED, same reasoning as `restoreWarnings` below. */
+  smartGallery: boolean;
   unseated: readonly Panelist[];
   /** Optional so existing callers building this input keep compiling; omitted means null. */
   pagingRefused?: string | null;
@@ -158,7 +177,9 @@ function cloneTally(tally: TallyState): TallyState {
 function cloneOverlays(overlays: OverlayState): OverlayState {
   return {
     nameplates: overlays.nameplates.map(cloneNameplate),
-    question: overlays.question === null ? null : { ...overlays.question }
+    question: overlays.question === null ? null : { ...overlays.question },
+    headline: overlays.headline === null ? null : { ...overlays.headline },
+    headlineVisible: overlays.headlineVisible
   };
 }
 
@@ -206,6 +227,7 @@ export function buildSnapshot(input: BuildSnapshotInput): ShowSnapshot {
     overlays: cloneOverlays(input.overlays),
     capabilities: cloneCapabilities(input.capabilities),
     health: cloneHealth(input.health),
+    smartGallery: input.smartGallery,
     unseated: input.unseated.map(clonePanelist),
     pagingRefused: input.pagingRefused ?? null,
     restoreWarnings: [...input.restoreWarnings]

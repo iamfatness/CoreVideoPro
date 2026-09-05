@@ -406,10 +406,23 @@ describe("scenario 1: a full show, end to end", () => {
       "setNameplates",
       "setQuestion"
     ]);
-    expect(rig.host.callsOfKind("applyLook")[0]?.boxes).toEqual([
-      [1, 7],
-      [2, 3]
-    ]);
+    // The WHOLE placement, end to end: `resolveLook` -> `HostCommandEmitter`
+    // -> the call the adapter actually received. Task 4 widened `applyLook`
+    // to carry the scene preset and both chairs precisely so a host never
+    // re-derives them, and until this assertion only `.boxes` was ever
+    // checked through the full pipeline — a `scenePreset` or chair dropped
+    // anywhere along it would have gone unnoticed here.
+    expect(rig.host.callsOfKind("applyLook")[0]).toEqual({
+      kind: "applyLook",
+      lookId: "panel",
+      scenePreset: "scene-panel",
+      hostSlot: 1,
+      readerSlot: 2,
+      boxes: [
+        [1, 7],
+        [2, 3]
+      ]
+    });
     expect(plateNames(rig.host.calls())).toEqual(["Ann Reed", "Bo Vance", "Gil Hale", "Cy Diaz"]);
 
     // --- Program cuts to the look. ------------------------------------------
@@ -776,7 +789,9 @@ const DISTINCTIVE_SNAPSHOT: ShowSnapshot = buildSnapshot({
   },
   overlays: {
     nameplates: [DISTINCTIVE_NAMEPLATE],
-    question: { askerName: "Asker", text: "Why?", tag: "tag", votes: 9 }
+    question: { askerName: "Asker", text: "Why?", tag: "tag", votes: 9 },
+    headline: { name: "Distinctive Headline", location: "Distinctive City" },
+    headlineVisible: true
   },
   capabilities: {
     registry: { state: "available", detail: null },
@@ -788,6 +803,7 @@ const DISTINCTIVE_SNAPSHOT: ShowSnapshot = buildSnapshot({
     hands: { state: "failing", consecutiveFailures: 9, detail: "HTTP 503 from hands" },
     question: { state: "ok", consecutiveFailures: 0, detail: "still a detail" }
   },
+  smartGallery: true,
   unseated: [distinctivePanelist("pB", "5555")],
   pagingRefused: "paging refused: distinctive reason",
   restoreWarnings: ["distinctive restore warning"]

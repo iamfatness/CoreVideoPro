@@ -7,11 +7,18 @@
 import type { ProgramSource } from "./contracts.js";
 import type { Nameplate } from "./lookDirector.js";
 import type { QuestionOverlay } from "./overlayDirector.js";
-import type { HostAdapter, HostCapabilities } from "./hostAdapter.js";
+import type { HostAdapter, HostCapabilities, LookPlacement } from "./hostAdapter.js";
 
 export type HostCall =
   | { kind: "assignSlot"; slot: number; participantId: string | null }
-  | { kind: "applyLook"; lookId: string; boxes: Array<[number, number | null]> }
+  | {
+      kind: "applyLook";
+      lookId: string;
+      scenePreset: string;
+      hostSlot: number | null;
+      readerSlot: number | null;
+      boxes: Array<[number, number | null]>;
+    }
   | { kind: "setPreview"; source: ProgramSource }
   | { kind: "cut" }
   | { kind: "auto"; transitionId: string | undefined }
@@ -68,8 +75,22 @@ export class MockHost implements HostAdapter {
     this.calls_.push({ kind: "assignSlot", slot, participantId });
   }
 
-  applyLook(lookId: string, boxes: ReadonlyMap<number, number | null>): void {
-    this.calls_.push({ kind: "applyLook", lookId, boxes: [...boxes.entries()] });
+  /**
+   * Snapshots `placement.boxes` into a plain array at record time — the
+   * engine reuses its working `Map` between ticks, so storing the caller's
+   * reference would make every historical call report the final state
+   * instead of what was true when it was sent (same reasoning as
+   * `setGallery` below).
+   */
+  applyLook(placement: LookPlacement): void {
+    this.calls_.push({
+      kind: "applyLook",
+      lookId: placement.lookId,
+      scenePreset: placement.scenePreset,
+      hostSlot: placement.hostSlot,
+      readerSlot: placement.readerSlot,
+      boxes: [...placement.boxes.entries()]
+    });
   }
 
   setPreview(source: ProgramSource): void {

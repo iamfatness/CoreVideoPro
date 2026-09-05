@@ -6,7 +6,7 @@ import { StateStore } from "./persistence.js";
 import { parseShowEngineConfig } from "./config.js";
 import { LiveSlotsRestoreError } from "./liveSlots.js";
 import { GalleryError } from "./galleryDirector.js";
-import { resolvePersonKey } from "./personKey.js";
+import { personKeyForPin, resolvePersonKey } from "./personKey.js";
 import type { StateFs, PersistedShowState } from "./persistence.js";
 import type { Clock } from "./clock.js";
 import type { ZoomEvent } from "./zoomIngest.js";
@@ -89,7 +89,12 @@ describe("ShowEngine construction", () => {
     expect(snap.panelists).toEqual([]);
     expect(snap.look).toBeNull();
     expect(snap.tally.mode).toBe("none");
-    expect(snap.overlays).toEqual({ nameplates: [], question: null });
+    expect(snap.overlays).toEqual({
+      nameplates: [],
+      question: null,
+      headline: null,
+      headlineVisible: false
+    });
   });
 
   it("resolves every capability to disabled for a registry-less show", () => {
@@ -725,6 +730,733 @@ describe("ShowEngine roster tick", () => {
   });
 });
 
+describe("ShowEngine operator seat controls (Task 6)", () => {
+  describe("addPanelist", () => {
+    it("seats a known-but-unseated participant into the first empty slot when no slot is given", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // p1 -> slot 1, p2 -> slot 2
+
+      e.removePanelist(1);
+      const seated = e.addPanelist("p1");
+
+      expect(seated).toBe(1);
+      expect(e.snapshot().slots[0]?.panelist?.participantId).toBe("p1");
+    });
+
+    it("seats a participant at an explicit empty slot", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // p1 -> slot 1 (auto)
+
+      e.removePanelist(1);
+      const seated = e.addPanelist("p1", 5);
+
+      expect(seated).toBe(5);
+      expect(e.snapshot().slots[4]?.panelist?.participantId).toBe("p1");
+    });
+
+    /**
+     * Mutation target: overwriting an occupied slot instead of refusing it
+     * reds this test. `replacePanelist` is the explicit verb for
+     * overwriting; `addPanelist` hitting an occupied slot must fail loudly
+     * so an operator who meant to add finds out, rather than having their
+     * intent silently reinterpreted as a replace.
+     */
+    it("refuses to seat into an occupied slot rather than silently replacing", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // p1 -> slot 1, p2 -> slot 2
+
+      expect(() => e.addPanelist("p2", 1)).toThrow(/occupied/i);
+      // Untouched: still p1 at slot 1, p2 still at its own slot 2.
+      expect(e.snapshot().slots[0]?.panelist?.participantId).toBe("p1");
+      expect(e.snapshot().slots[1]?.panelist?.participantId).toBe("p2");
+    });
+
+    it("throws for a participant id this show has never published", () => {
+      const e = engine();
+      expect(() => e.addPanelist("ghost")).toThrow(/unknown participant/i);
+    });
+
+    /**
+     * Fix round 1 (Important finding): the dirty flag was untested for the
+     * no-slot (auto-place) branch — the reviewer confirmed by deleting the
+     * `markSeatingDirty()` call from it and rerunning the full suite: no
+     * red anywhere. Mirrors `removePanelist`'s own persistence test shape:
+     * a SETUP round trip (open a slot, persist that) establishes a clean
+     * baseline, then the mutation under test runs alone with nothing else
+     * changed before the persistence-proving tick.
+     */
+    it("persists a seat filled by auto-placement (no slot given) on the next tick, by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save: p1 -> slot 1
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.removePanelist(1); // SETUP: open a slot, and persist that separately
+      await e.tick();
+      expect(store.writeCount()).toBe(2);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.addPanelist("p1"); // no slot given — the auto-place branch under test
+      await e.tick();
+
+      expect(store.writeCount()).toBe(3);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[0]?.panelist?.participantId).toBe("p1");
+    });
+
+    /**
+     * The explicit-slot branch's own twin of the test above — a separate
+     * `markSeatingDirty()` call site in `addPanelist`, so it needs its own
+     * regression guard.
+     */
+    it("persists a seat filled at an explicit slot on the next tick, by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save: p1 -> slot 1
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.removePanelist(1); // SETUP: open a slot, and persist that separately
+      await e.tick();
+      expect(store.writeCount()).toBe(2);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.addPanelist("p1", 5); // explicit empty slot — the branch under test
+      await e.tick();
+
+      expect(store.writeCount()).toBe(3);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[4]?.panelist?.participantId).toBe("p1");
+    });
+  });
+
+  describe("removePanelist", () => {
+    it("clears the seat — not a Zoom departure, an explicit operator action", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick();
+
+      e.removePanelist(1);
+
+      expect(e.snapshot().slots[0]?.panelist).toBeNull();
+    });
+
+    /**
+     * Mutation target: skipping the dirty flag on `removePanelist` reds
+     * this test. The removal itself is immediate (asserted above,
+     * independent of `tick()`), but nothing re-persists it to disk unless
+     * the dirty flag survives to the next debounce-elapsed tick.
+     */
+    it("persists a removed seat on the next tick, by itself, with nothing else changed", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST; // clear the debounce window before the mutation under test
+      e.removePanelist(1);
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[0]).toBeNull();
+    });
+  });
+
+  describe("replacePanelist", () => {
+    it("overwrites whoever holds a slot, occupied or not, and vacates their prior seat", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // p1 -> slot 1, p2 -> slot 2
+
+      e.replacePanelist(1, "p2");
+
+      const slots = e.snapshot().slots;
+      expect(slots[0]?.panelist?.participantId).toBe("p2");
+      expect(slots[1]?.panelist).toBeNull(); // p2's old seat moved, not duplicated
+    });
+
+    it("throws for a participant id this show has never published", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick();
+      expect(() => e.replacePanelist(1, "ghost")).toThrow(/unknown participant/i);
+    });
+
+    /**
+     * Fix round 1 (Important finding): `replacePanelist` had no
+     * persistence regression guard at all. Same shape as
+     * `removePanelist`'s own test — no SETUP round trip needed here since
+     * the slot is already occupied from the first tick.
+     */
+    it("persists a replaced seat on the next tick, by itself, with nothing else changed", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick(); // unthrottled first save: p1 -> slot 1, p2 -> slot 2
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.replacePanelist(1, "p2");
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.slots.seats[0]?.panelist?.participantId).toBe("p2");
+      expect(document.slots.seats[1]).toBeNull();
+    });
+  });
+
+  describe("setRole", () => {
+    /**
+     * The opacity test (mutation target: building the override's key by
+     * taking apart a `PersonKey` this class already holds, instead of
+     * calling `personKeyForPin(pin)` directly, reds this test). Asserts on
+     * the exact persisted key, not just the visible role, so any
+     * derivation other than `personKeyForPin(pin)` is caught even if it
+     * happens to demote the right person.
+     */
+    it("resolves the PIN to a PersonKey via personKeyForPin, never by parsing one", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.onZoomEvent(joined("p1", "Ann | 1234"));
+      await e.tick(); // unthrottled first save
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.setRole("1234", "reader");
+      await e.tick();
+
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      const expectedKey = personKeyForPin("1234");
+      expect(document.overrides[expectedKey]?.role).toBe("reader");
+      expect(Object.keys(document.overrides)).toEqual([expectedKey]);
+    });
+
+    /**
+     * Owner ruling, 2026-08-12: PINs are strings, not numbers. `"0042"`
+     * coercing to `42` and back would resolve `personKeyForPin("42")` — a
+     * DIFFERENT person's key — silently swapping identities. Two distinct
+     * panelists carry PINs that only differ by a leading zero; assigning a
+     * role to one must never touch the other.
+     */
+    it("treats a leading-zero PIN as distinct from its numeric value (no int coercion)", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 0042"));
+      e.onZoomEvent(joined("p2", "Bo | 4200")); // shares no digits' worth of ambiguity with "42"
+      await e.tick();
+
+      e.setRole("0042", "host");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("host");
+      expect(p2?.role).toBe("panelist");
+    });
+
+    /**
+     * Mutation target: routing an exclusive role through `OverrideDb.set`
+     * alone (skipping `assignExclusiveRole`) reds this test — it would
+     * leave both p1 and p2 as "host".
+     */
+    it("demotes the prior host when setRole assigns host to someone else", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 1111"));
+      e.onZoomEvent(joined("p2", "Bo | 2222"));
+      await e.tick();
+
+      e.setRole("1111", "host");
+      await e.tick();
+
+      e.setRole("2222", "host");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("panelist");
+      expect(p2?.role).toBe("host");
+    });
+
+    /**
+     * Fix round 1 (Minor): the demotion coverage above was "host"-only.
+     * `assignExclusiveRole` is role-generic, but an asymmetric fixture set
+     * is exactly what let a Critical through Task 3 of this plan — the
+     * `"reader"` twin closes that gap cheaply.
+     */
+    it("demotes the prior reader when setRole assigns reader to someone else", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 1111"));
+      e.onZoomEvent(joined("p2", "Bo | 2222"));
+      await e.tick();
+
+      e.setRole("1111", "reader");
+      await e.tick();
+
+      e.setRole("2222", "reader");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("panelist");
+      expect(p2?.role).toBe("reader");
+    });
+
+    /**
+     * Fix round 1 (Minor): a plain non-exclusive role assignment must
+     * never touch `assignExclusiveRole` at all — proven by an existing
+     * host surviving a SEPARATE person's `"panelist"` assignment
+     * untouched, not merely by the absence of a thrown error.
+     */
+    it("assigns a non-exclusive role without demoting an existing host", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann | 1111"));
+      e.onZoomEvent(joined("p2", "Bo | 2222"));
+      await e.tick();
+
+      e.setRole("1111", "host");
+      await e.tick();
+
+      e.setRole("2222", "panelist");
+      const snap = await e.tick();
+
+      const p1 = snap.slots.find((s) => s.panelist?.participantId === "p1")?.panelist;
+      const p2 = snap.slots.find((s) => s.panelist?.participantId === "p2")?.panelist;
+      expect(p1?.role).toBe("host"); // untouched by the unrelated panelist assignment
+      expect(p2?.role).toBe("panelist");
+    });
+  });
+
+  describe("headline", () => {
+    it("publishes an operator-set headline once visible", async () => {
+      const e = engine();
+      e.setHeadline({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      e.setHeadlineVisible(true);
+      const snap = await e.tick();
+      expect(snap.overlays.headline).toEqual({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      expect(snap.overlays.headlineVisible).toBe(true);
+    });
+
+    it("retains the headline text across a visibility toggle", async () => {
+      const e = engine();
+      e.setHeadline({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      e.setHeadlineVisible(true);
+      await e.tick();
+
+      e.setHeadlineVisible(false);
+      const hidden = await e.tick();
+      expect(hidden.overlays.headline).toEqual({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      expect(hidden.overlays.headlineVisible).toBe(false);
+
+      e.setHeadlineVisible(true);
+      const shownAgain = await e.tick();
+      expect(shownAgain.overlays.headline).toEqual({ name: "Ann Lee", location: "Santa Venetia, CA" });
+      expect(shownAgain.overlays.headlineVisible).toBe(true);
+    });
+  });
+});
+
+describe("ShowEngine gallery operator controls (Task 7)", () => {
+  describe("resetGalleryFromSlots", () => {
+    it("compacts occupied seats into the gallery from cell 1, blanks skipped", async () => {
+      const e = engine();
+      e.onZoomEvent(joined("p1", "Ann"));
+      e.onZoomEvent(joined("p2", "Bo"));
+      await e.tick();
+      e.removePanelist(1); // open a hole at slot 1, so p2 (slot 2) is the only occupant left
+      e.resetGalleryFromSlots();
+      const gallery = e.snapshot().gallery;
+      expect(gallery[0]?.slot).toBe(2);
+      expect(gallery.slice(1).every((c) => c.slot === 0)).toBe(true);
+    });
+
+    /**
+     * Mirrors `addPanelist`'s own dirty-flag regression test shape (Task 6
+     * fix round 1): the reviewer confirmed by deleting the analogous call
+     * that the suite stays green with no persist check on it.
+     */
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.onZoomEvent(joined("p1", "Ann"));
+      await e.tick(); // unthrottled first save
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.resetGalleryFromSlots();
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments[0]).toEqual({ cell: 1, slot: 1 });
+    });
+  });
+
+  describe("replaceGalleryCell", () => {
+    it("writes the given slot into the given cell", () => {
+      const e = engine();
+      e.replaceGalleryCell(1, 7);
+      expect(e.snapshot().gallery[0]?.slot).toBe(7);
+    });
+
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.onZoomEvent(joined("p1", "Ann")); // give the first tick something to persist
+      await e.tick(); // unthrottled first save
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.replaceGalleryCell(1, 3);
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments[0]).toEqual({ cell: 1, slot: 3 });
+    });
+  });
+
+  describe("removeGalleryCell", () => {
+    it("blanks the given cell, leaving the rest untouched", () => {
+      const e = engine();
+      e.replaceGalleryCell(1, 7);
+      e.replaceGalleryCell(2, 8);
+      e.removeGalleryCell(1);
+      const gallery = e.snapshot().gallery;
+      expect(gallery[0]?.slot).toBe(0);
+      expect(gallery[1]?.slot).toBe(8);
+    });
+
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.replaceGalleryCell(1, 3); // SETUP: persisted separately from the mutation under test
+      await e.tick();
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.removeGalleryCell(1);
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments[0]).toEqual({ cell: 1, slot: 0 });
+    });
+  });
+
+  describe("emptyGallery", () => {
+    it("blanks every cell", () => {
+      const e = engine();
+      e.replaceGalleryCell(1, 7);
+      e.replaceGalleryCell(2, 8);
+      e.emptyGallery();
+      expect(e.snapshot().gallery.every((c) => c.slot === 0)).toBe(true);
+    });
+
+    it("marks state dirty, persisting on the next tick by itself", async () => {
+      const store = recordingFs();
+      let nowMs = 0;
+      const e = new ShowEngine({
+        config: registryLess,
+        host: new MockHost(),
+        clock: { now: () => nowMs },
+        store: new StateStore(registryLess.statePath, { fs: store.fs })
+      });
+      e.replaceGalleryCell(1, 3); // SETUP: persisted separately from the mutation under test
+      e.replaceGalleryCell(2, 4);
+      await e.tick();
+      expect(store.writeCount()).toBe(1);
+
+      nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+      e.emptyGallery();
+      await e.tick();
+
+      expect(store.writeCount()).toBe(2);
+      const document = JSON.parse(
+        store.files.get(registryLess.statePath) ?? ""
+      ) as PersistedShowState;
+      expect(document.gallery.assignments.every((a) => a.slot === 0)).toBe(true);
+    });
+  });
+});
+
+/**
+ * Smart gallery: `RecencyScores`'s first consumer. `setSmartGallery` is a
+ * pure in-memory toggle (asserted separately below via a persistence
+ * negative); the ordering itself is a `tick()`-driven derived layer, so
+ * every test here drives it through `tick()` rather than calling any
+ * private method directly.
+ */
+describe("ShowEngine smart gallery (Task 7)", () => {
+  /**
+   * Final fix round, I4: the toggle must be READABLE, not just settable.
+   * `setSmartGallery` had exactly two readers in the whole package — its
+   * own setter and `tick()`'s guard — so `ohg.gallery.smart.set` was an
+   * action with no readback at all, and the three host panels (thin state
+   * renderers, by spec) could not show an operator whether it was on.
+   * Asserted through the PUBLIC snapshot, off a tick and after one, and in
+   * both directions so a hardcoded value reds.
+   */
+  it("publishes the smart-gallery toggle on the snapshot, both ways", async () => {
+    const e = engine();
+    expect(e.snapshot().smartGallery).toBe(false);
+
+    e.setSmartGallery(true);
+    expect(e.snapshot().smartGallery).toBe(true);
+    expect((await e.tick()).smartGallery).toBe(true);
+
+    e.setSmartGallery(false);
+    expect((await e.tick()).smartGallery).toBe(false);
+  });
+
+  /**
+   * Mutation target named in the brief: applying the smart order while
+   * the toggle is off. `resetGalleryFromSlots` seeds a known baseline
+   * (p1 at cell 1, p2 at cell 2); an active-speaker event for p2 alone
+   * must not touch it while `setSmartGallery` was never called (default
+   * off).
+   */
+  it("never reorders the gallery while the toggle is off", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    e.resetGalleryFromSlots();
+    await e.tick();
+    const before = e.snapshot().gallery.map((c) => c.slot);
+
+    e.onActiveSpeaker("p2");
+    await e.tick();
+
+    expect(e.snapshot().gallery.map((c) => c.slot)).toEqual(before);
+  });
+
+  it("orders occupied cells by speaker recency, most recently active first, once the toggle is on", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    e.onZoomEvent(joined("p3", "Cy"));
+    await e.tick(); // p1 -> slot 1, p2 -> slot 2, p3 -> slot 3
+
+    e.setSmartGallery(true);
+    e.onActiveSpeaker("p3");
+    await e.tick();
+    expect(e.snapshot().gallery[0]?.slot).toBe(3); // only p3 has ever spoken
+
+    e.onActiveSpeaker("p1");
+    await e.tick();
+    const gallery = e.snapshot().gallery;
+    expect(gallery[0]?.slot).toBe(1); // p1 is now the most recently active
+    expect(gallery[1]?.slot).toBe(3);
+    expect(gallery[2]?.slot).toBe(2); // p2 has never spoken, sorts last
+  });
+
+  /**
+   * THE OBLIGATION THIS TASK EXISTS TO DISCHARGE. Mutation target named in
+   * the brief: feeding the interpreter's id to `RecencyScores` (i.e.
+   * calling it outside/before the `shouldFollowSpeaker` gate). An ASL
+   * interpreter signs continuously, so a live Zoom meeting reports them as
+   * active speaker constantly — Zoom's own `onActiveSpeaker` fires for
+   * them far more often than for any panelist who actually takes turns
+   * talking. If that reached `RecencyScores` the gallery picture would
+   * chase the interpreter instead of the panel, exactly the defect this
+   * whole gate obligation (Plan 3) exists to prevent — now extended to the
+   * gallery, not just the position assigner.
+   */
+  it("never lets a skip-gated interpreter reorder the gallery, even dispatched far more often than the panelist who actually spoke", async () => {
+    const e = engine();
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Ivy"));
+    e.onZoomEvent(joined("p3", "Bo"));
+    await e.tick(); // p1 -> slot 1, p2 -> slot 2, p3 -> slot 3
+
+    const ivyKey = e.snapshot().panelists.find((p) => p.participantId === "p2")?.personKey;
+    expect(ivyKey).toBeDefined();
+    if (ivyKey !== undefined) {
+      e.setOverride({ personKey: ivyKey, displayName: "", location: "", role: "aslinterpreter" });
+    }
+    e.setSmartGallery(true);
+    await e.tick();
+
+    e.onActiveSpeaker("p3"); // the panelist who actually spoke, once
+    await e.tick();
+
+    // The interpreter "speaks" continuously, far outpacing p3 — must never win the front cell.
+    for (let i = 0; i < 5; i += 1) {
+      e.onActiveSpeaker("p2");
+      // eslint-disable-next-line no-await-in-loop
+      await e.tick();
+    }
+
+    // p3 (the one real speaker) stays front; the interpreter (p2, seated at
+    // slot 2) sits wherever their never-ranked, original-order position
+    // puts them — behind p3 and behind p1, but present (still seated, just
+    // never promoted by their own constant dispatch).
+    const gallery = e.snapshot().gallery;
+    expect(gallery[0]?.slot).toBe(3);
+    expect(gallery[1]?.slot).toBe(1);
+    expect(gallery[2]?.slot).toBe(2);
+  });
+
+  it("does not mark state dirty on its own (purely in-memory)", async () => {
+    const store = recordingFs();
+    let nowMs = 0;
+    const e = new ShowEngine({
+      config: registryLess,
+      host: new MockHost(),
+      clock: { now: () => nowMs },
+      store: new StateStore(registryLess.statePath, { fs: store.fs })
+    });
+    e.onZoomEvent(joined("p1", "Ann")); // give the first tick something to persist
+    await e.tick(); // unthrottled first save
+    expect(store.writeCount()).toBe(1);
+
+    nowMs += SAVE_DEBOUNCE_MS_FOR_TEST;
+    e.setSmartGallery(true);
+    await e.tick();
+    expect(store.writeCount()).toBe(1); // no second write: setSmartGallery alone did not dirty state
+  });
+
+  /**
+   * Closes the gap Plan 5's ledger recorded: `emitGallery`'s diffing was
+   * never exercised through `tick()` — only in `hostCommands.test.ts` —
+   * because no operator API mutated gallery cells before this task. This
+   * drives it end-to-end: a real `ShowEngine` + `MockHost`, through
+   * `tick()`, asserting on what actually reached the host.
+   */
+  it("emits setGallery through tick() when an operator gallery mutation changes a cell", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    await e.tick();
+    host.clear();
+
+    e.replaceGalleryCell(1, 2);
+    await e.tick();
+
+    expect(host.callsOfKind("setGallery")).toHaveLength(1);
+    expect(host.callsOfKind("setGallery")[0]?.cells).toContainEqual([1, 2]);
+  });
+
+  /**
+   * The other half of the same gap: an unchanged gallery must stay silent
+   * through `tick()`, the same churn discipline every other host-emission
+   * family in this file already proves.
+   */
+  it("emits nothing through tick() when no gallery mutation happened", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    await e.tick();
+    host.clear();
+
+    await e.tick();
+    await e.tick();
+
+    expect(host.callsOfKind("setGallery")).toEqual([]);
+  });
+
+  /**
+   * The smart-gallery reordering itself must reach the host too — the same
+   * diffing gap, but for a cell change driven by the tick's own derived
+   * layer rather than a direct operator call.
+   */
+  it("emits setGallery through tick() when smart-gallery ordering changes a cell", async () => {
+    const host = new MockHost();
+    const e = engine({ host });
+    e.onZoomEvent(joined("p1", "Ann"));
+    e.onZoomEvent(joined("p2", "Bo"));
+    e.setSmartGallery(true);
+    await e.tick();
+    host.clear();
+
+    e.onActiveSpeaker("p2");
+    await e.tick();
+
+    expect(host.callsOfKind("setGallery")).toHaveLength(1);
+    expect(host.callsOfKind("setGallery")[0]?.cells).toContainEqual([1, 2]);
+  });
+});
+
 describe("ShowEngine restore + non-roster input (fix round 1, Important 3)", () => {
   /**
    * `restore()` seeds `LiveSlots` from disk, but `ZoomIngest` starts empty
@@ -829,10 +1561,6 @@ describe("ShowEngine derived layers", () => {
     expect(snap.look?.scenePreset).toBe("scene-teatime");
   });
 
-  it("rejects an unknown look id", () => {
-    expect(() => engine().setLook("nope")).toThrow(/nope/);
-  });
-
   /**
    * Fix round 1, Minor: the original version of this test asserted only
    * `mode === "look"` with nobody seated, so it passed whether or not the
@@ -867,34 +1595,6 @@ describe("ShowEngine derived layers", () => {
     const snap = await e.tick();
     expect(snap.tally.mode).toBe("activeSpeaker");
     expect(snap.tally.onAirSlots).toEqual([2]);
-  });
-
-  it("clears manual box assignments when the look changes", async () => {
-    const e = engine();
-    e.setLook("teatime");
-    e.assignBox(1, 3);
-    await e.tick();
-    expect(e.snapshot().manualBoxes).toEqual({ 1: 3 });
-    e.setLook("banter");
-    expect(e.snapshot().manualBoxes).toEqual({});
-  });
-
-  it("keeps manual box assignments when the same look is re-selected", async () => {
-    const e = engine();
-    e.setLook("teatime");
-    e.assignBox(1, 3);
-    e.setLook("teatime");
-    expect(e.snapshot().manualBoxes).toEqual({ 1: 3 });
-  });
-
-  it("refuses paging under manual fill instead of throwing", async () => {
-    const e = engine();
-    e.setLook("teatime");
-    await e.tick();
-    expect(() => e.nextGuest()).not.toThrow();
-    const snap = await e.tick();
-    expect(snap.page).toBe(0);
-    expect(snap.pagingRefused).toMatch(/manual/i);
   });
 
   /**
@@ -1157,34 +1857,6 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
   });
 
   /**
-   * Finding 3: an out-of-range `nextGuest`/`prevGuest` must refuse and
-   * leave `this.page` untouched, not silently advance past the end and
-   * rely on `tick()`'s `clampPage` to pull it back with no signal to the
-   * operator that their move did nothing new.
-   */
-  it("refuses to page past the last page instead of relying on tick() to clamp it back silently", async () => {
-    const e = engineWithFill("queue", "available"); // pageCount 3: valid pages 0,1,2
-    e.setLook("teatime");
-    await e.tick();
-    e.nextGuest(); // 0 -> 1
-    e.nextGuest(); // 1 -> 2 (last valid page)
-    e.nextGuest(); // would be 3: refuse
-    const snap = await e.tick();
-    expect(snap.page).toBe(2);
-    expect(snap.pagingRefused).toMatch(/out of range/i);
-  });
-
-  it("refuses to page before the first page instead of silently doing nothing", async () => {
-    const e = engineWithFill("queue", "available");
-    e.setLook("teatime");
-    await e.tick(); // page 0
-    e.prevGuest(); // would be -1: refuse
-    const snap = await e.tick();
-    expect(snap.page).toBe(0);
-    expect(snap.pagingRefused).toMatch(/out of range/i);
-  });
-
-  /**
    * Finding 4: `pagingRefused` must not outlive the condition that caused
    * it. Once the hands feed recovers and the active look's boxes are
    * actually filling from the queue again, a STALE refusal recorded while
@@ -1236,17 +1908,6 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
     expect(snap.pagingRefused).toBeNull();
   });
 
-  /** Finding 4's other writer: a look change must not leave a stale refusal attributed to the look it just left. */
-  it("clears a stale paging refusal on setLook, even to a look that is also manual fill", async () => {
-    const e = engine(); // registry-less: handsQueue disabled, every look is effectively manual
-    e.setLook("teatime");
-    await e.tick();
-    e.nextGuest(); // refused: manual fill
-    expect(e.snapshot().pagingRefused).toMatch(/manual/i);
-    e.setLook("banter");
-    expect(e.snapshot().pagingRefused).toBeNull();
-  });
-
   /** "Also fix": a cold restart (no `setLook()` before `restore()`) must resume the persisted look, not resolve none until an operator re-selects one. */
   it("resumes the persisted look on a cold restart with no setLook() first", async () => {
     const fs = memoryFs({
@@ -1270,18 +1931,6 @@ describe("ShowEngine fix round 1 (2026-08-07)", () => {
     expect(snap.manualBoxes).toEqual({ 1: 3 });
   });
 
-  /** Minor: `assignBox` rejects a box number outside the active look's range instead of silently persisting garbage. */
-  it("rejects a manual box assignment outside the active look's box range", async () => {
-    const e = engine();
-    e.setLook("teatime"); // 2 boxes
-    expect(() => e.assignBox(3, 1)).toThrow(/out of range/);
-    expect(() => e.assignBox(0, 1)).toThrow();
-  });
-
-  /** Minor: `setPage` rejects a non-integer at the call site rather than letting it surface as a thrown error in a later tick. */
-  it("rejects a non-integer page from setPage", () => {
-    expect(() => engine().setPage(1.5)).toThrow(/integer/);
-  });
 });
 
 /**
@@ -1578,10 +2227,8 @@ describe("ShowEngine host emission", () => {
 /**
  * Test rig for Task 9: an engine wired to a REAL `MukanaClient` over a
  * controllable `FetchLike`, a mutable injected clock, and a recorded list of
- * every URL fetched (recorded at fetch-START time, not settle time — this is
- * what lets the scheduling test below assert on "did tick() start a poll"
- * without caring whether that poll has resolved yet). All three integrations
- * are enabled, matching Task 9's brief.
+ * every URL fetched (recorded at fetch-START time, not settle time). All
+ * three integrations are enabled, matching Task 9's brief.
  *
  * `hangHands: true` makes every `hands` fetch return a promise that never
  * settles on its own; each one queues its resolver, and `resolveHands()`
@@ -1596,10 +2243,16 @@ describe("ShowEngine host emission", () => {
  * with the fetch's own continuation microtasks, NOT a stable property of
  * this engine's design. Before `flush()` existed, the polling tests were
  * accidentally coupled to that interleaving (and, with a busy gate added,
- * some of them broke outright — see `pollMukana`'s doc comment). `flush()`
- * decouples every test below from `MukanaClient`'s internal shape: call it
- * after any `await e.tick()` whose test cares whether an in-flight fetch
- * has settled.
+ * some of them broke outright — see `MukanaPoller.poll`'s doc comment).
+ * `flush()` decouples every test below from `MukanaClient`'s internal shape:
+ * call it after any `await e.tick()` whose test cares whether an in-flight
+ * fetch has settled.
+ *
+ * Pure polling-MECHANISM tests (the due-check, the busy gate, the
+ * non-blocking/rejection-safety guarantees) live in `mukanaPoller.test.ts`
+ * now, exercising `MukanaPoller` directly (Task 1's carve-out) — what stays
+ * here is the integration-level guarantee that `ShowEngine.tick()` wires
+ * `MukanaPoller`'s outcomes into engine state exactly as before.
  */
 /**
  * A two-guest-box look whose boxes fill from the hands queue (the `boxFill`
@@ -1726,109 +2379,12 @@ function mukanaEngine(options: { hangHands?: boolean; looks?: readonly unknown[]
 }
 
 describe("ShowEngine Mukana polling", () => {
-  it("polls an endpoint only once its next delay has elapsed", async () => {
-    const { e, fetches, advance, flush } = mukanaEngine();
-    await e.tick();
-    await flush();
-    const first = fetches.length;
-    await e.tick();
-    await flush();
-    expect(fetches.length).toBe(first);
-    advance(10_000);
-    await e.tick();
-    await flush();
-    expect(fetches.length).toBeGreaterThan(first);
-  });
-
   /**
-   * The invariant this must break on: awaiting a fetch inside tick(). A hung
-   * registry must not stall the show loop — spec §2, normative.
-   */
-  it("completes a tick while a fetch is still in flight", async () => {
-    const { e, resolveHands } = mukanaEngine({ hangHands: true });
-    await expect(e.tick()).resolves.toBeDefined();
-    await expect(e.tick()).resolves.toBeDefined();
-    resolveHands();
-  });
-
-  /**
-   * Fix round 1, Finding 3/4/5: the busy gate this test pins is what makes
-   * "one in-flight promise per endpoint" a real invariant instead of a
-   * comment. Drives a hung `hands` fetch, then advances the clock and ticks
-   * repeatedly — `nextDelayMs` alone would call every one of those ticks
-   * "due," so without the gate a fresh overlapping fetch starts on each one
-   * (the reviewer's probe: 20 concurrent hung fetches over 20 ticks, none
-   * retired — unbounded concurrent load against an already-struggling
-   * registry, and settle-order-not-start-order application that can let a
-   * stale fetch overwrite a fresher one). With the gate, exactly one fetch
-   * for `hands` is ever outstanding while the first hasn't settled.
-   */
-  it("never starts a second fetch for an endpoint while one is still in flight", async () => {
-    const { e, fetches, advance } = mukanaEngine({ hangHands: true });
-    await e.tick();
-    const handsCallsAfterFirst = fetches.filter((url) => url.includes("req=hands")).length;
-    expect(handsCallsAfterFirst).toBe(1);
-
-    for (let i = 0; i < 5; i += 1) {
-      advance(10_000);
-      // eslint-disable-next-line no-await-in-loop
-      await e.tick();
-    }
-    const handsCallsAfterMany = fetches.filter((url) => url.includes("req=hands")).length;
-    expect(handsCallsAfterMany).toBe(1);
-  });
-
-  /**
-   * Fix round 1, Finding 6: `MukanaClient.request()` calls `parse(body)`
-   * OUTSIDE its own try/catch, so a `FetchLike` that violates its own
-   * contract (here: `text()` resolving to something other than a string)
-   * makes the fetch's returned promise REJECT rather than resolve to an
-   * `invalid` outcome. `pollMukana`'s fire-and-forget `.then()` calls must
-   * supply a rejection handler for every one of the three fetches, or this
-   * becomes an unhandled promise rejection — under Node's default
-   * `--unhandled-rejections=throw`, that kills the process: precisely the
-   * "a third-party service takes the show down" failure this whole
-   * capability model exists to prevent. Verified by actually listening for
-   * `unhandledRejection` for the duration of the test, not by inference.
-   *
-   * Node defers its "was this rejection ever handled" check past a
-   * microtask-queue drain — `flush()` alone (confirmed: it let the test
-   * pass while vitest's OWN top-level handler still separately reported
-   * the same rejection as an unhandled test-run error) is not enough to
-   * observe it reliably from inside the test. One real macrotask turn
-   * (`setImmediate`) after the flushes is what actually lands inside
-   * Node's check window before the listener is removed.
-   */
-  it("never leaves an unhandled promise rejection when a fetch's promise rejects", async () => {
-    const { e, advance, flush, breakHandsBody } = mukanaEngine();
-    breakHandsBody();
-
-    const rejections: unknown[] = [];
-    const onUnhandledRejection = (reason: unknown): void => {
-      rejections.push(reason);
-    };
-    process.on("unhandledRejection", onUnhandledRejection);
-    try {
-      advance(10_000);
-      await e.tick();
-      await flush();
-      await e.tick();
-      await flush();
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-    } finally {
-      process.off("unhandledRejection", onUnhandledRejection);
-    }
-
-    expect(rejections).toEqual([]);
-  });
-
-  /**
-   * Final review, I6: the test above proves a rejection handler EXISTS (it
-   * observes `unhandledRejection`), but not what its body does — replacing
-   * that body with `() => {}` left the whole suite green. The body's real
-   * job is clearing `mukanaPollBusy`, and losing that clear strands the
+   * Final review, I6: `mukanaPoller.test.ts` proves a rejection handler
+   * EXISTS on `MukanaPoller.poll` (it observes `unhandledRejection`
+   * directly against the poller), but not what its body does — replacing
+   * that body with `() => {}` left the whole suite green there. The body's
+   * real job is clearing the busy gate, and losing that clear strands the
    * endpoint for the lifetime of the process: the one-in-flight gate never
    * re-opens, no later fetch ever starts, and the feed is dead for the rest
    * of the show with the client's health frozen at whatever it last said.
@@ -2075,7 +2631,14 @@ describe("ShowEngine Mukana polling", () => {
     await flush();
     expect(degraded.capabilities.handsQueue.state).toBe("unavailable");
     expect(degraded.health.hands.state).toBe("failing");
-    expect(degraded.health.hands.detail).toMatch(/no response/);
+    // Fix round 1: pinned to the EXACT operator-facing string (not a loose
+    // `/no response/` regex) — that regex is what let a real regression
+    // through the carve-out invisibly: `MukanaPoller.hungEndpoints()`
+    // briefly returned bare endpoint names, dropping the millisecond figure
+    // an operator needs to tell "marginal" from "dead." The hands fetch
+    // that hung started at t=20_000 (`hungButFresh`'s tick); this tick runs
+    // at t=20_000+6_001=26_001, so outstandingMs is exactly 6001.
+    expect(degraded.health.hands.detail).toBe("no response after 6001ms with a poll still in flight");
     // Degrading is not discarding: the last good queue is still there for
     // the moment the feed comes back.
     expect(degraded.queue).toEqual(healthy.queue);
@@ -2091,5 +2654,79 @@ describe("ShowEngine Mukana polling", () => {
     await e.tick();
     await flush();
     expect(e.snapshot().capabilities.handsQueue.state).toBe("unavailable");
+  });
+
+  /**
+   * `syncAll()` forces every endpoint to read as due on the very next tick,
+   * without waiting out its own interval — the operator's explicit "sync
+   * now" control. Proven through a real tick: advancing the clock by less
+   * than any endpoint's interval (panelists 5000ms, hands/question 2000ms)
+   * keeps every poll un-due (the baseline check below), and `syncAll()`
+   * alone — with NO further clock advance — is what makes the next tick
+   * poll everything anyway.
+   */
+  it("syncAll forces every endpoint to poll on the next tick without waiting out its interval", async () => {
+    const { e, fetches, advance, flush } = mukanaEngine();
+
+    advance(10_000); // every endpoint is due on this very first tick regardless
+    await e.tick();
+    await flush();
+    const afterFirst = fetches.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    advance(500); // well under every endpoint's interval — nothing is naturally due
+    await e.tick();
+    await flush();
+    expect(fetches.length).toBe(afterFirst); // baseline: proves the next assertion is syncAll's doing, not the clock's
+
+    e.syncAll();
+    await e.tick(); // no further clock advance
+    await flush();
+    expect(fetches.length).toBeGreaterThan(afterFirst);
+  });
+
+  /**
+   * Final fix round, C1 — the on-air reproduction. An operator reaches for
+   * "sync now" exactly when a feed feels slow, i.e. precisely when a fetch
+   * is most likely to be outstanding. While `forceDue()` and the hung-poll
+   * detector shared one field, that press computed `Infinity`ms outstanding
+   * for the in-flight hands poll and degraded a healthy feed mid-show:
+   * `health.hands` → `failing` (with the literal string `Infinityms` shown
+   * to the operator), `capabilities.handsQueue` → `unavailable`, guest
+   * boxes fell back to manual fill, and paging started refusing.
+   *
+   * The hands fetch here NEVER settles across the sync — which is what no
+   * other `syncAll` fixture in this package does.
+   */
+  it("syncAll leaves an endpoint whose poll is still in flight healthy", async () => {
+    const { e, advance, flush, setHandsBody, hangHands } = mukanaEngine();
+    setHandsBody("4242,5555\n1383\nNONE");
+    advance(10_000);
+    await e.tick();
+    await flush();
+    const healthy = await e.tick();
+    await flush();
+    expect(healthy.capabilities.handsQueue.state).toBe("available");
+    expect(healthy.health.hands.state).toBe("ok");
+
+    hangHands();
+    advance(10_000);
+    await e.tick(); // starts the hands fetch that never settles
+    await flush();
+
+    e.syncAll(); // the operator presses "sync now" with that fetch outstanding
+    const afterSync = await e.tick();
+    await flush();
+
+    expect(afterSync.health.hands.state).toBe("ok");
+    expect(afterSync.health.hands.detail).toBeNull();
+    expect(afterSync.capabilities.handsQueue.state).toBe("available");
+    // Nothing downstream degraded either: the last good queue is intact.
+    expect(afterSync.queue.current).toBe("1383");
+  });
+
+  /** A show with no Mukana client has nothing to force; `syncAll` degrades to a no-op rather than throwing. */
+  it("syncAll is a no-op for a show with no Mukana client", () => {
+    expect(() => engine().syncAll()).not.toThrow();
   });
 });

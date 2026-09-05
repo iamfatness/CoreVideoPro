@@ -93,6 +93,129 @@ describe("MukanaClient", () => {
     expect(client.nextDelayMs("panelists")).toBe(60000);
   });
 
+  /**
+   * Task 3, the abort contract: `MukanaClient` must actually PASS a signal
+   * to the injected fetch, not merely accept one in `FetchLike`'s type.
+   * `FetchLike`'s own doc comment explains why this matters beyond typing —
+   * without a host fetch that honors `signal`, a hung endpoint's promise
+   * never settles, `consecutiveFailures` never leaves 0, backoff never
+   * engages, and `MukanaPoller`'s hung-poll rule is the only thing left
+   * standing between the show and a frozen queue. This test only proves the
+   * plumbing half (a signal is actually handed to `fetch`) — honoring it is
+   * the host's job, which `FetchLike`'s type cannot enforce. The signal's
+   * OWN duration (`MUKANA_HUNG_POLL_INTERVALS` x the interval, not the bare
+   * interval) is proven separately below, by real-timing tests that use a
+   * fetch which actually honors it — fix round 1's finding: every fixture
+   * up to this point (including this one) ignores `init.signal` entirely,
+   * which is exactly why the deadline being wrong (1x instead of 3x) was
+   * invisible to the whole suite.
+   */
+  it("passes an AbortSignal to the injected fetch", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const client = new MukanaClient(config, {
+      fetch: async (_url, init) => {
+        capturedSignal = init?.signal;
+        return { ok: true, status: 200, text: async () => panelistsBody };
+      }
+    });
+    await client.fetchPanelists();
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal?.aborted).toBe(false);
+  });
+
+  /**
+   * A REAL fetch double that actually honors `init.signal` — settling on
+   * its own after `realDelayMs` of REAL wall-clock time, unless the signal
+   * aborts first, in which case it rejects the way a real `fetch()` does.
+   * There is no way to fake `AbortSignal.timeout`'s own timer for a test
+   * (confirmed: `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync` does
+   * NOT move it — it is a separate internal timer, not the one
+   * `setTimeout`/`Date` fake-timer mocking replaces), so these tests use
+   * genuinely small millisecond intervals to keep real run time in the tens
+   * of milliseconds rather than seconds.
+   */
+  function honoringFetch(bodyProvider: () => string, initialDelayMs: number) {
+    let delayMs = initialDelayMs;
+    const fetch: FetchLike = (_url, init) =>
+      new Promise((resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined) {
+          reject(new Error("test fetch invoked without a signal — the abort contract is broken"));
+          return;
+        }
+        if (signal.aborted) {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+          return;
+        }
+        const timer = setTimeout(() => {
+          resolve({ ok: true, status: 200, text: async () => bodyProvider() });
+        }, delayMs);
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          },
+          { once: true }
+        );
+      });
+    return { fetch, setDelay: (ms: number): void => { delayMs = ms; } };
+  }
+
+  /**
+   * Fix round 1's exact critical finding, disproven directly: with the
+   * PREVIOUS (buggy) deadline of 1x the interval, a conforming host
+   * answering at 1.5x (past 1x, still well under the shipped 3x) would have
+   * been aborted before it ever got the chance to answer. `handsIntervalMs`
+   * is set to 30ms here purely so the real wait stays fast (~45ms), not
+   * because the mechanism cares about the magnitude.
+   */
+  it("does not abort a conforming fetch answering past 1x the interval but under 3x (Task 3 fix round 1)", async () => {
+    const fastConfig: MukanaConfig = { ...config, handsIntervalMs: 30 };
+    const { fetch } = honoringFetch(() => "4242,5555\n1383\nNONE", 45); // 1.5x 30ms
+    const client = new MukanaClient(fastConfig, { fetch });
+
+    const outcome = await client.fetchHands();
+    expect(outcome.kind).toBe("data");
+    expect(client.healthFor("hands").state).toBe("ok");
+  });
+
+  /**
+   * The other half: a conforming host that genuinely never answers inside
+   * the deadline IS aborted at (approximately) `MUKANA_HUNG_POLL_INTERVALS`
+   * x the interval — proving the hung path is actually REACHABLE for a
+   * conforming host, not just for one that ignores `signal` (fix round 1's
+   * headline finding: with the old 1x deadline this was true for NO
+   * conforming host, ever). And the abort itself must arm the recovery
+   * hold, not just fail ordinarily (fix round 1's second finding: `fail()`
+   * alone never armed a fresh hold) — proven by following the abort with a
+   * single fast, healthy settle and confirming it does NOT yet restore
+   * `"ok"`.
+   */
+  it("aborts a conforming fetch outstanding past 3x the interval, and arms the recovery hold (Task 3 fix round 1)", async () => {
+    const fastConfig: MukanaConfig = { ...config, handsIntervalMs: 30 };
+    const { fetch, setDelay } = honoringFetch(() => "4242,5555\n1383\nNONE", 5000); // never answers before the 90ms deadline
+    const client = new MukanaClient(fastConfig, { fetch });
+
+    const abortedOutcome = await client.fetchHands();
+    expect(abortedOutcome.kind).toBe("invalid");
+    expect(client.healthFor("hands").state).toBe("failing");
+    expect(client.healthFor("hands").consecutiveFailures).toBe(1);
+
+    // One fast, healthy settle right after the abort — must NOT restore
+    // "ok" yet (the recovery hold the abort itself armed).
+    setDelay(1);
+    const firstRecoverySettle = await client.fetchHands();
+    expect(firstRecoverySettle.kind).toBe("data");
+    expect(client.healthFor("hands").state).toBe("failing");
+    expect(client.healthFor("hands").detail).toMatch(/not yet trusted/);
+
+    // A second fast, healthy settle — NOW it's trusted again.
+    const secondRecoverySettle = await client.fetchHands();
+    expect(secondRecoverySettle.kind).toBe("data");
+    expect(client.healthFor("hands").state).toBe("ok");
+  });
+
   it("resets backoff after a recovery", async () => {
     let body = "nope";
     let ok = false;

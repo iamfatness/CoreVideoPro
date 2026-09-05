@@ -14,7 +14,7 @@
  * by object identity.
  */
 
-import type { MukanaQuestion } from "./contracts.js";
+import type { Headline, MukanaQuestion } from "./contracts.js";
 import type { LookResolution, Nameplate } from "./lookDirector.js";
 
 export type QuestionOverlay = {
@@ -27,20 +27,28 @@ export type QuestionOverlay = {
 export type OverlayState = {
   nameplates: Nameplate[];
   question: QuestionOverlay | null;
+  headline: Headline | null;
+  headlineVisible: boolean;
 };
 
 export type OverlayInput = {
   look: LookResolution | null;
   question: MukanaQuestion | null;
   questionVisible: boolean;
+  headline: Headline | null;
+  headlineVisible: boolean;
 };
 
 function emptyState(): OverlayState {
-  return { nameplates: [], question: null };
+  return { nameplates: [], question: null, headline: null, headlineVisible: false };
 }
 
 function cloneNameplates(nameplates: readonly Nameplate[]): Nameplate[] {
   return nameplates.map((plate) => ({ ...plate, position: { ...plate.position } }));
+}
+
+function cloneHeadline(headline: Headline): Headline {
+  return { ...headline };
 }
 
 function deriveQuestion(input: OverlayInput): QuestionOverlay | null {
@@ -51,10 +59,22 @@ function deriveQuestion(input: OverlayInput): QuestionOverlay | null {
   return { askerName, text, tag, votes };
 }
 
+/**
+ * Unlike `deriveQuestion`, this never nulls the text out for invisibility —
+ * the headline is operator-driven, not derived, and an invisible headline
+ * still carries its content so toggling visibility back on restores it
+ * without the operator retyping it mid-show. `headlineVisible` alone tells
+ * a renderer whether to draw it.
+ */
+function deriveHeadline(input: OverlayInput): Headline | null {
+  return input.headline === null ? null : cloneHeadline(input.headline);
+}
+
 function deriveState(input: OverlayInput): OverlayState {
   const nameplates = input.look === null ? [] : cloneNameplates(input.look.nameplates);
   const question = deriveQuestion(input);
-  return { nameplates, question };
+  const headline = deriveHeadline(input);
+  return { nameplates, question, headline, headlineVisible: input.headlineVisible };
 }
 
 function nameplatesEqual(a: readonly Nameplate[], b: readonly Nameplate[]): boolean {
@@ -84,8 +104,18 @@ function questionsEqual(a: QuestionOverlay | null, b: QuestionOverlay | null): b
   return a.askerName === b.askerName && a.text === b.text && a.tag === b.tag && a.votes === b.votes;
 }
 
+function headlinesEqual(a: Headline | null, b: Headline | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.name === b.name && a.location === b.location;
+}
+
 function statesEqual(a: OverlayState, b: OverlayState): boolean {
-  return nameplatesEqual(a.nameplates, b.nameplates) && questionsEqual(a.question, b.question);
+  return (
+    nameplatesEqual(a.nameplates, b.nameplates) &&
+    questionsEqual(a.question, b.question) &&
+    headlinesEqual(a.headline, b.headline) &&
+    a.headlineVisible === b.headlineVisible
+  );
 }
 
 /**
@@ -99,7 +129,9 @@ export class OverlayDirector {
   state(): OverlayState {
     return {
       nameplates: cloneNameplates(this.current.nameplates),
-      question: this.current.question === null ? null : { ...this.current.question }
+      question: this.current.question === null ? null : { ...this.current.question },
+      headline: this.current.headline === null ? null : cloneHeadline(this.current.headline),
+      headlineVisible: this.current.headlineVisible
     };
   }
 

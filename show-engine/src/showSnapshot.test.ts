@@ -67,7 +67,12 @@ function input() {
     page: 0,
     manualBoxes,
     tally: { mode: "none" as const, onAirSlots: tallyOnAirSlots, onAirPins: [], onAirParticipantIds: [] },
-    overlays: { nameplates: overlayNameplates, question: null },
+    overlays: {
+      nameplates: overlayNameplates,
+      question: null,
+      headline: null,
+      headlineVisible: false
+    },
     capabilities: {
       registry: { state: "disabled" as const, detail: null },
       handsQueue: { state: "disabled" as const, detail: null },
@@ -78,6 +83,7 @@ function input() {
       hands: { state: "ok" as const, consecutiveFailures: 0, detail: null },
       question: { state: "ok" as const, consecutiveFailures: 0, detail: null }
     },
+    smartGallery: true,
     unseated: [panelist("p9", "Cy")],
     restoreWarnings: ["persisted look \"gone\" is not defined in this show's configuration"]
   };

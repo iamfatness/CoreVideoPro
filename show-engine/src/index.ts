@@ -26,6 +26,7 @@ export {
   type Capability,
   type CapabilityState,
   type GalleryCell,
+  type Headline,
   type Identity,
   type LookDefinition,
   type MukanaDb,
@@ -59,6 +60,8 @@ export {
 export {
   MukanaClient,
   MUKANA_ENDPOINTS,
+  MUKANA_HUNG_POLL_INTERVALS,
+  MUKANA_RECOVERY_SETTLES,
   type FetchLike,
   type FetchResponse,
   type MukanaEndpoint,
@@ -123,7 +126,7 @@ export {
  * three host adapters in Plans 6-9 are built entirely against these names.
  */
 export { systemClock, type Clock } from "./clock.js";
-export type { HostAdapter, HostCapabilities } from "./hostAdapter.js";
+export type { HostAdapter, HostCapabilities, LookPlacement } from "./hostAdapter.js";
 export { MockHost, type HostCall } from "./mockHost.js";
 export {
   buildSnapshot,
@@ -131,3 +134,62 @@ export {
   type ShowSnapshot
 } from "./showSnapshot.js";
 export { ShowEngine, type ShowEngineDeps } from "./showEngine.js";
+
+/**
+ * The `ohg.*` action registry (Task 8) — the declarative surface every host
+ * bridge (Companion, OSC, the three native panels) invokes against, plus
+ * the `ProgramSource` wire codec its `preview`/`directCut` actions share
+ * with Task 9's feedback projection.
+ */
+export {
+  formatProgramSource,
+  invokeAction,
+  oscAddressFor,
+  parseProgramSource,
+  OHG_ACTIONS,
+  type ActionDefinition,
+  type ActionParam,
+  type ActionParamType,
+  type ActionResult
+} from "./actions.js";
+
+/**
+ * The flattened control-state projection (Task 9) — the other half of the
+ * `ohg.*` action registry: what an operator can SEE (a flat map of scalar
+ * feedback fields for a Companion button or an OSC subscriber) rather than
+ * what they can DO.
+ */
+export {
+  projectControlFields,
+  OHG_FIELD_TEMPLATES,
+  type ControlFieldValue
+} from "./controlState.js";
+
+/**
+ * The two carved-out orchestrator collaborators (Tasks 1-2). `ShowEngine`
+ * owns them, but a host process that wants to test its own polling cadence
+ * or paging affordances against the real types needs to be able to NAME
+ * them — and Plans 7-9's adapters are built entirely against this barrel.
+ */
+export {
+  MukanaPoller,
+  type HungMukanaPoll,
+  type PollOutcomes
+} from "./mukanaPoller.js";
+export { LookController, type PagingRefusalKind } from "./lookController.js";
+
+/**
+ * The host conformance suite (Task 10) — spec §6's mechanism for keeping
+ * CVP-Windows, CVP-Mac, and OBS semantically identical. Exported as DATA so
+ * each host's own test runner enumerates and executes the same cases
+ * against its real adapter; `conformance.ts`'s header states the contract a
+ * runner owes each case.
+ */
+export {
+  HOST_CONFORMANCE_CASES,
+  CONFORMANCE_CONFIG,
+  CONFORMANCE_LOOK_ID,
+  CONFORMANCE_SCENE_PRESET,
+  type ConformanceCase,
+  type ConformanceHost
+} from "./conformance.js";
