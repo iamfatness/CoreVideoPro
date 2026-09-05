@@ -5111,6 +5111,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   }
   markStage(s_stagePlanUs);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
+  // Mirrored for the audio worker's PRE-LOCK engine poll: it needs a frame
+  // number to stamp audio with, but must not take coreMutex to read one.
+  lastProgramFrameNumberAtomic_.store(lastProgramFrame_.frameNumber,
+                                      std::memory_order_relaxed);
   // Mark a new program frame for the video-out tick. Only the COUNTER moves here
   // (atomic, free); the wakeup itself is deliberately NOT sent under coreMutex —
   // the caller sends it via notifyProgramFramePublished() after releasing the
@@ -5277,7 +5281,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // callers (unit tests) keep it synchronous + single-threaded so applyCommands /
   // applyCommand still publish audio/output results into the returned snapshot.
   if (!videoOnly && !audioWorkerActive_) {
-    auto work = gatherAudioOutputWork();
+    // Single-threaded test/sync path: already under coreMutex and nothing else
+    // is running, so there is no contention to avoid — poll inline.
+    auto work = gatherAudioOutputWork(pollZoomAudioUnlocked());
     const auto results = runAudioOutputWork(work);
     publishAudioOutputResults(results);
   }
@@ -5289,20 +5295,45 @@ void MediaCore::enableAudioOutputWorker() { audioWorkerActive_ = true; }
 // single-threaded test path). Polls the audio sources (zoom/engine/capture/media),
 // copies the plain-data control state the worker reads, and snapshots the current
 // program frame for the encoder/output. Touches only coreMutex-domain state.
-MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
+// Poll the Zoom sources for audio WITHOUT holding coreMutex.
+//
+// This used to run inside gatherAudioOutputWork, i.e. under coreMutex — and
+// ZoomEngineRuntime::pollCompositorAudioFrames takes the engine's own mutex_,
+// which the video ingest thread holds on its 2ms poll. So the audio worker sat
+// on the BIG lock waiting for the engine lock: measured worst 8.5ms against a
+// sub-ms budget, while every other part of the gather stayed under 0.03ms.
+// Averages hid it completely (0.16ms mean).
+//
+// Both pollers own their own mutexes (RealZoomCaptureSource::mutex_ and
+// ZoomEngineRuntime::mutex_) and zoomEngineRuntime_ is created once in the
+// constructor and never reset, so calling them unlocked is safe — the same
+// reasoning that already lets drainZoomVideoFrameEvents run off the core lock.
+std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
+  std::vector<modules::AudioFrame> audioFrames = modules_.zoom->pollAudioFrames();
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    // Frame number from the atomic mirror rather than lastProgramFrame_: one
+    // render tick of staleness is irrelevant here (this is a synthetic
+    // monotonic stamp, not a wall clock, and the worker already runs at 50Hz
+    // against a 60Hz render), and reading it under the lock is the very thing
+    // being removed.
+    const auto frameNumber = lastProgramFrameNumberAtomic_.load(std::memory_order_relaxed);
+    auto engineAudioFrames = zoomEngineRuntime_->pollCompositorAudioFrames((frameNumber + 1) * 20);
+    if (!engineAudioFrames.empty()) {
+      audioFrames = std::move(engineAudioFrames);
+    }
+  }
+  return audioFrames;
+}
+
+MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
+    std::vector<modules::AudioFrame> prePolledZoomAudio) {
   AudioOutputWorkItem work;
   work.valid = true;
   work.frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
   const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * work.frameIntervalMs;
 
-  std::vector<modules::AudioFrame> audioFrames = modules_.zoom->pollAudioFrames();
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto engineAudioFrames =
-        zoomEngineRuntime_->pollCompositorAudioFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 20);
-    if (!engineAudioFrames.empty()) {
-      audioFrames = engineAudioFrames;
-    }
-  }
+  // Polled BEFORE coreMutex was taken (see pollZoomAudioUnlocked).
+  std::vector<modules::AudioFrame> audioFrames = std::move(prePolledZoomAudio);
   if (modules_.audioCapture) {
     auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
     audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
@@ -6217,6 +6248,9 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
 }
 
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
+  // OUTSIDE the lock: blocking on the engine mutex while holding coreMutex is
+  // what put this site 8x over its sub-ms budget.
+  auto zoomAudio = pollZoomAudioUnlocked();
   AudioOutputWorkItem work;
   {
     std::lock_guard<std::mutex> lock(coreMutex);
@@ -6225,7 +6259,7 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
     // audioOutputMutex_ only. An over-budget hold here means blocking work
     // crept back under the big lock.
     ScopedLockHoldTimer holdTimer("audio.gather", LockHoldGuardrail::kDefaultBudgetUs);
-    work = gatherAudioOutputWork();
+    work = gatherAudioOutputWork(std::move(zoomAudio));
   }
   AudioOutputResults results;
   {

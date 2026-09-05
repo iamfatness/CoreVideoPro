@@ -580,6 +580,9 @@ class MediaCore {
   modules::StreamingTruePeakMeterState programTruePeakMeterR_;
   std::chrono::steady_clock::time_point lastLoudnessCompute_{};
   modules::ProgramFrame lastProgramFrame_;
+  // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
+  // pre-lock engine poll (see pollZoomAudioUnlocked).
+  std::atomic<std::int64_t> lastProgramFrameNumberAtomic_{0};
   std::string encoderLifecycleStatus_ = "idle";
   std::string encoderLastTransition_ = "Encoder session idle.";
   double encoderPreparedAtMs_ = 0;
@@ -830,7 +833,9 @@ class MediaCore {
   // outputSender) + the BS.1770 loudness members; publish writes `coreMutex`-domain
   // published members. The caller owns the locking (so the same trio serves both the
   // worker — phased/locked — and the synchronous test path — single-threaded, no locks).
-  [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork();
+  [[nodiscard]] std::vector<modules::AudioFrame> pollZoomAudioUnlocked();
+  [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork(
+      std::vector<modules::AudioFrame> prePolledZoomAudio);
   [[nodiscard]] AudioOutputResults runAudioOutputWork(AudioOutputWorkItem& work);
   void publishAudioOutputResults(const AudioOutputResults& results);
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,

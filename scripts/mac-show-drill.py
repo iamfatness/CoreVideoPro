@@ -375,17 +375,31 @@ def main():
     else:
         failures.append(f"multiview missing bus cells (roles={sorted(roles)})")
 
+    # PER SITE. Several sites emit this line, so taking whichever logged last
+    # conflated them — a render-tick ratio could be reported as an audio one and
+    # vice versa. Keep the latest counters for each site and gate on the WORST,
+    # naming it, so the number points at something actionable.
+    per_site = {}
+    for line in core.stderr:
+        if "lock-guardrail" not in line or "over-budget" not in line:
+            continue
+        try:
+            site = line.split(" at '")[1].split("'")[0]
+            parts = line.split("over-budget ")[1].split(" of ")
+            per_site[site] = (int(parts[0]), int(parts[1].split(" ")[0]))
+        except (IndexError, ValueError):
+            continue
+    worst_site = ""
     over = 0
     total = 0
-    for line in core.stderr:
-        if "lock-guardrail" in line and "over-budget" in line:
-            parts = line.split("over-budget ")[1].split(" of ")
-            over = int(parts[0])
-            total = int(parts[1].split(" ")[0])
+    for site, (site_over, site_total) in per_site.items():
+        if site_total and site_over / site_total >= (over / total if total else 0):
+            worst_site, over, total = site, site_over, site_total
     if total:
         ratio = over / total
         verdict = "PASS" if ratio <= MAX_OVER_BUDGET_RATIO else "FAIL"
-        print(f"{verdict} coreMutex over-budget {over}/{total} ({ratio:.0%})")
+        print(f"{verdict} coreMutex over-budget {over}/{total} ({ratio:.0%}) "
+              f"worst site '{worst_site}'")
         if ratio > MAX_OVER_BUDGET_RATIO:
             failures.append(
                 f"render tick over budget on {ratio:.0%} of holds "
