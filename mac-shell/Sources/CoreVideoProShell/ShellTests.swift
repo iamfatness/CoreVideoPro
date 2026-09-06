@@ -39,6 +39,89 @@ enum ShellTests {
 
     // ── prefs: the data-loss class ───────────────────────────────────────────
 
+    private static func testBridgeGenerationRejectsStaleWork() {
+        var policy = BridgeGenerationPolicy()
+        expect(!policy.canWrite(policy.generation), "stopped bridge rejects writes")
+        let first = policy.begin()
+        expect(policy.isCurrent(first), "launched child owns current generation")
+        expect(!policy.canWrite(first), "unvalidated handshake cannot receive commands")
+        expect(policy.acceptHandshake(first), "current handshake is accepted")
+        expect(policy.canWrite(first), "validated current child accepts commands")
+
+        let recovery = policy.invalidate(stopped: false)
+        expect(!policy.isCurrent(first), "old stdout and exit callbacks are stale after exit")
+        expect(!policy.canWrite(first), "queued old writes cannot cross process exit")
+        expect(policy.canRelaunch(recovery), "current recovery token can relaunch")
+        let second = policy.begin()
+        expect(!policy.canRelaunch(recovery), "new child invalidates old relaunch timer")
+        expect(!policy.acceptHandshake(first), "late old handshake cannot mark new child ready")
+        expect(!policy.canWrite(second), "new child still requires its own handshake")
+        expect(policy.acceptHandshake(second), "replacement handshake is independent")
+        expect(!policy.canWrite(first), "old queued writes cannot enter ready replacement")
+        expect(policy.canWrite(second), "fresh commands can use ready replacement")
+
+        let pendingRecovery = policy.invalidate(stopped: false)
+        let stopped = policy.invalidate(stopped: true)
+        expect(!policy.canRelaunch(pendingRecovery), "stop invalidates scheduled relaunch")
+        expect(!policy.canRelaunch(stopped), "stop never schedules a new process")
+        expect(!policy.acceptHandshake(second), "late handshake cannot revive stopped bridge")
+
+        let incompatible = policy.begin()
+        _ = policy.invalidate(stopped: true)
+        expect(policy.stopped, "rejected handshake leaves bridge stopped")
+        expect(!policy.canWrite(incompatible), "rejected handshake blocks captured handles immediately")
+        expect(!policy.canRelaunch(policy.generation), "incompatible protocol does not auto-restart")
+    }
+
+    private static func testSharedLifecycleContracts() {
+        expectEqual(RecordingLifecycleReadModel.status(["status": "recording", "lifecycle": NSNull()]),
+                    "unknown", "malformed lifecycle never falls back to legacy live status")
+        for health in ["healthy", "degraded", "unknown", "failed"] {
+            let lifecycle: [String: Any] = ["sessionId": "test", "desiredActive": true,
+                "state": "live", "health": health, "finalized": false]
+            let expected = health == "healthy" || health == "degraded" ? "recording" : health
+            expectEqual(RecordingLifecycleReadModel.status(["lifecycle": lifecycle]), expected,
+                        "live state requires observed healthy or degraded media")
+        }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        do {
+            let data = try Data(contentsOf: root.appendingPathComponent("contracts/lifecycle.fixtures.json"))
+            guard let fixtures = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                expect(false, "lifecycle fixtures must be an array"); return
+            }
+            expect(!fixtures.isEmpty, "lifecycle fixtures are not empty")
+            for fixture in fixtures {
+                guard let id = fixture["id"] as? String, let contract = fixture["contract"] as? String,
+                      let accepted = fixture["accepted"] as? Bool, let json = fixture["json"] as? String,
+                      let payloadData = json.data(using: .utf8) else {
+                    expect(false, "malformed lifecycle fixture"); continue
+                }
+                let value = try JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed])
+                let validate: ([String: Any]) -> Bool
+                switch contract {
+                case "ProtocolVersion": validate = validateProtocolVersion
+                case "OutputLifecycle": validate = validateOutputLifecycle
+                case "OperationStatus": validate = validateOperationStatus
+                case "ProtocolFailure": validate = validateProtocolFailure
+                default: expect(false, "unknown contract \(contract)"); continue
+                }
+                expectEqual((value as? [String: Any]).map(validate) ?? false, accepted, id)
+                if accepted {
+                    let encoded: Data
+                    switch contract {
+                    case "ProtocolVersion": encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolVersion.self, from: payloadData))
+                    case "OutputLifecycle": encoded = try JSONEncoder().encode(JSONDecoder().decode(OutputLifecycle.self, from: payloadData))
+                    case "OperationStatus": encoded = try JSONEncoder().encode(JSONDecoder().decode(OperationStatus.self, from: payloadData))
+                    default: encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolFailure.self, from: payloadData))
+                    }
+                    let roundTrip = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+                    expect(roundTrip.map(validate) ?? false, "\(id) round trip")
+                }
+            }
+        } catch { expect(false, "lifecycle fixtures: \(error)") }
+    }
+
     /// Shipping `colorGrade` as a non-optional field silently reset EVERY saved
     /// setting, because synthesized Decodable ignores property defaults and
     /// load() swallows the throw with `try?`.
@@ -458,6 +541,8 @@ enum ShellTests {
         checks = 0
 
         let cases: [(String, () -> Void)] = [
+            ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
+            ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),
             ("prefs/older-file", testPrefsSurviveAnOlderFile),
             ("prefs/round-trip", testPrefsRoundTripKeepsEveryField),
             ("prefs/garbage", testPrefsToleratesGarbage),

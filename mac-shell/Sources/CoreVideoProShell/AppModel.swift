@@ -286,6 +286,7 @@ final class AppModel: ObservableObject {
     @Published var roster: [RosterParticipant] = []
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
+    @Published var recordingDesired = false
     @Published var recordingStartedAt: Date?
     @Published var recordingArtifactPath = ""
     @Published var recordingWarning = ""
@@ -577,6 +578,11 @@ final class AppModel: ObservableObject {
                     self?.onConnected()
                 }
                 if case .exited(let code) = status {
+                    self?.recordingDesired = false
+                    self?.streamingDesired = false
+                    self?.recordingStatus = "interrupted"
+                    self?.streamStatus = "interrupted"
+                    self?.streamDetail = "Media core exited; output continuity was interrupted."
                     self?.pushWarning("media core exited (code \(code)) — relaunching")
                 }
             }
@@ -713,7 +719,10 @@ final class AppModel: ObservableObject {
             refreshSlotHealth()
         }
         if let recording = snapshot["recording"] as? JSONObject {
-            let nextStatus = recording["status"] as? String ?? "idle"
+            let nextStatus = RecordingLifecycleReadModel.status(recording)
+            if nextStatus == "failed" || nextStatus == "interrupted" {
+                recordingDesired = false
+            }
             if nextStatus == "recording", recordingStatus != "recording" {
                 recordingStartedAt = Date()
             }
@@ -1914,7 +1923,7 @@ final class AppModel: ObservableObject {
     }
 
     private var isRecordingActive: Bool {
-        recordingStatus == "recording" || recordingStatus == "warning"
+        recordingDesired
     }
 
     func toggleStreaming() {
@@ -2244,7 +2253,8 @@ final class AppModel: ObservableObject {
 
     func toggleRecording() {
         guard let bridge else { return }
-        let stop = recordingStatus == "recording" || recordingStatus == "warning"
+        let stop = recordingDesired
+        recordingDesired = !stop
         Task {
             do {
                 if stop {
@@ -2283,6 +2293,7 @@ final class AppModel: ObservableObject {
                     ])
                 }
             } catch {
+                recordingDesired = false
                 pushWarning("recording command failed: \(error.localizedDescription)")
             }
         }
