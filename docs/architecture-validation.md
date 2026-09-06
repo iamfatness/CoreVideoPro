@@ -96,6 +96,10 @@ Follow-up local validation: 621 native tests (20 asynchronous encoder cases),
 489 MediaCore tests (11 handshake cases), 758 WinUI tests, and 23 release-evidence
 tests passed. The harness regression executes the workflow's PowerShell invocation
 with normal success, stale exit status, explicit script failure, an exception, and
-a failed native child. The macOS policy adds 23 checks to the hosted Swift suite;
+a failed native child. The macOS policy adds 29 checks to the hosted Swift suite;
 design lint passed locally, where no Swift compiler is installed. The remaining
 recording-cadence and controlled-rig acceptance requirements above are unchanged.
+
+Final merge review added coverage for delayed live snapshots after successful or
+failed Stop: those snapshots must preserve stopped intent, while observed media
+still permits an explicit Stop retry. A later explicit Start can arm a new take.

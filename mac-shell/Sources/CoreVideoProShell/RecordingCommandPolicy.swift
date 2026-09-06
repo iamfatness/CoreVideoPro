@@ -41,9 +41,8 @@ struct RecordingCommandPolicy {
         pending = nil
         if failed {
             awaitingStartProgress = false
-            // "starting" has no observed media proof. A failed safety Stop
-            // must not re-arm that pending start through another output command.
-            reconcile(fallback: operation.stop ? false : operation.previousDesired)
+            // Stop remains a safety intent even when its acknowledgement is lost.
+            reconcile(fallback: operation.stop ? false : (operation.previousDesired || observedLive))
         }
         return true
     }
@@ -57,8 +56,9 @@ struct RecordingCommandPolicy {
     }
 
     private mutating func reconcile(fallback: Bool) {
+        // Live polls cannot re-arm a stopped intent. begin() independently uses
+        // observedLive to offer Stop retries while media is still being written.
         switch status {
-        case "recording", "warning": desired = true
         case "idle", "completed", "failed", "interrupted", "stopping", "finalizing": desired = false
         default: desired = fallback
         }

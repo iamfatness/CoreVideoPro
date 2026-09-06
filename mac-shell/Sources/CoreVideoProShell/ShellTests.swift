@@ -48,7 +48,9 @@ enum ShellTests {
         policy.observe("recording")
         expect(!policy.desired, "live polls do not undo pending Stop intent")
         expect(policy.finish(stop, failed: true), "failed Stop owns its completion")
-        expect(policy.desired, "failed Stop restores still-live recording intent")
+        expect(!policy.desired, "failed Stop preserves stopped intent despite observed media")
+        policy.observe("recording")
+        expect(!policy.desired, "live poll after failed Stop cannot re-arm recording")
         let retry = policy.begin()
         expect(retry.stop, "retry of failed Stop sends Stop, matching Stop Rec label")
         policy.observe("finalizing")
@@ -94,6 +96,22 @@ enum ShellTests {
         expect(!policy.desired, "starting polls cannot re-arm stopped intent")
         policy.observe("recording")
         expect(policy.begin().stop, "observed media still permits explicit Stop retry")
+
+        var stopped = RecordingCommandPolicy()
+        stopped.observe("recording")
+        let acknowledgedStop = stopped.begin()
+        stopped.finish(acknowledgedStop, failed: false)
+        stopped.observe("recording")
+        expect(!stopped.desired, "stale live poll after acknowledged Stop cannot re-arm recording")
+        stopped.observe("warning")
+        expect(!stopped.desired, "degraded live poll also preserves stopped intent")
+        expect(stopped.begin().stop, "acknowledged Stop still offers explicit Stop while media is live")
+        stopped.observe("completed")
+        let restarted = stopped.begin()
+        expect(!restarted.stop && stopped.desired, "fresh Start after completion clears stopped intent")
+        stopped.finish(restarted, failed: false)
+        stopped.observe("recording")
+        expect(stopped.desired, "fresh recording after explicit Start remains armed")
     }
 
     private static func testBridgeGenerationRejectsStaleWork() {
