@@ -1,4 +1,5 @@
 #include "core/Protocol.h"
+#include "contracts/Lifecycle.h"
 
 #include <gtest/gtest.h>
 
@@ -28,6 +29,30 @@ void expectAllStringsPresent(const std::string& source, const Strings& strings) 
 }
 
 }  // namespace
+
+TEST(ContractParity, LifecycleGoldenMessagesMatchSchema) {
+  const auto fixtures = corevideo::rpc::Json::parse(readRepoFile("contracts/lifecycle.fixtures.json"));
+  ASSERT_TRUE(fixtures && fixtures->isArray());
+  ASSERT_FALSE(fixtures->asArray().empty());
+  for (const auto& fixture : fixtures->asArray()) {
+    const auto payload = corevideo::rpc::Json::parse(fixture.getString("json"));
+    ASSERT_TRUE(payload);
+    const auto name = fixture.getString("contract");
+    bool valid = false;
+    using namespace corevideo::contracts;
+    if (name == "ProtocolVersion") valid = validateProtocolVersion(*payload);
+    else if (name == "OutputLifecycle") valid = validateOutputLifecycle(*payload);
+    else if (name == "OperationStatus") valid = validateOperationStatus(*payload);
+    else if (name == "ProtocolFailure") valid = validateProtocolFailure(*payload);
+    else ASSERT_TRUE(false) << "Unknown contract: " << name;
+    ASSERT_NE(fixture.get("accepted"), nullptr);
+    EXPECT_EQ(valid, fixture.get("accepted")->asBool()) << fixture.getString("id");
+  }
+  const corevideo::contracts::OutputLifecycle lifecycle{"session-1", true, "starting", "unknown", false, std::nullopt};
+  const auto wire = corevideo::contracts::toJson(lifecycle);
+  EXPECT_TRUE(corevideo::contracts::validateOutputLifecycle(wire));
+  EXPECT_EQ(wire.get("error"), nullptr);
+}
 
 TEST(ContractParity, MediaCoreCommandTypesMatchTypeScriptProtocol) {
   const std::string source = readRepoFile("src/engine/nativeMediaCoreProtocol.ts");

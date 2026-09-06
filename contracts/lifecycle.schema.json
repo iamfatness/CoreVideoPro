@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corevideopro.local/contracts/lifecycle/v1",
+  "title": "CoreVideo additive lifecycle contracts",
+  "$defs": {
+    "ProtocolVersion": {
+      "type": "object", "additionalProperties": true,
+      "required": ["major", "minor"],
+      "properties": {
+        "major": {"type": "integer", "minimum": 1, "maximum": 1},
+        "minor": {"type": "integer", "minimum": 0, "maximum": 2147483647}
+      }
+    },
+    "OutputLifecycle": {
+      "type": "object", "additionalProperties": true,
+      "required": ["sessionId", "desiredActive", "state", "health", "finalized"],
+      "properties": {
+        "sessionId": {"type": "string", "minLength": 1},
+        "desiredActive": {"type": "boolean"},
+        "state": {"type": "string", "enum": ["idle", "starting", "live", "stopping", "finalizing", "completed", "failed", "interrupted"]},
+        "health": {"type": "string", "enum": ["unknown", "healthy", "degraded", "failed"]},
+        "finalized": {"type": "boolean"},
+        "error": {"type": "string"}
+      }
+    },
+    "OperationStatus": {
+      "type": "object", "additionalProperties": true,
+      "required": ["processEpoch", "operationId", "state"],
+      "properties": {
+        "processEpoch": {"type": "string", "minLength": 1},
+        "operationId": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "enum": ["accepted", "running", "completed", "failed", "cancelled"]},
+        "error": {"type": "string"}
+      }
+    },
+    "ProtocolFailure": {
+      "type": "object", "additionalProperties": true,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
