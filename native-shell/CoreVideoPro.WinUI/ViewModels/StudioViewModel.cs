@@ -10021,6 +10021,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (!ZoomCaptureSubscribed)
         {
+            // Output sessions are independent of Zoom capture. Keep observed state and
+            // terminal-failure disarming current even when only local inputs are used.
+            ApplyOutputLifecyclePatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
             LogIfSlow("notSubscribed");
             return;
         }
@@ -10193,31 +10196,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
         ApplyCaptionAndLowerThirdPatch(patch);
 
-        // Observed snapshots never overwrite operator intent. Terminal failure
-        // disarms future syncs once the active command has settled.
-        if (patch.RecordingRequested == false && !_transportCoordinator.RecordingToggleInFlight)
-        {
-            RecordingRequested = false;
-        }
-        if (patch.Recording is { } recording)
-        {
-            Recording = recording;
-        }
-
-        if (patch.Streaming is { } streaming)
-        {
-            Streaming = streaming;
-        }
-
-        if (patch.OutputStatus is { Length: > 0 } outputStatus)
-        {
-            OutputStatus = outputStatus;
-        }
-
-        if (patch.OutputSessionStatus is { Length: > 0 } outputSessionStatus)
-        {
-            OutputSessionStatus = outputSessionStatus;
-        }
+        ApplyOutputLifecyclePatch(patch);
 
         if (patch.ZoomStatus is { Length: > 0 } zoomStatus)
         {

@@ -164,7 +164,9 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task ToggleRecordingAsync()
+    public Task ToggleRecordingAsync() => SetRecordingAsync(!_host.Recording);
+
+    public async Task SetRecordingAsync(bool starting)
     {
         if (_recordingToggleInFlight)
         {
@@ -173,7 +175,6 @@ public sealed class TransportCoordinator
 
         _recordingToggleInFlight = true;
         _host.NotifyRecordingCommandCanExecuteChanged();
-        var starting = !_host.Recording;
         var previousRecording = _host.Recording;
         LaunchLog.Write(
             $"recording: toggle requested action={(starting ? "start" : "stop")} " +
@@ -391,7 +392,9 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task ToggleStreamingAsync()
+    public Task ToggleStreamingAsync() => SetStreamingAsync(!_host.Streaming);
+
+    public async Task SetStreamingAsync(bool starting)
     {
         if (_streamToggleInFlight)
         {
@@ -400,7 +403,6 @@ public sealed class TransportCoordinator
 
         _streamToggleInFlight = true;
         _host.NotifyStreamingCommandCanExecuteChanged();
-        var starting = !_host.Streaming;
         var requestedDestinations = _host.BuildSelectedStreamDestinations(validatedOnly: true);
         LaunchLog.Write(
             $"stream: toggle requested action={(starting ? "start" : "stop")} " +

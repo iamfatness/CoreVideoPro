@@ -31,6 +31,41 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     partial void OnRecordingRequestedChanged(bool value) => OnPropertyChanged(nameof(RecordingLabel));
     partial void OnStreamingRequestedChanged(bool value) => OnPropertyChanged(nameof(StreamingLabel));
 
+    internal Task SetRecordingAsync(bool requested) => _transportCoordinator.SetRecordingAsync(requested);
+    internal Task SetStreamingAsync(bool requested) => _transportCoordinator.SetStreamingAsync(requested);
+    internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || Settings.IsInMeeting);
+    internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight;
+
+    // Called only on the UI thread, including the capture-independent polling path.
+    private void ApplyOutputLifecyclePatch(LiveProductionSync.StudioLiveProductionPatch patch)
+    {
+        // Observed snapshots never overwrite operator intent. Terminal failure
+        // disarms future syncs once the active command has settled.
+        if (patch.RecordingRequested == false && !_transportCoordinator.RecordingToggleInFlight)
+        {
+            RecordingRequested = false;
+        }
+        if (patch.Recording is { } recording)
+        {
+            Recording = recording;
+        }
+
+        if (patch.Streaming is { } streaming)
+        {
+            Streaming = streaming;
+        }
+
+        if (patch.OutputStatus is { Length: > 0 } outputStatus)
+        {
+            OutputStatus = outputStatus;
+        }
+
+        if (patch.OutputSessionStatus is { Length: > 0 } outputSessionStatus)
+        {
+            OutputSessionStatus = outputSessionStatus;
+        }
+    }
+
     private void InterruptOutputSessions()
     {
         var interrupted = RecordingRequested || StreamingRequested || Recording || Streaming;
