@@ -39,6 +39,63 @@ enum ShellTests {
 
     // ── prefs: the data-loss class ───────────────────────────────────────────
 
+    private static func testRecordingCommandRetriesAndSupersession() {
+        var policy = RecordingCommandPolicy()
+        policy.observe("recording")
+        let stop = policy.begin()
+        expect(stop.stop, "observed live recording selects Stop")
+        expect(!policy.desired, "pending Stop expresses stopped intent")
+        policy.observe("recording")
+        expect(!policy.desired, "live polls do not undo pending Stop intent")
+        expect(policy.finish(stop, failed: true), "failed Stop owns its completion")
+        expect(policy.desired, "failed Stop restores still-live recording intent")
+        let retry = policy.begin()
+        expect(retry.stop, "retry of failed Stop sends Stop, matching Stop Rec label")
+        policy.observe("finalizing")
+        policy.finish(retry, failed: true)
+        expect(!policy.desired, "lost Stop reply after observed finalization stays stopped")
+
+        policy.observe("completed")
+        let firstStart = policy.begin()
+        expect(!firstStart.stop, "completed recording selects Start")
+        let cancelStart = policy.begin()
+        expect(cancelStart.stop, "pending Start can be cancelled")
+        let newestStart = policy.begin()
+        expect(!newestStart.stop, "new Start after cancellation expresses fresh intent")
+        expect(!policy.finish(firstStart, failed: true), "old Start failure is ignored")
+        expect(!policy.finish(cancelStart, failed: false), "old Stop success is ignored")
+        expect(policy.desired, "old completions cannot clear newest Start intent")
+        policy.interrupted()
+        expect(!policy.finish(newestStart, failed: true), "process exit invalidates pending completion")
+        expect(!policy.desired, "process exit clears recording intent")
+
+        policy.observe("idle")
+        let failedStart = policy.begin()
+        policy.finish(failedStart, failed: true)
+        expect(!policy.desired, "failed Start while idle permits retrying Start")
+        let acceptedStart = policy.begin()
+        policy.observe("recording")
+        policy.finish(acceptedStart, failed: true)
+        expect(policy.desired, "lost Start reply preserves observed recording")
+
+        policy.observe("completed")
+        let acknowledgedStart = policy.begin()
+        policy.finish(acknowledgedStart, failed: false)
+        policy.observe("idle")
+        expect(policy.desired, "old idle poll cannot undo acknowledged Start")
+        policy.observe("completed")
+        expect(policy.desired, "old completed poll cannot undo acknowledged Start")
+        policy.observe("starting")
+        expect(policy.desired, "fresh starting progress keeps Start intent")
+        let stopWhileStarting = policy.begin()
+        policy.finish(stopWhileStarting, failed: true)
+        expect(!policy.desired, "failed Stop while starting does not re-arm unproven media")
+        policy.observe("starting")
+        expect(!policy.desired, "starting polls cannot re-arm stopped intent")
+        policy.observe("recording")
+        expect(policy.begin().stop, "observed media still permits explicit Stop retry")
+    }
+
     private static func testBridgeGenerationRejectsStaleWork() {
         var policy = BridgeGenerationPolicy()
         expect(!policy.canWrite(policy.generation), "stopped bridge rejects writes")
@@ -541,6 +598,7 @@ enum ShellTests {
         checks = 0
 
         let cases: [(String, () -> Void)] = [
+            ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
             ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
             ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),
             ("prefs/older-file", testPrefsSurviveAnOlderFile),
