@@ -9,8 +9,9 @@ internal static class ApplicationLifecycle
 
     internal static void PrepareShutdown()
     {
-        _activation?.Unsubscribe();
         _activation?.SetActivationHandler(null);
+        try { _activation?.Unsubscribe(); }
+        catch (Exception ex) { LaunchLog.WriteException("shutdown: activation unsubscribe failed", ex); }
     }
 
     internal static void ForceExit(int exitCode = 0)
@@ -20,18 +21,17 @@ internal static class ApplicationLifecycle
             return;
         }
 
-        LaunchLog.Write($"shutdown: force exit code={exitCode}");
-        PrepareShutdown();
-
         try
         {
-            Microsoft.UI.Xaml.Application.Current.Exit();
+            LaunchLog.Write($"shutdown: force exit code={exitCode}");
+            PrepareShutdown();
         }
-        catch
+        finally
         {
-            // Best effort.
+            // The watchdog calls from a ThreadPool thread. Application.Current
+            // and Exit are XAML-affine; normal Close already runs on the UI
+            // thread. This final fallback must never touch XAML or await it.
+            Environment.Exit(exitCode);
         }
-
-        Environment.Exit(exitCode);
     }
 }

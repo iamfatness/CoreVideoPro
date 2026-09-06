@@ -1,6 +1,7 @@
 using CoreVideoPro.Control;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
+using CoreVideoPro.WinUI.ViewModels.Transport;
 using Microsoft.UI.Dispatching;
 using System.ComponentModel;
 
@@ -21,6 +22,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     private static readonly HashSet<string> FeedbackProps = new(StringComparer.Ordinal)
     {
         nameof(StudioViewModel.Recording), nameof(StudioViewModel.Streaming),
+        nameof(StudioViewModel.NativeLowerThirdStatus),
         nameof(StudioViewModel.ZoomCaptureSubscribed), nameof(StudioViewModel.EngineStatus),
         nameof(StudioViewModel.ZoomStatus), nameof(StudioViewModel.CommandStatus),
         nameof(StudioViewModel.ActiveSceneId), nameof(StudioViewModel.PreviewSceneId),
@@ -57,7 +59,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
-        "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
+        "automation.magic", "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
         "automation.lowerThirds.set", "automation.captions.set",
         "browser.add", "browser.remove", "browser.reload",
     };
@@ -88,6 +90,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         {
             try
             {
+                // A command may have queued before Dispose closed the surface.
+                // Check on the UI thread, where disposal sets the gate, before
+                // touching any VM command or property during teardown.
+                if (_disposed)
+                {
+                    tcs.TrySetResult(ControlInvokeResult.Fail("Control surface is shutting down."));
+                    return;
+                }
                 tcs.TrySetResult(await DispatchAsync(actionId, args).ConfigureAwait(true));
             }
             catch (Exception ex)
@@ -141,11 +151,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
 
             // ---- Transport ----------------------------------------------------------
             case "transport.take":
-                if (_vm.TakeCommand.CanExecute(null))
-                {
-                    await _vm.TakeCommand.ExecuteAsync(null).ConfigureAwait(true);
-                }
-                return ControlInvokeResult.Success;
+                return await RunTake(_vm.TakeCommand.CanExecute(null), _vm.TakeForControlAsync).ConfigureAwait(true);
             case "transport.transition.set":
                 _vm.SetTakeTransitionCommand.Execute(Str(args, 0));
                 return ControlInvokeResult.Success;
@@ -270,6 +276,8 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
 
             // ---- Automation ---------------------------------------------------------
+            case "automation.magic":
+                return RunMagicScene(_vm.RunMagicSceneCommand);
             case "automation.toggle":
                 _vm.ToggleAutomationCommand.Execute(null);
                 return ControlInvokeResult.Success;
@@ -449,7 +457,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 source.Status))
             .ToList();
 
-        return new ControlState
+        return NativeControlEvidence.Apply(new ControlState
         {
             Recording = _vm.Recording,
             Streaming = _vm.Streaming,
@@ -487,7 +495,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             VirtualCameraRawStatus = _vm.VirtualCameraRawStatus,
             Inputs = inputs,
             AudioSources = audioSources,
-        };
+        }, _vm.NativeControlSnapshot);
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -515,6 +523,33 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         }
         await command.ExecuteAsync(null).ConfigureAwait(true);
         return ControlInvokeResult.Success;
+    }
+
+    internal static ControlInvokeResult RunMagicScene(System.Windows.Input.ICommand command)
+    {
+        if (!command.CanExecute(null)) return ControlInvokeResult.Fail("Magic Scene is unavailable in the current state.");
+        try
+        {
+            command.Execute(null);
+            return ControlInvokeResult.Success;
+        }
+        catch (Exception ex) { return ControlInvokeResult.Fail($"Magic Scene failed: {ex.Message}"); }
+    }
+
+    internal static async Task<ControlInvokeResult> RunTake(bool canTake, Func<Task<TakeResult>> take)
+    {
+        if (!canTake)
+            return ControlInvokeResult.Fail("Take is unavailable. Queue a valid Preview scene or a changed draft and wait for any current Take to finish.");
+        try
+        {
+            var result = await take().ConfigureAwait(true);
+            return result.Succeeded ? ControlInvokeResult.Success
+                : ControlInvokeResult.Fail(result.Error ?? "Take was not confirmed by the media core.");
+        }
+        catch (Exception ex)
+        {
+            return ControlInvokeResult.Fail($"Take failed: {ex.Message}");
+        }
     }
 
     internal static async Task<ControlInvokeResult> RunOutputSet(

@@ -8,6 +8,25 @@ namespace CoreVideoPro.Control.Tests;
 public sealed class HttpControlRouterTests
 {
     [Fact]
+    public async Task NativeObservationFieldsAreAdditiveInHttpState()
+    {
+        var surface = new FakeControlSurface { State = new ControlState
+        {
+            ActiveSceneId = "desired", NativeActiveSceneId = "native",
+            NativePreviewSceneId = "queued", NativeLowerThirdPhase = "building-in",
+            NativeLowerThirdVisible = true, NativeProgramFrameCount = 80
+        }};
+        var response = await new HttpControlRouter(surface).HandleAsync("GET", "/state", null);
+        using var doc = JsonDocument.Parse(response.Body);
+        Assert.Equal("desired", doc.RootElement.GetProperty("activeSceneId").GetString());
+        Assert.Equal("native", doc.RootElement.GetProperty("nativeActiveSceneId").GetString());
+        Assert.Equal("queued", doc.RootElement.GetProperty("nativePreviewSceneId").GetString());
+        Assert.Equal("building-in", doc.RootElement.GetProperty("nativeLowerThirdPhase").GetString());
+        Assert.True(doc.RootElement.GetProperty("nativeLowerThirdVisible").GetBoolean());
+        Assert.Equal(80, doc.RootElement.GetProperty("nativeProgramFrameCount").GetInt32());
+    }
+
+    [Fact]
     public async Task Get_Manifest_ReturnsTheActionContract()
     {
         var router = new HttpControlRouter(new FakeControlSurface());
@@ -15,6 +34,7 @@ public sealed class HttpControlRouterTests
 
         Assert.Equal(200, response.Status);
         Assert.Contains("transport.take", response.Body);
+        Assert.Contains("automation.magic", response.Body);
         Assert.Contains("/cvp/transport/take", response.Body);
     }
 

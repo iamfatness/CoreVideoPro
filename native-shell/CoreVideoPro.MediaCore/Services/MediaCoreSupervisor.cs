@@ -46,21 +46,14 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private Channel<Action>? _frameDispatch;
     private long _zoomFrameCounter;
 
-    private static void PerfLog(string message)
-    {
-        BoundedLogFile.Append(
-            System.IO.Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CoreVideoPro", "perf.log"),
-            $"[{DateTimeOffset.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
-    }
+    private static void PerfLog(string message) => DiagnosticLog.Write("perf.log", message);
     private int _nextId;
     private int _restarts;
     private const int MaxCrashEvents = 20;
     private readonly LinkedList<MediaCoreCrashEvent> _crashEvents = new();
     private bool _stopped = true;
     private bool _recovering;
-    private bool _syncInFlight;
+    private int _syncInFlight;
     private int _syncFrameNumber;
     private NativeMediaCoreProfile? _profile;
     private string? _handshakeFailure;
@@ -544,12 +537,13 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         double elapsedMs,
         CancellationToken cancellationToken = default)
     {
-        if (_syncInFlight)
+        // UI submissions and the polling timer can arrive concurrently. Acquire
+        // the slot atomically so both cannot pass a check-then-set boolean gate.
+        if (Interlocked.CompareExchange(ref _syncInFlight, 1, 0) != 0)
         {
             throw new MediaCoreSyncInFlightException();
         }
 
-        _syncInFlight = true;
         try
         {
             var response = await SendAsync(
@@ -593,7 +587,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
         finally
         {
-            _syncInFlight = false;
+            Interlocked.Exchange(ref _syncInFlight, 0);
         }
     }
 
@@ -938,24 +932,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         });
     }
 
-    private static string? _coreLogPath;
-
-    private static void WriteCoreLog(string line)
-    {
-        try
-        {
-            _coreLogPath ??= System.IO.Path.Combine(
-                System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
-                "CoreVideoPro",
-                "media-core.log");
-            var stamped = $"[{System.DateTimeOffset.Now:O}] {line}{System.Environment.NewLine}";
-            BoundedLogFile.Append(_coreLogPath, stamped);
-        }
-        catch
-        {
-            // Best-effort diagnostic logging; never let it disrupt the media-core pipe.
-        }
-    }
+    private static void WriteCoreLog(string line) => DiagnosticLog.Write("media-core.log", line);
 
     private async Task ReadStdoutLoopAsync(Process process)
     {
@@ -983,6 +960,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 break;
             }
 
+            var receivedWallMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var receivedStamp = Stopwatch.GetTimestamp();
             lock (_gate)
             {
                 if (!ReferenceEquals(_process, process)) return;
@@ -997,10 +976,10 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             if (frameEvent is not null)
             {
                 var frame = frameEvent.Frame;
-                // DIAGNOSTIC: measure Zoom transport latency every 30th frame.
-                // recv = core-emit -> WinUI off-stdout (base64+pump+stdout);
-                // consume = + the C# frame-dispatch queue until the UI handler runs.
-                // (This excludes upstream SDK/engine->core, isolating OUR transport.)
+                // Sample thumbnail transport separately from parsing and the
+                // supervisor's background dispatch queue. This handler is not the
+                // XAML dispatcher, and these timings do not measure GPU presentation
+                // or end-to-end Zoom latency. Local durations use a monotonic clock.
                 if ((++_zoomFrameCounter % 30) == 0)
                 {
                     try
@@ -1010,13 +989,23 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                             fe.TryGetProperty("emitWallMs", out var ew))
                         {
                             var emit = ew.GetDouble();
-                            var recvAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - emit;
-                            PerfLog($"zoom transport emit->recv={recvAge:F0}ms");
+                            var recvAge = receivedWallMs - emit;
+                            var parseMs = Stopwatch.GetElapsedTime(receivedStamp).TotalMilliseconds;
+                            // Retain receive evidence even if drop-oldest dispatch
+                            // discards this sample or a subscriber later throws.
+                            var sample = _zoomFrameCounter;
+                            PerfLog($"zoom transport sample={sample} corePid={process.Id} emit->recv={recvAge:F0}ms parse={parseMs:F1}ms chars={line.Length}");
+                            var queuedStamp = Stopwatch.GetTimestamp();
                             DispatchFrame(process, () =>
                             {
-                                var consumeAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - emit;
-                                PerfLog($"zoom transport emit->UIhandler={consumeAge:F0}ms (queue={consumeAge - recvAge:F0}ms)");
-                                ZoomVideoFrameReceived?.Invoke(frame);
+                                var queueMs = Stopwatch.GetElapsedTime(queuedStamp).TotalMilliseconds;
+                                var handlerStamp = Stopwatch.GetTimestamp();
+                                try { ZoomVideoFrameReceived?.Invoke(frame); }
+                                finally
+                                {
+                                    var handlerMs = Stopwatch.GetElapsedTime(handlerStamp).TotalMilliseconds;
+                                    PerfLog($"zoom transport sample={sample} corePid={process.Id} dispatchQueue={queueMs:F1}ms subscriber={handlerMs:F1}ms");
+                                }
                             });
                             continue;
                         }
@@ -1169,31 +1158,45 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private void OnChildExited(object? sender, EventArgs e)
     {
+        MediaCoreHealth health;
+        bool exhausted;
         lock (_gate)
         {
             if (!ReferenceEquals(_process, sender)) return;
             RejectAll(new InvalidOperationException("Media core exited."));
-            if (_stopped)
-            {
-                return;
-            }
+            if (_stopped) return;
 
             _restarts++;
             _recovering = true;
             RecordCrashEvent(sender as Process, _restarts);
-            RaiseHealth();
-            StatusChanged?.Invoke($"Media core recovering (restart {_restarts})");
-
-            if (_restarts > _options.MaxRestarts)
-            {
-                _process = null;
-                StatusChanged?.Invoke("Media core failed after repeated restarts.");
-                return;
-            }
-
-            SpawnChild();
+            health = Health;
+            exhausted = _restarts > _options.MaxRestarts;
+            if (exhausted) _process = null;
         }
 
+        // Bridge health subscribers stop their periodic sync under the bridge
+        // gate. That same gate protects generation validation + supervisor
+        // submission, so invoking them under _gate reverses the lock order.
+        HealthChanged?.Invoke(health);
+        lock (_gate)
+        {
+            if (_stopped || _restarts != health.RestartCount ||
+                (!exhausted && !ReferenceEquals(_process, sender))) return;
+        }
+        StatusChanged?.Invoke($"Media core recovering (restart {health.RestartCount})");
+        if (exhausted)
+        {
+            StatusChanged?.Invoke("Media core failed after repeated restarts.");
+            return;
+        }
+
+        lock (_gate)
+        {
+            // A subscriber or operator can Stop/replace the child while events
+            // are delivered. Never restart the retired generation afterward.
+            if (_stopped || !ReferenceEquals(_process, sender)) return;
+            SpawnChild();
+        }
         _ = RecoverChildAsync();
     }
 
@@ -1288,7 +1291,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            WriteCoreLog($"[bridge] recovery failed: {ex.GetType().Name}: {ex.Message}");
+            DiagnosticLog.WriteException("media-core.log", "[bridge] recovery failed", ex);
             StatusChanged?.Invoke($"Media core recovered, but Zoom rejoin failed: {ex.Message}");
         }
     }
@@ -1394,6 +1397,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 _pending.Remove(id);
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                tcs.TrySetCanceled(cancellationToken);
+                return;
+            }
             WriteCoreLog($"[bridge] TIMEOUT id={id} type={requestType} after {timeoutMs ?? _options.RequestTimeoutMs}ms");
             tcs.TrySetException(new TimeoutException($"media core request {id} ({requestType}) timed out."));
         });
@@ -1440,7 +1448,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
                 if (requestType == "zoom-join")
                 {
-                    WriteCoreLog($"[bridge] write FAILED id={id} type=zoom-join: {ex.GetType().Name}: {ex.Message}");
+                    DiagnosticLog.WriteException("media-core.log", "[bridge] write FAILED type=zoom-join", ex, id);
                 }
 
                 tcs.TrySetException(ex);

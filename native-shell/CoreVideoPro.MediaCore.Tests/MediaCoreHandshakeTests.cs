@@ -79,11 +79,21 @@ public sealed class MediaCoreHandshakeTests
                 HandshakeRequestTimeoutMs = 1000, RequestTimeoutMs = 3000, FrameDrainIntervalMs = 100000
             });
             var startup = supervisor.StartAsync();
+            // A concurrent scene/settings sync sees a live process before the
+            // handshake is ready and must await readiness of that child.
+            Assert.True(supervisor.Running);
+            Assert.Null(supervisor.Profile);
+            var concurrentStartup = supervisor.StartAsync();
+            Assert.False(concurrentStartup.IsCompleted);
             var blocked = await Assert.ThrowsAsync<InvalidOperationException>(() => supervisor.PingAsync());
             Assert.Contains("handshake", blocked.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Equal("request-only", (await startup.WaitAsync(TimeSpan.FromSeconds(5)))?.Name);
+            Assert.Equal("request-only", (await concurrentStartup.WaitAsync(TimeSpan.FromSeconds(5)))?.Name);
             Assert.True(await supervisor.PingAsync());
-            Assert.Equal("handshake\nping\n", await File.ReadAllTextAsync(trace));
+            var requests = await File.ReadAllLinesAsync(trace);
+            Assert.Equal("ping", requests[^1]);
+            Assert.NotEmpty(requests[..^1]);
+            Assert.All(requests[..^1], request => Assert.Equal("handshake", request));
         }
         finally { Directory.Delete(directory, recursive: true); }
     }

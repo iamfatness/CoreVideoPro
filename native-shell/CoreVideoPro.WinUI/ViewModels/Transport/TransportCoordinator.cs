@@ -31,6 +31,7 @@ public sealed class TransportCoordinator
 
     private bool _recordingToggleInFlight;
     private bool _streamToggleInFlight;
+    private bool _takeInFlight;
 
     public TransportCoordinator(
         IMediaCoreBridge bridge,
@@ -82,7 +83,7 @@ public sealed class TransportCoordinator
                 }
 
                 _host.EngineStatus = "Requesting Zoom capture…";
-                _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayload);
+                _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayloadAsync);
                 _host.ZoomCaptureSubscribed = true;
                 _host.NotifySurfacesCaptureSubscribed(true, _bridge.Profile?.Renderer);
                 _host.NotifySurfacesPreviewParticipant(_host.SelectedParticipantId);
@@ -124,44 +125,80 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task TakeAsync()
+    public async Task<TakeResult> TakeAsync()
     {
-        var previousProgramSceneId = _host.ActiveSceneId;
-        var takenSceneId = _host.PreviewSceneId;
-
-        // Cueing media while Preview and Program reference the same scene creates an
-        // off-air draft. A conventional Take must still put that cue on air; the old
-        // scene-id-only CanTake rule disabled the button and stranded the operator.
-        // Commit only the pending draft in this case, then run the normal media
-        // promotion so the held Preview frame restarts from frame zero on Program.
-        if (string.Equals(previousProgramSceneId, takenSceneId, StringComparison.Ordinal) &&
-            _host.HasPendingProgramMediaCue(takenSceneId))
+        if (_takeInFlight) return TakeResult.Failed("A Take is already in progress.");
+        _takeInFlight = true;
+        try
         {
-            _host.CopyPreviewRoutesToScene(takenSceneId);
-        }
-        else
-        {
-            _host.ActiveSceneId = takenSceneId;
-            _host.PreviewSceneId = previousProgramSceneId;
-        }
+            var previousProgramSceneId = _host.ActiveSceneId;
+            var takenSceneId = _host.PreviewSceneId;
+            if (!_host.IsSceneAvailable(previousProgramSceneId) || !_host.IsSceneAvailable(takenSceneId))
+            {
+                const string unavailable = "Take unavailable - select an available Preview scene.";
+                _host.CommandStatus = unavailable;
+                return TakeResult.Failed(unavailable);
+            }
 
-        _host.IncrementProgramMediaPlaybackTakeVersion();
-        _host.PromoteProgramMediaRouteToPlayback();
-        _host.RefreshPreviewRoutingState();
-        _host.CommandStatus = $"{_host.ProgramSceneSummary} taken with {_host.TakeTransitionLabel.ToLowerInvariant()}";
-        _host.OutputStatus = "Program updated";
-
-        if (_bridge.Running)
-        {
+            var sealRollback = _host.CaptureTakeRollback();
+            _host.BeginTakeMutation();
             try
             {
-                await _host.SyncActiveSceneAsync().ConfigureAwait(false);
+                if (previousProgramSceneId == takenSceneId && _host.HasPendingPreviewChanges(takenSceneId))
+                    _host.CopyPreviewRoutesToScene(takenSceneId);
+                else
+                {
+                    _host.ActiveSceneId = takenSceneId;
+                    _host.PreviewSceneId = previousProgramSceneId;
+                }
+                _host.IncrementProgramMediaPlaybackTakeVersion();
+                _host.PromoteProgramMediaRouteToPlayback();
+                _host.RefreshPreviewRoutingState();
             }
-            catch (Exception ex)
+            finally { _host.EndTakeMutation(); }
+            var rollback = sealRollback();
+
+            if (!_bridge.Running)
             {
-                _dispatcher.RunOnUiThread(() => _host.CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
+                const string offline = "Program selected locally; Take was not sent because the media core is offline.";
+                _host.OutputStatus = offline;
+                return TakeResult.Failed(offline);
             }
+            // Swap once. Backpressure retries the resulting state, never the toggle.
+            for (var attempt = 0; attempt < _recordingSyncRetryAttempts; attempt++)
+            {
+                try
+                {
+                    await _host.SyncActiveSceneAsync("take").ConfigureAwait(true);
+                    _host.OutputStatus = "Program updated";
+                    return TakeResult.Success;
+                }
+                catch (MediaCoreSyncInFlightException)
+                {
+                    _host.CommandStatus = "Take waiting for media core...";
+                    if (attempt + 1 < _recordingSyncRetryAttempts)
+                        await Task.Delay(_recordingSyncRetryDelayMs).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    var restored = rollback();
+                    if (restored) _host.RequestTakeReconciliation();
+                    var failure = restored
+                        ? $"Take was not confirmed; previous local Program restored. Verify live output before retrying. {ex.Message}"
+                        : $"Take was not confirmed; newer local edits preserved. Verify live output. {ex.Message}";
+                    _host.CommandStatus = failure;
+                    return TakeResult.Failed(failure);
+                }
+            }
+            var rolledBack = rollback();
+            if (rolledBack) _host.RequestTakeReconciliation();
+            var exhausted = rolledBack
+                ? "Take could not reach the busy media core. Previous local Program restored; retry Take."
+                : "Take could not reach the busy media core; newer local edits preserved.";
+            _host.CommandStatus = exhausted;
+            return TakeResult.Failed(exhausted);
         }
+        finally { _takeInFlight = false; }
     }
 
     public Task ToggleRecordingAsync() => SetRecordingAsync(!_host.Recording);

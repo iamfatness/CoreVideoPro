@@ -164,6 +164,7 @@ public static class NativeMediaCoreStateMapper
 
         return baseSnapshot with
         {
+            PreviewScene = wire.PreviewScene,
             SceneId = wire.SceneId ?? baseSnapshot.SceneId,
             RouteCount = wire.RouteCount ?? baseSnapshot.RouteCount,
             ParticipantTransformCount = wire.TransformCount ?? baseSnapshot.ParticipantTransformCount,

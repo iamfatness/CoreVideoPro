@@ -31,6 +31,13 @@ public sealed record ControlState
 
     public string ActiveSceneId { get; init; } = string.Empty;
     public string PreviewSceneId { get; init; } = string.Empty;
+    // Native observations are nullable when no running core snapshot is available.
+    // The original fields above remain operator/local state for compatibility.
+    public string? NativeActiveSceneId { get; init; }
+    public string? NativePreviewSceneId { get; init; }
+    public string? NativeLowerThirdPhase { get; init; }
+    public bool? NativeLowerThirdVisible { get; init; }
+    public int? NativeProgramFrameCount { get; init; }
     public string ViewMode { get; init; } = string.Empty;
 
     public string MultiviewLayoutMode { get; init; } = string.Empty;

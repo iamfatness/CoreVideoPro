@@ -31,6 +31,10 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     partial void OnRecordingRequestedChanged(bool value) => OnPropertyChanged(nameof(RecordingLabel));
     partial void OnStreamingRequestedChanged(bool value) => OnPropertyChanged(nameof(StreamingLabel));
 
+    internal NativeMediaCoreStateSnapshot? NativeControlSnapshot => _bridge.Running ? _bridge.LastSnapshot : null;
+
+    internal Task<TakeResult> TakeForControlAsync() => _transportCoordinator.TakeAsync();
+
     internal Task SetRecordingAsync(bool requested) => _transportCoordinator.SetRecordingAsync(requested);
     internal Task SetStreamingAsync(bool requested) => _transportCoordinator.SetStreamingAsync(requested);
     internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || Settings.IsInMeeting);
@@ -147,9 +151,77 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     string ITransportHost.TakeTransitionLabel => TakeTransitionLabel;
 
-    bool ITransportHost.HasPendingProgramMediaCue(string sceneId) =>
+    bool ITransportHost.IsSceneAvailable(string? sceneId) =>
+        !string.IsNullOrWhiteSpace(sceneId) && Scenes.Any(scene => scene.Id == sceneId);
+
+    public bool HasPendingPreviewTake =>
         _livePreviewDraft is not null &&
-        HasPendingProgramMediaCue(GetMutableRoutes(sceneId), _livePreviewDraft);
+        string.Equals(_livePreviewDraftSceneId, ActiveSceneId, StringComparison.Ordinal) &&
+        SceneTakeRules.HasPendingChanges(GetMutableRoutes(ActiveSceneId), _livePreviewDraft);
+
+    bool ITransportHost.HasPendingPreviewChanges(string sceneId) =>
+        string.Equals(sceneId, _livePreviewDraftSceneId, StringComparison.Ordinal) && HasPendingPreviewTake;
+
+    private int _takeMutationDepth;
+    void ITransportHost.BeginTakeMutation() => _takeMutationDepth++;
+    void ITransportHost.EndTakeMutation() => _takeMutationDepth--;
+    void ITransportHost.RequestTakeReconciliation() => QueueProductionSyncRetry("take-rollback");
+
+    // Capture originals now, then seal ownership after the local Take mutations.
+    // A rollback must not erase edits made while the media-core reply was pending.
+    Func<Func<bool>> ITransportHost.CaptureTakeRollback()
+    {
+        var program = ActiveSceneId;
+        var preview = PreviewSceneId;
+        var programRoutes = GetMutableRoutes(program).Select(route => route.Clone()).ToList();
+        var previewRoutes = GetMutableRoutes(preview).Select(route => route.Clone()).ToList();
+        var draft = _livePreviewDraft?.Select(route => route.Clone()).ToList();
+        var draftScene = _livePreviewDraftSceneId;
+        var playbackVersion = _programMediaPlaybackTakeVersion;
+        return () =>
+        {
+            var attemptedProgram = ActiveSceneId;
+            var attemptedPreview = PreviewSceneId;
+            var expectedProgram = GetMutableRoutes(program).Select(route => route.Clone()).ToList();
+            var expectedPreview = GetMutableRoutes(preview).Select(route => route.Clone()).ToList();
+            var expectedDraft = _livePreviewDraft?.Select(route => route.Clone()).ToList();
+            return () =>
+            {
+                if (!((ITransportHost)this).IsSceneAvailable(program) ||
+                    !((ITransportHost)this).IsSceneAvailable(preview) ||
+                    ActiveSceneId != attemptedProgram ||
+                    SceneTakeRules.HasPendingChanges(expectedProgram, GetMutableRoutes(program)) ||
+                    SceneTakeRules.HasPendingChanges(expectedPreview, GetMutableRoutes(preview)) ||
+                    SceneTakeRules.HasPendingChanges(expectedDraft ?? [], _livePreviewDraft ?? []))
+                    return false;
+                _takeMutationDepth++;
+                try
+                {
+                    var stillOwnsPreview = PreviewSceneId == attemptedPreview;
+                    ActiveSceneId = program;
+                    if (stillOwnsPreview) PreviewSceneId = preview;
+                    GetMutableRoutes(program).Clear();
+                    GetMutableRoutes(program).AddRange(programRoutes);
+                    if (program != preview)
+                    {
+                        GetMutableRoutes(preview).Clear();
+                        GetMutableRoutes(preview).AddRange(previewRoutes);
+                    }
+                    if (stillOwnsPreview)
+                    {
+                        _livePreviewDraft = draft;
+                        _livePreviewDraftSceneId = draftScene;
+                    }
+                    _programMediaPlaybackTakeVersion = playbackVersion;
+                    RefreshPreviewRoutingState();
+                    OnPropertyChanged(nameof(CanTake));
+                    TakeCommand.NotifyCanExecuteChanged();
+                    return true;
+                }
+                finally { _takeMutationDepth--; }
+            };
+        };
+    }
 
     void ITransportHost.CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesToScene(sceneId);
 
@@ -166,7 +238,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     Task<NativeMediaCoreStateSnapshot> ITransportHost.SyncActiveSceneAsync(string? reason) =>
         SyncActiveSceneAsync(reason);
 
-    Dictionary<string, object?> ITransportHost.BuildSpinePayload() => BuildSpinePayload();
+    Task<Dictionary<string, object?>> ITransportHost.BuildSpinePayloadAsync(CancellationToken cancellationToken) => CaptureUiOwnedAsync(BuildSpinePayload, cancellationToken);
 
     void ITransportHost.UnsubscribeZoomCapture(string status) => UnsubscribeZoomCapture(status);
 

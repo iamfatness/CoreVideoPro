@@ -130,12 +130,14 @@ public sealed partial class StudioViewModel : IMagicSceneHost
 
     bool IMagicSceneHost.IsInMeeting => Settings.IsInMeeting;
 
+    bool IMagicSceneHost.IsMediaCoreRunning => _bridge.Running;
+
     string IMagicSceneHost.CommandStatus
     {
         set => CommandStatus = value;
     }
 
-    Task IMagicSceneHost.TakeAsync() => TakeAsync();
+    Task IMagicSceneHost.TakeAsync() => _transportCoordinator.TakeAsync();
 
     void IMagicSceneHost.SchedulePreviewRoutingRefresh() => SchedulePreviewRoutingRefresh();
 

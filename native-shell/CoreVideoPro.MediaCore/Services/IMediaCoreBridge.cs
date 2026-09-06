@@ -41,7 +41,7 @@ public interface IMediaCoreBridge : IAsyncDisposable
     void Stop();
 
     // --- Zoom spine sync installer (the transport Engine toggle drives this) ---
-    void ConfigureZoomSpineSync(Func<Dictionary<string, object?>>? payloadFactory);
+    void ConfigureZoomSpineSync(Func<CancellationToken, Task<Dictionary<string, object?>>>? payloadFactory);
 
     // --- sync / poll ---
     Task<NativeMediaCoreStateSnapshot> SyncAsync(

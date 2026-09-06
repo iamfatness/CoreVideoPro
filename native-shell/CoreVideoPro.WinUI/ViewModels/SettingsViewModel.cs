@@ -739,7 +739,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             _drainOAuthCallback?.Invoke();
             await RefreshOAuthStatusAsync().ConfigureAwait(false);
 
-            if (!_bridge.Running)
+            if (!_bridge.Running || _bridge.Profile is null)
             {
                 SetJoinProgress(ZoomMeetingState.Joining, "Preparing Zoom…");
                 LaunchLog.Write("zoom-join: starting media core");
@@ -792,6 +792,9 @@ public sealed partial class SettingsViewModel : ObservableObject
                 IsWebinar,
                 sdkJwt,
                 userZak).ConfigureAwait(false);
+
+            snapshot = await ZoomJoinReconciliation.ObserveLateJoinAsync(
+                snapshot, token => _bridge.GetZoomSnapshotAsync(token)).ConfigureAwait(false);
 
             LaunchLog.Write(
                 $"zoom-join: snapshot meetingState={snapshot.MeetingState} participants={snapshot.Participants.Count} warnings={(snapshot.Warnings?.Count ?? 0)}");

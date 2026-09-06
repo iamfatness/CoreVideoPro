@@ -401,7 +401,7 @@ public sealed class ShowInputsCoordinatorTests
         public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 #pragma warning restore CS0067
 
-        public void ConfigureZoomSpineSync(Func<Dictionary<string, object?>>? payloadFactory) { }
+        public void ConfigureZoomSpineSync(Func<CancellationToken, Task<Dictionary<string, object?>>>? payloadFactory) { }
 
         public Task<NativeMediaCoreProfile?> StartAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<NativeMediaCoreProfile?>(null);

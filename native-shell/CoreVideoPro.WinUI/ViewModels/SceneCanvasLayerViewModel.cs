@@ -160,6 +160,14 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     partial void OnModeChanged(string value)
     {
+        // Choosing an automatic route is explicit intent to stop pinning a source.
+        // A mode refresh during snapshot hydration must not make that decision.
+        if (!_suppressChangeNotification && value is "active-speaker" or "screen-share" or "spotlight" or "none")
+        {
+            _suppressChangeNotification = true;
+            try { ParticipantId = string.Empty; }
+            finally { _suppressChangeNotification = false; }
+        }
         RefreshSourceOptions();
         OnPropertyChanged(nameof(IsParticipantPickerEnabled));
         if (_suppressChangeNotification)
@@ -169,6 +177,17 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
         ApplyRoute();
         _onChanged(this);
+    }
+
+    public bool TrySelectSourceOption(RouteSelectOption? option) =>
+        option is not null && TrySelectSource(option.Value);
+
+    public bool TrySelectSource(string? value)
+    {
+        if (_suppressChangeNotification || value is null ||
+            !ParticipantOptions.Any(option => option.Value == value)) return false;
+        ParticipantId = value;
+        return true;
     }
 
     partial void OnParticipantIdChanged(string value)
@@ -248,7 +267,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             _showInputs = showInputs;
             _mediaAssets = mediaAssets;
             Mode = SceneRoutingService.ModeToWire(_route.Mode);
-            ParticipantOptions = BuildSourceOptions(Mode, participants, captureDevices, showInputs, mediaAssets);
+            RefreshSourceOptions();
             ParticipantId = ResolveSourceId(_route, participants, captureDevices, showInputs, mediaAssets);
             AudioRole = SceneRoutingService.AudioRoleToWire(_route.AudioRole);
             X = _route.CanvasRect?.X ?? 0;
@@ -266,7 +285,6 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             OnPropertyChanged(nameof(SourceColorGradeId));
             OnPropertyChanged(nameof(ColorGradeSummary));
             OnPropertyChanged(nameof(FramingSummary));
-            OnPropertyChanged(nameof(ParticipantOptions));
         }
         finally
         {
@@ -442,12 +460,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     private void RefreshSourceOptions()
     {
-        ParticipantOptions = BuildSourceOptions(Mode, _participants, _captureDevices, _showInputs, _mediaAssets);
-        if (!ParticipantOptions.Any(option => option.Value == ParticipantId))
-        {
-            ParticipantId = ParticipantOptions.FirstOrDefault()?.Value ?? string.Empty;
-        }
-
+        var options = BuildSourceOptions(Mode, _participants, _captureDevices, _showInputs, _mediaAssets);
+        // Replacing an unchanged list makes ComboBox clear/reselect its value.
+        // Preserve the selection and identity of missing/offline sources as well.
+        if (ParticipantOptions.Count == options.Count &&
+            ParticipantOptions.Zip(options).All(pair => pair.First.Value == pair.Second.Value && pair.First.Label == pair.Second.Label))
+            return;
+        ParticipantOptions = options;
         OnPropertyChanged(nameof(ParticipantOptions));
     }
 
@@ -476,6 +495,10 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         IReadOnlyList<ShowInputSlot> showInputs,
         IReadOnlyList<MediaAsset> mediaAssets)
     {
+        // Automatic routing owns source resolution; cached participant IDs are not pins.
+        if (route.Mode is SourceRouteMode.ActiveSpeaker or SourceRouteMode.ScreenShare or SourceRouteMode.None)
+            return string.Empty;
+
         // R1: role-targeted routes pick as "role:<id>" — the participant is
         // resolved from the role holder at sync time, never stored here.
         if (!string.IsNullOrWhiteSpace(route.ProductionRoleId))
@@ -483,21 +506,19 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             return ProductionRoleService.ToOptionValue(route.ProductionRoleId);
         }
 
-        if (route.ShowInputSlotNumber is { } slotNumber &&
-            showInputs.Any(slot => slot.SlotNumber == slotNumber))
+        if (route.ShowInputSlotNumber is { } slotNumber)
         {
             return FormatShowInputValue(slotNumber);
         }
 
-        if (ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId) &&
-            mediaAssets.Any(asset => string.Equals(asset.Id, mediaAssetId, StringComparison.Ordinal)))
+        if (ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId))
         {
             return FormatMediaAssetValue(mediaAssetId);
         }
 
         return route.Mode == SourceRouteMode.CaptureDevice
-            ? FormatCaptureDeviceValue(route.CaptureDeviceId ?? captureDevices.FirstOrDefault()?.Id ?? string.Empty)
-            : route.ParticipantId ?? participants.FirstOrDefault()?.Id ?? string.Empty;
+            ? FormatCaptureDeviceValue(route.CaptureDeviceId ?? string.Empty)
+            : route.ParticipantId ?? string.Empty;
     }
 
     private static IReadOnlyList<RouteSelectOption> BuildSourceOptions(
@@ -547,7 +568,15 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
                 Label = $"Role: {role.Label}"
             });
 
-        return showInputOptions
+        var automaticLabel = mode switch
+        {
+            "active-speaker" => "Automatic - Active Speaker",
+            "screen-share" => "Automatic - Screen Share",
+            "spotlight" => "Automatic - Spotlight",
+            _ => "Choose a source"
+        };
+        return new[] { new RouteSelectOption { Value = string.Empty, Label = automaticLabel } }
+            .Concat(showInputOptions)
             .Concat(roleOptions)
             .Concat(captureOptions)
             .Concat(mediaOptions)

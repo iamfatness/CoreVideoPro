@@ -51,6 +51,9 @@
                          HorizontalAlignment="Center"
                          VerticalAlignment="Center">
                     <Grid x:Name="DesignSurface" Width="1600" Height="900" Background="#0A1016">
+                        <cvcontrols:VideoSurfaceHost x:Name="CompositePreview"
+                                                     Visibility="Collapsed"
+                                                     IsHitTestVisible="False" />
                         <cvcontrols:MediaAssetPreviewHost x:Name="BackgroundPreview"
                                                           Visibility="Collapsed"
                                                           IsHitTestVisible="False"
