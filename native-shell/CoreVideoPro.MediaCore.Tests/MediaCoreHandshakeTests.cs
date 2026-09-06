@@ -9,6 +9,44 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class MediaCoreHandshakeTests
 {
     [Fact]
+    public async Task RequestOnlyChildCanHandshakeWhileOrdinaryCommandsRemainGated()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "corevideo-request-handshake-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var script = Path.Combine(directory, "request-only.cjs");
+            var trace = Path.Combine(directory, "trace.txt");
+            await File.WriteAllTextAsync(script, """
+                const fs = require('node:fs'), readline = require('node:readline');
+                readline.createInterface({input:process.stdin}).on('line', line => {
+                  const message = JSON.parse(line);
+                  fs.appendFileSync(process.env.COREVIDEO_HANDSHAKE_TRACE, message.type + '\n');
+                  const response = {id:message.id,ok:true,type:message.type};
+                  if(message.type === 'handshake') {
+                    response.protocolVersion = {major:1,minor:0};
+                    response.profile = {name:'request-only',renderer:'software',maxProgramResolution:'1920x1080'};
+                  }
+                  console.log(JSON.stringify(response));
+                });
+                """);
+            await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
+            {
+                Command = "node", Args = [script], WorkingDirectory = Path.GetTempPath(),
+                Environment = new Dictionary<string, string> { ["COREVIDEO_HANDSHAKE_TRACE"] = trace },
+                HandshakeRequestTimeoutMs = 1000, RequestTimeoutMs = 3000, FrameDrainIntervalMs = 100000
+            });
+            var startup = supervisor.StartAsync();
+            var blocked = await Assert.ThrowsAsync<InvalidOperationException>(() => supervisor.PingAsync());
+            Assert.Contains("handshake", blocked.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("request-only", (await startup.WaitAsync(TimeSpan.FromSeconds(5)))?.Name);
+            Assert.True(await supervisor.PingAsync());
+            Assert.Equal("handshake\nping\n", await File.ReadAllTextAsync(trace));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
     public async Task QueuedCommandCannotCrossIntoReplacementProcess()
     {
         var directory = Path.Combine(Path.GetTempPath(), "corevideo-generation-" + Guid.NewGuid().ToString("N"));

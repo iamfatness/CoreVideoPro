@@ -1352,6 +1352,10 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
 
         var tcs = new TaskCompletionSource<JsonDocument>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestType = payload.TryGetValue("type", out var typeValue) ? typeValue as string : null;
+        // A child may only advertise its profile in response to an explicit
+        // handshake. Keep ordinary commands gated while allowing that exchange.
+        var isHandshake = requestType == "handshake";
         Process requestProcess;
         StreamWriter requestStdin;
         lock (_gate)
@@ -1361,7 +1365,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             {
                 throw new InvalidOperationException("Media core is not running.");
             }
-            if (_profile is null) throw new InvalidOperationException("Media core handshake has not completed.");
+            if (_profile is null && !isHandshake) throw new InvalidOperationException("Media core handshake has not completed.");
 
             requestProcess = _process;
             requestStdin = _stdin;
@@ -1370,7 +1374,6 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeoutMs ?? _options.RequestTimeoutMs);
-        var requestType = payload.TryGetValue("type", out var typeValue) ? typeValue as string : null;
         await using var registration = timeoutCts.Token.Register(() =>
         {
             lock (_gate)
@@ -1394,7 +1397,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 lock (_gate)
                 {
                     if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
-                    if (_profile is null) throw new InvalidOperationException("Media core handshake has not completed.");
+                    if (_profile is null && !isHandshake) throw new InvalidOperationException("Media core handshake has not completed.");
                     if (!ReferenceEquals(_process, requestProcess) || !ReferenceEquals(_stdin, requestStdin))
                         throw new InvalidOperationException("Media core restarted before the queued command was written; reconcile state before retrying.");
                 }
