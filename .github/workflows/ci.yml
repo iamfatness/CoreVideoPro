@@ -285,6 +285,11 @@ jobs:
       - run: npm ci
       - name: Native media-core stub gate
         run: npm run test:native-media-core
+      - name: Restore and provision WinUI test runtime
+        run: |
+          dotnet restore native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/provision-winui-test-runtime.ps1
       - name: MediaCore, Control, WinUI and bridge tests
         run: npm run test:native-shell
       - name: Upload Windows test results
