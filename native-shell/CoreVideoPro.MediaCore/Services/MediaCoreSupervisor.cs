@@ -1158,31 +1158,45 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private void OnChildExited(object? sender, EventArgs e)
     {
+        MediaCoreHealth health;
+        bool exhausted;
         lock (_gate)
         {
             if (!ReferenceEquals(_process, sender)) return;
             RejectAll(new InvalidOperationException("Media core exited."));
-            if (_stopped)
-            {
-                return;
-            }
+            if (_stopped) return;
 
             _restarts++;
             _recovering = true;
             RecordCrashEvent(sender as Process, _restarts);
-            RaiseHealth();
-            StatusChanged?.Invoke($"Media core recovering (restart {_restarts})");
-
-            if (_restarts > _options.MaxRestarts)
-            {
-                _process = null;
-                StatusChanged?.Invoke("Media core failed after repeated restarts.");
-                return;
-            }
-
-            SpawnChild();
+            health = Health;
+            exhausted = _restarts > _options.MaxRestarts;
+            if (exhausted) _process = null;
         }
 
+        // Bridge health subscribers stop their periodic sync under the bridge
+        // gate. That same gate protects generation validation + supervisor
+        // submission, so invoking them under _gate reverses the lock order.
+        HealthChanged?.Invoke(health);
+        lock (_gate)
+        {
+            if (_stopped || _restarts != health.RestartCount ||
+                (!exhausted && !ReferenceEquals(_process, sender))) return;
+        }
+        StatusChanged?.Invoke($"Media core recovering (restart {health.RestartCount})");
+        if (exhausted)
+        {
+            StatusChanged?.Invoke("Media core failed after repeated restarts.");
+            return;
+        }
+
+        lock (_gate)
+        {
+            // A subscriber or operator can Stop/replace the child while events
+            // are delivered. Never restart the retired generation afterward.
+            if (_stopped || !ReferenceEquals(_process, sender)) return;
+            SpawnChild();
+        }
         _ = RecoverChildAsync();
     }
 

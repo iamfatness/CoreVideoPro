@@ -131,3 +131,12 @@ hung-cleanup watchdog behavior, dedicated resize-handle behavior, a 30-minute
 soak, or the full recording/streaming output chain. On meeting rejoin, the SDK
 recording notice was acknowledged and capture was explicitly enabled for testing;
 automatic capture after rejoin is not claimed as verified.
+
+## Pre-merge recovery review
+
+Independent review found a lock inversion between periodic bridge submission and
+supervisor crash callbacks. Crash health/status callbacks now run outside the
+supervisor gate, with child identity and Stop intent checked again before respawn.
+Two deterministic regressions cover concurrent bridge/supervisor acquisition and
+a subscriber stopping recovery. The full MediaCore suite passed 503 cases after
+this repair. The earlier live candidate results do not include this final repair.
