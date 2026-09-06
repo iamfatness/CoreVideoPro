@@ -311,39 +311,44 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     public async Task<NativeMediaCoreProfile?> HandshakeAsync(CancellationToken cancellationToken = default)
     {
+        Process handshakeProcess;
         lock (_gate)
         {
-            if (_profile is not null)
-            {
-                return _profile;
-            }
+            if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
+            if (_profile is not null) return _profile;
+            handshakeProcess = _process ?? throw new InvalidOperationException("Media core is not running.");
         }
 
-        var response = await SendAsync(
+        using var response = await SendAsync(
             new Dictionary<string, object?>
             {
                 ["id"] = NextId(),
                 ["type"] = "handshake"
             },
             cancellationToken,
-            _options.HandshakeRequestTimeoutMs).ConfigureAwait(false);
+            _options.HandshakeRequestTimeoutMs,
+            handshakeProcess).ConfigureAwait(false);
 
-        using (response)
+        NativeMediaCoreProfile? profile;
+        try { profile = CoreProtocolParser.TryParseHandshakeProfile(response); }
+        catch (InvalidOperationException ex)
         {
-            var profile = CoreProtocolParser.TryParseHandshakeProfile(response);
+            RejectHandshake(handshakeProcess, ex);
+            throw;
+        }
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_process, handshakeProcess))
+                throw new InvalidOperationException("Media core changed before handshake completed.");
+            if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
             if (profile is not null)
             {
-                lock (_gate)
-                {
-                    _profile = profile;
-                    _recovering = false;
-                }
-
-                ProfileChanged?.Invoke(profile);
+                _profile = profile;
+                _recovering = false;
             }
-
-            return profile;
         }
+        if (profile is not null) ProfileChanged?.Invoke(profile);
+        return profile;
     }
 
     public async Task<RawCaptureSnapshot> JoinZoomAsync(
@@ -1120,31 +1125,10 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             }
 
             bool accepted;
-            try { accepted = TryAcceptBootstrapHandshake(document); }
+            try { accepted = TryAcceptBootstrapHandshake(document, process); }
             catch (InvalidOperationException ex)
             {
-                StreamWriter? rejectedStdin;
-                lock (_gate)
-                {
-                    if (!ReferenceEquals(_process, process)) { document.Dispose(); return; }
-                    _handshakeFailure = ex.Message;
-                    _profile = null;
-                    _stopped = true;
-                    _recovering = false;
-                    StopFrameDrain();
-                    RejectAll(ex);
-                    // Incompatibility is terminal, not a transient child crash.
-                    // Closing the rejected process must not trigger auto-restart.
-                    rejectedStdin = _stdin;
-                    _stdin = null;
-                    _process = null;
-                }
-                // Process exit/disposal can wait for Exited handlers. Never do
-                // that under _gate, which those handlers also acquire.
-                process.Exited -= OnChildExited;
-                DisposeChild(process, rejectedStdin);
-                RaiseHealth();
-                StatusChanged?.Invoke(ex.Message);
+                RejectHandshake(process, ex);
                 document.Dispose();
                 return;
             }
@@ -1156,6 +1140,31 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
             document.Dispose();
         }
+    }
+
+    private void RejectHandshake(Process process, InvalidOperationException error)
+    {
+        StreamWriter? rejectedStdin;
+        lock (_gate)
+        {
+            // A completed response from an older child cannot reject its replacement.
+            if (!ReferenceEquals(_process, process)) return;
+            _handshakeFailure = error.Message;
+            _profile = null;
+            _stopped = true;
+            _recovering = false;
+            StopFrameDrain();
+            RejectAll(error);
+            rejectedStdin = _stdin;
+            _stdin = null;
+            _process = null;
+        }
+        // Exit handlers acquire _gate. Dispose outside it, and never auto-restart
+        // a child rejected for protocol incompatibility.
+        process.Exited -= OnChildExited;
+        DisposeChild(process, rejectedStdin);
+        RaiseHealth();
+        StatusChanged?.Invoke(error.Message);
     }
 
     private void OnChildExited(object? sender, EventArgs e)
@@ -1318,7 +1327,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         return $"Media core exited before handshake completed (exit {exitCode}).";
     }
 
-    private bool TryAcceptBootstrapHandshake(JsonDocument document)
+    private bool TryAcceptBootstrapHandshake(JsonDocument document, Process process)
     {
         if (!MediaCoreHandshakeRules.IsUnsolicitedBootstrapHandshake(document.RootElement))
         {
@@ -1333,6 +1342,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
         lock (_gate)
         {
+            if (!ReferenceEquals(_process, process) || _handshakeFailure is not null) return false;
             _profile = profile;
             _recovering = false;
         }
@@ -1344,7 +1354,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private async Task<JsonDocument> SendAsync(
         Dictionary<string, object?> payload,
         CancellationToken cancellationToken,
-        int? timeoutMs = null)
+        int? timeoutMs = null,
+        Process? expectedProcess = null)
     {
         if (!payload.TryGetValue("id", out var idValue) || idValue is not string id)
         {
@@ -1367,6 +1378,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             }
             if (_profile is null && !isHandshake) throw new InvalidOperationException("Media core handshake has not completed.");
 
+            if (expectedProcess is not null && !ReferenceEquals(_process, expectedProcess))
+                throw new InvalidOperationException("Media core changed before handshake request was sent.");
             requestProcess = _process;
             requestStdin = _stdin;
             _pending[id] = tcs;
