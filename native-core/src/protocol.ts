@@ -1,3 +1,5 @@
+export type { OutputLifecycle, OperationStatus, ProtocolVersion, ProtocolFailure } from './generated/lifecycle.js';
+
 export type MediaCoreRouteMode = "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
 export type MediaCoreAudioRole = "mix" | "isolated" | "audience";
 export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
@@ -289,6 +291,7 @@ export type MediaCoreRecordingStream = {
 };
 
 export type MediaCoreRecordingSession = {
+  lifecycle?: import("./generated/lifecycle.js").OutputLifecycle;
   sessionId: string;
   active: boolean;
   status: MediaCoreRecordingStatus;

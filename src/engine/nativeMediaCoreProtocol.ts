@@ -446,6 +446,7 @@ export type NativeMediaCoreRecordingStream = {
 };
 
 export type NativeMediaCoreRecordingSession = {
+  lifecycle?: import("./generated/lifecycle").OutputLifecycle;
   sessionId: string;
   active: boolean;
   status: "recording" | "warning" | "stopped" | "failed";

@@ -1,3 +1,4 @@
+import { recordingReadModel } from "./recordingReadModel";
 import type {
   FeedHealth,
   OutputDestinationState,
@@ -100,6 +101,7 @@ export function createSupportBundle(
 
 function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: ProductionState): SupportBundleMediaCore {
   const recordingManifest = state ? buildRecordingManifest(state, snapshot) : undefined;
+  const observedRecording = recordingReadModel(snapshot.recording);
   return {
     sceneId: snapshot.sceneId,
     renderPlanId: snapshot.renderPlan.renderPlanId,
@@ -158,7 +160,10 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: Prod
     },
     recording: snapshot.recording
       ? {
-          status: snapshot.recording.status,
+          status: observedRecording.status,
+          active: observedRecording.active,
+          lifecycle: snapshot.recording.lifecycle,
+          finalized: observedRecording.finalized,
           writerStatus: snapshot.recording.writerStatus,
           totalFramesWritten: snapshot.recording.totalFramesWritten,
           totalDroppedFrames: snapshot.recording.totalDroppedFrames,
@@ -183,6 +188,8 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: Prod
           sessionId: recordingManifest.sessionId,
           status: recordingManifest.status,
           active: recordingManifest.active,
+          lifecycle: recordingManifest.lifecycle,
+          finalized: recordingManifest.finalized,
           sceneId: recordingManifest.sceneId,
           targetFolder: recordingManifest.targetFolder,
           filenamePrefix: recordingManifest.filenamePrefix,

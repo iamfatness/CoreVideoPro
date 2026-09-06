@@ -1,3 +1,4 @@
+import { recordingReadModel } from "./engine/recordingReadModel";
 import {
   Activity,
   AudioLines,
@@ -228,6 +229,7 @@ export function App({ engines, runtime }: AppProps) {
   const [supportBundle, setSupportBundle] = useState<SupportBundle | undefined>();
   const [aiStudio, setAiStudio] = useState<AiStudioState>();
   const [mediaCoreSnapshot, setMediaCoreSnapshot] = useState<NativeMediaCoreStateSnapshot>();
+  const observedRecording = recordingReadModel(mediaCoreSnapshot?.recording, production.recording);
   const [studioViewMode, setStudioViewMode] = useState<StudioViewMode>("program");
   const [mockEngineStopped, setMockEngineStopped] = useState(false);
   const [sdkDiagnosticsExpanded, setSdkDiagnosticsExpanded] = useState(false);
@@ -2512,7 +2514,7 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Caption track" value={mediaCoreSnapshot?.captionTrack.status ?? "Pending"} />
               <ControlReadout label="Caption cue" value={mediaCoreSnapshot?.captionTrack.currentCue?.text ?? "None"} />
               <ControlReadout label="Caption latency" value={`${mediaCoreSnapshot?.captionTrack.latencyMs ?? 0} ms`} />
-              <ControlReadout label="Recording" value={mediaCoreSnapshot?.recording?.status ?? "Off"} />
+              <ControlReadout label="Recording" value={observedRecording.status === "idle" ? "Off" : observedRecording.status} />
               <ControlReadout label="Recorded frames" value={`${mediaCoreSnapshot?.recording?.totalFramesWritten ?? 0}`} />
               <ControlReadout label="Disk rate" value={mediaCoreSnapshot?.recording ? `${mediaCoreSnapshot.recording.estimatedDiskRateMBps} MB/s` : "0 MB/s"} />
               <ControlReadout label="Output health" value={mediaCoreSnapshot?.outputHealth[0]?.status ?? "Idle"} />
@@ -4570,9 +4572,9 @@ export function App({ engines, runtime }: AppProps) {
             Take
             <span className="caret" aria-hidden="true" />
           </button>
-          <button className={`transport-button record-button ${production.recording ? "active" : ""}`} onClick={toggleRecording}>
-            {production.recording ? <span className="live-dot" /> : <CircleDot size={16} />}
-            {production.recording ? "Recording" : "Record"}
+          <button className={`transport-button record-button ${observedRecording.active ? "active" : ""}`} onClick={toggleRecording}>
+            {observedRecording.active ? <span className="live-dot" /> : <CircleDot size={16} />}
+            {observedRecording.label}
             <span className="caret" aria-hidden="true" />
           </button>
           <button className={`transport-button stream-button ${production.streaming ? "active" : ""}`} onClick={toggleStreaming}>
