@@ -110,10 +110,12 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
 }
 
 bool ZoomEngineRuntime::configured() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   return !config_.executablePath.empty();
 }
 
 void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload) {
+  std::lock_guard<std::mutex> lock(mutex_);
   config_ = loadConfig();
   const auto payloadJwt = payload.getString("sdkJwt");
   const auto payloadZak = payload.getString("userZak");
@@ -126,7 +128,6 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     config_.userZak = payloadZak;
   }
   if (!payloadJwt.empty() && initialized_) {
-    std::lock_guard<std::mutex> lock(mutex_);
     if (process_ && process_->running()) {
       enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
     }
@@ -142,16 +143,37 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
   }
 }
 
-rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
+rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<bool()>& cancelled) {
   if (!configured()) {
     return nullptr;
   }
 
+  if (cancelled && cancelled()) return nullptr;
+  bool restart;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    restart = restartBeforeJoin_;
+    restartBeforeJoin_ = false;
+    if (restart) {
+      ++processGeneration_;
+      purgeQueuedEngineSendsLocked("join after leave");
+    }
+  }
+  if (restart) {
+    // Rejoin uses a fresh SDK process. Old callbacks have no operation identity,
+    // so they must be retired before accepting results for the next meeting.
+    stopReader(); // no coreMutex or runtime mutex held while terminating/joining
+    std::lock_guard<std::mutex> lock(mutex_);
+    process_.reset();
+    initialized_ = false;
+  }
+  if (cancelled && cancelled()) return nullptr;
   applyJoinCredentialsFromPayload(payload);
 
   const auto meetingId = meetingIdFromJoinPayload(payload);
   if (meetingId.empty()) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
     return rpc::Json::Object{
         {"meetingState", "error"},
         {"participants", rpc::Json::Array{}},
@@ -160,14 +182,17 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     };
   }
 
-  if (!ensureStarted()) {
+  if (!ensureStarted(cancelled)) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
     return rawCaptureSnapshotLocked();
   }
 
   bool waitForAuth = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
+    acceptJoinEvents_ = true;
     if (!process_ || !process_->running()) {
       return rawCaptureSnapshotLocked();
     }
@@ -194,6 +219,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     while (std::chrono::steady_clock::now() < authDeadline) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (cancelled && cancelled()) return nullptr;
         if (state_.sdkAuthenticated()) {
           authReady = true;
           break;
@@ -206,6 +232,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     }
     if (!authReady) {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (cancelled && cancelled()) return nullptr;
       state_.apply({ZoomEngineEventKind::Error, "error", "", "auth", "Timed out waiting for Zoom SDK authentication."});
       return rawCaptureSnapshotLocked();
     }
@@ -213,6 +240,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
     ZoomEngineJoinCommand command;
     command.meetingId = meetingId;
     command.displayName = payload.getString("displayName", "CoreVideo Pro");
@@ -230,6 +258,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
   while (std::chrono::steady_clock::now() < deadline) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (cancelled && cancelled()) return nullptr;
       const auto snapshot = state_.snapshot();
       if (snapshot.meetingState == "in-meeting" || snapshot.meetingState == "error") {
         return rawCaptureSnapshotLocked();
@@ -239,6 +268,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  if (cancelled && cancelled()) return nullptr;
   state_.apply({ZoomEngineEventKind::Error, "error", "", "join", "Timed out waiting for Zoom meeting join result."});
   return rawCaptureSnapshotLocked();
 }
@@ -249,6 +279,8 @@ rpc::Json ZoomEngineRuntime::leave() {
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  acceptJoinEvents_ = false;
+  restartBeforeJoin_ = true;
   if (process_ && process_->running()) {
     enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
   }
@@ -562,7 +594,7 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
   return frames;
 }
 
-bool ZoomEngineRuntime::ensureStarted() {
+bool ZoomEngineRuntime::ensureStarted(const std::function<bool()>& cancelled) {
   std::shared_ptr<ZoomEngineProcessClient> client;
   std::string executablePath;
   int connectTimeoutMs = 0;
@@ -593,14 +625,15 @@ bool ZoomEngineRuntime::ensureStarted() {
   // spawn — the studio keeps compositing while the engine boots. Together with
   // the RPC server routing zoom-join around coreMutex, this closes the
   // "whole studio freezes for the length of every join" P0.
-  const bool started = client->start({executablePath, connectTimeoutMs});
+  const bool started = client->start({executablePath, connectTimeoutMs, {}, cancelled});
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (processGeneration_ != generationAtStart) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if ((cancelled && cancelled()) || processGeneration_ != generationAtStart) {
     // Superseded mid-start (test process installed / another restart): discard
     // the freshly spawned process rather than clobbering the newer one.
-    client->stop();
-    return process_ && process_->running();
+    lock.unlock();
+    client->terminate();
+    return false;
   }
   if (!started) {
     state_.apply({ZoomEngineEventKind::Error, "error", "", "launch", client->lastError()});
@@ -626,27 +659,38 @@ void ZoomEngineRuntime::startReaderLocked() {
 
 void ZoomEngineRuntime::readerLoop() {
   while (true) {
+    std::shared_ptr<ZoomEngineProcessClient> process;
+    std::uint64_t generation;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!readerRunning_ || !process_ || !process_->running()) {
         return;
       }
+      process = process_;
+      generation = processGeneration_;
     }
 
-    auto event = process_->readEvent();
+    auto event = process->readEvent();
     if (!event) {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (readerRunning_) {
-        state_.apply({ZoomEngineEventKind::Error, "error", "", "read", process_ ? process_->lastError() : "Zoom engine stopped."});
+      if (readerRunning_ && generation == processGeneration_) {
+        state_.apply({ZoomEngineEventKind::Error, "error", "", "read", process->lastError()});
       }
       return;
     }
-    applyEvent(*event);
+    applyEvent(*event, generation);
   }
 }
 
-void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
+void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (generation && *generation != processGeneration_) return;
+  if (event.kind == ZoomEngineEventKind::Joined && !acceptJoinEvents_) {
+    // An SDK callback may arrive after Leave was accepted. Keep the current
+    // snapshot left and reassert leave rather than reviving capture.
+    enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
+    return;
+  }
   state_.apply(event);
   if (event.kind == ZoomEngineEventKind::Joined) {
     // Only auto-start raw media on join if the operator already enabled capture
@@ -666,13 +710,13 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
 void ZoomEngineRuntime::applyEngineEventForTest(const ZoomEngineEvent& event) { applyEvent(event); }
 
 void ZoomEngineRuntime::stopReader() {
+  std::shared_ptr<ZoomEngineProcessClient> process;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     readerRunning_ = false;
-    if (process_) {
-      process_->stop();
-    }
+    process = std::move(process_);
   }
+  if (process) process->terminate();
   if (reader_.joinable()) {
     reader_.join();
   }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "contracts/Lifecycle.h"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -436,6 +438,8 @@ struct IsoStreamStatus {
 
 struct OutputSession {
   bool active = false;
+  // Present only when the sink reports observed writer lifecycle.
+  std::optional<contracts::OutputLifecycle> lifecycle;
   std::vector<std::string> destinations;
   std::vector<std::string> isoParticipantIds;
   // Per-session subfolder + manifest (ISO-1 folder scheme, spec §5). Empty for

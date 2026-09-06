@@ -2,6 +2,8 @@
 #include "core/MediaCore.h"
 #include "rpc/Json.h"
 #include "rpc/JsonRpcServer.h"
+#include "rpc/CommandMailbox.h"
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -531,4 +533,118 @@ TEST(JsonRpcServer, CoalescedSyncAppliesNewestControlState) {
   const auto* active = recording->get("active");
   ASSERT_NE(active, nullptr);
   EXPECT_TRUE(active->asBool());
+}
+
+TEST(CommandMailbox, BoundsBytesAndReservesStopCapacity) {
+  using namespace corevideo::rpc;
+  CommandMailbox mailbox(4, 1024, 1);
+  std::optional<Json> replaced;
+  const auto push = [&](Json request, std::size_t bytes = 100) {
+    return mailbox.push({std::move(request), bytes, std::chrono::steady_clock::now()}, replaced);
+  };
+  for (int i = 0; i < 3; ++i) EXPECT_EQ(push(Json::Object{{"type", "ping"}}), CommandMailbox::Result::accepted);
+  EXPECT_EQ(push(Json::Object{{"type", "ping"}}), CommandMailbox::Result::overloaded);
+  EXPECT_EQ(push(Json::Object{{"type", "zoom-leave"}}), CommandMailbox::Result::accepted);
+  EXPECT_EQ(mailbox.size(), 4u);
+  EXPECT_EQ(mailbox.bytes(), 400u);
+  EXPECT_EQ(push(Json::Object{{"type", "zoom-leave"}}), CommandMailbox::Result::overloaded);
+  mailbox.pop(); mailbox.pop(); mailbox.pop(); mailbox.pop();
+  EXPECT_EQ(mailbox.bytes(), 0u);
+  EXPECT_EQ(push(Json::Object{{"type", "ping"}}, 1000), CommandMailbox::Result::overloaded);
+  EXPECT_EQ(push(Json::Object{{"type", "zoom-leave"}}, 1000), CommandMailbox::Result::accepted);
+}
+
+TEST(CommandMailbox, CoalescingRequiresExplicitStateAndNeverDropsEmbeddedActions) {
+  using namespace corevideo::rpc;
+  CommandMailbox mailbox;
+  std::optional<Json> replaced;
+  auto state = [](const char* id, const char* command = "load-scene-graph") -> Json {
+    return Json::Object{{"id", id}, {"type", "media-core-sync"}, {"replaceableFullState", true},
+        {"coalescingKey", "production"}, {"commands", Json::Array{Json::Object{{"type", command}}}}};
+  };
+  const auto push = [&](Json request) { return mailbox.push({request, 100, std::chrono::steady_clock::now()}, replaced); };
+  EXPECT_EQ(push(state("old")), CommandMailbox::Result::accepted);
+  EXPECT_EQ(push(state("new")), CommandMailbox::Result::superseded);
+  ASSERT_TRUE(replaced);
+  EXPECT_EQ(replaced->getString("id"), "old");
+  EXPECT_EQ(mailbox.size(), 1u);
+  EXPECT_EQ(mailbox.bytes(), 100u);
+  EXPECT_EQ(push(state("take", "start-program-output")), CommandMailbox::Result::accepted);
+  EXPECT_EQ(push(state("after")), CommandMailbox::Result::accepted);
+  EXPECT_EQ(mailbox.size(), 3u);
+  EXPECT_FALSE(CommandMailbox::replaceable(Json::Object{{"type", "ping"}, {"label", "media-core-sync"}}));
+  EXPECT_FALSE(CommandMailbox::replaceable(Json::Object{{"type", "media-core-sync"}, {"commands", Json::Array{}}}));
+  EXPECT_FALSE(CommandMailbox::replaceable(state("unknown", "future-command")));
+}
+
+TEST(JsonRpcServer, ProtocolVersionIsAdditiveAndRejectsUnsupportedMajor) {
+  using namespace corevideo::rpc;
+  corevideo::core::MediaCore core;
+  JsonRpcServer server(core);
+  const auto handshake = server.handshake();
+  ASSERT_NE(handshake.get("protocolVersion"), nullptr);
+  EXPECT_EQ(handshake.get("protocolVersion")->getNumber("major"), 1);
+  EXPECT_FALSE(handshake.getString("processEpoch").empty());
+  EXPECT_TRUE(server.handle(Json::Object{{"id", "old"}, {"type", "ping"}}).get("ok")->asBool());
+  const auto response = server.handle(Json::Object{{"id", "new"}, {"type", "ping"},
+      {"protocolVersion", Json::Object{{"major", 2}, {"minor", 0}}}});
+  EXPECT_FALSE(response.get("ok")->asBool());
+  EXPECT_NE(response.stringify().find("incompatible-protocol"), std::string::npos);
+}
+
+TEST(JsonRpcServer, DelayedJoinDoesNotBlockCommandsAndCancellationAnswersOriginalId) {
+  using namespace corevideo::rpc;
+  corevideo::core::MediaCore core;
+  JsonRpcServer server(core, [](const Json&, const std::function<bool()>& cancelled) -> Json {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!cancelled() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return Json::Object{{"meetingState", "in_meeting"}}; // late success must be discarded
+  });
+  std::istringstream input(
+      "{\"id\":\"join\",\"type\":\"zoom-join\",\"payload\":{}}\n"
+      "{\"id\":\"ping\",\"type\":\"ping\"}\n"
+      "{\"id\":\"leave\",\"type\":\"zoom-leave\"}\n");
+  std::ostringstream output;
+  const auto start = std::chrono::steady_clock::now();
+  server.run(input, output);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  const auto text = output.str();
+  EXPECT_NE(text.find("\"id\":\"ping\""), std::string::npos);
+  EXPECT_NE(text.find("operation-cancelled"), std::string::npos);
+  EXPECT_EQ(text.find("in_meeting"), std::string::npos);
+}
+
+TEST(JsonRpcServer, AsyncJoinAcknowledgesOnceAndPublishesIdentifiedCompletion) {
+  using namespace corevideo::rpc;
+  corevideo::core::MediaCore core;
+  JsonRpcServer server(core, [](const Json&, const std::function<bool()>& cancelled) -> Json {
+    while (!cancelled()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return Json::Object{{"meetingState", "in_meeting"}};
+  });
+  std::istringstream input("{\"id\":\"join\",\"type\":\"zoom-join\",\"asyncOperation\":true,\"payload\":{}}\n");
+  std::ostringstream output;
+  server.run(input, output);
+  std::istringstream lines(output.str());
+  std::string line, operationId;
+  int acknowledgements = 0, completions = 0;
+  while (std::getline(lines, line)) {
+    const auto message = Json::parse(line);
+    ASSERT_TRUE(message.has_value());
+    if (message->getString("id") == "join") {
+      ++acknowledgements;
+      ASSERT_NE(message->get("operation"), nullptr);
+      operationId = message->get("operation")->getString("operationId");
+      EXPECT_EQ(message->get("operation")->getString("state"), "accepted");
+    }
+    if (message->getString("type") == "operation-completed") {
+      ++completions;
+      ASSERT_NE(message->get("operation"), nullptr);
+      EXPECT_EQ(message->get("operation")->getString("operationId"), operationId);
+      EXPECT_EQ(message->get("operation")->getString("state"), "cancelled");
+      EXPECT_EQ(message->get("operation")->getString("processEpoch"), server.handshake().getString("processEpoch"));
+    }
+  }
+  EXPECT_EQ(acknowledgements, 1);
+  EXPECT_EQ(completions, 1);
 }

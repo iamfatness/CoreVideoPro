@@ -5,6 +5,7 @@
 #include "compositor/TilesMembership.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
+#include "core/RouteSourcePolicy.h"
 #include "modules/AudioDsp.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
@@ -521,9 +522,9 @@ bool MediaCore::zoomEngineConfigured() const {
   return zoomEngineRuntime_ && zoomEngineRuntime_->configured();
 }
 
-rpc::Json MediaCore::joinZoom(const rpc::Json& payload) {
+rpc::Json MediaCore::joinZoom(const rpc::Json& payload, const std::function<bool()>& cancelled) {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    return zoomEngineRuntime_->join(payload);
+    return zoomEngineRuntime_->join(payload, cancelled);
   }
 
   zoomJoined_ = true;
@@ -4224,7 +4225,8 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
 
   rpc::Json::Object recording{
       {"sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_},
-      {"active", recordingStatus_ == "recording" || recordingStatus_ == "warning"},
+      {"active", session.lifecycle ? session.lifecycle->state == "live" :
+                 recordingStatus_ == "recording" || recordingStatus_ == "warning"},
       {"status", recordingStatus_},
       {"writerStatus", recordingWriterStatus_},
       {"startedAtMs", recordingStartedAtMs_},
@@ -4274,6 +4276,9 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       {"totalDroppedFrames", static_cast<double>(droppedVideoFrames)},
       {"totalBytesWritten", static_cast<double>(totalBytesWritten)},
   };
+  if (session.lifecycle) {
+    recording.emplace("lifecycle", contracts::toJson(*session.lifecycle));
+  }
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);
   }
@@ -4471,26 +4476,21 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
-      layer.kind = route.mode == "screen-share" ? "screen-share" : "participant-video";
+      const auto fallbackParticipantId = videoLayerIndex < static_cast<int>(videoFrames.size())
+          ? std::optional<std::string_view>(videoFrames[static_cast<size_t>(videoLayerIndex)].participantId) : std::nullopt;
+      const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
+          route.captureDeviceId, route.participantId, fallbackParticipantId});
+      layer.kind = binding.kind;
+      layer.sourceId = binding.sourceId;
+      layer.participantId = binding.participantId;
       layer.order = videoLayerIndex;
       if (!route.mediaAssetId.empty() && !route.mediaAssetPath.empty()) {
-        layer.kind = "media-video";
-        layer.sourceId = "media:" + route.mediaAssetId;
         layer.mediaAssetId = route.mediaAssetId;
         layer.mediaAssetName = route.mediaAssetName;
         layer.mediaAssetKind = route.mediaAssetKind;
         layer.mediaAssetPath = route.mediaAssetPath;
         layer.mediaPlaybackKey = route.mediaPlaybackKey;
         layer.mediaAssetPlaying = route.mediaAssetPlaying;
-      } else if (route.mode == "capture-input" && !route.captureDeviceId.empty()) {
-        layer.participantId = "capture:" + route.captureDeviceId;
-        layer.sourceId = layer.participantId;
-      } else if (!route.participantId.empty()) {
-        layer.participantId = route.participantId;
-        layer.sourceId = "zoom:" + route.participantId;
-      } else if (videoLayerIndex < static_cast<int>(videoFrames.size())) {
-        layer.participantId = videoFrames[static_cast<size_t>(videoLayerIndex)].participantId;
-        layer.sourceId = "zoom:" + layer.participantId;
       }
       if (route.hasRect) {
         layer.rect = {route.rectX, route.rectY, route.rectWidth, route.rectHeight};

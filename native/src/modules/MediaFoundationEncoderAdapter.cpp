@@ -1635,9 +1635,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     }
     std::string programFinalizeError;
     const bool programFinalized = program_.finalize(&programFinalizeError);
-    if (!programFinalized && session_.recordingWarning.empty()) {
-      session_.recordingWarning = "Program recording did not finalize: " + programFinalizeError + ".";
-      session_.recordingError = session_.recordingWarning;
+    if (!programFinalized) {
+      session_.recordingError = "Program recording did not finalize: " + programFinalizeError + ".";
+      if (session_.recordingWarning.empty()) session_.recordingWarning = session_.recordingError;
       session_.recordingStatus = "warning";
     }
     // Each ISO writer finalizes INDEPENDENTLY (its own moov) so a source that
@@ -1655,6 +1655,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         iso.warning = "ISO writer did not finalize for " + iso.displayName + " (" + iso.sourceId +
                       "): " + isoFinalizeError + ".";
         raiseIsoWarning(iso.warning);
+        // An earlier warning must not mask a failed container finalization.
+        if (session_.recordingError.empty()) session_.recordingError = iso.warning;
       }
     }
     // Refresh the on-disk sizes into the ISO status before clearing.

@@ -38,8 +38,8 @@ namespace corevideo::modules {
 //   - configureRecording / start: NON-BLOCKING. They are re-emitted every sync
 //     while recording, so a blocking wait would couple the command thread to the
 //     writer's queue drain each tick. Ordering (container open ahead of frames)
-//     is preserved by the single FIFO queue; start() returns an optimistic
-//     active snapshot the writer reconciles with the wrapped session shortly.
+//     is preserved by the single FIFO queue; start() returns starting until
+//     the writer reports actual output progress.
 //   - stopRecording: NON-BLOCKING. The caller holds coreMutex, so it closes the
 //     producer gate and enqueues a FIFO barrier. Already-accepted media drains
 //     before asynchronous Finalize, preserving the take's A/V tail. The bounded
@@ -108,6 +108,7 @@ class AsyncEncoderSink final : public IEncoderSink {
   struct Item {
     Kind kind;
     uint64_t seq = 0;
+    uint64_t generation = 0;
     // Configure
     RecordingSessionRequest request;
     // Start
@@ -137,6 +138,11 @@ class AsyncEncoderSink final : public IEncoderSink {
     std::deque<Item> queue;
     uint64_t nextSeq = 1;
     uint64_t appliedSeq = 0;
+    uint64_t generation = 0;
+    std::string configuredSessionId = "recording";
+    // Separate from active: a failed writer still needs one cleanup/finalize.
+    bool stopRequested = true;
+    std::string epoch = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     bool applying = false;
     bool stop = false;
     bool writerDone = false;

@@ -37,6 +37,8 @@
 //   COREVIDEO_FAKE_ENGINE_FPS            frame cadence (default 30; use 60 for
 //                                        the 1080p60 load the product targets)
 //   COREVIDEO_FAKE_ENGINE_LOG            optional path for a standalone diag log
+//   COREVIDEO_FAKE_AUTH_DELAY_MS         synthetic SDK auth stall (0 by default, max 60000)
+//   COREVIDEO_FAKE_JOIN_DELAY_MS         synthetic meeting join stall (0 by default, max 60000)
 //
 // Windows-focused; a minimal POSIX fallback keeps the file portable so the
 // CMake target stays green on the Linux stub build.
@@ -755,6 +757,11 @@ int main(int argc, char** argv) {
 
         } else if (line.find(IPC_CMD_INIT) != std::string::npos) {
             EngineIpc::write(R"({"cmd":"debug","stage":"init_received"})");
+            if (const char* delay = std::getenv("COREVIDEO_FAKE_AUTH_DELAY_MS")) {
+                const int ms = (std::max)(0, (std::min)(60000, std::atoi(delay)));
+                diag("synthetic-auth-delay=" + std::to_string(ms));
+                std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            }
             EngineIpc::write(R"({"cmd":"auth_ok"})");
 
         } else if (line.find(IPC_CMD_JOIN) != std::string::npos) {
@@ -762,6 +769,11 @@ int main(int argc, char** argv) {
             EngineIpc::write(
                 R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
                 json_escape(meeting_id) + "\"}");
+            if (const char* delay = std::getenv("COREVIDEO_FAKE_JOIN_DELAY_MS")) {
+                const int ms = (std::max)(0, (std::min)(60000, std::atoi(delay)));
+                diag("synthetic-join-delay=" + std::to_string(ms));
+                std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            }
             {
                 std::lock_guard<std::mutex> lk(g_mtx);
                 g_roster = baseline_roster(baseline);
