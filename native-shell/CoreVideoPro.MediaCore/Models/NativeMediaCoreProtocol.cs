@@ -353,6 +353,7 @@ public sealed class NativeMediaCoreRecordingStream
 
 public sealed record NativeMediaCoreRecordingSession
 {
+    public CoreVideoPro.MediaCore.Contracts.OutputLifecycle? Lifecycle { get; init; }
     public required string SessionId { get; init; }
     public bool Active { get; init; }
     public required string Status { get; init; }

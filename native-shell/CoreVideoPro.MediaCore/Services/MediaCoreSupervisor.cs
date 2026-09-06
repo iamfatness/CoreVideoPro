@@ -63,6 +63,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private bool _syncInFlight;
     private int _syncFrameNumber;
     private NativeMediaCoreProfile? _profile;
+    private string? _handshakeFailure;
     private Dictionary<string, object?>? _zoomJoinRecoveryPayload;
     private bool _zoomRawCapturePaused;
 
@@ -127,13 +128,16 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     {
         lock (_gate)
         {
+            if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
             if (!_stopped && _process is { HasExited: false })
             {
-                return _profile;
+                if (_profile is not null) return _profile;
             }
-
-            _stopped = false;
-            SpawnChild();
+            else
+            {
+                _stopped = false;
+                SpawnChild();
+            }
         }
 
         var profile = await EnsureHandshakeProfileAsync(cancellationToken).ConfigureAwait(false);
@@ -145,6 +149,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     public void Stop()
     {
+        Process? process;
+        StreamWriter? stdin;
         lock (_gate)
         {
             _stopped = true;
@@ -152,10 +158,17 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             _zoomJoinRecoveryPayload = null;
             _zoomRawCapturePaused = false;
             StopFrameDrain();
-            TeardownChild();
+            RejectAll(new InvalidOperationException("Supervisor stopped."));
+            process = _process;
+            stdin = _stdin;
+            _process = null;
+            _stdin = null;
             _profile = null;
+            _handshakeFailure = null;
         }
 
+        if (process is not null) process.Exited -= OnChildExited;
+        DisposeChild(process, stdin);
         RaiseHealth();
         StatusChanged?.Invoke("Engine off — Zoom ingest paused");
     }
@@ -806,6 +819,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         // makes HandshakeAsync return before the replacement process is ready and
         // lets recovery traffic race its bootstrap handshake.
         _profile = null;
+        _handshakeFailure = null;
 
         string fileName;
         string arguments;
@@ -905,11 +919,18 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         WriteCoreLog($"[bridge] media core process started (pid {(_process.HasExited ? -1 : _process.Id)})");
     }
 
-    private void DispatchFrame(Action action)
+    private void DispatchFrame(Process process, Action action)
     {
         // Non-blocking: if the consumer is behind, the bounded channel drops the
         // oldest frame rather than stalling the stdout reader.
-        _frameDispatch?.Writer.TryWrite(action);
+        _frameDispatch?.Writer.TryWrite(() =>
+        {
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_process, process)) return;
+            }
+            action();
+        });
     }
 
     private static string? _coreLogPath;
@@ -957,6 +978,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 break;
             }
 
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_process, process)) return;
+            }
+
             if (line.Trim().Length == 0)
             {
                 continue;
@@ -981,7 +1007,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                             var emit = ew.GetDouble();
                             var recvAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - emit;
                             PerfLog($"zoom transport emit->recv={recvAge:F0}ms");
-                            DispatchFrame(() =>
+                            DispatchFrame(process, () =>
                             {
                                 var consumeAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - emit;
                                 PerfLog($"zoom transport emit->UIhandler={consumeAge:F0}ms (queue={consumeAge - recvAge:F0}ms)");
@@ -992,7 +1018,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                     }
                     catch { }
                 }
-                DispatchFrame(() => ZoomVideoFrameReceived?.Invoke(frame));
+                DispatchFrame(process, () => ZoomVideoFrameReceived?.Invoke(frame));
                 continue;
             }
 
@@ -1000,7 +1026,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             if (previewEvent is not null)
             {
                 var preview = previewEvent.Preview;
-                DispatchFrame(() => ProgramFramePreviewReceived?.Invoke(preview));
+                DispatchFrame(process, () => ProgramFramePreviewReceived?.Invoke(preview));
                 continue;
             }
 
@@ -1093,7 +1119,36 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 }
             }
 
-            if (TryAcceptBootstrapHandshake(document))
+            bool accepted;
+            try { accepted = TryAcceptBootstrapHandshake(document); }
+            catch (InvalidOperationException ex)
+            {
+                StreamWriter? rejectedStdin;
+                lock (_gate)
+                {
+                    if (!ReferenceEquals(_process, process)) { document.Dispose(); return; }
+                    _handshakeFailure = ex.Message;
+                    _profile = null;
+                    _stopped = true;
+                    _recovering = false;
+                    StopFrameDrain();
+                    RejectAll(ex);
+                    // Incompatibility is terminal, not a transient child crash.
+                    // Closing the rejected process must not trigger auto-restart.
+                    rejectedStdin = _stdin;
+                    _stdin = null;
+                    _process = null;
+                }
+                // Process exit/disposal can wait for Exited handlers. Never do
+                // that under _gate, which those handlers also acquire.
+                process.Exited -= OnChildExited;
+                DisposeChild(process, rejectedStdin);
+                RaiseHealth();
+                StatusChanged?.Invoke(ex.Message);
+                document.Dispose();
+                return;
+            }
+            if (accepted)
             {
                 document.Dispose();
                 continue;
@@ -1107,6 +1162,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     {
         lock (_gate)
         {
+            if (!ReferenceEquals(_process, sender)) return;
             RejectAll(new InvalidOperationException("Media core exited."));
             if (_stopped)
             {
@@ -1242,6 +1298,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                     return _profile;
                 }
 
+                if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
+
                 if (_process is null || _process.HasExited)
                 {
                     throw new InvalidOperationException(DescribeChildStartupFailure());
@@ -1294,13 +1352,19 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
 
         var tcs = new TaskCompletionSource<JsonDocument>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Process requestProcess;
+        StreamWriter requestStdin;
         lock (_gate)
         {
+            if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
             if (_stdin is null || _process is null || _process.HasExited)
             {
                 throw new InvalidOperationException("Media core is not running.");
             }
+            if (_profile is null) throw new InvalidOperationException("Media core handshake has not completed.");
 
+            requestProcess = _process;
+            requestStdin = _stdin;
             _pending[id] = tcs;
         }
 
@@ -1327,15 +1391,12 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         {
             try
             {
-                StreamWriter? stdin;
                 lock (_gate)
                 {
-                    stdin = _stdin;
-                }
-
-                if (stdin is null)
-                {
-                    throw new InvalidOperationException("Media core is not running.");
+                    if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
+                    if (_profile is null) throw new InvalidOperationException("Media core handshake has not completed.");
+                    if (!ReferenceEquals(_process, requestProcess) || !ReferenceEquals(_stdin, requestStdin))
+                        throw new InvalidOperationException("Media core restarted before the queued command was written; reconcile state before retrying.");
                 }
 
                 if (requestType == "zoom-join")
@@ -1343,8 +1404,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                     WriteCoreLog($"[bridge] -> id={id} type=zoom-join bytes={json.Length}");
                 }
 
-                await stdin.WriteLineAsync(json.AsMemory(), timeoutCts.Token).ConfigureAwait(false);
-                await stdin.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+                // Retain the original writer even after leaving _gate. A restart
+                // during an awaited write can fail this pipe, never retarget the
+                // old edge-triggered command to a replacement process.
+                await requestStdin.WriteLineAsync(json.AsMemory(), timeoutCts.Token).ConfigureAwait(false);
+                await requestStdin.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
 
                 if (requestType == "zoom-join")
                 {
@@ -1404,15 +1468,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         _frameDrainTimer = null;
     }
 
-    private void TeardownChild()
+    private static void DisposeChild(Process? process, StreamWriter? stdin)
     {
-        RejectAll(new InvalidOperationException("Supervisor stopped."));
-
-        var stdin = _stdin;
-        var process = _process;
-        _stdin = null;
-        _process = null;
-
         try
         {
             stdin?.Close();
