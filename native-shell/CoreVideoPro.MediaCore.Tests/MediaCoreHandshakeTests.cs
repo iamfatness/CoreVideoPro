@@ -33,7 +33,9 @@ public sealed class MediaCoreHandshakeTests
                 """);
             await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
             {
-                Command = "node", Args = [script], WorkingDirectory = directory,
+                // Keep the fixture directory out of inherited process/console-host cwd handles.
+                // Script, trace and control-file paths are absolute.
+                Command = "node", Args = [script], WorkingDirectory = Path.GetTempPath(),
                 Environment = new Dictionary<string, string> { ["COREVIDEO_GENERATION_TRACE"] = trace, ["COREVIDEO_EXIT_SIGNAL"] = exitSignal },
                 HandshakeRequestTimeoutMs = 5000, RequestTimeoutMs = 5000, FrameDrainIntervalMs = 100000, MaxRestarts = 1
             });
@@ -77,7 +79,9 @@ public sealed class MediaCoreHandshakeTests
                 """);
             await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
             {
-                Command = "node", Args = [script], WorkingDirectory = directory,
+                // Keep the fixture directory out of inherited process/console-host cwd handles.
+                // Script, trace and control-file paths are absolute.
+                Command = "node", Args = [script], WorkingDirectory = Path.GetTempPath(),
                 HandshakeRequestTimeoutMs = 3000, FrameDrainIntervalMs = 10000
             });
             Assert.NotNull(await supervisor.StartAsync());
@@ -113,7 +117,9 @@ public sealed class MediaCoreHandshakeTests
                 """);
             await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
             {
-                Command = "node", Args = [script], WorkingDirectory = directory,
+                // Keep the fixture directory out of inherited process/console-host cwd handles.
+                // Script, trace and control-file paths are absolute.
+                Command = "node", Args = [script], WorkingDirectory = Path.GetTempPath(),
                 Environment = new Dictionary<string, string>
                 {
                     ["COREVIDEO_HANDSHAKE_TRACE"] = trace,
