@@ -22,6 +22,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     private SceneCanvasLayerViewModel? _dragLayer;
     private string _dragMode = "move";
     private Point _dragStartPointer;
+    private Point _dragStartControlPointer;
+    private bool _dragMoved;
     private NormalizedCanvasRect? _dragStartRect;
     private double _dragStartSourceOffsetX;
     private double _dragStartSourceOffsetY;
@@ -122,7 +124,10 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
 
         ResizeCanvasViewport();
-        _selectedLayer = selectedLayer;
+        if (_selectedLayer is null || layers?.Contains(_selectedLayer) != true)
+        {
+            _selectedLayer = selectedLayer;
+        }
         SyncLayers(layers ?? Array.Empty<SceneCanvasLayerViewModel>());
     }
 
@@ -438,6 +443,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         _selectedLayer = layer;
         _dragLayer = layer;
         _dragStartPointer = e.GetCurrentPoint(LayerCanvas).Position;
+        _dragStartControlPointer = e.GetCurrentPoint(this).Position;
+        _dragMoved = false;
         _dragStartRect = new NormalizedCanvasRect
         {
             X = layer.X,
@@ -483,6 +490,14 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             return;
         }
 
+        var controlPosition = e.GetCurrentPoint(this).Position;
+        if (!_dragMoved && Math.Abs(controlPosition.X - _dragStartControlPointer.X) < 3 &&
+            Math.Abs(controlPosition.Y - _dragStartControlPointer.Y) < 3)
+        {
+            e.Handled = true;
+            return;
+        }
+        _dragMoved = true;
         var position = e.GetCurrentPoint(LayerCanvas).Position;
         var deltaX = (position.X - _dragStartPointer.X) / DesignWidth;
         var deltaY = (position.Y - _dragStartPointer.Y) / DesignHeight;
@@ -697,13 +712,14 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             frame.ReleasePointerCapture(e.Pointer);
         }
 
-        if (_dragLayer is not null)
+        if (_dragLayer is not null && _dragMoved)
         {
             _dragLayer.ApplyRoute();
             LayerChanged?.Invoke(this, _dragLayer);
         }
 
         _dragLayer = null;
+        _dragMoved = false;
         _dragStartRect = null;
         _dragStartSourceOffsetX = 0;
         _dragStartSourceOffsetY = 0;

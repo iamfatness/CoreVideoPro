@@ -146,6 +146,14 @@ public sealed partial class SourcesPage : UserControl
     private void OnCanvasPresetRequested(object? sender, string preset) =>
         ViewModel?.ApplyCanvasPreset(preset);
 
+    private void OnLayerSourceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is ComboBox { SelectedValue: string value, DataContext: SceneCanvasLayerViewModel layer })
+        {
+            layer.TrySelectSource(value);
+        }
+    }
+
     private void OnPreviewSceneSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         // ItemsSource refresh clears selection temporarily. Only a real scene
