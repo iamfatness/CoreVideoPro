@@ -45,6 +45,8 @@ public sealed class NativeControlEvidenceTests
     {
         var state = NativeControlEvidence.Apply(new ControlState { NativeActiveSceneId = "stale", NativeLowerThirdVisible = true }, null);
         Assert.Null(state.NativeActiveSceneId);
+        Assert.Null(state.NativeRenderedSceneId);
+        Assert.Null(state.NativeRenderPlanId);
         Assert.Null(state.NativePreviewSceneId);
         Assert.Null(state.NativeLowerThirdVisible);
         Assert.Null(state.NativeLowerThirdPhase);
@@ -73,4 +75,28 @@ public sealed class NativeControlEvidenceTests
         Assert.True(StudioControlSurface.RunMagicScene(command).Ok);
         Assert.Equal(1, calls);
     }
+    [Fact]
+    public void LastRenderedFrameRemainsDistinctFromAcknowledgedScene()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            SceneId = "new-scene",
+            ProgramFrame = new()
+            {
+                SceneId = "previous-scene", RenderPlanId = "previous-scene:2:0",
+                FrameNumber = 10, Health = "live"
+            }
+        };
+        var state = NativeControlEvidence.Apply(ControlState.Empty, snapshot);
+        Assert.Equal("new-scene", state.NativeActiveSceneId);
+        Assert.Equal("previous-scene", state.NativeRenderedSceneId);
+        Assert.Equal("previous-scene:2:0", state.NativeRenderPlanId);
+        var absentScene = NativeControlEvidence.Apply(ControlState.Empty, snapshot with
+        {
+            ProgramFrame = snapshot.ProgramFrame with { SceneId = null }
+        });
+        Assert.Null(absentScene.NativeRenderedSceneId);
+        Assert.Equal("previous-scene:2:0", absentScene.NativeRenderPlanId);
+    }
+
 }

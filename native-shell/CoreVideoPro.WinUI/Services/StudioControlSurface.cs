@@ -201,14 +201,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
 
             // ---- Graphics -----------------------------------------------------------
             case "graphics.lowerThird.toggle":
-                _vm.ToggleProgramLowerThirdCommand.Execute(null);
-                return ControlInvokeResult.Success;
+                return ApplyLowerThirdIntent(
+                    !(_vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible), true,
+                    () => _vm.ProgramLowerThirdEnabled,
+                    () => _vm.ToggleProgramLowerThirdCommand.Execute(null), () => _vm.CommandStatus);
             case "graphics.lowerThird.set":
-                if (_vm.ProgramLowerThirdEnabled != Bool(args, 0))
-                {
-                    _vm.ToggleProgramLowerThirdCommand.Execute(null);
-                }
-                return ControlInvokeResult.Success;
+                return ApplyLowerThirdIntent(Bool(args, 0), false,
+                    () => _vm.ProgramLowerThirdEnabled,
+                    () => _vm.ToggleProgramLowerThirdCommand.Execute(null), () => _vm.CommandStatus);
             case "graphics.caption.set":
                 _vm.CaptionText = Str(args, 0);
                 if (args.Count > 1 && args[1] is string speaker)
@@ -584,6 +584,19 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         }
         await command.ExecuteAsync(null).ConfigureAwait(true);
         return ControlInvokeResult.Success;
+    }
+
+    // Success confirms accepted intent, not completed animation/native pixels.
+    // The VM can reject a toggle (e.g. no eligible program source); propagate
+    // that outcome instead of making API clients wait for an impossible key.
+    internal static ControlInvokeResult ApplyLowerThirdIntent(bool requested, bool forceToggle,
+        Func<bool> readIntent, Action toggle, Func<string> readStatus)
+    {
+        if (forceToggle || readIntent() != requested) toggle();
+        if (readIntent() == requested) return ControlInvokeResult.Success;
+        var reason = readStatus();
+        return ControlInvokeResult.Fail(string.IsNullOrWhiteSpace(reason)
+            ? "Lower third request was not accepted." : reason);
     }
 
     private static string Str(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is string s ? s : string.Empty;

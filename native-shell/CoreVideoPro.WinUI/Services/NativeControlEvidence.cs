@@ -12,6 +12,8 @@ internal static class NativeControlEvidence
         return state with
         {
             NativeActiveSceneId = snapshot?.SceneId,
+            NativeRenderedSceneId = snapshot?.ProgramFrame?.SceneId,
+            NativeRenderPlanId = snapshot?.ProgramFrame?.RenderPlanId,
             NativePreviewSceneId = snapshot?.PreviewScene?.SceneId,
             NativeProgramFrameCount = snapshot?.ProgramFrameCount,
             NativeLowerThirdPhase = lowerThird?.KeyPhase,
