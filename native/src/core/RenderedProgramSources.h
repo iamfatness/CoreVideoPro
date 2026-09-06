@@ -11,6 +11,15 @@ namespace corevideo::core {
 // Owning attribution for the last composed Program frame, not current routing
 // intent. Binding identity does not prove fresh pixels from a source.
 class RenderedProgramSources {
+  struct Overlay {
+    std::string layerId, sourceId, title, org, text, imageUri, keyPosition, keyer, keyPhase;
+    auto identity() const { return std::tie(layerId, sourceId, title, org, text, imageUri, keyPosition, keyer, keyPhase); }
+    bool matches(const modules::CompositorRenderPlanLayer& layer) const {
+      return identity() == std::tie(layer.layerId, layer.sourceId, layer.overlay.title,
+          layer.overlay.org, layer.overlay.text, layer.overlay.imageUri, layer.overlay.keyPosition,
+          layer.overlay.keyer, layer.overlay.keyPhase);
+    }
+  };
  public:
   void publish(const modules::CompositorRenderPlan& plan) {
     size_t overlayIndex = 0;
@@ -67,15 +76,6 @@ class RenderedProgramSources {
   }
 
  private:
-  struct Overlay {
-    std::string layerId, sourceId, title, org, text, imageUri, keyPosition, keyer, keyPhase;
-    auto identity() const { return std::tie(layerId, sourceId, title, org, text, imageUri, keyPosition, keyer, keyPhase); }
-    bool matches(const modules::CompositorRenderPlanLayer& layer) const {
-      return identity() == std::tie(layer.layerId, layer.sourceId, layer.overlay.title,
-          layer.overlay.org, layer.overlay.text, layer.overlay.imageUri, layer.overlay.keyPosition,
-          layer.overlay.keyer, layer.overlay.keyPhase);
-    }
-  };
   static bool isVisibleOverlay(const modules::CompositorRenderPlanLayer& layer) {
     return layer.hasOverlayContent && layer.opacity > 0.f &&
         (layer.overlay.keyPhase == "on-air" ||
