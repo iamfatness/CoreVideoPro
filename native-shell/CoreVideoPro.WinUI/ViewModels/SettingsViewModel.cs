@@ -739,7 +739,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             _drainOAuthCallback?.Invoke();
             await RefreshOAuthStatusAsync().ConfigureAwait(false);
 
-            if (!_bridge.Running)
+            if (!_bridge.Running || _bridge.Profile is null)
             {
                 SetJoinProgress(ZoomMeetingState.Joining, "Preparing Zoom…");
                 LaunchLog.Write("zoom-join: starting media core");

@@ -105,4 +105,30 @@ public sealed class SceneCanvasSourceSelectionTests
         Assert.Equal(SourceRouteMode.Fixed, automatic.Mode);
         Assert.Equal("other", automatic.ParticipantId);
     }
+    [Fact]
+    public void SelectedShowInputOptionPinsItsParticipantAndNotifiesPreviewOnce()
+    {
+        var route = new SourceRoute { Id = "layer", Mode = SourceRouteMode.ActiveSpeaker };
+        var john = new Participant { Id = "john", Name = "John" };
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 7, Kind = ShowInputKind.ZoomParticipant,
+            ParticipantId = john.Id, InShow = true
+        };
+        var changes = 0;
+        var layer = new SceneCanvasLayerViewModel(0, route, [.. Participants, john], [], [slot], [], _ => changes++);
+        // The old SelectedValue is still the automatic entry when the selection
+        // event arrives. Commit the newly added item, as the view handler does.
+        Assert.Equal(string.Empty, layer.ParticipantId);
+        var addedItem = layer.ParticipantOptions.Single(option => option.Value == "input-07");
+        Assert.True(layer.TrySelectSourceOption(addedItem));
+        Assert.Equal("input-07", layer.ParticipantId);
+        Assert.Equal(7, route.ShowInputSlotNumber);
+        Assert.Equal("john", route.ParticipantId);
+        Assert.Equal(SourceRouteMode.Fixed, route.Mode);
+        Assert.Equal(1, changes);
+        Assert.False(layer.TrySelectSourceOption(null));
+        Assert.Equal(1, changes);
+    }
+
 }

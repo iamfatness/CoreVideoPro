@@ -2787,7 +2787,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ConfigureMultiviewerAsync()
     {
-        if (!_bridge.Running)
+        if (!_bridge.Running || _bridge.Profile is null)
         {
             return;
         }
@@ -3631,7 +3631,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // multi-layer preview bus (mirrors how program scene changes sync). Discrete user
         // action, so a single sync — no flood. Backpressure is transient (the periodic sync
         // reapplies), so swallow the in-flight signal.
-        if (_bridge.Running && _takeMutationDepth == 0)
+        if (_bridge.Running && _bridge.Profile is not null && _takeMutationDepth == 0)
         {
             _ = SyncPreviewSceneChangeAsync();
         }
@@ -3678,7 +3678,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LaunchLog.Write($"preview-scene sync failed: {ex.Message}");
+            LaunchLog.WriteException("preview-scene sync failed", ex);
         }
     }
 
@@ -6178,12 +6178,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            CommandStatus = ex.Message;
+            RunOnUiThread(() => CommandStatus = ex.Message);
+            LaunchLog.WriteException("media-core sync", ex);
         }
     }
 
     private void QueueProductionSyncRetry(string reason)
     {
+        if (_shutdownPrepared) return;
         var version = Interlocked.Increment(ref _productionSyncRetryVersion);
         LaunchLog.Write($"media-core sync deferred reason={reason}; request={version}");
         EnsureProductionSyncRetryWorker();
@@ -6204,7 +6206,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var handledVersion = 0;
         try
         {
-            while (_bridge.Running)
+            while (!_shutdownPrepared && _bridge.Running)
             {
                 var requestedVersion = Volatile.Read(ref _productionSyncRetryVersion);
                 if (requestedVersion == handledVersion)
@@ -6213,10 +6215,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 var synced = await RetryDeferredProductionSyncAsync(
-                        () => _bridge.Running,
+                        () => !_shutdownPrepared && _bridge.Running,
                         () => Volatile.Read(ref _applyingProductionPatch),
                         async () => { await SyncActiveSceneAsync().ConfigureAwait(false); },
-                        CancellationToken.None)
+                        _syncShutdownCancellation.Token)
                     .ConfigureAwait(false);
                 if (!synced)
                 {
@@ -6227,13 +6229,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LaunchLog.Write($"media-core deferred sync completed request={handledVersion}");
             }
         }
+        catch (OperationCanceledException) when (_shutdownPrepared) { }
         catch (Exception ex)
         {
             // A non-contention failure should be visible to the operator, but should not
             // spin forever. A later edit creates a new request and gets another attempt.
             handledVersion = Volatile.Read(ref _productionSyncRetryVersion);
             RunOnUiThread(() => CommandStatus = ex.Message);
-            LaunchLog.Write($"media-core deferred sync failed request={handledVersion}: {ex.Message}");
+            LaunchLog.WriteException("media-core deferred sync", ex, handledVersion.ToString());
         }
         finally
         {
@@ -6241,7 +6244,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
             // Close the handoff race: if an edit arrived while this worker was completing,
             // its version differs and a new worker is guaranteed to pick it up.
-            if (_bridge.Running && Volatile.Read(ref _productionSyncRetryVersion) != handledVersion)
+            if (!_shutdownPrepared && _bridge.Running && Volatile.Read(ref _productionSyncRetryVersion) != handledVersion)
             {
                 EnsureProductionSyncRetryWorker();
             }
@@ -6312,13 +6315,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task EnsureMediaCoreRunningAsync(string startingStatus)
     {
-        if (_bridge.Running)
+        _syncShutdownCancellation.Token.ThrowIfCancellationRequested();
+        // Process creation precedes protocol readiness. A second startup edit
+        // must await StartAsync's existing child handshake rather than send its
+        // production sync through a pipe that has not been validated yet.
+        if (_bridge.Running && _bridge.Profile is not null)
         {
             return;
         }
 
         RunOnUiThread(() => EngineStatus = startingStatus);
-        await _bridge.StartAsync().ConfigureAwait(false);
+        await _bridge.StartAsync(_syncShutdownCancellation.Token).ConfigureAwait(false);
         RunOnUiThread(() =>
         {
             Settings.RefreshSdkReadiness();
@@ -6541,6 +6548,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try
             {
                 LaunchLog.Write(string.Format("capture: screen connect requested {0}", device.Id));
+                await EnsureMediaCoreRunningAsync("Preparing capture...").ConfigureAwait(false);
                 var statuses = await _bridge.ConnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
                 var match = statuses.FirstOrDefault(s => s.Id == device.Id);
                 LaunchLog.Write(string.Format("capture: screen connect response {0}: statuses={1} match={2}", device.Id, statuses.Count, match?.ConnectionState ?? "none"));
@@ -6631,6 +6639,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
+            await EnsureMediaCoreRunningAsync("Preparing capture...").ConfigureAwait(false);
             // outputSourceId = device.Id: the core keys the camera's frames by the
             // SHELL's routing id, not its own MF-enumerated id, so the native frame
             // (`capture:<device.Id>`) matches the multiview/scene routing instead of
@@ -7098,6 +7107,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var screens = new List<CaptureDevice>();
         try
         {
+            await EnsureMediaCoreRunningAsync("Preparing capture devices...").ConfigureAwait(false);
             var nativeDevices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
             foreach (var native in nativeDevices)
             {
@@ -8484,10 +8494,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var syncContext = BuildProductionSyncContext();
         var participants = syncContext.Participants;
-        if (_bridge.LastSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true &&
-            _bridge.LastSnapshot.Participants is { Count: > 0 } liveParticipants)
+        var nativeSnapshot = _bridge.LastSnapshot;
+        if (nativeSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true &&
+            nativeSnapshot.Participants is { Count: > 0 } liveParticipants)
         {
-            var directedSpeakerId = _bridge.LastSnapshot.ActiveSpeakerId;
+            var directedSpeakerId = nativeSnapshot.ActiveSpeakerId;
             participants = liveParticipants
                 .Select(participant => new MediaCoreParticipantWire(
                     participant.UserId,
@@ -8540,27 +8551,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
     {
-        var scene = Scenes.FirstOrDefault(s => s.Id == ActiveSceneId)
-            ?? throw new InvalidOperationException("Program scene is unavailable. Select a valid scene before taking.");
-        var syncContext = BuildProductionSyncContext();
-        var commands = MediaCoreCommandBuilder.BuildSyncCommands(syncContext);
-        if (!string.IsNullOrWhiteSpace(reason))
+        // Capture and submit together on the binding thread: deferred workers and
+        // post-await callers must never enumerate the live route/roster/audio collections.
+        var pending = await CaptureUiOwnedAsync(() =>
         {
-            LaunchLog.Write(
-                $"media-core sync batch reason={reason} " +
-                $"recording={syncContext.Recording} streaming={syncContext.Streaming} " +
-                $"destinations={FormatStreamDestinationTelemetry(syncContext.StreamDestinations)} " +
-                $"commands={string.Join(",", commands.Select(command => command.Type))}");
-        }
-        // ConfigureAwait(true): resume on the CALLER'S context. UI callers (Engine On/Off,
-        // command handlers) then run ApplyLiveProductionPatch on the real binding thread,
-        // which is more reliable than the captured _dispatcher (the recurring off-thread
-        // set_OutputStatus crash came through here in a re-entrant Engine-On path where the
-        // guard's HasThreadAccess was bypassed). Off-thread callers have no UI context, so
-        // they resume on the pool and ApplyLiveProductionPatch's own guard marshals them.
-        var snapshot = await _bridge.SyncAsync(commands).ConfigureAwait(true);
-        ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
-        RunOnUiThread(() => CommandStatus = $"{scene.Name} synced to media core");
+            var scene = Scenes.FirstOrDefault(s => s.Id == ActiveSceneId)
+                ?? throw new InvalidOperationException("Program scene is unavailable. Select a valid scene before taking.");
+            var context = BuildProductionSyncContext();
+            var commands = MediaCoreCommandBuilder.BuildSyncCommands(context);
+            var version = ++_productionSyncCaptureVersion;
+            if (!string.IsNullOrWhiteSpace(reason))
+                LaunchLog.Write($"media-core sync batch reason={reason} request={version} recording={context.Recording} streaming={context.Streaming} commands={string.Join(",", commands.Select(command => command.Type))}");
+            return (Version: version, SceneId: scene.Id, SceneName: scene.Name, Response: _bridge.SyncAsync(commands));
+        }).ConfigureAwait(false);
+
+        var snapshot = await pending.Response.ConfigureAwait(false);
+        await CaptureUiOwnedAsync(() =>
+        {
+            // A queued response must not apply an older request's patch to a newer
+            // operator scene/intent. Its native snapshot remains available on the bridge.
+            if (pending.Version != _productionSyncCaptureVersion || pending.SceneId != ActiveSceneId) return false;
+            ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
+            CommandStatus = $"{pending.SceneName} synced to media core";
+            return true;
+        }).ConfigureAwait(false);
         return snapshot;
     }
 
@@ -9793,7 +9807,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // that throws bypasses every managed handler and fail-fasts the process
         // with 0xc000027b — three live-meeting crashes on 2026-08-09 decoded to
         // exactly that (see UiDispatch).
-        UiDispatch.Run(_dispatcher, action, "StudioViewModel");
+        UiDispatch.Run(_dispatcher, () => { if (!_shutdownPrepared) action(); }, "StudioViewModel");
     }
 
     private void OnBridgeStatusChanged(string status) =>
@@ -9972,6 +9986,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplySnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
     {
+        if (_shutdownPrepared) return;
         // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
         // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
         var _swTotal = System.Diagnostics.Stopwatch.StartNew();
@@ -10204,6 +10219,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyLiveProductionPatch(LiveProductionSync.StudioLiveProductionPatch patch)
     {
+        if (_shutdownPrepared) return;
         // This sets x:Bound VM properties (OutputStatus, Recording, ZoomStatus, ...).
         // Callers reach here from SyncActiveSceneAsync's `await ....ConfigureAwait(false)`
         // continuation, i.e. a thread-pool thread — setting a bound property off the UI
@@ -13977,34 +13993,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
-        MagicScene.Stop();
-        _bridge.HealthChanged -= OnBridgeHealthChanged;
-        _bridge.StatusChanged -= OnBridgeStatusChanged;
-        _bridge.ProfileChanged -= OnBridgeProfileChanged;
-        _bridge.SnapshotChanged -= OnSnapshotChanged;
-        _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
-        _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
-        _bridge.ProgramSharedTextureReceived -= OnProgramSharedTextureReceived;
-        _bridge.PreviewSharedTextureReceived -= OnPreviewSharedTextureReceived;
-        _bridge.ParticipantSharedTextureReceived -= OnParticipantSharedTextureReceived;
-        _bridge.MultiviewSharedTextureReceived -= OnMultiviewSharedTextureReceived;
-        CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
-        _surfaces.SurfacesChanged -= OnSurfacesChanged;
-        SrtIngestSources.CollectionChanged -= OnSrtIngestSourcesChanged;
-        foreach (var source in SrtIngestSources)
+        if (!_shutdownPrepared)
         {
-            source.PropertyChanged -= OnSrtIngestSourcePropertyChanged;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            try
+            {
+                await UiOwnedSnapshot.CaptureAsync(() => { PrepareForShutdown(); return true; },
+                    _dispatcher.HasThreadAccess, action => _dispatcher.TryEnqueue(() => action()), timeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception error) { LaunchLog.WriteException("shutdown UI preparation unavailable", error); }
         }
-
-        ForceShutdownMediaCore();
-
-        _surfaces.Dispose();
-        _captureFrameReader.Dispose();
-        _captureDiscovery.Dispose();
-        _audioCaptureDiscovery.Dispose();
-        _audioRenderDiscovery.Dispose();
-        _zoomOAuthCoordinator.Dispose();
-        await _bridge.DisposeAsync().ConfigureAwait(false);
+        void DisposeResource(string name, Action dispose)
+        {
+            try { dispose(); }
+            catch (Exception error) { LaunchLog.WriteException($"shutdown: {name}", error); }
+        }
+        DisposeResource("media core stop", ForceShutdownMediaCore);
+        DisposeResource("surfaces", _surfaces.Dispose);
+        DisposeResource("capture reader", _captureFrameReader.Dispose);
+        DisposeResource("capture discovery", _captureDiscovery.Dispose);
+        DisposeResource("audio capture discovery", _audioCaptureDiscovery.Dispose);
+        DisposeResource("audio render discovery", _audioRenderDiscovery.Dispose);
+        DisposeResource("OAuth coordinator", _zoomOAuthCoordinator.Dispose);
+        try { await _bridge.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception error) { LaunchLog.WriteException("shutdown: bridge dispose", error); }
         LaunchLog.Write("shutdown: studio view model disposed");
     }
 
@@ -14013,7 +14025,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             _bridge.ConfigureZoomSpineSync(null);
-            _surfaces.SetZoomCaptureSubscribed(false);
             if (_bridge.Running)
             {
                 LaunchLog.Write("shutdown: stopping media core");
@@ -14170,7 +14181,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // the texture in-core), so it neither loops nor floods.
     private void SyncMultiviewLayoutIfChanged()
     {
-        if (!MultiviewGpuEnabled || !_bridge.Running)
+        if (!MultiviewGpuEnabled || !_bridge.Running || _bridge.Profile is null)
         {
             return;
         }

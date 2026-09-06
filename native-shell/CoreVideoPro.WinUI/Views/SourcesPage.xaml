@@ -346,7 +346,8 @@
                                                 </Grid>
                                                 <StackPanel Spacing="2">
                                                     <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                    <ComboBox ItemsSource="{x:Bind ParticipantOptions, Mode=OneWay}"
+                                                    <ComboBox Tag="{x:Bind}"
+                                                              ItemsSource="{x:Bind ParticipantOptions, Mode=OneWay}"
                                                               SelectedValue="{x:Bind ParticipantId, Mode=OneWay}"
                                                               SelectionChanged="OnLayerSourceSelectionChanged"
                                                               SelectedValuePath="Value"

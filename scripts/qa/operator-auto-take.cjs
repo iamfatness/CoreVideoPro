@@ -1,6 +1,6 @@
 // Mutates the current show: run only in an authorized test meeting.
 const fs=require('node:fs'),path=require('node:path'), sleep=ms=>new Promise(r=>setTimeout(r,ms)), base=process.env.COREVIDEO_TEST_API_URL||'http://127.0.0.1:8011';
-const output=path.resolve('artifacts/live-operator-qa');fs.mkdirSync(output,{recursive:true});
+const output=path.resolve(process.env.COREVIDEO_TEST_OUTPUT_DIR||'artifacts/live-operator-qa');fs.mkdirSync(output,{recursive:true});
 async function state(){return (await fetch(base+'/state')).json();}
 async function invoke(action,args=[]){const r=await fetch(base+'/invoke',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,args}),signal:AbortSignal.timeout(40000)});const x=await r.json();if(!x.ok)throw Error(action+': '+x.error);}
 function check(ok,msg){if(!ok)throw Error(msg);}

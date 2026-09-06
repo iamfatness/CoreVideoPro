@@ -637,7 +637,7 @@ public sealed class TransportCoordinatorTests
             return SyncResult;
         }
 
-        public Dictionary<string, object?> BuildSpinePayload() => new() { ["spine"] = true };
+        public Task<Dictionary<string, object?>> BuildSpinePayloadAsync(CancellationToken cancellationToken) => Task.FromResult(new Dictionary<string, object?> { ["spine"] = true });
 
         public void UnsubscribeZoomCapture(string status)
         {
@@ -721,7 +721,7 @@ public sealed class TransportCoordinatorTests
         public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 #pragma warning restore CS0067
 
-        public void ConfigureZoomSpineSync(Func<Dictionary<string, object?>>? payloadFactory) =>
+        public void ConfigureZoomSpineSync(Func<CancellationToken, Task<Dictionary<string, object?>>>? payloadFactory) =>
             SpineCallbackInstalled = payloadFactory is not null;
 
         public Task<NativeMediaCoreProfile?> StartAsync(CancellationToken cancellationToken = default) =>

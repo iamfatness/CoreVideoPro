@@ -90,6 +90,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         {
             try
             {
+                // A command may have queued before Dispose closed the surface.
+                // Check on the UI thread, where disposal sets the gate, before
+                // touching any VM command or property during teardown.
+                if (_disposed)
+                {
+                    tcs.TrySetResult(ControlInvokeResult.Fail("Control surface is shutting down."));
+                    return;
+                }
                 tcs.TrySetResult(await DispatchAsync(actionId, args).ConfigureAwait(true));
             }
             catch (Exception ex)

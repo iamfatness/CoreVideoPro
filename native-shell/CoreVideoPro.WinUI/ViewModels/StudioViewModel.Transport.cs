@@ -238,7 +238,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     Task<NativeMediaCoreStateSnapshot> ITransportHost.SyncActiveSceneAsync(string? reason) =>
         SyncActiveSceneAsync(reason);
 
-    Dictionary<string, object?> ITransportHost.BuildSpinePayload() => BuildSpinePayload();
+    Task<Dictionary<string, object?>> ITransportHost.BuildSpinePayloadAsync(CancellationToken cancellationToken) => CaptureUiOwnedAsync(BuildSpinePayload, cancellationToken);
 
     void ITransportHost.UnsubscribeZoomCapture(string status) => UnsubscribeZoomCapture(status);
 

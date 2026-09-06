@@ -179,6 +179,9 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _onChanged(this);
     }
 
+    public bool TrySelectSourceOption(RouteSelectOption? option) =>
+        option is not null && TrySelectSource(option.Value);
+
     public bool TrySelectSource(string? value)
     {
         if (_suppressChangeNotification || value is null ||

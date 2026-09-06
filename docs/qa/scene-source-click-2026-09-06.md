@@ -17,6 +17,15 @@ Two paths combined: the canvas committed a route on every pointer release, and S
 
 Seven model regressions added; two reproduced the original fallback before the fix. Full Release WinUI suite: **821 passed**. The corrected app was published to `artifacts/live-verified/win-unpacked` and launched.
 
-Post-fix live-video verification is **pending**: rejoin returned `Zoom sign-in expired. Sign in with Zoom and try again.` Testing was paused when the user's next message indicated testing might not be allowed at that moment. No successful post-fix live click/drag pass is claimed.
+Testing subsequently resumed. A live eight-guest check found another picker defect:
+the dropdown displayed Input 07 / John while the route and image remained unchanged.
+The handler now takes the actual `SelectionChanged.AddedItems` option and the
+explicit `x:Bind` template owner instead of relying on `SelectedValue` event
+ordering and inherited `DataContext`. A regression covers the Input 07 selection.
 
-When testing resumes, confirm plain clicks preserve automatic/fixed routes, drag and resize preserve automatic routing, and explicit source selection still changes the intended layer.
+The revised Release x64 WinUI suite passed **826 tests**. In the live candidate at
+12:30:45 Eastern, selecting John changed the route summary and first native preview
+tile to John; subsequent observations showed video continuing to advance. A plain
+Source 4 click preserved routing, and a small Source 4 drag and reverse drag did
+not pin the automatic source to Jamal. The test did not press Save/Update scene.
+Dedicated resize-handle verification is still outstanding.

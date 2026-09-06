@@ -83,7 +83,7 @@ public sealed class TransportCoordinator
                 }
 
                 _host.EngineStatus = "Requesting Zoom capture…";
-                _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayload);
+                _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayloadAsync);
                 _host.ZoomCaptureSubscribed = true;
                 _host.NotifySurfacesCaptureSubscribed(true, _bridge.Profile?.Renderer);
                 _host.NotifySurfacesPreviewParticipant(_host.SelectedParticipantId);

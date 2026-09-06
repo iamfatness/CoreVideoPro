@@ -1,6 +1,7 @@
 using CoreVideoPro.WinUI.Services;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
 using WinRT.Interop;
@@ -11,6 +12,8 @@ public partial class App : Application
 {
     private static readonly AppActivationCoordinator Activation = new();
     private static Window? _window;
+    private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread()
+        ?? throw new InvalidOperationException("Application requires a UI dispatcher.");
     private static int _firstChanceWrongThread;
 
     public App()
@@ -96,16 +99,36 @@ public partial class App : Application
 
     private void OnAppActivated(AppActivationArguments args)
     {
-        if (_window?.Content is not Views.StudioWorkspace workspace)
+        // AppInstance.Activated may arrive on an RPC worker. Do not even read
+        // Window.Content or call the OAuth coordinator until on the UI thread.
+        if (_dispatcher.HasThreadAccess)
         {
-            LaunchLog.Write("activation: workspace not ready");
+            HandleActivationOnUiThread(args);
+        }
+        else if (!_dispatcher.TryEnqueue(() => HandleActivationOnUiThread(args)))
+        {
+            LaunchLog.Write("activation: UI dispatcher unavailable during shutdown");
+        }
+    }
+
+    private void HandleActivationOnUiThread(AppActivationArguments args)
+    {
+        if (_window is not MainWindow mainWindow || mainWindow.IsShuttingDown)
+        {
+            LaunchLog.Write("activation: main window unavailable or closing");
             return;
         }
 
-        workspace.ViewModel?.HandleAppActivation(args);
-        if (_window is not null)
+        try
         {
-            BringMainWindowToForeground(_window);
+            // Window.Content is the root Grid, not StudioWorkspace. The window
+            // owns the view model regardless of the visual tree's container.
+            mainWindow.ViewModel.HandleAppActivation(args);
+            BringMainWindowToForeground(mainWindow);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("activation: handling failed", ex);
         }
     }
 

@@ -1,7 +1,7 @@
 // Mutates the current show: run only in an authorized test meeting.
 const fs=require('node:fs');
 const path=require('node:path');
-const output=path.resolve('artifacts/live-operator-qa');
+const output=path.resolve(process.env.COREVIDEO_TEST_OUTPUT_DIR||'artifacts/live-operator-qa');
 fs.mkdirSync(output,{recursive:true});
 const base=process.env.COREVIDEO_TEST_API_URL||'http://127.0.0.1:8011', sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const rows=[];const startTime=new Date().toISOString();

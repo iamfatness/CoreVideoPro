@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using CoreVideoPro.WinUI.ViewModels;
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -148,9 +149,14 @@ public sealed partial class SourcesPage : UserControl
 
     private void OnLayerSourceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is ComboBox { SelectedValue: string value, DataContext: SceneCanvasLayerViewModel layer })
+        // SelectionChanged's added item is authoritative. SelectedValue can
+        // still contain the previous value while WinUI updates the selection;
+        // x:Bind's template owner is explicit rather than inferred DataContext.
+        if (sender is ComboBox { Tag: SceneCanvasLayerViewModel layer } &&
+            e.AddedItems.Count == 1 && e.AddedItems[0] is RouteSelectOption option)
         {
-            layer.TrySelectSource(value);
+            if (layer.TrySelectSourceOption(option))
+                LaunchLog.Write($"scene source selected: layer={layer.LayerIndex} source={option.Value}");
         }
     }
 

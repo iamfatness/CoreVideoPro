@@ -82,7 +82,7 @@ public interface ITransportHost
 
     Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null);
 
-    Dictionary<string, object?> BuildSpinePayload();
+    Task<Dictionary<string, object?>> BuildSpinePayloadAsync(CancellationToken cancellationToken);
 
     void UnsubscribeZoomCapture(string status);
 

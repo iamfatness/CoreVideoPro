@@ -456,15 +456,6 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   enqueueResponse(handshake().stringify());
 
-  // The shared-texture handle is tiny and drives the 60fps GPU program present; the
-  // render thread drains it every frame. The base64 zoom-frame/preview payloads are
-  // heavy and only a UI thumbnail, so this loop pumps them on a throttled cadence.
-  auto pumpHeavyFrameEvents = [&] {
-    for (const auto& event : mediaCore_.drainProgramFramePreviewEvents()) {
-      enqueueFrame(event.stringify());
-    }
-  };
-
   // The render thread, this command loop, and the audio/output worker (below) touch
   // MediaCore. coreMutex serializes fast in-memory state + the GPU/video path; the
   // worker additionally uses MediaCore's own audioOutputMutex_ for the long DSP/IO
@@ -910,7 +901,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           std::chrono::duration_cast<std::chrono::milliseconds>(dequeuedAt - enqueuedAt).count();
       {
         const std::string reqType = request->getString("type");
-        std::string responseStr;
+        Json response;
         std::chrono::steady_clock::time_point h0, h1;
         if ((reqType == "zoom-leave" || reqType == "zoom-cancel") &&
             (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
@@ -945,7 +936,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           core::ScopedLockHoldTimer holdGuard("cmd.handle",
                                               core::LockHoldGuardrail::kCommandHandleBudgetUs);
           h0 = std::chrono::steady_clock::now();
-          responseStr = handle(*request).stringify();
+          response = handle(*request);
           h1 = std::chrono::steady_clock::now();
         }
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
@@ -966,6 +957,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
                        static_cast<long long>(lockWaitMs), static_cast<long long>(heldMs),
                        static_cast<long long>(queueWaitMs + lockWaitMs + heldMs));
         }
+        // handle() returns an owning snapshot. Serialization can be expensive
+        // for a full production sync, and does not need to block the renderer.
+        const auto serializeStart = std::chrono::steady_clock::now();
+        auto responseStr = response.stringify();
+        const auto serializeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - serializeStart).count();
+        if (serializeMs >= 30) {
+          std::fprintf(stderr, "[response] '%s' serialize=%lldms bytes=%zu (outside core lock)\n",
+                       reqType.c_str(), static_cast<long long>(serializeMs), responseStr.size());
+        }
         enqueueResponse(responseStr);
       }
     }
@@ -981,24 +982,30 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
     // The render thread drives the display render + shared-texture pump. Here we
     // only pump the heavy base64 frame/preview events, on a throttled cadence so
-    // they don't starve responses. Lock the core while draining its queues.
+    // they don't starve responses. Only move the owning event snapshots while
+    // holding coreMutex; serialize and enqueue them after releasing it.
     if (now - lastPump >= kFramePumpInterval) {
       const auto p0 = std::chrono::steady_clock::now();
+      std::vector<Json> previewEvents;
       {
         std::lock_guard<std::mutex> lock(coreMutex);
-        // Increment 6 guardrail: sanctioned long-hold site (base64 preview
-        // stringify on the throttled pump).
+        // The drain moves owning JSON values and leaves the producer queue empty.
         core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
                                             core::LockHoldGuardrail::kFramePumpBudgetUs);
-        pumpHeavyFrameEvents();
+        previewEvents = mediaCore_.drainProgramFramePreviewEvents();
+      }
+      const auto drainedAt = std::chrono::steady_clock::now();
+      for (const auto& event : previewEvents) {
+        enqueueFrame(event.stringify());
       }
       const auto pumpMs =
           std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p0).count();
-      // pumpHeavyFrameEvents runs on the command loop under coreMutex; if it ever
-      // blocks for long it stalls both command handling and the render thread.
+      // Distinguish lock acquisition/drain from serialization/writer queue work.
       if (pumpMs >= 200) {
-        std::fprintf(stderr, "[pump] pumpHeavyFrameEvents %lldms (blocks command loop + render)\n",
-                     static_cast<long long>(pumpMs));
+        const auto drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(drainedAt - p0).count();
+        std::fprintf(stderr, "[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
+                     static_cast<long long>(pumpMs), static_cast<long long>(drainMs),
+                     static_cast<long long>(pumpMs - drainMs));
       }
       lastPump = now;
     }
