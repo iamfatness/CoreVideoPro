@@ -44,7 +44,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             typeof(VideoSurfaceHost),
             new PropertyMetadata(0d, OnSourceFramingChanged));
 
-    private readonly Direct3D11InteropService _direct3DInterop = new();
+    private Direct3D11InteropService? _direct3DInterop;
+    private readonly VideoSurfacePresentationLifecycle _presentationLifecycle;
     private nint _direct3DDevicePointer;
     private bool _refreshingPathBindings;
     private bool _sourceFramingRefreshScheduled;
@@ -59,8 +60,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public VideoSurfaceHost()
     {
+        _presentationLifecycle = new(AttachGpuPresenter, DetachGpuPresenter);
         InitializeComponent();
-        _direct3DInterop.PresentationPathChanged += OnPresentationPathChanged;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
         SizeChanged += OnSizeChanged;
@@ -164,12 +165,12 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public bool HasMediaAssetPreview => !string.IsNullOrWhiteSpace(SurfaceState?.MediaAssetPath);
 
-    public bool IsDirect3DReady => _direct3DInterop.IsReady || _direct3DDevicePointer != 0;
+    public bool IsDirect3DReady => _direct3DInterop?.IsReady == true || _direct3DDevicePointer != 0;
 
-    public bool IsGpuPathActive => _direct3DInterop.IsGpuPresenting;
+    public bool IsGpuPathActive => _direct3DInterop?.IsGpuPresenting == true;
 
     public bool IsCpuFallbackActive =>
-        _direct3DInterop.IsCpuFallback ||
+        _direct3DInterop?.IsCpuFallback == true ||
         (SurfaceState?.PendingSharedHandle is { IsValid: true } && !IsGpuPathActive && HasPreviewBitmap);
 
     public void UpdateMetadata(VideoFrameMetadata metadata, string statusLine, string? detailLine = null)
@@ -216,7 +217,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     public void SetDirect3DDevice(nint devicePointer)
     {
         _direct3DDevicePointer = devicePointer;
-        if (devicePointer != 0 || _direct3DInterop.IsReady)
+        if (devicePointer != 0 || _direct3DInterop?.IsReady == true)
         {
             SwapChainHost.Visibility = Visibility.Visible;
         }
@@ -229,7 +230,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             return false;
         }
 
-        if (_direct3DInterop.TryPresentSharedTexture(handle))
+        if (_direct3DInterop?.TryPresentSharedTexture(handle) == true)
         {
             SwapChainHost.Visibility = Visibility.Visible;
             PreviewImage.Visibility = Visibility.Collapsed;
@@ -247,6 +248,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         if (sender is VideoSurfaceHost host)
         {
+            host._presentationLifecycle.Refresh(host.UsesGpuSharedTexture);
             host.TryPresentPendingSharedHandle();
             host.UpdatePreviewBitmap();
             host.ApplySourceFraming();
@@ -298,12 +300,14 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         _disposed = false;
         RefreshSourceFraming();
+        _presentationLifecycle.Load(UsesGpuSharedTexture);
+    }
 
-        if (!UsesGpuSharedTexture)
-        {
-            return;
-        }
-
+    private bool AttachGpuPresenter()
+    {
+        // Unloaded controls may be loaded again. Never reuse a disposed interop.
+        _direct3DInterop = new Direct3D11InteropService();
+        _direct3DInterop.PresentationPathChanged += OnPresentationPathChanged;
         if (_direct3DInterop.TryAttachSwapChainPanel(SwapChainHost))
         {
             _direct3DInterop.Label = SurfaceKey;
@@ -321,7 +325,10 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
                 Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnCompositionRendering;
                 _renderingHooked = true;
             }
+            return true;
         }
+        DetachGpuPresenter();
+        return false;
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -329,12 +336,22 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         // Mark disposed FIRST so any in-flight/queued Rendering callback that races
         // teardown bails out before touching the interop being disposed.
         _disposed = true;
+        _presentationLifecycle.Unload();
+    }
+
+    private void DetachGpuPresenter()
+    {
         if (_renderingHooked)
         {
             Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnCompositionRendering;
             _renderingHooked = false;
         }
-        _direct3DInterop.Dispose();
+        if (_direct3DInterop is { } interop)
+        {
+            _direct3DInterop = null;
+            interop.PresentationPathChanged -= OnPresentationPathChanged;
+            interop.Dispose();
+        }
         _direct3DDevicePointer = 0;
     }
 

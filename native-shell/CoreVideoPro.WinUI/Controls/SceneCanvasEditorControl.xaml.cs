@@ -25,9 +25,12 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     private NormalizedCanvasRect? _dragStartRect;
     private double _dragStartSourceOffsetX;
     private double _dragStartSourceOffsetY;
+    private bool _hasComposite;
+    private MediaAsset? _backgroundAsset;
 
     public event EventHandler<string>? PresetRequested;
     public event EventHandler<SceneCanvasLayerViewModel>? LayerChanged;
+    private long _lastCompositeDragUpdate;
     public event EventHandler<bool>? InteractionChanged;
 
     public SceneCanvasEditorControl()
@@ -43,8 +46,30 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     public bool IsInteracting => _dragLayer is not null;
 
+    public void SetCompositeSurface(VideoSurfaceState? surface)
+    {
+        var hasComposite = SceneCanvasPresentationRules.HasComposite(surface);
+        CompositePreview.SurfaceState = hasComposite ? surface : null;
+        CompositePreview.Visibility = hasComposite ? Visibility.Visible : Visibility.Collapsed;
+        if (_hasComposite == hasComposite) return;
+        _hasComposite = hasComposite;
+        ApplyBackground();
+        foreach (var frame in _layerFrames.Values)
+        {
+            if (frame.Tag is SceneCanvasLayerViewModel layer)
+                UpdateLayerSurface(frame, layer.Surface);
+        }
+    }
+
     public void SetBackground(MediaAsset? asset)
     {
+        _backgroundAsset = asset;
+        ApplyBackground();
+    }
+
+    private void ApplyBackground()
+    {
+        var asset = _hasComposite ? null : _backgroundAsset;
         if (asset is null)
         {
             BackgroundPreview.Visibility = Visibility.Collapsed;
@@ -182,7 +207,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var videoHost = new VideoSurfaceHost
         {
             Name = "LayerPreview",
-            SurfaceState = layer.Surface,
+            SurfaceState = _hasComposite ? null : layer.Surface,
+            Visibility = _hasComposite ? Visibility.Collapsed : Visibility.Visible,
             SourceFit = layer.FitMode,
             SourceScale = layer.SourceScale,
             SourceOffsetX = layer.SourceOffsetX,
@@ -287,8 +313,11 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
     }
 
-    private static void UpdateLayerSurface(Border frame, VideoSurfaceState surface)
+    private void UpdateLayerSurface(Border frame, VideoSurfaceState surface)
     {
+        frame.Background = new SolidColorBrush(_hasComposite
+            ? Color.FromArgb(0, 0, 0, 0)
+            : Color.FromArgb(48, 68, 193, 161));
         if (frame.Child is not Grid content)
         {
             return;
@@ -296,9 +325,12 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
         foreach (var child in content.Children)
         {
-            if (child is VideoSurfaceHost host && !ReferenceEquals(host.SurfaceState, surface))
+            if (child is VideoSurfaceHost host)
             {
-                host.SurfaceState = surface;
+                host.Visibility = _hasComposite ? Visibility.Collapsed : Visibility.Visible;
+                var shownSurface = _hasComposite ? null : surface;
+                if (ReferenceEquals(host.SurfaceState, shownSurface)) return;
+                host.SurfaceState = shownSurface;
                 host.RefreshSourceFraming();
                 return;
             }
@@ -549,6 +581,14 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
 
         ApplyLayerGeometry(frame, _dragLayer);
+        // The live image now comes from the core composite. Send bounded drag
+        // updates so it follows the manipulation chrome; release flushes the end.
+        var now = Environment.TickCount64;
+        if (_hasComposite && now - _lastCompositeDragUpdate >= 50)
+        {
+            _lastCompositeDragUpdate = now;
+            LayerChanged?.Invoke(this, _dragLayer);
+        }
         e.Handled = true;
     }
 

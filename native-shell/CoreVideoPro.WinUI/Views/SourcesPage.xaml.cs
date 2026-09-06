@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using CoreVideoPro.WinUI.ViewModels;
+using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -8,10 +9,11 @@ namespace CoreVideoPro.WinUI.Views;
 
 public sealed partial class SourcesPage : UserControl
 {
-    private StudioViewModel? _boundViewModel;
+    private readonly LoadedViewModelSubscription<StudioViewModel> _subscriptions;
 
     public SourcesPage()
     {
+        _subscriptions = new(SubscribeViewModel, UnsubscribeViewModel);
         InitializeComponent();
         SceneCanvasEditor.PresetRequested += OnCanvasPresetRequested;
         SceneCanvasEditor.LayerChanged += OnCanvasLayerChanged;
@@ -33,40 +35,40 @@ public sealed partial class SourcesPage : UserControl
             typeof(SourcesPage),
             new PropertyMetadata(null, OnViewModelChanged));
 
-    private static void OnViewModelChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
-        ((SourcesPage)sender).BindViewModel(
-            (StudioViewModel?)args.NewValue,
-            (StudioViewModel?)args.OldValue);
-
-    private void OnLoaded(object sender, RoutedEventArgs e) =>
-        RefreshSceneCanvasEditor();
-
-    private void OnUnloaded(object sender, RoutedEventArgs e) =>
-        BindViewModel(null, _boundViewModel);
-
-    private void BindViewModel(StudioViewModel? next, StudioViewModel? previous)
+    private static void OnViewModelChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
-        if (ReferenceEquals(previous, next))
-        {
-            return;
-        }
+        var page = (SourcesPage)sender;
+        var viewModel = (StudioViewModel?)args.NewValue;
+        page._subscriptions.SetViewModel(viewModel);
+        page.PopulateAddSourceFlyout(viewModel);
+        page.RefreshSceneCanvasEditor();
+    }
 
-        if (previous is not null)
-        {
-            previous.PropertyChanged -= OnViewModelPropertyChanged;
-            previous.PreviewCanvasLayers.CollectionChanged -= OnPreviewCanvasLayersChanged;
-        }
-
-        _boundViewModel = next;
-
-        if (next is not null)
-        {
-            next.PropertyChanged += OnViewModelPropertyChanged;
-            next.PreviewCanvasLayers.CollectionChanged += OnPreviewCanvasLayersChanged;
-        }
-
-        PopulateAddSourceFlyout(next);
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        // Pages may be removed and reinserted without their ViewModel DP changing.
+        // Restore listeners before reading the current scene on every load.
+        _subscriptions.Load(ViewModel);
+        PopulateAddSourceFlyout(ViewModel);
         RefreshSceneCanvasEditor();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        _subscriptions.Unload();
+        SceneCanvasEditor.SetCompositeSurface(null);
+    }
+
+    private void SubscribeViewModel(StudioViewModel viewModel)
+    {
+        viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        viewModel.PreviewCanvasLayers.CollectionChanged += OnPreviewCanvasLayersChanged;
+    }
+
+    private void UnsubscribeViewModel(StudioViewModel viewModel)
+    {
+        viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        viewModel.PreviewCanvasLayers.CollectionChanged -= OnPreviewCanvasLayersChanged;
     }
 
     private void PopulateAddSourceFlyout(StudioViewModel? viewModel)
@@ -91,10 +93,15 @@ public sealed partial class SourcesPage : UserControl
     // POS-2: rebuilt on every open so it always reflects the current media bin
     // (the one-shot Add-source population above would show a stale asset list).
     private void OnAddOverlayFlyoutOpening(object sender, object e) =>
-        OverlayLayerMenuBuilder.Populate(AddOverlayFlyout, _boundViewModel ?? ViewModel);
+        OverlayLayerMenuBuilder.Populate(AddOverlayFlyout, _subscriptions.Current ?? ViewModel);
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName is nameof(StudioViewModel.SceneCanvasCompositeSurface))
+        {
+            SceneCanvasEditor.SetCompositeSurface(ViewModel?.SceneCanvasCompositeSurface);
+            return;
+        }
         if (e.PropertyName is nameof(StudioViewModel.PreviewCanvasLayers)
             or nameof(StudioViewModel.HasPreviewSlotEditors)
             or nameof(StudioViewModel.PreviewSceneBackgroundAsset)
@@ -120,6 +127,7 @@ public sealed partial class SourcesPage : UserControl
 
     private void RefreshSceneCanvasEditor()
     {
+        SceneCanvasEditor.SetCompositeSurface(ViewModel?.SceneCanvasCompositeSurface);
         var layers = ViewModel?.PreviewCanvasLayers.ToList();
         SceneCanvasEditor.SetBackground(ViewModel?.PreviewSceneBackgroundAsset);
         SceneCanvasEditor.SetLayers(layers, layers?.FirstOrDefault());
