@@ -929,10 +929,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           continue;
         } else {
           std::lock_guard<std::mutex> lock(coreMutex);
-          // Increment 6 guardrail: sanctioned long-hold site — command-carrying
-          // syncs legitimately render a capped catch-up of synthetic ticks under
-          // the lock; the budget is a regression backstop above the 30ms [cmd]
-          // warning below.
+          // Commands apply state and copy a snapshot under the lock; live render
+          // cadence belongs to the display worker. Keep the existing budget as
+          // a regression backstop above the 30ms [cmd] warning below.
           core::ScopedLockHoldTimer holdGuard("cmd.handle",
                                               core::LockHoldGuardrail::kCommandHandleBudgetUs);
           h0 = std::chrono::steady_clock::now();

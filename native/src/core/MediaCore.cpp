@@ -1093,24 +1093,15 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   }
   const auto tCmd1 = std::chrono::steady_clock::now();
 
-  const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
-  const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
-  int additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
-  // Cap catch-up: when a sync carries a large elapsedMs (UI/transport hiccup),
-  // never render a synchronous storm of frames. A live program only needs the
-  // current frame; rendering dozens back-to-back drives the real D3D11/encoder/
-  // output path into a blocking burst that wedges the processing thread.
-  if (audioWorkerActive_) {
-    additionalTicks = std::min(additionalTicks, 2);
-  }
-  // Increment 2 (depends on the audio decouple): in the live server the render thread
-  // keeps lastProgramFrame_ fresh at ~60fps and the audio/output worker keeps the
-  // audio/output snapshot fresh, so an EMPTY poll (the 250ms media-core-sync) no
-  // longer needs to drive a synthetic tick under coreMutex â€” return the latest
-  // published snapshot without the heavy tick. Commands still render so their effect
-  // is reflected immediately; direct/test callers (no worker) always render.
-  if (audioWorkerActive_ && commands.empty()) {
-    additionalTicks = 0;
+  // Live workers own media cadence. Commands publish their applied state now;
+  // rendered frame evidence changes on the next display tick. Rendering here
+  // duplicates GPU work under coreMutex and advances animations between ticks.
+  // Preserve synthetic elapsed-time stepping for direct callers without workers.
+  int additionalTicks = 0;
+  if (!audioWorkerActive_) {
+    const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
+    const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
+    additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
   }
   for (int tick = 0; tick < additionalTicks; ++tick) {
     renderSyntheticTick();

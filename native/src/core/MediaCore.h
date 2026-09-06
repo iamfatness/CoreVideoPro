@@ -108,9 +108,9 @@ class MediaCore {
   // Light, video-only render tick for the operator program display. Renders the
   // GPU compositor and emits the shared-texture handle, but skips the audio mix,
   // monitor/output senders, encoder submit and base64 preview readback — i.e. no
-  // blocking I/O — so it can run at ~60fps on the command-processing thread
-  // without starving RPC command handling. The full renderSyntheticTick (encoder/
-  // recording/streaming/audio) still runs on the host-sync cadence.
+  // blocking I/O — driven at ~60fps by the dedicated display worker under
+  // coreMutex. Live command batches apply state without rendering; the next
+  // display tick publishes the corresponding frame. Audio/output has its own worker.
   void renderDisplayTick();
 
   // Phase 2 audio/output decouple. The audio mix, routed-bus matrix, monitor
@@ -142,9 +142,9 @@ class MediaCore {
   void setVideoOutputTickRunning(bool running) {
     videoOutputTickRunning_.store(running, std::memory_order_release);
   }
-  // Marks that a dedicated audio/output worker thread now drives renderAudioOutputTick,
-  // so the synchronous command-thread path (renderSyntheticTick(videoOnly=false) and
-  // the empty-poll tick in applyCommands) stops doing the audio/output work itself.
+  // Enables live worker ownership: audio/output drives renderAudioOutputTick and
+  // the display worker drives video rendering. Command batches and startup command
+  // helpers stop rendering synthetic ticks, including nonempty batches and polls.
   // Direct/unit-test callers leave this false so applyCommands stays synchronous.
   void enableAudioOutputWorker();
 

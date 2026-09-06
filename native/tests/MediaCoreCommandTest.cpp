@@ -489,6 +489,63 @@ class RecordingAudioCaptureSource final : public corevideo::modules::IAudioCaptu
 
 }  // namespace
 
+TEST(MediaCoreCommand, LiveBatchAppliesSceneWithoutRenderingCatchUp) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.enableAudioOutputWorker();
+  const auto cold = mediaCore.sessionState();
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "first"}}}, 60000);
+  EXPECT_EQ(state.getString("sceneId"), "first");
+  EXPECT_EQ(state.getNumber("programFrameCount"), cold.getNumber("programFrameCount"));
+  EXPECT_EQ(state.getString("renderPlanId"), cold.getString("renderPlanId"));
+  mediaCore.renderDisplayTick();
+  const auto rendered = mediaCore.sessionState();
+  EXPECT_EQ(rendered.getNumber("programFrameCount"), cold.getNumber("programFrameCount") + 1);
+  EXPECT_EQ(rendered.getString("renderPlanId"), "first:0:0");
+
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "second"}}}, 3600000);
+  EXPECT_EQ(state.getString("sceneId"), "second");
+  EXPECT_EQ(state.getString("renderPlanId"), rendered.getString("renderPlanId"));
+  EXPECT_EQ(state.getNumber("programFrameCount"), rendered.getNumber("programFrameCount"));
+  mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_EQ(state.getString("renderPlanId"), "second:0:0");
+  EXPECT_EQ(state.getNumber("programFrameCount"), rendered.getNumber("programFrameCount") + 1);
+}
+
+TEST(MediaCoreCommand, LiveLowerThirdAnimationAdvancesOnlyOnDisplayTicks) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.enableAudioOutputWorker();
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "set-overlay-asset"}, {"overlayId", "key:lower-third"},
+          {"text", "Speaker"}, {"position", "lower-third"}, {"enabled", true},
+          {"keyPhase", "building-in"}, {"buildInMs", 1000}}});
+  const auto initialProgress = state.get("overlayState")->get("overlays")->asArray().front().getNumber("keyProgress");
+  for (int i = 0; i < 40; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "live"}}}, 60000);
+  }
+  const auto& unchanged = state.get("overlayState")->get("overlays")->asArray().front();
+  EXPECT_EQ(unchanged.getString("keyPhase"), "building-in");
+  EXPECT_EQ(unchanged.getNumber("keyProgress"), initialProgress);
+  EXPECT_EQ(state.getNumber("programFrameCount"), 0);
+  mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_GT(state.get("overlayState")->get("overlays")->asArray().front().getNumber("keyProgress"), initialProgress);
+  for (int i = 0; i < 65; ++i) mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_EQ(state.get("overlayState")->get("overlays")->asArray().front().getString("keyPhase"), "on-air");
+}
+
+TEST(MediaCoreCommand, DirectBatchRetainsSynchronousElapsedTimeRendering) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "direct"}}}, 99);
+  EXPECT_EQ(state.getNumber("programFrameCount"), 3);
+  EXPECT_EQ(state.getString("renderPlanId"), "direct:0:0");
+}
+
 TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
