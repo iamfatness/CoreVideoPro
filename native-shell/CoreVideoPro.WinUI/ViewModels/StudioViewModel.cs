@@ -1038,9 +1038,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string PreviewSceneSummary => ResolveOnAirSceneLabel(PreviewSceneId);
 
     public string LowerThirdKeyStatus =>
+        LowerThirdPhaseSyncPending ? "Lower third sync pending — media core has not confirmed the key" :
         $"{ProgramLowerThirdKey.PhaseLabel} - {ProgramLowerThirdKey.SourceLabel}";
 
     public string LowerThirdKeySummary =>
+        LowerThirdPhaseSyncPending ? "Lower third requested; waiting for media core confirmation." :
         ProgramLowerThirdKey.IsVisible
             ? $"{ProgramLowerThirdKey.SourceName} keyed from program source"
             : "Lower-third key follows the active program source.";
@@ -1052,6 +1054,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FormatStudioLowerThirdActionLabel(ProgramLowerThirdKey.IsVisible);
 
     public string StudioLowerThirdCompactStatus =>
+        LowerThirdPhaseSyncPending ? "Sync pending" :
         ProgramLowerThirdKey.IsVisible
             ? FormatLowerThirdPhaseLabel(ProgramLowerThirdKey.Phase)
             : ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not null
@@ -1059,6 +1062,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : "No source";
 
     public string StudioLowerThirdSourceLabel =>
+        LowerThirdPhaseSyncPending ? "Lower third sync pending; waiting for media core" :
         ProgramLowerThirdKey.IsVisible
             ? $"{ProgramLowerThirdKey.SourceName} - {ProgramLowerThirdKey.PhaseLabel}"
             : ResolveProgramLowerThirdSource(ProgramSceneRoutes) is { } source
@@ -3577,8 +3581,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    partial void OnActiveSceneIdChanged(string value)
+    partial void OnActiveSceneIdChanged(string oldValue, string value)
     {
+        if (!_scenes.Any(scene => string.Equals(scene.Id, value, StringComparison.Ordinal)))
+        {
+            // Never let a transient selection reset poison the program bus.
+            if (_scenes.Any(scene => string.Equals(scene.Id, oldValue, StringComparison.Ordinal)))
+            {
+                ActiveSceneId = oldValue;
+            }
+            return;
+        }
         RefreshSceneItems();
         OnPropertyChanged(nameof(ProgramScene));
         OnPropertyChanged(nameof(ProgramSceneSummary));
@@ -3600,6 +3613,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _lastValidPreviewSceneId = value;
+        MagicScene.NotifyPreviewSceneChanged();
         // S2b: cueing a different scene abandons any uncommitted edits to the
         // live scene (the draft belongs to the previously cued scene).
         DiscardLivePreviewDraft();
@@ -3617,7 +3631,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // multi-layer preview bus (mirrors how program scene changes sync). Discrete user
         // action, so a single sync — no flood. Backpressure is transient (the periodic sync
         // reapplies), so swallow the in-flight signal.
-        if (_bridge.Running)
+        if (_bridge.Running && _takeMutationDepth == 0)
         {
             _ = SyncPreviewSceneChangeAsync();
         }
@@ -3735,8 +3749,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void SelectScene(string sceneId)
     {
+        var scene = Scenes.FirstOrDefault(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
+        if (scene is null)
+        {
+            CommandStatus = "Select an available scene to queue on preview";
+            return;
+        }
+        MagicScene.NotifyManualSceneSelection();
         PreviewSceneId = sceneId;
-        CommandStatus = $"{Scenes.First(s => s.Id == sceneId).Name} queued on preview";
+        CommandStatus = $"{scene.Name} queued on preview";
         SchedulePreviewRoutingRefresh();
     }
 
@@ -3827,10 +3848,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public bool CanTake =>
-        PreviewSceneId != ActiveSceneId ||
-        (_livePreviewDraft is not null &&
-         string.Equals(_livePreviewDraftSceneId, ActiveSceneId, StringComparison.Ordinal) &&
-         HasPendingProgramMediaCue(GetMutableRoutes(ActiveSceneId), _livePreviewDraft));
+        Scenes.Any(scene => string.Equals(scene.Id, PreviewSceneId, StringComparison.Ordinal)) &&
+        Scenes.Any(scene => string.Equals(scene.Id, ActiveSceneId, StringComparison.Ordinal)) &&
+        (PreviewSceneId != ActiveSceneId || HasPendingPreviewTake);
 
     public string TakeTransitionLabel => TakeTransitionMode switch
     {
@@ -4095,7 +4115,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // generated [RelayCommand] (CanExecute = CanTake, shared with Scenes/MagicScene) so XAML and
     // the external TakeCommand.NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanTake))]
-    private Task TakeAsync() => _transportCoordinator.TakeAsync();
+    private Task TakeAsync()
+    {
+        MagicScene.NotifyManualSceneSelection();
+        return _transportCoordinator.TakeAsync();
+    }
 
     [RelayCommand]
     private void SetTakeTransition(string? transitionMode)
@@ -8516,7 +8540,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
     {
-        var scene = Scenes.First(s => s.Id == ActiveSceneId);
+        var scene = Scenes.FirstOrDefault(s => s.Id == ActiveSceneId)
+            ?? throw new InvalidOperationException("Program scene is unavailable. Select a valid scene before taking.");
         var syncContext = BuildProductionSyncContext();
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(syncContext);
         if (!string.IsNullOrWhiteSpace(reason))
@@ -10013,6 +10038,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         Tm("audioReadouts");
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
+        ReconcileLowerThirdPhaseSync(snapshot);
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
         MaybeLogAudioTelemetry(snapshot);
         Tm("audioTelemetry");
@@ -10374,6 +10400,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         LowerThirdName = string.Empty;
         LowerThirdTitle = string.Empty;
         LowerThirdOrg = string.Empty;
+        _lowerThirdKeyTransitionCts?.Cancel();
+        _lowerThirdTargetSourceId = string.Empty;
+        LowerThirdPhaseSyncPending = false;
         ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
         _captionTranscriptPatches.Clear();
         CaptionTranscript = [];
@@ -12873,7 +12902,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            CommandStatus = ex.Message;
+            cancellationToken.ThrowIfCancellationRequested();
+            RecoverLowerThirdPhaseSyncFailure(ex);
             return false;
         }
     }
@@ -13132,6 +13162,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(PreviewSlotCount));
         OnPropertyChanged(nameof(HasPreviewSlotEditors));
         OnPropertyChanged(nameof(SceneBuilderSlotSummary));
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
     }
 
     private IReadOnlyList<ParticipantSurfaceTile> BuildSceneTiles(

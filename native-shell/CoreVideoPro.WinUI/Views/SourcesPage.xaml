@@ -78,9 +78,10 @@
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <ComboBox ItemsSource="{x:Bind ViewModel.SceneItems, Mode=OneWay}"
+                            <ComboBox x:Name="ScenePicker" ItemsSource="{x:Bind ViewModel.SceneItems, Mode=OneWay}"
                                       DisplayMemberPath="Name" SelectedValuePath="Id"
-                                      SelectedValue="{x:Bind ViewModel.PreviewSceneId, Mode=TwoWay}"
+                                      SelectedValue="{x:Bind ViewModel.PreviewSceneId, Mode=OneWay}"
+                                      SelectionChanged="OnPreviewSceneSelectionChanged"
                                       Header="Template to edit" HorizontalAlignment="Stretch" />
                             <Button Grid.Column="1" Content="Edit Program"
                                     Style="{StaticResource OperatorGhostButton}"

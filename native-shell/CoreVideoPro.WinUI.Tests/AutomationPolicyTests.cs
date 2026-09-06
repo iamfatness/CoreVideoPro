@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.MediaCore.Models;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -60,6 +61,29 @@ public sealed class AutomationPolicyTests
 
         Assert.Equal("panel", thresholdThree.RecommendedSceneId);
         Assert.Equal("interview", thresholdFour.RecommendedSceneId);
+    }
+
+    [Theory]
+    [InlineData("speaker-slides", false, 4, 2, "interview")]
+    [InlineData("panel", true, 4, 3, "interview")]
+    [InlineData("interview", true, 2, 2, "panel")]
+    [InlineData("intro", true, 4, 5, "intro")]
+    public void NativeRecommendationHonorsOperatorPolicyWithoutLosingDominantSpeakerDecision(
+        string nativeScene, bool preferShare, int threshold, int count, string expected)
+    {
+        var native = new NativeMediaCoreAutoProduction
+        {
+            RecommendedSceneId = nativeScene,
+            Confidence = 95,
+            RuleId = nativeScene == "intro" ? "single-speaker" : "test",
+            Rationale = "native recommendation"
+        };
+        var participants = Enumerable.Range(0, count)
+            .Select(i => Participant(i.ToString(), nativeScene == "speaker-slides" && i == 0)).ToArray();
+        var recommendation = ProductionStateHelper.BuildAutomationRecommendation(
+            native, participants, Scenes, preferShare, threshold);
+        Assert.Equal(expected, recommendation.RecommendedSceneId);
+        if (nativeScene == "intro") Assert.Equal(95, recommendation.Confidence);
     }
 
     private static Participant Participant(string id, bool isScreenSharing = false) => new()

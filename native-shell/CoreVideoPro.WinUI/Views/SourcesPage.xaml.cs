@@ -10,6 +10,7 @@ namespace CoreVideoPro.WinUI.Views;
 public sealed partial class SourcesPage : UserControl
 {
     private readonly LoadedViewModelSubscription<StudioViewModel> _subscriptions;
+    private bool _scenePickerRestoreScheduled;
 
     public SourcesPage()
     {
@@ -97,6 +98,15 @@ public sealed partial class SourcesPage : UserControl
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(StudioViewModel.SceneItems) && !_scenePickerRestoreScheduled)
+        {
+            _scenePickerRestoreScheduled = true;
+            UiDispatch.Enqueue(DispatcherQueue, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                _scenePickerRestoreScheduled = false;
+                if (IsLoaded) ScenePicker.SelectedValue = ViewModel?.PreviewSceneId;
+            }, "scene-picker.restore-selection");
+        }
         if (e.PropertyName is nameof(StudioViewModel.SceneCanvasCompositeSurface))
         {
             SceneCanvasEditor.SetCompositeSurface(ViewModel?.SceneCanvasCompositeSurface);
@@ -135,6 +145,19 @@ public sealed partial class SourcesPage : UserControl
 
     private void OnCanvasPresetRequested(object? sender, string preset) =>
         ViewModel?.ApplyCanvasPreset(preset);
+
+    private void OnPreviewSceneSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // ItemsSource refresh clears selection temporarily. Only a real scene
+        // selection may cue preview; a binding reset must never become a Take target.
+        if (sender is ComboBox { SelectedValue: string sceneId } &&
+            ViewModel is { } viewModel &&
+            viewModel.Scenes.Any(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal)) &&
+            !string.Equals(viewModel.PreviewSceneId, sceneId, StringComparison.Ordinal))
+        {
+            viewModel.SelectSceneCommand.Execute(sceneId);
+        }
+    }
 
     private void OnCanvasLayerChanged(object? sender, SceneCanvasLayerViewModel layer) =>
         ViewModel?.CommitPreviewCanvasLayer(layer);

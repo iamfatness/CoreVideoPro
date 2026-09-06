@@ -1034,8 +1034,19 @@ public static class ProductionStateHelper
         bool preferScreenShare = true,
         int panelParticipantThreshold = 4)
     {
+        // The native director has no shell policy inputs (its panel cutoff is
+        // fixed at three and screen sharing always wins). Keep its richer speaker
+        // decisions only when they agree with the operator's layout preferences.
+        var threshold = Math.Clamp(panelParticipantThreshold, 2, 10);
+        var nativeScene = nativeRecommendation?.RecommendedSceneId;
+        var conflictsWithPolicy =
+            (nativeScene == "speaker-slides" && !preferScreenShare) ||
+            (nativeScene == "panel" && participants.Count < threshold) ||
+            (nativeScene == "interview" && participants.Count >= threshold);
         if (nativeRecommendation is not null &&
-            !string.IsNullOrWhiteSpace(nativeRecommendation.RecommendedSceneId) &&
+            !string.IsNullOrWhiteSpace(nativeScene) &&
+            scenes.Any(scene => scene.Id == nativeScene) &&
+            !conflictsWithPolicy &&
             participants.Count > 0)
         {
             return new AutoProductionState

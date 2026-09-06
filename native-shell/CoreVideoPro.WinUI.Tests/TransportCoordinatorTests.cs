@@ -294,6 +294,79 @@ public sealed class TransportCoordinatorTests
         Assert.StartsWith("Streaming start failed:", host.OutputStatus);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("deleted-scene")]
+    public async Task Take_InvalidPreviewCannotPoisonProgram(string? preview)
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = preview!;
+        await coordinator.TakeAsync();
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal(0, host.SyncCallCount);
+        Assert.Equal(0, host.PromoteCallCount);
+        Assert.Contains("unavailable", host.CommandStatus);
+    }
+
+    [Fact]
+    public async Task Take_BusySyncRetriesSameProgramWithoutSwappingAgain()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 3, recordingSyncRetryDelayMs: 1);
+        host.PreviewSceneId = "interview";
+        host.SyncFailuresRemaining = 2;
+        await coordinator.TakeAsync();
+        Assert.Equal(new[] { "interview", "interview", "interview" }, host.SyncedProgramIds);
+        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal(1, host.TakeVersionIncrements);
+        Assert.Equal(0, host.RollbackCount);
+        Assert.Equal("Program updated", host.OutputStatus);
+    }
+
+    [Fact]
+    public async Task Take_DoubleInvocationWhileAwaitingSyncDoesNotSwapBack()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        host.HoldSync = true;
+        var first = coordinator.TakeAsync();
+        await coordinator.TakeAsync();
+        Assert.Equal("interview", host.ActiveSceneId);
+        Assert.Equal(1, host.SyncCallCount);
+        host.ReleaseSync();
+        await first;
+    }
+
+    [Fact]
+    public async Task Take_FailureRestoresPriorProgramAndRetainsPreviewForRetry()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        host.SyncThrows = new InvalidOperationException("native rejected scene");
+        await coordinator.TakeAsync();
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(1, host.RollbackCount);
+        Assert.Contains("previous local Program restored", host.CommandStatus);
+        host.SyncThrows = null;
+        await coordinator.TakeAsync();
+        Assert.Equal("interview", host.ActiveSceneId);
+    }
+
+    [Fact]
+    public async Task Take_ExhaustedBackpressureRestoresProgramInsteadOfClaimingSuccess()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 2, recordingSyncRetryDelayMs: 1);
+        host.PreviewSceneId = "interview";
+        host.SyncFailuresRemaining = 10;
+        await coordinator.TakeAsync();
+        Assert.Equal(2, host.SyncCallCount);
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(1, host.RollbackCount);
+        Assert.NotEqual("Program updated", host.OutputStatus);
+    }
+
     // ---------------------------------------------------------------- Take
 
     [Fact]
@@ -384,7 +457,7 @@ public sealed class TransportCoordinatorTests
 
         public string EngineStatus { private get; set; } = string.Empty;
 
-        public string CommandStatus { private get; set; } = string.Empty;
+        public string CommandStatus { get; set; } = string.Empty;
 
         public string OutputStatus { get; set; } = "Outputs idle";
 
@@ -401,6 +474,8 @@ public sealed class TransportCoordinatorTests
         public string ProgramSceneSummary => ActiveSceneId;
 
         public string TakeTransitionLabel => "Fade";
+
+        public bool IsSceneAvailable(string? sceneId) => sceneId is "intro" or "interview";
 
         // --- test knobs ---
         public bool HoldSync { get; set; }
@@ -419,12 +494,15 @@ public sealed class TransportCoordinatorTests
 
         // --- observed counters ---
         public int SyncCallCount { get; private set; }
+        public List<string> SyncedProgramIds { get; } = [];
 
         public int PromoteCallCount { get; private set; }
 
         public int TakeVersionIncrements { get; private set; }
 
         public int CopyPreviewRoutesCallCount { get; private set; }
+
+        public int RollbackCount { get; private set; }
 
         public int UnsubscribeCallCount { get; private set; }
 
@@ -436,7 +514,18 @@ public sealed class TransportCoordinatorTests
         public void RunOnUiThread(Action action) => action();
 
         // --- ITransportHost ---
-        public bool HasPendingProgramMediaCue(string sceneId) => HasPendingCue;
+        public bool HasPendingPreviewChanges(string sceneId) => HasPendingCue;
+
+        public Func<Func<bool>> CaptureTakeRollback()
+        {
+            var program = ActiveSceneId;
+            var preview = PreviewSceneId;
+            return () => () => { ActiveSceneId = program; PreviewSceneId = preview; RollbackCount++; return true; };
+        }
+
+        public void BeginTakeMutation() { }
+        public void EndTakeMutation() { }
+        public void RequestTakeReconciliation() { }
 
         public void CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesCallCount++;
 
@@ -451,6 +540,7 @@ public sealed class TransportCoordinatorTests
         public async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
         {
             SyncCallCount++;
+            SyncedProgramIds.Add(ActiveSceneId);
             if (SyncFailuresRemaining > 0)
             {
                 SyncFailuresRemaining--;
