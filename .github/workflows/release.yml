@@ -50,12 +50,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  required-tests:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   # Job 0 -- validate: tag == package.json version, all version sources in sync
   # (D1 stamp check), and a CHANGELOG section exists for the release notes.
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -77,7 +84,7 @@ jobs:
         run: node scripts/release-notes.mjs "$GITHUB_REF_NAME"
 
   release-windows:
-    needs: validate
+    needs: [validate, required-tests]
     runs-on: windows-latest
     timeout-minutes: 120
     defaults:
@@ -85,6 +92,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -311,43 +320,26 @@ jobs:
           Set-Content -Path "artifacts/latest.json" -Value $latest -Encoding utf8
           Write-Host $latest
 
-      - name: Create GitHub Release
+      - name: Assemble immutable signed release candidate
         if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $tag = $env:GITHUB_REF_NAME
           $releaseDir = "artifacts/release"
           New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
           Copy-Item "artifacts/native/CoreVideoPro.msix" "$releaseDir/CoreVideoPro-v$version.msix"
           Copy-Item "artifacts/native/CoreVideoPro.appinstaller" "$releaseDir/CoreVideoPro.appinstaller"
           Copy-Item "artifacts/CoreVideoPro-symbols-v$version.zip" $releaseDir
           Copy-Item "artifacts/latest.json" $releaseDir
-          $notes = Join-Path $env:RUNNER_TEMP "release-notes.md"
-          node scripts/release-notes.mjs $tag | Out-File -FilePath $notes -Encoding utf8
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $assets = Get-ChildItem -Path $releaseDir -File | ForEach-Object { $_.FullName }
-          gh release create $tag --title "CoreVideo Pro v$version" --notes-file $notes --verify-tag @assets
+          node scripts/release-evidence.mjs candidate $env:GITHUB_SHA "$releaseDir/CoreVideoPro-v$version.msix" native/build-dev/CMakeCache.txt native-shell/CoreVideoPro.WinUI/msix-payload "$releaseDir/candidate.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Publish to update host (TODO -- D0/D4 hosting decision)
+      - name: Upload signed candidate for controlled hardware validation
         if: github.event_name == 'push'
-        env:
-          COREVIDEO_UPDATE_BASE_URL: ${{ vars.COREVIDEO_UPDATE_BASE_URL }}
-        run: |
-          # TODO(D0/D4): automate once the owner picks the update host + creds
-          # (spec D4 recommends an R2 bucket behind the existing Cloudflare
-          # account with a custom domain). Deliberately fail-soft: the signed
-          # release exists either way; auto-update just won't see it until the
-          # files below are published.
-          $version = "${{ steps.version.outputs.version }}"
-          $base = $env:COREVIDEO_UPDATE_BASE_URL.TrimEnd('/')
-          Write-Host "::warning::Update-host publish is NOT automated yet. To light up install/auto-update, upload these GitHub Release assets to the update host so these URLs resolve:"
-          Write-Host "  CoreVideoPro-v$version.msix   -> $base/CoreVideoPro-v$version.msix"
-          Write-Host "  CoreVideoPro.appinstaller     -> $base/CoreVideoPro.appinstaller"
-          Write-Host "  latest.json                   -> $base/latest.json"
-          Write-Host "Example (R2): wrangler r2 object put <bucket>/CoreVideoPro.appinstaller --file CoreVideoPro.appinstaller (+ msix + latest.json), or the R2 dashboard."
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-candidate
+          path: artifacts/release/*
+          if-no-files-found: error
 
       # ---- Dry-run (workflow_dispatch) artifacts: explicitly UNSIGNED. ----
 
@@ -366,3 +358,88 @@ jobs:
           name: CoreVideoPro-symbols-dry-run
           path: artifacts/CoreVideoPro-symbols-v*.zip
           if-no-files-found: error
+
+  hardware-evidence:
+    if: github.event_name == 'push'
+    needs: release-windows
+    # Dedicated controlled rig, never a pull-request runner. Its harness must
+    # install and exercise the downloaded package, not build another binary.
+    runs-on: [self-hosted, Windows, X64, corevideo-release-rig]
+    environment: production-hardware-validation
+    permissions:
+      contents: read
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-release-candidate
+          path: artifacts/candidate
+      - name: Run controlled rig harness on signed candidate
+        shell: pwsh
+        env:
+          COREVIDEO_HARDWARE_HARNESS: ${{ vars.COREVIDEO_HARDWARE_HARNESS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:COREVIDEO_HARDWARE_HARNESS -or -not (Test-Path -LiteralPath $env:COREVIDEO_HARDWARE_HARNESS -PathType Leaf)) {
+            throw 'Configure COREVIDEO_HARDWARE_HARNESS on the controlled rig; hardware evidence is mandatory for publication.'
+          }
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $evidenceDir | Out-Null
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "COREVIDEO_EVIDENCE_DIR=$evidenceDir"
+          $manifest = (Resolve-Path artifacts/candidate/candidate.json).Path
+          $candidate = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+          if ($candidate.sourceSha -ne $env:GITHUB_SHA) { throw 'Candidate source SHA differs from release workflow SHA.' }
+          $package = (Resolve-Path (Join-Path artifacts/candidate $candidate.artifact.name)).Path
+          & $env:COREVIDEO_HARDWARE_HARNESS -CandidateManifest $manifest -PackagePath $package -EvidenceDirectory $evidenceDir
+          if ($LASTEXITCODE -ne 0) { throw "Hardware harness failed: $LASTEXITCODE" }
+          node scripts/release-evidence.mjs validate $manifest (Join-Path $evidenceDir evidence.json) $package (Join-Path $evidenceDir verdict.json)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Archive sanitized hardware evidence
+        if: always() && env.COREVIDEO_EVIDENCE_DIR != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-release-evidence
+          path: ${{ env.COREVIDEO_EVIDENCE_DIR }}
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [required-tests, release-windows, hardware-evidence]
+    runs-on: ubuntu-latest
+    environment: production-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-release-candidate
+          path: artifacts/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: hardware-release-evidence
+          path: artifacts/evidence
+      - name: Revalidate candidate and evidence before publishing
+        run: |
+          PACKAGE=$(node -p "JSON.parse(require('fs').readFileSync('artifacts/release/candidate.json')).artifact.name")
+          node scripts/release-evidence.mjs validate artifacts/release/candidate.json artifacts/evidence/evidence.json "artifacts/release/$PACKAGE" artifacts/release/verification.json
+          node -e "const c=JSON.parse(require('fs').readFileSync('artifacts/release/candidate.json')); if(c.sourceSha!==process.env.GITHUB_SHA) process.exit(1)"
+      - name: Create GitHub Release from validated bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$GITHUB_REF_NAME" --title "CoreVideo Pro $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag artifacts/release/*
+      - name: Update host publication reminder
+        run: echo "::warning::Update-host upload remains manual. Publish the validated release assets to COREVIDEO_UPDATE_BASE_URL; do not rebuild them."

@@ -30,6 +30,8 @@ export default defineConfig({
       // does NOT match .claude/worktrees/<name>/native-core/**.
       "**/.claude/**",
       "native-core/**",
+      // Infrastructure tests use node:test and run in their own CI command.
+      "scripts/tests/release-evidence.test.mjs",
       "tests/e2e/**",
       "src/App.test.tsx"
     ],
