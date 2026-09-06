@@ -1,4 +1,77 @@
-# Command-thread render stall follow-up
+# Command-thread stalls and rendered lower-third identity
+
+## Final implementation
+
+PR [407](https://github.com/iamfatness/CoreVideoPro/pull/407) removes two sources
+of work under the command lock: redundant live rendering, and full session
+snapshots built and discarded after each command in a batch. Commands still
+apply in order; each batch captures one final snapshot. Direct callers without
+live workers retain synchronous rendering.
+
+Lower thirds now resolve from the successfully composed Program frame's ordered
+video-source bindings, rather than independently resolving automatic routes.
+The mapper reads the nested native frame's scene ID; it no longer substitutes
+the acknowledged scene ID. A source edit waits for its sync acknowledgment and
+a newer frame. The compositor suppresses a source-bound key on the first frame
+that no longer contains that source. Failed composition invalidates attribution;
+visibility confirmation matches the rendered source, content, and phase.
+Explicit missing sources remain missing, with no arbitrary roster substitution.
+Binding attribution does not itself prove fresh source pixels.
+
+The native log now includes the stage breakdown of the slowest individual tick
+in each 120-tick window. This supplements averages and excludes core-lock wait;
+it does not change frame budgets or rendering quality.
+
+## Final regression and live checks
+
+- Native Release core and tests rebuilt at `2825ea0`; **637/637 tests passed**.
+- **505/505 MediaCore and 834/834 WinUI tests passed**; shell publish succeeded.
+- Native regressions cover one snapshot per ordered batch, display-worker frame
+  ownership, stale intent versus rendered scene, immediate key suppression,
+  failed composition, same-ID key rebinding, and hidden-to-visible proof.
+- Managed regressions cover native wire mapping, exact current source metadata,
+  sticky selection only while present, same-scene freshness, and API evidence.
+- The first combined live candidate passed **90 operator cycles and 146 visible
+  lower-third identity observations**, 23:09:20.739–23:12:40.673 UTC. Frames
+  advanced from 3,328 to 15,328. Tests exercised Take/Preview convergence, keys
+  carried across cuts, Magic cueing, and manual automation override.
+- After the Clang compatibility correction, the final candidate passed automatic
+  Take, manual lower-third off, and manual Take holding. A real scene-builder
+  check preserved the source assignment on opening the picker; choosing Luis
+  changed the draft preview while Program retained Anika. Update scene then
+  rendered Luis and his matching lower third. This exercised the real view-model
+  freshness path, which cannot be constructed safely in the current unit harness.
+
+Local evidence is in `artifacts/render-stall-final`: candidate hashes, build/test
+logs, `operator/native-soak-results.json`, `automation/automatic-take-results.json`,
+and `scene-source-ui-results.json`. The UI test assigned Speaker + Slides source
+2 to Input 03 (Luis); this is a test-show configuration change.
+
+The final extended run uses `COREVIDEO_TEST_MINUTES=30` with
+`scripts/qa/operator-api-stress.cjs`, writing to `artifacts/render-stall-final/soak`.
+The harness requires Zoom Live and capture, verifies newer rendered frames, and
+rejects any observed visible lower third whose source is absent from rendered
+Program. It retains failures and timestamps. See PR 407 for the completed
+extended-run result, bounded performance metrics, and final merge disposition.
+
+## CI exception
+
+Clang initially rejected a nested deduced-return function used before its
+definition; moving that definition before its callers fixed the Mac builds.
+This was a new compile failure and was corrected rather than waived.
+
+The remaining macOS recording-rate assertion already fails on the exact base.
+At `2825ea0`, the [Mac drill](https://github.com/iamfatness/CoreVideoPro/actions/runs/34066221905/job/101575327338)
+measured 29.1 fps (166 frames / 5.71 seconds), with lock-budget and command-response
+checks passing. The [unchanged base drill](https://github.com/iamfatness/CoreVideoPro/actions/runs/34059147233/job/101556417182)
+measured 21.0 fps (129 frames / 6.15 seconds), failing the same sole assertion.
+This is not a claim that recording performance is fixed.
+
+## Earlier diagnostic evidence
+
+The sections below record the earlier candidate and why the additional changes
+above were needed. Their limitations and failed broad run remain part of the
+evidence; they are not final-candidate results.
 
 ## Starting point
 
@@ -30,7 +103,7 @@ native-confirmed operator cycles, 16:37:43–16:43:06 Eastern, with frame counte
 frame-counter advancement, not fresh meeting video. A brief managed publish
 overlapped part of the run. It is diagnostic evidence, not a controlled benchmark.
 
-## Validation
+## Earlier candidate validation
 
 - Native Release core and test build passed; all 632 native cases passed. New
   regressions cover applied versus rendered scene state, large elapsed values,
@@ -38,8 +111,8 @@ overlapped part of the run. It is diagnostic evidence, not a controlled benchmar
 - All 829 WinUI cases passed after adding rendered-frame control evidence and
   lower-third rejection tests. The final shell publish succeeded.
 - The control API now reports `nativeRenderPlanId` directly from the last rendered
-  frame. `nativeRenderedSceneId` is nullable and is not inferred when the native
-  protocol omits it. The focused scene test checks rendered-plan identity and a
+  frame. The later review found and removed a mapper substitution of acknowledged
+  scene identity. The focused scene test checks rendered-plan identity and a
   newer frame, rather than treating an acknowledged scene as fresh output.
 
 - Final live session `820dcfd06afb4572839fc9f9aec63dc3`, shell PID 5600/native
@@ -66,13 +139,13 @@ returned success. Native overlay state reads the current asset directly, so this
 was not an old rendered frame rolling back the key. No build-in command started.
 The API now returns failure when the view model rejects the requested intent.
 
-Once an eligible source appeared, the same native candidate successfully built
-the lower third to on-air. Automatic source attribution still needs a separate
-fix: an automatic route can show a native positional fallback while the managed
+Once an eligible source appeared, that native candidate successfully built
+the lower third to on-air. Automatic source attribution required another
+fix: an automatic route could show a native positional fallback while the managed
 lower-third resolver finds no active speaker, or selects a source that differs
 from that fallback. At 17:04:28 the Panel lower third named Susan while the visible
-six-person grid did not contain her. This branch does not change routing policy
-or claim that this identity mismatch is resolved. The aborted broad test remains
+six-person grid did not contain her. The final implementation above addresses
+this identity mismatch using rendered bindings. The aborted broad test remains
 in `artifacts/render-stall/candidate/native-soak-results.json`.
 
 On the final candidate at 17:08:51, the same unavailable-source request correctly
