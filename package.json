@@ -26,7 +26,7 @@
     "build:show-engine": "npm run build --workspace show-engine",
     "test:native-media-core": "powershell -ExecutionPolicy Bypass -File scripts/test-native.ps1",
     "test:native-recording-proof": "node scripts/native-recording-proof.mjs",
-    "test:native-shell": "dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj --logger trx --results-directory artifacts/test-results/mediacore && dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj --logger trx --results-directory artifacts/test-results/control && dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj --logger trx --results-directory artifacts/test-results/winui && powershell -ExecutionPolicy Bypass -File native-shell/test-media-core-bridge.ps1",
+    "test:native-shell": "dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj --logger trx --results-directory artifacts/test-results/mediacore && dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj --logger trx --results-directory artifacts/test-results/control && dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj --blame-hang-timeout 2m --blame-hang-dump-type mini --logger trx --results-directory artifacts/test-results/winui && powershell -ExecutionPolicy Bypass -File native-shell/test-media-core-bridge.ps1",
     "test:native-shell-smoke": "powershell -ExecutionPolicy Bypass -File scripts/test-native-shell-smoke.ps1",
     "test:native-shell-dev-readiness": "powershell -ExecutionPolicy Bypass -File scripts/test-native-shell-dev-readiness.ps1",
     "test:studio-workflow": "powershell -ExecutionPolicy Bypass -File scripts/test-studio-workflow.ps1",

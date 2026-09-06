@@ -292,7 +292,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-shell-test-results
-          path: artifacts/test-results/**/*.trx
+          path: artifacts/test-results/**
           if-no-files-found: error
       - name: Publish WinUI shell (build gate)
         run: dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -r win-x64 --self-contained false
