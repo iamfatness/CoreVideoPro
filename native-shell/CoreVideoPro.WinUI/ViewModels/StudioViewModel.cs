@@ -1613,9 +1613,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ? "Start or stop Zoom video capture for this meeting."
         : "Join a Zoom meeting before starting capture.";
 
-    public string RecordingLabel => Recording ? "Recording" : "Record";
+    public string RecordingLabel => Recording ? "Recording" : RecordingRequested ? "Starting…" : "Record";
 
-    public string StreamingLabel => Streaming ? "Streaming" : "Stream";
+    public string StreamingLabel => Streaming ? "Streaming" : StreamingRequested ? "Starting…" : "Stream";
 
     public IReadOnlyList<string> StreamRtmpProtocolOptions { get; } = ["rtmps", "rtmp"];
 
@@ -8499,7 +8499,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             new ZoomMediaSpinePayloadBuilder.BuildInput
             {
                 Participants = participants,
-                Recording = Recording,
+                Recording = RecordingRequested,
                 SelectedBreakoutRoomId = _currentRoomId,
                 EngineRunning = ZoomCaptureSubscribed,
                 // Explicit opt-in: raw capture (and the Zoom recording-rights
@@ -8732,8 +8732,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MultiviewColumns = multiviewGrid.Columns,
             MultiviewRows = multiviewGrid.Rows,
             Participants = participants,
-            Recording = Recording,
-            Streaming = Streaming,
+            Recording = RecordingRequested,
+            Streaming = StreamingRequested,
             StreamDestinations = BuildSelectedStreamDestinations(validatedOnly: true),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
@@ -9643,15 +9643,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SyncOutputProfileChangeAsync()
     {
-        if (Streaming && ValidateStreamDestinations() is { Length: > 0 } validationError)
+        if (StreamingRequested && ValidateStreamDestinations() is { Length: > 0 } validationError)
         {
             LaunchLog.Write($"stream: profile change blocked invalid destination ({validationError})");
             var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
             RunOnUiThread(() =>
             {
-                Streaming = false;
+                StreamingRequested = false;
                 RefreshOutputStatus();
-                OutputStatus = $"{failureStatus} Streaming stopped.";
+                OutputStatus = $"{failureStatus} Streaming stopping.";
                 OutputSessionStatus = OutputStatus;
             });
 
@@ -9684,7 +9684,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamSrtSummary));
         SaveProductionOutputPreferences();
 
-        if (!Streaming || !_bridge.Running)
+        if (!StreamingRequested || !_bridge.Running)
         {
             return;
         }
@@ -9692,9 +9692,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (ValidateStreamDestinations() is { Length: > 0 } validationError)
         {
             var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
-            Streaming = false;
+            StreamingRequested = false;
             RefreshOutputStatus();
-            OutputStatus = $"{failureStatus} Streaming stopped.";
+            OutputStatus = $"{failureStatus} Streaming stopping.";
             OutputSessionStatus = OutputStatus;
             try
             {
@@ -9735,7 +9735,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
         SaveProductionOutputPreferences();
 
-        if (!Recording || !_bridge.Running)
+        if (!RecordingRequested || !_bridge.Running)
         {
             return;
         }
@@ -9829,6 +9829,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         else if (health.Recovering)
         {
+            InterruptOutputSessions();
             EngineStatus = $"Media core recovering (restart {health.RestartCount})";
         }
 
@@ -10020,6 +10021,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (!ZoomCaptureSubscribed)
         {
+            // Output sessions are independent of Zoom capture. Keep observed state and
+            // terminal-failure disarming current even when only local inputs are used.
+            ApplyOutputLifecyclePatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
             LogIfSlow("notSubscribed");
             return;
         }
@@ -10050,8 +10054,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ActiveSceneId = ActiveSceneId,
             ActiveSceneLayout = ProgramScene.Layout,
             CurrentBreakoutRoomId = _currentRoomId,
-            RecordingRequested = Recording,
-            StreamingRequested = Streaming,
+            RecordingRequested = RecordingRequested,
+            StreamingRequested = StreamingRequested,
             Participants = RoomVideoParticipants
                 .Select(participant => new LiveProductionSync.LiveProductionParticipantContext
                 {
@@ -10162,6 +10166,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         UnsubscribeZoomCapture(status);
         Recording = false;
         Streaming = false;
+        RecordingRequested = false;
+        StreamingRequested = false;
         _bridge.Stop();
         EngineStatus = status;
         Settings.RefreshSdkReadiness();
@@ -10190,32 +10196,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
         ApplyCaptionAndLowerThirdPatch(patch);
 
-        // A record/stop command owns the requested state until its production sync
-        // completes.  The core can publish one or more snapshots describing the old
-        // writer state while that sync is back-pressured.  Applying those snapshots
-        // here used to flip Recording back to true during a deferred Stop; the retry
-        // then built a fresh payload with Recording=true and immediately armed a new
-        // recording directory.  Keep the operator's intent sticky for the lifetime of
-        // the guarded command.  Once it completes, normal snapshots resume ownership.
-        if (patch.Recording is { } recording && !_transportCoordinator.RecordingToggleInFlight)
-        {
-            Recording = recording;
-        }
-
-        if (patch.Streaming is { } streaming)
-        {
-            Streaming = streaming;
-        }
-
-        if (patch.OutputStatus is { Length: > 0 } outputStatus)
-        {
-            OutputStatus = outputStatus;
-        }
-
-        if (patch.OutputSessionStatus is { Length: > 0 } outputSessionStatus)
-        {
-            OutputSessionStatus = outputSessionStatus;
-        }
+        ApplyOutputLifecyclePatch(patch);
 
         if (patch.ZoomStatus is { Length: > 0 } zoomStatus)
         {
@@ -11191,15 +11172,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
-            var preferences = _outputPreferencesStore.Load();
+            var loaded = _outputPreferencesStore is FileProductionOutputPreferencesStore fileStore
+                ? fileStore.LoadWithResult()
+                : new ProductionPreferencesLoadResult(ProductionPreferencesLoadStatus.Loaded, _outputPreferencesStore.Load());
+            ProductionPreferencesWarning = ProductionPreferencesNotice.For(loaded.Status);
+            var preferences = loaded.Preferences;
             if (preferences is not null)
             {
                 ApplyProductionOutputPreferences(preferences);
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Output settings are best-effort; defaults must still allow startup.
+            ProductionPreferencesWarning = ProductionPreferencesNotice.RestoreFailure;
+            LaunchLog.Write($"prefs: startup restore failed ({ex.GetType().Name})");
         }
         finally
         {

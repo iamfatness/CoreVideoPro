@@ -56,7 +56,7 @@ public sealed class LiveProductionSyncTests
     }
 
     [Fact]
-    public void PreservesRequestedOutputsBeforeNativeProofCatchesUp()
+    public void RequestedOutputsDoNotClaimObservedMedia()
     {
         var context = Context with
         {
@@ -66,8 +66,35 @@ public sealed class LiveProductionSyncTests
 
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(BuildSnapshot(), context);
 
-        Assert.True(patch.Recording);
-        Assert.True(patch.Streaming);
+        Assert.False(patch.Recording);
+        Assert.False(patch.Streaming);
+    }
+
+    [Theory]
+    [InlineData("starting", false)]
+    [InlineData("live", true)]
+    [InlineData("stopping", false)]
+    [InlineData("finalizing", false)]
+    [InlineData("completed", false)]
+    [InlineData("failed", false)]
+    [InlineData("interrupted", false)]
+    [InlineData("future-state", false)]
+    public void LifecycleOverridesLegacyActiveAndIntent(string state, bool expectedLive)
+    {
+        var snapshot = BuildSnapshot(recordingActive: true);
+        snapshot = snapshot with { Recording = snapshot.Recording! with
+        {
+            Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+            {
+                SessionId = "process-1:take-1", DesiredActive = true,
+                State = state, Health = "healthy", Finalized = state == "completed"
+            }
+        }};
+        var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, Context with { RecordingRequested = true });
+        Assert.Equal(expectedLive, patch.Recording);
+        Assert.Equal(state is "failed" or "interrupted" ? false : (bool?)null, patch.RecordingRequested);
+        if (state == "finalizing")
+            Assert.Contains("not ready", patch.OutputSessionStatus);
     }
 
     [Fact]

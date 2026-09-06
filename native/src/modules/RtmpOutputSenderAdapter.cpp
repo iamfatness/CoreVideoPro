@@ -728,7 +728,8 @@ class RtmpOutputSender final : public IOutputSender {
     // this frame, so letting a preview-sized frame through here is what
     // restarted the encoder mid-stream.
     if (!videoSourceUsable(*frame)) {
-      sender_.status = "live";
+      sender_.status = hasWrittenVideo_ ? "live" : "starting";
+      sender_.destinationHealth = hasWrittenVideo_ ? "ok" : "starting";
       sender_.lastResultCode = "awaiting-full-res-frame";
       appendSendProof(frame, "awaiting-full-res-frame");
       return snapshot();
@@ -744,7 +745,7 @@ class RtmpOutputSender final : public IOutputSender {
     // 4K input pipe (the 2026-07-14 live freeze reproduced at 42 frames/0.84 s).
     writeAudioToFfmpeg();
     if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
-      sender_.status = "live";
+      sender_.status = hasWrittenVideo_ ? "live" : "starting";
       // A live stream still carries the unsupported-codec notice: the operator
       // asked for AV1/HEVC and is getting H.264, which must not go quiet just
       // because the stream is otherwise healthy.
@@ -752,8 +753,8 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.runtimeDetail = runtimeDetail_;
       sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
       sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
-      sender_.destinationHealth = "ok";
-      sender_.lastResultCode = "ok";
+      sender_.destinationHealth = hasWrittenVideo_ ? "ok" : "starting";
+      sender_.lastResultCode = hasWrittenVideo_ ? "encoder-input-accepted" : "waiting-for-frame";
       return snapshot();
     }
 
@@ -777,6 +778,7 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
+    hasWrittenVideo_ = true;
     sender_.status = "live";
     // A live stream still carries the unsupported-codec notice: the operator
     // asked for AV1/HEVC and is getting H.264, which must not go quiet just
@@ -784,12 +786,13 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.warning = unsupportedCodecWarning_;
     sender_.runtimeDetail = runtimeDetail_;
     sender_.lastFrameNumber = frame->frameNumber;
+    // These counters prove local FFmpeg input acceptance, not destination receipt.
     ++sender_.framesSent;
     sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps);
     sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
     sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
     sender_.destinationHealth = "ok";
-    sender_.lastResultCode = "ok";
+    sender_.lastResultCode = "encoder-input-accepted";
     clearFfmpegRetryBackoff();
     appendSendProof(frame, "sent");
     return snapshot();
@@ -1643,6 +1646,7 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
 
   void stopFfmpegProcess() {
+    hasWrittenVideo_ = false;
 #if defined(_WIN32)
     if (ffmpegStdin_) {
       CloseHandle(ffmpegStdin_);
@@ -1830,6 +1834,7 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
   OutputSender sender_;
   RtmpVideoFramePacer videoFramePacer_;
+  bool hasWrittenVideo_ = false;
   std::ofstream sendProof_;
 };
 #endif

@@ -1,6 +1,9 @@
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
+#include "rpc/CommandMailbox.h"
+#include "contracts/Lifecycle.h"
+#include <random>
 
 #include <atomic>
 #include <chrono>
@@ -46,7 +49,11 @@ Json::Array commandBatch(const Json& request) {
 
 }  // namespace
 
-JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore) : mediaCore_(mediaCore) {}
+JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler)
+    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)) {
+  std::random_device random;
+  processEpoch_ = std::to_string(random()) + "-" + std::to_string(random());
+}
 
 Json JsonRpcServer::handshake() const {
   return Json::Object{
@@ -54,18 +61,24 @@ Json JsonRpcServer::handshake() const {
       {"ok", true},
       {"type", "handshake"},
       {"profile", mediaCore_.profile()},
+      {"protocolVersion", contracts::toJson(contracts::ProtocolVersion{1, 0})},
+      {"processEpoch", processEpoch_},
   };
 }
 
 Json JsonRpcServer::handle(const Json& request) {
   const Json id = requestId(request);
   const std::string type = request.getString("type");
+  if (const auto* version = request.get("protocolVersion"); version && !contracts::validateProtocolVersion(*version)) {
+    return failure(id, "incompatible-protocol", "Unsupported protocol version; this core supports major 1.");
+  }
   if (type.empty()) {
     return failure(id, "protocol-error", "Request is missing a type field.");
   }
 
   if (hasType(request, "handshake")) {
-    return success(id, Json::Object{{"type", "handshake"}, {"profile", mediaCore_.profile()}});
+    return success(id, Json::Object{{"type", "handshake"}, {"profile", mediaCore_.profile()},
+        {"protocolVersion", contracts::toJson(contracts::ProtocolVersion{1, 0})}, {"processEpoch", processEpoch_}});
   }
 
   if (hasType(request, "ping")) {
@@ -99,7 +112,7 @@ Json JsonRpcServer::handle(const Json& request) {
                        });
   }
 
-  if (hasType(request, "zoom-leave")) {
+  if (hasType(request, "zoom-leave") || hasType(request, "zoom-cancel")) {
     return success(id, Json::Object{
                            {"type", "zoom-leave"},
                            {"snapshot", mediaCore_.leaveZoom()},
@@ -395,35 +408,45 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   std::mutex inMx;
   std::condition_variable inCv;
-  // INSTRUMENTATION: stamp each request as the reader enqueues it so the command
-  // loop can report queue-wait (dequeue - enqueue) separately from handle duration.
-  std::deque<std::pair<std::string, Stamp>> inQ;
+  CommandMailbox inQ;
   std::atomic<bool> inputClosed{false};
-
-  // Priority relief for control commands under a command backlog. The C# bridge
-  // re-emits the FULL, level-triggered production state every media-core-sync
-  // (scene routes, overlays, audio mix AND control commands like start/stop-
-  // recording), so when the command loop falls behind (soak: gaming + agent
-  // builds -> ~174s backlog, stop-recording queued >3min), every queued sync
-  // except the newest is stale. `pendingSyncs` counts syncs waiting in inQ so the
-  // loop can skip the expensive applyCommands/render pass for a sync that already
-  // has a newer one behind it — the newest sync carries the current intent — and
-  // reach stop-recording promptly instead of replaying minutes of stale state.
-  std::atomic<long long> pendingSyncs{0};
-  const auto isSyncLine = [](const std::string& line) {
-    return line.find("media-core-sync") != std::string::npos;
-  };
-
+  // The reader parses once, rejects overload explicitly, and never guesses command
+  // types from text inside a payload. getline's individual-line limit is handled
+  // below before JSON parsing; queued wire storage has a separate byte bound.
   std::thread reader([&] {
     std::string line;
-    while (std::getline(input, line)) {
-      const bool sync = isSyncLine(line);
+    // A 1 MiB VST state blob grows under base64; leave room for its envelope.
+    constexpr std::size_t maxLineBytes = 4 * 1024 * 1024;
+    while (input.good()) {
+      line.clear();
+      bool oversized = false;
+      char ch;
+      while (input.get(ch) && ch != '\n') {
+        if (line.size() < maxLineBytes) line.push_back(ch);
+        else oversized = true;
+      }
+      if (oversized) {
+        enqueueResponse(failure(Json("unknown"), "request-too-large", "Control request exceeds 4 MiB.").stringify());
+        continue;
+      }
+      if (line.empty()) continue;
+      std::string error;
+      auto request = Json::parse(line, &error);
+      if (!request) {
+        enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
+        continue;
+      }
+      std::optional<Json> superseded;
+      CommandMailbox::Result result;
       {
         std::lock_guard<std::mutex> lock(inMx);
-        inQ.emplace_back(std::move(line), std::chrono::steady_clock::now());
+        result = inQ.push({*request, line.size(), std::chrono::steady_clock::now()}, superseded);
       }
-      if (sync) {
-        pendingSyncs.fetch_add(1, std::memory_order_relaxed);
+      if (result == CommandMailbox::Result::overloaded) {
+        enqueueResponse(failure(requestId(*request), "control-overloaded", "Command mailbox is full; request was not accepted.").stringify());
+      } else if (superseded) {
+        enqueueResponse(success(requestId(*superseded), Json::Object{
+            {"type", superseded->getString("type")}, {"superseded", true}}).stringify());
       }
       inCv.notify_one();
     }
@@ -801,8 +824,66 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   });
 
+  // One lifecycle worker owns potentially blocking join/auth. The command loop
+  // keeps servicing Take/Stop/Leave; pending work is bounded to one join.
+  std::mutex joinMx;
+  std::condition_variable joinCv;
+  std::optional<std::pair<Json, std::uint64_t>> pendingJoin;
+  std::atomic<std::uint64_t> joinGeneration{0};
+  bool joinWorkerStopping = false;
+  bool joinBusy = false;
+  std::thread joinWorker([&] {
+    for (;;) {
+      Json request;
+      std::uint64_t generation;
+      {
+        std::unique_lock<std::mutex> lock(joinMx);
+        joinCv.wait(lock, [&] { return joinWorkerStopping || pendingJoin.has_value(); });
+        if (joinWorkerStopping && !pendingJoin) return;
+        request = std::move(pendingJoin->first);
+        generation = pendingJoin->second;
+        pendingJoin.reset();
+      }
+      const auto cancelled = [&] { return joinGeneration.load() != generation; };
+      const auto operationId = "zoom-join-" + std::to_string(generation);
+      const bool async = request.get("asyncOperation") && request.get("asyncOperation")->asBool();
+      Json response;
+      try {
+        const auto snapshot = joinHandler_ ? joinHandler_(*request.get("payload"), cancelled) :
+            mediaCore_.joinZoom(*request.get("payload"), cancelled);
+        if (cancelled()) {
+          response = failure(requestId(request), "operation-cancelled", "Zoom join was cancelled.");
+        } else {
+          auto operation = contracts::OperationStatus{processEpoch_, operationId,
+              snapshot.getString("meetingState") == "in_meeting" ? "completed" : "failed", {}};
+          response = success(requestId(request), Json::Object{{"type", "zoom-join"},
+              {"snapshot", snapshot}, {"operation", contracts::toJson(operation)}});
+        }
+      } catch (const std::exception& error) {
+        response = failure(requestId(request), "zoom-join-failed", error.what());
+      } catch (...) {
+        response = failure(requestId(request), "zoom-join-failed", "Zoom lifecycle worker failed.");
+      }
+      // Serialize final publication with Leave/cancel invalidation. A completion
+      // cannot pass its generation check and then overtake an accepted Leave.
+      std::lock_guard<std::mutex> completionLock(joinMx);
+      if (cancelled()) response = failure(requestId(request), "operation-cancelled", "Zoom join was cancelled.");
+      if (async) {
+        const auto* ok = response.get("ok");
+        const auto* snapshot = response.get("snapshot");
+        const std::string state = cancelled() ? "cancelled" :
+            (ok && ok->asBool() && snapshot && snapshot->getString("meetingState") == "in_meeting" ? "completed" : "failed");
+        enqueueResponse(Json(Json::Object{{"type", "operation-completed"},
+            {"operation", contracts::toJson(contracts::OperationStatus{processEpoch_, operationId, state, {}})},
+            {"result", response}}).stringify());
+      } else {
+        enqueueResponse(response.stringify());
+      }
+      joinBusy = false;
+    }
+  });
+
   auto lastPump = std::chrono::steady_clock::now();
-  long long coalescedSyncs = 0;
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(inMx);
@@ -815,80 +896,46 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // Drain ALL queued commands before rendering so a burst (e.g. the Zoom join
     // sequence) is serviced immediately and is never paced by the display tick.
     for (;;) {
-      std::string line;
+      std::optional<Json> request;
       Stamp enqueuedAt;
       {
         std::lock_guard<std::mutex> lock(inMx);
-        if (inQ.empty()) {
-          break;
-        }
-        line = std::move(inQ.front().first);
-        enqueuedAt = inQ.front().second;
-        inQ.pop_front();
+        if (inQ.empty()) break;
+        auto entry = inQ.pop();
+        request = std::move(entry.request);
+        enqueuedAt = entry.enqueuedAt;
       }
-      if (line.empty()) {
-        continue;
-      }
-      // Balance the pendingSyncs counter using the SAME cheap classification the
-      // reader used to increment it. `syncsQueuedAfter` is how many newer syncs
-      // are still waiting behind this one.
-      const bool wasSync = isSyncLine(line);
-      const long long syncsQueuedAfter =
-          wasSync ? (pendingSyncs.fetch_sub(1, std::memory_order_relaxed) - 1) : 0;
-      // Queue-wait: how long this request sat in inQ before the command loop got to
-      // it (i.e. the loop was busy handling earlier commands or pumping frames).
       const auto dequeuedAt = std::chrono::steady_clock::now();
       const auto queueWaitMs =
           std::chrono::duration_cast<std::chrono::milliseconds>(dequeuedAt - enqueuedAt).count();
-      std::string error;
-      auto request = Json::parse(line, &error);
-      if (!request) {
-        // Ungated: a request that failed to parse (e.g. a truncated/split large line)
-        // is answered with id="unknown", so the bridge's real request id never matches
-        // and it times out. Surface the length + error to catch line-protocol breakage.
-        std::fprintf(stderr, "[parse-dbg] FAILED len=%zu err='%s' head='%.60s'\n",
-                     line.size(), error.c_str(), line.c_str());
-        enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
-      } else {
+      {
         const std::string reqType = request->getString("type");
-        const bool syncRequest = reqType == "media-core-sync" || reqType == "native-media-core-sync" ||
-                                 request->get("commands") != nullptr;
-        if (wasSync && syncRequest && syncsQueuedAfter > 0) {
-          // Coalesce: a newer full-state sync is already queued, so this batch is
-          // superseded. Answer with the current snapshot (so the bridge's waiter
-          // still resolves — never a timeout) but skip the expensive apply/render
-          // pass. This is the backlog-relief "priority lane": the newest sync,
-          // which carries level-triggered control commands (stop-recording), is
-          // reached immediately instead of behind minutes of stale syncs.
-          Json snapshot;
-          {
-            std::lock_guard<std::mutex> lock(coreMutex);
-            core::ScopedLockHoldTimer holdGuard("cmd.coalesced-sync",
-                                                core::LockHoldGuardrail::kCommandHandleBudgetUs);
-            snapshot = mediaCore_.sessionState();
-          }
-          const std::string syncType =
-              reqType == "native-media-core-sync" ? "native-media-core-sync" : "media-core-sync";
-          enqueueResponse(
-              success(requestId(*request), Json::Object{{"type", syncType}, {"snapshot", snapshot}}).stringify());
-          if (++coalescedSyncs % 64 == 1) {
-            std::fprintf(stderr, "[cmd] coalesced %lld stale media-core-sync batch(es) (backlog relief)\n",
-                         static_cast<long long>(coalescedSyncs));
-          }
-          continue;
-        }
         std::string responseStr;
         std::chrono::steady_clock::time_point h0, h1;
-        if (reqType == "zoom-join" && mediaCore_.zoomEngineConfigured()) {
-          // The real-engine join blocks on process spawn + SDK auth + join
-          // handshake (observed 6.4s) and MediaCore::joinZoom is a PURE
-          // passthrough to ZoomEngineRuntime (its own lock discipline, no
-          // MediaCore state) — so run it WITHOUT coreMutex. Previously this
-          // single command froze the render thread — and with it the whole
-          // studio (program/preview/multiview) — for the entire join.
-          h0 = std::chrono::steady_clock::now();
-          responseStr = handle(*request).stringify();
-          h1 = std::chrono::steady_clock::now();
+        if ((reqType == "zoom-leave" || reqType == "zoom-cancel") &&
+            (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
+          std::lock_guard<std::mutex> lock(joinMx);
+          ++joinGeneration; // invalidate auth/spawn waits before applying Leave
+        }
+        if (reqType == "zoom-join" && (joinHandler_ || mediaCore_.zoomEngineConfigured()) &&
+            request->get("payload") && request->get("payload")->isObject() &&
+            (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
+          std::lock_guard<std::mutex> lock(joinMx);
+          if (joinBusy) {
+            enqueueResponse(failure(requestId(*request), "operation-in-progress",
+                "A Zoom join is already in progress; cancel or leave before retrying.").stringify());
+          } else {
+            joinBusy = true;
+            const auto generation = ++joinGeneration;
+            if (request->get("asyncOperation") && request->get("asyncOperation")->asBool()) {
+              enqueueResponse(success(requestId(*request), Json::Object{{"type", "zoom-join"},
+                  {"operation", contracts::toJson(contracts::OperationStatus{processEpoch_,
+                      "zoom-join-" + std::to_string(generation), "accepted", {}})}}).stringify());
+            }
+            pendingJoin = std::make_pair(*request, generation);
+            joinCv.notify_one();
+          }
+          continue;
         } else {
           std::lock_guard<std::mutex> lock(coreMutex);
           // Increment 6 guardrail: sanctioned long-hold site — command-carrying
@@ -957,6 +1004,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   }
 
+  {
+    std::lock_guard<std::mutex> lock(joinMx);
+    ++joinGeneration;
+    joinWorkerStopping = true;
+  }
+  joinCv.notify_one();
+  joinWorker.join(); // waits only for cancellation-aware spawn/auth teardown, never coreMutex
   stopping.store(true);
   outCv.notify_one();
   if (renderThread.joinable()) {

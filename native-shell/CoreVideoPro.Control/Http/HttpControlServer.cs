@@ -15,9 +15,24 @@ public sealed record HttpControlServerOptions
     /// for LAN access (may require a urlacl / admin on Windows — the operator opts in).</summary>
     public string Host { get; init; } = "127.0.0.1";
 
-    /// <summary>Optional bearer token. When set, requests must send
+    /// <summary>Bearer token, required for non-loopback hosts. When set, requests must send
     /// <c>Authorization: Bearer &lt;token&gt;</c> (or <c>?token=</c> for the WS upgrade).</summary>
     public string? AuthToken { get; init; }
+
+    /// <summary>Validate policy before allocating or starting a listener. Hostnames other than
+    /// localhost are treated as network bindings; DNS is not a security boundary.</summary>
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Host))
+            throw new ArgumentException("A control HTTP bind host is required.", nameof(Host));
+        if (ListenPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(ListenPort));
+
+        var loopback = string.Equals(Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+            (IPAddress.TryParse(Host.Trim('[', ']'), out var address) && IPAddress.IsLoopback(address));
+        if (!loopback && string.IsNullOrWhiteSpace(AuthToken))
+            throw new InvalidOperationException("LAN HTTP/WS control requires a non-empty COREVIDEO_CONTROL_TOKEN. Set a token or disable COREVIDEO_HTTP_LAN to use loopback.");
+    }
 }
 
 /// <summary>HTTP + WebSocket control transport over <see cref="HttpListener"/>. REST actions and
@@ -53,9 +68,19 @@ public sealed class HttpControlServer : IAsyncDisposable
             return;
         }
 
-        _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://{_options.Host}:{_options.ListenPort}/");
-        _listener.Start();
+        _options.Validate();
+        var listener = new HttpListener();
+        try
+        {
+            listener.Prefixes.Add($"http://{_options.Host}:{_options.ListenPort}/");
+            listener.Start();
+        }
+        catch
+        {
+            listener.Close();
+            throw;
+        }
+        _listener = listener;
         _cts = new CancellationTokenSource();
         _surface.StateChanged += OnStateChanged;
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_cts.Token));
@@ -131,20 +156,21 @@ public sealed class HttpControlServer : IAsyncDisposable
 
     private bool IsAuthorized(HttpListenerRequest request)
     {
-        if (string.IsNullOrEmpty(_options.AuthToken))
+        if (string.IsNullOrWhiteSpace(_options.AuthToken))
         {
             return true;
         }
 
         var header = request.Headers["Authorization"];
-        if (header is not null && header.StartsWith("Bearer ", StringComparison.Ordinal) &&
+        if (header is not null && header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(header["Bearer ".Length..], _options.AuthToken, StringComparison.Ordinal))
         {
             return true;
         }
 
         // Allow the token on the query string for the WS upgrade (browsers can't set WS headers).
-        return string.Equals(request.QueryString["token"], _options.AuthToken, StringComparison.Ordinal);
+        return request.IsWebSocketRequest && request.Url?.AbsolutePath.TrimEnd('/') == "/ws" &&
+            string.Equals(request.QueryString["token"], _options.AuthToken, StringComparison.Ordinal);
     }
 
     private static async Task WriteResponseAsync(HttpListenerContext context, HttpControlResponse response)

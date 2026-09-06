@@ -346,7 +346,8 @@ class AvfMp4Writer {
     return true;
   }
 
-  void finalize() {
+  bool finalize(std::string* errorOut = nullptr) {
+    bool finalized = true;
     if (writer_ && writing_) {
       [videoInput_ markAsFinished];
       if (audioInput_) {
@@ -356,7 +357,16 @@ class AvfMp4Writer {
       [writer_ finishWritingWithCompletionHandler:^{
         dispatch_semaphore_signal(done);
       }];
-      dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+      const auto waitResult = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+      if (waitResult != 0) {
+        finalized = false;
+        if (errorOut) *errorOut = "AVAssetWriter finalization timed out";
+        [writer_ cancelWriting];
+      } else if (writer_.status != AVAssetWriterStatusCompleted) {
+        finalized = false;
+        if (errorOut) *errorOut = writer_.error ? writer_.error.localizedDescription.UTF8String
+                                               : "AVAssetWriter did not complete finalization";
+      }
       std::error_code ec;
       const auto size = std::filesystem::file_size(path_, ec);
       bytesWritten_ = ec ? 0 : static_cast<int64_t>(size);
@@ -367,6 +377,7 @@ class AvfMp4Writer {
     adaptor_ = nil;
     writing_ = false;
     audioConfigured_ = false;
+    return finalized;
   }
 
   bool audioConfigured() const { return audioConfigured_; }
@@ -585,11 +596,16 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     if (!recordingArmed_) {
       return;
     }
-    writer_.finalize();
+    std::string finalizeError;
+    if (!writer_.finalize(&finalizeError)) failRecording(finalizeError);
     // Each ISO finalizes independently — its own moov, no 0-byte tails.
     for (auto& [sourceId, entry] : isoWriters_) {
       if (entry.opened) {
-        entry.writer->finalize();
+        std::string isoFinalizeError;
+        if (!entry.writer->finalize(&isoFinalizeError)) {
+          entry.status.warning = "ISO finalization failed for " + sourceId + ": " + isoFinalizeError;
+          failRecording(entry.status.warning);
+        }
         entry.status.bytesWritten = entry.writer->bytesWritten();
       }
     }

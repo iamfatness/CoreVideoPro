@@ -1,6 +1,7 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.ViewModels.Transport;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
@@ -21,20 +22,78 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 {
     private readonly TransportCoordinator _transportCoordinator;
 
+    // Intent is kept separately from Recording/Streaming, which reflect observed media.
+    [ObservableProperty]
+    private bool _recordingRequested;
+    [ObservableProperty]
+    private bool _streamingRequested;
+
+    partial void OnRecordingRequestedChanged(bool value) => OnPropertyChanged(nameof(RecordingLabel));
+    partial void OnStreamingRequestedChanged(bool value) => OnPropertyChanged(nameof(StreamingLabel));
+
+    internal Task SetRecordingAsync(bool requested) => _transportCoordinator.SetRecordingAsync(requested);
+    internal Task SetStreamingAsync(bool requested) => _transportCoordinator.SetStreamingAsync(requested);
+    internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || Settings.IsInMeeting);
+    internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight;
+
+    // Called only on the UI thread, including the capture-independent polling path.
+    private void ApplyOutputLifecyclePatch(LiveProductionSync.StudioLiveProductionPatch patch)
+    {
+        // Observed snapshots never overwrite operator intent. Terminal failure
+        // disarms future syncs once the active command has settled.
+        if (patch.RecordingRequested == false && !_transportCoordinator.RecordingToggleInFlight)
+        {
+            RecordingRequested = false;
+        }
+        if (patch.Recording is { } recording)
+        {
+            Recording = recording;
+        }
+
+        if (patch.Streaming is { } streaming)
+        {
+            Streaming = streaming;
+        }
+
+        if (patch.OutputStatus is { Length: > 0 } outputStatus)
+        {
+            OutputStatus = outputStatus;
+        }
+
+        if (patch.OutputSessionStatus is { Length: > 0 } outputSessionStatus)
+        {
+            OutputSessionStatus = outputSessionStatus;
+        }
+    }
+
+    private void InterruptOutputSessions()
+    {
+        var interrupted = RecordingRequested || StreamingRequested || Recording || Streaming;
+        RecordingRequested = false;
+        StreamingRequested = false;
+        Recording = false;
+        Streaming = false;
+        if (interrupted)
+        {
+            OutputStatus = "Outputs interrupted — recording continuity was lost. Start a new session after recovery.";
+            OutputSessionStatus = OutputStatus;
+        }
+    }
+
     // --- ITransportDispatcher: preserve the exact RunOnUiThread marshalling semantics ---
     void ITransportDispatcher.RunOnUiThread(Action action) => RunOnUiThread(action);
 
     // --- ITransportHost: bound transport state (stays [ObservableProperty] on StudioViewModel) ---
     bool ITransportHost.Recording
     {
-        get => Recording;
-        set => Recording = value;
+        get => RecordingRequested;
+        set => RecordingRequested = value;
     }
 
     bool ITransportHost.Streaming
     {
-        get => Streaming;
-        set => Streaming = value;
+        get => StreamingRequested;
+        set => StreamingRequested = value;
     }
 
     bool ITransportHost.ZoomCaptureSubscribed

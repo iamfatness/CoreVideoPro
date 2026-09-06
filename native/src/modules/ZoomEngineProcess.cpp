@@ -94,6 +94,10 @@ ZoomEngineProcessClient::~ZoomEngineProcessClient() {
 bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
   stop();
   lastError_.clear();
+  if (options.cancelled && options.cancelled()) {
+    setError("Zoom join cancelled.");
+    return false;
+  }
   if (options.executablePath.empty()) {
     setError("Zoom engine executable path is empty.");
     return false;
@@ -190,11 +194,16 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
   processId_ = static_cast<int>(pid);
 #endif
 
-  if (!connectIpc(options.connectTimeoutMs)) {
+  if (!connectIpc(options.connectTimeoutMs, options.cancelled)) {
     stop();
     return false;
   }
   return true;
+}
+
+void ZoomEngineProcessClient::terminate() {
+  closeIpc();
+  stop();
 }
 
 void ZoomEngineProcessClient::stop() {
@@ -288,7 +297,7 @@ std::optional<ZoomEngineEvent> ZoomEngineProcessClient::readEvent() {
   return event;
 }
 
-bool ZoomEngineProcessClient::connectIpc(int timeoutMs) {
+bool ZoomEngineProcessClient::connectIpc(int timeoutMs, const std::function<bool()>& cancelled) {
 #if defined(_WIN32)
   const std::string pipeP2E = ipc_pipe_p2e(instanceToken_);
   const std::string pipeE2P = ipc_pipe_e2p(instanceToken_);
@@ -298,6 +307,11 @@ bool ZoomEngineProcessClient::connectIpc(int timeoutMs) {
 #endif
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   while (std::chrono::steady_clock::now() < deadline) {
+    if (cancelled && cancelled()) {
+      setError("Zoom join cancelled.");
+      closeIpc();
+      return false;
+    }
 #if defined(_WIN32)
     if (!parentToEngine_) {
       if (WaitNamedPipeA(pipeP2E.c_str(), 100)) {

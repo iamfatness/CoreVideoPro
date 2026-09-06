@@ -230,7 +230,8 @@ endif()
 # windowscodecs + ole32 back the still-media WIC decoder (StillMediaFrameCache.cpp),
 # which is _WIN32-gated rather than option-gated so stills work in every Windows build.
 if(WIN32)
-  target_link_libraries(corevideo_native PUBLIC winmm windowscodecs ole32)
+  # The RPC audio worker uses MMCSS even in the stub configuration.
+  target_link_libraries(corevideo_native PUBLIC winmm windowscodecs ole32 avrt)
 endif()
 
 if(COREVIDEO_WITH_MF_ENCODER)
@@ -608,6 +609,7 @@ if(BUILD_TESTING)
     tests/CaptureIngestTest.cpp
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
+    tests/RouteSourcePolicyTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp

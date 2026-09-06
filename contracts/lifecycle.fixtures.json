@@ -1,0 +1,338 @@
+[
+  {
+    "id": "ProtocolVersion/valid",
+    "contract": "ProtocolVersion",
+    "accepted": true,
+    "json": "{\"major\":1,\"minor\":0}"
+  },
+  {
+    "id": "ProtocolVersion/additive-field",
+    "contract": "ProtocolVersion",
+    "accepted": true,
+    "json": "{\"major\":1,\"minor\":0,\"futureField\":{\"ignored\":true}}"
+  },
+  {
+    "id": "ProtocolVersion/not-object",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "ProtocolVersion/missing-major",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"minor\":0}"
+  },
+  {
+    "id": "ProtocolVersion/null-major",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":null,\"minor\":0}"
+  },
+  {
+    "id": "ProtocolVersion/missing-minor",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":1}"
+  },
+  {
+    "id": "ProtocolVersion/null-minor",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":1,\"minor\":null}"
+  },
+  {
+    "id": "OutputLifecycle/valid",
+    "contract": "OutputLifecycle",
+    "accepted": true,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/additive-field",
+    "contract": "OutputLifecycle",
+    "accepted": true,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false,\"futureField\":{\"ignored\":true}}"
+  },
+  {
+    "id": "OutputLifecycle/not-object",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "OutputLifecycle/missing-sessionId",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/null-sessionId",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":null,\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/missing-desiredActive",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/null-desiredActive",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":null,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/missing-state",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/null-state",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":null,\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/missing-health",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/null-health",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":null,\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/missing-finalized",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\"}"
+  },
+  {
+    "id": "OutputLifecycle/null-finalized",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":null}"
+  },
+  {
+    "id": "OutputLifecycle/optional-error",
+    "contract": "OutputLifecycle",
+    "accepted": true,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false,\"error\":\"diagnostic\"}"
+  },
+  {
+    "id": "OutputLifecycle/null-error",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false,\"error\":null}"
+  },
+  {
+    "id": "OutputLifecycle/empty-sessionId",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/numeric-desiredActive",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":1,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/unknown-state",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"future-enum\",\"health\":\"unknown\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/unknown-health",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"future-enum\",\"finalized\":false}"
+  },
+  {
+    "id": "OutputLifecycle/numeric-finalized",
+    "contract": "OutputLifecycle",
+    "accepted": false,
+    "json": "{\"sessionId\":\"session-1\",\"desiredActive\":true,\"state\":\"starting\",\"health\":\"unknown\",\"finalized\":1}"
+  },
+  {
+    "id": "OperationStatus/valid",
+    "contract": "OperationStatus",
+    "accepted": true,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"op-1\",\"state\":\"accepted\"}"
+  },
+  {
+    "id": "OperationStatus/additive-field",
+    "contract": "OperationStatus",
+    "accepted": true,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"op-1\",\"state\":\"accepted\",\"futureField\":{\"ignored\":true}}"
+  },
+  {
+    "id": "OperationStatus/not-object",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "OperationStatus/missing-processEpoch",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"operationId\":\"op-1\",\"state\":\"accepted\"}"
+  },
+  {
+    "id": "OperationStatus/null-processEpoch",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":null,\"operationId\":\"op-1\",\"state\":\"accepted\"}"
+  },
+  {
+    "id": "OperationStatus/missing-operationId",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"epoch-1\",\"state\":\"accepted\"}"
+  },
+  {
+    "id": "OperationStatus/null-operationId",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":null,\"state\":\"accepted\"}"
+  },
+  {
+    "id": "OperationStatus/missing-state",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"op-1\"}"
+  },
+  {
+    "id": "OperationStatus/null-state",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"op-1\",\"state\":null}"
+  },
+  {
+    "id": "OperationStatus/optional-error",
+    "contract": "OperationStatus",
+    "accepted": true,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"op-1\",\"state\":\"accepted\",\"error\":\"diagnostic\"}"
+  },
+  {
+    "id": "OperationStatus/null-error",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"op-1\",\"state\":\"accepted\",\"error\":null}"
+  },
+  {
+    "id": "OperationStatus/empty-processEpoch",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"\",\"operationId\":\"op-1\",\"state\":\"accepted\"}"
+  },
+  {
+    "id": "OperationStatus/empty-operationId",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"\",\"state\":\"accepted\"}"
+  },
+  {
+    "id": "OperationStatus/unknown-state",
+    "contract": "OperationStatus",
+    "accepted": false,
+    "json": "{\"processEpoch\":\"epoch-1\",\"operationId\":\"op-1\",\"state\":\"future-enum\"}"
+  },
+  {
+    "id": "ProtocolFailure/valid",
+    "contract": "ProtocolFailure",
+    "accepted": true,
+    "json": "{\"code\":\"incompatible_protocol\",\"message\":\"Unsupported protocol major\"}"
+  },
+  {
+    "id": "ProtocolFailure/additive-field",
+    "contract": "ProtocolFailure",
+    "accepted": true,
+    "json": "{\"code\":\"incompatible_protocol\",\"message\":\"Unsupported protocol major\",\"futureField\":{\"ignored\":true}}"
+  },
+  {
+    "id": "ProtocolFailure/not-object",
+    "contract": "ProtocolFailure",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "ProtocolFailure/missing-code",
+    "contract": "ProtocolFailure",
+    "accepted": false,
+    "json": "{\"message\":\"Unsupported protocol major\"}"
+  },
+  {
+    "id": "ProtocolFailure/null-code",
+    "contract": "ProtocolFailure",
+    "accepted": false,
+    "json": "{\"code\":null,\"message\":\"Unsupported protocol major\"}"
+  },
+  {
+    "id": "ProtocolFailure/missing-message",
+    "contract": "ProtocolFailure",
+    "accepted": false,
+    "json": "{\"code\":\"incompatible_protocol\"}"
+  },
+  {
+    "id": "ProtocolFailure/null-message",
+    "contract": "ProtocolFailure",
+    "accepted": false,
+    "json": "{\"code\":\"incompatible_protocol\",\"message\":null}"
+  },
+  {
+    "id": "ProtocolFailure/empty-code",
+    "contract": "ProtocolFailure",
+    "accepted": false,
+    "json": "{\"code\":\"\",\"message\":\"Unsupported protocol major\"}"
+  },
+  {
+    "id": "ProtocolFailure/empty-message",
+    "contract": "ProtocolFailure",
+    "accepted": false,
+    "json": "{\"code\":\"incompatible_protocol\",\"message\":\"\"}"
+  },
+  {
+    "id": "unsupported-major",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":2,\"minor\":0}"
+  },
+  {
+    "id": "fractional-minor",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":1,\"minor\":1.5}"
+  },
+  {
+    "id": "overflow-minor",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":1,\"minor\":2147483648}"
+  },
+  {
+    "id": "negative-minor",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":1,\"minor\":-1}"
+  },
+  {
+    "id": "boolean-major",
+    "contract": "ProtocolVersion",
+    "accepted": false,
+    "json": "{\"major\":true,\"minor\":0}"
+  },
+  {
+    "id": "integer-decimal-notation",
+    "contract": "ProtocolVersion",
+    "accepted": true,
+    "json": "{\"major\":1.0,\"minor\":0.0}"
+  }
+]

@@ -528,8 +528,8 @@ public sealed class StudioViewModelAudioStatusTests
 
     [Theory]
     [InlineData(true, false)]
-    [InlineData(false, true)]
-    public void ResolveStreamingStateAfterFailedRetry_RollsBackRequestedState(bool requestedStarting, bool expectedStreaming)
+    [InlineData(false, false)]
+    public void ResolveStreamingStateAfterFailedRetry_NeverRearmsOutput(bool requestedStarting, bool expectedStreaming)
     {
         Assert.Equal(expectedStreaming, TransportStatusFormatter.ResolveStreamingStateAfterFailedRetry(requestedStarting));
     }

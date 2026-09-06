@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -19,6 +20,10 @@ jobs:
           node-version: 22
       - name: Version sources agree with package.json
         run: node scripts/stamp-version.mjs --check
+      - name: Generated contracts are current
+        run: node contracts/generate.mjs --check
+      - name: Release evidence validator tests
+        run: node --test scripts/tests/release-evidence.test.mjs
 
   # Design-token gate for the macOS shell (docs/design-handoff-macos.md).
   # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /
@@ -280,7 +285,19 @@ jobs:
       - run: npm ci
       - name: Native media-core stub gate
         run: npm run test:native-media-core
-      - name: MediaCore bridge + unit tests
+      - name: Restore and provision WinUI test runtime
+        run: |
+          dotnet restore native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/provision-winui-test-runtime.ps1
+      - name: MediaCore, Control, WinUI and bridge tests
         run: npm run test:native-shell
+      - name: Upload Windows test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-shell-test-results
+          path: artifacts/test-results/**
+          if-no-files-found: error
       - name: Publish WinUI shell (build gate)
         run: dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -r win-x64 --self-contained false

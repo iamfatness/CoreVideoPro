@@ -1,3 +1,5 @@
+import type { OutputLifecycle } from "../engine/generated/lifecycle";
+import type { RecordingObservedStatus } from "../engine/recordingReadModel";
 import { buildMediaFrames } from "../engine/mediaFrames";
 
 export type ParticipantRole = "Host" | "Guest" | "Presenter" | "Panelist";
@@ -468,7 +470,10 @@ export type SupportBundleMediaCore = {
     }>;
   };
   recording?: {
-    status: "recording" | "warning" | "stopped" | "failed";
+    status: RecordingObservedStatus;
+    lifecycle?: OutputLifecycle;
+    active?: boolean;
+    finalized?: boolean;
     writerStatus: "writing" | "warning" | "stopped" | "failed";
     totalFramesWritten: number;
     totalDroppedFrames: number;
@@ -489,7 +494,9 @@ export type SupportBundleMediaCore = {
   recordingManifest?: {
     manifestId: string;
     sessionId?: string;
-    status: "idle" | "recording" | "warning" | "stopped" | "failed";
+    status: RecordingObservedStatus;
+    lifecycle?: OutputLifecycle;
+    finalized?: boolean;
     active: boolean;
     sceneId?: string;
     targetFolder: string;

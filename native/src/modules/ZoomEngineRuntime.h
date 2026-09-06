@@ -28,7 +28,7 @@ class ZoomEngineRuntime {
   ZoomEngineRuntime& operator=(const ZoomEngineRuntime&) = delete;
 
   [[nodiscard]] bool configured() const;
-  [[nodiscard]] rpc::Json join(const rpc::Json& payload);
+  [[nodiscard]] rpc::Json join(const rpc::Json& payload, const std::function<bool()>& cancelled = {});
   [[nodiscard]] rpc::Json leave();
   // Capture-off: stop raw media in the engine WITHOUT leaving the meeting.
   // Enqueues the engine `stop_media` command (engine command loop runs
@@ -92,10 +92,10 @@ class ZoomEngineRuntime {
   // Ensures a running engine process. Takes mutex_ ITSELF, in phases: the
   // blocking CreateProcess + IPC connect runs UNLOCKED (a generation guard
   // discards a superseded spawn) so per-tick frame polls never stall behind it.
-  [[nodiscard]] bool ensureStarted();
+  [[nodiscard]] bool ensureStarted(const std::function<bool()>& cancelled);
   void startReaderLocked();
   void readerLoop();
-  void applyEvent(const ZoomEngineEvent& event);
+  void applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation = {});
   void stopReader();
   void startSenderLocked();
   void senderLoop();
@@ -128,6 +128,8 @@ class ZoomEngineRuntime {
   std::thread reader_;
   bool readerRunning_ = false;
   bool initialized_ = false;
+  bool acceptJoinEvents_ = true;
+  bool restartBeforeJoin_ = false;
   bool mediaStarted_ = false;
   // Monotonic engine-process instance counter (guarded by mutex_). Bumped every
   // time a new process client is installed; queued sends carry the generation

@@ -359,11 +359,17 @@ public static class ProductionOutputPreferencesSerializer
     }
 }
 
+public enum ProductionPreferencesLoadStatus { Loaded, Missing, Corrupt, Unreadable, Recovered }
+
+public sealed record ProductionPreferencesLoadResult(
+    ProductionPreferencesLoadStatus Status, ProductionOutputPreferences? Preferences,
+    ProductionPreferencesLoadStatus? PrimaryFailure = null);
+
 public sealed class FileProductionOutputPreferencesStore : IProductionOutputPreferencesStore
 {
     public const string DefaultFileName = "production-output-preferences.json";
 
-    private readonly string _filePath;
+    private readonly AtomicJsonFile _file;
     private readonly Func<string, string>? _protectSecret;
     private readonly Func<string, string>? _unprotectSecret;
 
@@ -378,78 +384,106 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
         Func<string, string>? protectSecret = null,
         Func<string, string>? unprotectSecret = null)
     {
-        _filePath = Path.Combine(folderPath, fileName ?? DefaultFileName);
+        _file = new AtomicJsonFile(Path.Combine(folderPath, fileName ?? DefaultFileName));
         _protectSecret = protectSecret;
         _unprotectSecret = unprotectSecret;
     }
 
-    public void Save(ProductionOutputPreferences preferences)
+    internal FileProductionOutputPreferencesStore(string folderPath, Action<string> beforeReplace,
+        Func<string, string>? protectSecret = null, Func<string, string>? unprotectSecret = null)
     {
-        var directory = Path.GetDirectoryName(_filePath);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var json = ProductionOutputPreferencesSerializer.Serialize(preferences);
-        if (_protectSecret is not null)
-        {
-            json = ProductionOutputPreferencesSerializer.ProtectSecretFields(json, _protectSecret);
-        }
-
-        File.WriteAllText(_filePath, json);
+        _file = new AtomicJsonFile(Path.Combine(folderPath, DefaultFileName), beforeReplace);
+        _protectSecret = protectSecret;
+        _unprotectSecret = unprotectSecret;
     }
 
-    public ProductionOutputPreferences? Load()
+    public void Save(ProductionOutputPreferences preferences) => _file.Locked(() =>
     {
-        if (!File.Exists(_filePath))
+        SaveLocked(preferences);
+        return true;
+    });
+
+    private string Protect(string json) => _protectSecret is null ? json :
+        ProductionOutputPreferencesSerializer.ProtectSecretFields(json, _protectSecret);
+
+    private void SaveLocked(ProductionOutputPreferences preferences)
+    {
+        // Serialize/protect before touching either durable file. Reject non-finite
+        // values or encryption failures without disturbing the existing show.
+        var json = Protect(ProductionOutputPreferencesSerializer.Serialize(preferences));
+        var previous = Read(_file.Path, out var previousJson, out _);
+        if (previous.Status == ProductionPreferencesLoadStatus.Unreadable)
+            throw new IOException("The existing production preferences could not be read; save cancelled.");
+        _file.Write(json, previous.Preferences is null ? null : Protect(previousJson!));
+    }
+
+    public ProductionOutputPreferences? Load() => LoadWithResult().Preferences;
+
+    public ProductionPreferencesLoadResult LoadWithResult() => _file.Locked(() =>
+    {
+        var result = Read(_file.Path, out _, out var migrated);
+        if (result.Preferences is null)
         {
-            return null;
+            var backup = Read(_file.BackupPath, out _, out migrated);
+            if (backup.Preferences is not null)
+                result = new(ProductionPreferencesLoadStatus.Recovered, backup.Preferences, result.Status);
+            else
+            {
+                // Missing both files is normal first launch. All other failures
+                // are logged for operators/support instead of silently disappearing.
+                if (result.Status == ProductionPreferencesLoadStatus.Missing &&
+                    backup.Status != ProductionPreferencesLoadStatus.Missing)
+                    result = backup;
+                if (result.Status != ProductionPreferencesLoadStatus.Missing)
+                    LaunchLog.Write($"prefs: load failed ({result.Status}); no usable backup; defaults will be used");
+                return result;
+            }
         }
 
+        var preferences = result.Preferences!;
+        var hadPlaintextSecret = false;
+        if (_unprotectSecret is not null)
+        {
+            preferences.StreamRtmpStreamKey = UnprotectField(nameof(preferences.StreamRtmpStreamKey),
+                preferences.StreamRtmpStreamKey, ref hadPlaintextSecret);
+            preferences.StreamSrtPassphrase = UnprotectField(nameof(preferences.StreamSrtPassphrase),
+                preferences.StreamSrtPassphrase, ref hadPlaintextSecret);
+        }
+
+        if (result.Status == ProductionPreferencesLoadStatus.Recovered)
+            LaunchLog.Write($"prefs: recovered production preferences from backup (primary {result.PrimaryFailure})");
+
+        // Recovery does not replace an unreadable primary: it may be a transient
+        // sharing/permissions problem. A corrupt/missing primary can be repaired.
+        if ((result.Status == ProductionPreferencesLoadStatus.Recovered &&
+             result.PrimaryFailure != ProductionPreferencesLoadStatus.Unreadable) ||
+            (result.Status == ProductionPreferencesLoadStatus.Loaded &&
+             (migrated || (_protectSecret is not null && hadPlaintextSecret))))
+        {
+            try { SaveLocked(preferences); }
+            catch (Exception ex)
+            {
+                LaunchLog.Write($"prefs: durable re-save failed (keeping loaded preferences): {ex.GetType().Name}");
+            }
+        }
+        return result;
+    });
+
+    private static ProductionPreferencesLoadResult Read(string path, out string? json, out bool migrated)
+    {
+        json = null;
+        migrated = false;
         try
         {
-            var preferences = ProductionOutputPreferencesSerializer.Deserialize(
-                File.ReadAllText(_filePath), out var migratedFromOlderVersion);
-            if (preferences is null)
-            {
-                return null;
-            }
-
-            var hadPlaintextSecret = false;
-            if (_unprotectSecret is not null)
-            {
-                preferences.StreamRtmpStreamKey =
-                    UnprotectField(nameof(preferences.StreamRtmpStreamKey), preferences.StreamRtmpStreamKey, ref hadPlaintextSecret);
-                preferences.StreamSrtPassphrase =
-                    UnprotectField(nameof(preferences.StreamSrtPassphrase), preferences.StreamSrtPassphrase, ref hadPlaintextSecret);
-            }
-
-            // Migration (beta spec S4): plaintext secrets or an older schema
-            // version re-save encrypted at the new version. Best-effort — a
-            // failed rewrite must never lose working preferences.
-            if (_protectSecret is not null && (hadPlaintextSecret || migratedFromOlderVersion))
-            {
-                try
-                {
-                    Save(preferences);
-                }
-                catch (Exception ex)
-                {
-                    LaunchLog.Write($"prefs: encrypted re-save failed (keeping loaded preferences): {ex.Message}");
-                }
-            }
-
-            return preferences;
+            json = File.ReadAllText(path);
+            var preferences = ProductionOutputPreferencesSerializer.Deserialize(json, out migrated);
+            return new(preferences is null ? ProductionPreferencesLoadStatus.Corrupt :
+                ProductionPreferencesLoadStatus.Loaded, preferences);
         }
-        catch (IOException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return null;
-        }
+        catch (FileNotFoundException) { return new(ProductionPreferencesLoadStatus.Missing, null); }
+        catch (DirectoryNotFoundException) { return new(ProductionPreferencesLoadStatus.Missing, null); }
+        catch (IOException) { return new(ProductionPreferencesLoadStatus.Unreadable, null); }
+        catch (UnauthorizedAccessException) { return new(ProductionPreferencesLoadStatus.Unreadable, null); }
     }
 
     private string? UnprotectField(string fieldName, string? stored, ref bool hadPlaintextSecret)

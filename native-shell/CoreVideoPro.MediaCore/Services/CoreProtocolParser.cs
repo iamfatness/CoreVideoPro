@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using CoreVideoPro.MediaCore.Contracts;
 using CoreVideoPro.MediaCore.Json;
 using CoreVideoPro.MediaCore.Models;
 
@@ -467,6 +469,7 @@ public static class CoreProtocolParser
 
     public static NativeMediaCoreProfile? TryParseHandshakeProfile(JsonDocument response)
     {
+        MediaCoreHandshakeRules.RequireCompatibleProtocol(response.RootElement);
         if (!response.RootElement.TryGetProperty("ok", out var okElement) ||
             !okElement.GetBoolean() ||
             !response.RootElement.TryGetProperty("profile", out var profileElement))
@@ -488,14 +491,14 @@ public static class CoreProtocolParser
         if (root.TryGetProperty("snapshot", out var snapshotElement))
         {
             return JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(
-                snapshotElement.GetRawText(),
+                ValidatedRecordingLifecycleJson(snapshotElement),
                 MediaCoreJson.Options);
         }
 
         if (root.TryGetProperty("state", out var stateElement))
         {
             return JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(
-                stateElement.GetRawText(),
+                ValidatedRecordingLifecycleJson(stateElement),
                 MediaCoreJson.Options);
         }
 
@@ -524,7 +527,41 @@ public static class CoreProtocolParser
             return null;
         }
 
-        return JsonSerializer.Deserialize<NativeMediaCoreWireState>(wireElement.GetRawText(), MediaCoreJson.Options);
+        return JsonSerializer.Deserialize<NativeMediaCoreWireState>(ValidatedRecordingLifecycleJson(wireElement), MediaCoreJson.Options);
+    }
+
+    private static string ValidatedRecordingLifecycleJson(JsonElement snapshot)
+    {
+        var json = snapshot.GetRawText();
+        if (snapshot.ValueKind != JsonValueKind.Object) return json;
+        // Match the serializer's case-insensitive property handling.
+        var recording = snapshot.EnumerateObject().LastOrDefault(property =>
+            property.Name.Equals("recording", StringComparison.OrdinalIgnoreCase)).Value;
+        if (recording.ValueKind != JsonValueKind.Object) return json;
+        var lifecycle = recording.EnumerateObject().LastOrDefault(property =>
+            property.Name.Equals("lifecycle", StringComparison.OrdinalIgnoreCase)).Value;
+        if (lifecycle.ValueKind == JsonValueKind.Undefined || OutputLifecycleContract.Validate(lifecycle))
+            return json;
+
+        // Absence is an older protocol. Explicit null/invalid data is not: do
+        // not let nullable deserialization turn it into optimistic legacy state.
+        // Preserve the rest of the snapshot so the UI receives the failure
+        // instead of retaining a previous live snapshot after a parse rejection.
+        var root = JsonNode.Parse(json, new JsonNodeOptions { PropertyNameCaseInsensitive = true })!;
+        var target = root["recording"]!;
+        target["active"] = false;
+        target["status"] = "failed";
+        target["writerStatus"] = "failed";
+        target["lifecycle"] = JsonSerializer.SerializeToNode(new OutputLifecycle
+        {
+            SessionId = "unverified-recording",
+            DesiredActive = false,
+            State = "failed",
+            Health = "failed",
+            Finalized = false,
+            Error = "Malformed recording lifecycle received from the media core."
+        }, MediaCoreJson.Options);
+        return root.ToJsonString();
     }
 
     public static ZoomMediaSpineNativeSnapshot? TryParseZoomMediaSpineSnapshot(JsonDocument response)

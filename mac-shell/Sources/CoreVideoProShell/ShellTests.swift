@@ -39,6 +39,164 @@ enum ShellTests {
 
     // ── prefs: the data-loss class ───────────────────────────────────────────
 
+    private static func testRecordingCommandRetriesAndSupersession() {
+        var policy = RecordingCommandPolicy()
+        policy.observe("recording")
+        let stop = policy.begin()
+        expect(stop.stop, "observed live recording selects Stop")
+        expect(!policy.desired, "pending Stop expresses stopped intent")
+        policy.observe("recording")
+        expect(!policy.desired, "live polls do not undo pending Stop intent")
+        expect(policy.finish(stop, failed: true), "failed Stop owns its completion")
+        expect(!policy.desired, "failed Stop preserves stopped intent despite observed media")
+        policy.observe("recording")
+        expect(!policy.desired, "live poll after failed Stop cannot re-arm recording")
+        let retry = policy.begin()
+        expect(retry.stop, "retry of failed Stop sends Stop, matching Stop Rec label")
+        policy.observe("finalizing")
+        policy.finish(retry, failed: true)
+        expect(!policy.desired, "lost Stop reply after observed finalization stays stopped")
+
+        policy.observe("completed")
+        let firstStart = policy.begin()
+        expect(!firstStart.stop, "completed recording selects Start")
+        let cancelStart = policy.begin()
+        expect(cancelStart.stop, "pending Start can be cancelled")
+        let newestStart = policy.begin()
+        expect(!newestStart.stop, "new Start after cancellation expresses fresh intent")
+        expect(!policy.finish(firstStart, failed: true), "old Start failure is ignored")
+        expect(!policy.finish(cancelStart, failed: false), "old Stop success is ignored")
+        expect(policy.desired, "old completions cannot clear newest Start intent")
+        policy.interrupted()
+        expect(!policy.finish(newestStart, failed: true), "process exit invalidates pending completion")
+        expect(!policy.desired, "process exit clears recording intent")
+
+        policy.observe("idle")
+        let failedStart = policy.begin()
+        policy.finish(failedStart, failed: true)
+        expect(!policy.desired, "failed Start while idle permits retrying Start")
+        let acceptedStart = policy.begin()
+        policy.observe("recording")
+        policy.finish(acceptedStart, failed: true)
+        expect(policy.desired, "lost Start reply preserves observed recording")
+
+        policy.observe("completed")
+        let acknowledgedStart = policy.begin()
+        policy.finish(acknowledgedStart, failed: false)
+        policy.observe("idle")
+        expect(policy.desired, "old idle poll cannot undo acknowledged Start")
+        policy.observe("completed")
+        expect(policy.desired, "old completed poll cannot undo acknowledged Start")
+        policy.observe("starting")
+        expect(policy.desired, "fresh starting progress keeps Start intent")
+        let stopWhileStarting = policy.begin()
+        policy.finish(stopWhileStarting, failed: true)
+        expect(!policy.desired, "failed Stop while starting does not re-arm unproven media")
+        policy.observe("starting")
+        expect(!policy.desired, "starting polls cannot re-arm stopped intent")
+        policy.observe("recording")
+        expect(policy.begin().stop, "observed media still permits explicit Stop retry")
+
+        var stopped = RecordingCommandPolicy()
+        stopped.observe("recording")
+        let acknowledgedStop = stopped.begin()
+        stopped.finish(acknowledgedStop, failed: false)
+        stopped.observe("recording")
+        expect(!stopped.desired, "stale live poll after acknowledged Stop cannot re-arm recording")
+        stopped.observe("warning")
+        expect(!stopped.desired, "degraded live poll also preserves stopped intent")
+        expect(stopped.begin().stop, "acknowledged Stop still offers explicit Stop while media is live")
+        stopped.observe("completed")
+        let restarted = stopped.begin()
+        expect(!restarted.stop && stopped.desired, "fresh Start after completion clears stopped intent")
+        stopped.finish(restarted, failed: false)
+        stopped.observe("recording")
+        expect(stopped.desired, "fresh recording after explicit Start remains armed")
+    }
+
+    private static func testBridgeGenerationRejectsStaleWork() {
+        var policy = BridgeGenerationPolicy()
+        expect(!policy.canWrite(policy.generation), "stopped bridge rejects writes")
+        let first = policy.begin()
+        expect(policy.isCurrent(first), "launched child owns current generation")
+        expect(!policy.canWrite(first), "unvalidated handshake cannot receive commands")
+        expect(policy.acceptHandshake(first), "current handshake is accepted")
+        expect(policy.canWrite(first), "validated current child accepts commands")
+
+        let recovery = policy.invalidate(stopped: false)
+        expect(!policy.isCurrent(first), "old stdout and exit callbacks are stale after exit")
+        expect(!policy.canWrite(first), "queued old writes cannot cross process exit")
+        expect(policy.canRelaunch(recovery), "current recovery token can relaunch")
+        let second = policy.begin()
+        expect(!policy.canRelaunch(recovery), "new child invalidates old relaunch timer")
+        expect(!policy.acceptHandshake(first), "late old handshake cannot mark new child ready")
+        expect(!policy.canWrite(second), "new child still requires its own handshake")
+        expect(policy.acceptHandshake(second), "replacement handshake is independent")
+        expect(!policy.canWrite(first), "old queued writes cannot enter ready replacement")
+        expect(policy.canWrite(second), "fresh commands can use ready replacement")
+
+        let pendingRecovery = policy.invalidate(stopped: false)
+        let stopped = policy.invalidate(stopped: true)
+        expect(!policy.canRelaunch(pendingRecovery), "stop invalidates scheduled relaunch")
+        expect(!policy.canRelaunch(stopped), "stop never schedules a new process")
+        expect(!policy.acceptHandshake(second), "late handshake cannot revive stopped bridge")
+
+        let incompatible = policy.begin()
+        _ = policy.invalidate(stopped: true)
+        expect(policy.stopped, "rejected handshake leaves bridge stopped")
+        expect(!policy.canWrite(incompatible), "rejected handshake blocks captured handles immediately")
+        expect(!policy.canRelaunch(policy.generation), "incompatible protocol does not auto-restart")
+    }
+
+    private static func testSharedLifecycleContracts() {
+        expectEqual(RecordingLifecycleReadModel.status(["status": "recording", "lifecycle": NSNull()]),
+                    "unknown", "malformed lifecycle never falls back to legacy live status")
+        for health in ["healthy", "degraded", "unknown", "failed"] {
+            let lifecycle: [String: Any] = ["sessionId": "test", "desiredActive": true,
+                "state": "live", "health": health, "finalized": false]
+            let expected = health == "healthy" || health == "degraded" ? "recording" : health
+            expectEqual(RecordingLifecycleReadModel.status(["lifecycle": lifecycle]), expected,
+                        "live state requires observed healthy or degraded media")
+        }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        do {
+            let data = try Data(contentsOf: root.appendingPathComponent("contracts/lifecycle.fixtures.json"))
+            guard let fixtures = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                expect(false, "lifecycle fixtures must be an array"); return
+            }
+            expect(!fixtures.isEmpty, "lifecycle fixtures are not empty")
+            for fixture in fixtures {
+                guard let id = fixture["id"] as? String, let contract = fixture["contract"] as? String,
+                      let accepted = fixture["accepted"] as? Bool, let json = fixture["json"] as? String,
+                      let payloadData = json.data(using: .utf8) else {
+                    expect(false, "malformed lifecycle fixture"); continue
+                }
+                let value = try JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed])
+                let validate: ([String: Any]) -> Bool
+                switch contract {
+                case "ProtocolVersion": validate = validateProtocolVersion
+                case "OutputLifecycle": validate = validateOutputLifecycle
+                case "OperationStatus": validate = validateOperationStatus
+                case "ProtocolFailure": validate = validateProtocolFailure
+                default: expect(false, "unknown contract \(contract)"); continue
+                }
+                expectEqual((value as? [String: Any]).map(validate) ?? false, accepted, id)
+                if accepted {
+                    let encoded: Data
+                    switch contract {
+                    case "ProtocolVersion": encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolVersion.self, from: payloadData))
+                    case "OutputLifecycle": encoded = try JSONEncoder().encode(JSONDecoder().decode(OutputLifecycle.self, from: payloadData))
+                    case "OperationStatus": encoded = try JSONEncoder().encode(JSONDecoder().decode(OperationStatus.self, from: payloadData))
+                    default: encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolFailure.self, from: payloadData))
+                    }
+                    let roundTrip = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+                    expect(roundTrip.map(validate) ?? false, "\(id) round trip")
+                }
+            }
+        } catch { expect(false, "lifecycle fixtures: \(error)") }
+    }
+
     /// Shipping `colorGrade` as a non-optional field silently reset EVERY saved
     /// setting, because synthesized Decodable ignores property defaults and
     /// load() swallows the throw with `try?`.
@@ -458,6 +616,9 @@ enum ShellTests {
         checks = 0
 
         let cases: [(String, () -> Void)] = [
+            ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
+            ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
+            ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),
             ("prefs/older-file", testPrefsSurviveAnOlderFile),
             ("prefs/round-trip", testPrefsRoundTripKeepsEveryField),
             ("prefs/garbage", testPrefsToleratesGarbage),

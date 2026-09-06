@@ -40,6 +40,11 @@ class ControllableEncoder final : public IEncoderSink {
   std::atomic<int64_t> lastIsoVideoTimelineTimestamp100ns{0};
   std::atomic<int64_t> lastIsoTimelineTimestamp100ns{0};
   std::atomic<int> stopCount{0};
+  std::atomic<bool> stopEntered{false};
+  std::atomic<bool> throwOnStart{false};
+  std::atomic<bool> throwOnSubmit{false};
+  std::atomic<bool> throwOnStop{false};
+  std::atomic<bool> reportWriteFailure{false};
 
   ~ControllableEncoder() override { destroyed->store(true); }
 
@@ -50,14 +55,17 @@ class ControllableEncoder final : public IEncoderSink {
 
   OutputSession start(const std::vector<std::string>& destinations,
                       const std::vector<std::string>& /*isoParticipantIds*/) override {
+    if (throwOnStart.load()) throw std::runtime_error("writer open failed");
     std::lock_guard<std::mutex> lock(mutex_);
     session_.active = true;
+    session_.recordingError.clear();
     session_.destinations = destinations;
     session_.recordingStatus = "recording";
     return session_;
   }
 
   void submit(const ProgramFrame& frame) override {
+    if (throwOnSubmit.load()) throw std::runtime_error("disk write failed");
     submitEntered.store(true);
     while (blockSubmit->load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -66,6 +74,10 @@ class ControllableEncoder final : public IEncoderSink {
     lastProgramTimelineTimestamp100ns.store(frame.timelineTimestamp100ns);
     const int count = ++submitCount;
     std::lock_guard<std::mutex> lock(mutex_);
+    if (reportWriteFailure.load()) {
+      session_.recordingError = "reported disk failure";
+      return;
+    }
     session_.encodedFrameCount = count;
     session_.recordingVideoFrameCount = count;
     session_.recordingLastFrameNumber = frame.frameNumber;
@@ -104,6 +116,8 @@ class ControllableEncoder final : public IEncoderSink {
   }
 
   void stopRecording() override {
+    stopEntered.store(true);
+    if (throwOnStop.load()) throw std::runtime_error("finalize failed");
     while (blockStop->load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -189,7 +203,9 @@ TEST(AsyncEncoderSink, PassesFramesAndAudioThroughInOrderWhenNotOverloaded) {
   request.sessionId = "async-show";
   sink.configureRecording(request);
   const auto started = sink.start({"recording"}, {});
-  EXPECT_TRUE(started.active);
+  EXPECT_FALSE(started.active);
+  ASSERT_TRUE(started.lifecycle);
+  EXPECT_EQ(started.lifecycle->state, "starting");
 
   for (int i = 1; i <= 5; ++i) {
     sink.submit(videoFrame(i));
@@ -240,6 +256,105 @@ TEST(AsyncEncoderSink, SubmitIsNonBlockingAndDropsToLatestUnderBacklog) {
   EXPECT_EQ(sink.session().encoderQueueDroppedVideoFrames,
             static_cast<int64_t>(sink.droppedVideoFrames()));
   EXPECT_GT(sink.session().encoderQueueDroppedVideoFrames, 0);
+}
+
+TEST(AsyncEncoderSink, RepeatedGenerationsShareMediaBudgetAndPreserveStoppedTail) {
+  AsyncEncoderSink::Options options;
+  options.maxVideoQueue = options.maxIsoVideoQueue = 2;
+  options.maxAudioQueue = options.maxIsoAudioQueue = 2;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(0));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(raw->submitEntered.load());
+
+  const float pcm[2] = {0.1f, -0.1f};
+  for (int generation = 0; generation < 100; ++generation) {
+    if (generation != 0) sink.start({"recording"}, {});
+    for (int index = 1; index <= 2; ++index) {
+      sink.submit(videoFrame(generation * 10 + index));
+      IsoSourceVideoFrame iso;
+      iso.sourceId = "zoom:" + std::to_string(index);
+      iso.frame.frameId = generation * 10 + index;
+      sink.submitIsoVideo({iso});
+      sink.submitAudio(pcm, 1, 2, 48000);
+      IsoSourceAudio stem;
+      stem.sourceId = iso.sourceId;
+      sink.submitIsoAudio({stem});
+    }
+    sink.stopRecording();
+  }
+  // Each newer generation loses its incoming media, not the first take's
+  // accepted tail. A per-generation cap would report no drops here and retain
+  // all 800 queued media items while the writer remains blocked.
+  EXPECT_EQ(sink.droppedVideoFrames(), 396u);
+  EXPECT_EQ(sink.droppedAudioPackets(), 396u);
+  raw->blockSubmit->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
+  EXPECT_EQ(raw->submitCount.load(), 3);
+  EXPECT_EQ(raw->lastFrameNumber.load(), 2);
+  EXPECT_EQ(raw->isoVideoCount.load(), 2);
+  EXPECT_EQ(raw->audioCount.load(), 2);
+  EXPECT_EQ(raw->isoAudioCount.load(), 2);
+  EXPECT_EQ(raw->stopCount.load(), 100);
+  ASSERT_TRUE(sink.session().lifecycle);
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+
+  // Once capacity returns, a fresh take can make real progress again.
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1001));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "live");
+}
+
+TEST(AsyncEncoderSink, HeldProgramAndIsoFramesRetryAfterOlderGenerationBudgetDrains) {
+  AsyncEncoderSink::Options options;
+  options.maxVideoQueue = options.maxIsoVideoQueue = 1;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(0));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(raw->submitEntered.load());
+  sink.submit(videoFrame(1));
+  IsoSourceVideoFrame iso;
+  iso.sourceId = "zoom:guest";
+  iso.frame.frameId = 1;
+  sink.submitIsoVideo({iso});
+  sink.stopRecording();
+
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(2));
+  iso.frame.frameId = 2;
+  sink.submitIsoVideo({iso});
+  EXPECT_EQ(sink.droppedVideoFrames(), 2u);
+  raw->blockSubmit->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->submitCount.load(), 2);
+  EXPECT_EQ(raw->isoVideoCount.load(), 1);
+  EXPECT_EQ(sink.session().lifecycle->state, "starting");
+
+  // The producer holds these exact frames; their earlier rejected submissions
+  // must not suppress them now that this generation has room to accept them.
+  sink.submit(videoFrame(2));
+  sink.submitIsoVideo({iso});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->submitCount.load(), 3);
+  EXPECT_EQ(raw->lastFrameNumber.load(), 2);
+  EXPECT_EQ(raw->isoVideoCount.load(), 2);
+  EXPECT_EQ(sink.session().lifecycle->state, "live");
+  EXPECT_EQ(sink.droppedVideoFrames(), 2u);
 }
 
 TEST(AsyncEncoderSink, StopRecordingIsNonBlockingEvenWhenWriterIsStuck) {
@@ -383,4 +498,169 @@ TEST(AsyncEncoderSink, TeardownIsBoundedWhenWriterIsStuck) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   EXPECT_TRUE(destroyed->load());
+}
+
+
+TEST(AsyncEncoderSink, LifecycleRequiresWriterProgressAndActualFinalizeCompletion) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  ASSERT_TRUE(sink.session().lifecycle);
+  EXPECT_EQ(sink.session().lifecycle->state, "starting");
+  EXPECT_FALSE(sink.session().active);
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "live");
+  EXPECT_TRUE(sink.session().active);
+  raw->blockStop->store(true);
+  sink.stopRecording();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->stopEntered.load() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_TRUE(raw->stopEntered.load());
+  EXPECT_EQ(sink.session().lifecycle->state, "finalizing");
+  EXPECT_FALSE(sink.session().lifecycle->finalized);
+  EXPECT_FALSE(sink.session().lifecycle->desiredActive);
+  raw->blockStop->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "completed");
+  EXPECT_TRUE(sink.session().lifecycle->finalized);
+}
+
+TEST(AsyncEncoderSink, OldFinalizeCannotCompleteOrReactivateNewGeneration) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  const auto first = sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  raw->blockStop->store(true);
+  sink.stopRecording();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->stopEntered.load() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const auto second = sink.start({"recording"}, {});
+  EXPECT_NE(first.lifecycle->sessionId, second.lifecycle->sessionId);
+  raw->blockStop->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->sessionId, second.lifecycle->sessionId);
+  EXPECT_EQ(sink.session().lifecycle->state, "starting");
+  EXPECT_FALSE(sink.session().lifecycle->finalized);
+  EXPECT_TRUE(sink.session().lifecycle->desiredActive);
+  EXPECT_FALSE(sink.session().active);
+}
+
+TEST(AsyncEncoderSink, WriterExceptionsReportFailureAndNextGenerationCanRecover) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->throwOnStart.store(true);
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+  EXPECT_EQ(sink.session().lifecycle->error, "writer open failed");
+  EXPECT_FALSE(sink.session().active);
+  raw->throwOnStart.store(false);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "live");
+  raw->throwOnSubmit.store(true);
+  sink.submit(videoFrame(2));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+  EXPECT_EQ(sink.session().lifecycle->error, "disk write failed");
+}
+
+TEST(AsyncEncoderSink, FailedFinalizeNeverReportsCompletedOrFinalized) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  raw->throwOnStop.store(true);
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+  EXPECT_EQ(sink.session().lifecycle->error, "finalize failed");
+  EXPECT_FALSE(sink.session().lifecycle->finalized);
+  EXPECT_FALSE(sink.session().active);
+}
+
+
+TEST(AsyncEncoderSink, StopWithoutWrittenMediaNeverClaimsCompletedRecording) {
+  AsyncEncoderSink sink(std::make_unique<ControllableEncoder>());
+  sink.start({"recording"}, {});
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  ASSERT_TRUE(sink.session().lifecycle);
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+  EXPECT_FALSE(sink.session().lifecycle->finalized);
+  EXPECT_FALSE(sink.session().active);
+}
+
+
+TEST(AsyncEncoderSink, ConfigureDoesNotCarryPreviousWriterErrorIntoNewTake) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  raw->reportWriteFailure.store(true);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+  raw->reportWriteFailure.store(false);
+  RecordingSessionRequest next;
+  next.sessionId = "retry-take";
+  sink.configureRecording(next);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(2));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "live");
+  EXPECT_FALSE(sink.session().lifecycle->error.has_value());
+}
+
+
+TEST(AsyncEncoderSink, RepeatedStopDuringFinalizeAndAfterCompletionIsIdempotent) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  raw->blockStop->store(true);
+  sink.stopRecording();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->stopEntered.load() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_TRUE(raw->stopEntered.load());
+  for (int i = 0; i < 1000; ++i) sink.stopRecording();
+  EXPECT_EQ(sink.session().lifecycle->state, "finalizing");
+  raw->blockStop->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->stopCount.load(), 1);
+  EXPECT_EQ(sink.session().lifecycle->state, "completed");
+  sink.stopRecording();
+  EXPECT_EQ(sink.session().lifecycle->state, "completed");
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->stopCount.load(), 1);
+}
+
+TEST(AsyncEncoderSink, FailedWriterStillReceivesExactlyOneCleanupStop) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  raw->reportWriteFailure.store(true);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+  for (int i = 0; i < 50; ++i) sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->stopCount.load(), 1);
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+  EXPECT_FALSE(sink.session().lifecycle->desiredActive);
 }

@@ -152,11 +152,11 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             case "transport.record.toggle":
                 return await RunTransportToggle(_vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
             case "transport.record.set":
-                return await RunTransportSet(_vm.Recording, Bool(args, 0), _vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
+                return await RunOutputSet(_vm.RecordingRequested, _vm.Recording, Bool(args, 0), _vm.CanSetRecording, _vm.SetRecordingAsync, "recording").ConfigureAwait(true);
             case "transport.stream.toggle":
                 return await RunTransportToggle(_vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
             case "transport.stream.set":
-                return await RunTransportSet(_vm.Streaming, Bool(args, 0), _vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
+                return await RunOutputSet(_vm.StreamingRequested, _vm.Streaming, Bool(args, 0), _vm.CanSetStreaming, _vm.SetStreamingAsync, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":
                 return await RunTransportToggle(_vm.ToggleEngineCommand, "capture engine").ConfigureAwait(true);
             case "transport.engine.set":
@@ -514,6 +514,24 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             return ControlInvokeResult.Fail($"Cannot toggle {what} right now (the control is unavailable in the current state).");
         }
         await command.ExecuteAsync(null).ConfigureAwait(true);
+        return ControlInvokeResult.Success;
+    }
+
+    internal static async Task<ControlInvokeResult> RunOutputSet(
+        bool requested, bool observedLive, bool target, Func<bool, bool> canSet,
+        Func<bool, Task> set, string what)
+    {
+        // A disarmed intent is not proof that a previous Stop reached the core.
+        // Retry the explicit target while media is still live; never invert intent here.
+        if (requested == target && (target || !observedLive))
+        {
+            return ControlInvokeResult.Success;
+        }
+        if (!canSet(target))
+        {
+            return ControlInvokeResult.Fail($"Cannot set {what} right now (the control is unavailable in the current state).");
+        }
+        await set(target).ConfigureAwait(true);
         return ControlInvokeResult.Success;
     }
 

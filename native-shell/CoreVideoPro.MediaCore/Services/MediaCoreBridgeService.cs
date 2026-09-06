@@ -338,6 +338,10 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     public static string SummarizeOutputs(NativeMediaCoreStateSnapshot snapshot)
     {
+        if (snapshot.Recording?.Lifecycle is not null)
+        {
+            return SummarizeLifecycleOutputs(snapshot);
+        }
         var failedOutput = snapshot.OutputHealth
             .FirstOrDefault(item =>
                 item.Status is "failed" or "warning" &&
@@ -387,7 +391,48 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             return $"Recording {snapshot.Recording.ProgramPath}";
         }
 
-        return "Outputs idle";
+        var starting = snapshot.OutputSenderSession.Senders
+            .Where(sender => sender.Status == "starting")
+            .Select(sender => sender.Destination.ToUpperInvariant()).ToList();
+        return starting.Count > 0 ? $"Starting: {string.Join(", ", starting)}" : "Outputs idle";
+    }
+
+    internal static string SummarizeLifecycleOutputs(NativeMediaCoreStateSnapshot snapshot)
+    {
+        // Recording lifecycle is always present in the new core, including when
+        // only streaming. Compose independent outputs instead of letting idle
+        // recording or one failed destination hide the remaining live output.
+        var observations = snapshot.OutputHealth
+            .Where(item => !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
+            .Select(item => (Destination: item.Destination, Status: item.Status, Detail: (string?)item.Message))
+            .Concat(snapshot.OutputSenderSession.Senders.Select(sender =>
+                (Destination: sender.Destination, Status: sender.Status, Detail: sender.Warning ?? sender.LastError)))
+            .GroupBy(item => item.Destination, StringComparer.OrdinalIgnoreCase);
+        var parts = new List<string>();
+        var live = new List<string>();
+        var starting = new List<string>();
+        foreach (var destination in observations)
+        {
+            var failure = destination.FirstOrDefault(item => item.Status == "failed");
+            if (failure == default) failure = destination.FirstOrDefault(item => item.Status == "warning");
+            if (failure != default)
+            {
+                var detail = string.IsNullOrWhiteSpace(failure.Detail)
+                    ? destination.Select(item => item.Detail).FirstOrDefault(item => !string.IsNullOrWhiteSpace(item))
+                    : failure.Detail;
+                parts.Add($"{destination.Key.ToUpperInvariant()} output {failure.Status}" +
+                    (string.IsNullOrWhiteSpace(detail) ? string.Empty : $": {NormalizeOutputFailureMessage(detail)}"));
+            }
+            else if (destination.Any(item => item.Status == "live")) live.Add(destination.Key.ToUpperInvariant());
+            else if (destination.Any(item => item.Status == "starting")) starting.Add(destination.Key.ToUpperInvariant());
+        }
+        if (snapshot.Recording?.Lifecycle?.State != "idle")
+            parts.Add(OutputLifecycleReadModel.RecordingStatus(snapshot.Recording));
+        if (live.Count > 0) parts.Add($"Live: {string.Join(", ", live)}");
+        if (starting.Count > 0) parts.Add($"Starting: {string.Join(", ", starting)}");
+        var warning = snapshot.OutputSenderSession.Warnings.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item));
+        if (parts.Count == 0 && warning is not null) parts.Add($"Output warning: {NormalizeOutputFailureMessage(warning)}");
+        return parts.Count > 0 ? string.Join(" · ", parts) : "Outputs idle";
     }
 
     private static string NormalizeOutputFailureMessage(string? message)

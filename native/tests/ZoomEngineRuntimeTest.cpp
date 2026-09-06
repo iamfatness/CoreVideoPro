@@ -611,3 +611,35 @@ TEST(ZoomEngineRuntime, IngestsDedicatedMeetingMixPcmAsZoomMix) {
 
   shm_region_destroy(region);
 }
+
+TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  setEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS", "30000");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    std::atomic<bool> cancelled{false};
+    corevideo::rpc::Json result;
+    std::thread worker([&] {
+      result = runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "123456789"}},
+          [&] { return cancelled.load(); });
+    });
+    EXPECT_TRUE(fake->waitForSentLines(1, std::chrono::seconds(3)));
+    const auto start = std::chrono::steady_clock::now();
+    cancelled.store(true);
+    (void)runtime.leave();
+    worker.join();
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
+    EXPECT_TRUE(result.isNull());
+    runtime.applyEngineEventForTest({corevideo::modules::ZoomEngineEventKind::Joined});
+    EXPECT_NE(runtime.snapshot().getString("meetingState"), "in_meeting");
+    // The next join must retire the old process even though it still reports
+    // running; a missing replacement executable cannot reuse its late Joined.
+    const auto rejoin = runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "987654321"}});
+    EXPECT_FALSE(fake->running());
+    EXPECT_NE(rejoin.getString("meetingState"), "in_meeting");
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
+}

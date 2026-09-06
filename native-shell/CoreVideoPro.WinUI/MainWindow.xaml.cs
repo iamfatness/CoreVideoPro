@@ -120,20 +120,27 @@ public sealed partial class MainWindow : Window
                 port = configured;
             }
 
-            var lan = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_LAN"), "1", StringComparison.Ordinal);
+            var oscLanRequested = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_LAN"), "1", StringComparison.Ordinal);
+            var oscTrustedNetwork = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_TRUSTED_NETWORK"), "1", StringComparison.Ordinal);
+            var oscLan = oscLanRequested && oscTrustedNetwork;
+            if (oscLanRequested && !oscTrustedNetwork)
+            {
+                LaunchLog.Write("control: OSC remains on loopback. Unauthenticated LAN OSC requires COREVIDEO_OSC_TRUSTED_NETWORK=1 on a trusted network.");
+            }
 
             _controlSurface = new StudioControlSurface(ViewModel, _dispatcher);
 
             _controlServer = new OscControlServer(_controlSurface, new OscControlServerOptions
             {
                 ListenPort = port,
-                BindAddress = lan ? IPAddress.Any : IPAddress.Loopback
+                BindAddress = oscLan ? IPAddress.Any : IPAddress.Loopback
             });
             _controlServer.Start();
-            LaunchLog.Write($"control: OSC server listening on {(lan ? "0.0.0.0" : "127.0.0.1")}:{_controlServer.BoundPort}");
+            LaunchLog.Write($"control: OSC server listening on {(oscLan ? "0.0.0.0" : "127.0.0.1")}:{_controlServer.BoundPort}");
 
             // HTTP + WebSocket API sharing the same surface. Loopback needs no privileges;
-            // LAN ("+") may require a Windows urlacl. Optional bearer token for LAN safety.
+            // LAN ("+") may require a Windows urlacl and always requires a bearer token.
+            var httpLan = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_HTTP_LAN"), "1", StringComparison.Ordinal);
             var httpPort = 8011;
             if (int.TryParse(Environment.GetEnvironmentVariable("COREVIDEO_HTTP_PORT"), out var httpConfigured) &&
                 httpConfigured is > 0 and < 65536)
@@ -146,11 +153,11 @@ public sealed partial class MainWindow : Window
                 _httpControlServer = new HttpControlServer(_controlSurface, new HttpControlServerOptions
                 {
                     ListenPort = httpPort,
-                    Host = lan ? "+" : "127.0.0.1",
+                    Host = httpLan ? "+" : "127.0.0.1",
                     AuthToken = Environment.GetEnvironmentVariable("COREVIDEO_CONTROL_TOKEN")
                 });
                 _httpControlServer.Start();
-                LaunchLog.Write($"control: HTTP/WS API listening on http://{(lan ? "+" : "127.0.0.1")}:{httpPort}/ (GET /manifest, /state, /ws; POST /invoke)");
+                LaunchLog.Write($"control: HTTP/WS API listening on http://{(httpLan ? "+" : "127.0.0.1")}:{httpPort}/ (GET /manifest, /state, /ws; POST /invoke)");
             }
             catch (Exception ex)
             {

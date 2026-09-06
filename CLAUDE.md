@@ -22,7 +22,7 @@ Three processes, not a web app:
 - **Zoom engine subprocess** — `native/zoom-engine/` → `corevideo-zoom-engine.exe` —
   speaks the Zoom Meeting SDK, writes raw **I420** frames to shared memory.
 
-IPC: JSON-line commands/snapshots over named pipes; video as keyed-mutex **DXGI shared
+IPC: JSON-line commands/snapshots over child stdin/stdout pipes; video as keyed-mutex **DXGI shared
 textures** (cross-process) for program/preview, and shared-memory I420 for Zoom frames.
 
 Process boundaries + where spine features (ISO/NDI/SRT/browser) plug in: `docs/architecture-seams.md`.

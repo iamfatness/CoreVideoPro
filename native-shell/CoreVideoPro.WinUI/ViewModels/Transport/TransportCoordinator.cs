@@ -164,7 +164,9 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task ToggleRecordingAsync()
+    public Task ToggleRecordingAsync() => SetRecordingAsync(!_host.Recording);
+
+    public async Task SetRecordingAsync(bool starting)
     {
         if (_recordingToggleInFlight)
         {
@@ -173,7 +175,6 @@ public sealed class TransportCoordinator
 
         _recordingToggleInFlight = true;
         _host.NotifyRecordingCommandCanExecuteChanged();
-        var starting = !_host.Recording;
         var previousRecording = _host.Recording;
         LaunchLog.Write(
             $"recording: toggle requested action={(starting ? "start" : "stop")} " +
@@ -194,6 +195,8 @@ public sealed class TransportCoordinator
                 if (preflight.ShouldBlock)
                 {
                     LaunchLog.Write($"recording: start BLOCKED by disk pre-flight — {preflight.Message}");
+                    _recordingToggleInFlight = false;
+                    _host.NotifyRecordingCommandCanExecuteChanged();
                     _host.OutputStatus = preflight.Message;
                     _host.OutputSessionStatus = _host.OutputStatus;
                     _host.RefreshOutputStatus();
@@ -234,7 +237,7 @@ public sealed class TransportCoordinator
 
             _dispatcher.RunOnUiThread(() =>
             {
-                _host.OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
+                _host.OutputStatus = starting ? "Recording start requested." : "Recording stop requested — finalizing.";
                 _host.OutputSessionStatus = _host.OutputStatus;
             });
         }
@@ -339,7 +342,7 @@ public sealed class TransportCoordinator
 
                 _dispatcher.RunOnUiThread(() =>
                 {
-                    _host.OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
+                    _host.OutputStatus = starting ? "Recording start requested." : "Recording stop requested — finalizing.";
                     _host.OutputSessionStatus = _host.OutputStatus;
                     _host.RefreshOutputStatus();
                 });
@@ -389,7 +392,9 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task ToggleStreamingAsync()
+    public Task ToggleStreamingAsync() => SetStreamingAsync(!_host.Streaming);
+
+    public async Task SetStreamingAsync(bool starting)
     {
         if (_streamToggleInFlight)
         {
@@ -398,7 +403,6 @@ public sealed class TransportCoordinator
 
         _streamToggleInFlight = true;
         _host.NotifyStreamingCommandCanExecuteChanged();
-        var starting = !_host.Streaming;
         var requestedDestinations = _host.BuildSelectedStreamDestinations(validatedOnly: true);
         LaunchLog.Write(
             $"stream: toggle requested action={(starting ? "start" : "stop")} " +
@@ -498,7 +502,8 @@ public sealed class TransportCoordinator
                 LaunchLog.Write($"stream: {action} failed {ex.GetType().Name}: {ex.Message}");
                 _dispatcher.RunOnUiThread(() =>
                 {
-                    _host.Streaming = previousStreaming;
+                    // A failed Stop must not let the next state sync re-arm the sender.
+                    _host.Streaming = starting && previousStreaming;
                     _host.RefreshOutputStatus();
                     _host.OutputStatus = failureStatus;
                     _host.OutputSessionStatus = _host.OutputStatus;

@@ -81,7 +81,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json removeBrowserSource(const std::string& browserId, std::string& error);
   [[nodiscard]] rpc::Json reloadBrowserSource(const std::string& browserId, std::string& error);
   [[nodiscard]] rpc::Json browserSourcesState() const;
-  [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
+  [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload, const std::function<bool()>& cancelled = {});
   // True when a real Zoom engine subprocess is configured. Lock-free (the
   // runtime pointer and its executable path are fixed at construction). The
   // RPC server uses this to route zoom-join AROUND coreMutex: in this mode

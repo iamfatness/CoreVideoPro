@@ -1,3 +1,4 @@
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.ViewModels.Transport;
@@ -29,6 +30,55 @@ public sealed class TransportCoordinatorTests
             recordingSyncRetryAttempts,
             recordingSyncRetryDelayMs);
         return (coordinator, bridge, host);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitStop_RetriesFailedStopWithoutRearming(bool recording)
+    {
+        var (coordinator, _, host) = Build();
+        host.Recording = recording;
+        host.Streaming = !recording;
+        host.SyncThrows = new InvalidOperationException("stop did not reach core");
+        Func<bool, Task> set = recording ? coordinator.SetRecordingAsync : coordinator.SetStreamingAsync;
+        await set(false);
+        Assert.False(recording ? host.Recording : host.Streaming);
+        Assert.Equal(1, host.SyncCallCount);
+
+        host.SyncThrows = null;
+        host.HoldSync = true;
+        var retry = StudioControlSurface.RunOutputSet(false, true, false, _ => true, set, "output");
+        Assert.Equal(2, host.SyncCallCount);
+        Assert.False(recording ? host.Recording : host.Streaming);
+        host.ReleaseSync();
+        await retry;
+        Assert.False(recording ? host.Recording : host.Streaming);
+        Assert.Contains(recording ? "Recording stop requested" : "Streaming stopped", host.OutputStatus);
+    }
+
+    [Theory]
+    [InlineData(false, false, false, 0)]
+    [InlineData(true, false, true, 0)]
+    [InlineData(false, true, false, 1)]
+    [InlineData(true, true, false, 1)]
+    [InlineData(false, false, true, 1)]
+    public async Task ExplicitOutputSet_PreservesIdempotencyAndPassesTarget(bool requested, bool live, bool target, int expectedCalls)
+    {
+        var calls = new List<bool>();
+        await StudioControlSurface.RunOutputSet(requested, live, target, _ => true,
+            value => { calls.Add(value); return Task.CompletedTask; }, "output");
+        Assert.Equal(expectedCalls, calls.Count);
+        Assert.All(calls, value => Assert.Equal(target, value));
+    }
+
+    [Fact]
+    public async Task ExplicitOutputSet_DoesNotRunWhileUnavailable()
+    {
+        var called = false;
+        await StudioControlSurface.RunOutputSet(false, true, false, _ => false,
+            _ => { called = true; return Task.CompletedTask; }, "output");
+        Assert.False(called);
     }
 
     // ---------------------------------------------------------------- Recording
@@ -131,7 +181,7 @@ public sealed class TransportCoordinatorTests
         Assert.False(host.Recording);
         Assert.False(coordinator.RecordingToggleInFlight);
         Assert.Equal(4, host.SyncCallCount);
-        Assert.Equal("Recording stopped.", host.OutputStatus);
+        Assert.Equal("Recording stop requested — finalizing.", host.OutputStatus);
     }
 
     [Fact]
@@ -150,6 +200,19 @@ public sealed class TransportCoordinatorTests
     }
 
     // ---------------------------------------------------------------- Streaming
+
+    [Fact]
+    public async Task ToggleStreaming_FailedStopKeepsDesiredStateDisarmed()
+    {
+        var (coordinator, _, host) = Build();
+        host.Streaming = true;
+        host.SyncThrows = new InvalidOperationException("connection lost during stop");
+
+        await coordinator.ToggleStreamingAsync();
+
+        Assert.False(host.Streaming);
+        Assert.StartsWith("Streaming stop failed:", host.OutputStatus);
+    }
 
     [Fact]
     public async Task ToggleStreaming_ArmsAndProvesStart_WhenSenderGoesLive()

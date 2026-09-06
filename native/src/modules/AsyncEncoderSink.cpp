@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <exception>
+#include <stdexcept>
 #include <utility>
 
 namespace corevideo::modules {
@@ -76,21 +78,37 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
           state_->lastProgramFrameNumber == item.frame.frameNumber) {
         return 0;
       }
-      state_->hasLastProgramFrameNumber = true;
-      state_->lastProgramFrameNumber = item.frame.frameNumber;
     } else if (item.kind == Kind::IsoVideo && item.isoSources.size() == 1) {
       const auto& source = item.isoSources.front();
       const auto last = state_->lastIsoFrameIdBySource.find(source.sourceId);
       if (last != state_->lastIsoFrameIdBySource.end() && last->second == source.frame.frameId) {
         return 0;
       }
-      state_->lastIsoFrameIdBySource[source.sourceId] = source.frame.frameId;
     } else if (item.kind == Kind::Start) {
       // Zoom/shared-memory frame sequences may restart between meeting or
       // recording generations, so no dedup identity crosses a Start barrier.
       state_->hasLastProgramFrameNumber = false;
       state_->lastIsoFrameIdBySource.clear();
       state_->consecutiveProgramItems = 0;
+    }
+
+    if (item.kind == Kind::Configure) {
+      state_->configuredSessionId = item.request.sessionId;
+      item.generation = state_->generation + 1;
+    } else if (item.kind == Kind::Start) {
+      item.generation = ++state_->generation;
+      state_->stopRequested = false;
+      state_->active.store(true);
+      std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
+      state_->snapshot = OutputSession{};
+      state_->snapshot.destinations = item.destinations;
+      if (std::find(item.destinations.begin(), item.destinations.end(), "recording") != item.destinations.end()) {
+        state_->snapshot.lifecycle = contracts::OutputLifecycle{
+            state_->configuredSessionId + ":" + state_->epoch + ":" + std::to_string(item.generation),
+            true, "starting", "unknown", false, std::nullopt};
+      }
+    } else {
+      item.generation = state_->generation;
     }
 
     seq = state_->nextSeq++;
@@ -108,7 +126,7 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       if (kind == Kind::IsoVideo && item.isoSources.size() == 1) {
         const std::string& sourceId = item.isoSources.front().sourceId;
         for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
-          if (it->kind == Kind::IsoVideo && it->isoSources.size() == 1 &&
+          if (it->generation == item.generation && it->kind == Kind::IsoVideo && it->isoSources.size() == 1 &&
               it->isoSources.front().sourceId == sourceId) {
             state_->queue.erase(it);
             state_->droppedVideo.fetch_add(1);
@@ -132,23 +150,36 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         }
       }
       if (pending >= cap) {
+        // The budget belongs to the sink, not each queued take. Preserve all
+        // media accepted before an older take's Stop barrier: a new generation
+        // may replace its own pending media, but must drop its incoming item
+        // when older generations occupy the entire budget.
+        if (kind == Kind::Audio || kind == Kind::IsoAudio) {
+          state_->droppedAudio.fetch_add(1);
+        } else {
+          state_->droppedVideo.fetch_add(1);
+        }
+        bool replaced = false;
         for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
-          if (it->kind == kind) {
+          if (it->generation == item.generation && it->kind == kind) {
             state_->queue.erase(it);
-            if (kind == Kind::Audio || kind == Kind::IsoAudio) {
-              state_->droppedAudio.fetch_add(1);
-            } else {
-              // Video + IsoVideo both count as dropped video frames (ISO frames
-              // drop-to-latest under disk pressure — logged as ISO health, never
-              // program A/V, per spec §9).
-              state_->droppedVideo.fetch_add(1);
-            }
+            replaced = true;
             break;
           }
         }
+        if (!replaced) return 0;
       }
     }
 
+    // Only accepted frames become dedup identities. A held frame rejected
+    // while an older take owns the budget must be retryable after it drains.
+    if (item.kind == Kind::Video) {
+      state_->hasLastProgramFrameNumber = true;
+      state_->lastProgramFrameNumber = item.frame.frameNumber;
+    } else if (item.kind == Kind::IsoVideo && item.isoSources.size() == 1) {
+      const auto& source = item.isoSources.front();
+      state_->lastIsoFrameIdBySource[source.sourceId] = source.frame.frameId;
+    }
     state_->queue.push_back(std::move(item));
   }
   state_->queueCv.notify_one();
@@ -178,17 +209,6 @@ void AsyncEncoderSink::configureRecording(const RecordingSessionRequest& request
 
 OutputSession AsyncEncoderSink::start(const std::vector<std::string>& destinations,
                                       const std::vector<std::string>& isoParticipantIds) {
-  // Publish active BEFORE enqueue so any submit() racing right behind this call is
-  // enqueued (ordered after the Start item) instead of dropped.
-  state_->active.store(true);
-  // Optimistically reflect the started session in the snapshot so the immediate
-  // return (and any session() read before the writer applies Start) shows active;
-  // the writer overwrites this with the wrapped sink's real session shortly.
-  {
-    std::lock_guard<std::mutex> lock(state_->snapshotMutex);
-    state_->snapshot.active = true;
-    state_->snapshot.destinations = destinations;
-  }
   Item item;
   item.kind = Kind::Start;
   item.destinations = destinations;
@@ -267,6 +287,12 @@ void AsyncEncoderSink::stopRecording() {
   item.kind = Kind::StopRecording;
   {
     std::lock_guard<std::mutex> lock(state_->queueMutex);
+    // Desired-state sync may repeat Stop while Finalize is blocked. One
+    // barrier per generation keeps that repetition bounded and preserves the
+    // observed finalizing/completed state. Do not use the media gate here:
+    // writer failure closes it before the required cleanup Stop is submitted.
+    if (state_->stopRequested) return;
+    state_->stopRequested = true;
     // Close the producer gate under queueMutex, then append a FIFO control
     // barrier. Every media item accepted before this point is written before
     // Finalize; every racing or later submission is rejected by enqueue().
@@ -274,11 +300,15 @@ void AsyncEncoderSink::stopRecording() {
     // measured ~400ms Program/ISO A/V duration mismatch at every stop.
     state_->active.store(false, std::memory_order_release);
     item.seq = state_->nextSeq++;
+    item.generation = state_->generation;
     state_->queue.push_back(std::move(item));
-  }
-  {
-    std::lock_guard<std::mutex> lock(state_->snapshotMutex);
+    std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
     state_->snapshot.active = false;
+    if (state_->snapshot.lifecycle) {
+      state_->snapshot.lifecycle->desiredActive = false;
+      if (state_->snapshot.lifecycle->state != "failed")
+        state_->snapshot.lifecycle->state = "stopping";
+    }
   }
   state_->queueCv.notify_one();
 }
@@ -306,6 +336,10 @@ bool AsyncEncoderSink::drainForTest(std::chrono::milliseconds timeout) {
 }
 
 void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
+  uint64_t failedGeneration = 0;
+  std::string generationFailure;
+  int64_t startVideoCount = 0;
+  bool madeProgress = false;
   for (;;) {
     Item item;
     {
@@ -360,9 +394,20 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       state->applying = true;
     }
 
-    // Apply against the wrapped sink WITHOUT holding queueMutex — this is the
-    // (potentially blocking) I/O the async layer exists to keep off the worker.
-    if (state->inner) {
+    // Finalization remains pending until the actual writer returns. Only this
+    // generation may publish; queued old media/Stop must not revive a new take.
+    if (item.kind == Kind::StopRecording) {
+      std::lock_guard<std::mutex> queueLock(state->queueMutex);
+      std::lock_guard<std::mutex> lock(state->snapshotMutex);
+      if (state->snapshot.lifecycle && item.generation == state->generation &&
+          state->snapshot.lifecycle->state != "failed")
+        state->snapshot.lifecycle->state = "finalizing";
+    }
+    OutputSession fresh;
+    std::string failure;
+    try {
+      if (!state->inner) throw std::runtime_error("Recording writer is unavailable");
+      if (item.generation != failedGeneration || item.kind == Kind::StopRecording) {
       switch (item.kind) {
         case Kind::Configure:
           state->inner->configureRecording(item.request);
@@ -387,32 +432,59 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           state->inner->stopRecording();
           break;
       }
-    }
-
-    // Refresh the published snapshot from the wrapped session. NOTE: do NOT touch
-    // `active` here — it is owned by start() (set true synchronously) and the
-    // wrapped session's `active` LAGS behind the queue, so refreshing it from here
-    // could clobber the flag back to false between start() and the writer applying
-    // Start, causing a racing submit() to wrongly drop a frame.
-    OutputSession fresh;
-    if (state->inner) {
+      }
       fresh = state->inner->session();
+      if (item.kind == Kind::Start) {
+        startVideoCount = fresh.recordingVideoFrameCount;
+        madeProgress = false;
+      }
+      // encodedFrameCount includes attempted submissions in the MF adapter;
+      // only successfully written recording frames establish output truth.
+      madeProgress = madeProgress || fresh.recordingVideoFrameCount > startVideoCount;
+      // Configure may retain the previous take's terminal error until Start
+      // resets the wrapped session. It cannot poison the next generation.
+      if (item.kind != Kind::Configure)
+        failure = item.generation == failedGeneration ? generationFailure : fresh.recordingError;
+    } catch (const std::exception& ex) {
+      failure = ex.what();
+    } catch (...) {
+      failure = "Unknown recording writer failure";
     }
-    if (item.kind == Kind::StopRecording) {
-      // Some concrete sinks retain their last-session metadata after Finalize,
-      // including active=true. The async decorator owns the producer gate, so
-      // its public snapshot must reflect the stopped state immediately and
-      // must not be revived by that retained inner snapshot.
-      fresh.active = false;
+    if (!failure.empty()) {
+      failedGeneration = item.generation;
+      generationFailure = failure;
     }
     {
+      // Same lock order as producer-side Start/Stop publication.
+      std::lock_guard<std::mutex> queueLock(state->queueMutex);
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
-      state->snapshot = fresh;
-      // Keep `active` sticky once start() has run: the wrapped session's active flag
-      // lags the queue, so a snapshot refresh triggered by an earlier item (e.g. the
-      // queued Configure) must not report the session as inactive after start().
-      if (state->active.load()) {
-        state->snapshot.active = true;
+      if (item.generation == state->generation && state->snapshot.lifecycle &&
+          (item.kind != Kind::Configure || !failure.empty())) {
+        auto lifecycle = *state->snapshot.lifecycle;
+        if (!failure.empty()) {
+          lifecycle.state = "failed";
+          lifecycle.health = "failed";
+          lifecycle.error = failure;
+          state->active.store(false);
+        } else if (lifecycle.state != "failed") {
+          if (item.kind == Kind::StopRecording) {
+            lifecycle.finalized = madeProgress;
+            lifecycle.state = madeProgress ? "completed" : "failed";
+            lifecycle.health = madeProgress ? "healthy" : "failed";
+            if (!madeProgress) lifecycle.error = "Recording stopped before any media was written";
+          } else if (lifecycle.desiredActive) {
+            lifecycle.state = madeProgress ? "live" : "starting";
+            lifecycle.health = madeProgress ? "healthy" : "unknown";
+          }
+          if (!fresh.recordingWarning.empty() && lifecycle.health == "healthy")
+            lifecycle.health = "degraded";
+        }
+        fresh.lifecycle = std::move(lifecycle);
+        fresh.active = fresh.lifecycle->state == "live";
+        state->snapshot = std::move(fresh);
+      } else if (item.generation == state->generation && !state->snapshot.lifecycle) {
+        // Non-recording encoder use retains its legacy observed sink state.
+        state->snapshot = std::move(fresh);
       }
     }
 

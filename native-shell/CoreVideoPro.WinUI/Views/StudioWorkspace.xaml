@@ -131,6 +131,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- Row 0 doubles as the window title bar (drag region); right padding
@@ -1496,6 +1497,13 @@
                 </ScrollViewer>
             </Grid>
         </Border>
+
+        <controls:InfoBar Grid.Row="4"
+                          IsOpen="{x:Bind ViewModel.HasProductionPreferencesWarning, Mode=OneWay}"
+                          IsClosable="False"
+                          Severity="Warning"
+                          Title="Review restored settings"
+                          Message="{x:Bind ViewModel.ProductionPreferencesWarning, Mode=OneWay}" />
 
         <!-- S1 crash pipeline (docs/beta-engineering-spec.md §S1): one-shot consent
              surface for last session's crash dumps. Deliberately STATIC — populated

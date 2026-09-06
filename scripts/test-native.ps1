@@ -95,14 +95,12 @@ function Stage-NativeArtifacts {
 }
 
 if (-not (Test-CMakeAvailable)) {
-  Write-Host "[test-native] cmake not found on PATH; skipping native media-core CI gate." -ForegroundColor Yellow
-  exit 0
+  throw "[test-native] cmake not found on PATH; install CMake before running the required native gate."
 }
 
 $vsDevCmd = Resolve-VsDevCmd
 if (-not $vsDevCmd) {
-  Write-Host "[test-native] Visual Studio / Build Tools not found; skipping native media-core CI gate." -ForegroundColor Yellow
-  exit 0
+  throw "[test-native] Visual Studio / Build Tools not found; install the C++ build tools before running the required native gate."
 }
 
 Write-Host "[test-native] configuring portable stub build (COREVIDEO_STUB=ON)..." -ForegroundColor Cyan

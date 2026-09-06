@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -45,6 +46,60 @@ bool fileContainsAscii(const std::filesystem::path& path, const std::string& tok
 }
 
 }  // namespace
+
+TEST(EncoderRecordingSession, StubSnapshotsStayCoherentDuringConcurrentAudioAndVideo) {
+  auto encoder = corevideo::modules::createStubRecordingEncoderSink();
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "concurrent-stub";
+  request.width = 1920;
+  request.height = 1080;
+  request.fps = 60;
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {});
+  constexpr int count = 4000;
+  std::atomic<bool> start{false};
+  std::atomic<int> finished{0};
+  std::thread video([&] {
+    while (!start.load()) std::this_thread::yield();
+    corevideo::modules::ProgramFrame frame;
+    frame.width = request.width;
+    frame.height = request.height;
+    for (int i = 1; i <= count; ++i) {
+      frame.frameNumber = i;
+      encoder->submit(frame);
+      if (i % 64 == 0) std::this_thread::yield();
+    }
+    ++finished;
+  });
+  std::thread audio([&] {
+    while (!start.load()) std::this_thread::yield();
+    const std::array<float, 960> pcm{};
+    for (int i = 0; i < count; ++i) {
+      encoder->submitAudio(pcm.data(), 480, 2, 48000);
+      if (i % 64 == 0) std::this_thread::yield();
+    }
+    ++finished;
+  });
+  start.store(true);
+  bool coherent = true;
+  int snapshots = 0;
+  do {
+    const auto observed = encoder->session();
+    coherent = coherent && observed.recordingLastFrameNumber == observed.recordingVideoFrameCount &&
+        observed.recordingDurationMs == observed.recordingVideoFrameCount * 1000 / request.fps &&
+        observed.recordingProgramBytesWritten == observed.recordingBytesWritten &&
+        observed.recordingAudioSampleCount == observed.recordingAudioPacketCount * 480;
+    ++snapshots;
+  } while (finished.load() != 2);
+  video.join();
+  audio.join();
+  const auto final = encoder->session();
+  EXPECT_TRUE(coherent);
+  EXPECT_GT(snapshots, 0);
+  EXPECT_EQ(final.recordingVideoFrameCount, count);
+  EXPECT_EQ(final.recordingAudioPacketCount, count);
+  EXPECT_EQ(final.recordingAudioSampleCount, static_cast<int64_t>(count) * 480);
+}
 
 TEST(EncoderRecordingSession, StubTracksRequestedProfilePathAndFramesDeterministically) {
   auto encoder = corevideo::modules::createStubRecordingEncoderSink();

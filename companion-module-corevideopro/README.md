@@ -22,11 +22,26 @@ CoreVideo Pro starts its control servers automatically. By default they bind to
 |-----------|---------|--------------|
 | HTTP + WebSocket | `127.0.0.1:8011` | `COREVIDEO_HTTP_PORT` |
 | OSC (UDP) | `127.0.0.1:8010` | `COREVIDEO_OSC_PORT` |
-| LAN access (both) | off | `COREVIDEO_OSC_LAN=1` (binds `+`/`0.0.0.0`; HTTP may need a Windows `netsh http add urlacl`) |
-| Bearer token | none | `COREVIDEO_CONTROL_TOKEN` |
+| HTTP/WS LAN access | off | `COREVIDEO_HTTP_LAN=1` (binds `+`; may need a Windows `netsh http add urlacl`) |
+| OSC LAN access | off | Both `COREVIDEO_OSC_LAN=1` and `COREVIDEO_OSC_TRUSTED_NETWORK=1` (binds `0.0.0.0`) |
+| Bearer token | none on loopback; required for LAN HTTP/WS | `COREVIDEO_CONTROL_TOKEN` |
 
 This module uses the **HTTP/WebSocket** transport. If Companion runs on a different
-machine than CoreVideo Pro, set `COREVIDEO_OSC_LAN=1` (and ideally a token) on the app.
+machine than CoreVideo Pro, set `COREVIDEO_HTTP_LAN=1` and a strong, non-blank
+`COREVIDEO_CONTROL_TOKEN` on the app, then configure the same token in Companion.
+Restart CoreVideo Pro after changing environment variables. LAN HTTP/WS refuses to
+listen without a token; the launch log reports the configuration error.
+
+HTTP requests use `Authorization: Bearer <token>`. WebSocket upgrades to `/ws` accept
+that header or `?token=<URL-encoded token>`; ordinary HTTP routes never accept query
+tokens. Tokens authenticate callers but plain HTTP does not encrypt them. Use LAN
+control only on a trusted network; remote or untrusted-network access requires TLS
+through a reverse proxy or an authenticated tunnel. Keep tokens out of URLs in logs.
+
+HTTP LAN access does not enable OSC. OSC has no authentication: enable its two
+separate settings only when every device on that network is trusted to operate the
+show. Existing `COREVIDEO_OSC_LAN=1` configurations now keep both services local
+until the new HTTP setting or explicit OSC trusted-network setting is supplied.
 
 ## 2. Build the module
 
