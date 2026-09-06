@@ -125,9 +125,9 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task TakeAsync()
+    public async Task<TakeResult> TakeAsync()
     {
-        if (_takeInFlight) return;
+        if (_takeInFlight) return TakeResult.Failed("A Take is already in progress.");
         _takeInFlight = true;
         try
         {
@@ -135,8 +135,9 @@ public sealed class TransportCoordinator
             var takenSceneId = _host.PreviewSceneId;
             if (!_host.IsSceneAvailable(previousProgramSceneId) || !_host.IsSceneAvailable(takenSceneId))
             {
-                _host.CommandStatus = "Take unavailable - select an available Preview scene.";
-                return;
+                const string unavailable = "Take unavailable - select an available Preview scene.";
+                _host.CommandStatus = unavailable;
+                return TakeResult.Failed(unavailable);
             }
 
             var sealRollback = _host.CaptureTakeRollback();
@@ -159,8 +160,9 @@ public sealed class TransportCoordinator
 
             if (!_bridge.Running)
             {
-                _host.OutputStatus = "Program selected - media core is offline.";
-                return;
+                const string offline = "Program selected locally; Take was not sent because the media core is offline.";
+                _host.OutputStatus = offline;
+                return TakeResult.Failed(offline);
             }
             // Swap once. Backpressure retries the resulting state, never the toggle.
             for (var attempt = 0; attempt < _recordingSyncRetryAttempts; attempt++)
@@ -169,7 +171,7 @@ public sealed class TransportCoordinator
                 {
                     await _host.SyncActiveSceneAsync("take").ConfigureAwait(true);
                     _host.OutputStatus = "Program updated";
-                    return;
+                    return TakeResult.Success;
                 }
                 catch (MediaCoreSyncInFlightException)
                 {
@@ -181,17 +183,20 @@ public sealed class TransportCoordinator
                 {
                     var restored = rollback();
                     if (restored) _host.RequestTakeReconciliation();
-                    _host.CommandStatus = restored
+                    var failure = restored
                         ? $"Take was not confirmed; previous local Program restored. Verify live output before retrying. {ex.Message}"
                         : $"Take was not confirmed; newer local edits preserved. Verify live output. {ex.Message}";
-                    return;
+                    _host.CommandStatus = failure;
+                    return TakeResult.Failed(failure);
                 }
             }
             var rolledBack = rollback();
             if (rolledBack) _host.RequestTakeReconciliation();
-            _host.CommandStatus = rolledBack
+            var exhausted = rolledBack
                 ? "Take could not reach the busy media core. Previous local Program restored; retry Take."
                 : "Take could not reach the busy media core; newer local edits preserved.";
+            _host.CommandStatus = exhausted;
+            return TakeResult.Failed(exhausted);
         }
         finally { _takeInFlight = false; }
     }

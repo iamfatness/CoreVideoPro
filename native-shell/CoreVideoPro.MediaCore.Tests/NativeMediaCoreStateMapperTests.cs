@@ -7,6 +7,38 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class NativeMediaCoreStateMapperTests
 {
+    [Theory]
+    [InlineData("snapshot")]
+    [InlineData("state")]
+    public void PreviewSceneSurvivesRealWireParserAndMapper(string envelope)
+    {
+        using var response = JsonDocument.Parse("{\"ok\":true,\"" + envelope + "\":" + """
+            {"health":null,"profile":null,"sceneId":"native-program","previewScene":{
+              "sceneId":"native-preview","routeCount":2,"layerCount":3,"composite":true}}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var commands = new[] { MediaCoreCommandBuilder.BuildPreviewSceneCommand("desired-preview", []) };
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(commands, 100, 3, wire);
+        Assert.Equal("native-program", snapshot.SceneId);
+        Assert.NotNull(snapshot.PreviewScene);
+        Assert.Equal("native-preview", snapshot.PreviewScene.SceneId);
+        Assert.Equal(2, snapshot.PreviewScene.RouteCount);
+        Assert.Equal(3, snapshot.PreviewScene.LayerCount);
+        Assert.True(snapshot.PreviewScene.Composite);
+    }
+
+    [Fact]
+    public void MissingNativePreviewDoesNotInventObservedPreviewFromCommand()
+    {
+        using var response = JsonDocument.Parse("""{"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"native-program"}}""");
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var commands = new[] { MediaCoreCommandBuilder.BuildPreviewSceneCommand("desired-preview", []) };
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(commands, 100, 3, wire);
+        Assert.Null(snapshot.PreviewScene);
+    }
+
     private static readonly IReadOnlyList<NativeMediaCoreCommand> Commands =
     [
         new()

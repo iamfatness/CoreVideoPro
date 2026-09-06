@@ -307,6 +307,7 @@ public sealed class RawParticipantEvent
 
 public sealed class NativeMediaCoreWireState
 {
+    public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }
     public int? RouteCount { get; init; }
     public int? TransformCount { get; init; }

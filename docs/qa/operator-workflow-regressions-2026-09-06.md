@@ -1,5 +1,7 @@
 # Operator workflow regressions — 2026-09-06
 
+Follow-up: [live API verification](operator-api-live-verification-2026-09-06.md) records the subsequently authorized native-observed test pass. The original acceptance status below describes the earlier code-only repair.
+
 The running Windows build repeatedly logged `preview-scene sync failed: Sequence contains no matching element`. Code tracing found that the scene picker's two-way selection could briefly clear Preview while its item list refreshed. Take accepted the invalid ID and could put it into Program, preventing subsequent scene/overlay synchronization. Existing unit-suite success did not cover this operator sequence.
 
 ## Changes and automated evidence

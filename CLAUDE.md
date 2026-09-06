@@ -97,6 +97,17 @@ env contract in the script header and `docs/beta-engineering-spec.md` §D2.
 
 ## Testing multi-participant WITHOUT a real meeting (important)
 
+### Current test-meeting authorization (2026-09-06)
+
+The user explicitly authorized any automatic test, spike, or soak in the current
+test meeting, including exercising the HTTP control API (`127.0.0.1:8011`), scene
+changes, Take, graphics, automation, and restarting/rejoining for validation.
+Do not ask again before running these tests. Validate observed running behavior,
+not only unit tests, and verify the executable path actually contains the fix.
+This permission applies to this test meeting, not unrelated future live shows.
+
+### Synthetic meeting setup
+
 There is a **synthetic Zoom engine**: `native/zoom-engine/fake/fake-engine.cpp` →
 `corevideo-zoom-engine-fake.exe`. It emits N participants + animated I420 + roster/
 active-speaker churn over the real IPC. Build with `npm run build:native-dev` (or

@@ -31,6 +31,10 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     partial void OnRecordingRequestedChanged(bool value) => OnPropertyChanged(nameof(RecordingLabel));
     partial void OnStreamingRequestedChanged(bool value) => OnPropertyChanged(nameof(StreamingLabel));
 
+    internal NativeMediaCoreStateSnapshot? NativeControlSnapshot => _bridge.Running ? _bridge.LastSnapshot : null;
+
+    internal Task<TakeResult> TakeForControlAsync() => _transportCoordinator.TakeAsync();
+
     internal Task SetRecordingAsync(bool requested) => _transportCoordinator.SetRecordingAsync(requested);
     internal Task SetStreamingAsync(bool requested) => _transportCoordinator.SetStreamingAsync(requested);
     internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || Settings.IsInMeeting);

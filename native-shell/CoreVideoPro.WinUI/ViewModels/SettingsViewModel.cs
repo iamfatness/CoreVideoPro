@@ -793,6 +793,9 @@ public sealed partial class SettingsViewModel : ObservableObject
                 sdkJwt,
                 userZak).ConfigureAwait(false);
 
+            snapshot = await ZoomJoinReconciliation.ObserveLateJoinAsync(
+                snapshot, token => _bridge.GetZoomSnapshotAsync(token)).ConfigureAwait(false);
+
             LaunchLog.Write(
                 $"zoom-join: snapshot meetingState={snapshot.MeetingState} participants={snapshot.Participants.Count} warnings={(snapshot.Warnings?.Count ?? 0)}");
 

@@ -734,8 +734,17 @@ public sealed record NativeMediaCoreAutoProduction
     public string Rationale { get; init; } = string.Empty;
 }
 
+public sealed record NativeMediaCorePreviewScene
+{
+    public string? SceneId { get; init; }
+    public int RouteCount { get; init; }
+    public int LayerCount { get; init; }
+    public bool Composite { get; init; }
+}
+
 public sealed record NativeMediaCoreStateSnapshot
 {
+    public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }
     public int RouteCount { get; init; }
     public int FrameCount { get; init; }

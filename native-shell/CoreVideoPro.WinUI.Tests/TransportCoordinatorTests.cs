@@ -367,6 +367,82 @@ public sealed class TransportCoordinatorTests
         Assert.NotEqual("Program updated", host.OutputStatus);
     }
 
+    [Fact]
+    public async Task TakeApi_DisabledControlFailsWithoutInvokingTake()
+    {
+        var invoked = false;
+        var result = await StudioControlSurface.RunTake(false, () =>
+        {
+            invoked = true;
+            return Task.FromResult(TakeResult.Success);
+        });
+        Assert.False(result.Ok);
+        Assert.False(invoked);
+        Assert.Contains("unavailable", result.Error);
+    }
+
+    [Fact]
+    public async Task TakeApi_ReportsEachInvocationOutcomeInsteadOfPriorSuccess()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        var success = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.True(success.Ok);
+        host.SyncThrows = new InvalidOperationException("core rejected next scene");
+        var failure = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(failure.Ok);
+        Assert.Contains("core rejected next scene", failure.Error);
+        Assert.Contains("not confirmed", failure.Error);
+    }
+
+    [Fact]
+    public async Task TakeApi_ConcurrentInvocationCannotBorrowFirstCompletion()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        host.HoldSync = true;
+        var first = StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        var duplicate = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(duplicate.Ok);
+        Assert.Contains("already in progress", duplicate.Error);
+        Assert.False(first.IsCompleted);
+        host.ReleaseSync();
+        Assert.True((await first).Ok);
+        Assert.Equal(1, host.SyncCallCount);
+    }
+
+    [Fact]
+    public async Task TakeApi_OfflineLocalSelectionIsNotReportedAsOnAirSuccess()
+    {
+        var (coordinator, bridge, host) = Build();
+        bridge.Running = false;
+        host.PreviewSceneId = "interview";
+        var result = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(result.Ok);
+        Assert.Contains("offline", result.Error);
+        Assert.Equal(0, host.SyncCallCount);
+    }
+
+    [Fact]
+    public async Task TakeApi_ExhaustedBusySyncFails()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 1);
+        host.PreviewSceneId = "interview";
+        host.SyncFailuresRemaining = 1;
+        var result = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(result.Ok);
+        Assert.Contains("busy", result.Error);
+        Assert.Equal("intro", host.ActiveSceneId);
+    }
+
+    [Fact]
+    public async Task TakeApi_UnexpectedCommandExceptionReturnsFailure()
+    {
+        var result = await StudioControlSurface.RunTake(true, () => throw new InvalidOperationException("route preparation failed"));
+        Assert.False(result.Ok);
+        Assert.Contains("route preparation failed", result.Error);
+    }
+
     // ---------------------------------------------------------------- Take
 
     [Fact]

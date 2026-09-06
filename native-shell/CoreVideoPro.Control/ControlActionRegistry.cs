@@ -238,6 +238,7 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("on", b, true) }),
 
             // ---- Automation -------------------------------------------------------------
+            new("automation.magic", "Magic Scene", "Run the one-shot Magic Scene command using the current source roster."),
             new("automation.toggle", "Automation toggle", "Toggle production automation on/off."),
             new("automation.autoTake.set", "Auto-take", "Toggle automation auto-take.",
                 new[] { new ControlParam("on", b, true) }),
