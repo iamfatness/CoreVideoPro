@@ -68,3 +68,34 @@ Full generated legacy-protocol coverage, durable participant identity/native Tak
 and outbound backpressure remain implementation work in the
 [remediation plan](architecture-remediation-plan.md). They are not hidden behind
 the automated test totals.
+
+## PR review follow-up
+
+The follow-up fixes six review findings: shared media queue budgets across
+recording generations; output lifecycle polling while Zoom capture is off;
+explicit Windows Stop retries; macOS recording command reconciliation;
+request-only Windows handshakes; and successful PowerShell release harnesses
+that do not set a native exit code.
+
+The encoder retains media already accepted before an older Stop barrier. When
+older generations fill a media budget, incoming media from a newer take is
+dropped and counted until capacity returns. A new take only becomes live after
+the writer reports progress. The regression holds the writer stalled across
+100 recording generations and checks the preserved tail and subsequent recovery.
+
+Stop retries send an explicit false target rather than toggling an already-false
+intent back to true. macOS also guards asynchronous completions so an older
+command cannot overwrite newer intent. Windows output polling applies its output
+fields independently of Zoom capture subscription. Explicit handshakes may pass
+the startup gate; ordinary application commands still require a validated profile.
+Both solicited and unsolicited incompatible handshakes terminate the rejected child
+without an automatic restart, and profile publication is bound to the originating
+process.
+
+Follow-up local validation: 621 native tests (20 asynchronous encoder cases),
+489 MediaCore tests (11 handshake cases), 758 WinUI tests, and 23 release-evidence
+tests passed. The harness regression executes the workflow's PowerShell invocation
+with normal success, stale exit status, explicit script failure, an exception, and
+a failed native child. The macOS policy adds 23 checks to the hosted Swift suite;
+design lint passed locally, where no Swift compiler is installed. The remaining
+recording-cadence and controlled-rig acceptance requirements above are unchanged.
