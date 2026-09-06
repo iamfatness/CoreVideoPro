@@ -145,12 +145,21 @@ public sealed record NativeMediaCoreProgramSharedTexture
     public int FrameNumber { get; init; }
 }
 
+public sealed record NativeMediaCoreRenderedVideoSource
+{
+    public string LayerId { get; init; } = string.Empty;
+    public string SourceId { get; init; } = string.Empty;
+    public string ParticipantId { get; init; } = string.Empty;
+    public string Kind { get; init; } = string.Empty;
+}
+
 public sealed record NativeMediaCoreProgramFrame
 {
     public int FrameNumber { get; init; }
     public double TimestampMs { get; init; }
     public required string RenderPlanId { get; init; }
     public string? SceneId { get; init; }
+    public IReadOnlyList<NativeMediaCoreRenderedVideoSource>? VideoSources { get; init; }
     public int Width { get; init; }
     public int Height { get; init; }
     public int Fps { get; init; }

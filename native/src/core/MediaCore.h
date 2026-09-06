@@ -2,6 +2,7 @@
 
 #include "compositor/TilesMembership.h"
 #include "core/Director.h"
+#include "core/RenderedProgramSources.h"
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
 #include "modules/PluginHostClient.h"
@@ -229,6 +230,9 @@ class MediaCore {
   void injectPendingVstStates();
 
  private:
+  // Batch commands apply in order, then capture one response. Building and
+  // discarding a full session snapshot per command repeatedly takes module locks.
+  void applyCommandMutation(const rpc::Json& command);
   void loadSceneGraph(const rpc::Json& command);
   void setParticipantTransform(const rpc::Json& command);
   void setOverlayAsset(const rpc::Json& command);
@@ -580,6 +584,7 @@ class MediaCore {
   modules::StreamingTruePeakMeterState programTruePeakMeterR_;
   std::chrono::steady_clock::time_point lastLoudnessCompute_{};
   modules::ProgramFrame lastProgramFrame_;
+  RenderedProgramSources renderedProgramSources_;
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
   // pre-lock engine poll (see pollZoomAudioUnlocked).
   std::atomic<std::int64_t> lastProgramFrameNumberAtomic_{0};

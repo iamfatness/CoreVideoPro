@@ -14,6 +14,9 @@ internal static class NativeControlEvidence
             NativeActiveSceneId = snapshot?.SceneId,
             NativeRenderedSceneId = snapshot?.ProgramFrame?.SceneId,
             NativeRenderPlanId = snapshot?.ProgramFrame?.RenderPlanId,
+            NativeProgramVideoSources = snapshot?.ProgramFrame?.VideoSources?.Select(source =>
+                new ControlProgramVideoSource(source.LayerId, source.SourceId, source.ParticipantId, source.Kind)).ToArray(),
+            NativeLowerThirdSourceId = lowerThird?.SourceId,
             NativePreviewSceneId = snapshot?.PreviewScene?.SceneId,
             NativeProgramFrameCount = snapshot?.ProgramFrameCount,
             NativeLowerThirdPhase = lowerThird?.KeyPhase,

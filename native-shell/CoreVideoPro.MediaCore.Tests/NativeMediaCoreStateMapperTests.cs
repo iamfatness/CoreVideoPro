@@ -39,6 +39,32 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Null(snapshot.PreviewScene);
     }
 
+    [Fact]
+    public void NestedProgramFramePreservesActualSceneAndSourcesAcrossCommandAcknowledgment()
+    {
+        using var response = JsonDocument.Parse("""
+            {"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"new-scene","programFrameCount":10,
+            "programFrame":{"frameNumber":9,"sceneId":"old-scene","renderPlanId":"old-scene:2:0","health":"live",
+            "videoSources":[{"layerId":"speaker","sourceId":"zoom:jamal","participantId":"jamal","kind":"participant-video"}]}}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response)!;
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        Assert.Equal("new-scene", snapshot.SceneId);
+        Assert.Equal("old-scene", snapshot.ProgramFrame?.SceneId);
+        Assert.Equal(9, snapshot.ProgramFrame?.FrameNumber);
+        Assert.Equal("zoom:jamal", Assert.Single(snapshot.ProgramFrame!.VideoSources!).SourceId);
+    }
+
+    [Fact]
+    public void LegacyFrameCannotInventActualSourceOrSceneFromDesiredCommands()
+    {
+        using var response = JsonDocument.Parse("""{"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"desired","programFrameCount":10,"renderPlanId":"desired:2:0"}}""");
+        var wire = CoreProtocolParser.TryParseWireState(response)!;
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        Assert.Null(snapshot.ProgramFrame?.SceneId);
+        Assert.Null(snapshot.ProgramFrame?.VideoSources);
+    }
+
     private static readonly IReadOnlyList<NativeMediaCoreCommand> Commands =
     [
         new()

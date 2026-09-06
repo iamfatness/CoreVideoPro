@@ -26,7 +26,7 @@ public sealed class NativeControlEvidenceTests
                 }, new()
                 {
                     OverlayId = "key:lower-third", Kind = "lower-third", Position = "bottom-left",
-                    KeyPosition = "downstream", KeyPhase = "hidden", Keyer = "lower-third", Visible = false
+                    KeyPosition = "downstream", KeyPhase = "hidden", Keyer = "lower-third", Visible = false, SourceId = "zoom:actual"
                 }]
             }
         };
@@ -36,6 +36,7 @@ public sealed class NativeControlEvidenceTests
         Assert.Equal("observed", state.NativeActiveSceneId);
         Assert.Equal("native-preview", state.NativePreviewSceneId);
         Assert.Equal("hidden", state.NativeLowerThirdPhase);
+        Assert.Equal("zoom:actual", state.NativeLowerThirdSourceId);
         Assert.False(state.NativeLowerThirdVisible);
         Assert.Equal(42, state.NativeProgramFrameCount);
     }
@@ -47,6 +48,8 @@ public sealed class NativeControlEvidenceTests
         Assert.Null(state.NativeActiveSceneId);
         Assert.Null(state.NativeRenderedSceneId);
         Assert.Null(state.NativeRenderPlanId);
+        Assert.Null(state.NativeProgramVideoSources);
+        Assert.Null(state.NativeLowerThirdSourceId);
         Assert.Null(state.NativePreviewSceneId);
         Assert.Null(state.NativeLowerThirdVisible);
         Assert.Null(state.NativeLowerThirdPhase);
@@ -84,13 +87,15 @@ public sealed class NativeControlEvidenceTests
             ProgramFrame = new()
             {
                 SceneId = "previous-scene", RenderPlanId = "previous-scene:2:0",
-                FrameNumber = 10, Health = "live"
+                FrameNumber = 10, Health = "live",
+                VideoSources = [new() { LayerId = "first", SourceId = "zoom:actual", ParticipantId = "actual", Kind = "participant-video" }]
             }
         };
         var state = NativeControlEvidence.Apply(ControlState.Empty, snapshot);
         Assert.Equal("new-scene", state.NativeActiveSceneId);
         Assert.Equal("previous-scene", state.NativeRenderedSceneId);
         Assert.Equal("previous-scene:2:0", state.NativeRenderPlanId);
+        Assert.Equal("zoom:actual", Assert.Single(state.NativeProgramVideoSources!).SourceId);
         var absentScene = NativeControlEvidence.Apply(ControlState.Empty, snapshot with
         {
             ProgramFrame = snapshot.ProgramFrame with { SceneId = null }

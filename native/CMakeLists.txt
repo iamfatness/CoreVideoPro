@@ -624,6 +624,7 @@ if(BUILD_TESTING)
     tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/MediaCoreBatchSnapshotTest.cpp
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp
     tests/NdiPixelConvertTest.cpp

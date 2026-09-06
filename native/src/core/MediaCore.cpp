@@ -1,4 +1,4 @@
-﻿#include "core/MediaCore.h"
+#include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
 #include "compositor/TilesLayout.h"
@@ -636,6 +636,8 @@ rpc::Json MediaCore::sessionState() const {
       {"compositorRenderer", lastProgramFrame_.renderer},
       {"programFrame",
        rpc::Json::Object{
+           {"sceneId", renderedProgramSources_.sceneId()},
+           {"videoSources", renderedProgramSources_.videoSources()},
            {"frameNumber", static_cast<double>(lastProgramFrame_.frameNumber)},
            {"renderPlanId", lastProgramFrame_.renderPlanId},
            {"renderer", lastProgramFrame_.renderer},
@@ -1082,7 +1084,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   const auto tCmd0 = std::chrono::steady_clock::now();
   for (const auto& command : commands) {
     const auto ci0 = std::chrono::steady_clock::now();
-    (void)applyCommand(command);
+    applyCommandMutation(command);
     const auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(
                          std::chrono::steady_clock::now() - ci0)
                          .count();
@@ -1122,6 +1124,11 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
 }
 
 rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
+  applyCommandMutation(command);
+  return sessionState();
+}
+
+void MediaCore::applyCommandMutation(const rpc::Json& command) {
   const std::string type = command.getString("type");
   if (type == "load-scene-graph") {
     loadSceneGraph(command);
@@ -1215,7 +1222,6 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     // Pure query: the recommendation is derived from current state and surfaced
     // in the snapshot (see autoProductionState()), so there is nothing to mutate.
   }
-  return sessionState();
 }
 
 DirectorSignals MediaCore::deriveDirectorSignals() const {
@@ -3920,7 +3926,11 @@ rpc::Json MediaCore::overlayState() const {
         {"keyer", asset->keyer},
         {"buildInMs", asset->buildInMs},
         {"buildOutMs", asset->buildOutMs},
-        {"visible", asset->keyPhase != "hidden" && asset->keyPhase != "building-out"},
+        {"visible", asset->keyPhase != "hidden" && asset->keyPhase != "building-out" &&
+            (!isLowerThird || asset->sourceId.empty() || renderedProgramSources_.containsOverlay(
+                "overlay:" + asset->overlayId + ":lower-third", asset->sourceId,
+                asset->title, asset->org, asset->text, asset->imageUri, asset->keyPosition,
+                asset->keyer, asset->keyPhase))},
     });
   }
 
@@ -4700,7 +4710,20 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   for (const auto* asset : orderedOverlays) {
     modules::CompositorRenderPlanLayer layer;
     const bool isLowerThird = asset->position == "lower-third" || asset->position == "bottom-right";
+    if (isLowerThird && !asset->sourceId.empty() &&
+        std::none_of(renderPlan.layers.begin(), renderPlan.layers.end(), [&](const auto& video) {
+          return !video.hasOverlayContent && video.opacity > 0.f &&
+              (video.kind == "participant-video" || video.kind == "screen-share" || video.kind == "media-video") &&
+              (video.sourceId == asset->sourceId || video.participantId == asset->sourceId);
+        })) {
+      // A Take must not show the previous guest's name while the shell waits
+      // for rendered-source telemetry. Count this asset so the legacy fallback
+      // below cannot replace a deliberately suppressed key with a placeholder.
+      ++overlayLayerIndex;
+      continue;
+    }
     layer.layerId = "overlay:" + asset->overlayId + (isLowerThird ? ":lower-third" : ":bug");
+    layer.sourceId = asset->sourceId;
     layer.kind = "overlay";
     layer.order = static_cast<int>(renderPlan.layers.size());
     const auto layout = resolveOverlayLayout(asset->position);
@@ -4800,13 +4823,18 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   static int64_t s_subPollUs = 0;
   static int64_t s_subMergeUs = 0;
   static int s_stageTicks = 0;
+  // Preserve the stage breakdown of the slowest individual tick, not just
+  // averages that hide a texture-allocation/readback spike among cheap frames.
+  std::array<int64_t, 6> tickStages{}; // ingest, plan, program, multiview, preview, emit
   auto stageMark = std::chrono::steady_clock::now();
-  const auto markStage = [&stageMark, videoOnly](int64_t& acc) {
+  const auto markStage = [&stageMark, &tickStages, videoOnly](int64_t& acc, size_t stage) {
     if (!videoOnly) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
-    acc += std::chrono::duration_cast<std::chrono::microseconds>(now - stageMark).count();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - stageMark).count();
+    acc += elapsed;
+    tickStages[stage] += elapsed;
     stageMark = now;
   };
   // Tap the latest decoded Zoom frames (raw I420 planes) and ingest them into
@@ -4815,7 +4843,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
   if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
-    markStage(s_subFetchUs);
+    markStage(s_subFetchUs, 0);
     for (const auto& frame : decoded) {
       if (frame.hasI420()) {
         // GPU path: carry the raw I420 planes through to the compositor, which
@@ -4839,7 +4867,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     }
     // Split the per-frame store calls from the destruction of `decoded` (which
     // releases each shared I420 buffer) so a long tap says which one it is.
-    markStage(s_subStoreUs);
+    markStage(s_subStoreUs, 0);
   }
 
   // With a REAL Zoom engine configured, suppress only the SYNTHETIC FALLBACK
@@ -4848,7 +4876,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // ~16MB/frame under coreMutex (measured 26ms/tick on the Metal path). The
   // earlier all-or-nothing gate here also discarded the REAL decoded engine
   // frames ingested just above — live meetings rendered blank on macOS.
-  markStage(s_subTapUs);
+  markStage(s_subTapUs, 0);
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
   auto videoFrames = (engineLive && (!realZoom || realZoom->participantCount() == 0))
                          ? std::vector<modules::VideoFrame>{}
@@ -4863,7 +4891,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
                          std::make_move_iterator(browserFrames.begin()),
                          std::make_move_iterator(browserFrames.end()));
   }
-  markStage(s_subPollUs);
+  markStage(s_subPollUs, 0);
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
@@ -4897,7 +4925,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
-  markStage(s_subMergeUs);
+  markStage(s_subMergeUs, 0);
   // Still-image media routes (logos/bugs): inject the persistent decoded frames
   // (keyed "media:<assetId>") so program, preview bus and multiview all match
   // them like any other source frame. Cheap by construction — shared_ptr copies
@@ -4933,7 +4961,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   } else if (!latestIsoSourceFrames_.empty()) {
     latestIsoSourceFrames_.clear();
   }
-  markStage(s_stageIngestUs);
+  markStage(s_stageIngestUs, 0);
 
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
   // here: the audio mix / routing / monitor / loudness / encoder / output / recording
@@ -5100,8 +5128,17 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       }
     }
   }
-  markStage(s_stagePlanUs);
+  markStage(s_stagePlanUs, 1);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
+  if ((lastProgramFrame_.gpuComposed || !lastProgramFrame_.preview.bgra.empty()) &&
+      lastProgramFrame_.frameNumber > 0 && lastProgramFrame_.health != "failed" &&
+      lastProgramFrame_.renderPlanId == renderPlan.renderPlanId) {
+    renderedProgramSources_.publish(renderPlan);
+  } else {
+    // The returned frame now owns the snapshot identity. Never attach source
+    // or overlay proof from an older successful frame to this failed frame.
+    renderedProgramSources_.invalidate();
+  }
   // Mirrored for the audio worker's PRE-LOCK engine poll: it needs a frame
   // number to stamp audio with, but must not take coreMutex to read one.
   lastProgramFrameNumberAtomic_.store(lastProgramFrame_.frameNumber,
@@ -5115,7 +5152,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   if (!videoOnly && lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
-  markStage(s_stageProgramUs);
+  markStage(s_stageProgramUs, 2);
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
@@ -5179,7 +5216,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     lastProgramFrame_.multiviewWidth = lastMultiviewWidth_;
     lastProgramFrame_.multiviewHeight = lastMultiviewHeight_;
   }
-  markStage(s_stageMultiviewUs);
+  markStage(s_stageMultiviewUs, 3);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
   // (mirrors the program shared texture). Opt-in â€” only for a genuinely multi-layer
   // preview scene (a single passthrough source stays on the cheap WinUI single-source
@@ -5207,7 +5244,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     lastProgramFrame_.previewHeight = 0;
     previewStructureEmitted_ = false;
   }
-  markStage(s_stagePreviewUs);
+  markStage(s_stagePreviewUs, 4);
   if (videoOnly && ++s_stageTicks >= 120) {
     // Delta the cumulative compositor upload counters so the line reads as
     // "uploads in the last ~2s window".
@@ -5262,7 +5299,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       enqueueProgramFramePreviewEvent();
       lastFrameEventEmit_ = nowTp;
     }
-    markStage(s_stageEmitUs);
+    markStage(s_stageEmitUs, 5);
+  }
+  if (videoOnly) {
+    static std::array<int64_t, 6> peakStages{};
+    static int64_t peakUs = 0;
+    static int windowTicks = 0;
+    int64_t totalUs = 0;
+    for (const auto stageUs : tickStages) totalUs += stageUs;
+    if (totalUs > peakUs) { peakUs = totalUs; peakStages = tickStages; }
+    if (++windowTicks >= 120) {
+      std::fprintf(stderr,
+          "[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
+          peakUs / 1000.0, peakStages[0] / 1000.0, peakStages[1] / 1000.0,
+          peakStages[2] / 1000.0, peakStages[3] / 1000.0, peakStages[4] / 1000.0, peakStages[5] / 1000.0);
+      peakUs = 0;
+      windowTicks = 0;
+    }
   }
   // The audio/output half (mixer->mix, routed-bus matrix + insert chains,
   // monitorOutput->render, BS.1770 loudness, encoder->submit/submitAudio,
