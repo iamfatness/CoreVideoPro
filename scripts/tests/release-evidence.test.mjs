@@ -7,6 +7,37 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createCandidate, requiredChecks, sha256, validateEvidence } from '../release-evidence.mjs';
 
+test('release harness accepts PowerShell success and rejects script/native failures', (t) => {
+  const available = spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major']);
+  if (available.error?.code === 'ENOENT') return t.skip('PowerShell is unavailable');
+  assert.equal(available.status, 0);
+  const workflow = readFileSync(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8');
+  // Execute the actual workflow check so its script and executable exit semantics
+  // cannot drift from a separate test-only implementation.
+  const block = workflow.match(/          \$global:LASTEXITCODE = 0\r?\n[\s\S]*?throw "Hardware harness failed: \$LASTEXITCODE" }/);
+  assert.ok(block, 'locate the release harness invocation');
+  const dir = mkdtempSync(join(tmpdir(), 'corevideo-harness-test-'));
+  try {
+    for (const [name, body, previous, success] of [
+      ['normal script', 'Write-Output "passed"', '$null', true],
+      ['stale native status', 'Write-Output "passed"', '17', true],
+      ['explicit script failure', 'exit 7', '$null', false],
+      ['exception', 'throw "rig failed"', '$null', false],
+      ['native child failure', '& $env:HARNESS_TEST_NODE -e "process.exit(9)"', '$null', false],
+    ]) {
+      const harness = join(dir, 'harness.ps1');
+      writeFileSync(harness, 'param($CandidateManifest, $PackagePath, $EvidenceDirectory)\n' + body);
+      const command = `$ErrorActionPreference = 'Stop'\n$global:LASTEXITCODE = ${previous}\n${block[0]}\n`;
+      const result = spawnSync('pwsh', ['-NoProfile', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
+        env: { ...process.env, COREVIDEO_HARDWARE_HARNESS: harness, HARNESS_TEST_NODE: process.execPath }, encoding: 'utf8',
+      });
+      assert.equal(result.status === 0, success, `${name}: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function fixture() {
   const artifactBytes = Buffer.from('signed candidate'), report = Buffer.from('sanitized rig report');
   const configuration = { platform: 'windows-x64', flags: { COREVIDEO_STUB: 'OFF' }, runtimeFiles: { 'sdk.dll': sha256('sdk') } };

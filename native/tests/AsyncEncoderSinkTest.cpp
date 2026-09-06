@@ -258,6 +258,105 @@ TEST(AsyncEncoderSink, SubmitIsNonBlockingAndDropsToLatestUnderBacklog) {
   EXPECT_GT(sink.session().encoderQueueDroppedVideoFrames, 0);
 }
 
+TEST(AsyncEncoderSink, RepeatedGenerationsShareMediaBudgetAndPreserveStoppedTail) {
+  AsyncEncoderSink::Options options;
+  options.maxVideoQueue = options.maxIsoVideoQueue = 2;
+  options.maxAudioQueue = options.maxIsoAudioQueue = 2;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(0));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(raw->submitEntered.load());
+
+  const float pcm[2] = {0.1f, -0.1f};
+  for (int generation = 0; generation < 100; ++generation) {
+    if (generation != 0) sink.start({"recording"}, {});
+    for (int index = 1; index <= 2; ++index) {
+      sink.submit(videoFrame(generation * 10 + index));
+      IsoSourceVideoFrame iso;
+      iso.sourceId = "zoom:" + std::to_string(index);
+      iso.frame.frameId = generation * 10 + index;
+      sink.submitIsoVideo({iso});
+      sink.submitAudio(pcm, 1, 2, 48000);
+      IsoSourceAudio stem;
+      stem.sourceId = iso.sourceId;
+      sink.submitIsoAudio({stem});
+    }
+    sink.stopRecording();
+  }
+  // Each newer generation loses its incoming media, not the first take's
+  // accepted tail. A per-generation cap would report no drops here and retain
+  // all 800 queued media items while the writer remains blocked.
+  EXPECT_EQ(sink.droppedVideoFrames(), 396u);
+  EXPECT_EQ(sink.droppedAudioPackets(), 396u);
+  raw->blockSubmit->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
+  EXPECT_EQ(raw->submitCount.load(), 3);
+  EXPECT_EQ(raw->lastFrameNumber.load(), 2);
+  EXPECT_EQ(raw->isoVideoCount.load(), 2);
+  EXPECT_EQ(raw->audioCount.load(), 2);
+  EXPECT_EQ(raw->isoAudioCount.load(), 2);
+  EXPECT_EQ(raw->stopCount.load(), 100);
+  ASSERT_TRUE(sink.session().lifecycle);
+  EXPECT_EQ(sink.session().lifecycle->state, "failed");
+
+  // Once capacity returns, a fresh take can make real progress again.
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1001));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "live");
+}
+
+TEST(AsyncEncoderSink, HeldProgramAndIsoFramesRetryAfterOlderGenerationBudgetDrains) {
+  AsyncEncoderSink::Options options;
+  options.maxVideoQueue = options.maxIsoVideoQueue = 1;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(0));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(raw->submitEntered.load());
+  sink.submit(videoFrame(1));
+  IsoSourceVideoFrame iso;
+  iso.sourceId = "zoom:guest";
+  iso.frame.frameId = 1;
+  sink.submitIsoVideo({iso});
+  sink.stopRecording();
+
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(2));
+  iso.frame.frameId = 2;
+  sink.submitIsoVideo({iso});
+  EXPECT_EQ(sink.droppedVideoFrames(), 2u);
+  raw->blockSubmit->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->submitCount.load(), 2);
+  EXPECT_EQ(raw->isoVideoCount.load(), 1);
+  EXPECT_EQ(sink.session().lifecycle->state, "starting");
+
+  // The producer holds these exact frames; their earlier rejected submissions
+  // must not suppress them now that this generation has room to accept them.
+  sink.submit(videoFrame(2));
+  sink.submitIsoVideo({iso});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->submitCount.load(), 3);
+  EXPECT_EQ(raw->lastFrameNumber.load(), 2);
+  EXPECT_EQ(raw->isoVideoCount.load(), 2);
+  EXPECT_EQ(sink.session().lifecycle->state, "live");
+  EXPECT_EQ(sink.droppedVideoFrames(), 2u);
+}
+
 TEST(AsyncEncoderSink, StopRecordingIsNonBlockingEvenWhenWriterIsStuck) {
   // The caller holds coreMutex, so stop-recording must return instantly and let
   // the finalize happen on the writer thread — never stall the operator/render.

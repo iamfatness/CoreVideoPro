@@ -396,8 +396,12 @@ jobs:
           $candidate = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
           if ($candidate.sourceSha -ne $env:GITHUB_SHA) { throw 'Candidate source SHA differs from release workflow SHA.' }
           $package = (Resolve-Path (Join-Path artifacts/candidate $candidate.artifact.name)).Path
+          # A successful PowerShell script need not set LASTEXITCODE. Clear any
+          # inherited native status, then check both PowerShell and native failure.
+          $global:LASTEXITCODE = 0
           & $env:COREVIDEO_HARDWARE_HARNESS -CandidateManifest $manifest -PackagePath $package -EvidenceDirectory $evidenceDir
-          if ($LASTEXITCODE -ne 0) { throw "Hardware harness failed: $LASTEXITCODE" }
+          $harnessSucceeded = $?
+          if (-not $harnessSucceeded -or $LASTEXITCODE -ne 0) { throw "Hardware harness failed: $LASTEXITCODE" }
           node scripts/release-evidence.mjs validate $manifest (Join-Path $evidenceDir evidence.json) $package (Join-Path $evidenceDir verdict.json)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Archive sanitized hardware evidence

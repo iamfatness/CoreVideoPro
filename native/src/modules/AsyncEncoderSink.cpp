@@ -78,15 +78,12 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
           state_->lastProgramFrameNumber == item.frame.frameNumber) {
         return 0;
       }
-      state_->hasLastProgramFrameNumber = true;
-      state_->lastProgramFrameNumber = item.frame.frameNumber;
     } else if (item.kind == Kind::IsoVideo && item.isoSources.size() == 1) {
       const auto& source = item.isoSources.front();
       const auto last = state_->lastIsoFrameIdBySource.find(source.sourceId);
       if (last != state_->lastIsoFrameIdBySource.end() && last->second == source.frame.frameId) {
         return 0;
       }
-      state_->lastIsoFrameIdBySource[source.sourceId] = source.frame.frameId;
     } else if (item.kind == Kind::Start) {
       // Zoom/shared-memory frame sequences may restart between meeting or
       // recording generations, so no dedup identity crosses a Start barrier.
@@ -148,28 +145,41 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
                                                   : state_->maxIsoAudioQueue;
       size_t pending = 0;
       for (const auto& queued : state_->queue) {
-        if (queued.generation == item.generation && queued.kind == kind) {
+        if (queued.kind == kind) {
           ++pending;
         }
       }
       if (pending >= cap) {
+        // The budget belongs to the sink, not each queued take. Preserve all
+        // media accepted before an older take's Stop barrier: a new generation
+        // may replace its own pending media, but must drop its incoming item
+        // when older generations occupy the entire budget.
+        if (kind == Kind::Audio || kind == Kind::IsoAudio) {
+          state_->droppedAudio.fetch_add(1);
+        } else {
+          state_->droppedVideo.fetch_add(1);
+        }
+        bool replaced = false;
         for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
           if (it->generation == item.generation && it->kind == kind) {
             state_->queue.erase(it);
-            if (kind == Kind::Audio || kind == Kind::IsoAudio) {
-              state_->droppedAudio.fetch_add(1);
-            } else {
-              // Video + IsoVideo both count as dropped video frames (ISO frames
-              // drop-to-latest under disk pressure — logged as ISO health, never
-              // program A/V, per spec §9).
-              state_->droppedVideo.fetch_add(1);
-            }
+            replaced = true;
             break;
           }
         }
+        if (!replaced) return 0;
       }
     }
 
+    // Only accepted frames become dedup identities. A held frame rejected
+    // while an older take owns the budget must be retryable after it drains.
+    if (item.kind == Kind::Video) {
+      state_->hasLastProgramFrameNumber = true;
+      state_->lastProgramFrameNumber = item.frame.frameNumber;
+    } else if (item.kind == Kind::IsoVideo && item.isoSources.size() == 1) {
+      const auto& source = item.isoSources.front();
+      state_->lastIsoFrameIdBySource[source.sourceId] = source.frame.frameId;
+    }
     state_->queue.push_back(std::move(item));
   }
   state_->queueCv.notify_one();

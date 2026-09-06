@@ -33,6 +33,8 @@ namespace corevideo::modules {
 //     `maxVideoQueue`, the OLDEST pending frame is dropped (drop-to-latest) so
 //     the recording degrades to a lower effective fps instead of the worker
 //     stalling or memory growing without bound.
+//     Caps cover ALL queued generations. If older stopped takes hold the entire
+//     budget, new incoming media is dropped instead, preserving their tail.
 //   - submitAudio: enqueue and return. Audio drops are audible, so the audio cap
 //     is generous; beyond `maxAudioQueue` the oldest packet is dropped.
 //   - configureRecording / start: NON-BLOCKING. They are re-emitted every sync
