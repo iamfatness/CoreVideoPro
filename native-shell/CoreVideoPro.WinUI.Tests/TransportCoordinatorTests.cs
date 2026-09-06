@@ -131,7 +131,7 @@ public sealed class TransportCoordinatorTests
         Assert.False(host.Recording);
         Assert.False(coordinator.RecordingToggleInFlight);
         Assert.Equal(4, host.SyncCallCount);
-        Assert.Equal("Recording stopped.", host.OutputStatus);
+        Assert.Equal("Recording stop requested — finalizing.", host.OutputStatus);
     }
 
     [Fact]
@@ -150,6 +150,19 @@ public sealed class TransportCoordinatorTests
     }
 
     // ---------------------------------------------------------------- Streaming
+
+    [Fact]
+    public async Task ToggleStreaming_FailedStopKeepsDesiredStateDisarmed()
+    {
+        var (coordinator, _, host) = Build();
+        host.Streaming = true;
+        host.SyncThrows = new InvalidOperationException("connection lost during stop");
+
+        await coordinator.ToggleStreamingAsync();
+
+        Assert.False(host.Streaming);
+        Assert.StartsWith("Streaming stop failed:", host.OutputStatus);
+    }
 
     [Fact]
     public async Task ToggleStreaming_ArmsAndProvesStart_WhenSenderGoesLive()

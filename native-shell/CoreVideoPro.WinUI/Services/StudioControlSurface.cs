@@ -152,11 +152,11 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             case "transport.record.toggle":
                 return await RunTransportToggle(_vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
             case "transport.record.set":
-                return await RunTransportSet(_vm.Recording, Bool(args, 0), _vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
+                return await RunTransportSet(_vm.RecordingRequested, Bool(args, 0), _vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
             case "transport.stream.toggle":
                 return await RunTransportToggle(_vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
             case "transport.stream.set":
-                return await RunTransportSet(_vm.Streaming, Bool(args, 0), _vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
+                return await RunTransportSet(_vm.StreamingRequested, Bool(args, 0), _vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":
                 return await RunTransportToggle(_vm.ToggleEngineCommand, "capture engine").ConfigureAwait(true);
             case "transport.engine.set":

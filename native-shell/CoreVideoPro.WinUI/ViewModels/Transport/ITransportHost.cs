@@ -30,6 +30,8 @@ public interface ITransportHost
 {
     // --- transport bound state (the command bodies read/write these; they stay
     //     [ObservableProperty] on StudioViewModel so XAML x:Bind is unchanged) ---
+    // These legacy host names carry DESIRED activity. The shell implements them
+    // using RecordingRequested/StreamingRequested, never its live indicators.
     bool Recording { get; set; }
 
     bool Streaming { get; set; }

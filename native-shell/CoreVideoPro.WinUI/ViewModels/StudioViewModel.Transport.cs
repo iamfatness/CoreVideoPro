@@ -1,6 +1,7 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.ViewModels.Transport;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
@@ -21,20 +22,43 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 {
     private readonly TransportCoordinator _transportCoordinator;
 
+    // Intent is kept separately from Recording/Streaming, which reflect observed media.
+    [ObservableProperty]
+    private bool _recordingRequested;
+    [ObservableProperty]
+    private bool _streamingRequested;
+
+    partial void OnRecordingRequestedChanged(bool value) => OnPropertyChanged(nameof(RecordingLabel));
+    partial void OnStreamingRequestedChanged(bool value) => OnPropertyChanged(nameof(StreamingLabel));
+
+    private void InterruptOutputSessions()
+    {
+        var interrupted = RecordingRequested || StreamingRequested || Recording || Streaming;
+        RecordingRequested = false;
+        StreamingRequested = false;
+        Recording = false;
+        Streaming = false;
+        if (interrupted)
+        {
+            OutputStatus = "Outputs interrupted — recording continuity was lost. Start a new session after recovery.";
+            OutputSessionStatus = OutputStatus;
+        }
+    }
+
     // --- ITransportDispatcher: preserve the exact RunOnUiThread marshalling semantics ---
     void ITransportDispatcher.RunOnUiThread(Action action) => RunOnUiThread(action);
 
     // --- ITransportHost: bound transport state (stays [ObservableProperty] on StudioViewModel) ---
     bool ITransportHost.Recording
     {
-        get => Recording;
-        set => Recording = value;
+        get => RecordingRequested;
+        set => RecordingRequested = value;
     }
 
     bool ITransportHost.Streaming
     {
-        get => Streaming;
-        set => Streaming = value;
+        get => StreamingRequested;
+        set => StreamingRequested = value;
     }
 
     bool ITransportHost.ZoomCaptureSubscribed
