@@ -489,6 +489,188 @@ class RecordingAudioCaptureSource final : public corevideo::modules::IAudioCaptu
 
 }  // namespace
 
+TEST(MediaCoreCommand, LiveBatchAppliesSceneWithoutRenderingCatchUp) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.enableAudioOutputWorker();
+  const auto cold = mediaCore.sessionState();
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "first"}}}, 60000);
+  EXPECT_EQ(state.getString("sceneId"), "first");
+  EXPECT_EQ(state.getNumber("programFrameCount"), cold.getNumber("programFrameCount"));
+  EXPECT_EQ(state.getString("renderPlanId"), cold.getString("renderPlanId"));
+  mediaCore.renderDisplayTick();
+  const auto rendered = mediaCore.sessionState();
+  EXPECT_EQ(rendered.getNumber("programFrameCount"), cold.getNumber("programFrameCount") + 1);
+  EXPECT_EQ(rendered.getString("renderPlanId"), "first:0:0");
+
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "second"}}}, 3600000);
+  EXPECT_EQ(state.getString("sceneId"), "second");
+  EXPECT_EQ(state.getString("renderPlanId"), rendered.getString("renderPlanId"));
+  EXPECT_EQ(state.getNumber("programFrameCount"), rendered.getNumber("programFrameCount"));
+  mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_EQ(state.getString("renderPlanId"), "second:0:0");
+  EXPECT_EQ(state.getNumber("programFrameCount"), rendered.getNumber("programFrameCount") + 1);
+}
+
+TEST(MediaCoreCommand, RenderedProgramAttributionWaitsForCompositionAndPreservesFixedIdentity) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.enableAudioOutputWorker();
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "attribution"},
+          {"routes", corevideo::rpc::Json::Array{
+              corevideo::rpc::Json::Object{{"routeId", "guest"}, {"mode", "fixed"}, {"participantId", "missing-guest"}},
+              corevideo::rpc::Json::Object{{"routeId", "camera"}, {"mode", "capture-input"}, {"captureDeviceId", "camera-1"}}}}},
+      corevideo::rpc::Json::Object{{"type", "set-overlay-asset"}, {"overlayId", "title"}, {"text", "Title"}}});
+  EXPECT_EQ(state.get("programFrame")->getString("sceneId"), "");
+  EXPECT_TRUE(state.get("programFrame")->get("videoSources")->asArray().empty());
+  mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_EQ(state.get("programFrame")->getString("sceneId"), "attribution");
+  const auto& sources = state.get("programFrame")->get("videoSources")->asArray();
+  ASSERT_EQ(sources.size(), 2u);
+  EXPECT_EQ(sources[0].getString("layerId"), "route:guest");
+  EXPECT_EQ(sources[0].getString("sourceId"), "zoom:missing-guest");
+  EXPECT_EQ(sources[0].getString("participantId"), "missing-guest");
+  EXPECT_EQ(sources[1].getString("sourceId"), "capture:camera-1");
+  EXPECT_EQ(sources[1].getString("participantId"), "capture:camera-1");
+  const auto previous = state.get("programFrame")->get("videoSources")->stringify();
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "next"},
+          {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"routeId", "new"}, {"mode", "fixed"}, {"participantId", "next-guest"}}}}}});
+  EXPECT_EQ(state.get("programFrame")->getString("sceneId"), "attribution");
+  EXPECT_EQ(state.get("programFrame")->get("videoSources")->stringify(), previous);
+  mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_EQ(state.get("programFrame")->getString("sceneId"), "next");
+  EXPECT_EQ(state.get("programFrame")->get("videoSources")->asArray().front().getString("sourceId"), "zoom:next-guest");
+}
+
+TEST(MediaCoreCommand, LiveLowerThirdAnimationAdvancesOnlyOnDisplayTicks) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.enableAudioOutputWorker();
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "set-overlay-asset"}, {"overlayId", "key:lower-third"},
+          {"text", "Speaker"}, {"position", "lower-third"}, {"enabled", true},
+          {"keyPhase", "building-in"}, {"buildInMs", 1000}}});
+  const auto initialProgress = state.get("overlayState")->get("overlays")->asArray().front().getNumber("keyProgress");
+  for (int i = 0; i < 40; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "live"}}}, 60000);
+  }
+  const auto& unchanged = state.get("overlayState")->get("overlays")->asArray().front();
+  EXPECT_EQ(unchanged.getString("keyPhase"), "building-in");
+  EXPECT_EQ(unchanged.getNumber("keyProgress"), initialProgress);
+  EXPECT_EQ(state.getNumber("programFrameCount"), 0);
+  mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_GT(state.get("overlayState")->get("overlays")->asArray().front().getNumber("keyProgress"), initialProgress);
+  for (int i = 0; i < 65; ++i) mediaCore.renderDisplayTick();
+  state = mediaCore.sessionState();
+  EXPECT_EQ(state.get("overlayState")->get("overlays")->asArray().front().getString("keyPhase"), "on-air");
+}
+
+TEST(MediaCoreCommand, SourceBoundLowerThirdIsSuppressedOnFirstFrameAfterTake) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.enableAudioOutputWorker();
+  auto scene = [](const std::string& guest) {
+    return corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", guest},
+        {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+            {"routeId", "guest"}, {"mode", "fixed"}, {"participantId", guest}}}}};
+  };
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{scene("alice"),
+      corevideo::rpc::Json::Object{{"type", "set-overlay-asset"}, {"overlayId", "key"},
+          {"position", "lower-third"}, {"sourceId", "zoom:alice"}, {"text", "Alice"}, {"keyPhase", "on-air"}}});
+  mediaCore.renderDisplayTick();
+  EXPECT_EQ(mediaCore.sessionState().get("programFrame")->getNumber("layerCount"), 2);
+  EXPECT_TRUE(mediaCore.sessionState().get("overlayState")->get("overlays")->asArray().front().get("visible")->asBool());
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{scene("bob")});
+  mediaCore.renderDisplayTick();
+  EXPECT_EQ(mediaCore.sessionState().get("programFrame")->getNumber("layerCount"), 1);
+  EXPECT_FALSE(mediaCore.sessionState().get("overlayState")->get("overlays")->asArray().front().get("visible")->asBool());
+  // The desired key still exists, but cannot paint Alice over Bob. Unbound
+  // legacy text remains usable as a generic title on any scene.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "set-overlay-asset"}, {"overlayId", "key"}, {"sourceId", ""}}});
+  mediaCore.renderDisplayTick();
+  EXPECT_EQ(mediaCore.sessionState().get("programFrame")->getNumber("layerCount"), 2);
+}
+
+TEST(MediaCoreCommand, ReboundOverlayRequiresNewRenderedContentAndHiddenFrameIsNotProof) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  core.enableAudioOutputWorker();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "guests"}, {"routes", corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"routeId", "a"}, {"mode", "fixed"}, {"participantId", "alice"}},
+          corevideo::rpc::Json::Object{{"routeId", "b"}, {"mode", "fixed"}, {"participantId", "bob"}}}}}});
+  auto key = [](const std::string& person, const std::string& phase) {
+    return corevideo::rpc::Json::Object{{"type", "set-overlay-asset"}, {"overlayId", "key"},
+        {"position", "lower-third"}, {"sourceId", "zoom:" + person}, {"text", person}, {"keyPhase", phase}};
+  };
+  auto visible = [&] {
+    return core.sessionState().get("overlayState")->get("overlays")->asArray().front().get("visible")->asBool();
+  };
+  (void)core.applyCommands(corevideo::rpc::Json::Array{key("alice", "on-air")});
+  core.renderDisplayTick();
+  EXPECT_TRUE(visible());
+  (void)core.applyCommands(corevideo::rpc::Json::Array{key("bob", "on-air")});
+  EXPECT_FALSE(visible());
+  core.renderDisplayTick();
+  EXPECT_TRUE(visible());
+  (void)core.applyCommands(corevideo::rpc::Json::Array{key("bob", "hidden")});
+  core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{key("bob", "on-air")});
+  EXPECT_FALSE(visible());
+  core.renderDisplayTick();
+  EXPECT_TRUE(visible());
+}
+
+TEST(MediaCoreCommand, FailedCompositionInvalidatesPriorProgramAndOverlayEvidence) {
+  class MetadataOnlyCompositor final : public corevideo::modules::ICompositor {
+   public:
+    explicit MetadataOnlyCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner) : inner_(std::move(inner)) {}
+    std::string rendererName() const override { return "test"; }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      auto frame = inner_->render(plan, frames);
+      if (fail) { frame.preview.bgra.clear(); frame.gpuComposed = false; frame.health = "degraded"; }
+      return frame;
+    }
+    bool fail = false;
+   private:
+    std::unique_ptr<corevideo::modules::ICompositor> inner_;
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto compositor = std::make_unique<MetadataOnlyCompositor>(std::move(modules.compositor));
+  auto* probe = compositor.get();
+  modules.compositor = std::move(compositor);
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "first"}, {"routes", corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"routeId", "a"}, {"mode", "fixed"}, {"participantId", "alice"}}}}},
+      corevideo::rpc::Json::Object{{"type", "set-overlay-asset"}, {"overlayId", "key"},
+          {"position", "lower-third"}, {"sourceId", "zoom:alice"}, {"keyPhase", "on-air"}}});
+  core.renderDisplayTick();
+  EXPECT_EQ(core.sessionState().get("programFrame")->getString("sceneId"), "first");
+  probe->fail = true;
+  core.renderDisplayTick();
+  const auto state = core.sessionState();
+  EXPECT_EQ(state.get("programFrame")->getString("sceneId"), "");
+  EXPECT_TRUE(state.get("programFrame")->get("videoSources")->asArray().empty());
+  EXPECT_FALSE(state.get("overlayState")->get("overlays")->asArray().front().get("visible")->asBool());
+}
+
+TEST(MediaCoreCommand, DirectBatchRetainsSynchronousElapsedTimeRendering) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "direct"}}}, 99);
+  EXPECT_EQ(state.getNumber("programFrameCount"), 3);
+  EXPECT_EQ(state.getString("renderPlanId"), "direct:0:0");
+}
+
 TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{

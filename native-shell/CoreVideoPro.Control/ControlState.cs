@@ -34,6 +34,11 @@ public sealed record ControlState
     // Native observations are nullable when no running core snapshot is available.
     // The original fields above remain operator/local state for compatibility.
     public string? NativeActiveSceneId { get; init; }
+    // Actual last-rendered frame evidence; may lag acknowledged scene state.
+    public string? NativeRenderedSceneId { get; init; }
+    public string? NativeRenderPlanId { get; init; }
+    public IReadOnlyList<ControlProgramVideoSource>? NativeProgramVideoSources { get; init; }
+    public string? NativeLowerThirdSourceId { get; init; }
     public string? NativePreviewSceneId { get; init; }
     public string? NativeLowerThirdPhase { get; init; }
     public bool? NativeLowerThirdVisible { get; init; }
@@ -72,3 +77,5 @@ public sealed record ControlState
 
     public static ControlState Empty { get; } = new();
 }
+
+public sealed record ControlProgramVideoSource(string LayerId, string SourceId, string ParticipantId, string Kind);

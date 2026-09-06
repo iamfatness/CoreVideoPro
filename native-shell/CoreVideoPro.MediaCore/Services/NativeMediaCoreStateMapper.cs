@@ -83,13 +83,15 @@ public static class NativeMediaCoreStateMapper
             ? DecodeProgramFramePreview(wire.ProgramFramePreview) ?? baseSnapshot.ProgramFramePreview
             : baseSnapshot.ProgramFramePreview;
 
-        var programFrame = programFrameCount > 0
+        var programFrame = wire.ProgramFrame ?? (programFrameCount > 0
             ? new NativeMediaCoreProgramFrame
             {
                 FrameNumber = programFrameCount,
                 TimestampMs = elapsedMs,
                 RenderPlanId = wire.RenderPlanId ?? baseSnapshot.ProgramFrame?.RenderPlanId ?? $"native-plan-{frameNumber}",
-                SceneId = wire.SceneId ?? baseSnapshot.SceneId,
+                // Legacy cores do not provide rendered attribution. Never turn
+                // acknowledged scene state into proof of the last rendered scene.
+                SceneId = null,
                 Width = baseSnapshot.OutputProfile.Width,
                 Height = baseSnapshot.OutputProfile.Height,
                 Fps = baseSnapshot.OutputProfile.Fps,
@@ -97,7 +99,7 @@ public static class NativeMediaCoreStateMapper
                 ColorGrade = baseSnapshot.RenderPlan.ColorGrade,
                 Health = programFrameHealth
             }
-            : null;
+            : null);
 
         var audioMixSession = wire.AudioMixSession ?? baseSnapshot.AudioMixSession;
         var audioRoutingMatrix = wire.AudioRoutingMatrix ?? baseSnapshot.AudioRoutingMatrix;

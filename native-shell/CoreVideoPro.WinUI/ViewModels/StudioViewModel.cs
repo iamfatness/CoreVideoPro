@@ -50,7 +50,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // UpdateProgramLowerThirdKey so a refresh for the same target never restarts the slide
     // (the displayed key lags behind during a build-out). Empty when hidden.
     private string _lowerThirdTargetSourceId = string.Empty;
-    private long _lowerThirdKeyChangeTickMs;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
     private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
@@ -8562,7 +8561,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var version = ++_productionSyncCaptureVersion;
             if (!string.IsNullOrWhiteSpace(reason))
                 LaunchLog.Write($"media-core sync batch reason={reason} request={version} recording={context.Recording} streaming={context.Streaming} commands={string.Join(",", commands.Select(command => command.Type))}");
-            return (Version: version, SceneId: scene.Id, SceneName: scene.Name, Response: _bridge.SyncAsync(commands));
+            return (Version: version, SceneId: scene.Id, SceneName: scene.Name, LowerThirdRevision: _lowerThirdFreshness.Revision, Response: _bridge.SyncAsync(commands));
         }).ConfigureAwait(false);
 
         var snapshot = await pending.Response.ConfigureAwait(false);
@@ -8570,6 +8569,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             // A queued response must not apply an older request's patch to a newer
             // operator scene/intent. Its native snapshot remains available on the bridge.
+            ObserveLowerThirdProgramIntent();
+            if (pending.SceneId == ActiveSceneId)
+                _lowerThirdFreshness.Acknowledge(pending.LowerThirdRevision, snapshot.ProgramFrame?.FrameNumber ?? 0);
             if (pending.Version != _productionSyncCaptureVersion || pending.SceneId != ActiveSceneId) return false;
             ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
             CommandStatus = $"{pending.SceneName} synced to media core";
@@ -8580,6 +8582,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private MediaCoreProductionSyncContext BuildProductionSyncContext()
     {
+        ObserveLowerThirdProgramIntent();
         var resolvedSceneProgramRoutes = GetMutableRoutes(ActiveSceneId)
             .Select(ResolveRouteFromShowInput)
             .ToList();
@@ -10053,6 +10056,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         Tm("audioReadouts");
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
+        RefreshProgramLowerThirdKeyPosition();
         ReconcileLowerThirdPhaseSync(snapshot);
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
         MaybeLogAudioTelemetry(snapshot);
@@ -12776,7 +12780,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _programLowerThirdAutomationSuppressed,
             Graphics.Any(graphic => graphic.Enabled && graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)));
 
-        if (!lowerThirdEnabled || source is null)
+        if (source is null)
+        {
+            _lowerThirdKeyTransitionCts?.Cancel();
+            _lowerThirdTargetSourceId = string.Empty;
+            if (ProgramLowerThirdKey.IsVisible)
+            {
+                ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
+                _ = TrySyncMediaCoreAsync();
+            }
+            return;
+        }
+        if (!lowerThirdEnabled)
         {
             // Keep the shell preview and compositor on the same out phase.
             // Jumping directly to hidden made the UI vanish while the native
@@ -12815,17 +12830,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        // Debounce backstop: if the resolver still churns (co-program route order flicker),
-        // never restart the slide more than ~once/sec. The sync storm from rapid re-keys --
-        // each fires a full media-core sync batch -- is what caused the operator latency.
-        // First show (no target yet) is never debounced, so a genuine show is instant.
-        var nowMs = Environment.TickCount64;
-        if (!force && _lowerThirdTargetSourceId.Length > 0 &&
-            nowMs - _lowerThirdKeyChangeTickMs < 1200)
-        {
-            return;
-        }
-        _lowerThirdKeyChangeTickMs = nowMs;
+        // The old source has left actual Program. Never animate its name over
+        // the replacement while waiting for the new source's build-in.
+        if (ProgramLowerThirdKey.IsVisible && _lowerThirdTargetSourceId != source.SourceId)
+            ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
 
         LaunchLog.Write($"lower-third: key -> '{source.SourceId}' (name '{source.SourceName}')");
         _lowerThirdTargetSourceId = source.SourceId;
@@ -13015,87 +13023,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private LowerThirdSource? ResolveProgramLowerThirdSource(IReadOnlyList<SourceRoute> workingRoutes)
     {
-        var sources = workingRoutes
-            .OrderBy(route => route.ZIndex)
-            .Select(ResolveLowerThirdSource)
-            .Where(source => source is not null)
-            .Cast<LowerThirdSource>()
-            .ToList();
-
-        if (sources.Count == 0)
+        // Working routes express intent; only native frame attribution tells us
+        // which source actually occupies Program (including gallery/fallback).
+        ObserveLowerThirdProgramIntent();
+        var frame = _bridge.LastSnapshot?.ProgramFrame;
+        if (!_lowerThirdFreshness.Accepts(frame)) return null;
+        var source = RenderedLowerThirdSourceResolver.Resolve(ActiveSceneId,
+            frame, _lowerThirdTargetSourceId,
+            RoomVideoParticipants, CaptureDevices);
+        if (source is null) return null;
+        if (source.SourceId.StartsWith("capture:", StringComparison.Ordinal))
         {
-            return null;
+            var device = CaptureDevices.First(item => "capture:" + item.Id == source.SourceId);
+            return new LowerThirdSource(source.SourceId,
+                ResolveSourceDisplayName(source.SourceId, device.Name), string.Empty, string.Empty, false, false);
         }
-
-        // Stickiness: keep the source the lower third is ALREADY showing as long as it is
-        // still on program. Without this the choice ping-ponged between two co-program
-        // sources whose route order flickers (active-speaker re-sorting upstream re-orders
-        // ZIndex every ~1s), which changed the target and restarted the slide every tick =
-        // the residual loop. A genuine change (the current source leaves program) still
-        // re-picks below, so it keeps following manual cuts. (2026-07-11)
-        var current = sources.FirstOrDefault(source =>
-            string.Equals(source.SourceId, _lowerThirdTargetSourceId, StringComparison.Ordinal));
-        if (current is not null)
-        {
-            return current;
-        }
-
-        // No sticky source (first show, or the current one left program): pick
-        // DETERMINISTICALLY, ordered by SourceId -- NOT the ZIndex route order, which the
-        // active-speaker/fake-engine churn re-sorts every tick. A stable tiebreak means two
-        // co-program sources can't alternate the choice, so it can't ping-pong.
-        return sources.Where(source => !source.IsScreenShare)
-                      .OrderBy(source => source.SourceId, StringComparer.Ordinal)
-                      .FirstOrDefault()
-               ?? sources.OrderBy(source => source.SourceId, StringComparer.Ordinal).First();
-    }
-
-    private LowerThirdSource? ResolveLowerThirdSource(SourceRoute route)
-    {
-        if (route.Mode == SourceRouteMode.CaptureDevice && route.CaptureDeviceId is { Length: > 0 } captureDeviceId)
-        {
-            var device = CaptureDevices.FirstOrDefault(item =>
-                string.Equals(item.Id, captureDeviceId, StringComparison.Ordinal));
-            if (device is null)
-            {
-                return null;
-            }
-
-            var captureSourceId = ShowInputRosterService.CaptureSourceId(device.Id);
-            return new LowerThirdSource(
-                captureSourceId,
-                ResolveSourceDisplayName(captureSourceId, device.Name),
-                // A camera source has no presenter role/org -- leave the secondary lines
-                // blank so the lower third shows just the (operator-assignable) name
-                // instead of the device kind ("UVC", from device.Vendor) and resolution.
-                string.Empty,
-                string.Empty,
-                IsActiveSpeaker: false,
-                IsScreenShare: false);
-        }
-
-        var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
-        if (participant is null)
-        {
-            return null;
-        }
-
-        var isScreenShare = route.Mode == SourceRouteMode.ScreenShare || participant.IsScreenSharing;
-        var title = isScreenShare
-            ? "Screen share"
-            : string.IsNullOrWhiteSpace(participant.Title)
-                ? participant.RoleLabel
-                : participant.Title;
-
-        return new LowerThirdSource(
-            participant.Id,
-            ResolveSourceDisplayName(ShowInputRosterService.ZoomSourceId(participant.Id), participant.Name),
-            title,
-            string.IsNullOrWhiteSpace(participant.BreakoutRoomName)
-                ? participant.RoleLabel
-                : participant.BreakoutRoomName,
-            participant.IsActiveSpeaker,
-            isScreenShare);
+        var participant = RoomVideoParticipants.First(item => item.Id == source.ParticipantId);
+        var isScreenShare = source.Kind == "screen-share";
+        return new LowerThirdSource(source.SourceId,
+            ResolveSourceDisplayName(source.SourceId, participant.Name),
+            isScreenShare ? "Screen share" : string.IsNullOrWhiteSpace(participant.Title) ? participant.RoleLabel : participant.Title,
+            string.IsNullOrWhiteSpace(participant.BreakoutRoomName) ? participant.RoleLabel : participant.BreakoutRoomName,
+            participant.IsActiveSpeaker, isScreenShare);
     }
 
     private static void ReconcileRoutes(List<SourceRoute> mutableRoutes, IReadOnlyList<SourceRoute> defaults)
