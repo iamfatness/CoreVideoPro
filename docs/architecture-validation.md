@@ -5,7 +5,7 @@ results, not evidence for a signed release candidate.
 
 | Check | Result |
 | --- | --- |
-| Native portable suite | 618 passed, including 18 asynchronous encoder lifecycle cases |
+| Native portable suite | 619 passed, including 18 asynchronous encoder lifecycle cases |
 | WinUI suite | 750 passed; TRX retained under `artifacts/test-results/winui` |
 | MediaCore suite | 487 passed, including real child-process handshake/restart cases |
 | Control suite | 53 passed |
@@ -13,11 +13,13 @@ results, not evidence for a signed release candidate.
 | Node protocol runtime | 88 passed |
 | TypeScript show engine | 417 passed |
 | Release evidence validator | 22 passed |
-| Shared lifecycle fixtures | 56 wire cases in C++, C#, and both TypeScript consumers; Swift cases wired to macOS CI |
+| Shared lifecycle fixtures | 56 wire cases in C++, C#, both TypeScript consumers and Swift |
 | TypeScript checks / contract regeneration | Passed |
 | Real Windows native Release build | Passed with D3D11, Media Foundation and Zoom SDK adapters |
 | WinUI Release publish | Passed; existing analyzer warnings remain |
 | Stub process bridge smoke | Passed with an explicitly selected stub binary |
+| macOS shell CI | Build passed; 173 checks passed |
+| macOS native CI | Stub and Metal/AVFoundation/CoreAudio/capture configurations passed their suites |
 
 ## Process responsiveness
 
@@ -51,7 +53,12 @@ See the [recording proof procedure](recording-finalization-validation.md).
 
 ## Remaining evidence
 
-macOS build and adapter execution require macOS CI/a designated Mac. Real Zoom
+The macOS media drill still misses its 60fps recording requirement. Branch CI runs
+reported 19.3 and 24.1 fps; historical main runs reported 29.4 and 25.4 fps. This
+establishes an existing failing gate but shared-runner variation does not exclude
+a regression statistically. The frame-rate requirement remains unchanged.
+
+Real Zoom
 multi-participant ingest, simultaneous recording/streaming, per-destination faults,
 physical camera disconnection, disk exhaustion, the two-hour soak and clean-machine
 installation remain unverified for this candidate. The release workflow requires
