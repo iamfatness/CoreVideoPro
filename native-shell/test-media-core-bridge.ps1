@@ -1,23 +1,29 @@
 # Simple integration smoke test for the media-core stdio bridge.
 # Requires corevideo-native.exe; the old Electron/Node core stub has been removed.
 
+param([string]$NativeCorePath)
+
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+# This smoke sends a dummy meeting join. Never select the real SDK build by default.
 $nativeCandidates = @(
-    (Join-Path $repoRoot "native\build-dev\corevideo-native.exe"),
     (Join-Path $repoRoot "native\build\corevideo-native.exe"),
-    (Join-Path $repoRoot "native\build-dev\Release\corevideo-native.exe")
+    (Join-Path $repoRoot "native\build\Release\corevideo-native.exe")
 )
-$nativeExe = $nativeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$nativeExe = if ($NativeCorePath) {
+    (Resolve-Path -LiteralPath $NativeCorePath).Path
+} else {
+    $nativeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
 
 if ($nativeExe) {
     $runner = $nativeExe
     $runnerArgs = ""
-    Write-Host "Using packaged native core: $runner"
+    Write-Host "Using native bridge smoke core: $runner"
 }
 else {
-    Write-Error "corevideo-native.exe is required. Run npm run test:native-media-core or scripts/build-studio.ps1 first."
+    Write-Error "corevideo-native.exe is required. Build the stub core with npm run test:native-media-core first, or specify -NativeCorePath to a stub executable."
 }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -29,12 +35,18 @@ $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.CreateNoWindow = $true
+# Even a nominal stub binary must not inherit an external real SDK engine path.
+$psi.EnvironmentVariables["COREVIDEO_ZOOM_ENGINE_PATH"] = ""
+$psi.EnvironmentVariables["COREVIDEO_ZOOM_SDK_JWT"] = ""
+$psi.EnvironmentVariables["COREVIDEO_ZOOM_USER_ZAK"] = ""
 
 $process = [System.Diagnostics.Process]::Start($psi)
 if (-not $process) {
     Write-Error "Failed to start media core process."
 }
 
+$stderrTask = $process.StandardError.ReadToEndAsync()
+try {
 function Send-Line($json) {
     $request = $json | ConvertFrom-Json
     $process.StandardInput.WriteLine($json)
@@ -46,7 +58,7 @@ function Send-Line($json) {
             throw "Timed out waiting for response to $($request.id)."
         }
         if ($process.HasExited) {
-            $stderr = $process.StandardError.ReadToEnd()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
             throw "Media core process exited with code $($process.ExitCode) before responding to $($request.id). $stderr"
         }
         if (-not $read.Wait(250)) {
@@ -70,6 +82,11 @@ function Send-Line($json) {
 
 $handshake = Send-Line '{"id":"core-1","type":"handshake"}' | ConvertFrom-Json
 if (-not $handshake.ok) { throw "Handshake failed." }
+if ($handshake.profile.name -notlike '*Stub*' -or
+    $handshake.profile.capabilities -contains 'zoom-raw-video' -or
+    $handshake.profile.capabilities -contains 'zoom-raw-audio') {
+    throw "The dummy-join bridge smoke requires a stub profile without Zoom SDK capabilities; refusing '$($handshake.profile.name)'."
+}
 Write-Host "Handshake ok: $($handshake.profile.name)"
 
 $ping = Send-Line '{"id":"core-2","type":"ping"}' | ConvertFrom-Json
@@ -271,6 +288,15 @@ if ($leave.snapshot.meetingState -ne "idle") {
 }
 Write-Host "zoom-leave ok"
 
-$process.Kill()
-$process.WaitForExit()
 Write-Host "Integration smoke test passed."
+} finally {
+    # Only this script's child is stopped, including on assertion failure.
+    if (-not $process.HasExited) {
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(3000)) {
+            $process.Kill()
+            $process.WaitForExit()
+        }
+    }
+    $process.Dispose()
+}
