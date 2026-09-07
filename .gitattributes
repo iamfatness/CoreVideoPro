@@ -1,0 +1,2 @@
+# Preserve upstream notice text, including its original whitespace.
+docs/alpha-third-party-inputs/** -whitespace
