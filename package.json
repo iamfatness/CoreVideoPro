@@ -19,7 +19,7 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --config vite.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:gate": "npm run contract:check && npm run typecheck && npm run typecheck:show-engine && npm run test && npm run test:native-core && npm run test:show-engine && npm run verify:barrel:show-engine && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke && npm run test:release-evidence",
+    "test:gate": "npm run contract:check && npm run typecheck && npm run typecheck:show-engine && npm run test && npm run test:native-core && npm run test:show-engine && npm run verify:barrel:show-engine && npm run smoke:show-engine-host && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke && npm run test:release-evidence",
     "test:native-core": "npm run test --workspace native-core",
     "test:show-engine": "npm run test --workspace show-engine",
     "typecheck:show-engine": "npm run typecheck --workspace show-engine && npm run typecheck:tests --workspace show-engine",
