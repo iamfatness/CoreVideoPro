@@ -442,6 +442,14 @@ public sealed partial class MainWindow : Window
     /// </summary>
     internal async Task<string?> ApplyShowConfigAsync(ShowConfig config)
     {
+        // THERE IS NO ROLLBACK, deliberately. A step that fails part-way leaves the effective
+        // config written and possibly the adapter swapped, and the operator is told which step
+        // failed. That is acceptable because RestartAsync STOPS the engine first: the state a
+        // partial apply leaves behind is "engine down, new config on disk", which the next Save or
+        // the next app launch resolves - never a running engine driving the show from a config
+        // nobody chose. Rolling back would mean restoring and re-spawning onto the OLD config,
+        // which is strictly more machinery for a worse outcome (two restarts, and the operator's
+        // edit silently discarded).
         if (config is null)
         {
             return "No show config to apply.";
@@ -498,9 +506,24 @@ public sealed partial class MainWindow : Window
                         break;
 
                     case OhgConfigApplySteps.RestartEngine:
+                    {
                         // Off the UI thread: a restart kill-trees the child and respawns it.
                         await Task.Run(() => bridge!.RestartAsync(CancellationToken.None)).ConfigureAwait(true);
+
+                        // RestartAsync returning proves only that the restart was ISSUED. The
+                        // engine validates its own `engine` block (opaque to the shell) and exits
+                        // 78 - terminal, no respawn - on a config it refuses, so without this the
+                        // page would say "Saved and applied" over a dead engine.
+                        var health = bridge!.Health;
+                        var outcome = OhgConfigApplySteps.ApplyOutcomeMessage(
+                            health.State.ToString(), health.LastError);
+                        if (outcome is not null)
+                        {
+                            LaunchLog.Write($"ohg: {outcome}");
+                            return outcome;
+                        }
                         break;
+                    }
                 }
             }
 

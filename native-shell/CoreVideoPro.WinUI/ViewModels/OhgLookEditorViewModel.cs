@@ -49,11 +49,17 @@ public sealed partial class OhgLookEditorViewModel : ObservableObject
     /// <summary>The box count as a <see cref="double"/>, because <c>NumberBox.Value</c> is a double
     /// and x:Bind will not narrow one to an int on the way back (that conversion is explicit in
     /// C#, so the generated TwoWay setter would not compile). NaN - what an emptied NumberBox
-    /// reports - is read as 0 rather than throwing out of a bound setter.</summary>
+    /// reports mid-edit - KEEPS the previous count, matching the interval mirrors on
+    /// <c>OhgSettingsViewModel</c>: writing a 0 while the operator is halfway through retyping
+    /// silently changes the look.</summary>
     public double BoxesValue
     {
         get => Boxes;
-        set => Boxes = double.IsNaN(value) ? 0 : (int)Math.Round(value);
+        set
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value)) return;
+            Boxes = (int)Math.Round(value);
+        }
     }
     partial void OnIncludesHostChanged(bool value) => Edit.IncludesHost = value;
     partial void OnIncludesReaderChanged(bool value) => Edit.IncludesReader = value;

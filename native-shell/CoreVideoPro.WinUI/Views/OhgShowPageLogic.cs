@@ -17,6 +17,30 @@ namespace CoreVideoPro.WinUI.Views;
 /// </summary>
 internal static class OhgShowPageLogic
 {
+    /// <summary>What <c>AttachShowEvents</c> has to do when the page's current show view model is
+    /// <paramref name="current"/> and it is presently subscribed to <paramref name="previous"/>.
+    ///
+    /// <para>This exists because of the rebuild path added in Plan 7b Task 10: saving a show config
+    /// REPLACES <c>StudioViewModel.OhgShow</c> with a fresh view model and disposes the old one. A
+    /// page that only re-attached on Loaded and the DP-changed callback (neither of which fires for
+    /// a visibility-hosted page) would keep a PropertyChanged subscription on a DISPOSED view model
+    /// and keep the look ComboBox's ItemsSource pointing at the OLD view model's Looks - so picking
+    /// a look would send an id from the old config to the new engine.</para>
+    ///
+    /// <para><c>Resync</c> is true even when nothing changed: Loaded and the DP callback both call
+    /// in, and re-selecting the combos against the same view model is cheap and idempotent.</para>
+    /// </summary>
+    internal static (bool Detach, bool Attach, bool Resync) ShowSubscriptionChange(
+        object? previous, object? current)
+    {
+        if (ReferenceEquals(previous, current))
+        {
+            return (Detach: false, Attach: false, Resync: true);
+        }
+
+        return (Detach: previous is not null, Attach: current is not null, Resync: true);
+    }
+
     /// <summary>
     /// The argument for <c>ohg.panelist.role.set</c> implied by an operator picking
     /// <paramref name="picked"/> in a row's role ComboBox — or <c>null</c> when there is nothing to

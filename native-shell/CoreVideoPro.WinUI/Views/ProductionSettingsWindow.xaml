@@ -92,6 +92,7 @@
                             Click="OnFfmpegClicked" />
                     <Button x:Name="OhgMenuButton"
                             Content="OHG show"
+                            AutomationProperties.Name="OHG settings menu"
                             Style="{StaticResource SettingsMenuButton}"
                             Click="OnOhgClicked" />
                 </StackPanel>

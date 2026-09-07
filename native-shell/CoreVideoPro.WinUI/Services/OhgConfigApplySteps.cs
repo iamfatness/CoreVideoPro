@@ -40,4 +40,29 @@ public static class OhgConfigApplySteps
     /// nothing to swap, rebuild or restart, and the settings VM shows the restart-the-app
     /// message instead.</summary>
     public static IReadOnlyList<string> Order(bool engineRunning) => engineRunning ? WithEngine : WithoutEngine;
+
+    /// <summary>What to tell the operator after the restart step, given the engine's health right
+    /// after <c>RestartAsync</c> returned. Null means "applied" - anything else is the message the
+    /// settings page shows INSTEAD of "Saved and applied".
+    ///
+    /// <para><c>RestartAsync</c> returning proves only that the restart was issued: a config the
+    /// engine itself rejects exits 78 (terminal, no respawn), so a Save that landed a bad
+    /// <c>engine</c> block would otherwise read "Saved and applied" over a dead engine. The shell's
+    /// own validator cannot catch that - <c>engine</c> is opaque to us by design.</para>
+    ///
+    /// <para><c>Starting</c> is NOT a failure: the handshake takes a moment, and blocking the Save
+    /// on it would hold the UI thread for the length of a node startup.</para></summary>
+    public static string? ApplyOutcomeMessage(string? engineState, string? lastError)
+    {
+        var state = (engineState ?? "").Trim();
+        if (state.Length == 0 ||
+            state.Equals("running", StringComparison.OrdinalIgnoreCase) ||
+            state.Equals("starting", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var detail = string.IsNullOrWhiteSpace(lastError) ? "no error reported" : lastError!.Trim();
+        return $"Engine restarted into {state.ToLowerInvariant()}: {detail}";
+    }
 }

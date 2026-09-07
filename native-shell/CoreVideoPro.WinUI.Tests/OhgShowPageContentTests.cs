@@ -302,6 +302,52 @@ public sealed class OhgShowPageContentTests
         throw new Xunit.Sdk.XunitException($"Unbalanced braces reading the body of {methodName}.");
     }
 
+    // -- Task 10 fix round 1: the page must FOLLOW a rebuilt show view model --
+
+    /// <summary>
+    /// Saving a show config replaces <c>StudioViewModel.OhgShow</c> with a fresh view model and
+    /// DISPOSES the old one (Plan 7b Task 10). The page is hosted by visibility, not navigation, so
+    /// neither <c>Loaded</c> nor the ViewModel DP-changed callback fires for that swap - the page
+    /// has to watch the studio view model's PropertyChanged for it, or it keeps a subscription on a
+    /// dead view model and a look picker bound to the old config's looks.
+    /// </summary>
+    [Fact]
+    public void Page_FollowsARebuiltShowViewModel()
+    {
+        var code = ReadView("OhgShowPage.xaml.cs");
+
+        Assert.Contains("nameof(StudioViewModel.OhgShow)", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"show view model rebuild\"", code, StringComparison.Ordinal);
+
+        // ...and the subscription is dropped on unload, so the page cannot outlive it.
+        Assert.Contains("DetachViewModelEvents", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ShowSubscriptionChange_ReattachesWhenTheViewModelIsReplaced()
+    {
+        var previous = new object();
+        var current = new object();
+
+        Assert.Equal((true, true, true), OhgShowPageLogic.ShowSubscriptionChange(previous, current));
+    }
+
+    [Fact]
+    public void ShowSubscriptionChange_ResyncsWithoutTouchingTheSubscriptionWhenNothingChanged()
+    {
+        var same = new object();
+
+        Assert.Equal((false, false, true), OhgShowPageLogic.ShowSubscriptionChange(same, same));
+        Assert.Equal((false, false, true), OhgShowPageLogic.ShowSubscriptionChange(null, null));
+    }
+
+    [Fact]
+    public void ShowSubscriptionChange_AttachesTheFirstViewModelAndDetachesTheLast()
+    {
+        Assert.Equal((false, true, true), OhgShowPageLogic.ShowSubscriptionChange(null, new object()));
+        Assert.Equal((true, false, true), OhgShowPageLogic.ShowSubscriptionChange(new object(), null));
+    }
+
     // -- the Task 8 decisions, extracted and tested --
 
     [Fact]

@@ -14,17 +14,24 @@ namespace CoreVideoPro.WinUI.Services;
 /// that bug, which is why <c>ApplyHostCommandAsync</c> reads <see cref="Current"/> inside its own
 /// body.</para>
 ///
-/// <para>UI-THREAD ONLY. Both the reads (from the queue's links) and the writes (from
-/// <c>ApplyShowConfigAsync</c>) happen on the dispatcher, so no lock is needed and none is taken —
-/// a lock here would only make it look safe to call from somewhere it is not.</para>
+/// <para><b>Written on the UI thread, read from ANY thread.</b> Writes come from the constructor
+/// and <c>ApplyShowConfigAsync</c>, both on the dispatcher, and the apply queue reads it there too
+/// — but <c>StudioControlSurface.GetState()</c> also reads it, on an HTTP/OSC transport thread, for
+/// the state document's shadow-command field. Hence <see cref="System.Threading.Volatile"/> rather
+/// than a plain auto-property: the reference must not be torn or hoisted out of a loop. It is
+/// deliberately NOT locked. A reader racing a swap gets either the old or the new adapter, and a
+/// state document naming the previous shadowed command for one 150 ms feedback tick is acceptable;
+/// a lock here would park a transport thread behind the UI thread for a single reference read.</para>
 /// </summary>
 public sealed class OhgAdapterSlot
 {
+    private OhgHostAdapter? _current;
+
     /// <summary>The adapter host commands apply to right now, or null when OHG is not configured
     /// (the default: no show config on this machine).</summary>
-    public OhgHostAdapter? Current { get; private set; }
+    public OhgHostAdapter? Current => Volatile.Read(ref _current);
 
-    /// <summary>Swap the adapter. Commands already enqueued are NOT cancelled — they run against
-    /// whatever is current when they reach the head of the queue, which is this one.</summary>
-    public void Replace(OhgHostAdapter? adapter) => Current = adapter;
+    /// <summary>Swap the adapter (UI thread). Commands already enqueued are NOT cancelled — they
+    /// run against whatever is current when they reach the head of the queue, which is this one.</summary>
+    public void Replace(OhgHostAdapter? adapter) => Volatile.Write(ref _current, adapter);
 }

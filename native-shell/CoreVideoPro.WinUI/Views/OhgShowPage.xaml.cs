@@ -54,6 +54,12 @@ public sealed partial class OhgShowPage : UserControl
     /// subscription re-syncs a combo against a view model nobody is looking at.</summary>
     private OhgShowViewModel? _subscribedShow;
 
+    /// <summary>The <see cref="StudioViewModel"/> this page currently watches for
+    /// <c>OhgShow</c> REPLACEMENTS. Saving a show config rebuilds that view model (Plan 7b Task 10)
+    /// and disposes the old one; without this subscription the page would keep listening to the
+    /// dead one and keep the look picker bound to its Looks.</summary>
+    private StudioViewModel? _subscribedViewModel;
+
     public OhgShowPage()
     {
         InitializeComponent();
@@ -84,7 +90,7 @@ public sealed partial class OhgShowPage : UserControl
     /// callbacks are invisible in the XAML text where the other handlers are named.</summary>
     private static void OnViewModelPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is OhgShowPage page) page.Guarded("view model attach", page.AttachShowEvents);
+        if (d is OhgShowPage page) page.Guarded("view model attach", page.AttachAll);
     }
 
     // ── pure helpers (x:Bind function bindings) ───────────────────────────────────────
@@ -356,9 +362,52 @@ public sealed partial class OhgShowPage : UserControl
 
     // ── Task 8 handlers (look picker, toggles, override role, box preview) ────────────
 
-    private void OnPageLoaded(object sender, RoutedEventArgs e) => Guarded("page attach", AttachShowEvents);
+    private void OnPageLoaded(object sender, RoutedEventArgs e) => Guarded("page attach", AttachAll);
 
-    private void OnPageUnloaded(object sender, RoutedEventArgs e) => Guarded("page detach", DetachShowEvents);
+    private void OnPageUnloaded(object sender, RoutedEventArgs e) => Guarded("page detach", DetachAll);
+
+    /// <summary>Watch the studio view model for an <c>OhgShow</c> replacement, then attach to
+    /// whichever show view model it currently holds.</summary>
+    private void AttachAll()
+    {
+        AttachViewModelEvents();
+        AttachShowEvents();
+    }
+
+    private void DetachAll()
+    {
+        DetachViewModelEvents();
+        DetachShowEvents();
+    }
+
+    /// <summary>Subscribes to <see cref="StudioViewModel.PropertyChanged"/> so a REBUILT
+    /// <c>OhgShow</c> (the settings Save path) is picked up. The page is hosted by visibility, not
+    /// by navigation, so neither Loaded nor the ViewModel DP-changed callback fires when only the
+    /// OhgShow property is replaced - this subscription is the only thing that notices.</summary>
+    private void AttachViewModelEvents()
+    {
+        var viewModel = ViewModel;
+        if (ReferenceEquals(viewModel, _subscribedViewModel)) return;
+
+        DetachViewModelEvents();
+        if (viewModel is null) return;
+
+        _subscribedViewModel = viewModel;
+        viewModel.PropertyChanged += OnStudioPropertyChanged;
+    }
+
+    private void DetachViewModelEvents()
+    {
+        if (_subscribedViewModel is null) return;
+        _subscribedViewModel.PropertyChanged -= OnStudioPropertyChanged;
+        _subscribedViewModel = null;
+    }
+
+    private void OnStudioPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        => Guarded("show view model rebuild", () =>
+        {
+            if (e.PropertyName == nameof(StudioViewModel.OhgShow)) AttachShowEvents();
+        });
 
     /// <summary>Subscribes to the view model's <c>PropertyChanged</c> so the look picker can be
     /// re-selected when the ENGINE changes the cued look (a look cued from Companion/OSC, or the
@@ -367,20 +416,22 @@ public sealed partial class OhgShowPage : UserControl
     private void AttachShowEvents()
     {
         var show = Show;
-        if (ReferenceEquals(show, _subscribedShow))
+        var change = OhgShowPageLogic.ShowSubscriptionChange(_subscribedShow, show);
+
+        if (change.Detach) DetachShowEvents();
+        if (change.Attach)
+        {
+            _subscribedShow = show;
+            show!.PropertyChanged += OnShowPropertyChanged;
+        }
+
+        // ALWAYS re-synced, including on a rebuild that attached nothing new: the combos hold the
+        // previous view model's ItemsSource until something rewrites them.
+        if (change.Resync)
         {
             SyncLookCombo();
             SyncOverrideRoleCombo();
-            return;
         }
-
-        DetachShowEvents();
-        if (show is null) return;
-
-        _subscribedShow = show;
-        show.PropertyChanged += OnShowPropertyChanged;
-        SyncLookCombo();
-        SyncOverrideRoleCombo();
     }
 
     private void DetachShowEvents()
@@ -457,8 +508,9 @@ public sealed partial class OhgShowPage : UserControl
             combo.SelectionChanged -= OnOverrideRoleSelectionChanged;
 
             // Roles are a fixed list, so re-assigning ItemsSource on every re-sync would drop and
-            // rebuild the items (and any open popup) for nothing.
-            if (combo.ItemsSource is null) combo.ItemsSource = show.Roles;
+            // rebuild the items (and any open popup) for nothing - but a REBUILT view model brings
+            // its own Roles instance, and leaving the old one bound leaks the dead view model.
+            if (!ReferenceEquals(combo.ItemsSource, show.Roles)) combo.ItemsSource = show.Roles;
             combo.SelectedItem = show.Roles.Contains(show.OverrideRole) ? show.OverrideRole : null;
         }
         catch (Exception ex)

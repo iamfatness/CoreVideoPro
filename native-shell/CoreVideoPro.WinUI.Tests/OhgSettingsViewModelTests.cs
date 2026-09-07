@@ -445,4 +445,30 @@ public sealed class OhgSettingsViewModelTests : IDisposable
 
         Assert.Equal([("scene-e", "Scene E")], vm.SceneChoices);
     }
+
+    // -- Task 10 fix round 1: an emptied NumberBox must not silently change the look --
+
+    [Fact]
+    public void BoxesValue_KeepsThePreviousCountWhenTheNumberBoxIsEmptied()
+    {
+        var edit = new OhgLookEdit { Id = "banter", Label = "Banter", Boxes = 2 };
+        var look = new OhgLookEditorViewModel(edit);
+
+        look.BoxesValue = double.NaN;
+
+        Assert.Equal(2, look.Boxes);
+        Assert.Equal(2, edit.Boxes);
+    }
+
+    [Fact]
+    public void BoxesValue_RoundsAndWritesThroughToTheEditModel()
+    {
+        var edit = new OhgLookEdit { Id = "banter", Label = "Banter", Boxes = 2 };
+        var look = new OhgLookEditorViewModel(edit);
+
+        look.BoxesValue = 3.0;
+
+        Assert.Equal(3, edit.Boxes);
+        Assert.Equal(3.0, look.BoxesValue);
+    }
 }

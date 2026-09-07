@@ -49,6 +49,32 @@ public sealed class OhgConfigApplyStepsTests
             "The adapter must carry the new presets before the fresh engine issues its first host command.");
     }
 
+    // -- Task 10 fix round 1: the restart outcome, reported honestly --
+
+    [Theory]
+    [InlineData("Running")]
+    [InlineData("running")]
+    [InlineData("Starting")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void ApplyOutcomeMessage_IsSilentWhenTheEngineCameBackUp(string? state)
+        => Assert.Null(OhgConfigApplySteps.ApplyOutcomeMessage(state, null));
+
+    /// <summary>The engine validates its own <c>engine</c> block - opaque to the shell - and exits
+    /// 78 (terminal, no respawn) on a config it refuses. Without this the settings page would say
+    /// "Saved and applied" over a dead engine.</summary>
+    [Fact]
+    public void ApplyOutcomeMessage_NamesTheStateAndTheError()
+        => Assert.Equal(
+            "Engine restarted into failed: config rejected: capacity must be 10",
+            OhgConfigApplySteps.ApplyOutcomeMessage("Failed", "config rejected: capacity must be 10"));
+
+    [Fact]
+    public void ApplyOutcomeMessage_StillReportsAFailureWithNoErrorText()
+        => Assert.Equal(
+            "Engine restarted into stopped: no error reported",
+            OhgConfigApplySteps.ApplyOutcomeMessage("Stopped", "   "));
+
     /// <summary>Every step the window's switch knows how to run. A step added to the order without
     /// a case would silently do nothing.</summary>
     [Fact]
