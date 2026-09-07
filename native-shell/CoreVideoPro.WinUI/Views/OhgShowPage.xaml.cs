@@ -75,10 +75,16 @@ public sealed partial class OhgShowPage : UserControl
     /// <summary>The workspace assigns <see cref="ViewModel"/> AFTER the page is constructed (and,
     /// depending on tab order, after it has loaded), so the look picker's data source arrives late.
     /// Re-attaching here — rather than only in <c>Loaded</c> — is what makes the picker correct on
-    /// the first frame the operator ever sees.</summary>
+    /// the first frame the operator ever sees.
+    ///
+    /// A DP-changed callback is a FRAMEWORK callback like any XAML event handler — WinUI invokes it
+    /// while setting the property, and a throw here fail-fasts the process with no managed stack
+    /// exactly as a throwing Click would. It is guarded for that reason, and the guard-coverage test
+    /// polices every method wired through <c>DependencyProperty.Register</c> precisely because these
+    /// callbacks are invisible in the XAML text where the other handlers are named.</summary>
     private static void OnViewModelPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is OhgShowPage page) page.AttachShowEvents();
+        if (d is OhgShowPage page) page.Guarded("view model attach", page.AttachShowEvents);
     }
 
     // ── pure helpers (x:Bind function bindings) ───────────────────────────────────────
@@ -449,7 +455,10 @@ public sealed partial class OhgShowPage : UserControl
 
             _applyingOverrideRoleSelection = true;
             combo.SelectionChanged -= OnOverrideRoleSelectionChanged;
-            combo.ItemsSource = show.Roles;
+
+            // Roles are a fixed list, so re-assigning ItemsSource on every re-sync would drop and
+            // rebuild the items (and any open popup) for nothing.
+            if (combo.ItemsSource is null) combo.ItemsSource = show.Roles;
             combo.SelectedItem = show.Roles.Contains(show.OverrideRole) ? show.OverrideRole : null;
         }
         catch (Exception ex)

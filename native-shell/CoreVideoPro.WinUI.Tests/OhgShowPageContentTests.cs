@@ -251,6 +251,57 @@ public sealed class OhgShowPageContentTests
         }
     }
 
+    /// <summary>
+    /// The guard rule has a BLIND SPOT the XAML-text test above cannot see: a callback wired
+    /// through <c>DependencyProperty.Register</c> never appears in the XAML, yet WinUI invokes it
+    /// exactly like a Click handler - while it is setting the property, on the UI thread, with a
+    /// throw fail-fasting the process and no managed stack. This closes it: every method the
+    /// code-behind hands to a <c>PropertyMetadata</c>/<c>PropertyChangedCallback</c> must route
+    /// through <c>Guarded</c>.
+    /// </summary>
+    [Fact]
+    public void Page_GuardsEveryDependencyPropertyCallback()
+    {
+        var code = ReadView("OhgShowPage.xaml.cs");
+
+        var callbacks = Regex.Matches(code, @"new\s+(?:PropertyMetadata|PropertyChangedCallback)\s*\(([^)]*)\)")
+            .SelectMany(match => Regex.Matches(match.Groups[1].Value, @"[A-Za-z_]\w*").Select(m => m.Value))
+            .Where(name => code.Contains($"void {name}(", StringComparison.Ordinal))
+            .Distinct()
+            .ToList();
+
+        // The page HAS such a callback; an empty list would make this test vacuously green.
+        Assert.NotEmpty(callbacks);
+
+        foreach (var name in callbacks)
+        {
+            var body = MethodBody(code, name);
+            Assert.True(
+                body.Contains("Guarded(", StringComparison.Ordinal),
+                $"DependencyProperty callback {name} is not routed through Guarded(...): {Collapse(body)}");
+        }
+    }
+
+    /// <summary>The text of a method's body, by brace matching from its declaration - enough to
+    /// assert what a callback does without compiling the page (which this project cannot do).</summary>
+    private static string MethodBody(string code, string methodName)
+    {
+        var declaration = code.IndexOf($"void {methodName}(", StringComparison.Ordinal);
+        Assert.True(declaration >= 0, $"Could not find a declaration for {methodName}.");
+
+        var open = code.IndexOf('{', declaration);
+        Assert.True(open >= 0, $"Could not find a body for {methodName}.");
+
+        var depth = 0;
+        for (var index = open; index < code.Length; index++)
+        {
+            if (code[index] == '{') depth++;
+            else if (code[index] == '}' && --depth == 0) return code[open..(index + 1)];
+        }
+
+        throw new Xunit.Sdk.XunitException($"Unbalanced braces reading the body of {methodName}.");
+    }
+
     // -- the Task 8 decisions, extracted and tested --
 
     [Fact]
