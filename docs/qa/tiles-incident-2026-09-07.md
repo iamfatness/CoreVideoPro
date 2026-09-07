@@ -35,3 +35,7 @@ The initial UI freeze remains unconfirmed. Reproduce with the candidate package,
 retain the exact build manifest, and capture a WinUI hang dump before closing if
 it happens again. Do not claim a repaired live-meeting Tiles freeze based solely
 on the shutdown or headless native tests.
+Packaged native candidate e787e8e passed 20 Tiles activations and 20 switches
+away per buffer depth (2 and 3), using 1/2/4/8 image-backed members. Rendered
+Program membership and advancing Preview textures were checked; both owned
+children exited normally. Evidence: artifacts/tiles-scene/packaged-20-cycles.json.
