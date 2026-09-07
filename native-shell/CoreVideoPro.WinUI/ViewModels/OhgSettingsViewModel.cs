@@ -66,7 +66,133 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
         SceneChoices = _scenes();
 
         saveStatus = "";
+
+        // Seed the bindable mirrors from the loaded model. See the mirrors' remarks below for why
+        // the settings page binds THESE and not Model.* directly.
+        registryEnabled = Model.RegistryEnabled;
+        handsQueueEnabled = Model.HandsQueueEnabled;
+        questionFeedEnabled = Model.QuestionFeedEnabled;
+        mukanaBaseUrl = Model.MukanaBaseUrl ?? "";
+        mukanaEvent = Model.MukanaEvent ?? "";
+        panelistsIntervalMs = Model.PanelistsIntervalMs;
+        handsIntervalMs = Model.HandsIntervalMs;
+        questionIntervalMs = Model.QuestionIntervalMs;
+        maxBackoffMs = Model.MaxBackoffMs;
+        driveHost = Model.DriveHost;
+        presetSolo = Model.PresetSolo;
+        presetActiveSpeaker = Model.PresetActiveSpeaker;
+        presetBlack = Model.PresetBlack;
+        presetGallery = Model.PresetGallery;
+        defaultTransition = Model.DefaultTransition;
+        tallyUrl = Model.TallyUrl ?? "";
     }
+
+    // ── bindable mirrors of the scalar edit-model fields (Plan 7b Task 10) ─────────────
+    //
+    // OhgConfigEditModel is a plain mutable class with NO INotifyPropertyChanged (deliberately —
+    // it is the serialization shape, and Task 9's tests drive it directly). Binding
+    // `OhgSettings.Model.X` TwoWay from XAML would therefore write once and never notify, so the
+    // page could not reflect a value the VM changed. These mirrors are the bound surface; each
+    // writes STRAIGHT THROUGH to Model on change, so Validate()/SaveAsync() — which read Model —
+    // never need a separate commit pass, and Task 9's Model-first tests stay exactly as they were.
+    // The looks list needs none of this: OhgLookEditorViewModel already does the same job per row.
+
+    [ObservableProperty] private bool registryEnabled;
+    [ObservableProperty] private bool handsQueueEnabled;
+    [ObservableProperty] private bool questionFeedEnabled;
+    [ObservableProperty] private string mukanaBaseUrl = "";
+    [ObservableProperty] private string mukanaEvent = "";
+    // The four intervals are DOUBLES because NumberBox.Value is a double and x:Bind will not
+    // narrow one back to an int (that conversion is explicit in C#, so the generated TwoWay setter
+    // would not compile). They round into the model's ints; NaN - what an emptied NumberBox
+    // reports - keeps the model's previous value rather than writing a 0 the validator refuses.
+    [ObservableProperty] private double panelistsIntervalMs;
+    [ObservableProperty] private double handsIntervalMs;
+    [ObservableProperty] private double questionIntervalMs;
+    [ObservableProperty] private double maxBackoffMs;
+    [ObservableProperty] private bool driveHost;
+    [ObservableProperty] private string? presetSolo;
+    [ObservableProperty] private string? presetActiveSpeaker;
+    [ObservableProperty] private string? presetBlack;
+    [ObservableProperty] private string? presetGallery;
+    [ObservableProperty] private string defaultTransition = "cut";
+    [ObservableProperty] private string tallyUrl = "";
+
+    partial void OnRegistryEnabledChanged(bool value) => Model.RegistryEnabled = value;
+    partial void OnHandsQueueEnabledChanged(bool value) => Model.HandsQueueEnabled = value;
+    partial void OnQuestionFeedEnabledChanged(bool value) => Model.QuestionFeedEnabled = value;
+    partial void OnMukanaBaseUrlChanged(string value) => Model.MukanaBaseUrl = Blank(value);
+    partial void OnMukanaEventChanged(string value) => Model.MukanaEvent = Blank(value);
+    partial void OnPanelistsIntervalMsChanged(double value) => Model.PanelistsIntervalMs = Whole(value, Model.PanelistsIntervalMs);
+    partial void OnHandsIntervalMsChanged(double value) => Model.HandsIntervalMs = Whole(value, Model.HandsIntervalMs);
+    partial void OnQuestionIntervalMsChanged(double value) => Model.QuestionIntervalMs = Whole(value, Model.QuestionIntervalMs);
+    partial void OnMaxBackoffMsChanged(double value) => Model.MaxBackoffMs = Whole(value, Model.MaxBackoffMs);
+    partial void OnDriveHostChanged(bool value) => Model.DriveHost = value;
+    partial void OnPresetSoloChanged(string? value) => Model.PresetSolo = Blank(value);
+    partial void OnPresetActiveSpeakerChanged(string? value) => Model.PresetActiveSpeaker = Blank(value);
+    partial void OnPresetBlackChanged(string? value) => Model.PresetBlack = Blank(value);
+    partial void OnPresetGalleryChanged(string? value) => Model.PresetGallery = Blank(value);
+    partial void OnDefaultTransitionChanged(string value) => Model.DefaultTransition = value;
+    partial void OnTallyUrlChanged(string value) => Model.TallyUrl = Blank(value);
+
+    /// <summary>An empty/whitespace text box means "not set", i.e. null — never an empty string,
+    /// which <c>ShowConfigValidator</c> and the engine parser both read as a real (bad) value.
+    /// The "(none)" entry in each preset ComboBox arrives here as null already.</summary>
+    private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    /// <summary>A NumberBox value as a whole number, keeping <paramref name="fallback"/> for the
+    /// NaN an emptied box reports - writing 0 there would fail validation for a field the operator
+    /// is only halfway through retyping.</summary>
+    private static int Whole(double value, int fallback)
+        => double.IsNaN(value) || double.IsInfinity(value) ? fallback : (int)Math.Round(value);
+
+    /// <summary>Scene id for the picked NAME (the combos list names, the config stores ids), or
+    /// null for the "(none)" entry / an unknown name. Pure so the code-behind's guarded handler
+    /// carries no logic of its own.</summary>
+    public string? SceneIdForName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        foreach (var (id, sceneName) in SceneChoices)
+        {
+            if (string.Equals(sceneName, name, StringComparison.Ordinal))
+            {
+                return id;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Display name for a stored scene id, or the id itself when the scene has since been
+    /// renamed or deleted — showing the raw id is honest; showing nothing hides a broken config.</summary>
+    public string? SceneNameForId(string? id)
+    {
+        if (string.IsNullOrEmpty(id))
+        {
+            return null;
+        }
+
+        foreach (var (sceneId, sceneName) in SceneChoices)
+        {
+            if (string.Equals(sceneId, id, StringComparison.Ordinal))
+            {
+                return sceneName;
+            }
+        }
+
+        return id;
+    }
+
+    /// <summary>The "(none)" entry every preset/scene ComboBox carries, so an operator can UNSET a
+    /// preset (the config's null) instead of only ever swapping it for another scene.</summary>
+    public const string NoneChoice = "(none)";
+
+    /// <summary>The four transitions <c>ShowConfigValidator</c> accepts.</summary>
+    public static IReadOnlyList<string> TransitionChoices { get; } = ["cut", "fade", "dip", "wipe"];
 
     /// <summary>The bound edit model. Its scalar fields are bound directly by the settings page;
     /// <see cref="Looks"/> mirrors <see cref="OhgConfigEditModel.Looks"/> for the repeater.</summary>

@@ -36,6 +36,11 @@ public sealed partial class MainWindow : Window
     // the shutdown path or the show engine outlives the shell.
     private ShowEngineSupervisor? _showEngineSupervisor;
     private Action<NativeMediaCoreStateSnapshot>? _showEngineRosterPublisher;
+    // Where StartShowEngine wrote the effective config, so ApplyShowConfigAsync rewrites THE SAME
+    // file the running engine was spawned against. Resolved even when the engine never started
+    // (no config at launch) — first-time setup still has to write somewhere.
+    private string? _ohgConfigFolder;
+    private string? _ohgEffectiveConfigPath;
     private UpdateNotificationService.UpdateOffer? _updateOffer;
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
@@ -144,6 +149,10 @@ public sealed partial class MainWindow : Window
                 LaunchLog.Write("control: OSC remains on loopback. Unauthenticated LAN OSC requires COREVIDEO_OSC_TRUSTED_NETWORK=1 on a trusted network.");
             }
 
+            // Wired BEFORE the engine starts, and regardless of whether it does: the settings
+            // section must be able to save a first-ever config on a machine with no engine.
+            ViewModel.OhgApplyConfig = ApplyShowConfigAsync;
+
             // The OHG show engine is optional and must NEVER be able to stop the app launching:
             // StartShowEngine swallows everything into the launch log and returns the static-only
             // catalog on any failure (spec §6.4 "the app launches regardless").
@@ -209,6 +218,8 @@ public sealed partial class MainWindow : Window
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "CoreVideoPro");
             var store = new ShowConfigStore(folder);
+            _ohgConfigFolder = folder;
+            _ohgEffectiveConfigPath = Path.Combine(folder, EffectiveConfigFileName);
             if (!store.Exists)
             {
                 // The overwhelmingly common case: no show configured. Silent by design - this is
@@ -245,7 +256,7 @@ public sealed partial class MainWindow : Window
 
             // The engine reads ONE config file. Materialize the effective document (statePath
             // defaulted in) beside the source rather than mutating what the operator edits.
-            var effectiveConfigPath = Path.Combine(folder, "ohg-show-config.effective.json");
+            var effectiveConfigPath = _ohgEffectiveConfigPath;
             File.WriteAllText(effectiveConfigPath, store.MaterializeEngineConfig(config));
 
             var oscExposure = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_OHG_LAN"), "1", StringComparison.Ordinal)
@@ -269,6 +280,12 @@ public sealed partial class MainWindow : Window
                 // Seeded so the FIRST setPreview of a look resolves: the engine cues a look on
                 // preview one seq BEFORE the applyLook that names its scene (Task 13).
                 ShowConfigLooks.PresetsByLookId(config.Engine));
+
+            // The workspace's OHG tab (Plan 7b). Built HERE, not in the ViewModel: whether the
+            // show engine runs at all is an app-composition decision (config present + host
+            // resolvable), and the page renders its setup surface while this stays null.
+            AttachOhgShowViewModel(bridge, config);
+            ViewModel.OhgEngineStartedAtLaunch = true;
 
             // Roster + active speaker ride the core's snapshot stream (spec 6.2). This handler
             // runs on the media-core READER thread; every Publish on the bridge is lock-guarded
@@ -324,6 +341,9 @@ public sealed partial class MainWindow : Window
                 _showEngineRosterPublisher = null;
             }
 
+            DetachOhgShowViewModel();
+            ViewModel.OhgEngineStartedAtLaunch = false;
+
             try { _showEngineBridge?.Dispose(); }
             catch (Exception disposeError) { LaunchLog.Write($"ohg: bridge disposal failed ({disposeError.Message})"); }
             _showEngineBridge = null;
@@ -369,6 +389,131 @@ public sealed partial class MainWindow : Window
     // PATH entries may be quoted on Windows.
     private const char PathQuote = '"';
 
+    /// <summary>The document the engine is actually spawned against — the source config plus the
+    /// statePath the store fills in. Written beside the operator's file, never over it.</summary>
+    internal const string EffectiveConfigFileName = "ohg-show-config.effective.json";
+
+    /// <summary>Builds (or rebuilds) the OHG workspace view model over <paramref name="bridge"/>.
+    /// The looks list and shadow/drive mode come from the CONFIG, not the snapshot, so a rebuild
+    /// is what makes an edited look list show up in the page's picker.</summary>
+    private void AttachOhgShowViewModel(ShowEngineBridge bridge, ShowConfig config)
+    {
+        DetachOhgShowViewModel();
+
+        var show = new OhgShowViewModel(
+            new BridgeOhgActionInvoker(bridge),
+            action => UiDispatch.Run(_dispatcher, action, "ohg-show"),
+            () => bridge.Latest,
+            () => bridge.Health,
+            OhgSnapshotProjection.LookOptionsFromEngine(config.Engine),
+            config.Shell.DriveHost);
+        show.Attach(bridge);
+        ViewModel.OhgShow = show;
+    }
+
+    /// <summary>Drops the workspace VM and its bridge subscriptions. Null-safe and idempotent —
+    /// it is called on the startup failure path, on every rebuild, and at shutdown.</summary>
+    private void DetachOhgShowViewModel()
+    {
+        var show = ViewModel.OhgShow;
+        if (show is null)
+        {
+            return;
+        }
+
+        // Cleared FIRST so the page cannot re-render against a view model that is being disposed
+        // (Dispose unhooks the bridge events; a snapshot in flight would otherwise land on it).
+        ViewModel.OhgShow = null;
+        show.Dispose();
+    }
+
+    /// <summary>
+    /// Applies an edited show config (Plan 7b Task 10) — the settings section's Save. Returns null
+    /// on success or the operator-facing error text; it NEVER throws, because the caller is a
+    /// bound command on the settings page.
+    ///
+    /// <para>UI THREAD. The step ORDER lives in <see cref="OhgConfigApplySteps"/> (which carries
+    /// the reasoning and the tests); this method is the switch that runs it. The only work that
+    /// leaves the UI thread is the engine restart, which kills and respawns a child process.</para>
+    ///
+    /// <para>With no bridge — no config at launch, or the host was not resolvable — the order stops
+    /// after writing the effective config and this returns null; the settings VM then shows its
+    /// "restart CoreVideo Pro" message rather than claiming the show engine is live.</para>
+    /// </summary>
+    internal async Task<string?> ApplyShowConfigAsync(ShowConfig config)
+    {
+        if (config is null)
+        {
+            return "No show config to apply.";
+        }
+
+        var bridge = _showEngineBridge;
+
+        try
+        {
+            foreach (var step in OhgConfigApplySteps.Order(bridge is not null))
+            {
+                switch (step)
+                {
+                    case OhgConfigApplySteps.Validate:
+                    {
+                        var sceneIds = new HashSet<string>(ViewModel.Scenes.Select(scene => scene.Id), StringComparer.Ordinal);
+                        var problem = ShowConfigValidator.Validate(config, sceneIds);
+                        if (problem is not null)
+                        {
+                            LaunchLog.Write($"ohg: show config not applied ({problem})");
+                            return problem;
+                        }
+                        break;
+                    }
+
+                    case OhgConfigApplySteps.Materialize:
+                    {
+                        var folder = _ohgConfigFolder ?? Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                            "CoreVideoPro");
+                        _ohgConfigFolder = folder;
+                        _ohgEffectiveConfigPath ??= Path.Combine(folder, EffectiveConfigFileName);
+                        Directory.CreateDirectory(folder);
+                        File.WriteAllText(_ohgEffectiveConfigPath, new ShowConfigStore(folder).MaterializeEngineConfig(config));
+                        break;
+                    }
+
+                    case OhgConfigApplySteps.ReplaceAdapter:
+                    {
+                        // A NEW adapter, not a mutated one: the shell block and the look→scene
+                        // preset map are captured at construction, and rebuilding is the only way
+                        // an in-flight command can never see a half-updated adapter.
+                        var adapter = new OhgHostAdapter(
+                            new StudioViewModelOhgFacade(ViewModel, LaunchLog.Write),
+                            config.Shell,
+                            LaunchLog.Write,
+                            ShowConfigLooks.PresetsByLookId(config.Engine));
+                        _controlSurface?.ReplaceOhgAdapter(adapter);
+                        break;
+                    }
+
+                    case OhgConfigApplySteps.RebuildPageViewModel:
+                        AttachOhgShowViewModel(bridge!, config);
+                        break;
+
+                    case OhgConfigApplySteps.RestartEngine:
+                        // Off the UI thread: a restart kill-trees the child and respawns it.
+                        await Task.Run(() => bridge!.RestartAsync(CancellationToken.None)).ConfigureAwait(true);
+                        break;
+                }
+            }
+
+            LaunchLog.Write($"ohg: show config applied (engine {(bridge is null ? "not running" : "restarted")}, driveHost={config.Shell.DriveHost})");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("ohg: show config apply failed", ex);
+            return $"Could not apply the show config: {ex.Message}";
+        }
+    }
+
     private async Task StopShowEngineAsync()
     {
         var bridge = _showEngineBridge;
@@ -383,6 +528,11 @@ public sealed partial class MainWindow : Window
             TryShutdownStep("ohg roster publisher", () => ViewModel.MediaCoreBridge.SnapshotChanged -= publisher);
             _showEngineRosterPublisher = null;
         }
+
+        // BEFORE the bridge stops: the workspace VM holds snapshot/health/log subscriptions on it,
+        // and a stopping bridge still raises a final health event. Detached and dropped here, on
+        // the UI thread, while the dispatcher is still alive.
+        TryShutdownStep("ohg show view model", DetachOhgShowViewModel);
 
         try
         {

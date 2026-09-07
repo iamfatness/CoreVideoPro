@@ -700,6 +700,23 @@ is opaque to the shell (validated engine-side); `shell` is ours:
   refusal, not a clamp. A config with **no `version`** is refused as unsupported (never assumed v1).
 - `tallyUrl` is parsed and reserved; nothing posts to it in 7a.
 
+**Edit it in the app (Plan 7b Task 10):** Settings -> **OHG show** edits the same
+`ShowConfigStore` document (integrations, Mukana polling, looks, the four preset scenes,
+`driveHost`, default transition, tally URL). **Save** validates against the app's CURRENT
+scene ids, writes the effective config, hot-swaps the `OhgHostAdapter`
+(`StudioControlSurface.ReplaceOhgAdapter` -> `OhgAdapterSlot`), rebuilds `StudioViewModel.OhgShow`,
+then restarts the engine — in that ORDER, which is pinned by the pure
+`OhgConfigApplySteps.Order(engineRunning)` (restarting before materializing boots the engine on
+the PREVIOUS config; swapping the adapter after the restart cues the wrong scene on air). With no
+engine this launch it validates + writes only and the page says to restart the app. **The adapter
+is read at APPLY time, never at enqueue time** — a host command queued behind an awaiting take
+must use the adapter that is current when it RUNS, because the engine has by then been restarted
+onto the new config. `OhgConfigEditModel` is deliberately NOT observable, so the section binds
+`[ObservableProperty]` mirrors on `OhgSettingsViewModel` that write through to it; the intervals
+and per-look box count are `double` because `NumberBox.Value` is a double and x:Bind will not
+narrow it back. Every ComboBox in the section is filled and selected in guarded code-behind (never
+x:Bind selection), and every interactive element is named `OHG settings ...`.
+
 **Env vars:** `COREVIDEO_NODE_EXE` + `COREVIDEO_SHOW_ENGINE_DIR` (BOTH or neither — one alone is
 ignored) select a dev/override host; otherwise `<app>\node\node.exe` + `<app>\show-engine\` (packaged,
 staged by `scripts/sync-node-runtime-to-app.ps1`), then `node` on PATH + `<repo>\show-engine\` (dev).

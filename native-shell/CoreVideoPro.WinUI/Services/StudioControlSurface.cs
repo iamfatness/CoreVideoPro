@@ -76,7 +76,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _feedbackTimer;
     private readonly ShowEngineBridge? _bridge;
-    private readonly OhgHostAdapter? _ohgAdapter;
+    /// <summary>The OHG host adapter, held in a SLOT rather than a readonly field so a saved show
+    /// config can swap it live (<see cref="ReplaceOhgAdapter"/>). Read at APPLY time — see
+    /// <see cref="OhgAdapterSlot"/>.</summary>
+    private readonly OhgAdapterSlot _ohgAdapterSlot = new();
     private bool _disposed;
 
     /// <summary>The OHG show engine is OPTIONAL (both trailing arguments null = the app has no
@@ -91,7 +94,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         _vm = viewModel;
         _dispatcher = dispatcher;
         _bridge = bridge;
-        _ohgAdapter = ohgAdapter;
+        _ohgAdapterSlot.Replace(ohgAdapter);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _feedbackTimer = _dispatcher.CreateTimer();
         _feedbackTimer.IsRepeating = false;
@@ -552,7 +555,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             AudioSources = audioSources,
         }, _vm.NativeControlSnapshot);
 
-        return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapter?.ShadowLastCommand);
+        return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapterSlot.Current?.ShadowLastCommand);
     }
 
     private static readonly ShowEngineHealth StoppedHealth =
@@ -641,18 +644,30 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
 
     private async Task ApplyHostCommandAsync(ShowEngineHostCommand command)
     {
-        if (_disposed || _ohgAdapter is null)
+        // Resolved HERE, not captured when the link was enqueued: a Save in Settings can swap the
+        // adapter while this link is still queued behind an awaiting take, and the engine has by
+        // then been restarted onto the new config (OhgAdapterSlot's remarks).
+        var adapter = _ohgAdapterSlot.Current;
+        if (_disposed || adapter is null)
         {
             return;
         }
 
         try
         {
-            var refusal = await _ohgAdapter.ApplyAsync(command).ConfigureAwait(true);
+            var refusal = await adapter.ApplyAsync(command).ConfigureAwait(true);
             if (refusal is { Length: > 0 })
             {
                 // Operator-visible: a refused host command must never be silent.
                 _vm.CommandStatus = refusal;
+            }
+
+            // Shadow mode's whole product value is SEEING what the engine would have done, so the
+            // adapter's last shadowed line is pushed to the workspace after EVERY apply — a
+            // refusal included (the adapter records what it was asked to do either way).
+            if (adapter.ShadowLastCommand is { Length: > 0 } shadowed)
+            {
+                _vm.OhgShow?.SetShadowLastCommand(shadowed);
             }
         }
         catch (Exception ex)
@@ -660,6 +675,16 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             LaunchLog.Write($"ohg: host command '{command?.Name}' threw :: {ex}");
         }
     }
+
+    /// <summary>Swap the OHG host adapter the queue applies commands through — the settings
+    /// window's Save path, after the operator edits the show config (Plan 7b Task 10).
+    ///
+    /// <para>UI-THREAD ONLY, and the queue is NOT drained first: a command already enqueued keeps
+    /// its place and applies through whichever adapter is current when it RUNS, which after this
+    /// call is <paramref name="adapter"/>. That is deliberate — the engine is restarted onto the
+    /// new config moments later, so the new presets are the correct ones for anything still in
+    /// flight.</para></summary>
+    public void ReplaceOhgAdapter(OhgHostAdapter? adapter) => _ohgAdapterSlot.Replace(adapter);
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {

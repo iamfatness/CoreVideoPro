@@ -40,7 +40,21 @@ public sealed partial class OhgLookEditorViewModel : ObservableObject
     partial void OnIdChanged(string value) => Edit.Id = value;
     partial void OnLabelChanged(string value) => Edit.Label = value;
     partial void OnScenePresetChanged(string? value) => Edit.ScenePreset = value;
-    partial void OnBoxesChanged(int value) => Edit.Boxes = value;
+    partial void OnBoxesChanged(int value)
+    {
+        Edit.Boxes = value;
+        OnPropertyChanged(nameof(BoxesValue));
+    }
+
+    /// <summary>The box count as a <see cref="double"/>, because <c>NumberBox.Value</c> is a double
+    /// and x:Bind will not narrow one to an int on the way back (that conversion is explicit in
+    /// C#, so the generated TwoWay setter would not compile). NaN - what an emptied NumberBox
+    /// reports - is read as 0 rather than throwing out of a bound setter.</summary>
+    public double BoxesValue
+    {
+        get => Boxes;
+        set => Boxes = double.IsNaN(value) ? 0 : (int)Math.Round(value);
+    }
     partial void OnIncludesHostChanged(bool value) => Edit.IncludesHost = value;
     partial void OnIncludesReaderChanged(bool value) => Edit.IncludesReader = value;
     partial void OnPlateToneChanged(string value) => Edit.PlateTone = value;
