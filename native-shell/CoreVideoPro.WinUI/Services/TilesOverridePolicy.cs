@@ -4,8 +4,8 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class TilesOverridePolicy
 {
-    public static TilesMemberOverride EditorValues(DynamicGallerySettings? settings, string sourceId) =>
-        settings?.Overrides.TryGetValue(sourceId, out var value) == true ? value.Clone() :
+    public static TilesMemberOverride EditorValues(DynamicGallerySettings? settings, string? sourceId) =>
+        !string.IsNullOrWhiteSpace(sourceId) && settings?.Overrides.TryGetValue(sourceId, out var value) == true ? value.Clone() :
             Create(0, 0, .5, 1, 0, 0, 0);
     public static TilesMemberOverride Create(double x, double y, double width, double height, double left, double right, double z)
     {

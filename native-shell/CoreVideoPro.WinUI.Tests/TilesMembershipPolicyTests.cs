@@ -6,6 +6,26 @@ namespace CoreVideoPro.WinUI.Tests;
 
 public class TilesMembershipPolicyTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void TakeRefreshWithClearedSelectionLoadsDefaultsWithoutChangingOverrides(string? sourceId)
+    {
+        var scene = new DynamicGallerySettings { Overrides = new() { ["zoom:a"] = TilesOverridePolicy.Create(.1, .2, .3, .4, 10, 20, 5) } };
+        // The previous Program scene becomes Preview during Take, while the
+        // member selector may have been cleared by a source-list refresh.
+        var empty = TilesOverridePolicy.EditorValues(scene, sourceId);
+        Assert.Equal(0, empty.Rect!.X);
+        Assert.Equal(.5, empty.Rect.Width);
+        Assert.Equal(1, empty.Rect.Height);
+        Assert.Equal(0, empty.CropLeftPercent);
+        empty.CropLeftPercent = 30;
+        Assert.Single(scene.Overrides);
+        Assert.Equal(10, TilesOverridePolicy.EditorValues(scene, "zoom:a").CropLeftPercent);
+        Assert.Equal(.5, TilesOverridePolicy.EditorValues(null, sourceId).Rect!.Width);
+    }
+
     [Fact]
     public void SwitchingEditorSourceOrSceneLoadsSavedValuesOrDefaultsWithoutMutation()
     {
