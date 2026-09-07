@@ -122,8 +122,19 @@ function memoryStateFs(): StateFs {
  * rather than reimplementing it is deliberate: `ConformanceHost` is defined
  * as a `Pick<MockHost, …>`, so this cannot drift from what the cases read,
  * and the recorded shapes are identical to the ones vitest asserts on.
+ *
+ * **THE WRAPPER LAW — every `HostAdapter` method must be overridden here.**
+ * Inheriting one is not a compile error and not a runtime error: the call is
+ * RECORDED (so every case still passes, in vitest and in this mode) and
+ * silently never reaches the wire, so the shell simply never hears about that
+ * command. That is this repo's documented `WinUiCaptureDeviceAdapter` bug
+ * class — a permissive base whose inherited default swallowed every ingested
+ * audio frame while video flowed perfectly. Exported for exactly one reason:
+ * `conformance.test.ts` asserts each name is an OWN property of this
+ * prototype, so the next `HostAdapter` method fails loudly here rather than
+ * going missing on a live show.
  */
-class RecordingStdioFacade extends MockHost {
+export class RecordingStdioFacade extends MockHost {
   private readonly wire: StdioHostAdapter;
 
   constructor(wire: StdioHostAdapter) {

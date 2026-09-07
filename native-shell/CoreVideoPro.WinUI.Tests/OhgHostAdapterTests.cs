@@ -190,11 +190,13 @@ public sealed class OhgHostAdapterTests
         => new(1, seq, name, JsonDocument.Parse(argsJson).RootElement.Clone());
 
     private static (OhgHostAdapter Adapter, FakeOhgHostFacade Facade, List<string> Log) Build(
-        ShowShellConfig? shell = null, FakeOhgHostFacade? facade = null)
+        ShowShellConfig? shell = null,
+        FakeOhgHostFacade? facade = null,
+        IReadOnlyDictionary<string, string>? lookPresets = null)
     {
         var f = facade ?? new FakeOhgHostFacade();
         var log = new List<string>();
-        var adapter = new OhgHostAdapter(f, shell ?? Shell(), log.Add);
+        var adapter = new OhgHostAdapter(f, shell ?? Shell(), log.Add, lookPresets);
         return (adapter, f, log);
     }
 
@@ -308,15 +310,53 @@ public sealed class OhgHostAdapterTests
     }
 
     [Fact]
-    public async Task SetPreview_UnappliedLook_Refuses()
+    public async Task SetPreview_LookWithNoConfiguredPresetAndNoApplyLook_Refuses()
     {
         var (adapter, facade, log) = Build();
 
         var refusal = await adapter.ApplyAsync(Cmd("setPreview", """[{"kind":"look","lookId":"look-z"}]"""));
 
-        Assert.Equal("setPreview: look 'look-z' has not been applied yet", refusal);
+        Assert.Equal("setPreview: look 'look-z' has no configured scene preset", refusal);
         Assert.Empty(facade.Cues);
         Assert.Contains(refusal, log);
+    }
+
+    /// <summary>
+    /// THE FIRST CUE OF A LOOK MUST WORK (Task 13, fix round 1). The engine emits
+    /// <c>setPreview({kind:"look"})</c> BEFORE the <c>applyLook</c> that first names that look's
+    /// scene preset — same tick, one seq apart — which the cross-process adapter conformance run
+    /// caught and neither side's own tests could see. An adapter seeded from
+    /// <c>config.engine.looks[]</c> answers it; one that learns only from <c>applyLook</c> refuses
+    /// the first cue of every look on every show.
+    /// </summary>
+    [Fact]
+    public async Task SetPreview_ConfiguredButNeverAppliedLook_CuesItsPresetWithoutRefusing()
+    {
+        var (adapter, facade, log) = Build(
+            lookPresets: new Dictionary<string, string>(StringComparer.Ordinal) { ["look-a"] = "look-scene" });
+
+        var refusal = await adapter.ApplyAsync(Cmd("setPreview", """[{"kind":"look","lookId":"look-a"}]"""));
+
+        Assert.Null(refusal);
+        Assert.Empty(log);
+        Assert.Equal("look-scene", Assert.Single(facade.Cues).SceneId);
+    }
+
+    /// <summary>A later <c>applyLook</c> is still the live authority: a look re-pointed at another
+    /// scene engine-side cues the NEW scene, not the one the config was seeded with.</summary>
+    [Fact]
+    public async Task ApplyLook_OverridesTheConfigSeededPresetForLaterPreviews()
+    {
+        var (adapter, facade, _) = Build(
+            lookPresets: new Dictionary<string, string>(StringComparer.Ordinal) { ["look-a"] = "look-scene" });
+
+        await adapter.ApplyAsync(Cmd("applyLook", LookArgs("look-a", "solo-scene", "[[1,4]]")));
+        facade.Cues.Clear();
+
+        var refusal = await adapter.ApplyAsync(Cmd("setPreview", """[{"kind":"look","lookId":"look-a"}]"""));
+
+        Assert.Null(refusal);
+        Assert.Equal("solo-scene", Assert.Single(facade.Cues).SceneId);
     }
 
     [Fact]

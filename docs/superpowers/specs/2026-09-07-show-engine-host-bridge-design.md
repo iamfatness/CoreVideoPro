@@ -332,7 +332,7 @@ command to `StudioViewModel` through the **same entry points the control surface
 | `setPreview(source)` | `look:<id>` ⇒ cue that look's preset; `slot:<n>` ⇒ cue `presets.solo` and set its `ohg-box-1` route to slot n; `activeSpeaker` ⇒ cue `presets.activeSpeaker`; `black` ⇒ cue `presets.black`; `gallery` ⇒ cue `presets.gallery` | the named preset is unset or missing |
 | `cut()` | `TakeForControlAsync` with transition `cut` | take unavailable (`CanTake` false) |
 | `auto(t)` | set transition `t ?? config.defaultTransition`, then take | unknown transition |
-| `setGallery(cells)` | **not applied in 7a** — recorded to the shadow list regardless of `driveHost`; one status line per change | — |
+| `setGallery(cells)` | **not applied in 7a** — recorded to the shadow list regardless of `driveHost`; one status line per adapter lifetime | — |
 | `setNameplates(plates)` | for each plate: Show Input `plate.slot` display name ← `plate.name`; lower-third title for that input ← `plate.location` | slot unassigned |
 | `setQuestion(q)` | `CaptionText ← q.text` (`null` ⇒ empty); `CaptionSpeaker` unchanged | — |
 

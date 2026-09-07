@@ -192,8 +192,9 @@ async function runConformanceMode(sink: LineSink, generation: number): Promise<v
 async function main(): Promise<void> {
   const sink = stdoutSink();
 
-  if (process.argv.includes("--conformance")) {
-    const generation = parseGenerationOnly(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv.includes("--conformance")) {
+    const generation = parseGenerationOnly(argv);
     if (generation === null) {
       exitWithErrorLine("usage: show-engine-host --conformance [--generation <n>]", EX_USAGE);
       return;
@@ -203,7 +204,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const args = parseArgv(process.argv.slice(2));
+  const args = parseArgv(argv);
 
   if (args === null) {
     exitWithErrorLine("usage: show-engine-host --config <path> [--generation <n>]", EX_USAGE);

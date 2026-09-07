@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using CoreVideoPro.ShowEngine;
 using CoreVideoPro.WinUI.Services;
 using Xunit;
@@ -113,7 +115,7 @@ internal sealed class RecordingOhgHostFacade : IOhgHostFacade
 /// a guard that looks like coverage and isn't.</para>
 /// </summary>
 [Trait("Category", "Integration")]
-public sealed class AdapterConformanceTests
+public sealed partial class AdapterConformanceTests
 {
     private readonly ITestOutputHelper _output;
 
@@ -153,30 +155,23 @@ public sealed class AdapterConformanceTests
             _output.WriteLine(line);
         }
 
-        // KNOWN DEFECT, PINNED SO IT CANNOT QUIETLY GET WORSE (or quietly disappear).
+        // NO REFUSALS AT ALL. Every command the engine emits under CONFORMANCE_CONFIG is one this
+        // shell can carry out, and the adapter must carry all of them out.
         //
-        // Three cases select a look, and in each of them the engine emits
-        // `setPreview({kind:"look", lookId})` BEFORE the `applyLook` that first tells the shell
-        // which scene preset that look renders through — in the same tick, one seq apart. The
-        // adapter can only learn `lookId -> scenePreset` from `applyLook` (spec §8 gives it no
-        // other source), so it refuses the setPreview outright. Nothing on screen is wrong: the
-        // `applyLook` a line later cues the very same scene to preview with all four routes, which
-        // is what the refused command was asking for. But it is a real cross-process ordering
-        // mismatch that neither side's own tests can see — the engine's suite asserts on a recorder
-        // that has no such cache, and `OhgHostAdapterTests` feeds the adapter hand-written commands
-        // in whatever order it chose — and it is exactly the class of finding this test exists for.
-        //
-        // It is NOT fixed here: the fix is either an engine emission-order change or a spec change
-        // to `setPreview`'s look row, both outside Task 13. Pinned verbatim so a change in either
-        // direction reds this test and gets read.
-        Assert.Equal(
-            new[]
-            {
-                "20 setPreview: setPreview: look 'conformance.panel' has not been applied yet",
-                "55 setPreview: setPreview: look 'conformance.panel' has not been applied yet",
-                "71 setPreview: setPreview: look 'conformance.panel' has not been applied yet"
-            },
-            run.Refusals);
+        // This assertion is where fix round 1's real defect surfaced. Three cases select a look,
+        // and in each the engine emits `setPreview({kind:"look", lookId})` one seq BEFORE the
+        // `applyLook` that names that look's scene preset. An adapter that learned
+        // `lookId -> scenePreset` only from `applyLook` refused all three — i.e. it refused the
+        // FIRST cue of every look on every real show, a defect neither side's own tests could see
+        // (the engine's suite asserts on a recorder that keeps no such map, and
+        // `OhgHostAdapterTests` fed the adapter hand-written commands in an order it chose itself).
+        // The mapping was in `config.engine.looks[]` all along; the adapter is now seeded from it
+        // (see the `lookPresets` argument below), so this list is empty.
+        Assert.Empty(run.Refusals);
+
+        // Not one host command arrived outside a `begin`/`ok` bracket. The whole per-case bucketing
+        // rests on that framing, and a command counted into no case would silently shrink a golden.
+        Assert.Equal(0, run.UnbracketedHostCommands);
 
         Assert.Contains($"conformance: {OhgConformanceGoldens.Expected.Count}/{OhgConformanceGoldens.Expected.Count}", run.Logs);
         Assert.Equal(0, run.StaleHostCommandsDropped);
@@ -205,7 +200,27 @@ public sealed class AdapterConformanceTests
         IReadOnlyList<string> Logs,
         IReadOnlyDictionary<string, IReadOnlyList<string>> FacadeCallsByCase,
         IReadOnlyList<string> Refusals,
-        long StaleHostCommandsDropped);
+        long StaleHostCommandsDropped,
+        int UnbracketedHostCommands);
+
+    /// <summary>The tally that ends a run: <c>conformance: &lt;passed&gt;/&lt;total&gt;</c>, and nothing else.</summary>
+    [GeneratedRegex(@"^conformance: \d+/\d+$")]
+    private static partial Regex TallyLine();
+
+    /// <summary>
+    /// What the shell would have read out of <c>config.engine.looks[]</c> — the ONE look
+    /// <c>CONFORMANCE_CONFIG</c> declares (<c>show-engine/src/conformance.ts</c>:
+    /// <c>CONFORMANCE_LOOK_ID</c> / <c>CONFORMANCE_SCENE_PRESET</c>).
+    ///
+    /// <para>It is written out here rather than parsed from the temp config because the
+    /// <c>--conformance</c> mode builds its engines from <c>CONFORMANCE_CONFIG</c> internally and
+    /// ignores <c>--config</c> entirely; a seed read from a file the engine never opened would be
+    /// a fiction that happened to agree. If either constant changes engine-side, the look case's
+    /// <c>applyLook</c> carries the new preset and this map goes stale — which shows up as a
+    /// refusal, i.e. loudly, on the <c>Assert.Empty(run.Refusals)</c> above.</para>
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ConformanceLookPresets =
+        new Dictionary<string, string>(StringComparer.Ordinal) { ["conformance.panel"] = "conformance-scene" };
 
     /// <summary>All four presets set and <c>DriveHost = true</c>: shadow mode records instead of
     /// applying, so a conformance run in shadow mode would assert on the adapter's LOG rather than
@@ -245,6 +260,7 @@ public sealed class AdapterConformanceTests
             string? currentCase = null;
             RecordingOhgHostFacade? facade = null;
             OhgHostAdapter? adapter = null;
+            var unbracketed = 0;
 
             void CloseCase()
             {
@@ -273,7 +289,7 @@ public sealed class AdapterConformanceTests
 
             supervisor.LogReceived += line =>
             {
-                logs.Add(line.Message);
+                lock (logs) logs.Add(line.Message);
 
                 const string beginPrefix = "conformance: begin ";
                 if (line.Message.StartsWith(beginPrefix, StringComparison.Ordinal))
@@ -285,19 +301,25 @@ public sealed class AdapterConformanceTests
                     // contract: the adapter carries report-once state (the gallery note, the
                     // missing-route set), so one adapter across the run would make case N's golden
                     // depend on whether case N-1 had already spoken.
-                    adapter = new OhgHostAdapter(facade, shell, _ => { });
+                    adapter = new OhgHostAdapter(facade, shell, _ => { }, ConformanceLookPresets);
                     return;
                 }
 
                 if (!line.Message.StartsWith("conformance: ", StringComparison.Ordinal)) return;
 
                 CloseCase();
-                if (line.Message.Contains('/', StringComparison.Ordinal)) finished.TrySetResult();
+                // The tally, matched exactly — a case whose NAME happened to contain a slash would
+                // otherwise end the run early and truncate every bucket after it.
+                if (TallyLine().IsMatch(line.Message)) finished.TrySetResult();
             };
 
             supervisor.HostCommandReceived += command =>
             {
-                if (adapter is null) return;
+                if (adapter is null)
+                {
+                    unbracketed += 1;
+                    return;
+                }
 
                 // Awaited synchronously ON the reader thread on purpose: arrival order IS the
                 // contract, and the facade completes every task synchronously so nothing blocks.
@@ -330,13 +352,133 @@ public sealed class AdapterConformanceTests
             (await supervisor.SendAsync("ping", null, cts.Token)).Dispose();
 
             var completed = await Task.WhenAny(finished.Task, Task.Delay(TimeSpan.FromMinutes(2), cts.Token));
-            Assert.True(completed == finished.Task,
-                "the show engine never printed its conformance tally; logs so far: " + string.Join(" | ", logs));
+            if (completed != finished.Task)
+            {
+                // `logs` is appended to by the reader thread, which is still running — formatting it
+                // directly races an Add and can throw out of the failure message itself.
+                string sofar;
+                lock (logs) sofar = string.Join(" | ", logs.ToArray());
+                Assert.Fail("the show engine never printed its conformance tally; logs so far: " + sofar);
+            }
 
             await supervisor.StopAsync();
             CloseCase();
 
-            return new ConformanceRun(logs, byCase, refusals, supervisor.StaleHostCommandsDropped);
+            lock (logs)
+            {
+                return new ConformanceRun(
+                    logs.ToArray(), byCase, refusals.ToArray(), supervisor.StaleHostCommandsDropped, unbracketed);
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    // ---- the exit-code contract ---------------------------------------------------------
+
+    /// <summary>
+    /// <c>--conformance</c> exits <b>0 iff every case passed</b> — asserted against the process
+    /// itself, because nothing else can.
+    ///
+    /// <para>The supervisor path above is the real integration, but <see cref="ShowEngineSupervisor"/>
+    /// exposes no exit code (it has no use for one), so the contract that a CI job or a packaging
+    /// script would actually gate on is unobserved there. This drives the same built entry point as
+    /// a plain <see cref="Process"/>, feeding stdin the same three requests the supervisor sends —
+    /// a <c>handshake</c>, then the request the mode waits for before running its cases, then
+    /// <c>shutdown</c> — and reads the exit code.</para>
+    ///
+    /// <para>It deliberately does NOT parse the output: what the run printed is the other test's
+    /// subject, and a second copy of those assertions here would just be a place for them to drift.
+    /// The one thing read out of stdout is the tally line, and only to make a non-zero exit
+    /// diagnosable.</para>
+    /// </summary>
+    [Fact]
+    public async Task TheConformanceModeExitsZeroWhenEveryCasePassed()
+    {
+        var repoRoot = FindRepoRoot();
+        if (repoRoot is null)
+        {
+            _output.WriteLine("SKIPPED: no show-engine/package.json found walking up from " + AppContext.BaseDirectory);
+            return;
+        }
+
+        var entryScript = Path.Combine(repoRoot, "show-engine", "dist", "host", "main.js");
+        if (!File.Exists(entryScript))
+        {
+            _output.WriteLine($"SKIPPED: {entryScript} is not built — run `npm run build` in show-engine/");
+            return;
+        }
+
+        var nodeExe = FindNodeOnPath();
+        if (nodeExe is null)
+        {
+            _output.WriteLine("SKIPPED: node.exe is not on PATH");
+            return;
+        }
+
+        var tempDir = Directory.CreateTempSubdirectory("cvp-ohg-conformance-exit-").FullName;
+        try
+        {
+            var configPath = Path.Combine(tempDir, "show-config.json");
+            await File.WriteAllTextAsync(configPath, "{}", new UTF8Encoding(false));
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = nodeExe,
+                WorkingDirectory = Path.Combine(repoRoot, "show-engine"),
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardInputEncoding = new UTF8Encoding(false),
+                StandardOutputEncoding = new UTF8Encoding(false),
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add(entryScript);
+            startInfo.ArgumentList.Add("--config");
+            startInfo.ArgumentList.Add(configPath);
+            startInfo.ArgumentList.Add("--generation");
+            startInfo.ArgumentList.Add("1");
+            startInfo.ArgumentList.Add("--conformance");
+
+            using var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("node did not start");
+
+            using var kill = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            await using (var stdin = process.StandardInput)
+            {
+                // The mode answers any well-formed request `ok`; the FIRST one is also its start
+                // signal (it holds its cases until the parent has spoken — see main.ts). `shutdown`
+                // is what releases it to exit once the tally is printed.
+                await stdin.WriteLineAsync("""{"id":"se-1","type":"handshake"}""");
+                await stdin.WriteLineAsync("""{"id":"se-2","type":"ping"}""");
+                await stdin.WriteLineAsync("""{"id":"se-3","type":"shutdown"}""");
+                await stdin.FlushAsync(kill.Token);
+            }
+
+            var stdout = await process.StandardOutput.ReadToEndAsync(kill.Token);
+            var stderr = await process.StandardError.ReadToEndAsync(kill.Token);
+
+            try
+            {
+                await process.WaitForExitAsync(kill.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                process.Kill(entireProcessTree: true);
+                Assert.Fail("the conformance mode did not exit within 2 minutes");
+            }
+
+            var tally = stdout
+                .Split('\n')
+                .Select(line => line.Trim())
+                .LastOrDefault(line => line.Contains("conformance: ", StringComparison.Ordinal));
+            _output.WriteLine("tally line: " + (tally ?? "<none>"));
+            if (stderr.Length > 0) _output.WriteLine("stderr: " + stderr);
+
+            Assert.Equal(0, process.ExitCode);
         }
         finally
         {

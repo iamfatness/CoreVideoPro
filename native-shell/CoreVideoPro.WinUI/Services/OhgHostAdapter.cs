@@ -44,10 +44,17 @@ public sealed class OhgHostAdapter
 
     private readonly List<string> _shadowLog = new();
 
-    /// <summary>lookId → the preset scene the look was last applied with. <c>setPreview</c>'s
-    /// <c>{kind:"look"}</c> carries only the id, so this is the only place the shell can learn
-    /// which scene to cue.</summary>
-    private readonly Dictionary<string, string> _lookPresets = new(StringComparer.Ordinal);
+    /// <summary>lookId → the preset scene to cue for it. <c>setPreview</c>'s <c>{kind:"look"}</c>
+    /// carries only the id, so this is the only place the shell can learn which scene that is.
+    ///
+    /// <para>SEEDED FROM THE CONFIG at construction, and updated by every <c>applyLook</c>. Both
+    /// sources are needed and neither is redundant (Task 13, fix round 1): the engine emits the
+    /// <c>setPreview</c> for a look BEFORE the <c>applyLook</c> that first names its preset — same
+    /// tick, one <c>seq</c> apart — so an <c>applyLook</c>-only map refused the FIRST cue of every
+    /// look on every show, which the cross-process conformance run caught and no single-sided test
+    /// could. The config seed answers that first cue; <c>applyLook</c> keeps the map live, so a
+    /// look whose preset changed engine-side without a config round trip still resolves.</para></summary>
+    private readonly Dictionary<string, string> _lookPresets;
 
     /// <summary>Reported (preset, sorted missing-route-set) keys — a scene that is simply missing
     /// a route would otherwise repeat its warning on every look change.</summary>
@@ -55,11 +62,22 @@ public sealed class OhgHostAdapter
 
     private bool _reportedGalleryNote;
 
-    public OhgHostAdapter(IOhgHostFacade facade, ShowShellConfig shell, Action<string> log)
+    /// <param name="lookPresets">lookId → scenePreset, from <c>config.engine.looks[]</c> via
+    /// <see cref="ShowConfigLooks.PresetsByLookId"/>. Null or empty is legal (an unconfigured look
+    /// is refused at use time, not here) but costs the first cue of each look — see
+    /// <see cref="_lookPresets"/>.</param>
+    public OhgHostAdapter(
+        IOhgHostFacade facade,
+        ShowShellConfig shell,
+        Action<string> log,
+        IReadOnlyDictionary<string, string>? lookPresets = null)
     {
         _facade = facade ?? throw new ArgumentNullException(nameof(facade));
         _shell = shell ?? throw new ArgumentNullException(nameof(shell));
         _log = log ?? throw new ArgumentNullException(nameof(log));
+        _lookPresets = lookPresets is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(lookPresets, StringComparer.Ordinal);
     }
 
     /// <summary>False = shadow mode: commands are recorded, never applied.</summary>
@@ -182,7 +200,8 @@ public sealed class OhgHostAdapter
                 var lookId = RequiredString(source, "lookId");
                 if (!_lookPresets.TryGetValue(lookId, out var preset))
                 {
-                    return Refuse($"setPreview: look '{lookId}' has not been applied yet");
+                    // Neither the config's looks[] nor any applyLook has named a scene for this id.
+                    return Refuse($"setPreview: look '{lookId}' has no configured scene preset");
                 }
 
                 sceneId = preset;

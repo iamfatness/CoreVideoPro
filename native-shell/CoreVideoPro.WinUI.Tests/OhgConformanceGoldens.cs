@@ -16,15 +16,26 @@ namespace CoreVideoPro.WinUI.Tests;
 /// against the spec rather than accepted from the output:</para>
 /// <list type="bullet">
 /// <item><description>A <c>setGallery</c> lands on the FIRST tick of every case (the engine
-/// publishes the whole 16-cell map, all blank, as soon as it has a roster). Spec §8 says
-/// <c>setGallery</c> is <b>not applied in 7a</b> — recorded, with one status line — so the only
-/// facade traffic it may produce is that single <c>ReportStatus</c>, once per adapter. Anything
-/// that MOVED a tile here would be the adapter doing what 7a explicitly does not do.</description></item>
+/// publishes the whole 16-cell map, all blank, as soon as it has a roster). Spec §8: <c>setGallery</c>
+/// is <b>not applied in 7a</b> — "recorded to the shadow list regardless of <c>driveHost</c>; one
+/// status line per adapter lifetime". So the only facade traffic it may produce is that single
+/// <c>ReportStatus</c>, once, no matter how many maps arrive. (Per-adapter-lifetime rather than
+/// per-change is deliberate and the spec row says so: gallery order moves on every speaker swap,
+/// and a line per change would flood the operator's status surface with a note about a command 7a
+/// does not carry out anyway.) Anything that MOVED a tile here would be the adapter doing what 7a
+/// explicitly does not do.</description></item>
 /// <item><description>The engine emits <c>setPreview({kind:"look"})</c> <b>before</b> the
-/// <c>applyLook</c> that first names that look's scene preset, so the adapter — which can only
-/// learn <c>lookId → scenePreset</c> from <c>applyLook</c> (spec §8) — refuses it. That refusal is
-/// pinned in <see cref="AdapterConformanceTests"/> as a KNOWN DEFECT, not accepted as correct; see
-/// the comment there. It produces no facade call, which is why it is invisible in this table.</description></item>
+/// <c>applyLook</c> that first names that look's scene preset. An adapter that learned
+/// <c>lookId → scenePreset</c> only from <c>applyLook</c> refused it — i.e. refused the first cue
+/// of every look on every show — which this run caught and neither side's own tests could. Fixed
+/// (fix round 1) by seeding the adapter from <c>config.engine.looks[]</c> via
+/// <see cref="CoreVideoPro.ShowEngine.ShowConfigLooks.PresetsByLookId"/>. It is now VISIBLE in this
+/// table, as <see cref="LookPreviewCue"/>: the look's preset scene cued with an EMPTY route
+/// dictionary — spec §8's <c>setPreview</c> row is "cue that look's preset" and nothing more, and an
+/// empty dictionary is how "rewrite no routes" is expressed — immediately followed by the
+/// <c>applyLook</c> that cues the same scene WITH its four routes. Two cues of one scene in one
+/// tick, the second superseding the first, is what the engine's own emission order asks for; see the
+/// concern noted in the Task 13 report.</description></item>
 /// </list>
 ///
 /// <para><b>What a golden is sensitive to.</b> The sequence is the adapter's own conversion work, so
@@ -57,6 +68,15 @@ internal static class OhgConformanceGoldens
         "AssignZoomParticipant(7, null)",
         "AssignZoomParticipant(8, null)",
         "ReportStatus(gallery: cell order not applied (Tiles has no explicit order API))"
+    };
+
+    /// <summary>What <c>setPreview({kind:"look"})</c> converts to: cue the look's configured preset
+    /// scene, rewriting no routes. It arrives one seq BEFORE the <c>applyLook</c> for the same look,
+    /// so every look-selecting case shows this pair and then the placement.</summary>
+    private static readonly string[] LookPreviewCue =
+    {
+        "SceneExists(conformance-scene)",
+        "CueSceneWithRoutes(conformance-scene, )"
     };
 
     /// <summary>The full placement of the conformance look with box 1 holding slot 3 — the shape the
@@ -109,7 +129,8 @@ internal static class OhgConformanceGoldens
             // slot 1, reader chair → slot 2), addressed BY ROUTE ID, and re-applying the same
             // placement adds nothing. The plates that follow are the same look resolving, not a
             // second placement.
-            ["selecting a look applies its preset and both chairs"] = Sequence(SeatingPreamble, FullLook),
+            ["selecting a look applies its preset and both chairs"] =
+                Sequence(SeatingPreamble, LookPreviewCue, FullLook),
 
             // INTENT: "a host that declares `hasPreviewBus: false` must never receive
             // `setPreview`/`cut`/`auto` … and a cut must still put the staged source on program."
@@ -144,7 +165,7 @@ internal static class OhgConformanceGoldens
             // throughout (no question feed is configurable in CONFORMANCE_CONFIG), which is an
             // empty caption, published alongside each plate change.
             ["nameplates and question emit on change and stay silent otherwise"] =
-                Sequence(SeatingPreamble, FullLook, EmptyBoxLook),
+                Sequence(SeatingPreamble, LookPreviewCue, FullLook, EmptyBoxLook),
 
             // INTENT: "The engine ticks continuously; a host that received work every tick would be
             // rebinding inputs and re-rastering overlays at tick rate, which is the churn class this
@@ -152,6 +173,7 @@ internal static class OhgConformanceGoldens
             // NOTHING after it. The trailing three quiet ticks must add zero lines — a golden that
             // grew a tail here would be that churn class arriving through the adapter. (The second
             // setGallery from `gallery.resetFromSlots` adds no status: report-once.)
-            ["a tick that changes nothing sends nothing"] = Sequence(SeatingPreamble, EmptyBoxLook)
+            ["a tick that changes nothing sends nothing"] =
+                Sequence(SeatingPreamble, LookPreviewCue, EmptyBoxLook)
         };
 }

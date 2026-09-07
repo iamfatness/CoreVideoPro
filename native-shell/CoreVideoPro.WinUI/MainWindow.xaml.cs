@@ -258,7 +258,10 @@ public sealed partial class MainWindow : Window
             adapter = new OhgHostAdapter(
                 new StudioViewModelOhgFacade(ViewModel, LaunchLog.Write),
                 config.Shell,
-                LaunchLog.Write);
+                LaunchLog.Write,
+                // Seeded so the FIRST setPreview of a look resolves: the engine cues a look on
+                // preview one seq BEFORE the applyLook that names its scene (Task 13).
+                ShowConfigLooks.PresetsByLookId(config.Engine));
 
             // Roster + active speaker ride the core's snapshot stream (spec 6.2). This handler
             // runs on the media-core READER thread; every Publish on the bridge is lock-guarded

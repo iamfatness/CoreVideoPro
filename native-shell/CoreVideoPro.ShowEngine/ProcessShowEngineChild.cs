@@ -61,9 +61,9 @@ public sealed class ProcessShowEngineChild : IShowEngineChild
             if (e.Data is not null) _log.Append($"[show-engine gen {generation}] {e.Data}");
         };
 
+        var extraArgs = request.ExtraArgs.Count == 0 ? string.Empty : " " + string.Join(' ', request.ExtraArgs);
         _log.Append($"[show-engine] spawn gen {generation}: {request.NodeExe} {request.EntryScript} " +
-                    $"--config {request.ConfigPath} --generation {generation} " +
-                    string.Join(' ', request.ExtraArgs));
+                    $"--config {request.ConfigPath} --generation {generation}{extraArgs}");
 
         if (!_process.Start())
         {

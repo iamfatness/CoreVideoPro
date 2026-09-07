@@ -17,7 +17,9 @@
 
 import { describe, expect, it } from "vitest";
 import { HOST_CONFORMANCE_CASES } from "../conformance.js";
-import { runHostConformance } from "./conformance.js";
+import type { HostAdapter } from "../hostAdapter.js";
+import { MockHost } from "../mockHost.js";
+import { RecordingStdioFacade, runHostConformance } from "./conformance.js";
 
 type Line = Record<string, unknown> & { event?: string };
 
@@ -34,6 +36,57 @@ async function run(generation = 1): Promise<{ result: Awaited<ReturnType<typeof 
 function logs(lines: Line[]): string[] {
   return lines.filter((line) => line.event === "log").map((line) => String(line.message));
 }
+
+/**
+ * Every method on the `HostAdapter` port, written out so it can be checked at
+ * RUNTIME. `satisfies Record<keyof HostAdapter, true>` pins it in both
+ * directions against the interface itself: a method added to `HostAdapter`
+ * and not listed here is a missing key (compile error), and a name here that
+ * is not on `HostAdapter` is an excess property (compile error). So the list
+ * cannot rot into a stale copy of the port.
+ */
+const HOST_ADAPTER_METHODS = {
+  capabilities: true,
+  assignSlot: true,
+  applyLook: true,
+  setPreview: true,
+  cut: true,
+  auto: true,
+  setGallery: true,
+  setNameplates: true,
+  setQuestion: true
+} satisfies Record<keyof HostAdapter, true>;
+
+describe("RecordingStdioFacade (the wrapper law)", () => {
+  /**
+   * THE WRAPPER LAW. `RecordingStdioFacade` extends `MockHost`, whose methods
+   * all RECORD — so an un-overridden method is invisible twice over: it is not
+   * a compile error (the base satisfies the type), and it is not a test
+   * failure (every conformance case reads the recorder, and the recorder was
+   * written to). The call is simply never put on the wire, and the shell never
+   * hears about that command. This is the exact `WinUiCaptureDeviceAdapter`
+   * bug this repo documents — an inherited permissive default that swallowed
+   * every ingested audio frame while video flowed perfectly.
+   *
+   * `hasOwnProperty` on the prototype is the check that catches it: an
+   * inherited method is on `MockHost.prototype`, never on this one.
+   */
+  it("overrides every HostAdapter method rather than inheriting a record-only one", () => {
+    const missing = Object.keys(HOST_ADAPTER_METHODS).filter(
+      (name) => !Object.prototype.hasOwnProperty.call(RecordingStdioFacade.prototype, name)
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  /** The list above is only a guard if the names are real methods; this is what says so. */
+  it("names methods that MockHost actually implements", () => {
+    const host = new MockHost();
+    for (const name of Object.keys(HOST_ADAPTER_METHODS)) {
+      expect(typeof (host as unknown as Record<string, unknown>)[name]).toBe("function");
+    }
+  });
+});
 
 describe("runHostConformance", () => {
   it("reports every shipped case as ok and tallies them", async () => {
