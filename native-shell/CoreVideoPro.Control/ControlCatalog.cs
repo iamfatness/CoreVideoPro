@@ -17,8 +17,15 @@ namespace CoreVideoPro.Control;
 /// handler.
 ///
 /// Thread-safety: providers may raise <c>ActionsChanged</c> from a background thread. A private
-/// lock guards the rebuild, and each rebuild constructs a brand-new immutable snapshot (list +
-/// dictionaries) that is swapped in atomically, so readers never observe a half-built table.</summary>
+/// lock serializes concurrent rebuilds; each rebuild constructs a brand-new immutable snapshot
+/// (list + dictionaries + the validation error, all in ONE <c>Snapshot</c> record so they can
+/// never disagree) and publishes it by assigning the <c>volatile</c> <c>_snapshot</c> field.
+/// Every reader (<see cref="Actions"/>, <see cref="TryGet"/>, <see cref="Contains"/>,
+/// <see cref="ExposureOf"/>, <see cref="FeedbackFields"/>, <see cref="TryBind"/>,
+/// <see cref="LastValidationError"/>) reads that same field with no lock of its own — the
+/// volatile write/read pair gives the reader an acquire fence, so it can never observe a
+/// half-built or torn snapshot, or a snapshot's actions disagreeing with its own validation
+/// error.</summary>
 public sealed class ControlCatalog
 {
     public static readonly Regex ActionIdPattern = new("^[a-z][a-zA-Z0-9]*(\\.[a-z][a-zA-Z0-9]*)+$");
@@ -29,7 +36,14 @@ public sealed class ControlCatalog
     private readonly IReadOnlyList<IControlActionProvider> _providers;
     private readonly object _lock = new();
 
-    private Snapshot _snapshot;
+    // Providers (Task 6/8+) raise ActionsChanged from a background reader thread. The rebuild
+    // itself is serialized under _lock, but readers (Actions/TryGet/Contains/ExposureOf/
+    // FeedbackFields/TryBind/LastValidationError) take no lock at all — they just read this
+    // field. `volatile` gives those reads an acquire fence pairing with the release-semantics
+    // write in Rebuild()'s caller, so a reader can never observe a torn/reordered view of the
+    // fields inside a freshly published Snapshot. ValidationError lives INSIDE Snapshot (not a
+    // sibling field) so the two can never be published out of sync with each other.
+    private volatile Snapshot _snapshot;
 
     public ControlCatalog(IEnumerable<IControlActionProvider> providers)
     {
@@ -44,7 +58,7 @@ public sealed class ControlCatalog
 
     public event EventHandler? Changed;
 
-    public string? LastValidationError { get; private set; }
+    public string? LastValidationError => _snapshot.ValidationError;
 
     public IReadOnlyList<ControlAction> Actions => _snapshot.Actions;
 
@@ -168,10 +182,8 @@ public sealed class ControlCatalog
             feedbackFields.AddRange(provider.FeedbackFieldTemplates);
         }
 
-        LastValidationError = validationError;
-
         var byId = actions.ToDictionary(a => a.Id, StringComparer.Ordinal);
-        return new Snapshot(actions, byId, exposureById, feedbackFields);
+        return new Snapshot(actions, byId, exposureById, feedbackFields, validationError);
     }
 
     internal static bool TryCoerce(object raw, ControlParamType type, out object? value)
@@ -235,5 +247,6 @@ public sealed class ControlCatalog
         IReadOnlyList<ControlAction> Actions,
         IReadOnlyDictionary<string, ControlAction> ById,
         IReadOnlyDictionary<string, OscExposure> ExposureById,
-        IReadOnlyList<string> FeedbackFields);
+        IReadOnlyList<string> FeedbackFields,
+        string? ValidationError);
 }
