@@ -58,6 +58,19 @@ public sealed partial class OhgShowViewModelTests
     }
 
     [Fact]
+    public async Task AddSelectedToFirstEmpty_NoSelection_RefusesLocally_NeverInvokes()
+    {
+        var invoker = new FakeOhgActionInvoker();
+        var vm = NewVm(invoker);
+        vm.OnSnapshot(Snapshot(SnapshotA));
+
+        await vm.AddSelectedToFirstEmptyCommand.ExecuteAsync(null);
+
+        Assert.Empty(invoker.Invocations);
+        Assert.Equal("Select a panelist first", vm.LastActionStatus);
+    }
+
+    [Fact]
     public async Task AddSelectedToFirstEmpty_SendsPanelistAdd_OneArg()
     {
         var invoker = new FakeOhgActionInvoker();

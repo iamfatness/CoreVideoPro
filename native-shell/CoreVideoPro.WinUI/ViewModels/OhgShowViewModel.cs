@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CoreVideoPro.Control;
 using CoreVideoPro.ShowEngine;
 using CoreVideoPro.WinUI.Services;
 
@@ -353,7 +354,7 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
     /// operator action shows up in the same strip as an engine-side warn/error log line. Routed
     /// through <see cref="_marshal"/> because the invoker's continuation may resume off the UI
     /// thread.</summary>
-    internal void ReportResult(CoreVideoPro.Control.ControlInvokeResult result)
+    internal void ReportResult(ControlInvokeResult result)
     {
         var status = result.Ok ? "" : (result.Error ?? "Action failed.");
         _marshal(() =>
