@@ -59,7 +59,9 @@ public sealed partial class StudioViewModel
     [RelayCommand] private void ClearGalleryTileOverride() => TryTilesEdit(() => ClearTilesOverride(GallerySelectedMemberId));
     [RelayCommand] private void SetGalleryBackgroundSource() => TryTilesEdit(() => SetTilesBackground(GalleryBackgroundColor, GallerySelectedMemberId));
     [RelayCommand] private void ClearGalleryBackgroundSource() => TryTilesEdit(() => SetTilesBackground(GalleryBackgroundColor, ""));
-    public string GallerySelectedMemberId { get => _gallerySelectedMemberId; set { if (SetProperty(ref _gallerySelectedMemberId, value)) LoadGalleryTileEditor(); } }
+    // SelectedValue can be null while the source list is refreshed during Take.
+    [System.Diagnostics.CodeAnalysis.AllowNull]
+    public string GallerySelectedMemberId { get => _gallerySelectedMemberId; set { if (SetProperty(ref _gallerySelectedMemberId, value ?? string.Empty)) LoadGalleryTileEditor(); } }
     public double GalleryManualSlot { get => _galleryManualSlot; set => SetProperty(ref _galleryManualSlot, double.IsFinite(value) ? Math.Clamp(Math.Round(value), 1, 64) : 1); }
     public IReadOnlyList<GalleryMemberChoice> GalleryMemberChoices => RoomVideoParticipants
         .Select(p => new GalleryMemberChoice(p.Id.Contains(':') ? p.Id : "zoom:" + p.Id, p.Name)).ToList();
