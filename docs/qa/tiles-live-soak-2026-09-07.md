@@ -114,3 +114,12 @@ Private evidence: artifacts/tiles-range-fix/ (build hashes, focused test logs,
 selection results, original recording and visual-review). The stage timing report
 in post-validation identifies participant texture upload/conversion/copy as the
 next performance target; this recording does not establish 60 fps acceptance.
+
+A bounded comparison of the matching tile-1 ISO also found a compression pulse:
+ISO PTS 45.259500 versus neighbors 45.213867/45.282367 had stable-background RGB
+slopes 0.869/0.850/0.865 and offsets 16.48/17.88/14.27. Exact same-frame alignment
+to Program remains ambiguous. This proves the symptom is not exclusive to
+Program composition, but does not distinguish shared ingest from encoder
+conversion. The strongest Program tile-7 pulse could not be compared because
+none of the sampled ISO images matched that source; one ISO was blank at the
+sampled times. Keep this as a separate ISO-mapping investigation.
