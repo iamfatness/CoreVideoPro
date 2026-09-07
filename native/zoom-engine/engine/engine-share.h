@@ -1,4 +1,5 @@
 #pragma once
+#include "i420-range-expand.h"
 
 #include "engine-ipc.h"
 
@@ -88,6 +89,8 @@ private:
     ZOOMSDK::IMeetingShareController *m_share_ctrl = nullptr;
     ZOOMSDK::IZoomSDKRenderer *m_renderer = nullptr;
     mutable std::mutex m_mtx;
+    I420RangeNormalizer m_rangeNormalizer; // guarded by m_mtx
+    uint64_t m_limitedFrames = 0;
     std::unordered_map<std::string, std::unique_ptr<ShareTarget>> m_targets;
     uint32_t m_current_share_source_id = 0;
     uint32_t m_current_share_user_id = 0;

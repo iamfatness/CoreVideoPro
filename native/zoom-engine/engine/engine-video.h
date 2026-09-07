@@ -1,4 +1,5 @@
 #pragma once
+#include "i420-range-expand.h"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -64,6 +65,8 @@ private:
     // unSubscribe()/destroyRenderer(). Checked again under m_targets_mtx.
     std::atomic<bool> m_stopping{false};
     mutable std::mutex m_targets_mtx;
+    I420RangeNormalizer m_rangeNormalizer; // guarded by m_targets_mtx
+    uint64_t m_limitedFrames = 0;
     std::unordered_map<std::string, std::unique_ptr<SourceTarget>> m_targets;
 };
 

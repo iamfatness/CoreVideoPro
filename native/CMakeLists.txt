@@ -656,6 +656,7 @@ if(BUILD_TESTING)
     tests/VstLatencyCompensationTest.cpp
     tests/ZoomFrameReaderTest.cpp
     tests/ZoomEngineClientTest.cpp
+    tests/I420RangeExpandTest.cpp
     tests/ZoomEngineProcessTest.cpp
     tests/ZoomEngineRuntimeTest.cpp
     tests/ZoomEngineStateTest.cpp
