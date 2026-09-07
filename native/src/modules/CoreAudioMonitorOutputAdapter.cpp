@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 // CoreAudio monitor (MON bus) output — the macOS twin of
 // WasapiMonitorOutputAdapter, same pull-model contract
 // (docs/audio-pull-monitor-spec.md): the audio worker PUSHES into the shared
@@ -255,7 +256,7 @@ class CoreAudioMonitorOutput final : public IAudioMonitorOutput {
     if (warnings_.size() > 8) {
       warnings_.erase(warnings_.begin());
     }
-    std::fprintf(stderr, "[coreaudio-monitor] %s\n", message.c_str());
+    ::corevideo::core::nativeLogf("[coreaudio-monitor] %s\n", message.c_str());
   }
 
   AudioUnit unit_ = nullptr;

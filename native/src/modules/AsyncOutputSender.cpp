@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/AsyncOutputSender.h"
 
 #include <algorithm>
@@ -41,7 +42,7 @@ AsyncOutputSender::~AsyncOutputSender() {
       writer_.join();
     }
   } else {
-    std::fprintf(stderr, "[asyncOutput] writer still blocked after %lldms grace; detaching\n",
+    ::corevideo::core::nativeLogf("[asyncOutput] writer still blocked after %lldms grace; detaching\n",
                  static_cast<long long>(options_.shutdownGrace.count()));
     if (writer_.joinable()) {
       writer_.detach();

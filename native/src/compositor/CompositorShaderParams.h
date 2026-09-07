@@ -37,9 +37,15 @@ struct LayerShaderConstants {
   float chromaKeyColor[4];
   // x = similarity, y = smoothness, z = spill suppression, w = unused.
   float chromaKeyParams[4];
+  float tileRect[4]; // pixel center xy, half-size zw
+  float tileShape[4]; // enabled, radius px, inset border px, glow pass
+  float tileBorder[4];
+  float tileGlow[4]; // RGB, intensity
+  float tileFalloff[4]; // extent px, softness * 2
+
 };
 
-static_assert(sizeof(LayerShaderConstants) == 112,
+static_assert(sizeof(LayerShaderConstants) == 192,
               "LayerShaderConstants layout is the GPU wire format shared by the "
               "HLSL cbuffer and the MSL constant struct — do not add padding");
 

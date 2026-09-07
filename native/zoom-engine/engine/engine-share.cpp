@@ -285,6 +285,18 @@ void EngineShare::onRawDataFrameReceived(YUVRawDataI420 *data)
 
     std::lock_guard<std::mutex> lock(m_mtx);
     const uint32_t share_user_id = m_current_share_user_id;
+    const bool limited = data->IsLimitedI420();
+    const auto planes = m_rangeNormalizer.normalize(
+        reinterpret_cast<const uint8_t *>(data->GetYBuffer()),
+        reinterpret_cast<const uint8_t *>(data->GetUBuffer()),
+        reinterpret_cast<const uint8_t *>(data->GetVBuffer()), y_len, limited, kMaxShareShmYLen);
+    if (!planes.y) {
+        EngineIpc::write(R"({"cmd":"debug","stage":"share_frame_exceeds_shm_capacity"})");
+        return;
+    }
+    if (limited && (++m_limitedFrames == 1 || m_limitedFrames % 100 == 0))
+        EngineIpc::write(R"({"cmd":"debug","stage":"share_limited_range_expanded","count":)" +
+                         std::to_string(m_limitedFrames) + "}");
     for (auto &entry : m_targets) {
         const std::string &source_uuid = entry.first;
         ShareTarget &target = *entry.second;
@@ -308,9 +320,9 @@ void EngineShare::onRawDataFrameReceived(YUVRawDataI420 *data)
         hdr->height = h;
         hdr->y_len = static_cast<uint32_t>(y_len);
 
-        std::memcpy(pixels, data->GetYBuffer(), y_len);
-        std::memcpy(pixels + y_len, data->GetUBuffer(), y_len / 4);
-        std::memcpy(pixels + y_len + y_len / 4, data->GetVBuffer(), y_len / 4);
+        std::memcpy(pixels, planes.y, y_len);
+        std::memcpy(pixels + y_len, planes.u, y_len / 4);
+        std::memcpy(pixels + y_len + y_len / 4, planes.v, y_len / 4);
         std::atomic_thread_fence(std::memory_order_release);
         hdr->sequence = seq + 1;
 

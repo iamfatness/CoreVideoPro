@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 // AVFoundation/VideoToolbox recording encoder — the macOS twin of
 // MediaFoundationEncoderAdapter (increment 1: program A+V only; ISO writers,
 // the session subfolder scheme and manifest.json ride increment 2 — see
@@ -734,7 +735,7 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     session_.recordingWarning = warning;
     static std::atomic<int> warnBudget{8};
     if (warnBudget.fetch_sub(1, std::memory_order_relaxed) > 0) {
-      std::fprintf(stderr, "[avf-encoder] %s\n", warning.c_str());
+      ::corevideo::core::nativeLogf("[avf-encoder] %s\n", warning.c_str());
     }
   }
 

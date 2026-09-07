@@ -7,6 +7,42 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ScenePersistenceServiceTests
 {
     [Fact]
+    public void SavedTilesWithoutSettingsRestoresWallDespiteStaleActiveSpeakerRoute()
+    {
+        var preferences = ProductionOutputPreferencesSerializer.Deserialize("""
+            {"Version":11,"CustomScenes":[{"Id":"custom-74d5e390","Name":"CoreVideo Tiles",
+            "Layout":"dynamic-gallery","DynamicGallery":null,
+            "Routes":[{"Id":"stale-route","Mode":"active-speaker","AudioRole":"mix"}]}]}
+            """);
+        var persisted = Assert.Single(preferences!.CustomScenes);
+        var restored = ScenePersistenceService.SceneFromPersisted(persisted);
+        Assert.NotNull(restored.DynamicGallery);
+        Assert.Equal(16, restored.DynamicGallery.MaxTiles);
+        Assert.Equal("Auto-reflow Zoom gallery", restored.Automation);
+        var payload = TilesLayerPayloadBuilder.Build(restored,
+            [new Participant { Id = "42", Name = "Guest", Health = FeedHealth.Live }]);
+        Assert.NotNull(payload);
+        Assert.Equal(["zoom:42"], payload.Members);
+        // Restoration does not mutate the saved DTO or pretend its stale route
+        // is a wall member. Production/preview wire construction suppresses routes
+        // whenever the restored scene has DynamicGallery settings.
+        Assert.Null(persisted.DynamicGallery);
+        Assert.Single(persisted.Routes);
+    }
+
+    [Theory]
+    [InlineData("host-focus")]
+    [InlineData("full")]
+    public void OrdinaryLayoutWithoutGallerySettingsRemainsOrdinary(string layout)
+    {
+        var restored = ScenePersistenceService.SceneFromPersisted(new PersistedScene
+            { Id = "custom-normal", Name = "Normal", Layout = layout });
+        Assert.Null(restored.DynamicGallery);
+        Assert.Equal("Custom canvas", restored.Automation);
+        Assert.Null(TilesLayerPayloadBuilder.Build(restored, []));
+    }
+
+    [Fact]
     public void SceneRoundTripsThroughPersistedDtoAndJson()
     {
         var scene = new Scene
@@ -17,6 +53,9 @@ public sealed class ScenePersistenceServiceTests
             DynamicGallery = new DynamicGallerySettings
             {
                 MaxTiles = 8,
+                AutoFill = false,
+                ManualSlots = ["zoom:42", null, "zoom:99"],
+                ExcludedSourceIds = ["zoom:17"],
                 TileAspect = "4:3",
                 BorderShape = "rounded",
                 BorderColor = "#FF8800",
@@ -66,6 +105,9 @@ public sealed class ScenePersistenceServiceTests
         var restoredGallery = ScenePersistenceService.SceneFromPersisted(restoredScene).DynamicGallery;
         Assert.NotNull(restoredGallery);
         Assert.Equal(8, restoredGallery!.MaxTiles);
+        Assert.False(restoredGallery.AutoFill);
+        Assert.Equal(new string?[] { "zoom:42", null, "zoom:99" }, restoredGallery.ManualSlots);
+        Assert.Equal(new[] { "zoom:17" }, restoredGallery.ExcludedSourceIds);
         Assert.Equal("4:3", restoredGallery.TileAspect);
         Assert.Equal("rounded", restoredGallery.BorderShape);
         Assert.Equal(12, restoredGallery.GlowSize, 3);

@@ -912,7 +912,10 @@ public sealed class MediaCoreCommandBuilderTests
         CustomAspectRatio: 1.25,
         GutterPercent: 6.0,
         MarginPercent: 4.5,
-        BackgroundColor: "#101418");
+        BackgroundColor: "#101418", BorderShape: "rounded", BorderColor: "#123456", BorderThickness: 4,
+        CornerRadius: 22, GlowColor: "#abcdef", GlowSize: 12, GlowIntensity: 75, GlowSoftness: 40,
+        AnimateLayout: true, AnimationDurationMs: 800, FillMode: "manual", BackgroundSourceId: "zoom:bg",
+        Overrides: new Dictionary<string, MediaCoreTilesOverrideWire> { ["zoom:p1"] = new(new(0, 0, .4, 1), 10, 20, 3) });
 
     private static IReadOnlyList<NativeMediaCoreCommand> BuildWithWall(MediaCoreTilesLayerWire? wall) =>
         MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
@@ -944,6 +947,23 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal(6.0, style.GetProperty("gutterPercent").GetDouble());
         Assert.Equal(4.5, style.GetProperty("marginPercent").GetDouble());
         Assert.Equal("#101418", style.GetProperty("backgroundColor").GetString());
+        Assert.Equal("rounded", style.GetProperty("borderShape").GetString());
+        Assert.Equal("#123456", style.GetProperty("borderColor").GetString());
+        Assert.Equal(4, style.GetProperty("borderThickness").GetDouble());
+        Assert.Equal(22, style.GetProperty("cornerRadius").GetDouble());
+        Assert.Equal("#abcdef", style.GetProperty("glowColor").GetString());
+        Assert.Equal(12, style.GetProperty("glowSize").GetDouble());
+        Assert.Equal(75, style.GetProperty("glowIntensity").GetDouble());
+        Assert.Equal(40, style.GetProperty("glowSoftness").GetDouble());
+        Assert.True(style.GetProperty("animateLayout").GetBoolean());
+        Assert.Equal(800, style.GetProperty("animationDurationMs").GetInt32());
+        Assert.Equal("manual", style.GetProperty("fillMode").GetString());
+        Assert.Equal("zoom:bg", style.GetProperty("backgroundSourceId").GetString());
+        var pinned = tiles.GetProperty("overrides").GetProperty("zoom:p1");
+        Assert.Equal(.4, pinned.GetProperty("rect").GetProperty("w").GetDouble());
+        Assert.Equal(10, pinned.GetProperty("cropLeftPercent").GetDouble());
+        Assert.Equal(20, pinned.GetProperty("cropRightPercent").GetDouble());
+        Assert.Equal(3, pinned.GetProperty("z").GetInt32());
     }
 
     [Fact]
@@ -1014,12 +1034,14 @@ public sealed class MediaCoreCommandBuilderTests
         // core's rect defaults (x=0,y=0,w=1,h=1) apply. If a later task adds
         // one, parseTilesLayer reads "w"/"h" here — NOT "width"/"height" like a
         // scene route's rect.
-        Assert.Equal(["layerId", "members", "order", "style"], tilesKeys);
+        Assert.Equal(["layerId", "members", "order", "overrides", "style"], tilesKeys);
 
         var styleKeys = tiles.GetProperty("style").EnumerateObject()
             .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
         Assert.Equal(
-            ["backgroundColor", "customAspectRatio", "gutterPercent", "marginPercent", "tileAspect"],
+            ["animateLayout", "animationDurationMs", "backgroundColor", "backgroundSourceId", "borderColor", "borderShape",
+                "borderThickness", "cornerRadius", "customAspectRatio", "fillMode", "glowColor", "glowIntensity",
+                "glowSize", "glowSoftness", "gutterPercent", "marginPercent", "tileAspect"],
             styleKeys);
     }
 

@@ -12,14 +12,21 @@ recording for anything you cannot repeat.
 2. Extract the entire ZIP into a new writable folder. Keep its DLLs, Assets,
    notices, and other subfolders together. Do not run inside the ZIP or merge it
    over an older installation.
-3. Launch `StartCoreVideo.cmd`. On first launch, it downloads approximately 89 MB
+3. Before using Zoom, install or update the **Microsoft Visual C++ v14
+   Redistributable (x64)** from [Microsoft's official download guidance](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+   Choose the latest supported x64 package; its version must be at least the
+   package's `vcRuntimeVersion` in `build-manifest.json`. The isolated Zoom helper
+   uses this installed runtime. Do not copy CRT DLLs into its SDK folder.
+4. Launch `StartCoreVideo.cmd`. On first launch, it downloads approximately 89 MB
    of a pinned FFmpeg media runtime directly from its upstream GitHub release and
    verifies the archive checksum. Internet access is required for this first step;
    keep the console open until it finishes. It installs only inside the app folder
-   and does not change your system PATH. The package includes .NET and Windows
-   App Runtime and the Visual C++ runtime. This alpha is unsigned, so Windows may show an unknown-publisher
-   warning. Report any startup error with its exact message.
-4. Start with a disposable show and a short local recording. Confirm that you can
+   and does not change your system PATH. The package includes .NET, Windows
+   App Runtime, and an app-local Visual C++ runtime for the shell and native core;
+   this does **not** replace Zoom's installed-runtime prerequisite. This alpha is
+   unsigned. If Windows or the Zoom SDK reports a publisher/security warning or
+   startup error, stop and report its exact text; do not dismiss it to continue testing.
+5. Start with a disposable show and a short local recording. Confirm that you can
    play the completed file with audible sound before trying a meeting.
 
 Use a Windows x64 PC with a working Direct3D 11 GPU and current graphics drivers.

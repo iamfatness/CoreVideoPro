@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include <deque>
 #include <limits>
 #include "modules/Interfaces.h"
@@ -660,8 +661,7 @@ class Mp4Writer {
       // (~every 5s at the 50Hz worker cadence) so it can never hide again.
       ++audioWriteFailureCount_;
       if (audioWriteFailureCount_ == 1 || audioWriteFailureCount_ % 250 == 0) {
-        std::fprintf(stderr,
-                     "[recording] program audio WriteSample FAILED hr=%s stream=%lu (failure %lld) file=%s\n",
+        ::corevideo::core::nativeLogf("[recording] program audio WriteSample FAILED hr=%s stream=%lu (failure %lld) file=%s\n",
                      hresultString(result).c_str(), static_cast<unsigned long>(audioStreamIndex_),
                      static_cast<long long>(audioWriteFailureCount_), path_.string().c_str());
       }
@@ -725,8 +725,7 @@ class Mp4Writer {
     }
 
     const LONGLONG targetEnd100ns = std::max(lastVideoEnd100ns_, lastAudioEnd100ns_);
-    std::fprintf(stderr,
-                 "[recording] reconcile file=%s videoEnd=%.3fs audioEnd=%.3fs "
+    ::corevideo::core::nativeLogf("[recording] reconcile file=%s videoEnd=%.3fs audioEnd=%.3fs "
                  "audioPtsEnd=%.3fs muxAudioSamples=%lld rate=%d target=%.3fs\n",
                  path_.filename().string().c_str(), lastVideoEnd100ns_ / 10'000'000.0,
                  lastAudioEnd100ns_ / 10'000'000.0, maxAudioPtsEnd100ns_ / 10'000'000.0,
@@ -794,8 +793,7 @@ class Mp4Writer {
           }
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
         } while (std::chrono::steady_clock::now() < deadline);
-        std::fprintf(stderr,
-                     "[recording] drain file=%s received=%llu encoded=%llu processed=%llu "
+        ::corevideo::core::nativeLogf("[recording] drain file=%s received=%llu encoded=%llu processed=%llu "
                      "lastReceived=%.3fs lastProcessed=%.3fs\n",
                      path_.filename().string().c_str(),
                      static_cast<unsigned long long>(stats.qwNumSamplesReceived),

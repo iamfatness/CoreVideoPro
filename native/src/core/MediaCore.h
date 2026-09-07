@@ -1,6 +1,7 @@
 #pragma once
 
 #include "compositor/TilesMembership.h"
+#include "compositor/TilesPlanAnimation.h"
 #include "core/Director.h"
 #include "core/RenderedProgramSources.h"
 #include "core/ProgramAudioDelay.h"
@@ -41,6 +42,20 @@ struct TilesStyle {
   double gutterPercent = 0.741;
   double marginPercent = 0.741;
   std::string backgroundColor = "#000000";
+  std::string backgroundSourceId;
+  bool manualFill = false;
+  bool animateLayout = false;
+  int animationDurationMs = 350;
+  modules::TilesDecoration decoration;
+};
+
+struct TilesMemberOverride {
+  bool hasRect = false;
+  modules::CompositorLayerRect rect{0.f, 0.f, 1.f, 1.f};
+  float cropLeftPercent = 0.f;
+  float cropRightPercent = 0.f;
+  bool hasZ = false;
+  int z = 0;
 };
 
 struct TilesLayerState {
@@ -55,6 +70,7 @@ struct TilesLayerState {
   modules::CompositorLayerRect rect{0.f, 0.f, 1.f, 1.f};
   std::vector<std::string> members;   // ordered "zoom:<pid>" / "capture:<id>"
   TilesStyle style;
+  std::map<std::string, TilesMemberOverride> overrides;
 };
 
 class MediaCore {
@@ -434,6 +450,8 @@ class MediaCore {
   // applyPreviewScene. See tilesLayer_ above for why this must be a SEPARATE
   // field rather than shared.
   TilesLayerState previewTilesLayer_;
+  compositor::TilesPlanAnimation programTilesAnimation_;
+  compositor::TilesPlanAnimation previewTilesAnimation_;
   // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
   // every render tick from the live videoFrames gather (renderSyntheticTick,
   // under coreMutex — geometry bookkeeping, not pixel work). Covers members of

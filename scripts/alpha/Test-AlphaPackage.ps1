@@ -14,12 +14,19 @@ try {
         if (-not $name.StartsWith($prefix) -or $name -match '(^|/)\.\.(/|$)') { throw 'Unexpected archive path.' }
         if ($name.EndsWith('/')) { continue }
         $relative = $name.Substring($prefix.Length)
+        if ($relative -in @('sdk.dll','corevideo-zoom-engine.exe')) { throw "Legacy root Zoom component is forbidden: $relative" }
+        if ($relative -match '(?i)^zoom-runtime/windows/x64/bin/(?:.*/)?(?:msvcp[0-9].*|msvcr[0-9].*|vcruntime[0-9].*|concrt[0-9].*|vcomp[0-9].*|ucrtbase|api-ms-win-crt-.*)\.dll$') {
+            throw "App-local CRT is forbidden inside the isolated Zoom SDK: $relative"
+        }
         if ($entries.ContainsKey($relative)) { throw 'Duplicate archive entry.' }
         if ($relative -match '(?i)(^|/)(Recordings|Logs|CrashReports|SupportBundles|runtime-probe[^/]*)(/|$)|-fake\.exe$|-tests\.exe$|\.pdb$|\.dmp$|(^|/)(production-output-preferences|zoom-oauth)|(^|/)(ffmpeg|ffprobe|ffplay)\.exe$|(^|/)(av(codec|format|util|device|filter)|swscale|swresample|postproc)-[0-9]+\.dll$') { throw "Unexpected runtime/development data: $relative" }
         $entries[$relative] = $entry
     }
     foreach ($required in @('CoreVideoPro.WinUI.exe','coreclr.dll','hostfxr.dll','Microsoft.UI.Xaml.dll','Microsoft.WinUI.dll',
-        'corevideo-native.exe','corevideo-zoom-engine.exe','sdk.dll','Assets/AppIcon.ico','README.md',
+        'corevideo-native.exe','zoom-runtime/windows/x64/bin/corevideo-zoom-engine.exe','zoom-runtime/windows/x64/bin/sdk.dll','Assets/AppIcon.ico','README.md',
+        'zoom-runtime/windows/x64/lib/sdk.lib','zoom-runtime/windows/x64/h/zoom_sdk.h',
+        'zoom-runtime/windows/x64/h/meeting_service_interface.h','zoom-runtime/windows/x64/h/rawdata/zoom_rawdata_api.h',
+        'zoom-runtime/windows/x64/h/rawdata/rawdata_renderer_interface.h','zoom-runtime/windows/x64/h/rawdata/rawdata_audio_helper_interface.h',
         'StartCoreVideo.cmd','Install-MediaRuntime.ps1','build-manifest.json',
         'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll')) {
         if (-not $entries.ContainsKey($required)) { throw "Missing package component: $required" }

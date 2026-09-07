@@ -118,6 +118,10 @@ public sealed class Direct3D11InteropService : IDisposable
         }
     }
 
+    private static long s_nextDiagnosticId;
+    private readonly long _diagnosticId = System.Threading.Interlocked.Increment(ref s_nextDiagnosticId);
+    private PresentationStageWatchdog? _stageWatchdog;
+    private bool _presenting;
     private bool _disposed;
     private PresentationPath _path = PresentationPath.Uninitialized;
 
@@ -165,6 +169,16 @@ public sealed class Direct3D11InteropService : IDisposable
 
     public bool TryPresentSharedTexture(SharedTextureHandle handle)
     {
+        if (_disposed || _presenting) return false;
+        _presenting = true;
+        _stageWatchdog ??= new PresentationStageWatchdog((stage, elapsed) =>
+            LaunchLog.Write($"d3d: stalled presentation host={_diagnosticId} stage={stage} elapsedMs={elapsed}"));
+        try { return TryPresentSharedTextureCore(handle); }
+        finally { _stageWatchdog.Mark(null); _presenting = false; }
+    }
+
+    private bool TryPresentSharedTextureCore(SharedTextureHandle handle)
+    {
         if (_disposed ||
             !handle.IsValid ||
             SharedTextureInteropRules.IsStubHandle(handle.NtHandle) ||
@@ -176,6 +190,7 @@ public sealed class Direct3D11InteropService : IDisposable
             return false;
         }
 
+        _stageWatchdog?.Mark("ensure-device");
         if (!EnsureDevice())
         {
             LaunchLog.Write("d3d: present skip — EnsureDevice failed");
@@ -183,6 +198,7 @@ public sealed class Direct3D11InteropService : IDisposable
             return false;
         }
 
+        _stageWatchdog?.Mark("ensure-swap-chain");
         if (!EnsureSwapChain(handle.Width, handle.Height))
         {
             LaunchLog.Write($"d3d: present skip — EnsureSwapChain failed {handle.Width}x{handle.Height}");
@@ -201,6 +217,7 @@ public sealed class Direct3D11InteropService : IDisposable
                 _lastPresentedGeneration = -1;
             }
 
+            _stageWatchdog?.Mark("acquire-ingest");
             var ingest = AcquireIngest(handle);
             if (ingest is null)
             {
@@ -216,6 +233,7 @@ public sealed class Direct3D11InteropService : IDisposable
             // A second host the same vsync sees AcquireSync fail (no newer frame) and simply
             // presents the private copy. So there is exactly ONE keyed-mutex consumer no
             // matter how many hosts show the source -> neither host starves.
+            _stageWatchdog?.Mark("ingest-shared-copy");
             PumpIngest(ingest);
 
             // Skip-present when this host already showed the current frame (idle source):
@@ -238,10 +256,20 @@ public sealed class Direct3D11InteropService : IDisposable
             // Same-device copy from the ingest's private latest-frame texture into our back
             // buffer, then present. No keyed mutex is touched here, so two hosts presenting
             // the same source never contend.
+            _stageWatchdog?.Mark("copy-back-buffer");
             s_sharedContext.CopyResource(_backBuffer, ingest.Private);
-            _swapChain.Present(1, PresentFlags.None);
-            _lastPresentedHandle = handle.NtHandle;
-            _lastPresentedGeneration = ingest.Generation;
+            _stageWatchdog?.Mark("present");
+            var result = _swapChain.Present(1, PresentFlags.DoNotWait);
+            if (!PresentationAttempt.Commit(result.Code, () =>
+                {
+                    _lastPresentedHandle = handle.NtHandle;
+                    _lastPresentedGeneration = ingest.Generation;
+                }))
+            {
+                // Keep the prior GPU image if there is one, without claiming
+                // this newer generation was presented. Retry on the next tick.
+                return _path == PresentationPath.GpuActive;
+            }
             SetPresentationPath(PresentationPath.GpuActive);
             // Present runs only on new frames; log a heartbeat every 120 presents so the
             // launch log shows BOTH hosts' present # advancing when they share a handle.
@@ -417,6 +445,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     public void Dispose()
     {
+        _stageWatchdog?.Dispose();
         if (_disposed)
         {
             return;

@@ -4,6 +4,7 @@ public static class MediaCorePaths
 {
     public const string ZoomSdkDirEnvVar = "ZOOM_SDK_DIR";
     public const string ZoomRuntimeDirEnvVar = "COREVIDEO_ZOOM_RUNTIME_DIR";
+    public const string ZoomEnginePathEnvVar = "COREVIDEO_ZOOM_ENGINE_PATH";
     public const string ZoomOAuthBrokerStartUrlEnvVar = "COREVIDEO_ZOOM_OAUTH_BROKER_START_URL";
     public const string FfmpegBinDirEnvVar = "COREVIDEO_FFMPEG_BIN_DIR";
 
@@ -68,12 +69,31 @@ public static class MediaCorePaths
     {
         var repo = RepoRoot;
         var candidates = BuildZoomEngineExecutableCandidates(repo, AppContext.BaseDirectory);
+        return ResolveZoomEngineExecutable(Environment.GetEnvironmentVariable(ZoomEnginePathEnvVar), candidates, File.Exists);
+    }
 
-        return candidates.FirstOrDefault(File.Exists);
+    public static string? ResolveZoomEngineExecutable(string? explicitPath, IReadOnlyList<string> candidates, Func<string, bool> fileExists)
+    {
+        if (explicitPath is null) return candidates.FirstOrDefault(fileExists);
+
+        // Resolve before the child changes working directory. An explicit choice
+        // must never silently fall back to a different SDK/helper installation.
+        if (string.IsNullOrWhiteSpace(explicitPath))
+            throw new InvalidOperationException($"{ZoomEnginePathEnvVar} is set but does not name an executable file.");
+        string fullPath;
+        try { fullPath = Path.GetFullPath(explicitPath); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new InvalidOperationException($"{ZoomEnginePathEnvVar} contains an invalid executable path.", ex);
+        }
+        if (!fileExists(fullPath))
+            throw new FileNotFoundException($"{ZoomEnginePathEnvVar} points to a missing or inaccessible executable. Correct or unset the override.", fullPath);
+        return fullPath;
     }
 
     public static IReadOnlyList<string> BuildZoomEngineExecutableCandidates(string repoRoot, string appBaseDirectory) =>
     [
+        Path.Combine(appBaseDirectory, "zoom-runtime", "windows", "x64", "bin", "corevideo-zoom-engine.exe"),
         Path.Combine(appBaseDirectory, "corevideo-zoom-engine.exe"),
         Path.Combine(repoRoot, "native", "build-dev", "corevideo-zoom-engine.exe"),
         Path.Combine(repoRoot, "native", "build-dev", "Release", "corevideo-zoom-engine.exe"),
@@ -126,7 +146,7 @@ public static class MediaCorePaths
         var zoomEngine = ResolveZoomEngineExecutable();
         if (!string.IsNullOrWhiteSpace(zoomEngine))
         {
-            env["COREVIDEO_ZOOM_ENGINE_PATH"] = zoomEngine;
+            env[ZoomEnginePathEnvVar] = zoomEngine;
         }
 
         var zoomRuntime = ResolvePackagedZoomRuntimeDirectory();

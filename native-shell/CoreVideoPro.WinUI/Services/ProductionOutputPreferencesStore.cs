@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.WinUI.Services;
@@ -222,6 +223,11 @@ public sealed class PersistedScene
 
 public sealed class PersistedDynamicGallerySettings
 {
+    public string BackgroundColor { get; set; } = "#000000";
+    public string BackgroundSourceId { get; set; } = string.Empty;
+    public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
+    public List<string?> ManualSlots { get; set; } = [];
+    public List<string> ExcludedSourceIds { get; set; } = [];
     public bool AutoFill { get; set; } = true;
     public int MaxTiles { get; set; } = 16;
     public string TileAspect { get; set; } = "16:9";

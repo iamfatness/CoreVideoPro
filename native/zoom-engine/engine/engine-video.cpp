@@ -211,6 +211,20 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
     // Re-check under the lock: the destructor may have set the flag between the
     // early check and this acquisition; past this point it drains behind us.
     if (m_stopping.load(std::memory_order_acquire)) return;
+    // IsLimitedI420 is authoritative per frame even when BT709_F was requested.
+    // Normalize once before fan-out, using scratch protected by the target lock.
+    const bool limited = data->IsLimitedI420();
+    const auto planes = m_rangeNormalizer.normalize(
+        reinterpret_cast<const uint8_t *>(data->GetYBuffer()),
+        reinterpret_cast<const uint8_t *>(data->GetUBuffer()),
+        reinterpret_cast<const uint8_t *>(data->GetVBuffer()), y_len, limited, kMaxVideoShmYLen);
+    if (!planes.y) {
+        EngineIpc::write(R"({"cmd":"debug","stage":"video_frame_exceeds_shm_capacity"})");
+        return;
+    }
+    if (limited && (++m_limitedFrames == 1 || m_limitedFrames % 100 == 0))
+        EngineIpc::write(R"({"cmd":"debug","stage":"video_limited_range_expanded","count":)" +
+                         std::to_string(m_limitedFrames) + "}");
     for (auto &entry : m_targets) {
         const std::string &source_uuid = entry.first;
         SourceTarget &target = *entry.second;
@@ -242,9 +256,9 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
         hdr->height = h;
         hdr->y_len = static_cast<uint32_t>(y_len);
 
-        std::memcpy(pixels,                   data->GetYBuffer(), y_len);
-        std::memcpy(pixels + y_len,           data->GetUBuffer(), y_len / 4);
-        std::memcpy(pixels + y_len + y_len/4, data->GetVBuffer(), y_len / 4);
+        std::memcpy(pixels,                   planes.y, y_len);
+        std::memcpy(pixels + y_len,           planes.u, y_len / 4);
+        std::memcpy(pixels + y_len + y_len/4, planes.v, y_len / 4);
         std::atomic_thread_fence(std::memory_order_release);
         hdr->sequence = seq + 1;
 

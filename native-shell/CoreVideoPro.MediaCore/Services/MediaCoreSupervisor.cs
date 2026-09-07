@@ -38,9 +38,14 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private readonly MediaCoreSupervisorOptions _options;
     private readonly ProgramBufferStartupSettings _programBufferStartup = new();
     private Process? _process;
+    // Process.HasExited can pump STA messages even for a live process. Never
+    // query it while holding _gate: reentered UI bindings can need bridge locks.
+    private bool _processAlive;
+    private int? _lastExitCode;
     private StreamWriter? _stdin;
     private readonly Dictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
     private Timer? _frameDrainTimer;
+    private readonly SingleFlightTimerWork _frameDrainWork = new();
     // Frame/preview/texture handlers run here (off the stdout read loop) so their
     // UI-thread marshaling can never stall reading — which would back up stdout and
     // time out every command response. Drop-oldest: preview is latest-wins.
@@ -100,7 +105,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         {
             lock (_gate)
             {
-                return !_stopped && _process is { HasExited: false };
+                return !_stopped && _process is not null && _processAlive;
             }
         }
     }
@@ -123,7 +128,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         lock (_gate)
         {
             if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
-            if (!_stopped && _process is { HasExited: false })
+            if (!_stopped && _process is not null && _processAlive)
             {
                 if (_profile is not null) return _profile;
             }
@@ -161,6 +166,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             process = _process;
             stdin = _stdin;
             _process = null;
+            _processAlive = false;
             _stdin = null;
             _profile = null;
             _handshakeFailure = null;
@@ -820,6 +826,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private void SpawnChild()
     {
+        _processAlive = false;
         // A profile identifies one native-core generation. Keeping the old value
         // makes HandshakeAsync return before the replacement process is ready and
         // lets recovery traffic race its bootstrap handshake.
@@ -894,6 +901,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         {
             throw new InvalidOperationException("Failed to start media core process.");
         }
+        _processAlive = true;
+        _lastExitCode = null;
 
         var process = _process;
         _stdin = process.StandardInput;
@@ -925,7 +934,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             }
         };
         _process.BeginErrorReadLine();
-        WriteCoreLog($"[bridge] media core process started (pid {(_process.HasExited ? -1 : _process.Id)})");
+        WriteCoreLog($"[bridge] media core process started (pid {_process.Id})");
     }
 
     private void DispatchFrame(Process process, Action action)
@@ -1157,6 +1166,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             rejectedStdin = _stdin;
             _stdin = null;
             _process = null;
+            _processAlive = false;
         }
         // Exit handlers acquire _gate. Dispose outside it, and never auto-restart
         // a child rejected for protocol incompatibility.
@@ -1168,17 +1178,21 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private void OnChildExited(object? sender, EventArgs e)
     {
+        int? exitCode = null;
+        try { if (sender is Process exited) exitCode = exited.ExitCode; } catch { }
         MediaCoreHealth health;
         bool exhausted;
         lock (_gate)
         {
             if (!ReferenceEquals(_process, sender)) return;
+            _processAlive = false;
+            _lastExitCode = exitCode;
             RejectAll(new InvalidOperationException("Media core exited."));
             if (_stopped) return;
 
             _restarts++;
             _recovering = true;
-            RecordCrashEvent(sender as Process, _restarts);
+            RecordCrashEvent(exitCode, _restarts);
             health = Health;
             exhausted = _restarts > _options.MaxRestarts;
             if (exhausted) _process = null;
@@ -1322,7 +1336,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
                 if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
 
-                if (_process is null || _process.HasExited)
+                if (_process is null || !_processAlive)
                 {
                     throw new InvalidOperationException(DescribeChildStartupFailure());
                 }
@@ -1336,7 +1350,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private string DescribeChildStartupFailure()
     {
-        var exitCode = _process?.HasExited == true ? _process.ExitCode.ToString() : "running";
+        var exitCode = _lastExitCode?.ToString() ?? "unavailable";
         return $"Media core exited before handshake completed (exit {exitCode}).";
     }
 
@@ -1385,7 +1399,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         lock (_gate)
         {
             if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
-            if (_stdin is null || _process is null || _process.HasExited)
+            if (_stdin is null || _process is null || !_processAlive)
             {
                 throw new InvalidOperationException("Media core is not running.");
             }
@@ -1477,20 +1491,17 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     {
         StopFrameDrain();
         var interval = Math.Max(1, _options.FrameDrainIntervalMs);
+        var generation = _frameDrainWork.Reset();
         _frameDrainTimer = new Timer(
-            _ =>
+            _ => _ = _frameDrainWork.RunAsync(generation, async () =>
             {
                 if (!Running)
                 {
                     return;
                 }
 
-                _ = PingAsync().ContinueWith(
-                    task => task.Exception,
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted,
-                    TaskScheduler.Default);
-            },
+                try { await PingAsync().ConfigureAwait(false); } catch { /* Heartbeat is best effort. */ }
+            }),
             null,
             interval,
             interval);
@@ -1498,6 +1509,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     private void StopFrameDrain()
     {
+        _frameDrainWork.Reset();
         _frameDrainTimer?.Dispose();
         _frameDrainTimer = null;
     }
@@ -1563,21 +1575,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     /// <summary>
     /// Records a child exit into the bounded crash buffer. Caller must hold <see cref="_gate"/>.
     /// </summary>
-    private void RecordCrashEvent(Process? exited, int restartCount)
+    private void RecordCrashEvent(int? exitCode, int restartCount)
     {
-        int? exitCode = null;
-        try
-        {
-            if (exited is { HasExited: true })
-            {
-                exitCode = exited.ExitCode;
-            }
-        }
-        catch
-        {
-            // Exit code may be unavailable; record as null.
-        }
-
         _crashEvents.AddLast(new MediaCoreCrashEvent
         {
             At = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture),

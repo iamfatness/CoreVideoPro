@@ -8,6 +8,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private readonly object _gate = new();
     private Timer? _pollTimer;
     private Timer? _spineSyncTimer;
+    private readonly SingleFlightTimerWork _pollWork = new();
+    private readonly SingleFlightTimerWork _spineWork = new();
     private double _elapsedMs;
     private NativeMediaCoreStateSnapshot? _lastSnapshot;
     private Func<CancellationToken, Task<Dictionary<string, object?>>>? _spinePayloadFactory;
@@ -473,8 +475,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private void StartPolling()
     {
         StopPolling();
+        var generation = _pollWork.Reset();
         _pollTimer = new Timer(
-            _ => _ = PollLoopAsync(),
+            _ => _ = _pollWork.RunAsync(generation, PollLoopAsync),
             null,
             TimeSpan.FromMilliseconds(250),
             TimeSpan.FromMilliseconds(250));
@@ -483,6 +486,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     private void StopPolling()
     {
+        _pollWork.Reset();
         _pollTimer?.Dispose();
         _pollTimer = null;
     }
@@ -503,7 +507,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             if (_spinePayloadFactory is not null && Running)
             {
                 _spineFactoryCancellation = new CancellationTokenSource();
-                _spineSyncTimer = new Timer(_ => _ = SpineSyncLoopAsync(), null,
+                var generation = _spineWork.Reset();
+                _spineSyncTimer = new Timer(_ => _ = _spineWork.RunAsync(generation, SpineSyncLoopAsync), null,
                     TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
             }
         }
@@ -513,6 +518,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     private void StopSpineSync()
     {
+        _spineWork.Reset();
         CancellationTokenSource? retired;
         lock (_gate)
         {

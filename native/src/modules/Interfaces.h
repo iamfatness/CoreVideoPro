@@ -365,6 +365,19 @@ struct CompositorOverlayContent {
   std::string fontFamily = "Inter";
 };
 
+// Canvas-pixel Tiles decoration; disabled for every ordinary scene layer.
+struct TilesDecoration {
+  bool enabled = false;
+  bool glowPass = false;
+  float borderWidth = 0.f;
+  float radius = 0.f;
+  std::string borderColor = "#000000";
+  float glowSize = 0.f;
+  float glowIntensity = 1.f;
+  float glowSoftness = 0.f;
+  std::string glowColor = "#FFFFFF";
+};
+
 struct CompositorRenderPlanLayer {
   std::string layerId;
   std::string kind;
@@ -379,6 +392,9 @@ struct CompositorRenderPlanLayer {
   std::string borderStyle = "none";
   std::string borderColor = "#44C1A1";
   float borderThickness = 2.f;
+  TilesDecoration tilesDecoration;
+  float sourceCropLeftPercent = 0.f;
+  float sourceCropRightPercent = 0.f;
   float sourceScale = 1.f;
   float sourceOffsetX = 0.f;
   float sourceOffsetY = 0.f;

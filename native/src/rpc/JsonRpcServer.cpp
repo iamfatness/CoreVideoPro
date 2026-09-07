@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
@@ -394,8 +395,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         // write that blocked >200ms in flush(), means the stdout pipe is the
         // bottleneck (slow consumer / frame flood), NOT the core's handler.
         if ((isResponse && sojournMs >= 500) || flushMs >= 200) {
-          std::fprintf(stderr,
-                       "[writer] %s sojourn=%lldms flush=%lldms bytes=%zu hiDepth=%zu loDepth=%zu\n",
+          ::corevideo::core::nativeLogf("[writer] %s sojourn=%lldms flush=%lldms bytes=%zu hiDepth=%zu loDepth=%zu\n",
                        isResponse ? "RESPONSE" : "frame", static_cast<long long>(sojournMs),
                        static_cast<long long>(flushMs), message.size(), hiDepth, loDepth);
         }
@@ -524,8 +524,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           std::chrono::steady_clock::now() - cadenceAnchor).count());
     };
     const auto reportCadence = [&](const char* phase) {
-      std::fprintf(stderr,
-          "[render-deadlines] metricVersion=anchored-deadline-v1 stage=cpu-submission phase=%s elapsedNs=%lld completedSlots=%lld deadlineMisses=%lld skippedSlots=%lld maxLatenessNs=%lld gpuCompletionVerified=0 outputDeliveryVerified=0\n",
+      ::corevideo::core::nativeLogf("[render-deadlines] metricVersion=anchored-deadline-v1 stage=cpu-submission phase=%s elapsedNs=%lld completedSlots=%lld deadlineMisses=%lld skippedSlots=%lld maxLatenessNs=%lld gpuCompletionVerified=0 outputDeliveryVerified=0\n",
           phase, static_cast<long long>(elapsedNs()), static_cast<long long>(cadence.completedSlots()),
           static_cast<long long>(cadence.deadlineMisses()), static_cast<long long>(cadence.skippedSlots()),
           static_cast<long long>(cadence.maximumCompletionLatenessNs()));
@@ -595,7 +594,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto holdLockMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
         const auto holdRenderMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
         if (holdLockMs >= 200 || holdRenderMs >= 200) {
-          std::fprintf(stderr, "[render] STALL lockWait=%lldms render=%lldms\n",
+          ::corevideo::core::nativeLogf("[render] STALL lockWait=%lldms render=%lldms\n",
                        static_cast<long long>(holdLockMs), static_cast<long long>(holdRenderMs));
         }
       }
@@ -612,8 +611,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
         reportCadence("sample");
-        std::fprintf(stderr,
-                     "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
+        ::corevideo::core::nativeLogf("[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
                      "dropped=%lld  worst=%.1fms  (avg/frame over %lld)\n",
                      sec > 0 ? frames / sec : 0.0, lockWaitUs / (frames * 1000.0),
                      renderUs / (frames * 1000.0), drainUs / (frames * 1000.0),
@@ -756,7 +754,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       if (++ticks >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
-        std::fprintf(stderr, "[audioOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+        ::corevideo::core::nativeLogf("[audioOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
                      sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
         ticks = 0;
         workUs = 0;
@@ -769,8 +767,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           deadline = now;  // hopelessly behind: re-anchor (audio WILL be shed)
           ++reanchors;
           if (now - lastReanchorLog > std::chrono::seconds(5)) {
-            std::fprintf(stderr,
-                         "[audioOut] pacer re-anchored %lld time(s): worker >500ms behind, real-time audio shed\n",
+            ::corevideo::core::nativeLogf("[audioOut] pacer re-anchored %lld time(s): worker >500ms behind, real-time audio shed\n",
                          reanchors);
             lastReanchorLog = now;
             reanchors = 0;
@@ -821,7 +818,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
         // `work` here INCLUDES the wait for the next frame, so it tracks the
         // frame interval rather than the cost of a submit.
-        std::fprintf(stderr, "[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+        ::corevideo::core::nativeLogf("[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
                      sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
         ticks = 0;
         workUs = 0;
@@ -957,7 +954,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(h0 - dequeuedAt).count();
         if (heldMs >= 30) {
           const bool lockFree = reqType == "zoom-join" && mediaCore_.zoomEngineConfigured();
-          std::fprintf(stderr, "[cmd] '%s' %s %lldms%s\n", reqType.c_str(),
+          ::corevideo::core::nativeLogf("[cmd] '%s' %s %lldms%s\n", reqType.c_str(),
                        lockFree ? "handled lock-free in" : "held core lock",
                        static_cast<long long>(heldMs), lockFree ? " (render unaffected)" : " (starves render)");
         }
@@ -965,8 +962,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         // waiting for coreMutex + handling. If this is small but the host still
         // times out, the delay is downstream in the writer/pipe (see [writer]).
         if (queueWaitMs + lockWaitMs + heldMs >= 500) {
-          std::fprintf(stderr,
-                       "[req] '%s' queueWait=%lldms lockWait=%lldms handle=%lldms (total in-core=%lldms)\n",
+          ::corevideo::core::nativeLogf("[req] '%s' queueWait=%lldms lockWait=%lldms handle=%lldms (total in-core=%lldms)\n",
                        reqType.c_str(), static_cast<long long>(queueWaitMs),
                        static_cast<long long>(lockWaitMs), static_cast<long long>(heldMs),
                        static_cast<long long>(queueWaitMs + lockWaitMs + heldMs));
@@ -978,7 +974,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto serializeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - serializeStart).count();
         if (serializeMs >= 30) {
-          std::fprintf(stderr, "[response] '%s' serialize=%lldms bytes=%zu (outside core lock)\n",
+          ::corevideo::core::nativeLogf("[response] '%s' serialize=%lldms bytes=%zu (outside core lock)\n",
                        reqType.c_str(), static_cast<long long>(serializeMs), responseStr.size());
         }
         enqueueResponse(responseStr);
@@ -1017,7 +1013,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // Distinguish lock acquisition/drain from serialization/writer queue work.
       if (pumpMs >= 200) {
         const auto drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(drainedAt - p0).count();
-        std::fprintf(stderr, "[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
+        ::corevideo::core::nativeLogf("[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
                      static_cast<long long>(pumpMs), static_cast<long long>(drainMs),
                      static_cast<long long>(pumpMs - drainMs));
       }

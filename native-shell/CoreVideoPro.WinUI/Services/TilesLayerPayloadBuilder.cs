@@ -33,12 +33,12 @@ public static class TilesLayerPayloadBuilder
         // MEMBERSHIP POLICY ONLY. Whether a member actually has frames is the core's
         // decision (compositor::admitTilesMembers) — it is the process receiving them.
         // Deciding it twice is how the two ends drift.
-        var members = roomVideoParticipants
+        var eligible = roomVideoParticipants
             .Where(participant => participant.Health != FeedHealth.VideoOff)
             .Select(participant => QualifySourceId(participant.Id))
             .Distinct(StringComparer.Ordinal)
-            .Take(Math.Clamp(settings.MaxTiles, 1, 64))
             .ToList();
+        var members = TilesMembershipPolicy.Resolve(settings, eligible);
 
         return new TilesLayerPayload(
             LayerId: $"tiles:{scene.Id}",
@@ -49,7 +49,19 @@ public static class TilesLayerPayloadBuilder
                 CustomAspectRatio: settings.CustomAspectRatio,
                 GutterPercent: settings.GutterPercent,
                 MarginPercent: settings.MarginPercent,
-                BackgroundColor: "#000000"));
+                BackgroundColor: SceneRoutingService.NormalizeBorderColor(settings.BackgroundColor),
+                BorderShape: settings.BorderShape == "rounded" ? "rounded" : "square",
+                BorderColor: SceneRoutingService.NormalizeBorderColor(settings.BorderColor),
+                BorderThickness: FiniteClamp(settings.BorderThickness, 0, 32),
+                CornerRadius: FiniteClamp(settings.CornerRadius, 0, 100, 16),
+                GlowColor: SceneRoutingService.NormalizeBorderColor(settings.GlowColor),
+                GlowSize: FiniteClamp(settings.GlowSize, 0, 64),
+                GlowIntensity: FiniteClamp(settings.GlowIntensity, 0, 100, 100),
+                GlowSoftness: FiniteClamp(settings.GlowSoftness, 0, 100),
+                AnimateLayout: settings.AnimateLayout,
+                AnimationDurationMs: Math.Clamp(settings.AnimationDurationMs, 100, 2000), FillMode: settings.AutoFill ? "auto" : "manual",
+                BackgroundSourceId: settings.BackgroundSourceId),
+            Overrides: settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -73,17 +85,23 @@ public static class TilesLayerPayloadBuilder
     /// </summary>
     private static string QualifySourceId(string id) =>
         id.Contains(':') ? id : ShowInputRosterService.ZoomSourceId(id);
+
+    private static double FiniteClamp(double value, double min, double max, double fallback = 0) =>
+        double.IsFinite(value) ? Math.Clamp(value, min, max) : fallback;
 }
 
 public sealed record TilesLayerPayload(
     string LayerId,
     int Order,
     IReadOnlyList<string> Members,
-    TilesStylePayload Style);
+    TilesStylePayload Style, IReadOnlyDictionary<string, TilesMemberOverride>? Overrides = null);
 
 public sealed record TilesStylePayload(
     string TileAspect,
     double CustomAspectRatio,
     double GutterPercent,
     double MarginPercent,
-    string BackgroundColor);
+    string BackgroundColor,
+    string BorderShape = "square", string BorderColor = "#000000", double BorderThickness = 0,
+    double CornerRadius = 16, string GlowColor = "#FFFFFF", double GlowSize = 0,
+    double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto", string BackgroundSourceId = "");

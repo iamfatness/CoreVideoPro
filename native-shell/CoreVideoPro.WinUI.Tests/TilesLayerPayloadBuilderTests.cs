@@ -6,6 +6,32 @@ namespace CoreVideoPro.WinUI.Tests;
 
 public class TilesLayerPayloadBuilderTests
 {
+    [Fact]
+    public void BuildCarriesStylingAndRejectsNonFiniteOrOutOfRangeValues()
+    {
+        var settings = new DynamicGallerySettings { BorderShape = "rounded", BorderColor = "#123456",
+            BorderThickness = 4, CornerRadius = 22, GlowColor = "#abcdef", GlowSize = 12,
+            GlowIntensity = 75, GlowSoftness = 40 };
+        var style = TilesLayerPayloadBuilder.Build(GalleryScene(settings), [Guest("1")])!.Style;
+        Assert.Equal("rounded", style.BorderShape);
+        Assert.Equal("#123456", style.BorderColor);
+        Assert.Equal(4, style.BorderThickness);
+        Assert.Equal(22, style.CornerRadius);
+        Assert.Equal(12, style.GlowSize);
+        Assert.Equal(75, style.GlowIntensity);
+        Assert.Equal(40, style.GlowSoftness);
+        settings.BorderThickness = double.NaN;
+        settings.CornerRadius = -10;
+        settings.GlowSize = 1000;
+        settings.GlowIntensity = double.PositiveInfinity;
+        settings.GlowSoftness = -1;
+        style = TilesLayerPayloadBuilder.Build(GalleryScene(settings), [])!.Style;
+        Assert.Equal(0, style.BorderThickness);
+        Assert.Equal(0, style.CornerRadius);
+        Assert.Equal(64, style.GlowSize);
+        Assert.Equal(100, style.GlowIntensity);
+        Assert.Equal(0, style.GlowSoftness);
+    }
     private static Scene GalleryScene(DynamicGallerySettings? settings = null) => new()
     {
         Id = "scene-1",

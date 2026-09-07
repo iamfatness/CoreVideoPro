@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/UvcCaptureSupport.h"
 
@@ -194,7 +195,7 @@ class UvcCaptureSession {
       error_ = message;
     }
     running_ = false;
-    std::fprintf(stderr, "[uvc-capture] '%s' failed: %s\n", deviceId_.c_str(), message.c_str());
+    ::corevideo::core::nativeLogf("[uvc-capture] '%s' failed: %s\n", deviceId_.c_str(), message.c_str());
   }
 
   // Reads dimensions + color hints from the reader's CURRENT output type.
@@ -506,7 +507,7 @@ class UvcCaptureSession {
       }
       if (!loggedFirstFrame) {
         loggedFirstFrame = true;
-        std::fprintf(stderr, "[uvc-capture] first frame '%s' %dx%d (native MF capture live)\n",
+        ::corevideo::core::nativeLogf("[uvc-capture] first frame '%s' %dx%d (native MF capture live)\n",
                      deviceId_.c_str(), width, height);
       }
     }
@@ -599,7 +600,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       entry.info.connectionState = "connected";
       entry.info.signalPresent = false;
       entry.info.warning = "Waiting for the first camera frame.";
-      std::fprintf(stderr, "[uvc-capture] connect '%s' (%s) frameKey='%s'\n",
+      ::corevideo::core::nativeLogf("[uvc-capture] connect '%s' (%s) frameKey='%s'\n",
                    entry.info.id.c_str(), entry.info.name.c_str(),
                    outputSourceId.empty() ? entry.info.id.c_str() : outputSourceId.c_str());
       break;
@@ -622,7 +623,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       entry.info.connectionState = "detected";
       entry.info.signalPresent = false;
       entry.info.warning.clear();
-      std::fprintf(stderr, "[uvc-capture] disconnect '%s' (%s)\n",
+      ::corevideo::core::nativeLogf("[uvc-capture] disconnect '%s' (%s)\n",
                    entry.info.id.c_str(), entry.info.name.c_str());
       break;
     }

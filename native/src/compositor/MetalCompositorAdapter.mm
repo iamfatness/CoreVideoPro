@@ -1,3 +1,5 @@
+#include "core/BoundedAsyncLog.h"
+#include "compositor/TilesDecorationParams.h"
 // Metal GPU compositor adapter — the macOS twin of D3D11CompositorAdapter.
 //
 // Mirrors the D3D11 adapter's structure deliberately (resolveLayers ->
@@ -411,6 +413,13 @@ class MetalCompositor final : public ICompositor {
                               options:nil
                                 error:&error];
     if (!library) {
+      tilesEffectsAvailable_ = false;
+      NSString* clean = [@"#define COREVIDEO_DISABLE_TILES_EFFECT 1\n" stringByAppendingString:
+          [NSString stringWithUTF8String:kMetalCompositorShaderSource]];
+      library = [device_ newLibraryWithSource:clean options:nil error:&error];
+      if (library) ::corevideo::core::nativeLogf("[tiles] shader effect unavailable; rendering clean tiles.\n");
+    }
+    if (!library) {
       return fail(std::string("shader compile failed: ") +
                   (error ? error.localizedDescription.UTF8String : "no diagnostics"));
     }
@@ -438,7 +447,7 @@ class MetalCompositor final : public ICompositor {
   bool fail(const std::string& why) {
     pipelineFailed_ = true;
     pipelineError_ = why;
-    std::fprintf(stderr, "[compositor] Metal pipeline unavailable: %s\n", why.c_str());
+    ::corevideo::core::nativeLogf("[compositor] Metal pipeline unavailable: %s\n", why.c_str());
     return false;
   }
 
@@ -761,8 +770,7 @@ class MetalCompositor final : public ICompositor {
       }
       available += frame.participantId;
     }
-    std::fprintf(stderr,
-                 "[compositor] layer %s has NO matching frame (available: %s)\n",
+    ::corevideo::core::nativeLogf("[compositor] layer %s has NO matching frame (available: %s)\n",
                  sourceKey.c_str(), available.c_str());
   }
 
@@ -937,6 +945,7 @@ class MetalCompositor final : public ICompositor {
       constants.chromaKeyParams[2] = key.spill;
     }
     applyYuvParams(&constants, yuvShaderParamsForFrame(layer.frame));
+    if (tilesEffectsAvailable_) applyTilesDecoration(constants, layer.plan, targetWidth_, targetHeight_);
     [encoder setFragmentBytes:&constants length:sizeof(constants) atIndex:0];
   }
 
@@ -1093,6 +1102,16 @@ class MetalCompositor final : public ICompositor {
                                      layer.plan.rect.height};
     const float layerAlpha = compositorLayerOpacity(layer.plan);
 
+    if (layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass) {
+      if (!tilesEffectsAvailable_) return;
+      const auto expanded = tilesGlowRect(layer.plan, targetWidth_, targetHeight_);
+      if (layer.plan.hasClipRect)
+        setScissorFromRect(encoder, {layer.plan.clipRect.x, layer.plan.clipRect.y, layer.plan.clipRect.width, layer.plan.clipRect.height});
+      drawSolidQuad(encoder, layer, renderPlan, expanded, 0xffffffffu, layerAlpha);
+      resetScissor(encoder);
+      return;
+    }
+
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
       drawOverlayLayer(encoder, layer, renderPlan, rect, layerAlpha);
       return;
@@ -1117,7 +1136,7 @@ class MetalCompositor final : public ICompositor {
     const auto framing = compositor::computeSourceFraming(sourceWidth, sourceHeight, aspectRect,
                                                           layer.plan.fitMode, layer.plan.sourceScale,
                                                           layer.plan.sourceOffsetX,
-                                                          layer.plan.sourceOffsetY);
+                                                          layer.plan.sourceOffsetY, layer.plan.sourceCropLeftPercent, layer.plan.sourceCropRightPercent);
 
     if (framing.hasLetterbox) {
       drawSolidQuad(encoder, layer, renderPlan, rect, 0xff05080cu, layerAlpha);
@@ -1131,10 +1150,11 @@ class MetalCompositor final : public ICompositor {
                                           rect.y + imageFracY * rect.height, imageFracW * rect.width,
                                           imageFracH * rect.height};
 
+    const auto crop = compositor::sourceCropInterval(layer.plan.sourceCropLeftPercent, layer.plan.sourceCropRightPercent);
     // Main content pass: viewport = full rendered source layer; scissor = slot
     // (or the explicit clipRect for remapped composites).
     setViewportFromRect(encoder, imageRect);
-    setLayerConstants(encoder, layer, renderPlan, layer.color, layerAlpha, 1.f, 1.f, 0.f, 0.f);
+    setLayerConstants(encoder, layer, renderPlan, layer.color, layerAlpha, crop.width, 1.f, crop.left, 0.f);
 
     const bool isI420 = layer.frame != nullptr && layer.frame->hasI420();
     SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame) : nullptr;
@@ -1291,6 +1311,7 @@ class MetalCompositor final : public ICompositor {
   int targetHeight_ = 0;
   bool pipelineReady_ = false;
   bool pipelineFailed_ = false;
+  bool tilesEffectsAvailable_ = true;
   std::string pipelineError_;
   int64_t frameNumber_ = 0;
   uint64_t fullTickCounter_ = 0;
