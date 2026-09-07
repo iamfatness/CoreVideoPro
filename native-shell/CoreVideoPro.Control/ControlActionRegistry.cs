@@ -168,6 +168,10 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("browserId", s, true, "browser:<n>") }),
             new("browser.reload", "Reload browser source", "Reload a browser source's page by id.",
                 new[] { new ControlParam("browserId", s, true, "browser:<n>") }),
+
+            // ---- OHG show engine (shell-owned; the ohg.* actions come from the engine's own
+            // manifest through ControlCatalog, never from this static list) ------------------
+            new("showEngine.restart", "Restart show engine", "Restart the OHG show engine subprocess (used after it gives up, or after a config change)."),
         };
     }
 }

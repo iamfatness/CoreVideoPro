@@ -40,6 +40,9 @@ public interface IOhgHostFacade
 
     /// <summary>Cue <paramref name="sceneId"/> to PREVIEW and, in that scene, point each named
     /// route at the given Show Input slot (<c>null</c> ⇒ the route carries no source).
+    /// A route id ABSENT from <paramref name="routeSlots"/> is left exactly as it was — so an
+    /// EMPTY dictionary cues the scene and rewrites nothing — while a present key with a
+    /// <c>null</c> value explicitly empties that route.
     /// Returns the ids of routes that were REQUESTED but not found in the scene — the caller
     /// reports those; the rest are applied (a partly-wired look is better than none, and a
     /// silent partial application is what this return value exists to prevent).</summary>
