@@ -11,6 +11,32 @@ and mimoLive. All Zoom is 1080p and up to 60fps — never downgrade quality to d
 performance problem; fix the pipeline. CPU per-pixel work does not scale to 8 Zoom + 2
 capture @1080p60 — the compositor path must stay on the GPU.
 
+### Frame-delivery acceptance (user requirement, 2026-09-06)
+
+60 fps is a per-frame output delivery requirement, not an average-FPS target.
+The approved Program buffer is selectable at 2 or 3 frames, default 3, applied
+after app restart. At 60 Hz this adds 33.333 or 50 ms of buffering, with matching
+Program audio delay. A render overrun absorbed by the buffer is diagnostic, not
+an output failure. Any underrun or missed scheduled output deadline fails
+performance acceptance for the tested configuration. The PR #407
+operator soak passed functional checks, but its reported late intervals and
+42 ms worst interval do NOT pass this performance requirement. Never waive a
+frame-rate failure because the average or median is 60 fps. Preserve resolution,
+quality, audio continuity, and enabled outputs while fixing the pipeline.
+
+Measure render cost, GPU readiness by the scheduled presentation deadline, and each enabled output's
+delivery separately. CPU submissions or advancing frame counters alone do not
+prove presentation; duplicated/padded output must not conceal missed rendering.
+Report missing evidence as unverified, and record exact tested hardware, workload,
+duration, and failures. A finite soak cannot establish an unlimited guarantee.
+
+### Test interaction preference (user instruction, 2026-09-07)
+
+Use the local control API and headless test processes to manipulate CoreVideo
+while the user is using the PC. Do not take over the desktop with Computer Use
+unless the user explicitly requests it again. Existing authorization for tests,
+spikes, and soaks in the designated test meeting remains in effect.
+
 ## What this app is
 
 Three processes, not a web app:

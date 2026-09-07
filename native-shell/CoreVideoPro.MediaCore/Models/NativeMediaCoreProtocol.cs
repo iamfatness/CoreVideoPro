@@ -753,6 +753,7 @@ public sealed record NativeMediaCorePreviewScene
 
 public sealed record NativeMediaCoreStateSnapshot
 {
+    public JsonElement? ProgramBuffer { get; init; }
     public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }
     public int RouteCount { get; init; }

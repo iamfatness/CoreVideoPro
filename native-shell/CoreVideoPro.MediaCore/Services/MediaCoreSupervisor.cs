@@ -36,6 +36,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private readonly object _gate = new();
     private readonly SemaphoreSlim _stdinGate = new(1, 1);
     private readonly MediaCoreSupervisorOptions _options;
+    private readonly ProgramBufferStartupSettings _programBufferStartup = new();
     private Process? _process;
     private StreamWriter? _stdin;
     private readonly Dictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
@@ -138,6 +139,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         RaiseHealth();
         StatusChanged?.Invoke("Engine on");
         return profile;
+    }
+
+    public void ConfigureProgramBufferFrames(int frames)
+    {
+        lock (_gate) _programBufferStartup.Configure(frames);
     }
 
     public void Stop()
@@ -835,6 +841,10 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 env[pair.Key] = pair.Value;
             }
         }
+
+        // Apply last so inherited/options environment cannot silently override the
+        // saved app setting. Freeze before the child can start its render worker.
+        _programBufferStartup.ApplyTo(env);
 
         if (_options.Command is not null)
         {

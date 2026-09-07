@@ -70,6 +70,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         }
     }
 
+    public void ConfigureProgramBufferFrames(int frames) => _supervisor.ConfigureProgramBufferFrames(frames);
+
     public async Task<NativeMediaCoreProfile?> StartAsync(CancellationToken cancellationToken = default)
     {
         var profile = await _supervisor.StartAsync(cancellationToken).ConfigureAwait(false);

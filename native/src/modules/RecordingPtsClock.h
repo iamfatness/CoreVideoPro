@@ -17,8 +17,10 @@ namespace corevideo::modules {
 // The two never shared a clock, so recordings drifted A/V apart monotonically
 // for their whole length.
 //
-// This clock anchors BOTH tracks to ONE epoch — the first media submitted
-// after the writers open:
+// This clock anchors BOTH tracks to ONE capture epoch supplied by the recording
+// request. Legacy callers without a boundary use their first media timestamp.
+// Pre-epoch video is discarded; audio blocks crossing the boundary retain only
+// their post-epoch samples. Writer dequeue time never moves the capture epoch:
 //  - video PTS = elapsed wall time at submit; duplicate program frames are
 //    rejected by frameNumber so each composed frame is muxed exactly once, at
 //    the moment it is fresh (variable-frame-rate MP4, correct wall timing);
@@ -29,13 +31,63 @@ namespace corevideo::modules {
 //
 // Pure logic — the caller supplies `now` in 100ns ticks from any steady
 // origin — so the drift behavior is unit-testable without Media Foundation.
+// Select a real scheduled Program frame after writer readiness as the mux
+// origin. The operator request remains distinct diagnostic timing evidence.
+class RecordingStartBoundary {
+ public:
+  void begin(std::int64_t requested, std::int64_t ready) {
+    requested_ = requested; ready_ = ready; epoch_.reset();
+  }
+  bool select(std::int64_t scheduled) {
+    if (epoch_) return scheduled >= *epoch_;
+    if (scheduled < ready_ || (requested_ > 0 && scheduled < requested_)) return false;
+    epoch_ = scheduled; return true;
+  }
+  std::optional<std::int64_t> epoch() const { return epoch_; }
+ private:
+  std::int64_t requested_ = 0, ready_ = 0;
+  std::optional<std::int64_t> epoch_;
+};
+
 class RecordingPtsClock {
  public:
-  void reset() { *this = RecordingPtsClock{}; }
+  void reset(std::int64_t captureEpoch100ns = 0) {
+    *this = RecordingPtsClock{};
+    if (captureEpoch100ns > 0) ensureEpoch(captureEpoch100ns);
+  }
+  bool beforeEpoch(std::int64_t timestamp100ns) const {
+    return hasEpoch_ && timestamp100ns < epoch100ns_;
+  }
+
+  struct AudioBoundary {
+    int skippedFrames = 0;
+    int retainedFrames = 0;
+    std::int64_t timestamp100ns = 0;
+  };
+  // Input timestamps identify the first sample. Round the trim up so no
+  // retained sample predates the boundary, while preserving the valid tail.
+  AudioBoundary trimAudioToEpoch(std::int64_t timestamp100ns, int frameCount, int sampleRate) const {
+    AudioBoundary result{0, frameCount > 0 ? frameCount : 0, timestamp100ns};
+    if (!beforeEpoch(timestamp100ns) || frameCount <= 0 || sampleRate <= 0) return result;
+    const auto distance = epoch100ns_ - timestamp100ns;
+    const auto wholeSeconds = distance / 10'000'000;
+    // Avoid multiplying arbitrarily old timestamps by the sample rate.
+    if (wholeSeconds > frameCount / sampleRate) {
+      result.skippedFrames = frameCount;
+    } else {
+      const auto trim = wholeSeconds * sampleRate +
+          ((distance % 10'000'000) * sampleRate + 9'999'999) / 10'000'000;
+      result.skippedFrames = trim >= frameCount ? frameCount : static_cast<int>(trim);
+    }
+    result.retainedFrames -= result.skippedFrames;
+    result.timestamp100ns += (static_cast<std::int64_t>(result.skippedFrames) * 10'000'000 + sampleRate - 1) / sampleRate;
+    return result;
+  }
 
   // PTS for a program frame, or nullopt when this frameNumber was already
   // muxed (the audio worker re-submits the latest frame every tick).
   std::optional<std::int64_t> videoPts(std::int64_t now100ns, std::int64_t frameNumber) {
+    if (beforeEpoch(now100ns)) return std::nullopt;
     if (hasLastFrameNumber_ && frameNumber == lastFrameNumber_) {
       return std::nullopt;
     }
@@ -63,6 +115,7 @@ class RecordingPtsClock {
   // stream stays strictly monotonic for Media Foundation.
   std::optional<std::int64_t> videoPtsForSource(std::int64_t now100ns, const std::string& sourceId,
                                                 std::int64_t frameId) {
+    if (beforeEpoch(now100ns)) return std::nullopt;
     auto lastFrame = isoLastFrameId_.find(sourceId);
     if (lastFrame != isoLastFrameId_.end() && lastFrame->second == frameId) {
       return std::nullopt;  // this source frame is already in its file
@@ -151,8 +204,13 @@ class RecordingPtsClock {
       const std::int64_t latency100ns = audioLatencySamples_ * 10'000'000LL / rate;
       audioLatencyOffset100ns_ = latency100ns < audioBase100ns_ ? latency100ns : audioBase100ns_;
     }
-    const std::int64_t pts =
-        audioBase100ns_ - audioLatencyOffset100ns_ + audioSamples_ * 10'000'000LL / rate;
+    // Quantize the shared-epoch start once onto the PCM sample lattice.
+    // Combining base + sample count before conversion prevents fractional-base
+    // overlap with the writer's integer-sample leading silence.
+    const auto offset = audioBase100ns_ - audioLatencyOffset100ns_;
+    const auto baseSamples = (offset / 10'000'000) * rate +
+        ((offset % 10'000'000) * rate + 9'999'999) / 10'000'000;
+    const std::int64_t pts = (baseSamples + audioSamples_) * 10'000'000LL / rate;
     audioSamples_ += frameCount > 0 ? frameCount : 0;
     return pts;
   }

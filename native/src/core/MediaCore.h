@@ -3,6 +3,7 @@
 #include "compositor/TilesMembership.h"
 #include "core/Director.h"
 #include "core/RenderedProgramSources.h"
+#include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
 #include "modules/PluginHostClient.h"
@@ -112,7 +113,7 @@ class MediaCore {
   // blocking I/O — driven at ~60fps by the dedicated display worker under
   // coreMutex. Live command batches apply state without rendering; the next
   // display tick publishes the corresponding frame. Audio/output has its own worker.
-  void renderDisplayTick();
+  void renderDisplayTick(int64_t productionSlot = -1, int64_t productionAnchorNs = 0);
 
   // Phase 2 audio/output decouple. The audio mix, routed-bus matrix, monitor
   // device render, BS.1770 loudness, encoder submit, output-sender network sync
@@ -318,7 +319,7 @@ class MediaCore {
   void syncStillMediaDesired();
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
-  void renderSyntheticTick(bool videoOnly = false);
+  void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1);
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
   void enqueueParticipantSharedTextureEvents();
@@ -584,6 +585,8 @@ class MediaCore {
   modules::StreamingTruePeakMeterState programTruePeakMeterR_;
   std::chrono::steady_clock::time_point lastLoudnessCompute_{};
   modules::ProgramFrame lastProgramFrame_;
+  int64_t lastProducedFrameNumber_ = 0;
+  std::string lastProgramTextureIdentity_;
   RenderedProgramSources renderedProgramSources_;
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
   // pre-lock engine poll (see pollZoomAudioUnlocked).
@@ -594,6 +597,7 @@ class MediaCore {
   double encoderStartedAtMs_ = 0;
   double encoderStoppedAtMs_ = 0;
   std::string recordingSessionId_;
+  int64_t recordingCaptureEpoch100ns_ = 0;
   std::string recordingStatus_ = "stopped";
   std::string recordingWriterStatus_ = "stopped";
   std::string recordingTargetFolder_ = "Recordings/CoreVideo Pro/native-core";
@@ -652,6 +656,17 @@ class MediaCore {
   // Destinations the tick last synced. A change must reach the senders even on a
   // tick with no new frame — that is how they get STOPPED.
   std::vector<std::string> lastVideoOutDestinations_;
+  struct ProgramOutputConfiguration {
+    std::vector<std::string> destinations;
+    std::vector<modules::OutputDestinationSettings> settings;
+    bool expectsAudio = false;
+  };
+  // Commands atomically publish owning configuration. Delivery never waits for
+  // a render-held coreMutex, including when propagating Stop.
+  std::atomic<std::shared_ptr<const ProgramOutputConfiguration>> programOutputConfiguration_;
+  void publishProgramOutputConfiguration();
+  std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
+  int64_t lastBufferedDeliverySequence_ = 0;
   // Program-frame publish signal. The render thread bumps the counter and
   // notifies; the video-out tick waits on it instead of polling, so it wakes
   // once per real frame rather than acquiring coreMutex on a timer.
@@ -785,8 +800,12 @@ class MediaCore {
   // ---- Phase 2 audio/output decouple (gather → work → publish) ----
   // Per-tick inputs gathered under `coreMutex` (plain-data copies + freshly polled
   // audio frames + a copy of the current program frame for the encoder/output).
+  ProgramAudioDelay programOutputAudioDelay_;
+  ProgramAudioDelay streamOutputAudioDelay_;
   struct AudioOutputWorkItem {
     bool valid = false;
+    int64_t outputTimestamp100ns = 0;
+    int programBufferFrames = 0;
     int64_t frameIntervalMs = 16;
     std::vector<modules::AudioFrame> audioFrames;
     std::vector<ParticipantAudioChannelInput> channels;

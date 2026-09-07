@@ -166,6 +166,7 @@ public static class NativeMediaCoreStateMapper
 
         return baseSnapshot with
         {
+            ProgramBuffer = wire.ProgramBuffer is { ValueKind: JsonValueKind.Object } programBuffer ? programBuffer.Clone() : null,
             PreviewScene = wire.PreviewScene,
             SceneId = wire.SceneId ?? baseSnapshot.SceneId,
             RouteCount = wire.RouteCount ?? baseSnapshot.RouteCount,

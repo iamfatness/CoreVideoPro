@@ -1,5 +1,7 @@
 #include "modules/Interfaces.h"
 #include "modules/StillMediaFrameCache.h"
+#include "modules/MediaPlaybackTimeline.h"
+#include "modules/OwnedMediaFrameSource.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -20,6 +22,8 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -66,6 +70,72 @@ class ComPtrLite {
     }
   }
   T* value_ = nullptr;
+};
+
+// One outstanding request and one retained result per reader. The callback
+// owns no adapter pointer, so a retired generation cannot touch its successor.
+class MediaReadCallback final : public IMFSourceReaderCallback {
+ public:
+  explicit MediaReadCallback(std::function<void()> wake) : wake_(std::move(wake)) {}
+  STDMETHODIMP QueryInterface(REFIID iid, void** out) override {
+    if (!out) return E_POINTER;
+    *out = nullptr;
+    if (iid == __uuidof(IUnknown) || iid == __uuidof(IMFSourceReaderCallback)) {
+      *out = static_cast<IMFSourceReaderCallback*>(this); AddRef(); return S_OK;
+    }
+    return E_NOINTERFACE;
+  }
+  STDMETHODIMP_(ULONG) AddRef() override { return ++references_; }
+  STDMETHODIMP_(ULONG) Release() override { const auto count = --references_; if (!count) delete this; return count; }
+  STDMETHODIMP OnReadSample(HRESULT status, DWORD, DWORD flags, LONGLONG pts, IMFSample* sample) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (retired_) return S_OK;
+      pending_ = false; ready_ = true; status_ = status; flags_ = flags; pts_ = pts;
+      if (sample) sample->AddRef();
+      *sample_.put() = sample;
+    }
+    if (wake_) wake_(); // No callback mutex held across the worker notification.
+    return S_OK;
+  }
+  STDMETHODIMP OnFlush(DWORD) override { return S_OK; }
+  STDMETHODIMP OnEvent(DWORD, IMFMediaEvent*) override { return S_OK; }
+  void cancel() { std::lock_guard<std::mutex> lock(mutex_); retired_ = true; sample_ = {}; }
+  HRESULT take(IMFSourceReader* reader, DWORD stream, DWORD* flags, LONGLONG* pts, IMFSample** sample) {
+    HRESULT deliveredStatus = S_FALSE;
+    bool delivered = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (retired_) return MF_E_SHUTDOWN;
+      if (ready_) {
+        ready_ = false; *flags = flags_; *pts = pts_;
+        if (sample_) { sample_->AddRef(); *sample = sample_.get(); sample_ = {}; }
+        delivered = true; deliveredStatus = status_;
+        if (FAILED(status_) || (flags_ & MF_SOURCE_READERF_ENDOFSTREAM)) return status_;
+      } else if (pending_) return S_FALSE;
+      pending_ = true;
+    }
+    // Prime the next async request before the caller converts/copies this
+    // sample. Waiting for another worker iteration serializes decode with
+    // polling sleep and can reduce a60fps source to~54fps under load.
+    const auto status = reader->ReadSample(stream, 0, nullptr, nullptr, nullptr, nullptr);
+    if (FAILED(status)) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      pending_ = false;
+      if (delivered && !ready_) { ready_ = true; status_ = status; flags_ = 0; sample_ = {}; }
+    }
+    return delivered ? deliveredStatus : (FAILED(status) ? status : S_FALSE);
+  }
+
+ private:
+  std::function<void()> wake_;
+  std::atomic<ULONG> references_{1};
+  std::mutex mutex_;
+  bool ready_ = false, pending_ = false, retired_ = false;
+  HRESULT status_ = S_OK;
+  DWORD flags_ = 0;
+  LONGLONG pts_ = 0;
+  ComPtrLite<IMFSample> sample_;
 };
 
 std::wstring widenUtf8(const std::string& value) {
@@ -344,7 +414,7 @@ bool copyWicImageToFrame(IWICImagingFactory* factory, const std::string& path, V
   return true;
 }
 
-class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
+class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public IMediaVideoPrefetch {
  public:
   MediaFoundationMediaFrameSource() {
     const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -356,6 +426,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
   }
 
   ~MediaFoundationMediaFrameSource() override {
+    for (auto& [id, state] : states_) cancelReaders(state);
     states_.clear();
     wicFactory_ = {};
     if (mfStarted_) {
@@ -364,6 +435,25 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (comInitialized_) {
       CoUninitialize();
     }
+  }
+
+  void setMediaWakeCallback(std::function<void()> callback) override { mediaWake_ = std::move(callback); }
+
+  std::vector<ScheduledMediaVideo> prefetchMediaVideo(
+      const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
+    prefetchingVideo_ = true;
+    const auto frames = pollMediaFrames(layers, nowMs);
+    prefetchingVideo_ = false;
+    std::vector<ScheduledMediaVideo> result;
+    for (const auto& frame : frames) {
+      const auto found = states_.find(frame.participantId);
+      if (found == states_.end()) continue;
+      const auto& state = found->second;
+      const auto due = state.wasPlaying && !state.ffmpegVideo && !state.imageLoaded
+          ? state.clock.epoch100ns() + state.videoLoopOffset + state.decodedVideoPts : nowMs * 10000;
+      result.push_back({frame, due});
+    }
+    return result;
   }
 
   std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
@@ -429,18 +519,52 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     bool loop = false;
     int64_t frameId = 0;
     VideoFrame lastFrame;
+    ComPtrLite<MediaReadCallback> videoCallback;
     ComPtrLite<IMFSourceReader> reader;
     std::unique_ptr<FfmpegVideoDecoder> ffmpegVideo;
     std::int64_t ffmpegPublishedFrameId = 0;
     std::string videoDecoderError;
+    ComPtrLite<MediaReadCallback> audioCallback;
     ComPtrLite<IMFSourceReader> audioReader;
     bool audioEnded = false;
     std::string audioPlaybackKey;
+    MediaPlaybackTimeline clock;
+    MediaAudioWindows audioWindows;
+    std::string generationIdentity;
+    VideoFrame presentedFrame;
+    bool videoPending = false;
+    int64_t decodedVideoPts = 0, decodedVideoDuration = 0, videoLoopOffset = 0;
+    int64_t decodedAudioPts = 0, audioLoopOffset = 0, audioEndPts = 0;
   };
+
+  static void cancelReaders(AssetState& state) {
+    if (state.videoCallback) state.videoCallback->cancel();
+    if (state.audioCallback) state.audioCallback->cancel();
+    // Readers were created with ASYNC_CALLBACK: Flush cancels outstanding
+    // requests asynchronously. No synchronous ReadSample wait exists to join.
+    if (state.reader) state.reader->Flush(MF_SOURCE_READER_ALL_STREAMS);
+    if (state.audioReader) state.audioReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
+  }
+
+  AssetState& stateFor(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
+    const auto key = mediaFrameSourceId(layer);
+    const auto identity = normalizeMediaPath(layer.mediaAssetPath) + "|" + mediaLayerPlaybackKey(layer) +
+        (layer.mediaAssetPlaying ? "|playing" : "|paused") + (layer.mediaAssetLoop ? "|loop" : "|once");
+    auto& state = states_[key];
+    if (state.generationIdentity != identity) {
+      cancelReaders(state);
+      state = {};
+      state.generationIdentity = identity;
+      state.path = normalizeMediaPath(layer.mediaAssetPath);
+      state.loop = layer.mediaAssetLoop;
+      state.clock.configure(identity, layer.mediaAssetPlaying, timestampMs * 10000);
+    }
+    return state;
+  }
 
   bool decodeLayer(const CompositorRenderPlanLayer& layer, int64_t timestampMs, VideoFrame& frame) {
     const std::string frameSourceId = mediaFrameSourceId(layer);
-    auto& state = states_[frameSourceId];
+    auto& state = stateFor(layer, timestampMs);
     const auto path = normalizeMediaPath(layer.mediaAssetPath);
     if (state.path != path || state.loop != layer.mediaAssetLoop) {
       state = {};
@@ -509,6 +633,8 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       return false;
     }
     if (state.ended && layer.mediaAssetLoop) {
+      state.videoLoopOffset += state.decodedVideoPts + state.decodedVideoDuration;
+      state.videoPending = false;
       // Media Foundation is the fast path for compatible clips but does not
       // have FFmpeg's -stream_loop input option. Reopen at EOS while retaining
       // the last good frame; the replacement decoder can warm without a flash.
@@ -532,17 +658,37 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       }
       return false;
     }
-    if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs)) {
-      return false;
+    if (state.ffmpegVideo) {
+      if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs)) return false;
+      frame = state.lastFrame;
+      return frame.hasPixels();
     }
-    frame = state.lastFrame;
+    if (prefetchingVideo_) {
+      const auto previousId = state.frameId;
+      if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs) || state.frameId == previousId) return false;
+      frame = state.lastFrame;
+      return frame.hasPixels();
+    }
+    // One future sample is enough lookahead. Repeated render polls hold the
+    // current image; irregular polls select by media PTS, not decoder count.
+    for (int decoded = 0; decoded < 4; ++decoded) {
+      if (!state.videoPending) {
+        const auto previousId = state.frameId;
+        if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs) || state.frameId == previousId) break;
+        state.videoPending = true;
+      }
+      if (!state.clock.videoDue(state.videoLoopOffset + state.decodedVideoPts, timestampMs * 10000)) break;
+      state.presentedFrame = state.lastFrame;
+      state.videoPending = false;
+    }
+    frame = state.presentedFrame;
     return frame.hasPixels();
   }
 
   AudioFrame decodeLayerAudio(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
     AudioFrame frame;
     const std::string frameSourceId = mediaFrameSourceId(layer);
-    auto& state = states_[frameSourceId];
+    auto& state = stateFor(layer, timestampMs);
     const auto path = normalizeMediaPath(layer.mediaAssetPath);
     if (state.path != path) {
       state = {};
@@ -555,16 +701,34 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     }
     state.audioWasPlaying = true;
     state.audioPlaybackKey = playbackKey;
+    if (state.audioEnded && state.audioReader && layer.mediaAssetLoop) {
+      state.audioLoopOffset = state.audioEndPts;
+      if (state.audioCallback) state.audioCallback->cancel();
+      state.audioReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
+      state.audioReader = {}; state.audioEnded = false;
+    }
+    if (state.audioEnded && !state.audioReader) return {};
+    currentAudioRequestMs_ = timestampMs;
     if (!state.audioReader && !openAudioReader(path, state)) {
       warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Program audio.");
       return frame;
     }
-    if (state.audioEnded) {
-      return frame;
+    if (!state.audioReader || (state.audioEnded && state.audioWindows.bufferedThrough() <= state.audioWindows.cursor())) return {};
+    constexpr int windowFrames = 960;
+    const auto targetSample = state.clock.elapsed100ns(timestampMs * 10000) * 48000 / 10000000;
+    state.audioWindows.seek(targetSample);
+    for (int chunks = 0; chunks < 8 && !state.audioEnded &&
+         state.audioWindows.bufferedThrough() < state.audioWindows.cursor() + windowFrames; ++chunks) {
+      AudioFrame decoded;
+      if (!readNextAudioFrame(layer.mediaAssetId, state, timestampMs, decoded)) break;
+      state.audioWindows.append(state.decodedAudioPts, std::move(decoded.pcm));
     }
-    if (!readNextAudioFrame(layer.mediaAssetId, state, timestampMs, frame)) {
-      return {};
-    }
+    if (state.audioWindows.bufferedThrough() <= state.audioWindows.cursor() ||
+        (!state.audioEnded && state.audioWindows.bufferedThrough() < state.audioWindows.cursor() + windowFrames)) return {};
+    frame.participantId = frameSourceId;
+    frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = windowFrames;
+    frame.timestampMs = timestampMs; frame.voiceActive = true;
+    frame.pcm = state.audioWindows.take(windowFrames);
     return frame;
   }
 
@@ -578,7 +742,9 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       // Enable Media Foundation video processing so our requested RGB32 output
       // is negotiated through the built-in color converter/scaler.
       ComPtrLite<IMFAttributes> attributes;
-      if (SUCCEEDED(MFCreateAttributes(attributes.put(), 1)) &&
+      *state.videoCallback.put() = new MediaReadCallback(mediaWake_);
+      if (SUCCEEDED(MFCreateAttributes(attributes.put(), 2)) &&
+          SUCCEEDED(attributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, state.videoCallback.get())) &&
           SUCCEEDED(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE)) &&
           SUCCEEDED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), attributes.get(), state.reader.put()))) {
         ComPtrLite<IMFMediaType> mediaType;
@@ -606,8 +772,12 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (!mfStarted_) {
       return false;
     }
+    ComPtrLite<IMFAttributes> attributes;
+    *state.audioCallback.put() = new MediaReadCallback(mediaWake_);
+    if (FAILED(MFCreateAttributes(attributes.put(), 1)) ||
+        FAILED(attributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, state.audioCallback.get()))) return false;
     const HRESULT opened = MFCreateSourceReaderFromURL(
-        widenUtf8(path).c_str(), nullptr, state.audioReader.put());
+        widenUtf8(path).c_str(), attributes.get(), state.audioReader.put());
     if (FAILED(opened)) {
       return false;
     }
@@ -635,6 +805,16 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (FAILED(selected)) {
       state.audioReader = {};
       return false;
+    }
+    const auto audioPts = state.clock.elapsed100ns(currentAudioRequestMs_ * 10000);
+    const auto seekPts = mediaLoopSeek100ns(audioPts, state.audioLoopOffset);
+    if (seekPts > 0) {
+      PROPVARIANT position{}; position.vt = VT_I8;
+      position.hVal.QuadPart = seekPts;
+      if (FAILED(state.audioReader->SetCurrentPosition(GUID_NULL, position))) {
+        warnings_.push_back("Media audio could not seek to its shared playback clock.");
+        return false;
+      }
     }
     return true;
   }
@@ -676,8 +856,8 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     DWORD flags = 0;
     LONGLONG sampleTime = 0;
     ComPtrLite<IMFSample> sample;
-    const HRESULT read = state.reader->ReadSample(
-        MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &streamIndex, &flags, &sampleTime, sample.put());
+    const HRESULT read = state.videoCallback->take(
+        state.reader.get(), MF_SOURCE_READER_FIRST_VIDEO_STREAM, &flags, &sampleTime, sample.put());
     if (FAILED(read)) {
       warnings_.push_back("Media asset " + assetId + " failed while decoding a video frame.");
       return false;
@@ -740,6 +920,9 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     frame.pixelWidth = frame.width;
     frame.pixelHeight = frame.height;
     frame.pixelStride = stride;
+    state.decodedVideoPts = sampleTime;
+    LONGLONG duration = 0; sample->GetSampleDuration(&duration);
+    state.decodedVideoDuration = duration;
     frame.frameId = ++state.frameId;
     frame.pixels = std::move(pixels);
     state.lastFrame = std::move(frame);
@@ -754,8 +937,8 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     DWORD flags = 0;
     LONGLONG sampleTime = 0;
     ComPtrLite<IMFSample> sample;
-    const HRESULT read = state.audioReader->ReadSample(
-        MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &streamIndex, &flags, &sampleTime, sample.put());
+    const HRESULT read = state.audioCallback->take(
+        state.audioReader.get(), MF_SOURCE_READER_FIRST_AUDIO_STREAM, &flags, &sampleTime, sample.put());
     if (FAILED(read)) {
       warnings_.push_back("Media asset " + assetId + " failed while decoding Program audio.");
       return false;
@@ -802,7 +985,8 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     std::memcpy(pcm.data(), data, floatCount * sizeof(float));
     buffer->Unlock();
 
-    frame.participantId = "media";
+    state.decodedAudioPts = sampleTime + state.audioLoopOffset;
+    state.audioEndPts = state.decodedAudioPts + static_cast<int64_t>(floatCount / channels) * 10000000 / sampleRate;
     frame.sampleRate = static_cast<int>(sampleRate);
     frame.channels = static_cast<int>(channels);
     frame.timestampMs = timestampMs;
@@ -812,6 +996,9 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     return frame.sampleCount > 0;
   }
 
+  std::function<void()> mediaWake_;
+  bool prefetchingVideo_ = false;
+  int64_t currentAudioRequestMs_ = 0;
   bool comInitialized_ = false;
   bool mfStarted_ = false;
   ComPtrLite<IWICImagingFactory> wicFactory_;
@@ -822,7 +1009,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
 }  // namespace
 
 std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource() {
-  return std::make_unique<MediaFoundationMediaFrameSource>();
+  return std::make_unique<OwnedMediaFrameSource>([] { return std::make_unique<MediaFoundationMediaFrameSource>(); });
 }
 
 }  // namespace corevideo::modules

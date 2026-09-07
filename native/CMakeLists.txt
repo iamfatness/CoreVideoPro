@@ -596,6 +596,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp
     tests/AsyncEncoderSinkTest.cpp
     tests/AsyncOutputSenderTest.cpp
+    tests/IsolatedOutputSenderTest.cpp
     tests/AudioDspTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
@@ -622,9 +623,15 @@ if(BUILD_TESTING)
     tests/LockHoldGuardrailTest.cpp
     tests/LumaRangeProbeTest.cpp
     tests/MediaFrameSourceCompatibilityTest.cpp
+    tests/MediaPlaybackTimelineTest.cpp
     tests/MultiviewLayoutTest.cpp
+    tests/AnchoredFrameDeadlineTrackerTest.cpp
+    tests/ProgramAudioDelayTest.cpp
+    tests/ProgramPlayoutTimelineTest.cpp
+    tests/D3DProgramBufferTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/MediaCoreBatchSnapshotTest.cpp
+    tests/ProgramBufferIntegrationTest.cpp
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp
     tests/NdiPixelConvertTest.cpp

@@ -28,7 +28,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private const int MaxSrtIngestSources = 8;
     private const double DefaultAudioMonitorVolume = 0.75;
 
-    private readonly MediaCoreBridgeService _bridge = new();
+    private readonly MediaCoreBridgeService _bridge;
     private readonly MediaBinService _mediaBinService = new();
     private readonly CaptureDeviceDiscoveryService _captureDiscovery = new();
     private readonly AudioCaptureDeviceDiscoveryService _audioCaptureDiscovery = new();
@@ -55,7 +55,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
     private string? _lastAudioTelemetrySignature;
     private readonly Dictionary<string, List<string>> _audioProcessingInserts = new(StringComparer.Ordinal);
-    private readonly IProductionOutputPreferencesStore _outputPreferencesStore = CreateProductionOutputPreferencesStore();
+    private readonly IProductionOutputPreferencesStore _outputPreferencesStore;
+    private readonly StudioStartupBootstrap _startupBootstrap;
     private bool _outputPreferencesLoaded;
     private bool _programLowerThirdAutomationSuppressed;
     private bool _applyingStreamingProfile;
@@ -1402,8 +1403,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "Streaming encoder ready."
             : "Streaming encoder not found. Choose the folder containing ffmpeg.exe.";
 
-    public StudioViewModel()
+    public StudioViewModel() : this(StudioStartupBootstrap.Create(CreateProductionOutputPreferencesStore()))
     {
+    }
+
+    private StudioViewModel(StudioStartupBootstrap startup)
+    {
+        _startupBootstrap = startup;
+        _bridge = startup.Bridge;
+        _outputPreferencesStore = startup.Store;
+        _startupProgramBufferFrames = _programBufferFrames = startup.ProgramBufferFrames;
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
         AudioRoutingMatrix.RouteChanged += OnAudioRoutingMatrixChanged;
         AudioRoutingMatrix.BusOutputsChanged += () => _ = TrySyncMediaCoreAsync();
@@ -11221,15 +11230,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
-            var loaded = _outputPreferencesStore is FileProductionOutputPreferencesStore fileStore
-                ? fileStore.LoadWithResult()
-                : new ProductionPreferencesLoadResult(ProductionPreferencesLoadStatus.Loaded, _outputPreferencesStore.Load());
+            var loaded = _startupBootstrap.Loaded;
             ProductionPreferencesWarning = ProductionPreferencesNotice.For(loaded.Status);
-            var preferences = loaded.Preferences;
-            if (preferences is not null)
-            {
-                ApplyProductionOutputPreferences(preferences);
-            }
+            if (_startupBootstrap.LoadError is { } loadError) LaunchLog.WriteException("prefs: startup load failed", loadError);
+            _startupBootstrap.Restore(ApplyProductionOutputPreferences);
         }
         catch (Exception ex)
         {
@@ -11324,6 +11328,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtPassphrase = StreamSrtPassphrase,
             CanvasResolution = CanvasResolution,
             CanvasFps = CanvasFps,
+            ProgramBufferFrames = ProgramBufferFrames,
             LocalAudioSourceEnabled = LocalAudioSourceEnabled,
             SelectedLocalAudioCaptureDeviceId = SelectedLocalAudioCaptureDeviceId,
             AudioMonitoringEnabled = AudioMonitoringEnabled,
@@ -11427,6 +11432,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamSrtPassphrase = preferences.StreamSrtPassphrase ?? StreamSrtPassphrase;
         CanvasResolution = preferences.CanvasResolution ?? CanvasResolution;
         CanvasFps = preferences.CanvasFps ?? CanvasFps;
+        ProgramBufferFrames = preferences.ProgramBufferFrames;
         _localAudioSourceEnabled = preferences.LocalAudioSourceEnabled;
         _selectedLocalAudioCaptureDeviceId = preferences.SelectedLocalAudioCaptureDeviceId ?? SelectedLocalAudioCaptureDeviceId;
         _audioMonitoringEnabled = preferences.AudioMonitoringEnabled;

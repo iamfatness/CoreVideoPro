@@ -258,6 +258,12 @@ void AsyncEncoderSink::submitIsoAudio(const std::vector<IsoSourceAudio>& sources
 }
 
 void AsyncEncoderSink::submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) {
+  submitAudioAt(interleaved, frameCount, channels, sampleRate,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100);
+}
+
+void AsyncEncoderSink::submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                                    int64_t timelineTimestamp100ns) {
   if (!state_->active.load() || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
     return;
   }
@@ -267,6 +273,7 @@ void AsyncEncoderSink::submitAudio(const float* interleaved, int frameCount, int
   item.audioFrameCount = frameCount;
   item.audioChannels = channels;
   item.audioSampleRate = sampleRate;
+  item.audioTimelineTimestamp100ns = timelineTimestamp100ns;
   enqueue(std::move(item));
 }
 
@@ -425,8 +432,8 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           state->inner->submitIsoAudio(item.isoAudioSources);
           break;
         case Kind::Audio:
-          state->inner->submitAudio(item.audioPcm.data(), item.audioFrameCount, item.audioChannels,
-                                    item.audioSampleRate);
+          state->inner->submitAudioAt(item.audioPcm.data(), item.audioFrameCount, item.audioChannels,
+                                    item.audioSampleRate, item.audioTimelineTimestamp100ns);
           break;
         case Kind::StopRecording:
           state->inner->stopRecording();
