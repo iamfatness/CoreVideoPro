@@ -118,13 +118,18 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
     /// remembered so it is re-sent to the next engine generation.</summary>
     public void PublishRoster(IReadOnlyList<ShowEngineParticipant> roster)
     {
+        // Defensive copy: the caller's list must not be able to mutate our re-arm state out from
+        // under us after this call returns (e.g. a caller that reuses/clears the same List<T> on
+        // every roster tick).
+        var snapshot = roster.ToArray();
+
         lock (_gate)
         {
-            _lastRoster = roster;
+            _lastRoster = snapshot;
             _rosterEverPublished = true;
         }
 
-        SendRoster(roster);
+        SendRoster(snapshot);
     }
 
     /// <summary>Send an <c>activeSpeaker</c> request — but ONLY when the id actually changed since the
@@ -244,7 +249,10 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
             previous = _lastActionDefs;
             _lastActionDefs = handshake.Actions;
             _actions = mapped;
-            _feedbackFieldTemplates = handshake.FieldTemplates;
+            // Defensive copy: `handshake.FieldTemplates` is the parser's own list (see
+            // ShowEngineProtocol.TryParseHandshake) — copying it here means nothing outside this
+            // class can mutate what `FeedbackFieldTemplates` reports after the fact.
+            _feedbackFieldTemplates = handshake.FieldTemplates.ToArray();
 
             lastCapacity = _lastCapacity;
             capacityEver = _capacityEverPublished;
@@ -265,7 +273,16 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
 
         RaiseActionsChanged();
 
-        // Re-arm order matters (spec): capacity, then roster, then active speaker.
+        // Re-arm order matters (spec): capacity, then roster, then active speaker. This ordering
+        // relies on two properties of the send path, not on awaiting anything here: (1)
+        // ShowEngineSupervisor.SendAsync acquires its stdin gate (a SemaphoreSlim) SYNCHRONOUSLY
+        // when the gate is free — the write to the child's stdin has already happened by the time
+        // this call returns control to us, before the fire-and-forget Task is even observed; and
+        // (2) SemaphoreSlim releases waiters FIFO, so if the gate is ever briefly contended these
+        // three calls still drain in the order they were issued. Both together are why three
+        // back-to-back non-awaited SendFireAndForget calls land on the wire in call order. Inserting
+        // an `await` before any of these three sends would let the runtime interleave them and
+        // break that ordering — do not add one here.
         if (capacityEver) SendCapacity(lastCapacity);
         if (rosterEver) SendRoster(lastRoster);
         if (lastSpeaker is not null) SendActiveSpeaker(lastSpeaker);

@@ -122,16 +122,30 @@ public sealed class ShowEngineBridgeTests
     [Fact]
     public async Task Invoke_WhenNotRunning_FailsWithTheHealthState_WithoutSending()
     {
+        // "Without sending" can only be proven against a child that EXISTED and could have received
+        // an "invoke" line — a supervisor that was never started has no child to inspect at all. So
+        // this starts the engine (to get a real Child(1) with a real Written log), stops it (Health
+        // reverts to Stopped), and then asserts both the failure message AND that no "invoke" line
+        // ever reached that child.
         var factory = new FakeChildFactory();
+        factory.Configure = child => child.Push(TwoActionHandshake);
+        factory.PreloadHandshake = _ => false;
         var delays = new DelayController();
+        delays.SetImmediate(Options.RequestTimeout, Options.StopGrace);
         using var sup = NewSupervisor(factory, delays);
         using var bridge = new ShowEngineBridge(sup, OscExposure.LoopbackOnly);
 
-        // Never started: Health.State is Stopped.
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Running, "gen 1 running");
+
+        await sup.StopAsync();
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Stopped, "gen 1 to stop");
+
         var result = await bridge.InvokeAsync("ohg.program.cut", Array.Empty<object?>(), CancellationToken.None);
 
         Assert.False(result.Ok);
         Assert.Equal("OHG show engine is stopped", result.Error);
+        Assert.DoesNotContain(factory.Child(1).Written, l => FakeShowEngineChild.TypeOf(l) == "invoke");
     }
 
     [Fact]
@@ -165,7 +179,8 @@ public sealed class ShowEngineBridgeTests
         await WaitUntil(() => factory.Child(2).Written.Count(l => FakeShowEngineChild.TypeOf(l) == "activeSpeaker") == 1,
             "gen 2 to receive the re-armed active speaker");
 
-        var gen2Types = factory.Child(2).Written.Select(FakeShowEngineChild.TypeOf).ToList();
+        var gen2Written = factory.Child(2).Written;
+        var gen2Types = gen2Written.Select(FakeShowEngineChild.TypeOf).ToList();
         var capacityIndex = gen2Types.IndexOf("capacity");
         var rosterIndex = gen2Types.IndexOf("zoomEvent");
         var speakerIndex = gen2Types.IndexOf("activeSpeaker");
@@ -175,6 +190,29 @@ public sealed class ShowEngineBridgeTests
         Assert.True(speakerIndex >= 0, "active speaker was never re-sent to gen 2");
         Assert.True(capacityIndex < rosterIndex, "capacity must precede roster");
         Assert.True(rosterIndex < speakerIndex, "roster must precede active speaker");
+
+        // The exact wire shape, not just "a line of this type appeared": the capacity value and the
+        // full nested zoomEvent/roster/participant payload, field name for field name.
+        using (var capacityDoc = JsonDocument.Parse(gen2Written[capacityIndex]))
+        {
+            Assert.Equal(10, capacityDoc.RootElement.GetProperty("capacity").GetInt32());
+        }
+
+        using (var rosterDoc = JsonDocument.Parse(gen2Written[rosterIndex]))
+        {
+            var evt = rosterDoc.RootElement.GetProperty("event");
+            Assert.Equal("roster", evt.GetProperty("kind").GetString());
+            var participants = evt.GetProperty("participants");
+            Assert.Equal(1, participants.GetArrayLength());
+            var p = participants[0];
+            Assert.Equal("p1", p.GetProperty("participantId").GetString());
+            Assert.Equal("Alice", p.GetProperty("rawName").GetString());
+            Assert.True(p.GetProperty("online").GetBoolean());
+            Assert.True(p.GetProperty("videoOn").GetBoolean());
+            Assert.True(p.GetProperty("audioOn").GetBoolean());
+            Assert.False(p.GetProperty("handRaised").GetBoolean());
+            Assert.Equal(0, p.GetProperty("zoomRole").GetInt32());
+        }
     }
 
     [Fact]
@@ -285,6 +323,38 @@ public sealed class ShowEngineBridgeTests
         await WaitUntil(() => sup.Health.State == ShowEngineState.Failed, "the engine to fail terminally");
         await WaitUntil(() => bridge.Actions.Count == 0, "actions to clear on Failed");
         Assert.Empty(bridge.FeedbackFieldTemplates);
+    }
+
+    [Fact]
+    public async Task BadManifest_ThroughARealHandshake_LeavesActionsEmpty_AndLogsAnError()
+    {
+        // Drives an actually-broken manifest (an unknown param type) through a REAL supervisor
+        // handshake — not a direct call to ToControlActions — so this proves the bridge's own
+        // catch/clear/log/ActionsChanged wiring in OnHandshaken, not just the pure mapper.
+        const string badHandshake =
+            "{\"event\":\"handshake\",\"protocolVersion\":1,\"engineVersion\":\"0.1.0\",\"generation\":1," +
+            "\"actions\":[{\"id\":\"ohg.bad\",\"title\":\"Bad\",\"description\":\"desc\"," +
+            "\"params\":[{\"name\":\"weird\",\"type\":\"vector3\",\"required\":true,\"description\":\"nope\"}]}]," +
+            "\"fieldTemplates\":[\"ohg/look\"],\"snapshot\":{},\"fields\":{}}";
+
+        var factory = new FakeChildFactory { PreloadHandshake = _ => false };
+        factory.Configure = child => child.Push(badHandshake);
+        var delays = new DelayController();
+        using var sup = NewSupervisor(factory, delays);
+        using var bridge = new ShowEngineBridge(sup, OscExposure.LoopbackOnly);
+
+        var errors = new List<string>();
+        bridge.Log += (_, l) => { if (l.Level == "error") lock (errors) errors.Add(l.Message); };
+        var raisedCount = 0;
+        bridge.ActionsChanged += (_, _) => raisedCount++;
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => { lock (errors) return errors.Count > 0; }, "the bad-manifest error log");
+
+        Assert.Empty(bridge.Actions);
+        Assert.Empty(bridge.FeedbackFieldTemplates);
+        Assert.Equal(1, raisedCount);
+        lock (errors) Assert.Contains(errors, e => e.Contains("unknown param type 'vector3' on ohg.bad"));
     }
 
     [Fact]
