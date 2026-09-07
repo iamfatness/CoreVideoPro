@@ -62,6 +62,7 @@ if(MSVC)
 endif()
 
 add_library(corevideo_native
+  src/core/BoundedAsyncLog.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
   src/modules/AsyncEncoderSink.cpp
@@ -621,6 +622,7 @@ if(BUILD_TESTING)
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
+    tests/BoundedAsyncLogTest.cpp
     tests/LumaRangeProbeTest.cpp
     tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MediaPlaybackTimelineTest.cpp

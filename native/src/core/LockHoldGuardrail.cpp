@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "core/LockHoldGuardrail.h"
 
 #include <cstdio>
@@ -69,15 +70,14 @@ bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long
     snapshot = record.stats;
   }
   if (warn) {
-    std::fprintf(stderr,
-                 "[lock-guardrail] coreMutex hold %lldus at '%s' exceeds budget %lldus "
+    ::corevideo::core::nativeLogf("[lock-guardrail] coreMutex hold %lldus at '%s' exceeds budget %lldus "
                  "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)\n",
                  heldUs, site, budgetUs,
                  static_cast<unsigned long long>(snapshot.overBudget),
                  static_cast<unsigned long long>(snapshot.holds), snapshot.worstHeldUs,
                  static_cast<unsigned long long>(suppressed));
     if (strictModeEnabled()) {
-      std::fprintf(stderr, "[lock-guardrail] STRICT mode enabled — aborting on over-budget hold.\n");
+      ::corevideo::core::nativeLogf("[lock-guardrail] STRICT mode enabled — aborting on over-budget hold.\n");
       std::abort();
     }
   }

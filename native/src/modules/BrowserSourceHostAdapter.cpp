@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/BrowserSourceHostAdapter.h"
 
 #include "modules/BrowserSourceShm.h"
@@ -134,7 +135,7 @@ bool BrowserSourceHostAdapter::validateAddRequest(const std::string& url, int wi
 std::string BrowserSourceHostAdapter::addSource(const std::string& url, int width, int height,
                                                 int fps, std::string& error) {
   if (!validateAddRequest(url, width, height, fps, error)) {
-    std::fprintf(stderr, "[browser] REJECTED add: %s\n", error.c_str());
+    ::corevideo::core::nativeLogf("[browser] REJECTED add: %s\n", error.c_str());
     return {};
   }
 
@@ -152,7 +153,7 @@ std::string BrowserSourceHostAdapter::addSource(const std::string& url, int widt
     source.shmName = browsershm::shmName(currentPid(), ordinal);
     sources_.emplace(id, std::move(source));
   }
-  std::fprintf(stderr, "[browser] added %s %dx%d@%d url='%s'\n", id.c_str(), width, height, fps,
+  ::corevideo::core::nativeLogf("[browser] added %s %dx%d@%d url='%s'\n", id.c_str(), width, height, fps,
                url.c_str());
   ensureSupervisorStarted();
   supervisorCv_.notify_all();
@@ -168,7 +169,7 @@ bool BrowserSourceHostAdapter::removeSource(const std::string& id) {
   closeProcessLocked(it->second);
   closeMappingLocked(it->second);
   sources_.erase(it);
-  std::fprintf(stderr, "[browser] removed %s\n", id.c_str());
+  ::corevideo::core::nativeLogf("[browser] removed %s\n", id.c_str());
   return true;
 }
 
@@ -203,7 +204,7 @@ bool BrowserSourceHostAdapter::reloadSource(const std::string& id, std::string& 
       source.lastError.clear();
       needsRespawn = true;
     }
-    std::fprintf(stderr, "[browser] reload %s (%s)\n", id.c_str(),
+    ::corevideo::core::nativeLogf("[browser] reload %s (%s)\n", id.c_str(),
                  reloadedInPlace ? "in-place" : "respawn");
   }
   if (needsRespawn) {
@@ -261,7 +262,7 @@ std::vector<VideoFrame> BrowserSourceHostAdapter::pollVideoFrames(int64_t timest
       auto read = browsershm::readNewFrame(source.view, source.mappedBytes, source.lastSequence);
       if (read.gotNewFrame) {
         if (source.frameId == 0) {
-          std::fprintf(stderr, "[browser] first frame %s %dx%d (compositing real page pixels)\n",
+          ::corevideo::core::nativeLogf("[browser] first frame %s %dx%d (compositing real page pixels)\n",
                        id.c_str(), read.width, read.height);
         }
         ++source.frameId;
@@ -377,8 +378,7 @@ void BrowserSourceHostAdapter::supervisorLoop() {
       closeMappingLocked(source);
       source.policy.onFailure(now);
       source.lastError = "browser host exited (code " + std::to_string(exitCode) + ")";
-      std::fprintf(stderr,
-                   "[browser] WARNING %s host DIED (exit=%lu, failure %d/%d) — %s\n",
+      ::corevideo::core::nativeLogf("[browser] WARNING %s host DIED (exit=%lu, failure %d/%d) — %s\n",
                    id.c_str(), static_cast<unsigned long>(exitCode),
                    source.policy.consecutiveFailures(),
                    BrowserHostRestartPolicy::kMaxConsecutiveFailures,
@@ -455,13 +455,12 @@ void BrowserSourceHostAdapter::supervisorLoop() {
         ++source.restartCount;
         source.lastSequence = 0;
         source.lastMapAttemptMs = 0;
-        std::fprintf(stderr, "[browser] %s host spawned (attempt %d)\n", outcome.id.c_str(),
+        ::corevideo::core::nativeLogf("[browser] %s host spawned (attempt %d)\n", outcome.id.c_str(),
                      source.restartCount);
       } else {
         source.policy.onFailure(commitNow);
         source.lastError = outcome.error;
-        std::fprintf(stderr,
-                     "[browser] WARNING %s host SPAWN FAILED (failure %d/%d): %s — %s\n",
+        ::corevideo::core::nativeLogf("[browser] WARNING %s host SPAWN FAILED (failure %d/%d): %s — %s\n",
                      outcome.id.c_str(), source.policy.consecutiveFailures(),
                      BrowserHostRestartPolicy::kMaxConsecutiveFailures, outcome.error.c_str(),
                      source.policy.gaveUp() ? "GIVING UP; reload the source to retry"
@@ -651,7 +650,7 @@ void BrowserSourceHostAdapter::tryMapLocked(Source& source, int64_t nowMsValue) 
   const void* view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, bytes);
   if (view == nullptr) {
     CloseHandle(handle);
-    std::fprintf(stderr, "[browser] WARNING %s MapViewOfFile('%s') failed (err=%lu)\n",
+    ::corevideo::core::nativeLogf("[browser] WARNING %s MapViewOfFile('%s') failed (err=%lu)\n",
                  source.id.c_str(), source.shmName.c_str(),
                  static_cast<unsigned long>(GetLastError()));
     return;
@@ -659,7 +658,7 @@ void BrowserSourceHostAdapter::tryMapLocked(Source& source, int64_t nowMsValue) 
   source.mappingHandle = handle;
   source.view = static_cast<const uint8_t*>(view);
   source.mappedBytes = bytes;
-  std::fprintf(stderr, "[browser] mapped %s shm='%s' (%dx%d)\n", source.id.c_str(),
+  ::corevideo::core::nativeLogf("[browser] mapped %s shm='%s' (%dx%d)\n", source.id.c_str(),
                source.shmName.c_str(), source.width, source.height);
 #else
   // Read-only shared mapping published by the host process. Retried on the
@@ -673,7 +672,7 @@ void BrowserSourceHostAdapter::tryMapLocked(Source& source, int64_t nowMsValue) 
   void* view = ::mmap(nullptr, bytes, PROT_READ, MAP_SHARED, fd, 0);
   if (view == MAP_FAILED) {
     ::close(fd);
-    std::fprintf(stderr, "[browser] WARNING %s mmap('%s', %zu) failed: %s\n",
+    ::corevideo::core::nativeLogf("[browser] WARNING %s mmap('%s', %zu) failed: %s\n",
                  source.id.c_str(), source.shmName.c_str(), bytes,
                  std::strerror(errno));
     return;
@@ -681,7 +680,7 @@ void BrowserSourceHostAdapter::tryMapLocked(Source& source, int64_t nowMsValue) 
   source.mappingHandle = reinterpret_cast<void*>(static_cast<intptr_t>(fd));
   source.view = static_cast<const uint8_t*>(view);
   source.mappedBytes = bytes;
-  std::fprintf(stderr, "[browser] mapped %s shm='%s' (%dx%d)\n", source.id.c_str(),
+  ::corevideo::core::nativeLogf("[browser] mapped %s shm='%s' (%dx%d)\n", source.id.c_str(),
                source.shmName.c_str(), source.width, source.height);
 #endif
 }

@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
@@ -455,7 +456,7 @@ rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId,
 }
 
 rpc::Json MediaCore::disconnectCaptureDevice(const std::string& deviceId) {
-  std::fprintf(stderr, "[lifecycle] disconnect capture %s\n", deviceId.c_str());
+  ::corevideo::core::nativeLogf("[lifecycle] disconnect capture %s\n", deviceId.c_str());
   return captureDeviceArray(modules_.captureDevice->disconnect(deviceId));
 }
 
@@ -699,6 +700,12 @@ rpc::Json MediaCore::sessionState() const {
       {"displayBusy", static_cast<double>(buffer.displayBusy)},
       {"outputSequenceGaps", static_cast<double>(bufferedOutputSequenceGaps_.load())},
       {"displayPresentationVerified", false}, {"destinationCompletionVerified", false}});
+  const auto logStats = nativeLogStats();
+  state.emplace("nativeDiagnostics", rpc::Json::Object{
+      {"logDropped", static_cast<double>(logStats.dropped)},
+      {"logTruncated", static_cast<double>(logStats.truncated)},
+      {"logSinkFailures", static_cast<double>(logStats.sinkFailures)},
+      {"logQueued", static_cast<double>(logStats.queued)}});
   const auto zoomCapture = zoomSnapshot();
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
@@ -806,7 +813,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
   // and the real-engine paths (the multiview lives in MediaCore, not the Zoom runtime).
   if (const rpc::Json* multiview = payload.get("multiview"); multiview && multiview->isObject()) {
     if (applyMultiviewLayout(*multiview)) {
-      std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources (spine)\n",
+      ::corevideo::core::nativeLogf("[multiview] set-multiview-layout received: %zu sources (spine)\n",
                    multiviewSources_.size());
     }
   }
@@ -818,7 +825,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
   // both the stub and the real-engine paths (the preview bus lives in MediaCore).
   if (const rpc::Json* previewScene = payload.get("previewScene"); previewScene && previewScene->isObject()) {
     if (applyPreviewScene(*previewScene)) {
-      std::fprintf(stderr, "[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
+      ::corevideo::core::nativeLogf("[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
     }
   }
 
@@ -1112,7 +1119,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
                          std::chrono::steady_clock::now() - ci0)
                          .count();
     if (cms >= 10) {
-      std::fprintf(stderr, "[cmd] '%s' %lldms\n", command.getString("type").c_str(),
+      ::corevideo::core::nativeLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
                    static_cast<long long>(cms));
     }
   }
@@ -1139,7 +1146,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   const auto renderMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRender - tCmd1).count();
   const auto stateMs = std::chrono::duration_cast<std::chrono::milliseconds>(tState - tRender).count();
   if (cmdMs + renderMs + stateMs >= 80) {
-    std::fprintf(stderr, "[applyCommands] %zu cmds=%lldms render(%dticks)=%lldms snapshot=%lldms\n",
+    ::corevideo::core::nativeLogf("[applyCommands] %zu cmds=%lldms render(%dticks)=%lldms snapshot=%lldms\n",
                  commands.size(), static_cast<long long>(cmdMs), additionalTicks,
                  static_cast<long long>(renderMs), static_cast<long long>(stateMs));
   }
@@ -1215,7 +1222,7 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setMediaPlayback(command);
   } else if (type == "set-multiview-layout") {
     setMultiviewLayout(command);
-    std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources\n",
+    ::corevideo::core::nativeLogf("[multiview] set-multiview-layout received: %zu sources\n",
                  multiviewSources_.size());
   } else if (type == "configure-multiviewer") {
     configureMultiviewer(command);
@@ -1225,19 +1232,19 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     std::string error;
     (void)addBrowserSource(command, error);
     if (!error.empty()) {
-      std::fprintf(stderr, "[browser] browser-add REJECTED: %s\n", error.c_str());
+      ::corevideo::core::nativeLogf("[browser] browser-add REJECTED: %s\n", error.c_str());
     }
   } else if (type == "browser-remove") {
     std::string error;
     (void)removeBrowserSource(command.getString("browserId"), error);
     if (!error.empty()) {
-      std::fprintf(stderr, "[browser] browser-remove REJECTED: %s\n", error.c_str());
+      ::corevideo::core::nativeLogf("[browser] browser-remove REJECTED: %s\n", error.c_str());
     }
   } else if (type == "browser-reload") {
     std::string error;
     (void)reloadBrowserSource(command.getString("browserId"), error);
     if (!error.empty()) {
-      std::fprintf(stderr, "[browser] browser-reload REJECTED: %s\n", error.c_str());
+      ::corevideo::core::nativeLogf("[browser] browser-reload REJECTED: %s\n", error.c_str());
     }
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
@@ -1937,8 +1944,7 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
       incomingSessionId == recordingSessionId_) {
     static std::map<std::string, std::int64_t> s_dedupLogCount;
     if (s_dedupLogCount[incomingSessionId]++ == 0) {
-      std::fprintf(stderr,
-                   "[recording] start-recording-session '%s' repeated while already "
+      ::corevideo::core::nativeLogf("[recording] start-recording-session '%s' repeated while already "
                    "recording — deduped (the writer keeps its session)\n",
                    incomingSessionId.c_str());
     }
@@ -2180,7 +2186,7 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     if (const auto* v = mastering->get("glueBandMidDb")) params.glueBandMidDb = v->asNumber();
     if (const auto* v = mastering->get("glueBandHighDb")) params.glueBandHighDb = v->asNumber();
     if (params.enabled != masteringParams_.enabled || params.targetLufs != masteringParams_.targetLufs) {
-      std::fprintf(stderr, "[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
+      ::corevideo::core::nativeLogf("[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
                    params.enabled ? 1 : 0, params.targetLufs, params.ceilingDbfs, params.glueAmount,
                    params.maxRideDb);
     }
@@ -2298,12 +2304,12 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   if (on && !virtualCameraEnabled_) {
     virtualCamera_->start(width, height, fps);
     virtualCameraEnabled_ = true;
-    std::fprintf(stderr, "[virtualcam] enable requested %dx%d@%d mirror=%d\n", width, height, fps,
+    ::corevideo::core::nativeLogf("[virtualcam] enable requested %dx%d@%d mirror=%d\n", width, height, fps,
                  mirror ? 1 : 0);
   } else if (!on && virtualCameraEnabled_) {
     virtualCamera_->stop();
     virtualCameraEnabled_ = false;
-    std::fprintf(stderr, "[virtualcam] disable requested\n");
+    ::corevideo::core::nativeLogf("[virtualcam] disable requested\n");
   }
 }
 
@@ -2332,7 +2338,7 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   audioMonitorWarning_.clear();
   // Click-hunt: the operator toggle state was not reaching the adapter -
   // log exactly what each sync carries so UI-vs-core disagreements are visible.
-  std::fprintf(stderr, "[monitor] sync: enabled=%d device=%s volume=%.2f\n",
+  ::corevideo::core::nativeLogf("[monitor] sync: enabled=%d device=%s volume=%.2f\n",
                audioMonitorEnabled_ ? 1 : 0, audioMonitorDeviceName_.c_str(), audioMonitorVolume_);
 
   if (!audioMonitorEnabled_) {
@@ -5000,7 +5006,7 @@ void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnch
   if (++s_displayTickCount % 120 == 0) {
     const auto now = std::chrono::steady_clock::now();
     const double sec = std::chrono::duration<double>(now - s_displayTickStamp).count();
-    std::fprintf(stderr, "[render] displayTick #%lld %.1f fps (content render rate)\n",
+    ::corevideo::core::nativeLogf("[render] displayTick #%lld %.1f fps (content render rate)\n",
                  static_cast<long long>(s_displayTickCount), sec > 0.0 ? 120.0 / sec : 0.0);
     s_displayTickStamp = now;
   }
@@ -5432,7 +5438,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     static bool loggedMultiview = false;
     if (!loggedMultiview) {
       loggedMultiview = true;
-      std::fprintf(stderr, "[multiview] composite: sources=%zu layers=%zu handle='%s' %dx%d\n",
+      ::corevideo::core::nativeLogf("[multiview] composite: sources=%zu layers=%zu handle='%s' %dx%d\n",
                    multiviewSources_.size(), multiviewPlan.layers.size(),
                    lastProgramFrame_.multiviewSharedTexture.sharedHandleHex.c_str(),
                    multiviewPlan.width, multiviewPlan.height);
@@ -5476,7 +5482,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     static bool loggedPreview = false;
     if (!loggedPreview) {
       loggedPreview = true;
-      std::fprintf(stderr, "[preview] composite: routes=%d layers=%zu handle='%s' %dx%d\n",
+      ::corevideo::core::nativeLogf("[preview] composite: routes=%d layers=%zu handle='%s' %dx%d\n",
                    previewRouteCount_, previewPlan.layers.size(),
                    lastProgramFrame_.previewSharedTexture.sharedHandleHex.c_str(),
                    previewPlan.width, previewPlan.height);
@@ -5493,8 +5499,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (videoOnly && ++s_stageTicks >= 120) {
     const auto buffer = modules_.compositor->programBufferDiagnostics();
     if (buffer.activeFrames > 0 || buffer.status == "failed") {
-      std::fprintf(stderr,
-          "[program-buffer] status=%s depth=%d occupancy=%d produced=%llu delivered=%llu underruns=%llu overflows=%llu gpuNotReady=%llu deadlineMisses=%llu displayUnconsumed=%llu displayBusy=%llu outputSequenceGaps=%llu presentationVerified=0 destinationCompletionVerified=0\n",
+      ::corevideo::core::nativeLogf("[program-buffer] status=%s depth=%d occupancy=%d produced=%llu delivered=%llu underruns=%llu overflows=%llu gpuNotReady=%llu deadlineMisses=%llu displayUnconsumed=%llu displayBusy=%llu outputSequenceGaps=%llu presentationVerified=0 destinationCompletionVerified=0\n",
           buffer.status.c_str(), buffer.activeFrames, buffer.occupancy,
           static_cast<unsigned long long>(buffer.produced), static_cast<unsigned long long>(buffer.delivered),
           static_cast<unsigned long long>(buffer.underruns), static_cast<unsigned long long>(buffer.overflows),
@@ -5511,8 +5516,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // stage total and break it out beside it.
     const int64_t ingestTotalUs =
         s_stageIngestUs + s_subFetchUs + s_subStoreUs + s_subTapUs + s_subPollUs + s_subMergeUs;
-    std::fprintf(stderr,
-                 "[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
+    ::corevideo::core::nativeLogf("[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
                  "plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
                  "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
                  ingestTotalUs / (s_stageTicks * 1000.0),
@@ -5565,8 +5569,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     for (const auto stageUs : tickStages) totalUs += stageUs;
     if (totalUs > peakUs) { peakUs = totalUs; peakStages = tickStages; }
     if (++windowTicks >= 120) {
-      std::fprintf(stderr,
-          "[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
+      ::corevideo::core::nativeLogf("[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
           peakUs / 1000.0, peakStages[0] / 1000.0, peakStages[1] / 1000.0,
           peakStages[2] / 1000.0, peakStages[3] / 1000.0, peakStages[4] / 1000.0, peakStages[5] / 1000.0);
       peakUs = 0;
@@ -5773,7 +5776,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   const auto tMix0 = std::chrono::steady_clock::now();
   results.mixedFrameCount = modules_.mixer->mix(work.audioFrames);
   const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
-  if (mixMs >= 30) std::fprintf(stderr, "[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
+  if (mixMs >= 30) ::corevideo::core::nativeLogf("[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
 
   // A3 (latency compensation, owner decision: COMPENSATE): the active
   // plugin's reported latency, valid only while the host is genuinely
@@ -5842,7 +5845,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           source.insertSettings = &channel.insertSettings;  // C5b params
           source.dspState = &channelDspStates_[frame.participantId];  // C7c continuity
           if (debugDir != nullptr) {
-            std::fprintf(stderr, "[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
+            ::corevideo::core::nativeLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
                          frame.participantId.c_str(), static_cast<void*>(source.dspState),
                          source.dspState->gateEnvelope, source.dspState->gateGain,
                          source.dspState->gateHoldRemaining);
@@ -5875,8 +5878,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         static std::map<std::string, std::int64_t> s_lastWarn;
         auto& warned = s_lastWarn[frame.participantId];
         if (warned++ % 250 == 0) {  // ~every 5s at 50Hz, first occurrence immediately
-          std::fprintf(stderr,
-                       "[audio] FADER LAW: routed source '%s' has NO channel strip — "
+          ::corevideo::core::nativeLogf("[audio] FADER LAW: routed source '%s' has NO channel strip — "
                        "dropped from the bus mix (add a fader to make it audible)\n",
                        frame.participantId.c_str());
         }
@@ -6018,7 +6020,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         // this the chain was inaudible at the monitor - owner-reported).
         static int s_masteringLogTick = 0;
         if (++s_masteringLogTick % 250 == 1) {
-          std::fprintf(stderr, "[mastering] ride=%.2fdB avg=%.1fLUFS target=%.1f\n",
+          ::corevideo::core::nativeLogf("[mastering] ride=%.2fdB avg=%.1fLUFS target=%.1f\n",
                        results.masteringRideDb, masteringState_.loudnessAvgLufs,
                        work.masteringParams.targetLufs);
         }
@@ -6056,7 +6058,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                            std::chrono::steady_clock::now() - tBic0)
                            .count();
     if (bicMs >= 20) {
-      std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
+      ::corevideo::core::nativeLogf("[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
     }
     if (debugDir != nullptr) {
       const auto monTap = results.routedBusPcm.find("mon");
@@ -6074,7 +6076,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
     }
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
-    if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
+    if (mrbMs >= 20) ::corevideo::core::nativeLogf("[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
   }
 
   // LOCAL bus tap lookups over the freshly-mixed routedBusPcm (NOT the published member).
@@ -6305,7 +6307,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                              std::chrono::steady_clock::now() - tOut0)
                              .count();
       if (outMs >= 20) {
-        std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
+        ::corevideo::core::nativeLogf("[outputSender] sync %lldms dests=%zu\n",
                      static_cast<long long>(outMs), outputDestinations.size());
       }
     } catch (const std::exception& ex) {
@@ -6427,7 +6429,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
       // recording warning. Log once per distinct warning — this is the loud
       // half of the guarantee that a video-only recording cannot look healthy.
       recordingWarning_ = results.recordingWarning;
-      std::fprintf(stderr, "[recording] warning: %s\n", recordingWarning_.c_str());
+      ::corevideo::core::nativeLogf("[recording] warning: %s\n", recordingWarning_.c_str());
     }
   }
 }
@@ -6739,8 +6741,7 @@ void MediaCore::ensurePluginHostServeStarted() {
     allowed = pluginHostRespawnPolicy_.requestStart(pluginHostSteadyNowMs());
     if (!allowed && pluginHostRespawnPolicy_.gaveUp() && !pluginHostGaveUpAnnounced_) {
       pluginHostGaveUpAnnounced_ = true;
-      std::fprintf(stderr,
-                   "[plugin-host] serve respawn GAVE UP after %d consecutive failures; VST inserts "
+      ::corevideo::core::nativeLogf("[plugin-host] serve respawn GAVE UP after %d consecutive failures; VST inserts "
                    "stay BYPASSED (audio unprocessed) until the plug-in is re-selected\n",
                    pluginHostRespawnPolicy_.consecutiveFailures());
     }
@@ -6763,7 +6764,7 @@ void MediaCore::ensurePluginHostServeStarted() {
       pluginHostRespawnPolicy_.onLaunchResult(pluginHostSteadyNowMs(), launched);
     }
     if (!launched) {
-      std::fprintf(stderr, "[plugin-host] serve launch FAILED (%s)\n",
+      ::corevideo::core::nativeLogf("[plugin-host] serve launch FAILED (%s)\n",
                    exePath.empty() ? "corevideo-plugin-host.exe not found" : exePath.c_str());
     } else {
       // A2: every fresh host generation (first launch AND respawns) gets the
@@ -6878,7 +6879,7 @@ void MediaCore::setVstInsertState(const rpc::Json& command) {
   if (blob.empty() && !stateBase64.empty()) {
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
     pluginHostInsertError_ = "saved state for '" + query + "' is not valid base64; restore skipped";
-    std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+    ::corevideo::core::nativeLogf("[plugin-host] %s\n", pluginHostInsertError_.c_str());
     return;
   }
   {
@@ -6928,7 +6929,7 @@ void MediaCore::injectPendingVstStates() {
       // silent default state.
       std::lock_guard<std::mutex> lock(pluginHostMutex_);
       pluginHostInsertError_ = "saved state restore for '" + entry.query + "' failed: " + error;
-      std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+      ::corevideo::core::nativeLogf("[plugin-host] %s\n", pluginHostInsertError_.c_str());
     }
   }
 }
@@ -6964,7 +6965,7 @@ VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query
     // Rate-capped (~5s at the 50Hz worker): loud, not spammy.
     static std::atomic<int> s_resolveLogTick{0};
     if (s_resolveLogTick.fetch_add(1, std::memory_order_relaxed) % 250 == 0) {
-      std::fprintf(stderr, "[plugin-host] vst insert BYPASSED: %s\n", selection.error.c_str());
+      ::corevideo::core::nativeLogf("[plugin-host] vst insert BYPASSED: %s\n", selection.error.c_str());
     }
   }
   return selection;

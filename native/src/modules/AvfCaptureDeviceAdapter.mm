@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 // AVFoundation camera capture — the macOS twin of UvcCaptureDeviceAdapter.
 // Same contract: enumerate cheap+throttled, connect() creates a per-device
 // session that delivers I420 VideoFrames keyed `capture:<outputSourceId ?:
@@ -240,8 +241,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
       for (auto& [retryId, retryEntry] : shared_->devices) {
         if (retryEntry.pendingPermission) {
           retryEntry.pendingPermission = false;
-          std::fprintf(stderr,
-                       "[avf-capture] permission granted — reconnecting '%s'\n",
+          ::corevideo::core::nativeLogf("[avf-capture] permission granted — reconnecting '%s'\n",
                        retryEntry.info.name.c_str());
           startSessionLocked(retryEntry);
         }
@@ -283,7 +283,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
           entry.state->error = error;
         }
         stopSessionRuntimeLocked(entry);
-        std::fprintf(stderr, "[avf-capture] %s\n", error.c_str());
+        ::corevideo::core::nativeLogf("[avf-capture] %s\n", error.c_str());
       }
       if (!error.empty()) {
         entry.info.connectionState = "error";
@@ -322,7 +322,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
           frames.push_back(std::move(frame));
           if (!entry.stallLogged) {
             entry.stallLogged = true;
-            std::fprintf(stderr, "[avf-capture] '%s' STALLED (no new frame for %llds)\n",
+            ::corevideo::core::nativeLogf("[avf-capture] '%s' STALLED (no new frame for %llds)\n",
                          entry.info.name.c_str(),
                          static_cast<long long>(stalledMs / 1000));
           }
@@ -437,7 +437,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
       entry.info.warning =
           "Camera access is denied for CoreVideo Pro. Grant it in System "
           "Settings > Privacy & Security > Camera, then reconnect.";
-      std::fprintf(stderr, "[avf-capture] camera permission DENIED for '%s'\n",
+      ::corevideo::core::nativeLogf("[avf-capture] camera permission DENIED for '%s'\n",
                    entry.info.name.c_str());
       return;
     }
@@ -450,7 +450,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
       auto shared = shared_;
       [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
                                completionHandler:^(BOOL granted) {
-        std::fprintf(stderr, "[avf-capture] camera permission %s\n",
+        ::corevideo::core::nativeLogf("[avf-capture] camera permission %s\n",
                      granted ? "granted" : "denied");
         if (granted) {
           shared->retryAfterPermission.store(true);
@@ -460,7 +460,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
       entry.info.connectionState = "error";
       entry.info.warning =
           "Waiting for camera permission — approve the macOS prompt.";
-      std::fprintf(stderr, "[avf-capture] camera permission requested for '%s'\n",
+      ::corevideo::core::nativeLogf("[avf-capture] camera permission requested for '%s'\n",
                    entry.info.name.c_str());
       return;
     }
@@ -480,7 +480,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
       entry.info.warning = std::string("Camera access failed: ") +
                            (error ? error.localizedDescription.UTF8String
                                   : "no diagnostics (camera permission denied?)");
-      std::fprintf(stderr, "[avf-capture] %s (%s)\n", entry.info.warning.c_str(),
+      ::corevideo::core::nativeLogf("[avf-capture] %s (%s)\n", entry.info.warning.c_str(),
                    entry.info.name.c_str());
       return;
     }
@@ -519,7 +519,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
     entry.info.connectionState = "connected";
     entry.info.signalPresent = false;
     entry.info.warning = "Waiting for the first camera frame.";
-    std::fprintf(stderr, "[avf-capture] connected '%s' frameKey=capture:%s\n",
+    ::corevideo::core::nativeLogf("[avf-capture] connected '%s' frameKey=capture:%s\n",
                  entry.info.name.c_str(),
                  (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId).c_str());
   }

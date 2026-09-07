@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
@@ -929,7 +930,7 @@ class RtmpOutputSender final : public IOutputSender {
       // silent here, and a sudden run of misses is the signal worth seeing.
       if (std::chrono::duration<double>(now - s_stamp).count() >= 3.0) {
         if (s_full != s_total) {
-          std::fprintf(stderr, "[rtmp] full-res tap missed %lld of %lld ticks\n",
+          ::corevideo::core::nativeLogf("[rtmp] full-res tap missed %lld of %lld ticks\n",
                        s_total - s_full, s_total);
         }
         s_full = 0; s_total = 0; s_stamp = now;
@@ -1329,7 +1330,7 @@ class RtmpOutputSender final : public IOutputSender {
       static bool s_loggedArgs = false;
       if (!s_loggedArgs) {
         s_loggedArgs = true;
-        std::fprintf(stderr, "[rtmp] ffmpeg %s\n", argString.c_str());
+        ::corevideo::core::nativeLogf("[rtmp] ffmpeg %s\n", argString.c_str());
       }
     }
     std::vector<std::string> tokens = tokenizeArguments(argString);
@@ -1451,8 +1452,7 @@ class RtmpOutputSender final : public IOutputSender {
         const auto fmt = videoPixelFormat(frame);
         const size_t expected = static_cast<size_t>(w) * static_cast<size_t>(h) *
                                 (fmt == "nv12" ? 3u : 8u) / 2u;
-        std::fprintf(stderr,
-                     "[rtmp] first video write: declared %dx%d %s -> expected %zu bytes, "
+        ::corevideo::core::nativeLogf("[rtmp] first video write: declared %dx%d %s -> expected %zu bytes, "
                      "actual %zu bytes (source=%s)%s\n",
                      w, h, fmt.c_str(), expected, videoBytes.size(),
                      hasProgramNv12(frame) ? "programNv12"

@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/StillMediaFrameCache.h"
 
 #include "modules/ImageResize.h"
@@ -356,7 +357,7 @@ void StillMediaFrameCache::warnRateLimitedLocked(const std::string& key, const s
     return;
   }
   last = now;
-  std::fprintf(stderr, "[still-media] %s\n", message.c_str());
+  ::corevideo::core::nativeLogf("[still-media] %s\n", message.c_str());
 }
 
 void StillMediaFrameCache::enforceBudgetLocked() {
@@ -385,8 +386,7 @@ void StillMediaFrameCache::enforceBudgetLocked() {
       return;
     }
     cacheBytes_ -= std::min(cacheBytes_, victim->second->bytes);
-    std::fprintf(stderr,
-                 "[still-media] evicting cached still '%s' (%zu bytes, LRU) — cache over %zu-byte budget\n",
+    ::corevideo::core::nativeLogf("[still-media] evicting cached still '%s' (%zu bytes, LRU) — cache over %zu-byte budget\n",
                  victim->first.c_str(), victim->second->bytes, cacheBudgetBytes_);
     cache_.erase(victim);
   }
@@ -463,8 +463,7 @@ void StillMediaFrameCache::workerLoop() {
           auto scaled = std::make_shared<std::vector<uint8_t>>();
           if (resizeBgraBilinear(decoded.bgra->data(), decoded.width, decoded.height, scaledWidth,
                                  scaledHeight, *scaled)) {
-            std::fprintf(stderr,
-                         "[still-media] downscaled oversized still '%s' %dx%d -> %dx%d\n",
+            ::corevideo::core::nativeLogf("[still-media] downscaled oversized still '%s' %dx%d -> %dx%d\n",
                          workPath.c_str(), decoded.width, decoded.height, scaledWidth, scaledHeight);
             decoded.width = scaledWidth;
             decoded.height = scaledHeight;

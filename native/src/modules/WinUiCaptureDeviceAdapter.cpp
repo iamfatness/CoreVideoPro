@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "WinUiCaptureDeviceAdapter.h"
 
 #include <algorithm>
@@ -93,7 +94,7 @@ void WinUiCaptureDeviceAdapter::registerCaptureBuffer(const std::string& deviceI
   buffer.mappingHandle = handle;
   buffer.view = static_cast<const uint8_t*>(view);
 #endif
-  std::fprintf(stderr, "[capture-shm] registered '%s' %dx%d shm='%s' mapped=%d\n",
+  ::corevideo::core::nativeLogf("[capture-shm] registered '%s' %dx%d shm='%s' mapped=%d\n",
                deviceId.c_str(), width, height, shmName.c_str(), buffer.view ? 1 : 0);
 }
 
@@ -132,7 +133,7 @@ std::vector<VideoFrame> WinUiCaptureDeviceAdapter::pollVideoFrames(int64_t times
         if (s2 == s1) {  // not torn
           buffer.lastSequence = s1;
           if (buffer.frameId == 0) {
-            std::fprintf(stderr, "[capture-shm] first frame '%s' %ux%u (core now compositing real capture pixels)\n",
+            ::corevideo::core::nativeLogf("[capture-shm] first frame '%s' %ux%u (core now compositing real capture pixels)\n",
                          deviceId.c_str(), w, h);
           }
           ++buffer.frameId;

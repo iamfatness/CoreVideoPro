@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "compositor/TilesDecorationParams.h"
 // Metal GPU compositor adapter — the macOS twin of D3D11CompositorAdapter.
 //
@@ -416,7 +417,7 @@ class MetalCompositor final : public ICompositor {
       NSString* clean = [@"#define COREVIDEO_DISABLE_TILES_EFFECT 1\n" stringByAppendingString:
           [NSString stringWithUTF8String:kMetalCompositorShaderSource]];
       library = [device_ newLibraryWithSource:clean options:nil error:&error];
-      if (library) std::fprintf(stderr, "[tiles] shader effect unavailable; rendering clean tiles.\n");
+      if (library) ::corevideo::core::nativeLogf("[tiles] shader effect unavailable; rendering clean tiles.\n");
     }
     if (!library) {
       return fail(std::string("shader compile failed: ") +
@@ -446,7 +447,7 @@ class MetalCompositor final : public ICompositor {
   bool fail(const std::string& why) {
     pipelineFailed_ = true;
     pipelineError_ = why;
-    std::fprintf(stderr, "[compositor] Metal pipeline unavailable: %s\n", why.c_str());
+    ::corevideo::core::nativeLogf("[compositor] Metal pipeline unavailable: %s\n", why.c_str());
     return false;
   }
 
@@ -769,8 +770,7 @@ class MetalCompositor final : public ICompositor {
       }
       available += frame.participantId;
     }
-    std::fprintf(stderr,
-                 "[compositor] layer %s has NO matching frame (available: %s)\n",
+    ::corevideo::core::nativeLogf("[compositor] layer %s has NO matching frame (available: %s)\n",
                  sourceKey.c_str(), available.c_str());
   }
 

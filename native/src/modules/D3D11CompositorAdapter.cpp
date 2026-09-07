@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 
 // The GPU compositor is intentionally a dev-machine adapter. COREVIDEO_STUB
@@ -238,8 +239,7 @@ class D3D11Compositor final : public ICompositor {
       worstSlowProgramUs_ = (std::max)(worstSlowProgramUs_, static_cast<long long>(totalUs));
       if (lastSlowProgramLog_.time_since_epoch().count() == 0 ||
           timingEnd - lastSlowProgramLog_ >= std::chrono::seconds(1)) {
-        std::fprintf(stderr,
-            "[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
+        ::corevideo::core::nativeLogf("[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
             static_cast<long long>(frameNumber_), static_cast<long long>(totalUs), setupUs, resolveUs,
             uploadUs, (std::max)(0LL, drawUs - uploadUs), readbackUs, vcamUs, sharedUs,
             participantUs, evictUs, flushUs, layers.size(), frames.size(), !renderPlan.skipCpuReadback,
@@ -510,7 +510,7 @@ class D3D11Compositor final : public ICompositor {
     }
 
     if (!tilesEffectsAvailable_)
-      std::fprintf(stderr, "[tiles] shader effect unavailable; rendering clean tiles without border/radius/glow.\n");
+      ::corevideo::core::nativeLogf("[tiles] shader effect unavailable; rendering clean tiles without border/radius/glow.\n");
     D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -726,8 +726,7 @@ class D3D11Compositor final : public ICompositor {
         available += "(empty)";
       }
     }
-    std::fprintf(stderr,
-                 "[compositor] %s layer '%s' has NO matching frame (placeholder tile) - "
+    ::corevideo::core::nativeLogf("[compositor] %s layer '%s' has NO matching frame (placeholder tile) - "
                  "available %s frames: [%s]\n",
                  isCapture ? "capture" : "media", sourceKey.c_str(), prefix,
                  available.empty() ? "none" : available.c_str());
@@ -889,7 +888,6 @@ class D3D11Compositor final : public ICompositor {
         static_cast<double>(strokeX) * targetWidth_,
         static_cast<double>(strokeY) * targetHeight_,
         border.colorRgba);
-    std::fflush(stderr);
   }
 
   // Strokes a border around `rect` by drawing its four edge quads.
@@ -2161,7 +2159,7 @@ class D3D11Compositor final : public ICompositor {
                                                nullptr, vcamPsY2_.put())) ||
         FAILED(vcamDevice2_->CreatePixelShader(psUvBlob->GetBufferPointer(), psUvBlob->GetBufferSize(),
                                                nullptr, vcamPsUV2_.put()))) {
-      std::fprintf(stderr, "[vcam-tap] NV12 shader build failed: %s\n", shaderError.c_str());
+      ::corevideo::core::nativeLogf("[vcam-tap] NV12 shader build failed: %s\n", shaderError.c_str());
       stopVcamTap();
       return false;
     }
@@ -2205,8 +2203,7 @@ class D3D11Compositor final : public ICompositor {
     }
     vcamTapStop_.store(false, std::memory_order_release);
     vcamThread_ = std::thread([this] { vcamTapLoop(); });
-    std::fprintf(stderr,
-                 "[vcam-tap] rig built OK %dx%d (device2 + shared%s + GPU NV12 targets + stagings + thread)\n",
+    ::corevideo::core::nativeLogf("[vcam-tap] rig built OK %dx%d (device2 + shared%s + GPU NV12 targets + stagings + thread)\n",
                  width, height, vcamUseLocalCopy2_ ? " via local copy" : " direct SRV");
     return true;
   }
@@ -2334,7 +2331,7 @@ class D3D11Compositor final : public ICompositor {
       } else if (!vcamTapErrorLogged_) {
         // Device removed / driver reset / TDR: skip frames (never crash, never
         // spin - the CV wait above still paces the loop); log ONCE per rig.
-        std::fprintf(stderr, "[vcam-tap] GPU NV12 staging Map failed; skipping frames\n");
+        ::corevideo::core::nativeLogf("[vcam-tap] GPU NV12 staging Map failed; skipping frames\n");
         vcamTapErrorLogged_ = true;
       }
     }

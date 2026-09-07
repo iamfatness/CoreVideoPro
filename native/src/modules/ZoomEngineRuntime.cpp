@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
 
 #include "config/ZoomMeetingSdkConfig.h"
@@ -589,15 +590,13 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
       const auto idx = static_cast<std::size_t>(q * (s_samples.size() - 1));
       return s_samples[idx];
     };
-    std::fprintf(stderr,
-                 "[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
+    ::corevideo::core::nativeLogf("[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
                  "(n=%zu, +<=2ms upstream poll)\n",
                  at(0.50), at(0.99), s_samples.back(), s_samples.size());
     // Where every decoded frame went. published = fresh + overwritten (+ one
     // in-flight per source); starved = render ticks that re-served a frame the
     // compositor already had. Overwritten is the only true motion loss.
-    std::fprintf(stderr,
-                 "[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
+    ::corevideo::core::nativeLogf("[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
                  "starved=%lld over %.2fs\n",
                  slotPublished_, slotFresh_, slotOverwritten_,
                  slotPublished_ > 0 ? 100.0 * slotOverwritten_ / slotPublished_ : 0.0,
@@ -865,7 +864,7 @@ void ZoomEngineRuntime::purgeQueuedEngineSendsLocked(const char* reason) {
 
 void ZoomEngineRuntime::noteDroppedEngineSends(std::size_t count, const char* reason) {
   const auto total = droppedEngineSends_.fetch_add(count) + count;
-  std::fprintf(stderr, "[zoom-engine] dropped %zu queued engine send(s): %s (total dropped %llu)\n",
+  ::corevideo::core::nativeLogf("[zoom-engine] dropped %zu queued engine send(s): %s (total dropped %llu)\n",
                count, reason, static_cast<unsigned long long>(total));
 }
 
@@ -1080,8 +1079,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
           // stream that has announced dimensions but stays unmappable is a
           // frozen source, and this used to retry in complete silence.
           if (++ref.regionOpenFailures == 120 || ref.regionOpenFailures % 600 == 0) {
-            std::fprintf(stderr,
-                         "[zoom-ingest] %s: video shm STILL unmappable after %d polls "
+            ::corevideo::core::nativeLogf("[zoom-ingest] %s: video shm STILL unmappable after %d polls "
                          "(%ux%u announced) — source is frozen, engine region missing or undersized\n",
                          uuid.c_str(), ref.regionOpenFailures, ref.width, ref.height);
           }
@@ -1155,7 +1153,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     const auto now = std::chrono::steady_clock::now();
     const double sec = std::chrono::duration<double>(now - s_stamp).count();
     if (sec >= 2.0) {
-      std::fprintf(stderr, "[zoom-ingest] %.0f frames/s decoded into the core (%.1f MB/s)\n",
+      ::corevideo::core::nativeLogf("[zoom-ingest] %.0f frames/s decoded into the core (%.1f MB/s)\n",
                    s_published / sec, s_published / sec * 3.11);
       s_published = 0;
       s_stamp = now;
@@ -1177,8 +1175,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     stream->second.lastSequence = result.job.sequence;
     if (result.job.probeLumaRange && result.lumaRange.sampled > 0) {
       stream->second.lumaRangeProbed = true;
-      std::fprintf(stderr,
-                   "[zoom-color] source=%s participant=%u requested=bt709-full "
+      ::corevideo::core::nativeLogf("[zoom-color] source=%s participant=%u requested=bt709-full "
                    "luma_min=%u luma_max=%u below16=%u above235=%u sampled=%u\n",
                    result.job.uuid.c_str(), result.job.participantId,
                    static_cast<unsigned>(result.lumaRange.minimum),
@@ -1336,7 +1333,7 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
     const auto before = pending.lostPackets;
     pending.lostPackets += static_cast<std::int64_t>(lost);
     if (before == 0 || (before / 100) != (pending.lostPackets / 100)) {
-      std::fprintf(stderr, "[zoom-audio] stream %s lost %zu packet(s) (total %lld)\n",
+      ::corevideo::core::nativeLogf("[zoom-audio] stream %s lost %zu packet(s) (total %lld)\n",
                    uuid.c_str(), lost, static_cast<long long>(pending.lostPackets));
     }
   }
@@ -1363,7 +1360,7 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
     if (appendZoomEnginePcmChunk(pending, chunk, kMaxPendingAudioSamplesPerChannel)) {
       ++pending.ingestedChunks;
       if (pending.ingestedChunks == 1 || pending.ingestedChunks % 3000 == 0) {
-        std::fprintf(stderr, "[zoom-audio] stream %s chunk #%lld rate=%d ch=%d pending=%zu\n",
+        ::corevideo::core::nativeLogf("[zoom-audio] stream %s chunk #%lld rate=%d ch=%d pending=%zu\n",
                      uuid.c_str(), static_cast<long long>(pending.ingestedChunks), chunk.sampleRate,
                      chunk.channels, pending.pcm.size());
       }
