@@ -201,4 +201,30 @@ describe("HostLoop", () => {
     expect(responses()[0]).toEqual({ id: "s", ok: true });
     expect(loop.shuttingDown).toBe(true);
   });
+
+  it("a single bad tick does not kill the show — it logs an error and the loop keeps serving", async () => {
+    const { loop, engine, events, responses } = rig();
+    loop.announce();
+    // Force this one tick to reject, the way a real `store.save` failure or
+    // a thrown derived-layer bug would (`ShowEngine.tick()`'s own doc
+    // comment: a `StateFs` failure propagates out of `tick()` rather than
+    // being swallowed there — `HostLoop.tick()` is the layer that must not
+    // let it take the process down).
+    engine.tick = async () => {
+      throw new Error("bad tick: synthetic failure");
+    };
+
+    await expect(loop.tick()).resolves.toBeUndefined();
+
+    expect(
+      events().some(
+        (e) => e.event === "log" && e.level === "error" && /bad tick: synthetic failure/.test(e.message as string)
+      )
+    ).toBe(true);
+
+    // The loop is still alive and answering — a rejected tick must not
+    // leave `handleLine` (or any later `tick()`) broken.
+    loop.handleLine(JSON.stringify({ id: "after", type: "ping" }));
+    expect(responses().some((r) => r.id === "after" && r.ok === true)).toBe(true);
+  });
 });

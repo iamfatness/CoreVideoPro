@@ -64,8 +64,23 @@ function stdoutSink(): LineSink {
   };
 }
 
-function logErrorLine(sink: LineSink, message: string): void {
-  sink(encodeLine({ event: "log", level: "error", message }));
+/**
+ * Write one line to `stream` and exit ONLY after the write's callback fires.
+ * A piped stdout/stderr is asynchronous on Windows, so `process.exit()` on
+ * the very next statement can race the OS write and truncate — or entirely
+ * drop — the diagnostic line the caller most needs to see. Every exit path
+ * in this file (usage, config error, uncaught/unhandled) goes through this;
+ * `shutdown()`'s clean-exit path already did, which is what exposed the gap
+ * on the three failure paths.
+ */
+function writeThenExit(stream: NodeJS.WritableStream, text: string, code: number): void {
+  stream.write(text, () => {
+    process.exit(code);
+  });
+}
+
+function exitWithErrorLine(message: string, code: number): void {
+  writeThenExit(process.stdout, encodeLine({ event: "log", level: "error", message }) + "\n", code);
 }
 
 async function main(): Promise<void> {
@@ -73,8 +88,7 @@ async function main(): Promise<void> {
   const sink = stdoutSink();
 
   if (args === null) {
-    logErrorLine(sink, "usage: show-engine-host --config <path> [--generation <n>]");
-    process.exit(EX_USAGE);
+    exitWithErrorLine("usage: show-engine-host --config <path> [--generation <n>]", EX_USAGE);
     return;
   }
 
@@ -106,8 +120,7 @@ async function main(): Promise<void> {
     loop = new HostLoop(runtime);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logErrorLine(sink, `config error: ${message}`);
-    process.exit(EX_CONFIG);
+    exitWithErrorLine(`config error: ${message}`, EX_CONFIG);
     return;
   }
 
@@ -121,9 +134,7 @@ async function main(): Promise<void> {
     if (shuttingDownStarted) return;
     shuttingDownStarted = true;
     clearInterval(interval);
-    process.stdout.write("", () => {
-      process.exit(0);
-    });
+    writeThenExit(process.stdout, "", 0);
   };
 
   const rl = createInterface({ input: process.stdin });
@@ -141,14 +152,12 @@ async function main(): Promise<void> {
 
 process.on("uncaughtException", (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(encodeLine({ event: "log", level: "error", message }) + "\n");
-  process.exit(EX_SOFTWARE);
+  writeThenExit(process.stderr, encodeLine({ event: "log", level: "error", message }) + "\n", EX_SOFTWARE);
 });
 
 process.on("unhandledRejection", (reason: unknown) => {
   const message = reason instanceof Error ? reason.message : String(reason);
-  process.stderr.write(encodeLine({ event: "log", level: "error", message }) + "\n");
-  process.exit(EX_SOFTWARE);
+  writeThenExit(process.stderr, encodeLine({ event: "log", level: "error", message }) + "\n", EX_SOFTWARE);
 });
 
 void main();

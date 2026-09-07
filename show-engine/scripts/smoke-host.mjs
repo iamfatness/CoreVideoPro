@@ -9,9 +9,15 @@
  * (statePath rewritten under `os.tmpdir()` so the real process can actually
  * write it), spawns the real entry point against it, waits up to 5s for a
  * `handshake` event with `protocolVersion === 1` and the full 28-action
- * registry, sends `shutdown`, and requires a clean exit 0. Any other
- * outcome is a hard `process.exit(1)` with the collected stdio printed —
- * this script IS the coverage for `main.ts`, which has no unit test.
+ * registry, sends `shutdown`, and requires a clean exit 0 within a SECOND
+ * bounded wait. Both waits are independently bounded: a script that hangs
+ * forever on the exact failure it exists to catch (the child answers the
+ * handshake but never actually exits after `shutdown`) is worse than a
+ * script that fails fast, so `shutdown()` not landing within
+ * `SHUTDOWN_TIMEOUT_MS` kills the child and fails loudly rather than
+ * awaiting an `exit` event that may never come. Any other outcome is a hard
+ * `process.exit(1)` with the collected stdio printed — this script IS the
+ * coverage for `main.ts`, which has no unit test.
  */
 
 import { spawn } from "node:child_process";
@@ -25,6 +31,7 @@ const distEntry = path.join(packageRoot, "dist", "index.js");
 const hostEntry = path.join(packageRoot, "dist", "host", "main.js");
 
 const HANDSHAKE_TIMEOUT_MS = 5000;
+const SHUTDOWN_TIMEOUT_MS = 5000;
 const EXPECTED_ACTION_COUNT = 28;
 
 function fail(message, stdout, stderr) {
@@ -121,7 +128,19 @@ async function main() {
   }
 
   if (exitCode === null) {
-    await exitPromise;
+    const shutdownTimeout = new Promise((resolve) => {
+      setTimeout(resolve, SHUTDOWN_TIMEOUT_MS, "timeout");
+    });
+    const shutdownOutcome = await Promise.race([exitPromise.then(() => "exited"), shutdownTimeout]);
+    if (shutdownOutcome === "timeout") {
+      child.kill();
+      fail(
+        `handshake arrived and shutdown was sent, but the process did not exit within ${SHUTDOWN_TIMEOUT_MS}ms`,
+        stdoutChunks,
+        stderrChunks
+      );
+      return;
+    }
   }
 
   if (exitCode !== 0) {
