@@ -63,10 +63,7 @@ public static class ShowConfigValidator
             return null;
         }
 
-        var found = capacityElement.ValueKind == JsonValueKind.Number
-            ? capacityElement.GetRawText()
-            : capacityElement.ValueKind.ToString();
-        return $"config.capacity must be {hostCapacity} (the Show Input count); found {found}";
+        return $"config.capacity must be {hostCapacity} (the Show Input count); found {capacityElement.GetRawText()}";
     }
 
     private static string? ValidateLooks(JsonElement engine, IReadOnlySet<string> sceneIds)

@@ -72,6 +72,20 @@ public class ShowConfigStoreTests : IDisposable
     }
 
     [Fact]
+    public void Load_MissingVersionProperty_ReturnsUnsupportedVersion0()
+    {
+        // Controller ruling (Task 9 fix round 1): a config with no "version" key at all must
+        // fail exactly as loudly as an explicit wrong version, not be silently treated as v1.
+        var store = new ShowConfigStore(_dir);
+        File.WriteAllText(store.FilePath, """{"engine":{"capacity":10}}""");
+
+        var config = store.Load(out var error);
+
+        Assert.Null(config);
+        Assert.Equal("unsupported ohg-show-config version 0", error);
+    }
+
+    [Fact]
     public void Load_MissingEngineObject_ReturnsNullWithError()
     {
         var store = new ShowConfigStore(_dir);
