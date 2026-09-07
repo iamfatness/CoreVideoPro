@@ -23,6 +23,29 @@
 - Every task carries a **Mutations to run** block; a task is not done until each named mutation has reddened the named test for the named reason and been reverted. Report results.
 - Commit after every task with the message given.
 
+## Model guidance per task (advisory — the executing controller decides)
+
+Calibrated on Plan 7a: every Critical finding there came from a more capable reviewer on a threading or cross-task seam; well-specified mechanical tasks landed with at most one fix round on a mid-tier implementer.
+
+| Task | Implementer | Task reviewer | Why |
+|---|---|---|---|
+| 1 Snapshot projection | mid (sonnet) | mid | pure JSON → records; the brief carries the field list and tests |
+| 2 Invoker seam + arg builders | mid | mid | 28 mechanical builders against a literal id list |
+| 3 ViewModel core | **most capable (opus)** | **most capable** | marshaling, diff-update under the 0xc000027b rules, signature gate — threading judgment |
+| 4 Panelist commands | mid | mid | dispatch-only partial |
+| 5 Program commands + labels | mid | mid | dispatch + pure labels; adds the diff-updated `Boxes` collection (follow Task 3's pattern) |
+| 6 Gallery + GFX commands | mid | mid | dispatch-only partial |
+| 7 Tab plumbing + page + panelist board XAML | **most capable** | **most capable** | touches `StudioViewModel` tab machinery and `StudioWorkspace.xaml`; XAML compile + automation names |
+| 8 Remaining panel XAML | **most capable** | mid | XAML volume; selection-in-code-behind rule |
+| 9 Config edit model + settings VM | mid | mid | pure round-trip + validation; well specified |
+| 10 Settings section, adapter hot-swap, restart on save | **most capable** | **most capable** | `MainWindow`/`StudioControlSurface` lifecycle; ordering seam |
+| 11 Isadora importer | mid | mid | pure text extraction with synthetic fixtures |
+| 12 Conformance case, parked minors, docs, outcomes | **most capable** | — (final whole-branch review follows) | cross-language conformance edit + synthesis from all reports |
+| Scoped re-reviews of small fix diffs | — | cheap/mid (haiku/sonnet) | verify named findings only |
+| Final whole-branch review | — | **most capable** | seams the per-task reviews cannot see |
+
+Fix-loop escalation (rounds 4–5) goes one tier above the stuck implementer, per the SDD skill.
+
 ## Decisions taken before this plan (controller rulings, 2026-09-07)
 
 - **D1 The tab is always visible.** The spec's "tab visible only when the config file exists" is replaced by: the tab is always present; with no config the page renders a single "Set up OHG" surface whose button opens the settings section. (Hiding a tab on a file's existence is a discoverability trap; the setup surface is the honest state.)
