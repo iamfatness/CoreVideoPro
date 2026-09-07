@@ -118,6 +118,7 @@ public sealed class ShowEngineSupervisorTests
         // child would pass a number-only check. Child identity is what closes it.
         var factory = new FakeChildFactory { PreloadHandshake = g => g == 1 };
         var delays = new DelayController();          // HandshakeTimeout parks: gen 2 never handshakes
+        delays.SetImmediate(TimeSpan.FromSeconds(1)); // let the real policy's first backoff fire at once
         using var sup = NewSupervisor(factory, delays);
 
         var commands = new List<ShowEngineHostCommand>();
@@ -141,6 +142,7 @@ public sealed class ShowEngineSupervisorTests
     {
         var factory = new FakeChildFactory { PreloadHandshake = g => g == 1 };
         var delays = new DelayController();
+        delays.SetImmediate(TimeSpan.FromSeconds(1)); // let the real policy's first backoff fire at once
         using var sup = NewSupervisor(factory, delays);
 
         var snapshots = new List<ShowEngineSnapshot>();
@@ -210,6 +212,7 @@ public sealed class ShowEngineSupervisorTests
     {
         var factory = new FakeChildFactory();
         var delays = new DelayController();
+        delays.SetImmediate(TimeSpan.FromSeconds(1)); // let the real policy's first backoff fire at once
         using var sup = NewSupervisor(factory, delays);
 
         var commands = new List<ShowEngineHostCommand>();
@@ -284,6 +287,107 @@ public sealed class ShowEngineSupervisorTests
         Assert.Equal(1, sup.Health.RestartCount);
     }
 
+    [Theory]
+    [InlineData(1)] [InlineData(2)] [InlineData(3)] [InlineData(4)] [InlineData(5)]
+    [InlineData(6)] [InlineData(7)] [InlineData(8)] [InlineData(9)] [InlineData(10)]
+    [InlineData(11)] [InlineData(12)] [InlineData(13)] [InlineData(14)] [InlineData(15)]
+    [InlineData(16)] [InlineData(17)] [InlineData(18)] [InlineData(19)] [InlineData(20)]
+    public async Task PreHandshakeDeath_NeverThrowsOutOfStart(int iteration)
+    {
+        // Regression for the Task 6 re-review finding: a child already dead at spawn can have its
+        // reader loop hit EOF and dispose the child's CancellationTokenSource BEFORE
+        // SpawnAndHandshakeAsync ever reads `scope.Token` (for the handshake-timeout delay and the
+        // heartbeat Task.Run) — a race that, uncaught, throws ObjectDisposedException out of
+        // StartAsync. `iteration` (1..20) just runs this repeatedly so a rare race is not missed by luck.
+        _ = iteration;
+        var factory = new FakeChildFactory { PreloadHandshake = _ => false };
+        factory.Configure = child => child.Complete(78);
+        var delays = new DelayController();
+
+        using var sup = NewSupervisor(factory, delays);
+        await sup.StartAsync(Request, CancellationToken.None);   // must never throw
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Failed, "the pre-handshake exit 78");
+
+        Assert.Contains("exit 78", sup.Health.LastError);
+    }
+
+    [Fact]
+    public async Task Recovery_UsesThePolicyDelay_AndFailsWhenExhausted()
+    {
+        // A real policy, budget 2: two respawns are granted (1s, then 2s), a third crash exhausts it.
+        // HeartbeatInterval is pinned well away from 1s/2s/4s/8s so a heartbeat park can never be
+        // mistaken for a backoff entry when both land in delays.Recorded.
+        var options = new ShowEngineSupervisorOptions { HeartbeatInterval = TimeSpan.FromMinutes(5) };
+        var factory = new FakeChildFactory();
+        factory.Configure = child => child.Responder = line =>
+            FakeShowEngineChild.TypeOf(line) == "ping"
+                ? new[] { TestLines.OkResponse(IdOf(line)) }
+                : Array.Empty<string>();
+        var delays = new DelayController();
+        delays.SetImmediate(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2));
+        var policy = new ShowEngineRestartPolicy(maxConsecutiveFailures: 2);
+
+        using var sup = NewSupervisor(factory, delays, policy, options);
+        await sup.StartAsync(Request, CancellationToken.None);
+        Assert.Equal(ShowEngineState.Running, sup.Health.State);
+
+        factory.Child(1).Complete(1);
+        await WaitUntil(() => factory.SpawnCount == 2 && sup.Health.State == ShowEngineState.Running,
+            "the first respawn to handshake");
+
+        factory.Child(2).Complete(1);
+        await WaitUntil(() => factory.SpawnCount == 3 && sup.Health.State == ShowEngineState.Running,
+            "the second respawn to handshake");
+
+        factory.Child(3).Complete(1);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Failed, "the budget to exhaust");
+
+        var backoffSized = delays.Recorded
+            .Where(d => d == TimeSpan.FromSeconds(1) || d == TimeSpan.FromSeconds(2))
+            .ToList();
+        Assert.Equal(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2) }, backoffSized);
+        Assert.DoesNotContain(TimeSpan.FromSeconds(4), delays.Recorded);
+        Assert.DoesNotContain(TimeSpan.FromSeconds(8), delays.Recorded);
+
+        Assert.Equal(3, factory.SpawnCount);
+        Assert.Equal(ShowEngineState.Failed, sup.Health.State);
+        Assert.Equal(3, sup.Health.RestartCount);
+
+        // ------------------------------------------------------------------ healthy-reset, isolated
+        // A second, independent scenario (fresh supervisor + policy, mutable clock) proves the OTHER
+        // half of the contract: a heartbeat while Running clears the consecutive-failure count once the
+        // current running spell has lasted 60s, even though the count above was earned by real crashes.
+        var now = Clock;
+        var factory2 = new FakeChildFactory();
+        factory2.Configure = child => child.Responder = line =>
+            FakeShowEngineChild.TypeOf(line) == "ping"
+                ? new[] { TestLines.OkResponse(IdOf(line)) }
+                : Array.Empty<string>();
+        var delays2 = new DelayController();
+        delays2.SetImmediate(TimeSpan.FromSeconds(1));   // first backoff fires at once
+        var policy2 = new ShowEngineRestartPolicy();
+        var options2 = new ShowEngineSupervisorOptions { HeartbeatInterval = TimeSpan.FromSeconds(30) };
+
+        using var sup2 = new ShowEngineSupervisor(factory2, policy2, delays2.DelayAsync, () => now, options2);
+        await sup2.StartAsync(Request, CancellationToken.None);
+        Assert.Equal(ShowEngineState.Running, sup2.Health.State);
+
+        factory2.Child(1).Complete(1);
+        await WaitUntil(() => factory2.SpawnCount == 2 && sup2.Health.State == ShowEngineState.Running,
+            "the respawn to handshake");
+        Assert.Equal(1, policy2.ConsecutiveFailures);
+
+        await WaitUntil(() => delays2.ParkedCount(options2.HeartbeatInterval) > 0, "the first heartbeat wait");
+        now += TimeSpan.FromSeconds(30);
+        delays2.Release(options2.HeartbeatInterval);
+
+        await WaitUntil(() => delays2.ParkedCount(options2.HeartbeatInterval) > 0, "the second heartbeat wait");
+        now += TimeSpan.FromSeconds(31);   // 61s total since RecordRunning — crosses the 60s reset
+        delays2.Release(options2.HeartbeatInterval);
+
+        await WaitUntil(() => policy2.ConsecutiveFailures == 0, "the healthy reset");
+    }
+
     [Fact]
     public async Task OrdinaryExit_BeforeAnyHandshake_Recovers()
     {
@@ -292,6 +396,7 @@ public sealed class ShowEngineSupervisorTests
         var factory = new FakeChildFactory { PreloadHandshake = g => g == 2 };
         factory.Configure = child => { if (child.Generation == 1) child.Complete(1); };
         var delays = new DelayController();
+        delays.SetImmediate(TimeSpan.FromSeconds(1)); // let the real policy's first backoff fire at once
 
         using var sup = NewSupervisor(factory, delays);
         await sup.StartAsync(Request, CancellationToken.None);
@@ -320,6 +425,11 @@ public sealed class ShowEngineSupervisorTests
             await WaitUntil(() => delays.ParkedCount(Options.HeartbeatInterval) > 0, "heartbeat wait");
             delays.Release(Options.HeartbeatInterval);
         }
+
+        // the hang trips the real policy's first backoff (1s, same value as HeartbeatInterval — the
+        // dead child's heartbeat loop has already returned, so this park can only be the backoff)
+        await WaitUntil(() => delays.ParkedCount(TimeSpan.FromSeconds(1)) > 0, "the backoff wait");
+        delays.Release(TimeSpan.FromSeconds(1));
 
         await WaitUntil(() => factory.SpawnCount == 2, "the hang to trigger a respawn");
         Assert.True(factory.Child(1).Killed);
@@ -354,6 +464,11 @@ public sealed class ShowEngineSupervisorTests
             delays.Release(Options.HeartbeatInterval);
         }
 
+        // the hang trips the real policy's first backoff (1s, same value as HeartbeatInterval — the
+        // dead child's heartbeat loop has already returned, so this park can only be the backoff)
+        await WaitUntil(() => delays.ParkedCount(TimeSpan.FromSeconds(1)) > 0, "the backoff wait");
+        delays.Release(TimeSpan.FromSeconds(1));
+
         await WaitUntil(() => factory.SpawnCount == 2, "the failed beats to trigger a respawn");
         Assert.True(factory.Child(1).Killed);
         Assert.Equal(ShowEngineState.Recovering, sup.Health.State);
@@ -385,6 +500,12 @@ public sealed class ShowEngineSupervisorTests
         await WaitUntil(() => gen1.IdOfWritten("ping") is not null, "the ping to be written");
 
         gen1.SignalExit(3);
+
+        // the crash trips the real policy's first backoff (1s, same value as HeartbeatInterval — the
+        // dead child's heartbeat loop has already returned, so this park can only be the backoff)
+        await WaitUntil(() => delays.ParkedCount(TimeSpan.FromSeconds(1)) > 0, "the backoff wait");
+        delays.Release(TimeSpan.FromSeconds(1));
+
         await WaitUntil(() => factory.SpawnCount == 2, "the crash to be recovered");
 
         lock (logs) Assert.DoesNotContain(logs, l => l.Message.Contains("heartbeat failed"));

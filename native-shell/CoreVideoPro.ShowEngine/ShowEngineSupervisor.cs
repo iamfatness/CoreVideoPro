@@ -272,6 +272,14 @@ public sealed class ShowEngineSupervisor : IDisposable
             return false;
         }
 
+        // Captured ONCE, before the reader loop starts: a child that is already dead at spawn can have
+        // its reader loop hit EOF and dispose `scope` (see ReaderLoopAsync's finally) before this method
+        // ever reads `scope.Token` below — a bare `scope.Token` read after that would throw
+        // ObjectDisposedException out of StartAsync. `CancellationTokenSource.Token` returns the same
+        // live token whether read before or after Dispose is called elsewhere, so capturing it up front
+        // is always safe and this method must use ONLY this captured copy from here on.
+        var token = scope.Token;
+
         lock (_gate)
         {
             _child = child;
@@ -286,7 +294,7 @@ public sealed class ShowEngineSupervisor : IDisposable
         // time do we ask for one explicitly (which the host answers with a response AND another event).
         // child.Exited is in the race so a child that dies before announcing does not hold the start
         // for the full HandshakeTimeout — the exit watcher has already begun recovery by then.
-        var wait = _delay(_options.HandshakeTimeout, scope.Token);
+        var wait = _delay(_options.HandshakeTimeout, token);
         await Task.WhenAny(handshakeSignal.Task, wait, child.Exited).ConfigureAwait(false);
         if (!handshakeSignal.Task.IsCompleted && !child.Exited.IsCompleted)
         {
@@ -295,7 +303,7 @@ public sealed class ShowEngineSupervisor : IDisposable
                 // HandshakeTimeout governs how long we wait for the UNSOLICITED announcement. Once we
                 // are actively asking, the ordinary request timeout applies — a host that answers no
                 // request at all is dead, and waiting another 15 s only delays the recovery.
-                using var reply = await SendCoreAsync(child, "handshake", null, _options.RequestTimeout, scope.Token)
+                using var reply = await SendCoreAsync(child, "handshake", null, _options.RequestTimeout, token)
                     .ConfigureAwait(false);
                 // Some hosts (and Task 6's fixtures) carry the manifest on the RESPONSE itself; the real
                 // host follows it with the event, which the reader loop signals just as well.
@@ -308,7 +316,7 @@ public sealed class ShowEngineSupervisor : IDisposable
                     // The real host (hostLoop.ts, the "handshake" request case) answers {id, ok:true}
                     // and THEN emits the handshake EVENT, so the manifest arrives on the FOLLOWING
                     // line. Ordinary request timing applies to that wait, not the announcement budget.
-                    var second = _delay(_options.RequestTimeout, scope.Token);
+                    var second = _delay(_options.RequestTimeout, token);
                     await Task.WhenAny(handshakeSignal.Task, second).ConfigureAwait(false);
                     if (!handshakeSignal.Task.IsCompleted)
                     {
@@ -366,7 +374,7 @@ public sealed class ShowEngineSupervisor : IDisposable
         });
 
         Raise(Handshaken, handshake);
-        _ = Task.Run(() => HeartbeatLoopAsync(child, scope.Token), CancellationToken.None);
+        _ = Task.Run(() => HeartbeatLoopAsync(child, token), CancellationToken.None);
         return true;
     }
 
