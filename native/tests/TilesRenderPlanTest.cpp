@@ -1,6 +1,7 @@
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
 #include "rpc/Json.h"
+#include "compositor/TilesPinnedLayout.h"
 
 #include <gtest/gtest.h>
 
@@ -33,7 +34,7 @@ const corevideo::modules::CompositorRenderPlanLayer* findLayer(
 // Build the command with the Json::Object/Json::Array literal pattern used
 // throughout MediaCoreCommandTest.cpp. Json has no .set(), and Json::parse
 // returns std::optional<Json> — see the API facts in Global Constraints.
-void loadWall(MediaCore& core, const std::vector<std::string>& members) {
+void loadWall(MediaCore& core, const std::vector<std::string>& members, bool manual = false) {
   corevideo::rpc::Json::Array memberJson;
   for (const auto& member : members) {
     memberJson.push_back(corevideo::rpc::Json{member});
@@ -47,6 +48,7 @@ void loadWall(MediaCore& core, const std::vector<std::string>& members) {
               {"layerId", corevideo::rpc::Json{"tiles:s"}},
               {"members", corevideo::rpc::Json{memberJson}},
               {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"fillMode", corevideo::rpc::Json{manual ? "manual" : "auto"}},
                   {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}}});
 }
 
@@ -228,6 +230,83 @@ TEST(TilesRenderPlan, EachAdmittedMemberBecomesOneTileLayer) {
   EXPECT_EQ(layerIds, expected);
 }
 
+TEST(TilesRenderPlan, ManualSlotsRetainGeometryAcrossMissingAndReturningSources) {
+  MediaCore core;
+  loadWall(core, {"zoom:1", "", "zoom:3"}, true);
+  ASSERT_EQ(core.tilesLayerForTest().members.size(), 3u);
+  EXPECT_TRUE(core.tilesLayerForTest().members[1].empty());
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:3", true, 0}});
+  const auto before = core.lastRenderPlanForTest();
+  ASSERT_NE(findLayer(before, "tile:zoom:3"), nullptr);
+  const auto original = findLayer(before, "tile:zoom:3")->rect;
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", false, 0}, {"zoom:3", true, 0}, {"zoom:unassigned", true, 0}});
+  const auto missing = core.lastRenderPlanForTest();
+  EXPECT_EQ(countLayersOfKind(missing, "participant-video"), 1);
+  ASSERT_NE(findLayer(missing, "tile:zoom:3"), nullptr);
+  EXPECT_EQ(findLayer(missing, "tile:zoom:3")->rect.x, original.x);
+  EXPECT_EQ(findLayer(missing, "tile:zoom:3")->rect.width, original.width);
+  EXPECT_EQ(findLayer(missing, "tile:zoom:3")->rect.y, original.y);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:3", true, 0}});
+  const auto returned = core.lastRenderPlanForTest();
+  EXPECT_EQ(countLayersOfKind(returned, "participant-video"), 2);
+  EXPECT_EQ(findLayer(returned, "tile:zoom:3")->rect.x, original.x);
+}
+
+TEST(TilesRenderPlan, PinnedHostAndMultiplePinsLeaveNonOverlappingGridSpace) {
+  using corevideo::compositor::tilesLargestFreeRect;
+  const auto besideHost = tilesLargestFreeRect({{0, 0, .4f, 1}});
+  EXPECT_EQ(besideHost.x, .4f);
+  EXPECT_EQ(besideHost.width, .6f);
+  const auto betweenPins = tilesLargestFreeRect({{0, 0, .25f, 1}, {.75f, 0, .25f, 1}});
+  EXPECT_EQ(betweenPins.x, .25f);
+  EXPECT_EQ(betweenPins.width, .5f);
+  EXPECT_EQ(betweenPins.height, 1.f);
+  const auto full = tilesLargestFreeRect({{0, 0, 1, 1}});
+  EXPECT_EQ(full.width * full.height, 0.f);
+}
+
+TEST(TilesRenderPlan, OverridesAndLiveBackgroundReachRenderedPlanWithoutReplacingMissingSources) {
+  MediaCore core;
+  const auto command = corevideo::rpc::Json::parse(R"({"type":"load-scene-graph","sceneId":"pinned","routes":[],
+    "tiles":{"layerId":"tiles:pinned","members":["zoom:1","zoom:2"],
+      "style":{"backgroundSourceId":"zoom:background","backgroundColor":"#123456","animateLayout":true,"animationDurationMs":800,
+        "borderShape":"rounded","borderThickness":8,"borderColor":"#FF0000","cornerRadius":24,
+        "glowSize":16,"glowColor":"#00FF00","glowIntensity":50,"glowSoftness":75},
+      "overrides":{"zoom:1":{"rect":{"x":0,"y":0,"w":0.4,"h":1},"cropLeftPercent":10,"cropRightPercent":20,"z":3}}}})");
+  ASSERT_TRUE(command.has_value());
+  core.applyCommands(corevideo::rpc::Json::Array{*command});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}, {"zoom:background", true, 0}});
+  const auto plan = core.lastRenderPlanForTest();
+  const auto* host = findLayer(plan, "tile:zoom:1");
+  const auto* guest = findLayer(plan, "tile:zoom:2");
+  const auto* background = findLayer(plan, "tiles-source-bg:tiles:pinned");
+  ASSERT_NE(host, nullptr); ASSERT_NE(guest, nullptr); ASSERT_NE(background, nullptr);
+  EXPECT_EQ(host->rect.width, .4f);
+  EXPECT_TRUE(guest->rect.x >= host->rect.x + host->rect.width);
+  EXPECT_EQ(host->sourceCropLeftPercent, 10.f);
+  EXPECT_EQ(host->sourceCropRightPercent, 20.f);
+  ASSERT_TRUE(host->tilesDecoration.enabled);
+  EXPECT_EQ(host->tilesDecoration.borderWidth, 8.f);
+  EXPECT_EQ(host->tilesDecoration.radius, 24.f);
+  EXPECT_EQ(host->tilesDecoration.borderColor, "#FF0000");
+  EXPECT_EQ(host->tilesDecoration.glowSize, 16.f);
+  EXPECT_EQ(host->tilesDecoration.glowColor, "#00FF00");
+  EXPECT_EQ(host->tilesDecoration.glowIntensity, .5f);
+  EXPECT_EQ(host->tilesDecoration.glowSoftness, .75f);
+  const auto* halo = findLayer(plan, "tiles-glow:zoom:1");
+  ASSERT_NE(halo, nullptr);
+  EXPECT_TRUE(halo->tilesDecoration.glowPass);
+  EXPECT_TRUE(halo->order < host->order && halo->order < guest->order);
+  EXPECT_EQ(halo->rect.width, host->rect.width);
+  EXPECT_EQ(halo->tilesDecoration.radius, host->tilesDecoration.radius);
+  EXPECT_TRUE(background->order < host->order);
+  EXPECT_EQ(background->participantId, "background");
+  EXPECT_TRUE(core.tilesLayerForTest().style.animateLayout);
+  EXPECT_EQ(core.tilesLayerForTest().style.animationDurationMs, 800);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tiles-source-bg:tiles:pinned"), nullptr);
+}
+
 TEST(TilesRenderPlan, TheWallDrawsABackgroundBeneathEveryTile) {
   MediaCore core; loadWall(core, {"zoom:1"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
@@ -268,7 +347,7 @@ TEST(TilesRenderPlan, EveryTileFillsRatherThanFits) {
 
 // T1 ships no styling: a border here would composite chrome into PROGRAM, the
 // virtual camera, and every recording. T2 adds it deliberately.
-TEST(TilesRenderPlan, TilesCarryNoBorderBeforeStylingShips) {
+TEST(TilesRenderPlan, TilesDoNotDoubleApplyGenericSceneBorders) {
   MediaCore core; loadWall(core, {"zoom:1"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
 

@@ -259,8 +259,43 @@
                                 <StackPanel Spacing="8">
                                     <TextBlock Text="CoreVideo Tiles" FontWeight="Bold" FontSize="13"
                                                Foreground="{StaticResource StudioAccentBrush}" />
-                                    <TextBlock Text="Live Zoom participants fill this wall automatically and reflow as the roster changes."
+                                    <TextBlock Text="Choose manual slots or fill remaining slots from the roster. Excluded sources never join this wall."
                                                FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
+                                    <ToggleSwitch Header="Fill remaining slots automatically" IsOn="{x:Bind ViewModel.GalleryAutoFill, Mode=TwoWay}" />
+                                    <ComboBox Header="Source" ItemsSource="{x:Bind ViewModel.GalleryMemberChoices, Mode=OneWay}"
+                                              SelectedValue="{x:Bind ViewModel.GallerySelectedMemberId, Mode=TwoWay}" SelectedValuePath="Id" DisplayMemberPath="Name" />
+                                    <NumberBox Header="Manual slot" Value="{x:Bind ViewModel.GalleryManualSlot, Mode=TwoWay}" Minimum="1" Maximum="64" SpinButtonPlacementMode="Compact" />
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="Assign slot" Command="{x:Bind ViewModel.AssignGalleryMemberCommand}" />
+                                        <Button Content="Clear slot" Command="{x:Bind ViewModel.ClearGallerySlotCommand}" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="Never show" Command="{x:Bind ViewModel.ExcludeGalleryMemberCommand}" />
+                                        <Button Content="Allow" Command="{x:Bind ViewModel.AllowGalleryMemberCommand}" />
+                                    </StackPanel>
+                                    <TextBlock Text="{x:Bind ViewModel.GalleryMembershipSummary, Mode=OneWay}" TextWrapping="WrapWholeWords" FontSize="10" />
+                                    <TextBox Header="Tiles background color" Text="{x:Bind ViewModel.GalleryBackgroundColor, Mode=TwoWay}" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <Button Content="Use selected source behind tiles" Command="{x:Bind ViewModel.SetGalleryBackgroundSourceCommand}" />
+                                        <Button Content="Clear live background" Command="{x:Bind ViewModel.ClearGalleryBackgroundSourceCommand}" />
+                                    </StackPanel>
+                                    <TextBlock Text="Use the scene background picker above for an imported image or video. A live background draws above it when available." TextWrapping="WrapWholeWords" FontSize="10" />
+                                    <Expander Header="Selected tile rectangle and crop" HorizontalAlignment="Stretch">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Text="Coordinates use 0–1 of the canvas. Apply pins the selected tile; other tiles fill the largest remaining rectangle. Clear returns it to the grid." TextWrapping="WrapWholeWords" FontSize="10" />
+                                            <NumberBox Header="X" Value="{x:Bind ViewModel.GalleryTileX, Mode=TwoWay}" Minimum="0" Maximum="1" SmallChange="0.01" />
+                                            <NumberBox Header="Y" Value="{x:Bind ViewModel.GalleryTileY, Mode=TwoWay}" Minimum="0" Maximum="1" SmallChange="0.01" />
+                                            <NumberBox Header="Width" Value="{x:Bind ViewModel.GalleryTileWidth, Mode=TwoWay}" Minimum="0.01" Maximum="1" SmallChange="0.01" />
+                                            <NumberBox Header="Height" Value="{x:Bind ViewModel.GalleryTileHeight, Mode=TwoWay}" Minimum="0.01" Maximum="1" SmallChange="0.01" />
+                                            <NumberBox Header="Crop left (%)" Value="{x:Bind ViewModel.GalleryTileCropLeft, Mode=TwoWay}" Minimum="0" Maximum="45" />
+                                            <NumberBox Header="Crop right (%)" Value="{x:Bind ViewModel.GalleryTileCropRight, Mode=TwoWay}" Minimum="0" Maximum="45" />
+                                            <NumberBox Header="Order (0–63)" Value="{x:Bind ViewModel.GalleryTileOrder, Mode=TwoWay}" Minimum="0" Maximum="63" />
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <Button Content="Apply to selected tile" Command="{x:Bind ViewModel.ApplyGalleryTileOverrideCommand}" />
+                                                <Button Content="Clear tile override" Command="{x:Bind ViewModel.ClearGalleryTileOverrideCommand}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Expander>
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                                         <NumberBox Header="Max tiles" Value="{x:Bind ViewModel.GalleryMaxTiles, Mode=TwoWay}"
@@ -288,6 +323,8 @@
                                     </Grid>
                                     <TextBox Header="Border color" Text="{x:Bind ViewModel.GalleryBorderColor, Mode=TwoWay}"
                                              PlaceholderText="#000000" />
+                                    <NumberBox Header="Corner radius" Value="{x:Bind ViewModel.GalleryCornerRadius, Mode=TwoWay}"
+                                               Minimum="0" Maximum="100" SmallChange="1" SpinButtonPlacementMode="Compact" />
                                     <TextBlock Text="Glow" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>

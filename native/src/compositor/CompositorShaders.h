@@ -63,7 +63,39 @@ cbuffer LayerConstants : register(b0) {
   float temperature;
   float2 uvScale;
   float2 uvOffset;
+  float4 yuvTransform;
+  float4 yuvCoeffs;
+  float4 chromaKeyColor;
+  float4 chromaKeyParams;
+  float4 tileRect;
+  float4 tileShape;
+  float4 tileBorder;
+  float4 tileGlow;
+  float4 tileFalloff;
 };
+float4 decorateTile(float4 sampleColor, float2 pixel) {
+#ifdef COREVIDEO_DISABLE_TILES_EFFECT
+  return sampleColor;
+#else
+  if (tileShape.x < 0.5) return sampleColor;
+  float2 q = abs(pixel - tileRect.xy) - (tileRect.zw - tileShape.y);
+  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - tileShape.y;
+  float aa = max(fwidth(d), 0.0001);
+  if (tileShape.w > 0.5) {
+    float t = saturate(d / max(tileFalloff.x, 0.0001));
+    float ramp = 1.0 - t;
+    return float4(tileGlow.rgb, saturate(ramp * ramp * (1.0 + tileFalloff.y * t)) * tileGlow.a * sampleColor.a);
+  }
+  float alpha = tileShape.y > 0.0 ? 1.0 - smoothstep(-aa, aa, d) : 1.0;
+  float3 rgb = sampleColor.rgb;
+  if (tileShape.z > 0.0) {
+    float inner = 1.0 - smoothstep(-aa, aa, d + tileShape.z);
+    rgb = lerp(tileBorder.rgb, rgb, inner);
+  }
+  return float4(rgb, sampleColor.a * alpha);
+#endif
+}
+
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float3 rgb = color.rgb;
@@ -72,7 +104,7 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return float4(saturate(rgb), color.a);
+  return decorateTile(float4(saturate(rgb), color.a), pos.xy);
 }
 )";
 
@@ -94,7 +126,35 @@ cbuffer LayerConstants : register(b0) {
   float4 yuvCoeffs;
   float4 chromaKeyColor;
   float4 chromaKeyParams;
+  float4 tileRect;
+  float4 tileShape;
+  float4 tileBorder;
+  float4 tileGlow;
+  float4 tileFalloff;
 };
+float4 decorateTile(float4 sampleColor, float2 pixel) {
+#ifdef COREVIDEO_DISABLE_TILES_EFFECT
+  return sampleColor;
+#else
+  if (tileShape.x < 0.5) return sampleColor;
+  float2 q = abs(pixel - tileRect.xy) - (tileRect.zw - tileShape.y);
+  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - tileShape.y;
+  float aa = max(fwidth(d), 0.0001);
+  if (tileShape.w > 0.5) {
+    float t = saturate(d / max(tileFalloff.x, 0.0001));
+    float ramp = 1.0 - t;
+    return float4(tileGlow.rgb, saturate(ramp * ramp * (1.0 + tileFalloff.y * t)) * tileGlow.a * sampleColor.a);
+  }
+  float alpha = tileShape.y > 0.0 ? 1.0 - smoothstep(-aa, aa, d) : 1.0;
+  float3 rgb = sampleColor.rgb;
+  if (tileShape.z > 0.0) {
+    float inner = 1.0 - smoothstep(-aa, aa, d + tileShape.z);
+    rgb = lerp(tileBorder.rgb, rgb, inner);
+  }
+  return float4(rgb, sampleColor.a * alpha);
+#endif
+}
+
 
 // CHROMA KEY — the HLSL twin of the MSL implementation in
 // MetalCompositorShaders.h. Keep the two in step: they share one cbuffer
@@ -149,7 +209,7 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return float4(saturate(rgb), sampled.a * color.a * keyAlpha);
+  return decorateTile(float4(saturate(rgb), sampled.a * color.a * keyAlpha), pos.xy);
 }
 )";
 
@@ -198,7 +258,35 @@ cbuffer LayerConstants : register(b0) {
   float4 yuvCoeffs;    // x = rV, y = gU, z = gV, w = bU
   float4 chromaKeyColor;  // xyz = key colour, w = 1 when enabled
   float4 chromaKeyParams; // x = similarity, y = smoothness, z = spill
+  float4 tileRect;
+  float4 tileShape;
+  float4 tileBorder;
+  float4 tileGlow;
+  float4 tileFalloff;
 };
+float4 decorateTile(float4 sampleColor, float2 pixel) {
+#ifdef COREVIDEO_DISABLE_TILES_EFFECT
+  return sampleColor;
+#else
+  if (tileShape.x < 0.5) return sampleColor;
+  float2 q = abs(pixel - tileRect.xy) - (tileRect.zw - tileShape.y);
+  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - tileShape.y;
+  float aa = max(fwidth(d), 0.0001);
+  if (tileShape.w > 0.5) {
+    float t = saturate(d / max(tileFalloff.x, 0.0001));
+    float ramp = 1.0 - t;
+    return float4(tileGlow.rgb, saturate(ramp * ramp * (1.0 + tileFalloff.y * t)) * tileGlow.a * sampleColor.a);
+  }
+  float alpha = tileShape.y > 0.0 ? 1.0 - smoothstep(-aa, aa, d) : 1.0;
+  float3 rgb = sampleColor.rgb;
+  if (tileShape.z > 0.0) {
+    float inner = 1.0 - smoothstep(-aa, aa, d + tileShape.z);
+    rgb = lerp(tileBorder.rgb, rgb, inner);
+  }
+  return float4(rgb, sampleColor.a * alpha);
+#endif
+}
+
 
 // CHROMA KEY — the HLSL twin of the MSL implementation in
 // MetalCompositorShaders.h. Keep the two in step: they share one cbuffer
@@ -263,7 +351,7 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return float4(saturate(rgb), color.a * keyAlpha);
+  return decorateTile(float4(saturate(rgb), color.a * keyAlpha), pos.xy);
 }
 )";
 
@@ -329,6 +417,16 @@ inline ComPtrLite<ID3DBlob> compileShader(const char* source, const char* entry,
     return {};
   }
   return blob;
+}
+
+// Retry without the optional effect on a Tiles shader failure. Callers disable
+// all decorations together and skip halo quads when this fallback is selected.
+inline ComPtrLite<ID3DBlob> compileTilesShader(const char* source, bool& available, std::string& error) {
+  auto blob = available ? compileShader(source, "main", "ps_5_0", error) : ComPtrLite<ID3DBlob>{};
+  if (blob) return blob;
+  available = false;
+  const std::string clean = std::string("#define COREVIDEO_DISABLE_TILES_EFFECT 1\n") + source;
+  return compileShader(clean.c_str(), "main", "ps_5_0", error);
 }
 
 }  // namespace corevideo::modules

@@ -53,6 +53,9 @@ public sealed class ScenePersistenceServiceTests
             DynamicGallery = new DynamicGallerySettings
             {
                 MaxTiles = 8,
+                AutoFill = false,
+                ManualSlots = ["zoom:42", null, "zoom:99"],
+                ExcludedSourceIds = ["zoom:17"],
                 TileAspect = "4:3",
                 BorderShape = "rounded",
                 BorderColor = "#FF8800",
@@ -102,6 +105,9 @@ public sealed class ScenePersistenceServiceTests
         var restoredGallery = ScenePersistenceService.SceneFromPersisted(restoredScene).DynamicGallery;
         Assert.NotNull(restoredGallery);
         Assert.Equal(8, restoredGallery!.MaxTiles);
+        Assert.False(restoredGallery.AutoFill);
+        Assert.Equal(new string?[] { "zoom:42", null, "zoom:99" }, restoredGallery.ManualSlots);
+        Assert.Equal(new[] { "zoom:17" }, restoredGallery.ExcludedSourceIds);
         Assert.Equal("4:3", restoredGallery.TileAspect);
         Assert.Equal("rounded", restoredGallery.BorderShape);
         Assert.Equal(12, restoredGallery.GlowSize, 3);

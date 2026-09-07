@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -280,6 +281,15 @@ inline uint32_t parseHexColorRgba(const std::string& value, uint32_t fallback = 
 //                the rendered source behind the clipped destination; for
 //                undersized content it positions the rendered source inside the
 //                destination.
+struct SourceCropInterval { float left = 0.f, width = 1.f; };
+inline SourceCropInterval sourceCropInterval(float leftPercent, float rightPercent) {
+  float left = std::isfinite(leftPercent) ? std::max(leftPercent, 0.f) / 100.f : 0.f;
+  float right = std::isfinite(rightPercent) ? std::max(rightPercent, 0.f) / 100.f : 0.f;
+  const float total = left + right;
+  if (total > 0.9f) { left *= 0.9f / total; right *= 0.9f / total; }
+  return {left, 1.f - left - right};
+}
+
 inline SourceFraming computeSourceFraming(
     int sourceWidth,
     int sourceHeight,
@@ -287,8 +297,11 @@ inline SourceFraming computeSourceFraming(
     const std::string& fitMode,
     float sourceScale,
     float sourceOffsetX,
-    float sourceOffsetY) {
+    float sourceOffsetY,
+    float cropLeftPercent = 0.f,
+    float cropRightPercent = 0.f) {
   SourceFraming framing;
+  const auto crop = sourceCropInterval(cropLeftPercent, cropRightPercent);
   const bool validAspect = sourceWidth > 0 && sourceHeight > 0 && dest.width > 0.f && dest.height > 0.f;
   if (!validAspect) {
     framing.imageX = dest.x;
@@ -302,7 +315,7 @@ inline SourceFraming computeSourceFraming(
     return framing;
   }
 
-  const float sourceAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
+  const float sourceAspect = static_cast<float>(sourceWidth) * crop.width / static_cast<float>(sourceHeight);
   const float destAspect = dest.width / dest.height;
   const float ratio = sourceAspect / destAspect;
   const bool wider = ratio > 1.f + 1e-3f;
@@ -362,6 +375,8 @@ inline SourceFraming computeSourceFraming(
     framing.u1 = std::clamp((visibleX1 - imageX) / renderW, 0.f, 1.f);
     framing.v1 = std::clamp((visibleY1 - imageY) / renderH, 0.f, 1.f);
   }
+  framing.u0 = crop.left + framing.u0 * crop.width;
+  framing.u1 = crop.left + framing.u1 * crop.width;
   return framing;
 }
 

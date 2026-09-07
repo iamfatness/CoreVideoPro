@@ -23,6 +23,11 @@ public static class ScenePersistenceService
         new()
         {
             AutoFill = settings.AutoFill,
+            BackgroundColor = settings.BackgroundColor,
+            BackgroundSourceId = settings.BackgroundSourceId,
+            Overrides = settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
+            ManualSlots = [.. settings.ManualSlots],
+            ExcludedSourceIds = [.. settings.ExcludedSourceIds],
             MaxTiles = settings.MaxTiles,
             TileAspect = settings.TileAspect,
             CustomAspectRatio = settings.CustomAspectRatio,
@@ -87,6 +92,11 @@ public static class ScenePersistenceService
         new()
         {
             AutoFill = persisted.AutoFill,
+            BackgroundColor = persisted.BackgroundColor,
+            BackgroundSourceId = persisted.BackgroundSourceId,
+            Overrides = (persisted.Overrides ?? []).Where(p => p.Value is not null).Take(64).ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
+            ManualSlots = (persisted.ManualSlots ?? []).Take(64).ToList(),
+            ExcludedSourceIds = (persisted.ExcludedSourceIds ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).Take(1024).ToList(),
             MaxTiles = Math.Clamp(persisted.MaxTiles, 1, 64),
             TileAspect = DynamicGalleryLayoutService.NormalizeAspectPreset(persisted.TileAspect),
             CustomAspectRatio = Math.Clamp(persisted.CustomAspectRatio, 0.25, 4),

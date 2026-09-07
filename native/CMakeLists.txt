@@ -628,6 +628,7 @@ if(BUILD_TESTING)
     tests/AnchoredFrameDeadlineTrackerTest.cpp
     tests/ProgramAudioDelayTest.cpp
     tests/ProgramPlayoutTimelineTest.cpp
+    tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/MediaCoreBatchSnapshotTest.cpp
@@ -644,6 +645,7 @@ if(BUILD_TESTING)
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/TilesLayoutTest.cpp
+    tests/TilesAnimatorTest.cpp
     tests/TilesLayerTest.cpp
     tests/TilesMembershipTest.cpp
     tests/TilesRenderPlanTest.cpp

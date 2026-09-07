@@ -77,7 +77,7 @@ bool blitVideoFrameLayerClipped(
     const VideoFrame& frame,
     const CompositorLayerRect& imageRect,
     const CompositorLayerRect& clipRect,
-    float opacity);
+    float opacity, float cropLeft = 0.f, float cropWidth = 1.f);
 
 [[nodiscard]] rpc::Json programSharedTextureJson(const ProgramFrame& frame);
 

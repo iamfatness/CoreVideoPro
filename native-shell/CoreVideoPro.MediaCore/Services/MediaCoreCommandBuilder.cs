@@ -145,13 +145,31 @@ public static class MediaCoreCommandBuilder
                 ["layerId"] = tiles.LayerId,
                 ["order"] = tiles.Order,
                 ["members"] = tiles.Members,
+                ["overrides"] = tiles.Overrides?.ToDictionary(p => p.Key, p => new Dictionary<string, object?>
+                {
+                    ["rect"] = p.Value.Rect is { } rect ? new Dictionary<string, object?>
+                        { ["x"] = rect.X, ["y"] = rect.Y, ["w"] = rect.Width, ["h"] = rect.Height } : null,
+                    ["cropLeftPercent"] = p.Value.CropLeftPercent, ["cropRightPercent"] = p.Value.CropRightPercent, ["z"] = p.Value.Z
+                }),
                 ["style"] = new Dictionary<string, object?>
                 {
                     ["tileAspect"] = tiles.TileAspect,
                     ["customAspectRatio"] = tiles.CustomAspectRatio,
                     ["gutterPercent"] = tiles.GutterPercent,
                     ["marginPercent"] = tiles.MarginPercent,
-                    ["backgroundColor"] = tiles.BackgroundColor
+                    ["backgroundColor"] = tiles.BackgroundColor,
+                    ["backgroundSourceId"] = tiles.BackgroundSourceId,
+                    ["borderShape"] = tiles.BorderShape,
+                    ["borderColor"] = tiles.BorderColor,
+                    ["borderThickness"] = tiles.BorderThickness,
+                    ["cornerRadius"] = tiles.CornerRadius,
+                    ["glowColor"] = tiles.GlowColor,
+                    ["glowSize"] = tiles.GlowSize,
+                    ["glowIntensity"] = tiles.GlowIntensity,
+                    ["glowSoftness"] = tiles.GlowSoftness,
+                    ["animateLayout"] = tiles.AnimateLayout,
+                    ["animationDurationMs"] = tiles.AnimationDurationMs,
+                    ["fillMode"] = tiles.FillMode
                 }
             };
 

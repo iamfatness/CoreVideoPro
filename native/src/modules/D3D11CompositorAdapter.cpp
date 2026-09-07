@@ -23,6 +23,7 @@
 #include "compositor/ComPtrLite.h"
 #include "compositor/CompositorLayout.h"
 #include "compositor/CompositorOverlayRaster.h"  // extracted DirectWrite/WIC/D2D overlay raster
+#include "compositor/TilesDecorationParams.h"
 #include "compositor/CompositorShaders.h"  // extracted HLSL shader sources + pure shader/format helpers
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
@@ -466,7 +467,7 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "vertex shader: " + error;
       return;
     }
-    const auto pixelBlob = compileShader(kCompositorPixelShader, "main", "ps_5_0", error);
+    const auto pixelBlob = compileTilesShader(kCompositorPixelShader, tilesEffectsAvailable_, error);
     if (!pixelBlob) {
       initError_ = "pixel shader: " + error;
       return;
@@ -480,7 +481,7 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "CreatePixelShader failed.";
       return;
     }
-    const auto texturedPixelBlob = compileShader(kCompositorTexturedPixelShader, "main", "ps_5_0", error);
+    const auto texturedPixelBlob = compileTilesShader(kCompositorTexturedPixelShader, tilesEffectsAvailable_, error);
     if (!texturedPixelBlob) {
       initError_ = "textured pixel shader: " + error;
       return;
@@ -489,7 +490,7 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "CreatePixelShader (textured) failed.";
       return;
     }
-    const auto yuvPixelBlob = compileShader(kCompositorYuvPixelShader, "main", "ps_5_0", error);
+    const auto yuvPixelBlob = compileTilesShader(kCompositorYuvPixelShader, tilesEffectsAvailable_, error);
     if (!yuvPixelBlob) {
       initError_ = "yuv pixel shader: " + error;
       return;
@@ -508,6 +509,8 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
 
+    if (!tilesEffectsAvailable_)
+      std::fprintf(stderr, "[tiles] shader effect unavailable; rendering clean tiles without border/radius/glow.\n");
     D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -791,6 +794,7 @@ class D3D11Compositor final : public ICompositor {
       return false;
     }
     auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
+    *constants = {};
     constants->color[0] = static_cast<float>((colorArgb >> 16) & 0xff) / 255.f;
     constants->color[1] = static_cast<float>((colorArgb >> 8) & 0xff) / 255.f;
     constants->color[2] = static_cast<float>(colorArgb & 0xff) / 255.f;
@@ -805,6 +809,7 @@ class D3D11Compositor final : public ICompositor {
     constants->uvOffset[0] = uvOffsetX;
     constants->uvOffset[1] = uvOffsetY;
     applyYuvParams(constants, yuvShaderParamsForFrame(layer.frame));
+    if (tilesEffectsAvailable_) applyTilesDecoration(*constants, layer.plan, targetWidth_, targetHeight_);
     context_->Unmap(constantBuffer_.get(), 0);
     ID3D11Buffer* buffers[] = {constantBuffer_.get()};
     context_->PSSetConstantBuffers(0, 1, buffers);
@@ -920,6 +925,18 @@ class D3D11Compositor final : public ICompositor {
         layer.plan.rect.x, layer.plan.rect.y, layer.plan.rect.width, layer.plan.rect.height};
     const float layerAlpha = compositorLayerOpacity(layer.plan);
 
+    if (layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass) {
+      if (!tilesEffectsAvailable_) return;
+      const auto expanded = tilesGlowRect(layer.plan, targetWidth_, targetHeight_);
+      if (layer.plan.hasClipRect) {
+        context_->RSSetState(scissorRasterizerState_.get());
+        setScissorFromRect({layer.plan.clipRect.x, layer.plan.clipRect.y, layer.plan.clipRect.width, layer.plan.clipRect.height});
+      }
+      drawSolidQuad(layer, renderPlan, expanded, 0xffffffffu, layerAlpha);
+      context_->RSSetState(rasterizerState_.get());
+      return;
+    }
+
     // Overlay/lower-third/caption layers go through the raster stage.
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
       drawOverlayLayer(layer, renderPlan, rect, layerAlpha);
@@ -956,7 +973,7 @@ class D3D11Compositor final : public ICompositor {
         layer.plan.fitMode,
         layer.plan.sourceScale,
         layer.plan.sourceOffsetX,
-        layer.plan.sourceOffsetY);
+        layer.plan.sourceOffsetY, layer.plan.sourceCropLeftPercent, layer.plan.sourceCropRightPercent);
 
     // Letterbox bars: paint the full layer rect dark first when the content is
     // inset, so fit/contain shows bars (matching the CPU preview).
@@ -974,11 +991,12 @@ class D3D11Compositor final : public ICompositor {
         imageFracW * rect.width,
         imageFracH * rect.height};
 
+    const auto crop = compositor::sourceCropInterval(layer.plan.sourceCropLeftPercent, layer.plan.sourceCropRightPercent);
     // Main content pass: viewport = full rendered source layer; scissor = slot.
     // This keeps source X/Y relative to the original layer, then clips the
     // result to the source box, matching a layer-based SuperSource model.
     setViewportFromRect(imageRect);
-    if (!writeLayerConstants(layer, renderPlan, layer.color, layerAlpha, 1.f, 1.f, 0.f, 0.f)) {
+    if (!writeLayerConstants(layer, renderPlan, layer.color, layerAlpha, crop.width, 1.f, crop.left, 0.f)) {
       return;
     }
 
@@ -1348,6 +1366,7 @@ class D3D11Compositor final : public ICompositor {
       return false;
     }
     auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
+    *constants = {};
     constants->color[0] = constants->color[1] = constants->color[2] = constants->color[3] = 1.f;
     constants->exposure = grade.exposure * 0.1f;
     constants->contrast = grade.contrast * 0.1f;
@@ -2043,6 +2062,7 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
     auto* c = static_cast<LayerShaderConstants*>(mapped.pData);
+    *c = {};
     c->color[0] = c->color[1] = c->color[2] = c->color[3] = 1.f;
     c->exposure = c->contrast = c->saturation = c->temperature = 0.f;
     c->uvScale[0] = c->uvScale[1] = 1.f;
@@ -2395,6 +2415,7 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Device> device_;
   ComPtrLite<ID3D11DeviceContext> context_;
   ComPtrLite<ID3D11VertexShader> vertexShader_;
+  bool tilesEffectsAvailable_ = true;
   ComPtrLite<ID3D11PixelShader> pixelShader_;
   ComPtrLite<ID3D11PixelShader> texturedPixelShader_;
   ComPtrLite<ID3D11PixelShader> yuvPixelShader_;

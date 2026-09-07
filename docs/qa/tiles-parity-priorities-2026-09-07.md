@@ -8,7 +8,7 @@ The existing parity charter remains the requirement: every CoreVideo plugin
 workflow must have a working Pro equivalent. Tiles selection stability is the
 first gate. The shutdown race fix does not close the reported selection freeze.
 
-## Verified Tiles status
+## Audit baseline (before implementation)
 
 | Capability | Current state | Evidence |
 | --- | --- | --- |
@@ -26,6 +26,19 @@ feature completion. Settings must visibly affect Preview, Program and the saved
 recording. A headless native pass does not prove the WinUI scene-selection path.
 
 ## Execution order and acceptance
+
+Implementation in progress on `codex/tiles-crash-hardening` now includes dedicated
+Tiles border/radius/glow shaders, render-clock animation with separate Program and
+Preview state, manual slots and exclusions, crop/rectangle/order overrides, and
+solid/live-source backgrounds. Scene-selection notifications suppress two-way
+binding echoes; presentation defers busy swap chains and records slow stages.
+These are candidate changes, not proof that the original live freeze is resolved.
+
+Pinned rectangles reserve their areas; automatic members occupy the largest
+remaining free rectangle. Other disjoint regions remain background. The editor
+currently uses numeric controls and API actions, without draggable tile handles.
+Windows GPU, managed, package and live acceptance results must be recorded
+separately; Metal source changes still require macOS build and pixel validation.
 
 1. **Reproduce and fix scene-selection failure.** Use the candidate build and
    its exact manifest; capture UI and native state before shutdown. Exercise

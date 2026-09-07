@@ -3620,6 +3620,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        LaunchLog.Write($"scene-selection phase=begin scene={value} gallery={PreviewScene.DynamicGallery is not null} participants={RoomVideoParticipants.Count}");
         _lastValidPreviewSceneId = value;
         MagicScene.NotifyPreviewSceneChanged();
         // S2b: cueing a different scene abandons any uncommitted edits to the
@@ -3627,13 +3628,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         DiscardLivePreviewDraft();
         SceneBuilderName = PreviewScene.Name;
         NotifyDynamicGalleryPropertiesChanged();
+        LaunchLog.Write($"scene-selection phase=refresh-items scene={value}");
         RefreshSceneItems();
+        LaunchLog.Write($"scene-selection phase=refresh-background scene={value}");
         RefreshSceneBackgroundSelection();
         OnPropertyChanged(nameof(PreviewScene));
         OnPropertyChanged(nameof(PreviewSceneSummary));
         OnPropertyChanged(nameof(SceneRailDisplaySummary));
         OnPropertyChanged(nameof(CanTake));
         TakeCommand.NotifyCanExecuteChanged();
+        LaunchLog.Write($"scene-selection phase=schedule-routing scene={value}");
         SchedulePreviewRoutingRefresh();
         // Push the newly-selected PREVIEW scene graph to the core so it composites the
         // multi-layer preview bus (mirrors how program scene changes sync). Discrete user
@@ -3641,8 +3645,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // reapplies), so swallow the in-flight signal.
         if (_bridge.Running && _bridge.Profile is not null && _takeMutationDepth == 0)
         {
+            LaunchLog.Write($"scene-selection phase=sync-start scene={value}");
             _ = SyncPreviewSceneChangeAsync();
         }
+        LaunchLog.Write($"scene-selection phase=queued scene={value}");
     }
 
     private void SchedulePreviewSceneSelectionRestore()
@@ -10325,6 +10331,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RoomParticipantsForInputs = ParticipantMapper.ParticipantsInRoom(mapped, _currentRoomId);
         CurrentRoomLabel = _currentRoomName;
         OnPropertyChanged(nameof(RoomVideoParticipants));
+        NotifyDynamicGalleryPropertiesChanged();
         OnPropertyChanged(nameof(CurrentRoomHeader));
         RefreshAudioParticipantRows();
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
@@ -12691,7 +12698,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             payload.Style.CustomAspectRatio,
             payload.Style.GutterPercent,
             payload.Style.MarginPercent,
-            payload.Style.BackgroundColor);
+            payload.Style.BackgroundColor,
+            payload.Style.BorderShape, payload.Style.BorderColor, payload.Style.BorderThickness,
+            payload.Style.CornerRadius, payload.Style.GlowColor, payload.Style.GlowSize,
+            payload.Style.GlowIntensity, payload.Style.GlowSoftness,
+            payload.Style.AnimateLayout, payload.Style.AnimationDurationMs, payload.Style.FillMode, payload.Style.BackgroundSourceId,
+            payload.Overrides?.ToDictionary(p => p.Key, p => new MediaCoreTilesOverrideWire(
+                p.Value.Rect is { } r ? new MediaCoreTilesRectWire(r.X, r.Y, r.Width, r.Height) : null,
+                p.Value.CropLeftPercent, p.Value.CropRightPercent, p.Value.Z)));
     }
 
     // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
@@ -12709,29 +12723,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // Third instance of the Selector.SelectedValue + x:Bind family in this
     // codebase (SourcesInputsPage role ComboBox; the scene ComboBox writing null
     // into PreviewSceneId). See CLAUDE.md.
-    private bool _updatingGallery;
+    private readonly GalleryEditGuard _galleryEditGuard = new();
 
     private void UpdateGallery(Action<DynamicGallerySettings> update)
     {
-        if (_updatingGallery)
+        _galleryEditGuard.TryEdit(() =>
         {
-            return;
-        }
-
-        if (PreviewScene.DynamicGallery is not { } settings)
-        {
-            return;
-        }
-
-        _updatingGallery = true;
-        try
-        {
-            UpdateGalleryCore(settings, update);
-        }
-        finally
-        {
-            _updatingGallery = false;
-        }
+            if (PreviewScene.DynamicGallery is { } settings)
+            {
+                UpdateGalleryCore(settings, update);
+            }
+        });
     }
 
     private void UpdateGalleryCore(DynamicGallerySettings settings, Action<DynamicGallerySettings> update)
@@ -12750,21 +12752,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void NotifyDynamicGalleryPropertiesChanged()
     {
-        OnPropertyChanged(nameof(IsPreviewDynamicGallery));
-        OnPropertyChanged(nameof(GalleryMaxTiles));
-        OnPropertyChanged(nameof(GalleryTileAspect));
-        OnPropertyChanged(nameof(GalleryCustomAspectRatio));
-        OnPropertyChanged(nameof(GalleryGutterPercent));
-        OnPropertyChanged(nameof(GalleryMarginPercent));
-        OnPropertyChanged(nameof(GalleryBorderShape));
-        OnPropertyChanged(nameof(GalleryBorderColor));
-        OnPropertyChanged(nameof(GalleryBorderThickness));
-        OnPropertyChanged(nameof(GalleryGlowColor));
-        OnPropertyChanged(nameof(GalleryGlowSize));
-        OnPropertyChanged(nameof(GalleryGlowIntensity));
-        OnPropertyChanged(nameof(GalleryGlowSoftness));
-        OnPropertyChanged(nameof(GalleryAnimateLayout));
-        OnPropertyChanged(nameof(GalleryAnimationDurationMs));
+        // Selection refresh also writes model values into TwoWay controls.
+        // Suppress echoed edits while preserving an outer UpdateGallery scope.
+        _galleryEditGuard.Notify(() =>
+        {
+            OnPropertyChanged(nameof(IsPreviewDynamicGallery));
+            OnPropertyChanged(nameof(GalleryAutoFill));
+            OnPropertyChanged(nameof(GalleryMembershipSummary));
+            OnPropertyChanged(nameof(GalleryMemberChoices));
+            OnPropertyChanged(nameof(GalleryMaxTiles));
+            OnPropertyChanged(nameof(GalleryTileAspect));
+            OnPropertyChanged(nameof(GalleryCustomAspectRatio));
+            OnPropertyChanged(nameof(GalleryGutterPercent));
+            OnPropertyChanged(nameof(GalleryMarginPercent));
+            OnPropertyChanged(nameof(GalleryBorderShape));
+            OnPropertyChanged(nameof(GalleryBorderColor));
+            OnPropertyChanged(nameof(GalleryBorderThickness));
+            OnPropertyChanged(nameof(GalleryCornerRadius));
+            OnPropertyChanged(nameof(GalleryBackgroundColor));
+            LoadGalleryTileEditor();
+            OnPropertyChanged(nameof(GalleryGlowColor));
+            OnPropertyChanged(nameof(GalleryGlowSize));
+            OnPropertyChanged(nameof(GalleryGlowIntensity));
+            OnPropertyChanged(nameof(GalleryGlowSoftness));
+            OnPropertyChanged(nameof(GalleryAnimateLayout));
+            OnPropertyChanged(nameof(GalleryAnimationDurationMs));
+        });
     }
 
     // NOT force: forcing re-ran the full building-out -> building-in slide on EVERY

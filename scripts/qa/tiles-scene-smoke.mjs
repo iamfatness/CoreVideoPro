@@ -94,7 +94,10 @@ async function run(nativeCore, frames, fixtures, cycles) {
       const members = ids.map(id => `media:${id}`);
       const tile = values => ({ layerId: `wall-${cycle}`, order: 0,
         rect: { x: 0, y: 0, w: 1, h: 1 }, members: [...values, 'zoom:never-present'],
-        style: { tileAspect: cycle % 2 ? '1:1' : '16:9', gutterPercent: 0.741, marginPercent: 0.741 } });
+        style: { tileAspect: cycle % 2 ? '1:1' : '16:9', gutterPercent: 0.741, marginPercent: 0.741,
+          borderShape: 'rounded', cornerRadius: 24, borderThickness: 6, borderColor: '#FF8000',
+          glowSize: 12, glowIntensity: 65, glowSoftness: 40, glowColor: '#0080FF',
+          animateLayout: true, animationDurationMs: 350 } });
       await sync([
         { type: 'load-scene-graph', sceneId, routes, tiles: tile(members) },
         { type: 'set-preview-scene', sceneId: previewId, routes,
@@ -171,7 +174,8 @@ try {
   const fixtures = Array.from({ length: 8 }, (_, i) => join(fixtureDirectory, `${i}.bmp`));
   fixtures.forEach(fixture);
   const report = { schemaVersion: 1, nativeCore, nativeSha256: createHash('sha256').update(readFileSync(nativeCore)).digest('hex'),
-    scope: 'headless-native-tiles-functional', cycles, physicalPresentationMeasured: false, framePerformancePassed: false,
+    scope: 'headless-native-tiles-functional', cycles, decoratedTiles: true, animationEnabled: true,
+    physicalPresentationMeasured: false, framePerformancePassed: false,
     limitation: 'Real D3D/WIC still-image Tiles on Program and Preview; no GUI consumer, live meeting, camera video, physical presentation, or output cadence acceptance. Media backing routes sit below the Tiles background. Preview validates composite surface progress, not pixel membership.', runs: [] };
   for (const frames of [2, 3]) {
     if (stopRequested) break;

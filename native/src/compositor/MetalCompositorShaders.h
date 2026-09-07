@@ -34,7 +34,35 @@ struct LayerConstants {
   float4 yuvCoeffs;    // x = rV, y = gU, z = gV, w = bU
   float4 chromaKeyColor;  // xyz = key colour, w = 1 when keying is enabled
   float4 chromaKeyParams; // x = similarity, y = smoothness, z = spill
+  float4 tileRect;
+  float4 tileShape;
+  float4 tileBorder;
+  float4 tileGlow;
+  float4 tileFalloff;
 };
+float4 decorateTile(float4 sampleColor, float2 pixel, constant LayerConstants& c) {
+#ifdef COREVIDEO_DISABLE_TILES_EFFECT
+  return sampleColor;
+#else
+  if (c.tileShape.x < 0.5) return sampleColor;
+  float2 q = abs(pixel - c.tileRect.xy) - (c.tileRect.zw - c.tileShape.y);
+  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - c.tileShape.y;
+  float aa = max(fwidth(d), 0.0001);
+  if (c.tileShape.w > 0.5) {
+    float t = saturate(d / max(c.tileFalloff.x, 0.0001));
+    float ramp = 1.0 - t;
+    return float4(c.tileGlow.rgb, saturate(ramp * ramp * (1.0 + c.tileFalloff.y * t)) * c.tileGlow.a * sampleColor.a);
+  }
+  float alpha = c.tileShape.y > 0.0 ? 1.0 - smoothstep(-aa, aa, d) : 1.0;
+  float3 rgb = sampleColor.rgb;
+  if (c.tileShape.z > 0.0) {
+    float inner = 1.0 - smoothstep(-aa, aa, d + c.tileShape.z);
+    rgb = mix(c.tileBorder.rgb, rgb, inner);
+  }
+  return float4(rgb, sampleColor.a * alpha);
+#endif
+}
+
 
 struct VSOut {
   float4 pos [[position]];
@@ -101,7 +129,7 @@ static inline float3 suppressSpill(float3 rgb, constant LayerConstants& c) {
 
 fragment float4 compositorSolid(VSOut in [[stage_in]],
                                 constant LayerConstants& c [[buffer(0)]]) {
-  return float4(applyGrade(c.color.rgb, c), c.color.a);
+  return decorateTile(float4(applyGrade(c.color.rgb, c), c.color.a), in.pos.xy, c);
 }
 
 // Textured variant: samples a decoded BGRA frame and applies the same grade.
@@ -113,7 +141,7 @@ fragment float4 compositorTextured(VSOut in [[stage_in]],
   float4 sampled = layerTexture.sample(layerSampler, sourceUv);
   float keyAlpha = chromaKeyAlpha(sampled.rgb, c);
   float3 rgb = suppressSpill(sampled.rgb, c);
-  return float4(applyGrade(rgb, c), sampled.a * c.color.a * keyAlpha);
+  return decorateTile(float4(applyGrade(rgb, c), sampled.a * c.color.a * keyAlpha), in.pos.xy, c);
 }
 
 // Overlay variant: the raster texture is PREMULTIPLIED alpha; fading it means
@@ -146,7 +174,7 @@ fragment float4 compositorI420(VSOut in [[stage_in]],
   rgb = saturate(rgb);
   float keyAlpha = chromaKeyAlpha(rgb, c);
   rgb = suppressSpill(rgb, c);
-  return float4(applyGrade(rgb, c), c.color.a * keyAlpha);
+  return decorateTile(float4(applyGrade(rgb, c), c.color.a * keyAlpha), in.pos.xy, c);
 }
 )MSL";
 
