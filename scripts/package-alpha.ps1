@@ -41,7 +41,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'native-core/zoom-runtime/
 # Visual Studio redistribution tree, never DLLs scavenged from System32/PATH.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw 'Visual Studio Installer vswhere.exe is required to locate licensed VC redistributables.' }
-$vsRoot = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+$vsPaths = @(& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+$vsRoot = $vsPaths | Select-Object -First 1
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vsRoot)) { throw 'No installed Visual Studio C++ redistributable location found.' }
 $versionFile = Join-Path $vsRoot 'VC/Auxiliary/Build/Microsoft.VCRedistVersion.default.txt'
 $crtVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
