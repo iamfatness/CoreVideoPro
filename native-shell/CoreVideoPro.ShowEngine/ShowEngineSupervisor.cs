@@ -377,8 +377,27 @@ public sealed class ShowEngineSupervisor : IDisposable
     /// permanently written off.</summary>
     private void AbortStart(IShowEngineChild child, string error, bool terminal)
     {
-        var claimed = TryClaimEnded(child, out var request);
-        TeardownChild(child, kill: true);
+        // THE EXIT CODE IS THE AUTHORITY OVER A CHILD THAT ALREADY DIED.
+        //
+        // Every non-terminal abort here rests on the ABSENCE of evidence ("it never handshook"), and a
+        // child that exits before announcing is exactly what a config rejection looks like: exit 78 IS
+        // "the engine read its config at startup and refused it". <see cref="WatchExitAsync"/> wakes off
+        // the same completed TCS this method can observe, so whichever task claims first decides the
+        // classification — and if this one won, the terminal exit-78 branch in
+        // <see cref="OnChildEnded"/> would never run and a permanently broken config would respawn for
+        // ever. So: withdraw, claim nothing, DETACH NOTHING (a detach here would make the exit
+        // unclaimable and strand the supervisor in Starting), and let the exit path classify it.
+        //
+        // A TERMINAL abort is different and still wins: it rests on POSITIVE evidence we already read
+        // off the wire (an unsupported protocolVersion), not on an absence.
+        if (!terminal && child.Exited.IsCompleted)
+        {
+            RejectPendingFor(child, new InvalidOperationException(error));
+            return;
+        }
+
+        var claimed = TryClaimEnded(child, out var request, out var scope);
+        TeardownChild(child, scope, kill: true);
         RejectPendingFor(child, new InvalidOperationException(error));
 
         // Superseded (recovery already spawned a successor) or stopping: publish nothing.
@@ -580,6 +599,11 @@ public sealed class ShowEngineSupervisor : IDisposable
             }
             catch (Exception ex)
             {
+                // An ordinary crash rejects this child's pendings with "Show engine exited." while a
+                // ping is in flight, which lands right here. That is the exit path doing its job, not a
+                // heartbeat fault, so it must not add a warn of its own.
+                if (!IsCurrent(child)) return;
+
                 // EVERY failed beat counts, not only a timeout. An engine that answers ok:false to a
                 // ping surfaces here as an InvalidOperationException, and treating that as "stop
                 // watching" would silently disable the watchdog against a host that is answering but
@@ -626,7 +650,9 @@ public sealed class ShowEngineSupervisor : IDisposable
     /// </summary>
     private void OnChildEnded(IShowEngineChild child, int exitCode)
     {
-        if (!TryClaimEnded(child, out var request)) return;
+        // The scope is deliberately NOT cancelled: this is the drain-to-EOF path, and the reader loop
+        // owns disposing both it and the child when the pipe finally closes.
+        if (!TryClaimEnded(child, out var request, out _)) return;
 
         // The process is already gone (or was just killed by the hang path), so the claim above only
         // DETACHED it. Its reader loop is deliberately left running to drain whatever is still in the
@@ -683,12 +709,15 @@ public sealed class ShowEngineSupervisor : IDisposable
 
     /// <summary>Atomically test-and-detach: returns true exactly once per child, and only while the
     /// supervisor is neither stopping nor disposed.</summary>
-    private bool TryClaimEnded(IShowEngineChild child, out ShowEngineSpawnRequest? request)
+    private bool TryClaimEnded(
+        IShowEngineChild child, out ShowEngineSpawnRequest? request, out CancellationTokenSource? scope)
     {
         lock (_gate)
         {
             request = _request;
+            scope = null;
             if (_stopping || _disposed || !ReferenceEquals(_child, child)) return false;
+            scope = _childScope;
             _child = null;
             _childScope = null;
             return true;
@@ -741,9 +770,14 @@ public sealed class ShowEngineSupervisor : IDisposable
 
     /// <summary>Forced teardown: detach, optionally kill the tree, and end the reader loop (which then
     /// disposes the child and the scope).</summary>
-    private void TeardownChild(IShowEngineChild child, bool kill)
+    private void TeardownChild(IShowEngineChild child, bool kill) =>
+        TeardownChild(child, DetachChild(child), kill);
+
+    /// <summary>Forced teardown for a caller that has ALREADY detached the child — it must hand the
+    /// scope it claimed back in, because <see cref="DetachChild"/> would now return null and the reader
+    /// loop would be left running against a child nobody owns.</summary>
+    private void TeardownChild(IShowEngineChild child, CancellationTokenSource? scope, bool kill)
     {
-        var scope = DetachChild(child);
         if (kill)
         {
             try { child.Kill(); } catch { /* best effort */ }

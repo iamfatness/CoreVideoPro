@@ -103,6 +103,8 @@ public sealed class ShowEngineSupervisorTests
         await WaitUntil(() => sup.Health.State == ShowEngineState.Failed, "the retry budget to run out");
 
         Assert.Equal(2, factory.SpawnCount);                       // it RESPAWNED, so it was not terminal
+        // The claimed scope must reach TeardownChild, or the aborted child's reader loop outlives it.
+        Assert.True(factory.Child(1).Disposed);
         lock (states) Assert.Contains(ShowEngineState.Recovering, states);
         Assert.Equal(2, sup.Health.RestartCount);
         Assert.Contains("press Restart", sup.Health.LastError);
@@ -263,6 +265,44 @@ public sealed class ShowEngineSupervisorTests
     }
 
     [Fact]
+    public async Task Exit78_BeforeAnyHandshake_IsStillTerminal()
+    {
+        // The config-rejection shape: the engine reads its config at startup, refuses it, and dies
+        // WITHOUT ever announcing. The missing handshake is the weaker evidence; the exit code is the
+        // authority, so this must be terminal, not an endless respawn of a permanently broken config.
+        var factory = new FakeChildFactory { PreloadHandshake = _ => false };
+        factory.Configure = child => child.Complete(78);
+        var delays = new DelayController();
+
+        using var sup = NewSupervisor(factory, delays);
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Failed, "the pre-handshake exit 78");
+
+        Assert.Contains("exit 78", sup.Health.LastError);
+        Assert.Equal(1, factory.SpawnCount);
+        Assert.DoesNotContain(TimeSpan.Zero, delays.Recorded);   // no backoff was taken
+        Assert.Equal(1, sup.Health.RestartCount);
+    }
+
+    [Fact]
+    public async Task OrdinaryExit_BeforeAnyHandshake_Recovers()
+    {
+        // The sibling classification on the same pre-handshake path: an ordinary exit code IS
+        // transient, so it respawns. Both outcomes are pinned so neither can drift into the other.
+        var factory = new FakeChildFactory { PreloadHandshake = g => g == 2 };
+        factory.Configure = child => { if (child.Generation == 1) child.Complete(1); };
+        var delays = new DelayController();
+
+        using var sup = NewSupervisor(factory, delays);
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Running, "the successor to handshake");
+
+        Assert.Equal(2, factory.SpawnCount);
+        Assert.Equal(2, sup.Health.Generation);
+        Assert.Equal(1, sup.Health.RestartCount);
+    }
+
+    [Fact]
     public async Task Hang_TwoMissedHeartbeats_TriggersRecovery()
     {
         // gen 2 never handshakes, so the supervisor is observably still Recovering after the respawn.
@@ -319,6 +359,36 @@ public sealed class ShowEngineSupervisorTests
         Assert.Equal(ShowEngineState.Recovering, sup.Health.State);
         Assert.Equal(1, sup.Health.RestartCount);      // claimed exactly once, never twice
         lock (logs) Assert.Contains(logs, l => l.Message.Contains("engine is wedged"));
+    }
+
+    [Fact]
+    public async Task OrdinaryCrash_WithAPingInFlight_AddsNoHeartbeatWarning()
+    {
+        // The crash rejects this child's pendings with "Show engine exited." — and the in-flight ping is
+        // one of them, so the rejection surfaces inside the heartbeat's catch. That is the exit path
+        // doing its job; reporting it as a heartbeat fault would put a spurious warning in the log of
+        // every ordinary crash, right where an operator goes looking for the real cause.
+        var factory = new FakeChildFactory { PreloadHandshake = g => g == 1 };
+        var delays = new DelayController();
+        factory.Configure = child => child.Responder = _ => Array.Empty<string>();
+
+        var logs = new List<ShowEngineLogLine>();
+        using var sup = NewSupervisor(factory, delays);
+        sup.LogReceived += l => { lock (logs) logs.Add(l); };
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        var gen1 = factory.Child(1);
+
+        // one heartbeat beat, answered by nobody and never timing out: the ping is now pending
+        await WaitUntil(() => delays.ParkedCount(Options.HeartbeatInterval) > 0, "the heartbeat wait");
+        delays.Release(Options.HeartbeatInterval);
+        await WaitUntil(() => gen1.IdOfWritten("ping") is not null, "the ping to be written");
+
+        gen1.SignalExit(3);
+        await WaitUntil(() => factory.SpawnCount == 2, "the crash to be recovered");
+
+        lock (logs) Assert.DoesNotContain(logs, l => l.Message.Contains("heartbeat failed"));
+        Assert.Equal(1, sup.Health.RestartCount);
     }
 
     [Fact]
