@@ -288,7 +288,17 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
         // NEW selection, not on every snapshot.
         ApplyParticipantSelectionFlag();
         ApplySlotSelectionFlag();
+
+        // Task 5 (Program.cs): Boxes sync + SelectedLookId + label recompute. A partial hook
+        // keeps the program-panel concern out of this file while still running as part of the
+        // same Apply unit of work (never a separate marshal/dispatch).
+        OnApplied(view);
     }
+
+    /// <summary>Implemented in <c>OhgShowViewModel.Program.cs</c> (Task 5). Called at the end of
+    /// every <see cref="Apply"/> — i.e. only when a snapshot was actually applied, never on a
+    /// revision-gated no-op.</summary>
+    partial void OnApplied(OhgSnapshotView view);
 
     /// <summary>Selection is PAGE state and survives ingestion — a snapshot must never yank the
     /// operator's cursor. The one exception: a key that no longer exists cannot be acted on, so it
