@@ -120,6 +120,135 @@ public sealed class ShowEngineBridgeTests
     }
 
     [Fact]
+    public async Task Invoke_TrimsTrailingNullArgs_ButKeepsInteriorOnes()
+    {
+        // ControlCatalog.TryBind pads every omitted optional param with null, and the engine's
+        // bindArgs treats only `undefined` as absent — so ["p1", null] failed coercion and
+        // `ohg.panelist.add` without a slot was refused on every transport. The shell trims.
+        var factory = new FakeChildFactory();
+        RespondToInvoke(factory, new Dictionary<string, string>
+        {
+            ["ohg.panelist.add"] = "{\"kind\":\"ok\"}",
+            ["ohg.middle"] = "{\"kind\":\"ok\"}",
+        });
+        var delays = new DelayController();
+        using var sup = NewSupervisor(factory, delays);
+        using var bridge = new ShowEngineBridge(sup, OscExposure.LoopbackOnly);
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Running, "the engine to be running");
+
+        Assert.True((await bridge.InvokeAsync(
+            "ohg.panelist.add", new object?[] { "p1", null }, CancellationToken.None)).Ok);
+        Assert.True((await bridge.InvokeAsync(
+            "ohg.middle", new object?[] { null, "x" }, CancellationToken.None)).Ok);
+
+        var invokes = factory.Child(1).Written
+            .Where(l => FakeShowEngineChild.TypeOf(l) == "invoke")
+            .ToList();
+        Assert.Equal(2, invokes.Count);
+
+        using (var trimmed = JsonDocument.Parse(invokes[0]))
+        {
+            var args = trimmed.RootElement.GetProperty("args");
+            Assert.Equal(1, args.GetArrayLength());
+            Assert.Equal("p1", args[0].GetString());
+        }
+
+        // An INTERIOR null is positional: dropping it would slide "x" onto the first parameter.
+        using (var kept = JsonDocument.Parse(invokes[1]))
+        {
+            var args = kept.RootElement.GetProperty("args");
+            Assert.Equal(2, args.GetArrayLength());
+            Assert.Equal(JsonValueKind.Null, args[0].ValueKind);
+            Assert.Equal("x", args[1].GetString());
+        }
+    }
+
+    [Fact]
+    public async Task PublishRoster_SendsOnlyWhenTheRosterActuallyChanged()
+    {
+        // The caller is the media core's snapshot stream (~4-10 Hz), which republishes the whole
+        // roster whether or not anything moved.
+        var factory = new FakeChildFactory();
+        var delays = new DelayController();
+        using var sup = NewSupervisor(factory, delays);
+        using var bridge = new ShowEngineBridge(sup, OscExposure.LoopbackOnly);
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Running, "gen 1 running");
+
+        var alice = new ShowEngineParticipant("p1", "Alice", true, true, true, false, 0);
+        var bob = new ShowEngineParticipant("p2", "Bob", true, true, true, false, 0);
+
+        bridge.PublishRoster(new[] { alice });
+        bridge.PublishRoster(new[] { alice });   // identical: nothing on the wire
+
+        await WaitUntil(() => RosterLines(factory).Count == 1, "exactly one roster line");
+        await Task.Delay(50);
+        Assert.Single(RosterLines(factory));
+
+        // A field change on the same participant IS a change...
+        bridge.PublishRoster(new[] { alice with { HandRaised = true } });
+        await WaitUntil(() => RosterLines(factory).Count == 2, "the hand-raise to publish");
+
+        // ... and so is a reorder, because roster ORDER is what the engine seats by.
+        bridge.PublishRoster(new[] { alice with { HandRaised = true }, bob });
+        await WaitUntil(() => RosterLines(factory).Count == 3, "the added participant to publish");
+        bridge.PublishRoster(new[] { bob, alice with { HandRaised = true } });
+        await WaitUntil(() => RosterLines(factory).Count == 4, "the reorder to publish");
+    }
+
+    [Fact]
+    public async Task PublishRoster_WhileStopped_RecordsSilently_AndRidesTheNextHandshake()
+    {
+        // Nothing sent, NOTHING LOGGED: a failed fire-and-forget send warns per call, and the
+        // caller calls per media-core snapshot, so a down engine used to flood launch.log. Health
+        // is the operator's signal that the engine is down; the re-arm is what delivers the state.
+        var factory = new FakeChildFactory();
+        var delays = new DelayController();
+        delays.SetImmediate(Options.RequestTimeout, Options.StopGrace);
+        using var sup = NewSupervisor(factory, delays);
+        using var bridge = new ShowEngineBridge(sup, OscExposure.LoopbackOnly);
+
+        var logs = new List<ShowEngineLogLine>();
+        bridge.Log += (_, line) => { lock (logs) logs.Add(line); };
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Running, "gen 1 running");
+        await sup.StopAsync();
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Stopped, "gen 1 stopped");
+
+        var writtenAtStop = factory.Child(1).Written.Count;
+        lock (logs) logs.Clear();
+
+        var roster = new[] { new ShowEngineParticipant("p1", "Alice", true, true, true, false, 0) };
+        bridge.PublishRoster(roster);
+        bridge.PublishCapacity(10);
+        bridge.PublishActiveSpeaker("p1");
+
+        await Task.Delay(50);
+        Assert.Equal(writtenAtStop, factory.Child(1).Written.Count);
+        lock (logs) Assert.Empty(logs);
+
+        // Start again: the handshake re-arms all three from what was recorded while it was down.
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Running, "gen 2 running");
+
+        await WaitUntil(
+            () => factory.Child(2).Written.Count(l => FakeShowEngineChild.TypeOf(l) == "activeSpeaker") == 1,
+            "gen 2 to receive the re-armed active speaker");
+
+        var types = factory.Child(2).Written.Select(FakeShowEngineChild.TypeOf).ToList();
+        Assert.Contains("capacity", types);
+        Assert.Contains("zoomEvent", types);
+        Assert.Contains("activeSpeaker", types);
+    }
+
+    private static List<string> RosterLines(FakeChildFactory factory) =>
+        factory.Child(1).Written.Where(l => FakeShowEngineChild.TypeOf(l) == "zoomEvent").ToList();
+
+    [Fact]
     public async Task Invoke_WhenNotRunning_FailsWithTheHealthState_WithoutSending()
     {
         // "Without sending" can only be proven against a child that EXISTED and could have received

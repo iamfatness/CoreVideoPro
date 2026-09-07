@@ -331,10 +331,15 @@ public sealed class OhgHostAdapter
 
     /// <summary>
     /// The route ids a <c>LookPlacement</c> addresses: <c>"ohg-box-&lt;box&gt;"</c> for every box
-    /// in the placement (value may be null — an empty box), plus <c>"ohg-host"</c> /
-    /// <c>"ohg-reader"</c> ONLY when that chair is seated. A look with no reader must not touch
-    /// the reader route: leaving the key out is how "not this look's business" is expressed, and
-    /// it is why routes are addressed by ID rather than by layer position.
+    /// in the placement, plus <c>"ohg-host"</c> / <c>"ohg-reader"</c> whenever the placement
+    /// CARRIES that chair — seated or not. A null value is not "leave it alone", it is
+    /// <b>clear it</b>: <c>OhgRouteSlotWriter</c> turns a null slot into Mode None with the
+    /// participant/role/spotlight ids cleared, exactly like an empty box.
+    ///
+    /// <para>An earlier cut wrote a chair key only when the chair was seated, which made a look
+    /// with <c>readerSlot: null</c> INHERIT the previous look's reader — the same defect the
+    /// "a route to an unassigned slot MUST clear ParticipantId" rule exists for, one level up:
+    /// the previous guest stayed on air through a look that does not seat them.</para>
     /// </summary>
     public static IReadOnlyDictionary<string, int?> RoutesForLook(JsonElement placement)
     {
@@ -363,6 +368,9 @@ public sealed class OhgHostAdapter
         return routes;
     }
 
+    /// <summary>Write the chair's route whenever the placement carries the field AT ALL. The
+    /// ABSENCE of the key is the only thing that means "this look does not address that chair";
+    /// a present-but-null value means "unseat it", and must reach the route writer as null.</summary>
     private static void AddChair(Dictionary<string, int?> routes, JsonElement placement, string field, string routeId)
     {
         if (placement.ValueKind != JsonValueKind.Object || !placement.TryGetProperty(field, out var value))
@@ -370,11 +378,7 @@ public sealed class OhgHostAdapter
             return;
         }
 
-        var slot = ReadOptionalInt(value, field);
-        if (slot.HasValue)
-        {
-            routes[routeId] = slot.Value;
-        }
+        routes[routeId] = ReadOptionalInt(value, field);
     }
 
     // ---- shadow log -----------------------------------------------------------------

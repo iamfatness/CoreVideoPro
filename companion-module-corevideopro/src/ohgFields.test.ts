@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { expandFeedbackFields, isTallyField, variableIdFor } from './ohgFields.js'
+import { expandFeedbackFields, isTallyField, variableIdFor, withoutShellScalarFields } from './ohgFields.js'
 
 describe('expandFeedbackFields', () => {
 	it('expands a {slot} template into 10 fields by default', () => {
@@ -56,5 +56,27 @@ describe('isTallyField', () => {
 	it('is false for a non-tally field', () => {
 		expect(isTallyField('ohg/slot/3/name')).toBe(false)
 		expect(isTallyField('ohg/program/mode')).toBe(false)
+	})
+})
+
+describe('withoutShellScalarFields', () => {
+	it('drops the two fields the shell publishes as ControlState scalars', () => {
+		// They live in /manifest's feedbackFields, and their expanded ids are EXACTLY the two
+		// hand-authored variable ids — registering both would double-register the same ids and
+		// then read them out of `state.ohgFields`, which never carries them.
+		const fields = withoutShellScalarFields(
+			expandFeedbackFields(['ohg/health/engine', 'ohg/shadow/lastCommand', 'ohg/program/mode']),
+		)
+
+		expect(fields).toEqual(['ohg/program/mode'])
+		expect(fields.map(variableIdFor)).not.toContain('ohg_health_engine')
+		expect(fields.map(variableIdFor)).not.toContain('ohg_shadow_lastCommand')
+	})
+
+	it('leaves every other ohg field alone', () => {
+		expect(withoutShellScalarFields(['ohg/slot/1/tally', 'ohg/health/mukana'])).toEqual([
+			'ohg/slot/1/tally',
+			'ohg/health/mukana',
+		])
 	})
 })

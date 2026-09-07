@@ -44,3 +44,21 @@ export function variableIdFor(field: string): string {
 export function isTallyField(field: string): boolean {
 	return field.endsWith('/tally')
 }
+
+/**
+ * The `ohg/` fields the SHELL publishes as top-level ControlState scalars
+ * (`ohgEngineHealth` / `ohgShadowLastCommand`) rather than inside the flat
+ * `ohgFields` map. They appear in `/manifest`'s feedbackFields (they are
+ * `ControlManifest.StateFields` entries), and their expanded ids collide
+ * exactly with the module's hand-authored `ohg_health_engine` /
+ * `ohg_shadow_lastCommand` variables — so expanding them would register the
+ * same two variable ids twice and then look them up in a map that never
+ * carries them. Dropped here; the hand-authored pair keeps the friendly names
+ * and reads from the scalars.
+ */
+export const SHELL_SCALAR_FIELDS: readonly string[] = ['ohg/health/engine', 'ohg/shadow/lastCommand']
+
+/** Drop the shell-scalar fields from an expanded field list. */
+export function withoutShellScalarFields(fields: readonly string[]): string[] {
+	return fields.filter((field) => !SHELL_SCALAR_FIELDS.includes(field))
+}

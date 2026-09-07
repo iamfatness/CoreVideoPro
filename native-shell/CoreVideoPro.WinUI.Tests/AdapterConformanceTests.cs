@@ -458,17 +458,30 @@ public sealed partial class AdapterConformanceTests
                 await stdin.FlushAsync(kill.Token);
             }
 
-            var stdout = await process.StandardOutput.ReadToEndAsync(kill.Token);
-            var stderr = await process.StandardError.ReadToEndAsync(kill.Token);
-
+            string stdout;
+            string stderr;
             try
             {
+                // ReadToEndAsync is itself cancellable, and a child that wedges with stdout still
+                // open cancels HERE rather than at WaitForExitAsync — leaving node running for the
+                // rest of the test session. The kill belongs to the whole read/wait span, not to
+                // the wait alone.
+                stdout = await process.StandardOutput.ReadToEndAsync(kill.Token);
+                stderr = await process.StandardError.ReadToEndAsync(kill.Token);
                 await process.WaitForExitAsync(kill.Token);
             }
             catch (OperationCanceledException)
             {
-                process.Kill(entireProcessTree: true);
                 Assert.Fail("the conformance mode did not exit within 2 minutes");
+                throw;   // unreachable; Assert.Fail always throws
+            }
+            finally
+            {
+                try
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                }
+                catch { /* best effort - it may have exited between the check and the kill */ }
             }
 
             var tally = stdout

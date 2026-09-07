@@ -97,7 +97,7 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
         try
         {
             using var response = await _supervisor
-                .SendAsync("invoke", new { action = actionId, args = boundArgs }, ct)
+                .SendAsync("invoke", new { action = actionId, args = TrimTrailingNulls(boundArgs) }, ct)
                 .ConfigureAwait(false);
 
             var result = ShowEngineProtocol.ParseActionResult(response.RootElement);
@@ -114,8 +114,40 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
         }
     }
 
+    /// <summary>
+    /// Drop TRAILING nulls from a bound argument list. <c>ControlCatalog.TryBind</c> pads every
+    /// omitted optional param with <c>null</c>, so an OSC/HTTP/Companion caller who simply left the
+    /// last argument off arrives here as <c>["p1", null]</c> — and the engine's <c>bindArgs</c>
+    /// (<c>show-engine/src/actions.ts</c>) treats only <c>undefined</c> as absent, so it fails
+    /// coercion and refuses the action. <c>ohg.panelist.add</c> without a slot was refused on EVERY
+    /// transport because of it.
+    ///
+    /// <para>Only trailing nulls go: a null in the MIDDLE is positionally load-bearing (it says
+    /// "this optional one is absent, the next one is not") and dropping it would shift every
+    /// argument after it onto the wrong parameter. The shell trims rather than the engine
+    /// tolerating null, per the controller ruling — the engine's "undefined means absent" rule is
+    /// its own, and a padded null is the SHELL's artifact.</para>
+    /// </summary>
+    internal static IReadOnlyList<object?> TrimTrailingNulls(IReadOnlyList<object?> args)
+    {
+        var count = args.Count;
+        while (count > 0 && args[count - 1] is null) count--;
+        if (count == args.Count) return args;
+
+        var trimmed = new object?[count];
+        for (var i = 0; i < count; i++) trimmed[i] = args[i];
+        return trimmed;
+    }
+
     /// <summary>Send the current Zoom roster as a <c>zoomEvent {kind:"roster"}</c>. Fire-and-forget;
-    /// remembered so it is re-sent to the next engine generation.</summary>
+    /// remembered so it is re-sent to the next engine generation.
+    ///
+    /// <para><b>Only on a real CHANGE.</b> The caller is the media core's snapshot stream, which
+    /// republishes the whole roster at snapshot rate (~4-10 Hz) whether or not a participant moved.
+    /// Sending each one put a request per snapshot on the engine's stdin for a show where nothing
+    /// happened; when the engine was DOWN it also put a <c>warn</c> in <c>launch.log</c> per
+    /// snapshot. The comparison is order-sensitive and covers all seven fields (record equality),
+    /// because roster ORDER is what the engine seats by.</para></summary>
     public void PublishRoster(IReadOnlyList<ShowEngineParticipant> roster)
     {
         // Defensive copy: the caller's list must not be able to mutate our re-arm state out from
@@ -123,12 +155,17 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
         // every roster tick).
         var snapshot = roster.ToArray();
 
+        bool changed;
         lock (_gate)
         {
+            // The FIRST call always counts as a change, even for an empty roster: "the meeting has
+            // nobody in it" is real state the engine has not been told yet.
+            changed = !_rosterEverPublished || !_lastRoster.SequenceEqual(snapshot);
             _lastRoster = snapshot;
             _rosterEverPublished = true;
         }
 
+        if (!changed || !IsRunning) return;
         SendRoster(snapshot);
     }
 
@@ -145,7 +182,7 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
             _lastActiveSpeaker = participantId;
         }
 
-        if (!changed || participantId is null) return;
+        if (!changed || participantId is null || !IsRunning) return;
         SendActiveSpeaker(participantId);
     }
 
@@ -158,8 +195,23 @@ public sealed class ShowEngineBridge : IControlActionProvider, IDisposable
             _capacityEverPublished = true;
         }
 
+        if (!IsRunning) return;
         SendCapacity(capacity);
     }
+
+    /// <summary>
+    /// RECORD BUT DO NOT SEND while the engine is anything but Running.
+    ///
+    /// <para>Every one of the three publishers is fed by a stream that keeps running when the
+    /// engine is down — the media core's snapshots do not stop because a Node process crashed. The
+    /// send would fail synchronously in <see cref="ShowEngineSupervisor.SendAsync"/> and land in
+    /// <see cref="SendFireAndForget"/>'s catch, i.e. one <c>warn</c> per snapshot in the launch log
+    /// for as long as the engine is out. There is nothing to be gained by it: the next handshake
+    /// RE-ARMS all three from exactly the state recorded above, and
+    /// <see cref="ShowEngineSupervisor.Health"/> is the operator's signal that the engine is down —
+    /// a flood of failed-publish warnings is noise on top of a fact already reported.</para>
+    /// </summary>
+    private bool IsRunning => _supervisor.Health.State == ShowEngineState.Running;
 
     public Task StartAsync(ShowEngineSpawnRequest request, CancellationToken ct)
     {

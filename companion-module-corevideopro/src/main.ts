@@ -14,7 +14,7 @@ import { getConfigFields, type CvpConfig } from './config.js'
 import { buildFeedbacks, FEEDBACK_FLAGS } from './feedbacks.js'
 import { buildVariables, VARIABLE_FIELDS } from './variables.js'
 import { buildPresets } from './presets.js'
-import { expandFeedbackFields, isTallyField, variableIdFor } from './ohgFields.js'
+import { expandFeedbackFields, isTallyField, variableIdFor, withoutShellScalarFields } from './ohgFields.js'
 
 interface ManifestParam {
 	name: string
@@ -131,7 +131,7 @@ class CvpInstance extends InstanceBase<CvpConfig> {
 			if (!res.ok) throw new Error(`HTTP ${res.status}`)
 			const manifest = (await res.json()) as Manifest
 			this.setActionDefinitions(this.buildActions(manifest))
-			this.ohgFields = expandFeedbackFields(manifest.feedbackFields ?? [])
+			this.ohgFields = withoutShellScalarFields(expandFeedbackFields(manifest.feedbackFields ?? []))
 			this.applyDefinitions()
 		} catch (err) {
 			this.log('warn', `Could not load manifest: ${String(err)}`)

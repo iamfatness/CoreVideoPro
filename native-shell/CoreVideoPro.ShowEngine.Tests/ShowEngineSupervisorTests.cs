@@ -565,6 +565,83 @@ public sealed class ShowEngineSupervisorTests
     }
 
     [Fact]
+    public async Task RestartDuringBackoff_KillsTheSupersededRecoverySpawn()
+    {
+        // THE ORPHAN. A crash parks RecoverAsync on its backoff delay. StopAsync returns EARLY
+        // during a backoff (`_child` is already null — TryClaimEnded detached it), so an operator
+        // Restart neither cancels nor awaits that parked task: it runs StopAsync, then StartAsync,
+        // and generation 2 is live. When the parked delay finally wakes, the recovery spawns
+        // generation 3 and — without the attach guard — overwrites `_child` with it, leaving
+        // generation 2's node.exe running with its stdin held open by nobody.
+        var options = new ShowEngineSupervisorOptions { HeartbeatInterval = TimeSpan.FromMinutes(5) };
+        var factory = new FakeChildFactory();
+        var delays = new DelayController();          // the 1s backoff PARKS: that is the window
+        var backoff = ShowEngineRestartPolicy.Delays[0];
+
+        var handshakes = 0;
+        using var sup = NewSupervisor(factory, delays, options: options);
+        sup.Handshaken += _ => Interlocked.Increment(ref handshakes);
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        Assert.Equal(ShowEngineState.Running, sup.Health.State);
+
+        factory.Child(1).Complete(1);
+        await WaitUntil(() => delays.ParkedCount(backoff) == 1, "the recovery to park on its backoff");
+        Assert.Equal(ShowEngineState.Recovering, sup.Health.State);
+
+        // The operator restarts while the recovery is still parked.
+        await sup.RestartAsync(Request, CancellationToken.None);
+        Assert.Equal(ShowEngineState.Running, sup.Health.State);
+        Assert.Equal(2, sup.Health.Generation);
+        Assert.Equal(2, factory.SpawnCount);
+
+        // ... and only NOW does the parked recovery wake up.
+        Assert.Equal(1, delays.Release(backoff));
+        await WaitUntil(() => factory.SpawnCount == 3, "the superseded recovery to spawn");
+
+        // Its child is killed and disposed by the spawn path itself — no reader loop ever started
+        // for it, so nothing else would have.
+        await WaitUntil(() => factory.Child(3).Killed && factory.Child(3).Disposed,
+            "the superseded spawn to be killed and disposed");
+
+        // Generation 2 is untouched: still current, still Running, and its handshake is the last
+        // one accepted (child 3's preloaded handshake was never read).
+        Assert.Equal(ShowEngineState.Running, sup.Health.State);
+        Assert.Equal(2, sup.Health.Generation);
+        Assert.False(factory.Child(2).Killed);
+        Assert.False(factory.Child(2).Disposed);
+        Assert.Equal(2, Volatile.Read(ref handshakes));
+    }
+
+    [Fact]
+    public async Task StopDuringBackoff_NeverSpawns()
+    {
+        // The sibling of the case above: a stop while parked must not spawn AT ALL — not spawn and
+        // then kill. A spawned-then-killed child is a real node.exe that briefly read the show
+        // config and wrote to the engine log after the operator stopped the engine.
+        var options = new ShowEngineSupervisorOptions { HeartbeatInterval = TimeSpan.FromMinutes(5) };
+        var factory = new FakeChildFactory();
+        var delays = new DelayController();
+        var backoff = ShowEngineRestartPolicy.Delays[0];
+
+        using var sup = NewSupervisor(factory, delays, options: options);
+        await sup.StartAsync(Request, CancellationToken.None);
+
+        factory.Child(1).Complete(1);
+        await WaitUntil(() => delays.ParkedCount(backoff) == 1, "the recovery to park on its backoff");
+
+        await sup.StopAsync();
+        Assert.Equal(ShowEngineState.Stopped, sup.Health.State);
+
+        Assert.Equal(1, delays.Release(backoff));
+
+        // Give the woken recovery every chance to spawn; the assertion is that it does not.
+        await Task.Delay(100);
+        Assert.Equal(1, factory.SpawnCount);
+        Assert.Equal(ShowEngineState.Stopped, sup.Health.State);
+    }
+
+    [Fact]
     public async Task SendAsync_ThrowsWhenNotRunning()
     {
         var factory = new FakeChildFactory();

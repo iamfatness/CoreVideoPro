@@ -256,6 +256,19 @@ public sealed class ShowEngineSupervisor : IDisposable
 
     private async Task<bool> SpawnAndHandshakeAsync(ShowEngineSpawnRequest request, CancellationToken ct)
     {
+        // A PARKED RecoverAsync SURVIVES BOTH StopAsync AND RestartAsync.
+        //
+        // StopAsync returns early when `_child` is already null (which it always is during a
+        // backoff — TryClaimEnded detached it before BeginRecovery), so it neither cancels nor
+        // awaits the recovery task; the parked `_delay` simply wakes up later and lands here. This
+        // cheap pre-check is what makes "stop while parked" spawn NOTHING at all rather than spawn
+        // and immediately kill. The authoritative guard is the attach block below — `_stopping` can
+        // still be set, or a newer child attached, in the window between here and there.
+        lock (_gate)
+        {
+            if (_stopping || _disposed) return false;
+        }
+
         var generation = Interlocked.Increment(ref _spawnGeneration);
         var handshakeSignal = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         var scope = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
@@ -280,11 +293,37 @@ public sealed class ShowEngineSupervisor : IDisposable
         // is always safe and this method must use ONLY this captured copy from here on.
         var token = scope.Token;
 
+        // THE ATTACH IS ALSO A CLAIM ON BEING THE CURRENT CHILD.
+        //
+        // Without this guard a recovery parked on its backoff delay could wake AFTER a
+        // RestartAsync had already started generation N+1 and overwrite `_child` with its own
+        // spawn — stranding the newer engine process alive with its stdin held open by a
+        // supervisor that no longer references it (an orphan that keeps running the show's
+        // config, invisible to the operator). `_child` is ALWAYS null on the normal recovery path
+        // (TryClaimEnded detached it before BeginRecovery ran) and on the normal start path
+        // (StopAsync/Dispose/AbortStart all detach), so this fires ONLY on supersession.
+        //
+        // A superseded spawn owns its own teardown: its reader loop has not started, so nothing
+        // else will ever dispose the child or the scope.
+        bool superseded;
         lock (_gate)
         {
-            _child = child;
-            _childScope = scope;
-            _handshakeSignal = handshakeSignal;
+            superseded = _stopping || _disposed || _child is not null;
+            if (!superseded)
+            {
+                _child = child;
+                _childScope = scope;
+                _handshakeSignal = handshakeSignal;
+            }
+        }
+
+        if (superseded)
+        {
+            try { child.Kill(); } catch { /* best effort */ }
+            try { child.Dispose(); } catch { /* best effort */ }
+            try { scope.Cancel(); } catch { /* best effort */ }
+            try { scope.Dispose(); } catch { /* best effort */ }
+            return false;
         }
 
         _ = Task.Run(() => ReaderLoopAsync(child, scope), CancellationToken.None);
@@ -492,7 +531,23 @@ public sealed class ShowEngineSupervisor : IDisposable
                     // the successor is already publishing NEWER ones. Delivering it would move the
                     // show state BACKWARDS, so a detached child's snapshots are dropped.
                     if (!IsCurrent(child)) break;
-                    Raise(SnapshotReceived, ShowEngineProtocol.ParseSnapshot(doc.RootElement));
+                    ShowEngineSnapshot snapshot;
+                    try
+                    {
+                        snapshot = ShowEngineProtocol.ParseSnapshot(doc.RootElement);
+                    }
+                    catch (FormatException ex)
+                    {
+                        // A snapshot line with no `snapshot` node would otherwise publish
+                        // default(JsonElement) onto ControlState.Ohg and throw at serialization
+                        // time, far away from the line that caused it. Same treatment as a line
+                        // that would not parse at all: warn, drop, keep reading.
+                        Raise(LogReceived, new ShowEngineLogLine("warn",
+                            $"malformed show engine snapshot: {ex.Message}"));
+                        break;
+                    }
+
+                    Raise(SnapshotReceived, snapshot);
                     break;
 
                 case ShowEngineProtocol.LineKind.HostCommand:

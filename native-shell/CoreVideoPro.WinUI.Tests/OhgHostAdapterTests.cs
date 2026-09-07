@@ -26,7 +26,11 @@ public sealed class OhgHostAdapterTests
     {
         /// <summary>Route ids the fake "scene" owns, deliberately in a SCRAMBLED order: an
         /// adapter that addressed routes positionally would move the wrong guest.</summary>
-        public List<string> KnownRoutes { get; } = new() { "ohg-box-2", "ohg-host", "ohg-box-1" };
+        // Deliberately scrambled, and it carries BOTH chairs: a look that unseats a chair now
+        // writes that chair's route with a null slot (it must CLEAR it, not leave the previous
+        // guest on air), so a scene missing "ohg-reader" would report a missing route on every
+        // look that has no reader.
+        public List<string> KnownRoutes { get; } = new() { "ohg-box-2", "ohg-host", "ohg-box-1", "ohg-reader" };
 
         public HashSet<string> Scenes { get; } = new() { "look-scene", "solo-scene", "as-scene", "black-scene", "gallery-scene" };
 
@@ -259,17 +263,27 @@ public sealed class OhgHostAdapterTests
     }
 
     [Fact]
-    public async Task ApplyLook_NullReaderSlot_NeverTouchesTheReaderRoute()
+    public async Task ApplyLook_NullReaderSlot_CLEARS_TheReaderRoute()
     {
+        // AN UNSEATED CHAIR IS CLEARED, NOT SKIPPED. This test used to assert the opposite — that a
+        // null readerSlot left the reader route untouched — which is exactly how the PREVIOUS
+        // look's reader stayed on air through a look that seats nobody there. It is the same defect
+        // as "a route to an unassigned slot MUST clear ParticipantId", one level up: a chair is a
+        // route like any other, and null means empty, not "no opinion".
         var (adapter, facade, _) = Build();
-        facade.KnownRoutes.Add("ohg-reader");
+
+        // Seat the reader first, so "cleared" is distinguishable from "never written".
+        await adapter.ApplyAsync(Cmd("applyLook",
+            LookArgs("look-a", "look-scene", "[[1,4]]", hostSlot: "1", readerSlot: "2"), seq: 1));
+        Assert.Equal(2, facade.RouteSlots["ohg-reader"]);
 
         await adapter.ApplyAsync(Cmd("applyLook",
-            LookArgs("look-a", "look-scene", "[[1,4]]", hostSlot: "1", readerSlot: "null")));
+            LookArgs("look-b", "look-scene", "[[1,4]]", hostSlot: "1", readerSlot: "null"), seq: 2));
 
-        var cue = Assert.Single(facade.Cues);
-        Assert.False(cue.Routes.ContainsKey("ohg-reader"));
-        Assert.False(facade.RouteSlots.ContainsKey("ohg-reader"));
+        var cue = facade.Cues[^1];
+        Assert.True(cue.Routes.ContainsKey("ohg-reader"));
+        Assert.Null(cue.Routes["ohg-reader"]);
+        Assert.Null(facade.RouteSlots["ohg-reader"]);
     }
 
     [Fact]
@@ -694,7 +708,7 @@ public sealed class OhgHostAdapterTests
     }
 
     [Fact]
-    public void RoutesForLook_NamesEveryBoxAndOnlyTheChairsThatAreSeated()
+    public void RoutesForLook_NamesEveryBoxAndEveryChairThePlacementCarries()
     {
         var placement = JsonDocument.Parse(
             """{"lookId":"l","scenePreset":"s","hostSlot":2,"readerSlot":null,"boxes":[[3,9],[1,null]]}""")
@@ -702,10 +716,30 @@ public sealed class OhgHostAdapterTests
 
         var routes = OhgHostAdapter.RoutesForLook(placement);
 
-        Assert.Equal(3, routes.Count);
+        Assert.Equal(4, routes.Count);
         Assert.Equal(9, routes["ohg-box-3"]);
         Assert.Null(routes["ohg-box-1"]);
         Assert.Equal(2, routes["ohg-host"]);
+
+        // AN UNSEATED CHAIR IS A PRESENT KEY WITH A NULL VALUE, never a missing key. A missing key
+        // leaves the route untouched, which is how the previous look's reader stayed on air
+        // through a look that seats nobody in that chair.
+        Assert.True(routes.ContainsKey("ohg-reader"));
+        Assert.Null(routes["ohg-reader"]);
+    }
+
+    [Fact]
+    public void RoutesForLook_OmitsAChairThePlacementDoesNotCarryAtAll()
+    {
+        // The one thing that still means "not this look's business": the field is absent entirely.
+        var placement = JsonDocument.Parse(
+            """{"lookId":"l","scenePreset":"s","hostSlot":1,"boxes":[]}""")
+            .RootElement.Clone();
+
+        var routes = OhgHostAdapter.RoutesForLook(placement);
+
+        Assert.Equal("ohg-host", Assert.Single(routes).Key);
+        Assert.Equal(1, routes["ohg-host"]);
         Assert.False(routes.ContainsKey("ohg-reader"));
     }
 }

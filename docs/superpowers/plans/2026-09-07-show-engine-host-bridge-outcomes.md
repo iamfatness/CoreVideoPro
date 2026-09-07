@@ -82,6 +82,16 @@ the truth.
   plan's Task 6 stub and is required by Task 7's supervisor test.
 - **Two surfaces the plan did not name were needed:** `HostRuntime.capacity` (Task 3) and
   `ShowEngineSpawnRequest.ExtraArgs` (Task 13, to pass `--conformance`).
+- **A look's CHAIR routes must be written even when the chair is empty (C2, whole-branch review).**
+  `OhgHostAdapter.RoutesForLook` wrote `ohg-host`/`ohg-reader` only when the slot was non-null, on
+  the reading that an absent key means "not this look's business". An absent key leaves the route
+  UNTOUCHED, so a look with `readerSlot: null` inherited the previous look's reader — the previous
+  guest stayed on air through a look that seats nobody there. This is the boxes' rule ("a route to
+  an unassigned slot MUST clear `ParticipantId`") one level up, and the chairs were the one place
+  it was not applied. Fixed: the key is written whenever the placement CARRIES the field, with a
+  null value, which `OhgRouteSlotWriter` turns into Mode None with the ids cleared. Only a field
+  the placement omits entirely still means "leave it alone". The conformance goldens did not move
+  (every case seats both chairs), so nothing but the unit tests could have caught it.
 
 ## Decisions worth not re-litigating
 
@@ -203,15 +213,73 @@ Every `minor (deferred)` from the ledger, kept so they are findable rather than 
 | 2 | `nodeStateFs.mkdir`'s `EEXIST` catch is likely unreachable (recursive `mkdir` never throws `EEXIST`) |
 | 3 | Double-answer after a throw post-response (`hostLoop:113/149`); `lastPublishedRevision` never read; `'engine' in parsed` vs `??`; `--generation` accepts a non-integer; `ENGINE_VERSION` literal; `restore()` failure exits 70 by fallthrough; `Rig.revisionOf` unused |
 | 4 | `ControlActionRegistry.ById` is now dead (kept to honor move-only) |
-| 6 | Timed-out request task leak; `Raise` swallows subscriber exceptions silently; exit-78 intermediate health; `TrimToNewestHalf` counts chars not bytes, and its tail may begin mid-line when there is no newline after the start; `Dispose` reads `_child` unlocked and would dispose `_stdinGate` under a write; `_handshakeSignal` has no child guard; the supervisor is 701 lines against the spec's ~300 (`SpawnAndHandshakeAsync` extraction); `JsonDocument` leak when a response races `SendCoreAsync`'s finally; `AbortStart` under `_stopping` leaves `_child` attached until `StopAsync`/`Dispose`; non-atomic check-then-claim window in the withdraw; response-side `protocolVersion` tolerance unexercised at supervisor level |
+| 6 | Timed-out request task leak; `Raise` swallows subscriber exceptions silently; exit-78 intermediate health; `TrimToNewestHalf` counts chars not bytes, and its tail may begin mid-line when there is no newline after the start; `_handshakeSignal` has no child guard; the supervisor is 701 lines against the spec's ~300 (`SpawnAndHandshakeAsync` extraction); `JsonDocument` leak when a response races `SendCoreAsync`'s finally; non-atomic check-then-claim window in the withdraw; response-side `protocolVersion` tolerance unexercised at supervisor level |
 | 7 | The healthy-reset scenario is packed into the same `[Fact]` as the exhaustion scenario; `ShowEngineRestartPolicy` is not sealed |
-| 8 | Fire-and-forget sends log a warn per roster change while the engine is down; an `IsCanceled` continuation is swallowed; `IdOf` is a dead test helper; a weak drift assertion (`Contains` digits); the report said 10 facts, the diff has 9 |
+| 8 | an `IsCanceled` continuation is swallowed; `IdOf` is a dead test helper; a weak drift assertion (`Contains` digits); the report said 10 facts, the diff has 9 |
 | 9 | `ValidateCapacity`'s `found <ValueKind>` formatting for wrong-typed values; `ValidateLooks` silently skips malformed look entries (deliberate, uncommented); duplicated `Engine(json)` test helper |
 | 10 | The fake's scrambled route list is inert (the comment says otherwise); every exception is labelled "malformed args"; `setPreview`'s slot has no upper bound; `ShadowLog` exposes its live list; lenient arity; the missing-route dedupe names only the first look |
 | 11 | `ApplySlotToRoute` clears `SpotlightIndex` on every route (the picker only appears on non-slot branches); the new method lands on `StudioViewModel` via a partial file rather than a focused type; `PublishCapacity(ShowInputEditors.Count)` vs the brief's literal 10 (self-correcting); the report cites the wrong comment for the Fixed-renders-slate choice |
 | 12 | The sync script auto-creates `AppDir` (siblings throw); forward slashes in the missing-entry message; `Assert-MsixPayloadReady` not extended to node/show-engine |
 | 13 | Pinned seq numbers removed with the fix; discarded out-of-bracket commands; `argv.includes` over the full argv; trailing space in the spawn log; the logs list is formatted while being appended; the exit-code test's `ReadToEndAsync` path can orphan node if the child wedges with stdout open; sequential stdout/stderr `ReadToEnd` shape |
 | 14 | The Companion module casts `ohgFields` values without a `typeof` guard; the drill probes speculative `looks` fields (always SKIP) |
+
+Two Task 6 minors were struck from the table above rather than carried: "`Dispose` reads `_child`
+unlocked and would dispose `_stdinGate` under a write" (verified stale — `Dispose` reads `_child`
+INSIDE `lock (_gate)` and deliberately never disposes `_stdinGate`, with the reason written at the
+site) and "`AbortStart` under `_stopping` leaves `_child` attached until `StopAsync`/`Dispose`"
+(subsumed by C1 below: the attach is now a claim, and a superseded or stopping spawn attaches
+nothing at all). Task 8's "fire-and-forget sends log a warn per roster change while the engine is
+down" was fixed, not deferred — see I2.
+
+## Final-review findings, fixed pre-merge
+
+A whole-branch review after Task 15 found five defects the per-task reviews did not. All five are
+fixed on this branch, each with a test that reds without its fix.
+
+- **C1 — an orphaned engine process on Restart during backoff.** `SpawnAndHandshakeAsync` attached
+  its child with no supersession check, and a `RecoverAsync` parked on its backoff delay survives
+  BOTH `StopAsync` (which returns early when `_child` is already null, which it always is during a
+  backoff) and `RestartAsync`. The parked task woke after the operator's restart had generation 2
+  running, spawned generation 3, and overwrote `_child` — stranding generation 2's node.exe alive
+  with its stdin held open by nobody. The attach block is now also a CLAIM (`_stopping ||
+  _disposed || _child is not null` ⇒ kill + dispose the just-spawned child and its scope, return
+  false), plus a cheap pre-spawn `_stopping`/`_disposed` check so a stop while parked spawns
+  nothing at all rather than spawning and immediately killing. Normal recovery always has
+  `_child == null`, so the guard fires only on supersession. `MainWindow` also now DISPOSES the
+  supervisor on the shutdown path — it was only ever stopping and disposing the bridge, and the
+  bridge does not own the supervisor. The supervisor is held in a `MainWindow` field rather than
+  given to the bridge to own: the bridge is handed a supervisor in its constructor and unhooks its
+  events on Dispose, and changing that to ownership would change the disposal contract of every
+  caller that constructs the pair.
+- **C2 — an unseated chair kept the previous guest on air.** See the corrections list above.
+- **I1 — `ohg.panelist.add` without a slot was refused on every transport.**
+  `ControlCatalog.TryBind` pads omitted optional params with `null`; the engine's `bindArgs` treats
+  only `undefined` as absent, so `["p1", null]` failed coercion. Fixed SHELL-side (controller
+  ruling): `ShowEngineBridge.InvokeAsync` trims TRAILING nulls before serializing. An interior null
+  is positional and stays.
+- **I2 — roster republished at media-core snapshot rate, and a warn-flood when the engine was
+  down.** `PublishRoster` now compares against the last roster (order-sensitive, all seven fields)
+  and returns early when unchanged; all three publishers RECORD but do not send — and do not log —
+  while `Health.State != Running`. The next handshake's re-arm delivers exactly what was recorded,
+  and health is the operator's signal that the engine is down.
+- **I3 — host commands were not serialized across an await.** Each command was fire-and-forgotten
+  onto the dispatcher, which orders only the STARTS: `cut`/`auto` await `TakeAsync`, and the next
+  command's `applyLook` ran inside that await and rewrote the preview draft mid-take. They now
+  chain through a `SequentialAsyncQueue` (a small testable seam in `WinUI/Services`), one link at a
+  time in `seq` order, with each link's exception reported and swallowed so a fault can never stop
+  the chain draining.
+
+Three cheap minors rode the same wave: `ShowEngineProtocol.ParseSnapshot` now throws
+`FormatException` on a missing `snapshot` node (it used to yield `default(JsonElement)`, which
+survived to `ControlState.Ohg` and threw inside the control server's JSON writer) and the reader
+loop logs it on its malformed path; the Companion module no longer double-registers
+`ohg_health_engine`/`ohg_shadow_lastCommand` (the shell publishes them as top-level ControlState
+scalars, and they were ALSO being expanded out of `/manifest`'s feedbackFields); and the
+`AdapterConformanceTests` exit-code test wraps its whole read/wait span in a `finally` that kills
+the node tree, so a child that wedges with stdout still open cannot be orphaned.
+
+CLAUDE.md's OHG section also had the restart ladder wrong (`5→10→20→40→60 s`); the shipped
+`ShowEngineRestartPolicy.Delays` is `1, 2, 4, 8, 16, 30 s`.
 
 ## Mutation results
 

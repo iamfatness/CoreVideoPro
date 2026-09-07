@@ -173,10 +173,16 @@ public static class ShowEngineProtocol
         return true;
     }
 
+    /// <summary>Read a <c>snapshot</c> event. THROWS <see cref="FormatException"/> when the line
+    /// carries no <c>snapshot</c> node: <see cref="Clone"/> would otherwise hand back
+    /// <c>default(JsonElement)</c> (ValueKind <c>Undefined</c>), which survives all the way to
+    /// <c>ControlState.Ohg</c> and only then throws — inside the control server's JSON writer, on a
+    /// thread with no idea what produced it. A malformed line must be named where it is read; the
+    /// reader loop logs it exactly like a line that failed to parse at all.</summary>
     public static ShowEngineSnapshot ParseSnapshot(JsonElement root) => new(
         Int32(root, "generation"),
         Int64(root, "revision"),
-        Clone(root, "snapshot"),
+        RequiredNode(root, "snapshot"),
         ParseFields(root));
 
     public static ShowEngineHostCommand ParseHostCommand(JsonElement root) => new(
@@ -252,6 +258,18 @@ public static class ShowEngineProtocol
     /// after the reader loop disposes the line's document.</summary>
     private static JsonElement Clone(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value) ? value.Clone() : default;
+
+    /// <summary>Like <see cref="Clone"/>, but a missing (or explicitly Undefined) node is a
+    /// <see cref="FormatException"/> rather than a silent <c>default(JsonElement)</c>.</summary>
+    private static JsonElement RequiredNode(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new FormatException($"show engine line carried no '{name}'");
+        }
+
+        return value.Clone();
+    }
 
     private static string String(JsonElement root, string name, string fallback = "") =>
         root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String

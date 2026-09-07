@@ -623,8 +623,21 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     // Host commands DO touch the ViewModel, so they marshal (spec §3). ApplyAsync never throws
     // by contract; the wrapper below is belt-and-braces because this body runs inside a queued
     // dispatcher callback.
+    //
+    // AND THEY RUN ONE AT A TIME, IN SEQ ORDER. Marshaling alone only orders the STARTS: `cut` and
+    // `auto` await TakeAsync, and the next command's `applyLook` would otherwise run inside that
+    // await and rewrite the preview draft mid-take — putting the wrong guest on air. The queue
+    // holds each command until its predecessor has fully finished, awaits included.
     private void OnBridgeHostCommand(object? sender, ShowEngineHostCommand command)
-        => UiDispatch.Run(_dispatcher, () => _ = ApplyHostCommandAsync(command), "control-surface.ohg-host-command");
+        => UiDispatch.Run(
+            _dispatcher,
+            () => _ = _ohgCommands.Enqueue(() => ApplyHostCommandAsync(command)),
+            "control-surface.ohg-host-command");
+
+    /// <summary>Serializes <see cref="ApplyHostCommandAsync"/> across awaits. Enqueued from inside
+    /// the UiDispatch callback above, so every link runs on the UI thread.</summary>
+    private readonly SequentialAsyncQueue _ohgCommands = new(
+        ex => LaunchLog.Write($"ohg: host command queue link failed :: {ex}"));
 
     private async Task ApplyHostCommandAsync(ShowEngineHostCommand command)
     {

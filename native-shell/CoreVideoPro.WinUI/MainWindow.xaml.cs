@@ -29,6 +29,12 @@ public sealed partial class MainWindow : Window
     private OscControlServer? _controlServer;
     private HttpControlServer? _httpControlServer;
     private ShowEngineBridge? _showEngineBridge;
+    // The supervisor the bridge wraps. Held HERE rather than made the bridge's property, because
+    // the bridge does not own it (it is handed one in its constructor and unhooks its events on
+    // Dispose, nothing more) and giving it ownership would change the disposal contract of every
+    // caller that constructs the pair. It owns the child PROCESS handle, so it must be disposed on
+    // the shutdown path or the show engine outlives the shell.
+    private ShowEngineSupervisor? _showEngineSupervisor;
     private Action<NativeMediaCoreStateSnapshot>? _showEngineRosterPublisher;
     private UpdateNotificationService.UpdateOffer? _updateOffer;
     private bool _resourceMonitoringStopped;
@@ -254,6 +260,7 @@ public sealed partial class MainWindow : Window
             var bridge = new ShowEngineBridge(supervisor, oscExposure);
             bridge.Log += (_, line) => LaunchLog.Write($"ohg[{line.Level}]: {line.Message}");
             _showEngineBridge = bridge;
+            _showEngineSupervisor = supervisor;
 
             adapter = new OhgHostAdapter(
                 new StudioViewModelOhgFacade(ViewModel, LaunchLog.Write),
@@ -321,6 +328,10 @@ public sealed partial class MainWindow : Window
             catch (Exception disposeError) { LaunchLog.Write($"ohg: bridge disposal failed ({disposeError.Message})"); }
             _showEngineBridge = null;
 
+            try { _showEngineSupervisor?.Dispose(); }
+            catch (Exception disposeError) { LaunchLog.Write($"ohg: supervisor disposal failed ({disposeError.Message})"); }
+            _showEngineSupervisor = null;
+
             adapter = null;
             return ControlCatalog.StaticOnly;
         }
@@ -384,6 +395,15 @@ public sealed partial class MainWindow : Window
         }
 
         TryShutdownStep("ohg bridge", bridge.Dispose);
+
+        // The supervisor LAST: it kill-trees anything StopAsync left alive and cancels the
+        // lifetime token every parked recovery is waiting on. Without it a supervisor that was
+        // mid-backoff at shutdown would still be holding a spawn intent.
+        if (_showEngineSupervisor is { } supervisor)
+        {
+            _showEngineSupervisor = null;
+            TryShutdownStep("ohg supervisor", supervisor.Dispose);
+        }
     }
 
     private async Task StopControlServerAsync()
