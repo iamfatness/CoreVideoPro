@@ -39,7 +39,8 @@ spikes, and soaks in the designated test meeting remains in effect.
 
 ## What this app is
 
-Three processes, not a web app:
+Three processes, not a web app (plus an optional fourth, the OHG show engine host — see
+its section below):
 
 - **WinUI 3 (.NET 9) shell** — `native-shell/CoreVideoPro.WinUI/` — the operator console
   (the product). It owns no real-time media; it sends commands and renders shared textures.
@@ -667,6 +668,79 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
 3. Build target: `cmake --build native\build-dev --config Release --target
    corevideo-virtualcam corevideo-native corevideo-native-tests`.
 4. `native/virtualcam-dll/VcamLog.h` is gated serve-tracing for debugging the DLL side.
+
+## OHG show engine host (Plan 7a, 2026-09-07)
+
+The OHG show engine (`show-engine/`, TypeScript) runs **as a fourth, optional child process** and
+drives the shell over the existing control surface. It is not media — it is show *direction*
+(seating, looks, hands queue, gallery) that issues commands the shell applies.
+
+**What runs where.** `CoreVideoPro.ShowEngine.ShowEngineSupervisor` spawns
+`node show-engine/dist/host/main.js --config <path> --generation <n>` and speaks JSON lines over
+stdin/stdout (the same shape as the core/engine pipes). `ShowEngineBridge` implements
+`IControlActionProvider`, so the engine's 28 `ohg.*` actions are **merged into `ControlCatalog`**
+at runtime — `ControlActionRegistry` stays a closed compile-time list and is NOT made mutable; the
+catalog composes static + provider. State comes back two ways: the raw `ShowSnapshot` under
+`ControlState.Ohg` (`/state` → `ohg`, camelCase straight from TS, never mirrored into a C# type)
+and a **flattened** `ControlState.OhgFields` map (`ohg/slot/3/tally` → one scalar) that OSC and the
+Companion module read without walking the nested object. `ohg.*` actions are **loopback-only over
+OSC** by default (`OscExposure.LoopbackOnly`) — a LAN sender is refused with a message naming
+`COREVIDEO_OSC_OHG_LAN=1`, which is the only way to open them up. OSC carries no auth token, so
+opening them puts on-air actions on the LAN unauthenticated; that is the whole reason for the gate.
+
+**Configure it:** `%LOCALAPPDATA%\CoreVideoPro\ohg-show-config.json` (`ShowConfigStore`). `engine`
+is opaque to the shell (validated engine-side); `shell` is ours:
+- `driveHost` (**default false = shadow mode**) — host commands are logged to
+  `ohg/shadow/lastCommand` and the log, and NEVER applied. Ship a new show config in shadow first.
+- `presets` — the four fixed scene ids the engine cues by name: `solo`, `activeSpeaker`, `black`,
+  `gallery`. Unconfigured = null = refused **at use time**, loudly, not at load.
+- Route ids are naming, not config: `ohg-box-<n>` per look box, plus `ohg-host` / `ohg-reader`
+  for the two chairs (a chair route is only written when that chair is seated).
+- `engine.capacity` **must be 10** and must equal the host capacity — a mismatch is a loud config
+  refusal, not a clamp. A config with **no `version`** is refused as unsupported (never assumed v1).
+- `tallyUrl` is parsed and reserved; nothing posts to it in 7a.
+
+**Env vars:** `COREVIDEO_NODE_EXE` + `COREVIDEO_SHOW_ENGINE_DIR` (BOTH or neither — one alone is
+ignored) select a dev/override host; otherwise `<app>\node\node.exe` + `<app>\show-engine\` (packaged,
+staged by `scripts/sync-node-runtime-to-app.ps1`), then `node` on PATH + `<repo>\show-engine\` (dev).
+`COREVIDEO_OSC_OHG_LAN=1` exposes `ohg.*` to LAN OSC. Node **>= 24** is required.
+
+**Exit codes** (the host owns them; the supervisor reads them): `64` usage (bad argv), `78` config
+rejected — **terminal, no backoff, no respawn**, because a bad config will be bad again — `70`
+anything else (restartable). Restarts escalate 5→10→20→40→60 s and **give up after 5 consecutive
+failures**; a 60 s healthy run resets the budget. `--conformance` runs the exported host conformance
+suite in-process and exits 0 iff every case passed (this is what the xUnit integration test drives).
+
+**Logs:** `%LOCALAPPDATA%\CoreVideoPro\show-engine.log` (the engine's own `log` events, and the
+supervisor's) and `launch.log` `ohg:` lines for startup/resolution/teardown (`ohg: show engine
+starting (dev|packaged|env) node=… entry=… driveHost=…`).
+
+**Test it:** `npm run typecheck:show-engine`, `npm run test:show-engine` (vitest),
+`npm run smoke:show-engine-host` (spawns the real host, asserts handshake + 28 actions),
+`dotnet test native-shell/CoreVideoPro.ShowEngine.Tests`, and — the one that actually proves the
+seam — `AdapterConformanceTests` in `CoreVideoPro.WinUI.Tests`, which **spawns node** and drives
+every conformance case through the real `OhgHostAdapter` to a golden facade sequence. (It lives in
+WinUI.Tests, not ShowEngine.Tests, because ShowEngine cannot reference WinUI.) Operator drill:
+`node scripts/validate-show-engine.mjs --base http://127.0.0.1:8011` against a running app;
+its judgement logic is unit-tested offline by `npm run test:show-engine-drill-judge`.
+
+**Three gotchas learned the hard way:**
+
+- **Every supervisor event is guarded by generation, and a dead child is drained to EOF.** A
+  respawn means responses, snapshots and host commands from the OLD child can still be in flight;
+  each is checked against the current child (by reference, not just a generation number — a
+  number-only guard reds nothing when the child object is swapped) and dropped. The exception is
+  **log** lines: the dying child's last words are the whole reason we drain its stdout to EOF, so
+  they are **tagged** `[gen N, exited]` rather than dropped. Logs are inert text; state is not.
+- **A route to an unassigned slot MUST clear `ParticipantId`.** Writing only the slot number left
+  the previous guest's participant id on the route — so cueing a look with an empty box put the
+  PREVIOUS guest on air. `OhgRouteSlotWriter` clears participant/role/spotlight on every route it
+  writes; the test is the contract.
+- **An "empty" OHG box is not guaranteed BLANK yet.** The C++ core's positional fallback
+  (`native/src/core/RouteSourcePolicy.h`) makes a route with no participant/capture/media id
+  inherit `videoFrames[routeIndex]` — so a cleared box can composite an arbitrary decoded guest.
+  Fixing it needs a route-contract sentinel in the core and is **not** Plan 7a scope. Until then,
+  clearing a box is "not the previous guest", not "blank". Do not assert blankness in a drill.
 
 ## Zoom capture on/off (engine raw-media stop — 2026-07-19)
 
