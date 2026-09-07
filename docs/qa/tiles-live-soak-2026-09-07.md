@@ -8,8 +8,7 @@ to speaker-slides, view to ProgramPreview, and auto-Take to true; the API
 confirmed restoration. The earlier UI/API deadlock did not recur in this run.
 
 This is **not release acceptance**. The operator reported flashing in both
-Program and Multiview, absent from the Zoom client. The exact flash appearance
-is not yet specified. API success cannot override that visual failure.
+Program and Multiview, absent from the Zoom client. Subsequent encoded-frame analysis below identifies brightness/contrast pulses. API success cannot override that visual failure.
 
 Buffer deltas during the measured hour:
 
@@ -48,8 +47,70 @@ explain the operator's flashing. Relevant plugin commits: fccaaf9, 5b65dae and
 After the soak, a short Program/ISO recording was captured using the existing
 recording configuration to inspect encoded pixels. Recording was stopped and
 both buses restored. Its added encoder load excludes it from the soak's
-performance measurement. Pixel analysis is pending.
+performance measurement. Pixel analysis is reported below.
 
 Private evidence: artifacts/tiles-live-soak-d97eeaa/soak/,
 operator-visual-failure.json, post-soak/ and the test copy's Recordings directory.
 The heartbeat is paused. The public release has not been replaced.
+
+## Recorded flashing investigation
+
+Original decoded Program frames (without FFmpeg frame duplication) confirm
+brief brightness/contrast pulses inside individual Tiles. The same pixel detector
+found 11 events over 40.133 seconds on d97eeaa and 16 over 60.633 seconds on
+f848a28: 16.45 and 15.83 events/minute. The obsolete-frame publication guard
+therefore did not materially reduce this recorded symptom.
+
+For one low-motion pulse, stable-pixel affine fits had RGB slopes 0.879, 0.852,
+and 0.862 and intercepts 15.92, 17.55, and 13.88. This supports a temporary
+full-to-limited range compression, rather than a source identity swap. ISO
+sampling was too sparse to establish which pipeline stage introduced it.
+
+CoreVideo OBS commit 444cfea8da6d2aa78bdca7d4faba91b2c0d2db7e
+(2026-08-22) documents the same SDK behavior: even with BT709_F requested,
+individual callbacks can be limited range. Its fix checks IsLimitedI420 on each
+frame and normalizes pixels before shared-memory publication. Pro was missing
+this treatment. The port covers participant video and screen share, reuses
+lock-protected scratch storage only for limited-range frames, and rejects
+oversized frames before allocation. Full-range SDK buffers remain borrowed and
+unmodified. Live validation below did not pass.
+
+Optional COREVIDEO_D3D_STAGE_PROFILE=1 instrumentation splits participant export
+and Multiview CPU wall time into stages for the separate cadence investigation.
+These durations include driver/scheduler waits and do not measure GPU completion.
+
+### Range-port live validation
+
+Local diagnostic core 3371f00 (shell d97eeaa, range fix c9c34a7) joined the test
+meeting. The running helper hash matched the built artifact. Camera correction
+logs were frequent: about 100 limited frames per source in four seconds, unlike
+the rare-frame pattern recorded in the original OBS investigation.
+
+The post-port Program clip contains 8,386 original decoded frames over 142.233
+seconds. The identical detector found 26 pulses (10.97/min), with maximum RGB
+mean jump 13.18. The strongest stable-pixel fit remains compression-directed.
+This is a failed visual acceptance result; the short samples do not establish a
+statistically reliable improvement. No full-black/full-white tile failure was
+found by this detector. Ten selection/Take cycles passed (20 selections, maximum
+HTTP 81 ms), and both buses, recording state and auto-Take were restored.
+
+The final Release build passed four range tests, four actual-GPU Tiles decoration
+tests and two actual-GPU buffer tests. Independent review found and resolved an
+oversized-frame allocation issue. Earlier shared-memory tests also passed.
+
+The new diagnostic copy initially had ffmpeg.exe without its shared DLLs; analysis
+used the previously verified d97 decoder. Automatic approval review rejected the
+attempt to restart and install the complete pinned media runtime, without a
+specific reason. No public package was changed. The local copy's media-runtime
+setup remains incomplete; this is separate from the encoded pulse result.
+
+Next evidence needed: correlate SDK flag/timestamp and pre/post-normalization
+luma with a published frame and an encoded pulse. Audits found no callback bypass
+or inverted flag interpretation, and Zoom remains I420 downstream. BGRA export
+metrics include other input types. Avoid inferring pixel range solely from a
+histogram or adding a heuristic color correction without this correlation.
+
+Private evidence: artifacts/tiles-range-fix/ (build hashes, focused test logs,
+selection results, original recording and visual-review). The stage timing report
+in post-validation identifies participant texture upload/conversion/copy as the
+next performance target; this recording does not establish 60 fps acceptance.
