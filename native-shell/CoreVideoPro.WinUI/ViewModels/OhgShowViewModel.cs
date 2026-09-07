@@ -46,6 +46,12 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
     private long _appliedRevision;
     private bool _hasApplied;
 
+    /// <summary>The generation the bound state currently reflects. Paired with
+    /// <see cref="_appliedRevision"/> in the envelope gate in <see cref="OnSnapshot"/> — a
+    /// snapshot from a NEW generation (e.g. a respawned engine that happens to start back at the
+    /// same revision number) must always be applied, never mistaken for a repeat.</summary>
+    private int _appliedGeneration;
+
     /// <summary>Deduplicates the projection's own "malformed wire node" warnings so a persistently
     /// bad snapshot names itself ONCE in the strip rather than every tick.</summary>
     private string _lastProjectionWarningSignature = "";
@@ -163,9 +169,19 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
         if (snapshot == null) return;
         _marshal(() =>
         {
+            // Envelope gate BEFORE the JSON walk: the engine republishes on a cadence, and a
+            // re-published (generation, revision) pair is pure churn. Compare generation too — a
+            // respawned engine can legitimately restart its revision counter, and a
+            // revision-only gate would wrongly swallow that first post-respawn snapshot.
+            if (_hasApplied && snapshot.Generation == _appliedGeneration && snapshot.Revision == _appliedRevision)
+            {
+                return;
+            }
+
             var view = OhgSnapshotProjection.Project(snapshot.Snapshot, out var warnings);
             NoteProjectionWarnings(warnings);
             Apply(view);
+            _appliedGeneration = snapshot.Generation;
         });
     }
 
@@ -228,7 +244,8 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
     /// revision already on screen is pure churn (which is the thing that fail-fasts WinUI).</summary>
     private void Apply(OhgSnapshotView view)
     {
-        if (_hasApplied && view.Revision == _appliedRevision) return;
+        // The envelope gate in OnSnapshot already refused a genuine repeat before this runs;
+        // Apply always does the work when called.
         _hasApplied = true;
         _appliedRevision = view.Revision;
 
@@ -263,6 +280,13 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
         Current = view;
 
         ClearDepartedSelection(view);
+
+        // Rows are diff-updated in place (never replaced), so a newly INSERTED row (a newcomer)
+        // starts with IsSelected=false regardless of the page's current selection — reassert it
+        // here rather than relying on the property-changed hooks below, which only fire on a
+        // NEW selection, not on every snapshot.
+        ApplyParticipantSelectionFlag();
+        ApplySlotSelectionFlag();
     }
 
     /// <summary>Selection is PAGE state and survives ingestion — a snapshot must never yank the
@@ -283,6 +307,33 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
         }
     }
 
+    // ── selection → row IsSelected (Task 7's templates bind IsSelected) ───────────────
+
+    /// <summary>Generated CommunityToolkit.Mvvm hook — fires on every real change to
+    /// <see cref="SelectedParticipantId"/>.</summary>
+    partial void OnSelectedParticipantIdChanged(string? oldValue, string? newValue) => ApplyParticipantSelectionFlag();
+
+    /// <summary>Generated CommunityToolkit.Mvvm hook — fires on every real change to
+    /// <see cref="SelectedSlot"/>.</summary>
+    partial void OnSelectedSlotChanged(int? oldValue, int? newValue) => ApplySlotSelectionFlag();
+
+    /// <summary>Exactly the row whose key matches <see cref="SelectedParticipantId"/> (in either
+    /// <see cref="Panelists"/> or <see cref="Unseated"/>) carries <c>IsSelected=true</c>; every
+    /// other row is cleared. Each row's generated setter no-ops when the value does not change, so
+    /// this costs no PropertyChanged traffic on an unaffected row.</summary>
+    private void ApplyParticipantSelectionFlag()
+    {
+        foreach (var row in Panelists) row.IsSelected = row.Key == SelectedParticipantId;
+        foreach (var row in Unseated) row.IsSelected = row.Key == SelectedParticipantId;
+    }
+
+    /// <summary>Exactly the row whose key matches <see cref="SelectedSlot"/> carries
+    /// <c>IsSelected=true</c>; every other row is cleared.</summary>
+    private void ApplySlotSelectionFlag()
+    {
+        foreach (var row in Slots) row.IsSelected = row.Key == SelectedSlot;
+    }
+
     // ── commands ──────────────────────────────────────────────────────────────────────
 
     /// <summary>Restarts the show engine. The invoker never throws; a failure lands in
@@ -294,5 +345,21 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
         var result = await _invoker.RestartEngineAsync().ConfigureAwait(false);
         var status = result.Ok ? "" : (result.Error ?? "Restart failed.");
         _marshal(() => LastActionStatus = status);
+    }
+
+    /// <summary>Shared result-reporting for every <c>ohg.*</c> action command (Task 4/5/6):
+    /// <see cref="LastActionStatus"/> becomes <c>""</c> on success, or the invoker's error text on
+    /// failure — and a failure is ALSO pushed onto <see cref="RecentRefusals"/> so a refused
+    /// operator action shows up in the same strip as an engine-side warn/error log line. Routed
+    /// through <see cref="_marshal"/> because the invoker's continuation may resume off the UI
+    /// thread.</summary>
+    internal void ReportResult(CoreVideoPro.Control.ControlInvokeResult result)
+    {
+        var status = result.Ok ? "" : (result.Error ?? "Action failed.");
+        _marshal(() =>
+        {
+            LastActionStatus = status;
+            if (!result.Ok) PushRefusal(status);
+        });
     }
 }

@@ -20,7 +20,7 @@ namespace CoreVideoPro.WinUI.Tests;
 /// The VM is constructed with plain data and NO <c>DispatcherQueue</c> — the marshal delegate is
 /// <c>a =&gt; a()</c> — so every fact here is provable off the UI thread, the same convention
 /// every other VM test in this assembly uses.</summary>
-public sealed class OhgShowViewModelTests
+public sealed partial class OhgShowViewModelTests
 {
     // ── fixtures ──────────────────────────────────────────────────────────────────────
 
@@ -28,13 +28,13 @@ public sealed class OhgShowViewModelTests
 
     private static JsonElement Json(string json) => JsonDocument.Parse(json).RootElement.Clone();
 
-    private static ShowEngineSnapshot Snapshot(string json)
+    private static ShowEngineSnapshot Snapshot(string json, int generation = 1)
     {
         var element = Json(json);
         var revision = element.TryGetProperty("revision", out var r) && r.ValueKind == JsonValueKind.Number
             ? r.GetInt64()
             : 0L;
-        return new ShowEngineSnapshot(1, revision, element, new Dictionary<string, JsonElement>());
+        return new ShowEngineSnapshot(generation, revision, element, new Dictionary<string, JsonElement>());
     }
 
     /// <summary>Two seated panelists (slot 1 Ann, slot 2 Bob), slot 1 on air, one unseated guest,
@@ -179,6 +179,62 @@ public sealed class OhgShowViewModelTests
         Assert.Equal("Ann", vm.Panelists[0].DisplayName);
         Assert.Empty(log.Actions);
         Assert.Equal(0, propertyChanges);
+    }
+
+    [Fact]
+    public void AFirstSnapshotOfANewGeneration_IsApplied_EvenWithTheSameRevision()
+    {
+        var vm = NewVm();
+        vm.OnSnapshot(Snapshot(SnapshotA, generation: 1));
+
+        // A respawned engine (generation 2) that happens to restart at the same revision number
+        // must NOT be swallowed by the revision-only gate — the payload differs and must land.
+        vm.OnSnapshot(Snapshot(SnapshotA.Replace("\"Ann\"", "\"Not Ann\""), generation: 2));
+
+        Assert.Equal("Not Ann", vm.Panelists[0].DisplayName);
+    }
+
+    [Fact]
+    public void SelectingAParticipant_SetsExactlyThatRowsFlag_AndClearsThePrevious()
+    {
+        var vm = NewVm();
+        vm.OnSnapshot(Snapshot(SnapshotA));
+
+        var ann = vm.Panelists.Single(p => p.ParticipantId == "p1");
+        var bob = vm.Panelists.Single(p => p.ParticipantId == "p2");
+        var zed = vm.Unseated.Single(p => p.ParticipantId == "p9");
+
+        vm.SelectedParticipantId = "p1";
+        Assert.True(ann.IsSelected);
+        Assert.False(bob.IsSelected);
+        Assert.False(zed.IsSelected);
+
+        vm.SelectedParticipantId = "p9";
+        Assert.False(ann.IsSelected);
+        Assert.False(bob.IsSelected);
+        Assert.True(zed.IsSelected);
+
+        vm.SelectedParticipantId = null;
+        Assert.False(ann.IsSelected);
+        Assert.False(zed.IsSelected);
+    }
+
+    [Fact]
+    public void SelectingASlot_SetsExactlyThatRowsFlag_AndClearsThePrevious()
+    {
+        var vm = NewVm();
+        vm.OnSnapshot(Snapshot(SnapshotA));
+
+        var slot1 = vm.Slots.Single(s => s.Slot == 1);
+        var slot2 = vm.Slots.Single(s => s.Slot == 2);
+
+        vm.SelectedSlot = 1;
+        Assert.True(slot1.IsSelected);
+        Assert.False(slot2.IsSelected);
+
+        vm.SelectedSlot = 2;
+        Assert.False(slot1.IsSelected);
+        Assert.True(slot2.IsSelected);
     }
 
     [Fact]
