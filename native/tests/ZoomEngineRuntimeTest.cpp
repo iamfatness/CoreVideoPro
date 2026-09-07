@@ -647,6 +647,47 @@ TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined)
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {
+  static void installVideoRegion(ZoomEngineRuntime& runtime, std::shared_ptr<void> region,
+                                 std::uint32_t width = 4, std::uint32_t height = 4) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    auto& stream = runtime.videoStreams_["test-camera"];
+    stream = {};
+    stream.regionOpaque = std::move(region);
+    stream.participantId = 42;
+    stream.width = width;
+    stream.height = height;
+    stream.lumaRangeProbed = true;
+    runtime.frameSyncEnabled_ = false;
+  }
+  static void drainVideo(ZoomEngineRuntime& runtime, const std::function<void()>& afterCapture = {},
+                         const std::function<void()>& beforePublish = {}) {
+    runtime.drainVideoStreamsThreePhase(afterCapture, beforePublish);
+  }
+  static std::uint32_t videoSequence(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    return runtime.videoStreams_.at("test-camera").lastSequence;
+  }
+  static std::size_t decodedCount(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    return runtime.latestDecodedFrames_.size();
+  }
+  static std::uint64_t staleVideoCount(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    return runtime.staleVideoPublications_;
+  }
+  static void invalidateVideo(ZoomEngineRuntime& runtime, int mutation, std::shared_ptr<void> replacement) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    auto& stream = runtime.videoStreams_.at("test-camera");
+    switch (mutation) {
+      case 0: stream.regionOpaque = std::move(replacement); break;
+      case 1: ++stream.participantId; break;
+      case 2: ++stream.width; break;
+      case 3: ++stream.height; break;
+      case 4: ++runtime.processGeneration_; break;
+      case 5: runtime.shuttingDown_ = true; break;
+      case 6: runtime.restartBeforeJoin_ = true; break;
+    }
+  }
   static void markInitialized(ZoomEngineRuntime& runtime) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     runtime.initialized_ = true;
@@ -669,6 +710,56 @@ struct ZoomEngineRuntimeTestAccess {
   }
 };
 }  // namespace corevideo::modules
+
+namespace {
+// Owned in-memory SHM view exercises the real parser/copy/publication path
+// without a subprocess, named region, sleeps, or background ingestion thread.
+struct InMemoryVideoRegion {
+  std::vector<std::uint8_t> bytes = std::vector<std::uint8_t>(sizeof(ShmFrameHeader) + 4 * 4 * 3 / 2, 128);
+  ShmRegion region{};
+  InMemoryVideoRegion() { region.ptr = bytes.data(); region.size = bytes.size(); setHeader(2, 4, 4); }
+  void setHeader(std::uint32_t sequence, std::uint32_t width, std::uint32_t height) {
+    const ShmFrameHeader header{sequence, width, height, width * height};
+    std::memcpy(bytes.data(), &header, sizeof(header));
+  }
+  static std::shared_ptr<void> holder(const std::shared_ptr<InMemoryVideoRegion>& owner) {
+    return std::shared_ptr<void>(owner, &owner->region);
+  }
+};
+}
+
+TEST(ZoomEngineRuntime, VideoPublicationRejectsReplacedMappingIdentityAndRetiredGenerations) {
+  using namespace corevideo::modules;
+  for (int mutation = 0; mutation != 7; ++mutation) {
+    ZoomEngineRuntime runtime;
+    auto original = std::make_shared<InMemoryVideoRegion>();
+    auto replacement = std::make_shared<InMemoryVideoRegion>();
+    ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(original));
+    ZoomEngineRuntimeTestAccess::drainVideo(runtime, {}, [&] {
+      ZoomEngineRuntimeTestAccess::invalidateVideo(runtime, mutation, InMemoryVideoRegion::holder(replacement));
+    });
+    EXPECT_EQ(ZoomEngineRuntimeTestAccess::videoSequence(runtime), 0u);
+    EXPECT_EQ(ZoomEngineRuntimeTestAccess::decodedCount(runtime), 0u);
+    EXPECT_EQ(ZoomEngineRuntimeTestAccess::staleVideoCount(runtime), 1u);
+  }
+}
+
+TEST(ZoomEngineRuntime, VideoPublicationUsesCopiedSequenceAndRequiresMatchingHeaderDimensions) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  auto region = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(region));
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime, [&] { region->setHeader(4, 2, 4); });
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::videoSequence(runtime), 0u);
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::decodedCount(runtime), 0u);
+  // After matching dimensions are announced, a newer complete frame can arrive
+  // between the phase-1 peek and phase-2 copy. Its own sequence is consumed.
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(region), 2, 4);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime, [&] { region->setHeader(6, 2, 4); });
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::videoSequence(runtime), 6u);
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::decodedCount(runtime), 1u);
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::staleVideoCount(runtime), 1u);
+}
 
 TEST(ZoomEngineRuntime, AuthAndJoinTimeoutsRetireHelperAndRejectLateEvents) {
   using namespace corevideo::modules;

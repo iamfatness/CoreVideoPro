@@ -1044,7 +1044,8 @@ void ZoomEngineRuntime::videoIngestLoop() {
   }
 }
 
-void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
+void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>& afterCapture,
+                                                  const std::function<void()>& beforePublish) {
   // Phase 1 (locked, cheap): open missing regions, peek sequences, collect
   // the streams that have a NEW complete frame. shared_ptr region holders let
   // phase 2 read safely even if a leave/reset drops the stream meanwhile.
@@ -1058,6 +1059,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::uint32_t sequence = 0;
     bool buildThumbnail = false;
     bool probeLumaRange = false;
+    std::uint64_t generation = 0;
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -1101,10 +1103,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
                                   nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail, !ref.lumaRangeProbed});
+                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_});
     }
   }
 
+  if (afterCapture) afterCapture();
   // Phase 2 (UNLOCKED, heavy): full I420 copy + thumbnail conversion per new
   // frame. The seqlock inside the snapshot re-validates against tearing.
   struct SnapshotResult {
@@ -1140,39 +1143,37 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     }
   }
 
-  // Achieved ingest rate: how many decoded frames per second actually reach the
-  // core. The compositor's upload counters are throttled (multiview composites
-  // every 3rd tick), so they CANNOT be used as an ingest proxy — this is the
-  // real number, and it is what proves whether a 1080p60 wall is being consumed.
-  {
-    static auto s_stamp = std::chrono::steady_clock::now();
-    static long long s_published = 0;
-    for (const auto& r : results) {
-      if (r.frame) ++s_published;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    const double sec = std::chrono::duration<double>(now - s_stamp).count();
-    if (sec >= 2.0) {
-      ::corevideo::core::nativeLogf("[zoom-ingest] %.0f frames/s decoded into the core (%.1f MB/s)\n",
-                   s_published / sec, s_published / sec * 3.11);
-      s_published = 0;
-      s_stamp = now;
-    }
-  }
-
-  // Phase 3 (locked, cheap): publish.
+  if (beforePublish) beforePublish();
+  // Phase 3 (locked, cheap): publish only into the captured stream generation.
   std::lock_guard<std::mutex> lock(mutex_);
+  const auto rejectStale = [&] {
+    ++staleVideoPublications_;
+    if (staleVideoPublications_ == 1 || staleVideoPublications_ % 100 == 0)
+      ::corevideo::core::nativeLogf("[zoom-ingest] stale publication rejected count=%llu; obsolete copy discarded\n",
+          static_cast<unsigned long long>(staleVideoPublications_));
+  };
   for (auto& result : results) {
     auto stream = videoStreams_.find(result.job.uuid);
-    if (stream == videoStreams_.end()) {
-      continue;  // stream left while we were reading
+    if (shuttingDown_ || restartBeforeJoin_ || result.job.generation != processGeneration_ ||
+        stream == videoStreams_.end() || stream->second.regionOpaque != result.job.holder ||
+        stream->second.participantId != result.job.participantId ||
+        stream->second.width != result.job.width || stream->second.height != result.job.height) {
+      rejectStale();
+      continue;  // leave, resize, remap, or helper retirement while copying
     }
     if (!result.frame) {
       state_.recordFrameIngestFailure(result.job.uuid, result.job.participantId,
                                       "shared memory snapshot was incomplete, stale, or malformed");
       continue;
     }
-    stream->second.lastSequence = result.job.sequence;
+    if (result.frame->i420Width != result.job.width || result.frame->i420Height != result.job.height ||
+        result.frame->participantId != participantIdString(result.job.participantId)) {
+      rejectStale();
+      continue; // A resized SHM header arrived before its matching stream beacon.
+    }
+    // The writer may advance between the cheap peek and the validated copy.
+    // Consume the sequence we actually copied, never the earlier peek.
+    stream->second.lastSequence = static_cast<std::uint32_t>(result.frame->frameId);
     if (result.job.probeLumaRange && result.lumaRange.sampled > 0) {
       stream->second.lumaRangeProbed = true;
       ::corevideo::core::nativeLogf("[zoom-color] source=%s participant=%u requested=bt709-full "
@@ -1185,6 +1186,15 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
                             std::move(result.i420Shared), result.observedAt);
+    ++videoPublishedSinceLog_;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const double seconds = std::chrono::duration<double>(now - videoPublishLogStamp_).count();
+  if (seconds >= 2.0) {
+    ::corevideo::core::nativeLogf("[zoom-ingest] %.0f frames/s accepted into core; stale_publications=%llu\n",
+        videoPublishedSinceLog_ / seconds, static_cast<unsigned long long>(staleVideoPublications_));
+    videoPublishedSinceLog_ = 0;
+    videoPublishLogStamp_ = now;
   }
 }
 
