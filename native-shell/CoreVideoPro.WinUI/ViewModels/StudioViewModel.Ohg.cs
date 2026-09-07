@@ -1,3 +1,5 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Services;
 
@@ -28,6 +30,19 @@ public sealed partial class StudioViewModel
     /// publisher to the same snapshot stream the ViewModel consumes. Read-only handle; nothing
     /// outside the ViewModel may command the core through it.</summary>
     internal IMediaCoreBridge MediaCoreBridge => _bridge;
+
+    /// <summary>The OHG show workspace view model, or <c>null</c> when OHG is not configured on
+    /// this machine. Assigned by <c>MainWindow</c> at startup (Task 10) — the ViewModel never
+    /// constructs it, because whether the show engine runs at all is an app-composition decision
+    /// (config present + host resolvable), not a workspace one. The page binds this directly and
+    /// renders its setup surface while it is null.</summary>
+    [ObservableProperty] private OhgShowViewModel? _ohgShow;
+
+    /// <summary>Opens the production settings window on the OHG section. The section itself is
+    /// registered in Task 10; until then <c>ShowSection("ohg")</c> is a no-op that still opens the
+    /// window, which is strictly better than a button that does nothing at all.</summary>
+    [RelayCommand]
+    private void OpenOhgSettings() => OpenProductionSettingsSection("ohg");
 
     /// <summary>
     /// Point the named PREVIEW routes at Show Input slots. Semantics (the Task 10 adapter
