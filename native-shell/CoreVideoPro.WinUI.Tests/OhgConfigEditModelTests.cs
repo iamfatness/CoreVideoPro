@@ -101,8 +101,20 @@ public sealed class OhgConfigEditModelTests
         Assert.Equal(original.MukanaEvent, rebuilt.MukanaEvent);
         Assert.Equal(original.PanelistsIntervalMs, rebuilt.PanelistsIntervalMs);
         Assert.Equal(original.Looks.Count, rebuilt.Looks.Count);
-        Assert.Equal(original.Looks[0].Id, rebuilt.Looks[0].Id);
-        Assert.Equal(original.Looks[1].ScenePreset, rebuilt.Looks[1].ScenePreset);
+        for (var i = 0; i < original.Looks.Count; i++)
+        {
+            var expected = original.Looks[i];
+            var actual = rebuilt.Looks[i];
+            Assert.Equal(expected.Id, actual.Id);
+            Assert.Equal(expected.Label, actual.Label);
+            Assert.Equal(expected.ScenePreset, actual.ScenePreset);
+            Assert.Equal(expected.Boxes, actual.Boxes);
+            Assert.Equal(expected.IncludesHost, actual.IncludesHost);
+            Assert.Equal(expected.IncludesReader, actual.IncludesReader);
+            Assert.Equal(expected.PlateTone, actual.PlateTone);
+            Assert.Equal(expected.TallySource, actual.TallySource);
+            Assert.Equal(expected.BoxFill, actual.BoxFill);
+        }
         Assert.Equal(original.DriveHost, rebuilt.DriveHost);
         Assert.Equal(original.PresetSolo, rebuilt.PresetSolo);
         Assert.Equal(original.DefaultTransition, rebuilt.DefaultTransition);

@@ -148,6 +148,134 @@ public sealed class OhgSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Validate_CatchesALookWithMoreThanFourBoxes()
+    {
+        var vm = MakeViewModel(out _);
+        AssignAllPresetsAndLookScenes(vm);
+        vm.Model.Looks[0].Boxes = 5;
+
+        var problem = vm.Validate();
+
+        Assert.Equal($"look '{vm.Model.Looks[0].Id}': boxes must be 0..4", problem);
+    }
+
+    [Fact]
+    public async Task SaveAsync_RefusesALookWithMoreThanFourBoxesAndNeverSaves()
+    {
+        var vm = MakeViewModel(out var applied);
+        AssignAllPresetsAndLookScenes(vm);
+        vm.Model.Looks[0].Boxes = 5;
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Empty(applied);
+        Assert.NotEmpty(vm.ValidationMessage);
+        Assert.False(new ShowConfigStore(_dir).Exists);
+    }
+
+    [Fact]
+    public void Validate_RequiresMukanaBaseUrlAndEventWhenAnyIntegrationIsEnabled()
+    {
+        var vm = MakeViewModel(out _);
+        AssignAllPresetsAndLookScenes(vm);
+        vm.Model.HandsQueueEnabled = true;
+        // MukanaBaseUrl/MukanaEvent left unset — this is exactly what ToConfig() would otherwise
+        // silently turn into baseUrl:"" / event:"", which the engine's parseShowEngineConfig
+        // rejects at startup (terminal exit 78).
+
+        var problem = vm.Validate();
+
+        Assert.Equal("Mukana base URL and event are required when an integration is enabled", problem);
+    }
+
+    [Fact]
+    public void Validate_RejectsAMukanaBaseUrlWithoutAnHttpScheme()
+    {
+        var vm = MakeViewModel(out _);
+        AssignAllPresetsAndLookScenes(vm);
+        vm.Model.RegistryEnabled = true;
+        vm.Model.MukanaBaseUrl = "not-a-url";
+        vm.Model.MukanaEvent = "officehours";
+
+        var problem = vm.Validate();
+
+        Assert.Equal("Mukana base URL and event are required when an integration is enabled", problem);
+    }
+
+    [Fact]
+    public void Validate_RequiresPositiveMukanaIntervalsWhenAnyIntegrationIsEnabled()
+    {
+        var vm = MakeViewModel(out _);
+        AssignAllPresetsAndLookScenes(vm);
+        vm.Model.QuestionFeedEnabled = true;
+        vm.Model.MukanaBaseUrl = "https://host/php-panel-rest.php";
+        vm.Model.MukanaEvent = "officehours";
+        vm.Model.MaxBackoffMs = 0;
+
+        var problem = vm.Validate();
+
+        Assert.Equal("Mukana interval settings must be positive when an integration is enabled", problem);
+    }
+
+    [Fact]
+    public async Task SaveAsync_ARefusedMukanaConfigIsNeverSaved()
+    {
+        var vm = MakeViewModel(out var applied);
+        AssignAllPresetsAndLookScenes(vm);
+        vm.Model.RegistryEnabled = true;
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Empty(applied);
+        Assert.NotEmpty(vm.ValidationMessage);
+        Assert.False(new ShowConfigStore(_dir).Exists);
+    }
+
+    [Fact]
+    public async Task SaveAsync_AValidEnabledIntegrationConfigSaves()
+    {
+        var vm = MakeViewModel(out var applied);
+        AssignAllPresetsAndLookScenes(vm);
+        vm.Model.RegistryEnabled = true;
+        vm.Model.MukanaBaseUrl = "https://host/php-panel-rest.php";
+        vm.Model.MukanaEvent = "officehours";
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Empty(vm.ValidationMessage);
+        Assert.Single(applied);
+        Assert.True(new ShowConfigStore(_dir).Exists);
+    }
+
+    [Fact]
+    public void Constructor_ACorruptExistingConfigIsReportedNotSilentlyReplaced()
+    {
+        var store = new ShowConfigStore(_dir);
+        File.WriteAllText(store.FilePath, "{ this is not valid json");
+
+        var vm = MakeViewModel(out _, store: store);
+
+        Assert.True(vm.LoadedFromDefaultsBecauseOfError);
+        Assert.StartsWith("Existing config could not be loaded:", vm.ValidationMessage);
+        Assert.Contains("Saving will overwrite it.", vm.ValidationMessage);
+        // Falls back to Default() so the VM is still usable.
+        Assert.Equal(10, vm.Model.Capacity);
+        Assert.Equal(4, vm.Model.Looks.Count);
+    }
+
+    [Fact]
+    public void Constructor_ALoadableExistingConfigDoesNotSetTheLoadErrorFlag()
+    {
+        var store = new ShowConfigStore(_dir);
+        store.Save(OhgConfigEditModel.Default().ToConfig());
+
+        var vm = MakeViewModel(out _, store: store);
+
+        Assert.False(vm.LoadedFromDefaultsBecauseOfError);
+        Assert.Empty(vm.ValidationMessage);
+    }
+
+    [Fact]
     public async Task SaveAsync_DoesNotCallApplyOnAValidationError()
     {
         var vm = MakeViewModel(out var applied);

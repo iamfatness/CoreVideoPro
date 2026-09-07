@@ -33,19 +33,38 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
         _engineStartedAtLaunch = engineStartedAtLaunch;
 
         ShowConfig? loaded = null;
+        string? loadError = null;
         if (store.Exists)
         {
-            loaded = store.Load(out _);
+            loaded = store.Load(out loadError);
         }
 
-        Model = loaded is not null
-            ? OhgConfigEditModel.FromConfig(loaded, out _)
-            : OhgConfigEditModel.Default();
+        if (loaded is not null)
+        {
+            Model = OhgConfigEditModel.FromConfig(loaded, out _);
+            validationMessage = "";
+        }
+        else
+        {
+            Model = OhgConfigEditModel.Default();
+            if (loadError is not null)
+            {
+                // The saved config exists but couldn't be parsed (corrupt file, bad JSON,
+                // unsupported version, etc.) — silently falling back to Default() would let an
+                // operator overwrite a broken-but-recoverable file without ever knowing it was
+                // broken. Surface the error and flag it so the UI can warn loudly.
+                loadedFromDefaultsBecauseOfError = true;
+                validationMessage = $"Existing config could not be loaded: {loadError}. Saving will overwrite it.";
+            }
+            else
+            {
+                validationMessage = "";
+            }
+        }
 
         Looks = new ObservableCollection<OhgLookEditorViewModel>(Model.Looks.Select(look => new OhgLookEditorViewModel(look)));
         SceneChoices = _scenes();
 
-        validationMessage = "";
         saveStatus = "";
     }
 
@@ -60,6 +79,7 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
     [ObservableProperty] private string validationMessage;
     [ObservableProperty] private string saveStatus;
     [ObservableProperty] private bool needsAppRestart;
+    [ObservableProperty] private bool loadedFromDefaultsBecauseOfError;
 
     [RelayCommand]
     private void RefreshScenes()
@@ -115,9 +135,17 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
         return Task.CompletedTask;
     }
 
-    /// <summary>Local checks first (look ids non-empty and unique; boxes &gt;= 0; every look has
+    /// <summary>Every <c>engine</c> look's box count must fit the engine's fixed layout
+    /// (<c>MAX_LOOK_BOXES</c> in <c>show-engine/src/config.ts</c>) — the engine parser would
+    /// otherwise reject the config outright (exit 78, terminal, no respawn).</summary>
+    private const int MaxLookBoxes = 4;
+
+    /// <summary>Local checks first (look ids non-empty and unique; boxes in 0..4; every look has
     /// a scene preset and all four shell presets are set WHEN <see cref="OhgConfigEditModel.DriveHost"/>
-    /// is on — shadow mode can be saved half-configured), then the shared
+    /// is on — shadow mode can be saved half-configured; Mukana's required fields whenever any
+    /// integration flag is on — <c>ToConfig()</c> would otherwise emit an empty <c>baseUrl</c>/
+    /// <c>event</c> or a non-positive interval, which <c>parseShowEngineConfig</c> refuses at
+    /// startup with a TERMINAL exit code, never restarted), then the shared
     /// <see cref="ShowConfigValidator"/> over the built <see cref="ShowConfig"/>.</summary>
     public string? Validate()
     {
@@ -132,9 +160,9 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
             {
                 return $"Duplicate look id '{look.Id}'";
             }
-            if (look.Boxes < 0)
+            if (look.Boxes < 0 || look.Boxes > MaxLookBoxes)
             {
-                return $"Look '{look.Id}' has a negative box count";
+                return $"look '{look.Id}': boxes must be 0..4";
             }
         }
 
@@ -154,6 +182,25 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
                 string.IsNullOrEmpty(Model.PresetGallery))
             {
                 return "All four presets (solo, active speaker, black, gallery) must be set before Drive Host can be enabled";
+            }
+        }
+
+        if (Model.RegistryEnabled || Model.HandsQueueEnabled || Model.QuestionFeedEnabled)
+        {
+            if (string.IsNullOrWhiteSpace(Model.MukanaBaseUrl) ||
+                !(Model.MukanaBaseUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                  Model.MukanaBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) ||
+                string.IsNullOrWhiteSpace(Model.MukanaEvent))
+            {
+                return "Mukana base URL and event are required when an integration is enabled";
+            }
+
+            if (Model.PanelistsIntervalMs <= 0 ||
+                Model.HandsIntervalMs <= 0 ||
+                Model.QuestionIntervalMs <= 0 ||
+                Model.MaxBackoffMs <= 0)
+            {
+                return "Mukana interval settings must be positive when an integration is enabled";
             }
         }
 
