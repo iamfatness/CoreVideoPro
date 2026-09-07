@@ -89,7 +89,7 @@ public sealed class OhgShowPageContentTests
         var xaml = ReadView("OhgShowPage.xaml");
         var code = ReadView("OhgShowPage.xaml.cs");
 
-        var handlers = Regex.Matches(xaml, @"(?:Click|Loaded|SelectionChanged|ElementPrepared|Tapped)=""(\w+)""")
+        var handlers = Regex.Matches(xaml, @"(?:Click|Loaded|SelectionChanged|ElementPrepared|Tapped|Toggled)=""(\w+)""")
             .Select(match => match.Groups[1].Value)
             .Distinct()
             .ToList();
@@ -110,6 +110,13 @@ public sealed class OhgShowPageContentTests
         Assert.Contains("Guarded(\"seat select\"", code, StringComparison.Ordinal);
         Assert.Contains("Guarded(\"role change\"", code, StringComparison.Ordinal);
         Assert.Contains("Guarded(\"role combo realize\"", code, StringComparison.Ordinal);
+
+        // Task 8's handlers - the look picker, the two toggles, and the override role picker.
+        Assert.Contains("Guarded(\"look change\"", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"look combo sync\"", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"as-follow toggle\"", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"smart gallery toggle\"", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"override role change\"", code, StringComparison.Ordinal);
     }
 
     // ── the one decision a guarded handler makes, extracted and tested ──
@@ -129,6 +136,162 @@ public sealed class OhgShowPageContentTests
     [InlineData("panelist", "   ")]
     public void RoleChangeFor_SendsNothingWhenThereIsNoRealChange(string current, string? picked)
         => Assert.Null(OhgShowPageLogic.RoleChangeFor(current, "1234", picked));
+
+    // -- Task 8: program / gallery / GFX panels ----------------------------------------
+
+    [Fact]
+    public void Page_BindsTheProgramPanel()
+    {
+        var xaml = ReadView("OhgShowPage.xaml");
+
+        // Readouts: what is on air, what is cued, who is talking, who is queued.
+        Assert.Contains("ViewModel.OhgShow.ProgramLabel", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.PreviewLabel", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.CurrentSpeakerLabel", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.QueueLabel", xaml, StringComparison.Ordinal);
+
+        // Take surface.
+        Assert.Contains("ViewModel.OhgShow.CutCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.AutoCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.PreviewCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.DirectCutCommand", xaml, StringComparison.Ordinal);
+
+        // Direct cut takes the PVW SOURCE - the raw wire string, never the formatted label.
+        Assert.Contains("ViewModel.OhgShow.PreviewSource", xaml, StringComparison.Ordinal);
+
+        // Look + paging + boxes.
+        Assert.Contains("ViewModel.OhgShow.Boxes", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.NextGuestCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.PrevGuestCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.AssignSelectedSlotToBoxCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.ClearBoxCommand", xaml, StringComparison.Ordinal);
+
+        // The AS-follow switch reads its state OneWay and applies in code-behind.
+        Assert.Contains("ViewModel.OhgShow.AsFollow", xaml, StringComparison.Ordinal);
+
+        var code = ReadView("OhgShowPage.xaml.cs");
+        Assert.Contains("SetAsFollowCommand", code, StringComparison.Ordinal);
+
+        // The look picker is code-behind driven (ItemsSource + selection), never x:Bind.
+        Assert.Contains("SetLookCommand", code, StringComparison.Ordinal);
+        Assert.Contains("show.Looks", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Page_BindsTheGalleryPanel()
+    {
+        var xaml = ReadView("OhgShowPage.xaml");
+
+        Assert.Contains("ViewModel.OhgShow.Gallery,", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.GalleryNote", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.ReplaceCellWithSelectedSlotCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.RemoveCellCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.ResetGalleryFromSlotsCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.EmptyGalleryCommand", xaml, StringComparison.Ordinal);
+
+        // Smart gallery: OneWay state in, Toggled out through code-behind.
+        Assert.Contains("ViewModel.OhgShow.SmartGallery", xaml, StringComparison.Ordinal);
+
+        var code = ReadView("OhgShowPage.xaml.cs");
+        Assert.Contains("SetSmartGalleryCommand", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Page_BindsTheGfxAndDataPanel()
+    {
+        var xaml = ReadView("OhgShowPage.xaml");
+
+        // Question card.
+        Assert.Contains("ViewModel.OhgShow.QuestionText", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.QuestionAsker", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.QuestionInCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.QuestionOutCommand", xaml, StringComparison.Ordinal);
+
+        // Headline editor - the two fields are TwoWay so the operator's typing reaches the VM.
+        Assert.Contains("ViewModel.OhgShow.HeadlineName, Mode=TwoWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.HeadlineLocation, Mode=TwoWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.HeadlineVisible", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.HeadlineInCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.HeadlineOutCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.HeadlineChangeCommand", xaml, StringComparison.Ordinal);
+
+        // Mukana health + the three capability lamps (with their detail text).
+        Assert.Contains("ViewModel.OhgShow.MukanaHealthLabel", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.RegistryLamp", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.HandsLamp", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.QuestionLamp", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.MukanaSyncCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("LampBrush(", xaml, StringComparison.Ordinal);
+
+        // Registry override editor.
+        Assert.Contains("ViewModel.OhgShow.OverridePin, Mode=TwoWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.OverrideName, Mode=TwoWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.OverrideLocation, Mode=TwoWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.OverrideSetCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.OverrideDeleteCommand", xaml, StringComparison.Ordinal);
+
+        // The override ROLE is a ComboBox, so it is applied in code-behind like every other
+        // Selector on this page.
+        var code = ReadView("OhgShowPage.xaml.cs");
+        Assert.Contains("OverrideRole", code, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The five panel titles. The board keeps the two titles Task 7 named it with
+    /// ("Panelists" over the roster, "Seats" over the seat grid); Task 8 adds the other three.
+    /// </summary>
+    [Fact]
+    public void Page_TitlesEveryPanel()
+    {
+        var xaml = ReadView("OhgShowPage.xaml");
+
+        foreach (var title in new[] { "Panelists", "Seats", "Program", "Gallery", "GFX &amp; data" })
+        {
+            Assert.Contains($"Text=\"{title}\"", xaml, StringComparison.Ordinal);
+        }
+    }
+
+    // -- the Task 8 decisions, extracted and tested --
+
+    [Fact]
+    public void LookChangeFor_SendsThePickedLook()
+        => Assert.Equal("panel4", OhgShowPageLogic.LookChangeFor("panel2", "panel4"));
+
+    [Theory]
+    [InlineData("panel2", "panel2")]   // re-selecting the cued look is not an edit
+    [InlineData("panel2", null)]       // a ComboBox mid-rebind reports no selection
+    [InlineData("panel2", "")]
+    [InlineData("panel2", "   ")]
+    [InlineData(null, null)]
+    public void LookChangeFor_SendsNothingWhenThereIsNoRealChange(string? current, string? picked)
+        => Assert.Null(OhgShowPageLogic.LookChangeFor(current, picked));
+
+    [Fact]
+    public void LookChangeFor_SendsTheFirstLookWhenNothingIsCued()
+        => Assert.Equal("panel2", OhgShowPageLogic.LookChangeFor(null, "panel2"));
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void ToggleChangeFor_SendsNothingWhenTheSwitchAlreadyMatchesTheEngine(bool current, bool isOn)
+        => Assert.Null(OhgShowPageLogic.ToggleChangeFor(current, isOn));
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void ToggleChangeFor_SendsTheOperatorsNewValue(bool current, bool isOn)
+        => Assert.Equal(isOn, OhgShowPageLogic.ToggleChangeFor(current, isOn));
+
+    [Theory]
+    [InlineData("available", "StudioLiveBrush")]
+    [InlineData("AVAILABLE", "StudioLiveBrush")]
+    [InlineData("unavailable", "StudioMutedBrush")]
+    [InlineData("disabled", "StudioProgramBrush")]
+    [InlineData("", "StudioMutedBrush")]
+    [InlineData(null, "StudioMutedBrush")]
+    [InlineData("something-new", "StudioMutedBrush")]
+    public void LampBrushKey_ColoursEveryCapabilityState(string? state, string expected)
+        => Assert.Equal(expected, OhgShowPageLogic.LampBrushKey(state));
 
     [Fact]
     public void Page_NeverDrivesASelectorSelectionThroughXBind()

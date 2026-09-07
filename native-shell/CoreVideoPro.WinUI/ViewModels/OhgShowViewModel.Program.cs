@@ -46,7 +46,23 @@ public sealed partial class OhgShowViewModel
         OnPropertyChanged(nameof(PreviewLabel));
         OnPropertyChanged(nameof(CurrentSpeakerLabel));
         OnPropertyChanged(nameof(QueueLabel));
+        OnPropertyChanged(nameof(PreviewSource));
+        OnPropertyChanged(nameof(AsFollow));
     }
+
+    /// <summary>The RAW wire preview source (<c>black | gallery | activeSpeaker | look:&lt;id&gt; |
+    /// slot:&lt;n&gt;</c>) — what a direct cut must be given. Deliberately separate from
+    /// <see cref="PreviewLabel"/>, which is operator TEXT ("slot 3: Ada") and would be refused by
+    /// the engine; binding the label to a command parameter is exactly the mistake this property
+    /// exists to make impossible. Null when no snapshot has landed, which disables the button
+    /// rather than cutting to a guess.</summary>
+    public string? PreviewSource => Current?.Program.Preview;
+
+    /// <summary>Active-speaker follow, as the engine last reported it — the OneWay source for the
+    /// AS-follow <c>ToggleSwitch</c> (which applies through <see cref="SetAsFollowCommand"/> in
+    /// code-behind on <c>Toggled</c>, never a TwoWay binding that would fire a command while the
+    /// snapshot is writing it).</summary>
+    public bool AsFollow => Current?.Program.ActiveSpeakerFollow ?? false;
 
     // ── labels (pure, computed over Current only) ──────────────────────────────────────
 

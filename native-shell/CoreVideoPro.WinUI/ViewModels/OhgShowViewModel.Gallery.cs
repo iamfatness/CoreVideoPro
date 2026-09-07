@@ -18,6 +18,13 @@ public sealed partial class OhgShowViewModel
     /// rather than imply an effect that isn't real yet.</summary>
     public string GalleryNote { get; } = "Cell order is not yet applied to Tiles (carried to a core change)";
 
+    /// <summary>Smart gallery, as the engine last reported it — the OneWay source for the Smart
+    /// <c>ToggleSwitch</c> (which applies through <see cref="SetSmartGalleryCommand"/> in
+    /// code-behind on <c>Toggled</c>). Re-raised from <c>OnAppliedGfx</c> in the Gfx partial, which
+    /// is the second of Apply's two hooks — this partial has no hook of its own, and adding a third
+    /// to raise one property would be more machinery than the line it saves.</summary>
+    public bool SmartGallery => Current?.SmartGallery ?? false;
+
     /// <summary>Puts the currently selected slot into <paramref name="cell"/>. Refused LOCALLY
     /// (no invoke) when nothing is selected — same shape as
     /// <see cref="OhgShowViewModel.AssignSelectedToSlotAsync"/> in the Panelists partial.</summary>

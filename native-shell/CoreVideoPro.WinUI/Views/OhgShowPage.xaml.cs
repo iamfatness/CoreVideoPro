@@ -38,6 +38,22 @@ public sealed partial class OhgShowPage : UserControl
     /// not be echoed back to the engine as an operator role change.</summary>
     private bool _applyingRoleSelection;
 
+    /// <summary>Same guard for the look picker (<see cref="SyncLookCombo"/>) and the override-role
+    /// picker (<see cref="SyncOverrideRoleCombo"/>).</summary>
+    private bool _applyingLookSelection;
+    private bool _applyingOverrideRoleSelection;
+
+    /// <summary>Same guard for the two <c>ToggleSwitch</c>es. It covers the write
+    /// <see cref="OnToggleLoaded"/> makes; the binding's own write is caught by the value
+    /// comparison in <see cref="OhgShowPageLogic.ToggleChangeFor"/> (see its remarks).</summary>
+    private bool _applyingToggle;
+
+    /// <summary>The view model this page currently has a <c>PropertyChanged</c> subscription on.
+    /// Held so the subscription can be moved when the ViewModel property changes and dropped on
+    /// unload — a page that outlives its subscription leaks, and one that keeps a stale
+    /// subscription re-syncs a combo against a view model nobody is looking at.</summary>
+    private OhgShowViewModel? _subscribedShow;
+
     public OhgShowPage()
     {
         InitializeComponent();
@@ -54,7 +70,16 @@ public sealed partial class OhgShowPage : UserControl
             nameof(ViewModel),
             typeof(StudioViewModel),
             typeof(OhgShowPage),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnViewModelPropertyChanged));
+
+    /// <summary>The workspace assigns <see cref="ViewModel"/> AFTER the page is constructed (and,
+    /// depending on tab order, after it has loaded), so the look picker's data source arrives late.
+    /// Re-attaching here — rather than only in <c>Loaded</c> — is what makes the picker correct on
+    /// the first frame the operator ever sees.</summary>
+    private static void OnViewModelPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is OhgShowPage page) page.AttachShowEvents();
+    }
 
     // ── pure helpers (x:Bind function bindings) ───────────────────────────────────────
 
@@ -72,6 +97,11 @@ public sealed partial class OhgShowPage : UserControl
     /// <summary>Non-empty text is a real message; empty text is not a blank row.</summary>
     public static Visibility VisibleWhenText(string? value)
         => string.IsNullOrWhiteSpace(value) ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>Enables a control only when the wire value it acts on actually exists. Used by
+    /// direct-cut: before the first snapshot there IS no preview source, and a cut that sends null
+    /// is a refusal the operator has to read instead of a button that was never armed.</summary>
+    public static bool EnabledWhenText(string? value) => !string.IsNullOrWhiteSpace(value);
 
     /// <summary>The seat's tally border: air red when the seat is on program, otherwise the
     /// ordinary panel line. This is the ONE piece of tally on the page, so it is a function of the
@@ -127,6 +157,74 @@ public sealed partial class OhgShowPage : UserControl
     public static string SlotAutomationName(int slot) => $"OHG slot {slot}";
 
     public static string RemoveSlotAutomationName(int slot) => $"OHG remove slot {slot}";
+
+    // ── Task 8: program / gallery / GFX helpers ───────────────────────────────────────
+
+    public static string BoxNumberLabel(int box) => $"BOX {box}";
+
+    /// <summary>What a look box shows. An unfilled box reads EMPTY; a box whose seat carries no
+    /// resolvable name reads its seat number rather than a blank tile — "we have a seat here but
+    /// not a name" is different information from "nothing is here", and the operator needs both.
+    /// </summary>
+    public static string BoxLabel(int? slot, string? displayName)
+    {
+        if (slot is not int seat) return "EMPTY";
+        return string.IsNullOrWhiteSpace(displayName) ? $"seat {seat}" : displayName!;
+    }
+
+    public static string BoxAutomationName(int box) => $"OHG box {box}";
+
+    public static string PreviewBoxAutomationName(int box) => $"OHG preview box {box}";
+
+    public static string ClearBoxAutomationName(int box) => $"OHG clear box {box}";
+
+    public static string GalleryCellNumberLabel(int cell) => $"{cell}";
+
+    /// <summary>A blank gallery cell is a live row (the 4x4 grid never restructures), so it says
+    /// BLANK rather than rendering as an empty tile that reads like a layout bug.</summary>
+    public static string GalleryCellLabel(bool isBlank, string? displayName)
+        => isBlank || string.IsNullOrWhiteSpace(displayName) ? "BLANK" : displayName!;
+
+    public static string GalleryCellAutomationName(int cell) => $"OHG gallery cell {cell}";
+
+    public static string RemoveCellAutomationName(int cell) => $"OHG remove gallery cell {cell}";
+
+    /// <summary>The question card's body. No question is stated ("no question staged"), never an
+    /// empty card the operator has to interpret.</summary>
+    public static string QuestionTextLabel(string? questionText)
+        => string.IsNullOrWhiteSpace(questionText) ? "no question staged" : questionText!;
+
+    /// <summary>A Mukana capability lamp's chip text, e.g. <c>"REGISTRY · AVAILABLE"</c>.</summary>
+    public static string LampLabel(string name, string? state)
+        => $"{name} · {(string.IsNullOrWhiteSpace(state) ? "UNKNOWN" : state!.ToUpperInvariant())}";
+
+    /// <summary>The lamp's colour. The decision itself is
+    /// <see cref="OhgShowPageLogic.LampBrushKey"/> (a pure, unit-tested key) — this only resolves
+    /// that key against the theme, which needs a XAML runtime and so cannot be tested.</summary>
+    public static Brush LampBrush(string? state)
+    {
+        var key = OhgShowPageLogic.LampBrushKey(state);
+        return Resource(key, key switch
+        {
+            "StudioLiveBrush" => 0x22C86EU,
+            "StudioProgramBrush" => 0xE8A41FU,
+            _ => 0x8B949BU,
+        });
+    }
+
+    /// <summary>Worst-of Mukana health (<c>ok | dormant | failing</c>, ranked by
+    /// <c>worstMukanaHealth</c> in the engine's <c>controlState.ts</c>). Failing is AIR RED here
+    /// even though the page reserves red for tally elsewhere: a dead data plane silently seats the
+    /// wrong names and captions the wrong people, which is an on-air failure, not a hint.</summary>
+    public static Brush HealthBrush(string? worst) => (worst ?? "").ToLowerInvariant() switch
+    {
+        "ok" => Resource("StudioLiveBrush", 0x22C86EU),
+        "dormant" => Resource("StudioMutedBrush", 0x8B949BU),
+        _ => Resource("StudioAirBrush", 0xE5433FU),
+    };
+
+    public static string HealthLabel(string? worst)
+        => $"MUKANA {(string.IsNullOrWhiteSpace(worst) ? "UNKNOWN" : worst!.ToUpperInvariant())}";
 
     private static string Fallback(string? name) => string.IsNullOrWhiteSpace(name) ? "unnamed" : name!;
 
@@ -249,6 +347,195 @@ public sealed partial class OhgShowPage : UserControl
 
             show.SetRoleCommand.Execute(change);
         });
+
+    // ── Task 8 handlers (look picker, toggles, override role, box preview) ────────────
+
+    private void OnPageLoaded(object sender, RoutedEventArgs e) => Guarded("page attach", AttachShowEvents);
+
+    private void OnPageUnloaded(object sender, RoutedEventArgs e) => Guarded("page detach", DetachShowEvents);
+
+    /// <summary>Subscribes to the view model's <c>PropertyChanged</c> so the look picker can be
+    /// re-selected when the ENGINE changes the cued look (a look cued from Companion/OSC, or the
+    /// engine self-correcting a refused <c>ohg.look.set</c>). Idempotent: re-attaching to the same
+    /// view model is a no-op, so Loaded + the DP callback can both call it.</summary>
+    private void AttachShowEvents()
+    {
+        var show = Show;
+        if (ReferenceEquals(show, _subscribedShow))
+        {
+            SyncLookCombo();
+            SyncOverrideRoleCombo();
+            return;
+        }
+
+        DetachShowEvents();
+        if (show is null) return;
+
+        _subscribedShow = show;
+        show.PropertyChanged += OnShowPropertyChanged;
+        SyncLookCombo();
+        SyncOverrideRoleCombo();
+    }
+
+    private void DetachShowEvents()
+    {
+        if (_subscribedShow is null) return;
+        _subscribedShow.PropertyChanged -= OnShowPropertyChanged;
+        _subscribedShow = null;
+    }
+
+    private void OnShowPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        => Guarded("look combo sync", () =>
+        {
+            if (e.PropertyName == nameof(OhgShowViewModel.SelectedLookId)) SyncLookCombo();
+            else if (e.PropertyName == nameof(OhgShowViewModel.OverrideRole)) SyncOverrideRoleCombo();
+        });
+
+    private void OnLookComboLoaded(object sender, RoutedEventArgs e)
+        => Guarded("look combo sync", SyncLookCombo);
+
+    /// <summary>Writes the look picker's items and selection — the ONLY writer of either, exactly
+    /// like <see cref="SyncRoleCombo"/>. The change handler is detached across the write and the
+    /// re-entrancy flag is set, so the engine never sees this page's own selection echoed back as
+    /// an operator cue.</summary>
+    private void SyncLookCombo()
+    {
+        if (OhgLookCombo is not { } combo) return;
+
+        try
+        {
+            if (Show is not { } show) return;
+
+            _applyingLookSelection = true;
+            combo.SelectionChanged -= OnLookSelectionChanged;
+            combo.DisplayMemberPath = "Label";
+            combo.ItemsSource = show.Looks;
+            combo.SelectedItem = show.Looks.FirstOrDefault(look => look.Id == show.SelectedLookId);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ohg: look selection skipped ({ex.GetType().Name}: {ex.Message})");
+        }
+        finally
+        {
+            _applyingLookSelection = false;
+            combo.SelectionChanged -= OnLookSelectionChanged;
+            combo.SelectionChanged += OnLookSelectionChanged;
+        }
+    }
+
+    private void OnLookSelectionChanged(object sender, SelectionChangedEventArgs e)
+        => Guarded("look change", () =>
+        {
+            if (_applyingLookSelection) return;
+            if (sender is not ComboBox combo || Show is not { } show) return;
+
+            var picked = (combo.SelectedItem as OhgLookOption)?.Id;
+            if (OhgShowPageLogic.LookChangeFor(show.SelectedLookId, picked) is not { } lookId) return;
+
+            show.SetLookCommand.Execute(lookId);
+        });
+
+    private void OnOverrideRoleComboLoaded(object sender, RoutedEventArgs e)
+        => Guarded("override role sync", SyncOverrideRoleCombo);
+
+    private void SyncOverrideRoleCombo()
+    {
+        if (OhgOverrideRoleCombo is not { } combo) return;
+
+        try
+        {
+            if (Show is not { } show) return;
+
+            _applyingOverrideRoleSelection = true;
+            combo.SelectionChanged -= OnOverrideRoleSelectionChanged;
+            combo.ItemsSource = show.Roles;
+            combo.SelectedItem = show.Roles.Contains(show.OverrideRole) ? show.OverrideRole : null;
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ohg: override role selection skipped ({ex.GetType().Name}: {ex.Message})");
+        }
+        finally
+        {
+            _applyingOverrideRoleSelection = false;
+            combo.SelectionChanged -= OnOverrideRoleSelectionChanged;
+            combo.SelectionChanged += OnOverrideRoleSelectionChanged;
+        }
+    }
+
+    /// <summary>The override role is EDITOR state, not an engine action — it is read by
+    /// <c>OverrideSetCommand</c> when the operator commits the form. Nothing is sent here.</summary>
+    private void OnOverrideRoleSelectionChanged(object sender, SelectionChangedEventArgs e)
+        => Guarded("override role change", () =>
+        {
+            if (_applyingOverrideRoleSelection) return;
+            if (sender is not ComboBox combo || Show is not { } show) return;
+            if (combo.SelectedItem is not string role || string.IsNullOrWhiteSpace(role)) return;
+
+            show.OverrideRole = role;
+        });
+
+    /// <summary>Belt-and-braces initial state for a <c>ToggleSwitch</c>: if the OneWay binding has
+    /// not landed by the time the switch realizes, this writes the view model's value — under the
+    /// re-entrancy flag, because writing <c>IsOn</c> raises <c>Toggled</c>.</summary>
+    private void OnToggleLoaded(object sender, RoutedEventArgs e) => Guarded("toggle sync", () =>
+    {
+        if (sender is not ToggleSwitch toggle || Show is not { } show) return;
+
+        var desired = toggle.Tag as string switch
+        {
+            "asFollow" => show.AsFollow,
+            "smartGallery" => show.SmartGallery,
+            _ => (bool?)null,
+        };
+
+        if (desired is not bool value || toggle.IsOn == value) return;
+
+        _applyingToggle = true;
+        try
+        {
+            toggle.IsOn = value;
+        }
+        finally
+        {
+            _applyingToggle = false;
+        }
+    });
+
+    private void OnAsFollowToggled(object sender, RoutedEventArgs e) => Guarded("as-follow toggle", () =>
+    {
+        if (_applyingToggle) return;
+        if (sender is not ToggleSwitch toggle || Show is not { } show) return;
+        if (OhgShowPageLogic.ToggleChangeFor(show.AsFollow, toggle.IsOn) is not bool on) return;
+
+        show.SetAsFollowCommand.Execute(on);
+    });
+
+    private void OnSmartGalleryToggled(object sender, RoutedEventArgs e) => Guarded("smart gallery toggle", () =>
+    {
+        if (_applyingToggle) return;
+        if (sender is not ToggleSwitch toggle || Show is not { } show) return;
+        if (OhgShowPageLogic.ToggleChangeFor(show.SmartGallery, toggle.IsOn) is not bool on) return;
+
+        show.SetSmartGalleryCommand.Execute(on);
+    });
+
+    /// <summary>Cues the seat sitting in a look box. A click handler rather than a bound command
+    /// because the box's slot is nullable and <c>PreviewSlotCommand</c> takes an <c>int</c> — a
+    /// null CommandParameter reaching a <c>RelayCommand&lt;int&gt;</c> throws INSIDE the flyout's
+    /// invoke, which is the fail-fast shape this whole page is written to avoid.</summary>
+    private void OnPreviewBoxSlotClick(object sender, RoutedEventArgs e) => Guarded("preview box slot", () =>
+    {
+        if (RowFrom<OhgBoxViewModel>(sender) is not { } row || Show is not { } show) return;
+        if (row.Slot is not int slot)
+        {
+            show.LastActionStatus = "That box is empty";
+            return;
+        }
+
+        show.PreviewSlotCommand.Execute(slot);
+    });
 
     private static T? FindDescendant<T>(DependencyObject root, string name) where T : FrameworkElement
     {

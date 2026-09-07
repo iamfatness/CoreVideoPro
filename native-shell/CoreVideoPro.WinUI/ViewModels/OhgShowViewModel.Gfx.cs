@@ -60,6 +60,10 @@ public sealed partial class OhgShowViewModel
         OnPropertyChanged(nameof(QuestionAsker));
         OnPropertyChanged(nameof(HeadlineVisible));
 
+        // Gallery.cs's computed SmartGallery — raised here because this is Apply's last hook and
+        // the gallery partial has none of its own.
+        OnPropertyChanged(nameof(SmartGallery));
+
         // Seed the headline editor from the snapshot's own headline ONLY when the operator has not
         // started typing anything — never clobber a mid-edit. Once seeded (or once the operator
         // types anything), later snapshots leave the fields alone.

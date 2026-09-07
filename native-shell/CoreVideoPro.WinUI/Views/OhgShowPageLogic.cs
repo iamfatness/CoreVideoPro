@@ -37,4 +37,61 @@ internal static class OhgShowPageLogic
         if (string.Equals(picked, currentRole, StringComparison.Ordinal)) return null;
         return (pin ?? string.Empty, picked!);
     }
+
+    /// <summary>
+    /// The look id implied by an operator picking <paramref name="picked"/> in the look ComboBox —
+    /// or <c>null</c> when there is nothing to cue.
+    ///
+    /// Same two refusals as <see cref="RoleChangeFor"/>, for the same reasons: a ComboBox whose
+    /// ItemsSource is mid-assignment reports no selection, and re-selecting the look already cued
+    /// is not an operator edit. That second refusal is what makes the page's own re-sync (the look
+    /// picker is re-selected from the snapshot after every <c>SelectedLookId</c> change) harmless
+    /// even if the re-entrancy flag were ever bypassed — otherwise every snapshot would re-issue
+    /// <c>ohg.look.set</c> at snapshot rate, i.e. re-cue the show engine's look on a cadence.
+    /// </summary>
+    internal static string? LookChangeFor(string? currentLookId, string? picked)
+    {
+        if (string.IsNullOrWhiteSpace(picked)) return null;
+        if (string.Equals(picked, currentLookId, StringComparison.Ordinal)) return null;
+        return picked;
+    }
+
+    /// <summary>
+    /// The value to send for a <c>ToggleSwitch</c> that just reported <paramref name="isOn"/>, or
+    /// <c>null</c> when the switch merely caught up with the engine.
+    ///
+    /// Both OHG toggles (AS-follow, Smart gallery) bind <c>IsOn</c> OneWay from the snapshot, and a
+    /// binding-driven write raises <c>Toggled</c> exactly like a finger does — WinUI gives the
+    /// handler no way to tell them apart. The page carries a re-entrancy flag for the writes it
+    /// makes itself, but the binding's write happens outside any code the page runs, so the flag
+    /// alone cannot cover it. This comparison can: a switch that now equals the engine's own state
+    /// has nothing to send. Without it, every snapshot that flips the engine's value would bounce
+    /// straight back as an operator command.
+    /// </summary>
+    internal static bool? ToggleChangeFor(bool current, bool isOn)
+        => isOn == current ? null : isOn;
+
+    /// <summary>
+    /// The brush resource key a Mukana capability lamp shows for <paramref name="state"/> (the
+    /// engine's <c>available | unavailable | disabled</c>, see
+    /// <c>show-engine/src/capabilities.ts</c>). The KEY is returned rather than a
+    /// <c>Brush</c> so this decision is testable — resolving a key against
+    /// <c>Application.Current.Resources</c> needs a XAML runtime.
+    ///
+    /// <list type="bullet">
+    /// <item><c>available</c> → live green: the endpoint answered.</item>
+    /// <item><c>disabled</c> → program amber: Mukana is not configured for this capability, so a
+    /// feature the operator may be expecting is deliberately off. Amber is the console's "read
+    /// this" colour (air red is reserved for tally).</item>
+    /// <item>anything else, including the projection's <c>unavailable</c> default for a missing or
+    /// malformed capability node → muted: we do not know that it works, and an unknown is not a
+    /// claim. Unrecognized future states land here rather than reading as healthy.</item>
+    /// </list>
+    /// </summary>
+    internal static string LampBrushKey(string? state) => (state ?? "").ToLowerInvariant() switch
+    {
+        "available" => "StudioLiveBrush",
+        "disabled" => "StudioProgramBrush",
+        _ => "StudioMutedBrush",
+    };
 }
