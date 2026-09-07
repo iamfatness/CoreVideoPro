@@ -90,6 +90,13 @@ export type MukanaQuestion = {
 };
 
 /**
+ * An operator-set headline. Unlike a `Nameplate`, nothing derives this from
+ * the roster or the resolved look — the operator types it, and separately
+ * controls whether it is on screen (`OverlayInput.headlineVisible`).
+ */
+export type Headline = { name: string; location: string };
+
+/**
  * Visual weight applied to a lower-third plate. Mirrors `PlateTone` in the
  * app's `src/engine/lowerThird.ts` (a different package) so the host adapter
  * maps these 1:1 onto CVP's lower-third renderer. Kept as its own copy here

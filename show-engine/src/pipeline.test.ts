@@ -10,7 +10,7 @@ import {
   ZoomIngest,
   type FetchLike,
   type Participant,
-  type ShowState,
+  type PersistedShowState,
   type StateFs
 } from "./index.js";
 
@@ -177,11 +177,13 @@ describe("identity and roster pipeline", () => {
     ]);
 
     const store = new StateStore(config.statePath, { fs: memoryFs() });
-    const saved: ShowState = {
-      version: 2,
+    const saved: PersistedShowState = {
+      version: 3,
       slots: slots.toJSON(),
       overrides: overrides.entries(),
-      gallery: { version: 1, cells: 1, assignments: [{ cell: 1, slot: 0 }] }
+      gallery: { version: 1, cells: 1, assignments: [{ cell: 1, slot: 0 }] },
+      manualBoxes: {},
+      lookId: null
     };
     await store.save(saved);
 

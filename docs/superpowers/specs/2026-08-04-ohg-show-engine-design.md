@@ -187,11 +187,17 @@ Companion builds actions from it dynamically. Params are positional
    panels, and OSC clients keep a single integration point. Every action gets an OSC
    address for free (`/cvp/ohg/panelist/add`) — also a migration path for legacy OSC
    gear.
-2. **Actions** (positional params; defaults shown):
-   - `ohg.panelist.add (int zoomID, int slot = 0 /* 0 = first empty */)`
+2. **Actions** (positional params; defaults shown). **Amended 2026-08-12 (Task 8 owner
+   ruling):** every participant id and PIN below is `string`, not `int` — a 4-digit PIN
+   like `"0042"` survives `int` coercion as `42`, and `personKeyForPin("42")` is a
+   DIFFERENT person's key from `personKeyForPin("0042")`, a silent identity swap that
+   would put the wrong name and role on air. Participant ids are opaque host strings
+   (§5), not guaranteed numeric. This applies uniformly to every `pin`/`zoomID`-shaped
+   param in this list, including `ohg.mukana.override.set`/`.delete` below:
+   - `ohg.panelist.add (string participantId, int slot = 0 /* 0 = first empty */)`
    - `ohg.panelist.remove (int slot)`
-   - `ohg.panelist.replace (int slot, int zoomID)`
-   - `ohg.panelist.role.set (int pin, string role)`
+   - `ohg.panelist.replace (int slot, string participantId)`
+   - `ohg.panelist.role.set (string pin, string role)`
    - `ohg.panelist.syncAll ()`
    - `ohg.program.preview (string source)` · `ohg.program.cut ()` ·
      `ohg.program.auto ()` · `ohg.program.directCut (string source)` ·
@@ -208,8 +214,8 @@ Companion builds actions from it dynamically. Params are positional
    - `ohg.gfx.headline.in ()` / `.out ()` / `.change (string name, string location)`
    - `ohg.gfx.question.in ()` / `.out ()` — the operator's show/hide controls; maps to
      `overlayDirector`'s `questionVisible` input
-   - `ohg.mukana.sync ()` · `ohg.mukana.override.set (int pin, string name,
-     string location, string role)` · `ohg.mukana.override.delete (int pin)`
+   - `ohg.mukana.sync ()` · `ohg.mukana.override.set (string pin, string name,
+     string location, string role)` · `ohg.mukana.override.delete (string pin)`
 3. **State.** Rich JSON on the `ohg` node of `/state` + WS push: `panelists` (master
    DB), `slots` (live array with holes), `gallery`, `queue`, `program`
    (pgm/pvw/mode/asFollow), `tally` (PIN lists + per-slot on-air), `health` (mukana /
