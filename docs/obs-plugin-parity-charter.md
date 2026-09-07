@@ -37,6 +37,8 @@ source rather than documentation on the Pro side. Every "gap" below carries the
 evidence that established it. Where a claim rests on absence, the search that found
 nothing is named, so it can be re-run.
 
+> Current verification: [September 7 Tiles stability and parity priorities](qa/tiles-parity-priorities-2026-09-07.md). The inventory below is the August baseline; use the dated re-audit for current implementation gaps and acceptance boundaries.
+
 ## Inventory
 
 ### Pro is at parity or ahead
