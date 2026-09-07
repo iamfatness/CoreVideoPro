@@ -147,7 +147,13 @@ describe("outputs pipeline", () => {
     });
 
     const overlay = new OverlayDirector();
-    overlay.update({ look, question: null, questionVisible: false });
+    overlay.update({
+      look,
+      question: null,
+      questionVisible: false,
+      headline: null,
+      headlineVisible: false
+    });
 
     const tally = deriveTally({
       source: { kind: "look", lookId: "teatime" },
@@ -229,9 +235,15 @@ describe("outputs pipeline", () => {
     if (outcome.kind !== "data") return;
 
     const overlay = new OverlayDirector();
-    expect(overlay.update({ look: null, question: outcome.question, questionVisible: true })).toBe(
-      true
-    );
+    expect(
+      overlay.update({
+        look: null,
+        question: outcome.question,
+        questionVisible: true,
+        headline: null,
+        headlineVisible: false
+      })
+    ).toBe(true);
     expect(overlay.state().question).toEqual({
       askerName: "Douglas",
       text: "Why?",
