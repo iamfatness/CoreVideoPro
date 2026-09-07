@@ -15,12 +15,13 @@ try {
         if ($name.EndsWith('/')) { continue }
         $relative = $name.Substring($prefix.Length)
         if ($entries.ContainsKey($relative)) { throw 'Duplicate archive entry.' }
-        if ($relative -match '(?i)(^|/)(Recordings|Logs|CrashReports|SupportBundles|runtime-probe[^/]*)(/|$)|-fake\.exe$|-tests\.exe$|\.pdb$|\.dmp$|^ffmpeg\.exe$|^av(codec|format|util)-[0-9]+\.dll$') { throw "Unexpected runtime/development data: $relative" }
+        if ($relative -match '(?i)(^|/)(Recordings|Logs|CrashReports|SupportBundles|runtime-probe[^/]*)(/|$)|-fake\.exe$|-tests\.exe$|\.pdb$|\.dmp$|(^|/)(production-output-preferences|zoom-oauth)|(^|/)(ffmpeg|ffprobe|ffplay)\.exe$|(^|/)(av(codec|format|util|device|filter)|swscale|swresample|postproc)-[0-9]+\.dll$') { throw "Unexpected runtime/development data: $relative" }
         $entries[$relative] = $entry
     }
     foreach ($required in @('CoreVideoPro.WinUI.exe','coreclr.dll','hostfxr.dll','Microsoft.UI.Xaml.dll','Microsoft.WinUI.dll',
         'corevideo-native.exe','corevideo-zoom-engine.exe','sdk.dll','Assets/AppIcon.ico','README.md',
-        'StartCoreVideo.cmd','Install-MediaRuntime.ps1','build-manifest.json')) {
+        'StartCoreVideo.cmd','Install-MediaRuntime.ps1','build-manifest.json',
+        'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll')) {
         if (-not $entries.ContainsKey($required)) { throw "Missing package component: $required" }
     }
     if (-not @($entries.Keys | Where-Object { $_ -like '*.xbf' }).Count) { throw 'Compiled XAML is missing.' }

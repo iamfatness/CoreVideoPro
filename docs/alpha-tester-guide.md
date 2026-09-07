@@ -17,7 +17,7 @@ recording for anything you cannot repeat.
    verifies the archive checksum. Internet access is required for this first step;
    keep the console open until it finishes. It installs only inside the app folder
    and does not change your system PATH. The package includes .NET and Windows
-   App Runtime. This alpha is unsigned, so Windows may show an unknown-publisher
+   App Runtime and the Visual C++ runtime. This alpha is unsigned, so Windows may show an unknown-publisher
    warning. Report any startup error with its exact message.
 4. Start with a disposable show and a short local recording. Confirm that you can
    play the completed file with audible sound before trying a meeting.

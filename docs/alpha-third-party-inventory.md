@@ -31,14 +31,26 @@ retained as provenance history, not as the source of the alpha's downloaded DLLs
 | --- | --- | --- |
 | FFmpeg shared Windows runtime | `N-124549-g1572784128-20260519`; `avcodec-62`, `avformat-62`, `avutil-60`, `avdevice-62`, `avfilter-11`, `swresample-6`, `swscale-9` | Include inspected LGPLv3 text, version/build configuration, and verified corresponding source/build/dependency information. See unresolved provenance below. |
 | Zoom Meeting SDK | Local packaging record says Windows x64 `7.0.5.39292`; verify final SDK binary versions | Retain the SDK runtime's `directui_license.txt`, `duilib_license.txt`, and `nanosvg_LICENSE.txt`. These component texts do not replace the SDK distribution terms or prove permission to redistribute the full SDK. |
-| .NET runtime | Local self-contained runtime package `9.0.16` | Include its `LICENSE.TXT` and `THIRD-PARTY-NOTICES.TXT`; use the actual selected runtime version if publish resolves another. |
-| Windows App SDK runtime / WinUI | NuGet `2.2.0` / `2.2.1` | Include each package's `license.txt` and `NOTICE.txt`; verify self-contained publication includes its required runtime files. |
+| .NET runtime | Final self-contained publication uses `9.0.17` | Include its `LICENSE.TXT` and `THIRD-PARTY-NOTICES.TXT`; the packager captured the actual `9.0.17` notices. |
+| Windows App SDK runtime / WinUI | NuGet `2.4.0` / `2.3.6` | Captured each package's current `license.txt` and `NOTICE.txt`; published self-contained runtime uses this pair. |
+| Windows App SDK Foundation / Base / InteractiveExperiences | `2.3.9` / `2.0.4` / `2.1.6` | Captured package licenses and available notices; InteractiveExperiences is explicitly pinned to the runtime's expected version. |
 | CommunityToolkit.Mvvm | NuGet `8.4.0` | Include `License.md` and `ThirdPartyNotices.txt`. |
-| Other managed/native dependencies | Vortice, SharpGen, WinRT, WebView2 loader, Microsoft SDK packages and transitive dependencies in final `.deps.json` / `project.assets.json` | Collect the resolved package license expressions/files and notices; the captured subset is not a complete transitive inventory. |
+| WebView2 | `1.0.3719.77`, including managed Core projection and native loader | Captured official NuGet LICENSE and NOTICE. |
+| Vortice.Windows / Mathematics | Direct3D11, DirectX, DXGI `3.6.2`; Mathematics `1.9.2` | Captured MIT texts at the package nuspec's source revisions `cd916a03f206165bec67982ed501e88820d4182b` / `f712049b1c3cd1671240af6a8ae22a635c4c34dd`. |
+| SharpGen.Runtime / COM | `2.2.0-beta` | Captured MIT text at nuspec revision `a22348d2e1ff76dfbdc51d68800ed31e991d8b32`. The beta version label does not change the included MIT declaration. |
+| Windows SDK .NET projection / WinRT.Runtime | Runtime pack `10.0.19041.57`; CsWinRT `2.2.0.48161` | Captured Windows SDK license RTF from package license URL `https://aka.ms/WinSDKLicenseURL`, and CsWinRT MIT text at the binary's source revision `8649ee3eeb2445ca2a36d80d878ef60b96a6c65d`. |
+| System.Security.Cryptography.ProtectedData | `9.0.0` | Captured package LICENSE and THIRD-PARTY-NOTICES. |
+| Microsoft Visual C++ x64 CRT | Installed VS 18 redistributable `14.51.36231`, `Microsoft.VC145.CRT` | Package the ten DLLs from the designated `VC/Redist/MSVC/14.51.36231/x64/Microsoft.VC145.CRT` directory, never copies from System32. Captured installed `Redist.txt` and its official `https://aka.ms/vs/18/redistribution` destination; these are redistribution-list inputs, not a replacement for the applicable Visual Studio license terms. |
 | Bundled fonts | Space Grotesk and IBM Plex Mono | Captured `SpaceGrotesk-OFL.txt` and `IBMPlexMono-OFL.txt` from the Google Fonts upstream repository; include them with the final Assets folder and retain attribution. |
 
 Font notice sources: [Space Grotesk OFL](https://github.com/google/fonts/blob/main/ofl/spacegrotesk/OFL.txt)
 and [IBM Plex Mono OFL](https://github.com/google/fonts/blob/main/ofl/ibmplexmono/OFL.txt), retrieved 2026-09-07.
+
+The final `publish-stable/CoreVideoPro.WinUI.deps.json` and resolved assets were
+checked against these managed/runtime versions. Captured Windows App SDK texts
+now use the adopted stable components, with no engineering-preview text retained.
+This dependency inventory does not replace Zoom SDK distribution terms or claim
+that the unrelated vendor SDK's complete third-party dependency tree was audited.
 
 ## FFmpeg provenance
 

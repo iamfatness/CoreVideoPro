@@ -33,8 +33,28 @@ foreach ($file in $nativeFiles) {
 }
 # The existing SDK copier protects WinUI-owned resources. Its destination is a
 # new release tree, so it cannot remove or overwrite a running app's runtime.
-& (Join-Path $PSScriptRoot 'sync-zoom-runtime-to-app.ps1') -AppDir $app
-if ($LASTEXITCODE -ne 0) { throw 'Zoom runtime staging failed.' }
+if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'native-core/zoom-runtime/windows/x64/bin/sdk.dll'))) {
+    throw 'Stage the production Zoom SDK before packaging.'
+}
+& (Join-Path $PSScriptRoot 'sync-zoom-runtime-to-app.ps1') -AppDir $app -RuntimeDir (Join-Path $repoRoot 'native-core/zoom-runtime/windows/x64')
+# Native helpers link the desktop VC runtime dynamically. Use the installed
+# Visual Studio redistribution tree, never DLLs scavenged from System32/PATH.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw 'Visual Studio Installer vswhere.exe is required to locate licensed VC redistributables.' }
+$vsRoot = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vsRoot)) { throw 'No installed Visual Studio C++ redistributable location found.' }
+$versionFile = Join-Path $vsRoot 'VC/Auxiliary/Build/Microsoft.VCRedistVersion.default.txt'
+$crtVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+if ($crtVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Unexpected Visual C++ redistributable version.' }
+$crtRoot = Join-Path $vsRoot "VC/Redist/MSVC/$crtVersion/x64"
+$crtDirectories = @(Get-ChildItem -LiteralPath $crtRoot -Directory | Where-Object { $_.Name -match '^Microsoft\.VC[0-9]+\.CRT$' })
+if ($crtDirectories.Count -ne 1) { throw 'Expected exactly one desktop x64 VC CRT redistributable directory.' }
+$crtDirectory = $crtDirectories[0].FullName
+foreach ($required in @('msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $crtDirectory $required) -PathType Leaf)) { throw "VC redistributable is missing required native import: $required" }
+}
+Get-ChildItem -LiteralPath $crtDirectory -File -Filter '*.dll' |
+    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $app -Force }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'alpha/Install-MediaRuntime.ps1') -Destination $app
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/alpha-tester-guide.md') -Destination (Join-Path $app 'README.md')
 $notices = Join-Path $app 'notices'
@@ -74,14 +94,14 @@ cd /d "%~dp0"
 $files = @(Get-ChildItem -LiteralPath $app -Recurse -File)
 foreach ($file in $files) {
     $relative = $file.FullName.Substring($app.Length + 1).Replace('\','/')
-    if ($relative -match '(?i)(^|/)(Recordings|Logs|CrashReports|SupportBundles)(/|$)|-fake\.exe$|-tests\.exe$|\.pdb$|\.dmp$|(^|/)(production-output-preferences|zoom-oauth)|^ffmpeg\.exe$|^av(codec|format|util)-[0-9]+\.dll$') {
+    if ($relative -match '(?i)(^|/)(Recordings|Logs|CrashReports|SupportBundles)(/|$)|-fake\.exe$|-tests\.exe$|\.pdb$|\.dmp$|(^|/)(production-output-preferences|zoom-oauth)|(^|/)(ffmpeg|ffprobe|ffplay)\.exe$|(^|/)(av(codec|format|util|device|filter)|swscale|swresample|postproc)-[0-9]+\.dll$') {
         throw "Disallowed public alpha content: $relative"
     }
 }
 $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $manifest = [ordered]@{
     releaseId=$ReleaseId; sourceCommit=$commit; platform='Windows x64'; channel='alpha'; signed=$false
-    appRuntime='Bundled .NET and Windows App SDK'; mediaRuntime='Verified upstream download on first launch'
+    appRuntime='Bundled .NET, Windows App SDK and Visual C++ CRT'; vcRuntimeVersion=$crtVersion; mediaRuntime='Verified upstream download on first launch'
     framePerformanceAccepted=$false
     files=@($files | Sort-Object FullName | ForEach-Object { [ordered]@{
         path=$_.FullName.Substring($app.Length+1).Replace('\','/'); bytes=$_.Length
