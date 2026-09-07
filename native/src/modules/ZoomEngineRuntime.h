@@ -65,6 +65,11 @@ class ZoomEngineRuntime {
   void applyEngineEventForTest(const ZoomEngineEvent& event);
 
  private:
+  friend struct ZoomEngineRuntimeTestAccess;
+  // Terminal lifecycle transition, serialized with incoming events and worker creation.
+  void beginShutdown();
+  bool shuttingDown_ = false;  // guarded by mutex_
+
   struct Config {
     std::string executablePath;
     std::string sdkJwt;

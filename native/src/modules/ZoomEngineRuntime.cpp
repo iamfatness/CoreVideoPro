@@ -76,7 +76,7 @@ ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::
 ZoomEngineRuntime::~ZoomEngineRuntime() {
   // Stop the video-ingest thread FIRST: it takes mutex_ briefly and touches
   // SHM regions that teardown below releases.
-  videoIngestRun_.store(false, std::memory_order_release);
+  beginShutdown();
   if (videoIngestThread_.joinable()) {
     videoIngestThread_.join();
   }
@@ -90,6 +90,15 @@ ZoomEngineRuntime::~ZoomEngineRuntime() {
   if (sender_.joinable()) {
     sender_.join();
   }
+}
+
+void ZoomEngineRuntime::beginShutdown() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  // The reader can still finish an in-flight event until stopReader joins it.
+  // Publish terminal state before clearing the run flag, so that event cannot
+  // replace the still-joinable ingest thread. All joins remain outside mutex_.
+  shuttingDown_ = true;
+  videoIngestRun_.store(false, std::memory_order_release);
 }
 
 ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
@@ -684,7 +693,7 @@ void ZoomEngineRuntime::readerLoop() {
 
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (generation && *generation != processGeneration_) return;
+  if (shuttingDown_ || (generation && *generation != processGeneration_)) return;
   if (event.kind == ZoomEngineEventKind::Joined && !acceptJoinEvents_) {
     // An SDK callback may arrive after Leave was accepted. Keep the current
     // snapshot left and reassert leave rather than reviving capture.
@@ -1003,7 +1012,7 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
 }
 
 void ZoomEngineRuntime::ensureVideoIngestThreadLocked() {
-  if (videoIngestRun_.load(std::memory_order_acquire)) {
+  if (shuttingDown_ || videoIngestThread_.joinable()) {
     return;
   }
   videoIngestRun_.store(true, std::memory_order_release);

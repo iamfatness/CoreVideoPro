@@ -65,15 +65,23 @@ public static class ScenePersistenceService
             ZIndex = route.ZIndex
         };
 
-    public static Scene SceneFromPersisted(PersistedScene persisted) =>
-        new()
+    public static Scene SceneFromPersisted(PersistedScene persisted)
+    {
+        // Older saved Tiles scenes can retain the layout discriminator while
+        // omitting their settings. Restore the discriminator's default behavior;
+        // explicit settings and ordinary custom canvases keep their existing path.
+        var gallery = persisted.DynamicGallery is { } settings ? FromPersisted(settings)
+            : string.Equals(persisted.Layout, "dynamic-gallery", StringComparison.Ordinal)
+                ? new DynamicGallerySettings() : null;
+        return new()
         {
             Id = persisted.Id,
             Name = persisted.Name,
             Layout = string.IsNullOrWhiteSpace(persisted.Layout) ? "host-focus" : persisted.Layout,
-            Automation = persisted.DynamicGallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
-            DynamicGallery = persisted.DynamicGallery is null ? null : FromPersisted(persisted.DynamicGallery)
+            Automation = gallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
+            DynamicGallery = gallery
         };
+    }
 
     public static DynamicGallerySettings FromPersisted(PersistedDynamicGallerySettings persisted) =>
         new()

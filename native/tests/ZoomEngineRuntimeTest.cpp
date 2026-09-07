@@ -643,3 +643,55 @@ TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined)
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
   unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
 }
+
+
+namespace corevideo::modules {
+struct ZoomEngineRuntimeTestAccess {
+  static void beginShutdown(ZoomEngineRuntime& runtime) { runtime.beginShutdown(); }
+  static bool ingestRunning(ZoomEngineRuntime& runtime) {
+    return runtime.videoIngestRun_.load(std::memory_order_acquire);
+  }
+  static bool ingestJoinable(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    return runtime.videoIngestThread_.joinable();
+  }
+};
+}  // namespace corevideo::modules
+
+TEST(ZoomEngineRuntime, LateFrameDuringShutdownCannotReplaceJoinableIngestThread) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  ZoomEngineEvent frame;
+  frame.kind = ZoomEngineEventKind::Frame;
+  frame.sourceUuid = "shutdown-regression-no-shared-memory";
+  frame.participantId = 4242;
+  frame.width = 2;
+  frame.height = 2;
+  runtime.applyEngineEventForTest(frame);
+  ASSERT_TRUE(ZoomEngineRuntimeTestAccess::ingestRunning(runtime));
+  ASSERT_TRUE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
+
+  // Exercise the precise destructor window: stop is published, but the old
+  // std::thread has not been joined. A late reader event previously assigned a
+  // new thread over this joinable owner and called std::terminate.
+  ZoomEngineRuntimeTestAccess::beginShutdown(runtime);
+  runtime.applyEngineEventForTest(frame);
+  EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestRunning(runtime));
+  EXPECT_TRUE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
+  // Destruction must join the existing owner outside the event mutex.
+}
+
+TEST(ZoomEngineRuntime, ShutdownBeforeFirstFrameNeverStartsIngest) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  ZoomEngineRuntimeTestAccess::beginShutdown(runtime);
+  ZoomEngineEvent frame;
+  frame.kind = ZoomEngineEventKind::Frame;
+  frame.sourceUuid = "shutdown-before-first-frame";
+  frame.participantId = 4242;
+  frame.width = 2;
+  frame.height = 2;
+  runtime.applyEngineEventForTest(frame);
+  EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestRunning(runtime));
+  EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
+}
