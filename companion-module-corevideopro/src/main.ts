@@ -6,12 +6,15 @@ import {
 	type CompanionActionDefinitions,
 	type CompanionActionDefinition,
 	type SomeCompanionActionInputField,
+	type CompanionFeedbackDefinitions,
+	type CompanionVariableDefinition,
 } from '@companion-module/base'
 import WebSocket from 'ws'
 import { getConfigFields, type CvpConfig } from './config.js'
 import { buildFeedbacks, FEEDBACK_FLAGS } from './feedbacks.js'
 import { buildVariables, VARIABLE_FIELDS } from './variables.js'
 import { buildPresets } from './presets.js'
+import { expandFeedbackFields, isTallyField, variableIdFor } from './ohgFields.js'
 
 interface ManifestParam {
 	name: string
@@ -33,12 +36,18 @@ interface Manifest {
 	feedbackFields: string[]
 }
 
+/** Reuse the same red used for "recording"/"streaming" in feedbacks.ts — the tally lamp color. */
+const OHG_TALLY_COLOR = combineRgb(200, 40, 40)
+
 class CvpInstance extends InstanceBase<CvpConfig> {
 	private config!: CvpConfig
 	private ws?: WebSocket
 	private wsReconnect?: NodeJS.Timeout
 	private state: Record<string, unknown> = {}
 	private destroyed = false
+	// `manifest.feedbackFields`, expanded (`{slot}` -> 1..10) and filtered to `ohg/` fields only.
+	// Empty until the first successful loadManifest(); onStateMessage/checkFeedbacks read it live.
+	private ohgFields: string[] = []
 
 	async init(config: CvpConfig): Promise<void> {
 		this.config = config
@@ -46,12 +55,46 @@ class CvpInstance extends InstanceBase<CvpConfig> {
 		this.updateStatus(InstanceStatus.Connecting)
 
 		// Static feedbacks/variables are stable (ControlState shape); actions come from the manifest.
-		this.setFeedbackDefinitions(buildFeedbacks(this))
-		this.setVariableDefinitions(buildVariables())
+		this.applyDefinitions()
 		this.setPresetDefinitions(buildPresets())
 
 		await this.loadManifest()
 		this.connectWebSocket()
+	}
+
+	/**
+	 * (Re)registers variable + feedback definitions: the hand-authored static lists (unchanged)
+	 * plus one variable per manifest-driven `ohg/` field (Task 14), one boolean feedback per
+	 * `ohg/.../tally` field, and the two shell scalars (`ohgEngineHealth`/`ohgShadowLastCommand`).
+	 * Called once at init() with `ohgFields` still empty, and again after each successful
+	 * loadManifest() so a manifest that arrives later (or changes) is reflected.
+	 */
+	private applyDefinitions(): void {
+		const ohgVariables: CompanionVariableDefinition[] = this.ohgFields.map((field) => ({
+			variableId: variableIdFor(field),
+			name: field,
+		}))
+		const shellVariables: CompanionVariableDefinition[] = [
+			{ variableId: 'ohg_health_engine', name: 'OHG show engine health' },
+			{ variableId: 'ohg_shadow_lastCommand', name: 'OHG shadow-mode last command' },
+		]
+		this.setVariableDefinitions([...buildVariables(), ...ohgVariables, ...shellVariables])
+
+		const feedbacks: CompanionFeedbackDefinitions = buildFeedbacks(this)
+		for (const field of this.ohgFields) {
+			if (!isTallyField(field)) continue
+			feedbacks[variableIdFor(field)] = {
+				type: 'boolean',
+				name: field,
+				defaultStyle: {
+					bgcolor: OHG_TALLY_COLOR,
+					color: combineRgb(255, 255, 255),
+				},
+				options: [],
+				callback: () => this.ohgFlag(field),
+			}
+		}
+		this.setFeedbackDefinitions(feedbacks)
 	}
 
 	async destroy(): Promise<void> {
@@ -88,6 +131,8 @@ class CvpInstance extends InstanceBase<CvpConfig> {
 			if (!res.ok) throw new Error(`HTTP ${res.status}`)
 			const manifest = (await res.json()) as Manifest
 			this.setActionDefinitions(this.buildActions(manifest))
+			this.ohgFields = expandFeedbackFields(manifest.feedbackFields ?? [])
+			this.applyDefinitions()
 		} catch (err) {
 			this.log('warn', `Could not load manifest: ${String(err)}`)
 			// Retry via the WS reconnect loop; keep whatever actions we already have.
@@ -209,15 +254,39 @@ class CvpInstance extends InstanceBase<CvpConfig> {
 			const v = next[field.id]
 			if (v !== undefined && v !== null) values[field.id] = v as string | number | boolean
 		}
+
+		// Manifest-driven `ohg/` fields live under the flat `state.ohgFields` map (Task 5).
+		const ohgFields = next.ohgFields as Record<string, unknown> | undefined
+		for (const field of this.ohgFields) {
+			const v = ohgFields?.[field]
+			if (v !== undefined && v !== null) values[variableIdFor(field)] = v as string | number | boolean
+		}
+
+		const engineHealth = next.ohgEngineHealth
+		if (engineHealth !== undefined && engineHealth !== null) {
+			values['ohg_health_engine'] = engineHealth as string | number | boolean
+		}
+		const shadowLastCommand = next.ohgShadowLastCommand
+		if (shadowLastCommand !== undefined && shadowLastCommand !== null) {
+			values['ohg_shadow_lastCommand'] = shadowLastCommand as string | number | boolean
+		}
+
 		this.setVariableValues(values)
 
 		// Re-evaluate the boolean feedbacks that light buttons.
-		this.checkFeedbacks(...FEEDBACK_FLAGS.map((f) => f.id))
+		const ohgTallyIds = this.ohgFields.filter(isTallyField).map(variableIdFor)
+		this.checkFeedbacks(...FEEDBACK_FLAGS.map((f) => f.id), ...ohgTallyIds)
 	}
 
 	/** Read a boolean state field for a feedback (used by feedbacks.ts). */
 	public flag(id: string): boolean {
 		return Boolean(this.state[id])
+	}
+
+	/** Read a boolean `state.ohgFields[field]` value for an ohg tally feedback. */
+	private ohgFlag(field: string): boolean {
+		const ohgFields = this.state.ohgFields as Record<string, unknown> | undefined
+		return Boolean(ohgFields?.[field])
 	}
 }
 

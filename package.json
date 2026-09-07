@@ -53,6 +53,7 @@
     "validate:record-stream": "node ./scripts/validate-record-stream.mjs",
     "validate:tiles": "node scripts/validate-tiles.mjs",
     "test:release-evidence": "node --test scripts/tests/release-evidence.test.mjs",
+    "test:show-engine-drill-judge": "node --test scripts/validate-show-engine-judge.test.mjs",
     "contract:generate": "node contracts/generate.mjs",
     "contract:check": "node contracts/generate.mjs --check"
   },
