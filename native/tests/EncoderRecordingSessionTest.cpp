@@ -1637,3 +1637,103 @@ TEST(EncoderRecordingSession, EncoderRecordingWarningSurfacesInSnapshotRecording
   EXPECT_EQ(recording->getString("warning"), dropWarning);
   EXPECT_EQ(recording->getString("status"), "recording");  // still recording; warning, not failure
 }
+
+TEST(RecordingPtsClock, SessionBoundaryRejectsPreEpochVideoWithoutConsumingIdentity) {
+  corevideo::modules::RecordingPtsClock clock;
+  clock.reset(10'000'000);
+  EXPECT_FALSE(clock.videoPts(9'000'000, 42).has_value());
+  EXPECT_FALSE(clock.videoPtsForSource(9'000'000, "camera", 42).has_value());
+  const auto accepted = clock.videoPts(10'000'000, 42);
+  ASSERT_TRUE(accepted.has_value());
+  EXPECT_EQ(*accepted, 0);
+  const auto iso = clock.videoPtsForSource(10'000'000, "camera", 42);
+  ASSERT_TRUE(iso.has_value());
+  EXPECT_EQ(*iso, 0);
+}
+TEST(RecordingPtsClock, AudioFirstCannotProduceNegativeVideoPts) {
+  corevideo::modules::RecordingPtsClock clock;
+  EXPECT_EQ(clock.audioPts(10'000'000, 960, 48000), 0);
+  EXPECT_FALSE(clock.videoPts(9'000'000, 1).has_value());
+  const auto accepted = clock.videoPts(10'166'667, 2);
+  ASSERT_TRUE(accepted.has_value());
+  EXPECT_EQ(*accepted, 166'667);
+}
+TEST(RecordingPtsClock, ExplicitBoundaryKeepsCapturedAudioOffsetIndependentOfWriterDelay) {
+  corevideo::modules::RecordingPtsClock clock;
+  clock.reset(10'000'000);
+  EXPECT_EQ(clock.audioPts(10'200'000, 960, 48000), 200'000);
+  EXPECT_EQ(clock.audioPts(10'400'000, 960, 48000), 400'000);
+  const auto video = clock.videoPts(10'200'000, 1);
+  ASSERT_TRUE(video.has_value());
+  EXPECT_EQ(*video, 200'000);
+}
+
+TEST(RecordingPtsClock, AudioBoundaryRetainsPostEpochTailOfStraddlingBlock) {
+  corevideo::modules::RecordingPtsClock clock;
+  clock.reset(10'000'000);
+  const auto tail = clock.trimAudioToEpoch(9'900'000, 960, 48000);
+  EXPECT_EQ(tail.skippedFrames, 480);
+  EXPECT_EQ(tail.retainedFrames, 480);
+  EXPECT_EQ(tail.timestamp100ns, 10'000'000);
+  EXPECT_EQ(clock.audioPts(tail.timestamp100ns, tail.retainedFrames, 48000), 0);
+  EXPECT_EQ(clock.audioPts(10'100'000, 960, 48000), 100'000);
+}
+TEST(RecordingPtsClock, AudioBoundaryRoundsFractionalSamplesUpAndRejectsFullyStaleBlock) {
+  corevideo::modules::RecordingPtsClock clock;
+  clock.reset(10'000'000);
+  const auto fractional = clock.trimAudioToEpoch(9'999'999, 960, 48000);
+  EXPECT_EQ(fractional.skippedFrames, 1);
+  EXPECT_EQ(fractional.retainedFrames, 959);
+  EXPECT_EQ(fractional.timestamp100ns, 10'000'208);
+  const auto stale = clock.trimAudioToEpoch(9'800'000, 960, 48000);
+  EXPECT_EQ(stale.skippedFrames, 960);
+  EXPECT_EQ(stale.retainedFrames, 0);
+  const auto exact = clock.trimAudioToEpoch(10'000'000, 960, 48000);
+  EXPECT_EQ(exact.skippedFrames, 0);
+  EXPECT_EQ(exact.retainedFrames, 960);
+  EXPECT_EQ(exact.timestamp100ns, 10'000'000);
+}
+
+TEST(RecordingPtsClock, FractionalAudioEpochUsesOneIntegerSampleTimeline) {
+  corevideo::modules::RecordingPtsClock clock;
+  clock.reset(10'000'000);
+  // Just past480samples: leading silence must occupy481 whole samples.
+  const auto first = clock.audioPts(10'100'001, 1024, 48000);
+  EXPECT_EQ(first, 481LL * 10'000'000 / 48000);
+  EXPECT_EQ((first * 48000 + 9'999'999) / 10'000'000, 481);
+  for (int block = 1; block < 100; ++block) {
+    const auto pts = clock.audioPts(99'000'000, 1024, 48000);
+    EXPECT_EQ(pts, (481LL + block * 1024LL) * 10'000'000 / 48000);
+  }
+}
+
+TEST(RecordingStartBoundary, FirstReadyProgramFrameDefinesSharedZeroWithoutPreroll) {
+  corevideo::modules::RecordingStartBoundary start;
+  start.begin(10'000'000, 13'000'000);
+  EXPECT_FALSE(start.select(12'900'000));
+  EXPECT_FALSE(start.epoch().has_value());
+  ASSERT_TRUE(start.select(13'166'667));
+  corevideo::modules::RecordingPtsClock clock;
+  clock.reset(*start.epoch());
+  ASSERT_TRUE(clock.videoPts(13'166'667, 10).has_value());
+  EXPECT_EQ(clock.lastVideoPts100ns(), 0);
+  const auto audio = clock.trimAudioToEpoch(13'066'667, 960, 48000);
+  EXPECT_EQ(audio.retainedFrames, 480);
+  EXPECT_EQ(clock.audioPts(audio.timestamp100ns, audio.retainedFrames, 48000), 0);
+  const auto iso = clock.videoPtsForSource(13'333'334, "iso", 2);
+  ASSERT_TRUE(iso.has_value());
+  EXPECT_EQ(*iso, 166'667);
+}
+TEST(RecordingStartBoundary, RestartAndStopBeforeFirstFrameNeverReusePriorEpoch) {
+  corevideo::modules::RecordingStartBoundary start;
+  start.begin(100, 200);
+  ASSERT_TRUE(start.select(300));
+  start.begin(400, 500);
+  EXPECT_FALSE(start.epoch().has_value());
+  EXPECT_FALSE(start.select(499));
+  EXPECT_FALSE(start.epoch().has_value());
+  ASSERT_TRUE(start.select(600));
+  EXPECT_EQ(*start.epoch(), 600);
+  EXPECT_FALSE(start.select(599));
+  EXPECT_EQ(*start.epoch(), 600);
+}

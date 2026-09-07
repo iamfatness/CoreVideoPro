@@ -213,6 +213,8 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("mode", s, true, "perGuestIso | programMix") }),
             new("audio.monitor.set", "Audio monitor", "Enable/disable the audio monitor.",
                 new[] { new ControlParam("on", b, true) }),
+            new("settings.programBuffer.set", "Program buffer depth", "Save 2 or 3 frames for the next app launch. Does not change the running buffer. Read saved/session/restart state from /state.",
+                [new("frames", ControlParamType.Double, Description: "Exactly 2 or 3; fractional values are rejected.")]),
             new("audio.monitor.volume", "Monitor volume", "Set the audio monitor volume (0.0-1.0).",
                 new[] { new ControlParam("volume", d, true, "0.0-1.0") }),
             new("audio.masterLimiter.set", "Master limiter", "Enable/disable the master limiter.",

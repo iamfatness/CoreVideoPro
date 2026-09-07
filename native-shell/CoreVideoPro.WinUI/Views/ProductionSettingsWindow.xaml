@@ -126,6 +126,13 @@
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="14">
                             <TextBlock Text="Canvas" Style="{StaticResource SettingsLabel}" />
+                            <ComboBox Header="Program buffer (frames)"
+                                      ItemsSource="{x:Bind ViewModel.ProgramBufferFrameOptions}"
+                                      SelectedItem="{x:Bind ViewModel.ProgramBufferFrames, Mode=TwoWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.ProgramBufferSessionSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                            <TextBlock Text="Requires the D3D11 renderer. Default: 3 frames. Changes apply after restarting the app."
+                                       Style="{StaticResource OperatorSummary}" />
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />

@@ -1,6 +1,7 @@
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
+#include "core/AnchoredFrameDeadlineTracker.h"
 #include "rpc/CommandMailbox.h"
 #include "contracts/Lifecycle.h"
 #include <random>
@@ -470,6 +471,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // work. Engine pipe writes happen ONLY on the runtime's dedicated sender thread
   // (increment 3) — no engine I/O ever runs under coreMutex.
   std::mutex coreMutex;
+  // Give an already-waiting command the next lock acquisition. This replaces
+  // a fixed post-render sleep, which consumed frame time even with no command.
+  // Both callers run on the single RPC loop thread; multiple command workers
+  // would require a waiter count instead of this single-waiter flag.
+  std::atomic<bool> commandWaitingForCore{false};
+  std::condition_variable coreHandoff;
+  const auto lockCommandCore = [&] {
+    commandWaitingForCore.store(true, std::memory_order_release);
+    std::unique_lock<std::mutex> lock(coreMutex);
+    commandWaitingForCore.store(false, std::memory_order_release);
+    coreHandoff.notify_one();
+    return lock;
+  };
 
   // Flip MediaCore to worker mode: the heavy audio/output half no longer runs on the
   // command thread inside renderSyntheticTick — the audioOutputThread below drives it.
@@ -482,9 +496,6 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
-    // Past this per-tick render cost the loop is saturated and must yield.
-    constexpr long long kRenderYieldThresholdMs = 12;
-    constexpr long long kRenderYieldMs = 6;
     long long frames = 0;
     long long lockWaitUs = 0;
     long long renderUs = 0;
@@ -498,16 +509,28 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // so a late frame is followed by a SHORTER wait and the average holds 60,
     // with bounded catch-up (same discipline as the audio worker's pacer) so a
     // genuinely overrunning tick can't build unpayable debt.
-    constexpr long long kFrameBudgetUs = 16666;  // 60fps
+    constexpr long long kFrameBudgetUs = 16666;  // legacy interval diagnostic only
     constexpr int kMaxCatchUpFrames = 3;
-    // A 60.0 AVERAGE can still hide judder: one 33ms frame plus one 0ms frame
-    // averages perfectly and looks broken on motion. Broadcast switchers are
-    // judged on DROPPED frames, not mean fps, so count intervals that ran past
-    // 1.5x budget (a frame the operator/stream actually lost) and keep the worst.
+    // Preserve the legacy late-interval diagnostic for log compatibility. It
+    // counts gaps >1.5 periods, not exact dropped output frames. Anchored CPU
+    // completion deadlines below count smaller overruns and skipped slots too.
     long long lateFrames = 0;
     long long worstFrameUs = 0;
     auto lastFrameStart = std::chrono::steady_clock::now();
-    auto nextDeadline = std::chrono::steady_clock::now() + std::chrono::microseconds(kFrameBudgetUs);
+    const auto cadenceAnchor = std::chrono::steady_clock::now();
+    core::AnchoredFrameDeadlineTracker cadence;
+    const auto elapsedNs = [&] {
+      return static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - cadenceAnchor).count());
+    };
+    const auto reportCadence = [&](const char* phase) {
+      std::fprintf(stderr,
+          "[render-deadlines] metricVersion=anchored-deadline-v1 stage=cpu-submission phase=%s elapsedNs=%lld completedSlots=%lld deadlineMisses=%lld skippedSlots=%lld maxLatenessNs=%lld gpuCompletionVerified=0 outputDeliveryVerified=0\n",
+          phase, static_cast<long long>(elapsedNs()), static_cast<long long>(cadence.completedSlots()),
+          static_cast<long long>(cadence.deadlineMisses()), static_cast<long long>(cadence.skippedSlots()),
+          static_cast<long long>(cadence.maximumCompletionLatenessNs()));
+    };
+    reportCadence("begin");
 #ifdef _WIN32
     // Raise the system timer resolution to 1ms so sub-frame sleeps in this loop are
     // accurate. The Windows default (~15.6ms) rounds any sleep up to a full tick, which
@@ -528,15 +551,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         worstFrameUs = (std::max)(worstFrameUs, intervalUs);
         lastFrameStart = t0;
       }
-      long long tickRenderMs = 0;
       {
         std::unique_lock<std::mutex> lock(coreMutex);
+        coreHandoff.wait(lock, [&] {
+          return !commandWaitingForCore.load(std::memory_order_acquire) || stopping.load();
+        });
+        if (stopping.load()) break;
         // Increment 6 guardrail: sanctioned long-hold site — the video-only GPU
         // tick typically holds ~1-2ms; warn (rate-capped) past half a frame.
         core::ScopedLockHoldTimer holdGuard("render.display-tick",
                                             core::LockHoldGuardrail::kRenderTickBudgetUs);
         const auto t1 = std::chrono::steady_clock::now();
-        mediaCore_.renderDisplayTick();
+        mediaCore_.renderDisplayTick(cadence.slotIndex(),
+            std::chrono::duration_cast<std::chrono::nanoseconds>(cadenceAnchor.time_since_epoch()).count());
         // The event drain + stringify + enqueue below runs UNDER coreMutex but
         // outside MediaCore's own stage instrumentation, so it was invisible in
         // the "[render] stages" line — the unaccounted remainder of a long tick.
@@ -571,27 +598,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           std::fprintf(stderr, "[render] STALL lockWait=%lldms render=%lldms\n",
                        static_cast<long long>(holdLockMs), static_cast<long long>(holdRenderMs));
         }
-        tickRenderMs = holdRenderMs;
       }
       // Wake the program-video-out worker HERE — coreMutex is released. Doing it
       // inside the scope above woke a thread that immediately blocked on the lock
       // we still held, and cost operator command p99 51ms -> 107ms.
       mediaCore_.notifyProgramFramePublished();
-      // COMMAND PRIORITY. A saturated tick (a real show: several 1080p Zoom
-      // feeds plus capture sources pushed this to ~34ms) exceeds the frame
-      // budget, so the pacer below sleeps zero and this loop re-acquires
-      // coreMutex immediately — the lock is then held ~100% of wall time and
-      // NO request can ever acquire it, so every shell command times out
-      // (joins, scene syncs, assigns). Yield a fixed slice with the lock
-      // RELEASED whenever the tick overran. Dropping a frame is invisible;
-      // a timed-out command breaks the app.
-      if (tickRenderMs > kRenderYieldThresholdMs) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(kRenderYieldMs));
-      }
+      const auto previousMisses = cadence.deadlineMisses();
+      cadence.recordCompletion(elapsedNs());
+      mediaCore_.reportRenderDeadlineMisses(cadence.deadlineMisses() - previousMisses);
+      // Command fairness is handled by coreHandoff above. The pacer uses only
+      // remaining deadline slack; never add six milliseconds to a costly frame.
       if (++frames >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
-        mediaCore_.reportRenderDeadlineMisses(lateFrames);
+        reportCadence("sample");
         std::fprintf(stderr,
                      "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
                      "dropped=%lld  worst=%.1fms  (avg/frame over %lld)\n",
@@ -614,7 +634,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // (Win10 1803+) gives ~0.5ms wakeup precision without burning the CPU; only a
       // ~200us yield tail remains to absorb the residual jitter. Heavy iterations
       // (work >= budget) blow past the deadline and run flat out, as before.
-      const auto deadline = nextDeadline;
+      const auto deadline = cadenceAnchor + std::chrono::nanoseconds(cadence.nextDeadlineOffsetNs());
 #ifdef _WIN32
       static thread_local HANDLE pacerTimer = ::CreateWaitableTimerExW(
           nullptr, nullptr,
@@ -658,16 +678,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         // Tiny tail to absorb timer overshoot; yield keeps it civil.
         std::this_thread::yield();
       }
-      nextDeadline += std::chrono::microseconds(kFrameBudgetUs);
-      // Bounded catch-up: if the tick genuinely overran (heavy show, thermal
-      // throttle) don't try to reclaim unbounded lost frames by free-running —
-      // re-anchor and keep real-time cadence from here.
-      const auto afterPace = std::chrono::steady_clock::now();
-      if (nextDeadline + std::chrono::microseconds(kFrameBudgetUs * kMaxCatchUpFrames) <
-          afterPace) {
-        nextDeadline = afterPace + std::chrono::microseconds(kFrameBudgetUs);
-      }
+      // Bounded catch-up preserves the original clock and accounts every slot
+      // it abandons, rather than silently resetting the clock after a stall.
+      mediaCore_.reportRenderDeadlineMisses(cadence.advance(elapsedNs(), kMaxCatchUpFrames));
     }
+    reportCadence("end"); // includes the final partial 120-frame window
   });
 
   // Dedicated Zoom-frame pump: drains the engine frame queue -> stdout on its own
@@ -928,7 +943,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           }
           continue;
         } else {
-          std::lock_guard<std::mutex> lock(coreMutex);
+          auto lock = lockCommandCore();
           // Commands apply state and copy a snapshot under the lock; live render
           // cadence belongs to the display worker. Keep the existing budget as
           // a regression backstop above the 30ms [cmd] warning below.
@@ -987,7 +1002,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       const auto p0 = std::chrono::steady_clock::now();
       std::vector<Json> previewEvents;
       {
-        std::lock_guard<std::mutex> lock(coreMutex);
+        auto lock = lockCommandCore();
         // The drain moves owning JSON values and leaves the producer queue empty.
         core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
                                             core::LockHoldGuardrail::kFramePumpBudgetUs);
@@ -1018,6 +1033,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   joinCv.notify_one();
   joinWorker.join(); // waits only for cancellation-aware spawn/auth teardown, never coreMutex
   stopping.store(true);
+  coreHandoff.notify_all();
   outCv.notify_one();
   if (renderThread.joinable()) {
     renderThread.join();

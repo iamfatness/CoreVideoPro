@@ -223,6 +223,20 @@ struct MultiviewTileRect {
   std::string tally = "none";
 };
 
+struct CompositorRenderPlan;
+
+struct ProgramBufferDiagnostics {
+  int requestedFrames = 3;
+  int activeFrames = 0;
+  int capacity = 0;
+  int occupancy = 0;
+  uint64_t produced = 0, delivered = 0, underruns = 0, overflows = 0;
+  uint64_t gpuNotReady = 0, deadlineMisses = 0;
+  uint64_t displayUnconsumed = 0, displayBusy = 0;
+  uint64_t generation = 0;
+  std::string status = "unsupported";
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -277,6 +291,14 @@ struct ProgramFrame {
   // Recording sinks use it instead of writer-thread time so encoder/disk queue
   // latency cannot stretch the Program video timeline away from audio.
   int64_t timelineTimestamp100ns = 0;
+  int64_t deliverySequence = 0;
+  int64_t producedAt100ns = 0;
+  int64_t deliveredAt100ns = 0;
+  int64_t productionSlot = -1;
+  int64_t productionAnchorNs = 0;
+  // Retain GPU resources and attribution for this exact buffered frame.
+  std::shared_ptr<const void> gpuOwner;
+  std::shared_ptr<const CompositorRenderPlan> renderPlanEvidence;
 };
 
 struct CompositorLayerRect {
@@ -465,6 +487,15 @@ struct OutputSession {
   int64_t recordingProgramBytesWritten = 0;
   int64_t recordingDurationMs = 0;
   int64_t recordingVideoFrameCount = 0;
+  int64_t recordingVideoPrerollFrameCount = 0;
+  int64_t recordingVideoTailFrameCount = 0;
+  int64_t recordingMuxVideoFrameCount = 0;
+  int64_t recordingRequestedAt100ns = 0;
+  int64_t recordingWriterReadyAt100ns = 0;
+  int64_t recordingMuxEpoch100ns = 0;
+  int64_t recordingStartupDroppedAudioPackets = 0;
+  int64_t recordingAudioPrerollSampleCount = 0;
+  int64_t recordingAudioTailSampleCount = 0;
   int64_t recordingLastFrameNumber = 0;
   int recordingWidth = 0;
   int recordingHeight = 0;
@@ -505,6 +536,8 @@ struct IsoSourceSelection {
 };
 
 struct RecordingSessionRequest {
+  // Steady-clock capture boundary; zero retains legacy first-media epoch.
+  int64_t captureEpoch100ns = 0;
   std::string sessionId = "native-recording-session";
   std::string targetFolder = "Recordings/CoreVideo Pro/native-core";
   std::string filenamePrefix = "program";
@@ -697,6 +730,14 @@ class ICompositor {
   virtual ~ICompositor() = default;
   virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
+  // Startup-only configuration. Unsupported compositors report zero active
+  // frames, so consumers must not introduce an unmatched audio delay.
+  virtual void configureProgramBuffer(int /*frames*/) {}
+  virtual void setProgramProductionTiming(int64_t /*slot*/, int64_t /*anchorNs*/) {}
+  [[nodiscard]] virtual int programBufferFrames() const { return 0; }
+  virtual bool latestDeliveredProgramFrame(ProgramFrame& /*out*/) const { return false; }
+  virtual bool takeDeliveredProgramFrame(ProgramFrame& /*out*/, int /*timeoutMs*/) { return false; }
+  [[nodiscard]] virtual ProgramBufferDiagnostics programBufferDiagnostics() const { return {}; }
   // Virtual camera: the render thread does a cheap GPU->GPU copy of the program
   // into a keyed-mutex shared texture (via the render plan's fullProgramReadback
   // flag); a dedicated device+thread reads it back AND converts it to NV12 off
@@ -787,6 +828,11 @@ class IMediaFrameSource {
  public:
   virtual ~IMediaFrameSource() = default;
   virtual std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) = 0;
+  // Exact monotonic presentation time for scheduled media. Legacy adapters
+  // retain their millisecond contract through this additive default.
+  virtual std::vector<VideoFrame> pollMediaFramesAt100ns(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestamp100ns) {
+    return pollMediaFrames(layers, timestamp100ns / 10000);
+  }
   virtual std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) {
     (void)layers;
     (void)timestampMs;
@@ -878,6 +924,13 @@ class IEncoderSink {
     (void)frameCount;
     (void)channels;
     (void)sampleRate;
+  }
+  // Preserve the producer timestamp across asynchronous writers. Legacy sinks
+  // retain their existing audio behavior through this default forwarding seam.
+  virtual void submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                             int64_t timelineTimestamp100ns) {
+    (void)timelineTimestamp100ns;
+    submitAudio(interleaved, frameCount, channels, sampleRate);
   }
   // A3 (VST latency compensation): the program-audio content latency added by
   // an active out-of-process plugin, in samples at the program rate. The

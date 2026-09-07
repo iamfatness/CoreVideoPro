@@ -1,5 +1,15 @@
 # Control command lifecycle
 
+The operator HTTP/OSC action `settings.programBuffer.set` accepts positional
+arguments `[2]` or `[3]` only. It saves the setting for the next app launch; the
+current native process and its recovered children retain their startup depth.
+`/state` exposes `programBufferRequestedFrames`,
+`programBufferSessionRequestedFrames`, and `programBufferRestartRequired`.
+`nativeProgramBuffer` separately reports the native process's observed state.
+A failed durable save rejects the action and retains the previous selection;
+the same request can be retried. Successful saving does not claim that the
+running buffer changed or that frame performance was verified.
+
 The native handshake includes `protocolVersion: {major: 1, minor: 0}` and a
 `processEpoch`. Existing clients may omit version fields. Requests specifying an
 unsupported major receive `incompatible-protocol` before execution.

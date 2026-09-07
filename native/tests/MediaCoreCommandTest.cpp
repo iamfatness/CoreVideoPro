@@ -2853,8 +2853,10 @@ AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAASibW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAA
   layer.mediaPlaybackKey = "preview:diagnostic";
   layer.mediaAssetPlaying = false;
   std::vector<corevideo::modules::VideoFrame> frames;
-  for (int i = 0; i < 120 && frames.empty(); ++i) {
-    frames = source->pollMediaFrames({layer}, i * 16);
+  const auto readyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (frames.empty() && std::chrono::steady_clock::now() < readyDeadline) {
+    frames = source->pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (frames.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
   ASSERT_FALSE(frames.empty());
   EXPECT_EQ(frames.front().participantId, "preview:media:diagnostic");
@@ -2866,6 +2868,7 @@ AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAASibW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAA
     EXPECT_EQ((*frames.front().pixels)[offset], 0xff);
   }
   EXPECT_TRUE(source->warnings().empty());
+  source.reset(); // Release owned decoder workers before deleting their fixture.
   std::filesystem::remove(videoPath);
 }
 
@@ -2886,9 +2889,14 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   layer.mediaPlaybackKey = "program-take:1:media:clip-audio";
   layer.mediaAssetPlaying = true;
 
-  const auto frames = source->pollMediaAudioFrames({layer}, 33);
+  std::vector<corevideo::modules::AudioFrame> frames;
+  const auto readyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (frames.empty() && std::chrono::steady_clock::now() < readyDeadline) {
+    frames = source->pollMediaAudioFrames({layer}, 33);
+    if (frames.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
   ASSERT_FALSE(frames.empty());
-  EXPECT_EQ(frames.front().participantId, "media");
+  EXPECT_EQ(frames.front().participantId, "media:clip-audio");
   EXPECT_EQ(frames.front().sampleRate, 48000);
   EXPECT_EQ(frames.front().channels, 2);
   EXPECT_TRUE(frames.front().sampleCount > 0);
@@ -2901,6 +2909,7 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   EXPECT_TRUE(peak > 0.05f);
   EXPECT_TRUE(source->warnings().empty());
 
+  source.reset(); // Release owned decoder workers before deleting their fixture.
   std::filesystem::remove(wavPath);
 }
 #endif

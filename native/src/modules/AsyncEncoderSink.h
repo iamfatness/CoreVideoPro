@@ -89,6 +89,8 @@ class AsyncEncoderSink final : public IEncoderSink {
   void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override;
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override;
   void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override;
+  void submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                     int64_t timelineTimestamp100ns) override;
   // A3: forwarded straight to the inner sink — the interface contract makes
   // the implementation thread-safe (an atomic store), so no queue item.
   void setAudioContentLatencySamples(int latencySamples) override;
@@ -127,6 +129,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     int audioFrameCount = 0;
     int audioChannels = 0;
     int audioSampleRate = 0;
+    int64_t audioTimelineTimestamp100ns = 0;
   };
 
   // All state the (possibly-detached) writer thread touches. Held by shared_ptr

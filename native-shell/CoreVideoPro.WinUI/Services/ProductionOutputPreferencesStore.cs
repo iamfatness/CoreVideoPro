@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.WinUI.Services;
 
@@ -47,7 +48,15 @@ public sealed class ProductionOutputPreferences
     // profiles migrate once from programMix so Zoom ISO sources automatically
     // reach MASTER + Program L/R through their own faders. The operator can
     // still explicitly select Zoom program mix after migration.
-    public const int CurrentVersion = 10;
+    // v11: startup-only Program buffer depth, default three frames.
+    public const int CurrentVersion = 11;
+
+    private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
+    public int ProgramBufferFrames
+    {
+        get => _programBufferFrames;
+        set => _programBufferFrames = ProgramBufferPreference.Normalize(value);
+    }
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }

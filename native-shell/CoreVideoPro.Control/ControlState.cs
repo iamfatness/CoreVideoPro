@@ -43,6 +43,10 @@ public sealed record ControlState
     public string? NativeLowerThirdPhase { get; init; }
     public bool? NativeLowerThirdVisible { get; init; }
     public int? NativeProgramFrameCount { get; init; }
+    public System.Text.Json.JsonElement? NativeProgramBuffer { get; init; }
+    public int? ProgramBufferRequestedFrames { get; init; }
+    public int? ProgramBufferSessionRequestedFrames { get; init; }
+    public bool? ProgramBufferRestartRequired { get; init; }
     public string ViewMode { get; init; } = string.Empty;
 
     public string MultiviewLayoutMode { get; init; } = string.Empty;

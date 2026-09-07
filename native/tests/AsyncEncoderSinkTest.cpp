@@ -32,6 +32,7 @@ class ControllableEncoder final : public IEncoderSink {
   std::atomic<int> submitCount{0};
   std::atomic<int> lastFrameNumber{-1};
   std::atomic<int> audioCount{0};
+  std::atomic<int64_t> lastAudioTimestamp{0};
   std::atomic<int> isoAudioCount{0};
   std::atomic<int> isoVideoCount{0};
   std::atomic<int> programCountAtSecondIso{0};
@@ -83,6 +84,10 @@ class ControllableEncoder final : public IEncoderSink {
     session_.recordingLastFrameNumber = frame.frameNumber;
   }
 
+  void submitAudioAt(const float* pcm, int frames, int channels, int rate, int64_t timestamp) override {
+    lastAudioTimestamp.store(timestamp);
+    submitAudio(pcm, frames, channels, rate);
+  }
   void submitAudio(const float* /*interleaved*/, int frameCount, int /*channels*/, int /*sampleRate*/) override {
     if (frameCount <= 0) {
       return;
@@ -663,4 +668,17 @@ TEST(AsyncEncoderSink, FailedWriterStillReceivesExactlyOneCleanupStop) {
   EXPECT_EQ(raw->stopCount.load(), 1);
   EXPECT_EQ(sink.session().lifecycle->state, "failed");
   EXPECT_FALSE(sink.session().lifecycle->desiredActive);
+}
+
+TEST(AsyncEncoderSink, AudioProducerTimestampSurvivesWriterQueue) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* probe = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  const float pcm[] = {0.1f, 0.2f};
+  sink.submitAudioAt(pcm, 1, 2, 48000, 123456789);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(probe->lastAudioTimestamp.load(), 123456789);
+  EXPECT_EQ(probe->audioCount.load(), 1);
 }

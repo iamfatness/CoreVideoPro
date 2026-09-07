@@ -307,6 +307,7 @@ public sealed class RawParticipantEvent
 
 public sealed class NativeMediaCoreWireState
 {
+    public System.Text.Json.JsonElement? ProgramBuffer { get; init; }
     public NativeMediaCoreProgramFrame? ProgramFrame { get; init; }
     public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }

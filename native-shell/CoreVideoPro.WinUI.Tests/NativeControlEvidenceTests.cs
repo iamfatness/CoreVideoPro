@@ -10,6 +10,26 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class NativeControlEvidenceTests
 {
     [Fact]
+    public void ProgramBufferDiagnosticsSurviveWireMappingAndControlSerializationWithoutDefaultProof()
+    {
+        const string json = """{"programBuffer":{"activeFrames":3,"occupancy":2,"underruns":1,"delivered":90,"deadlineMisses":4,"outputSequenceGaps":2,"displayPresentationVerified":false}}""";
+        var wire = JsonSerializer.Deserialize<NativeMediaCoreWireState>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var snapshot = CoreVideoPro.MediaCore.Services.NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        var state = NativeControlEvidence.Apply(ControlState.Empty, snapshot);
+        using var serialized = JsonDocument.Parse(JsonSerializer.Serialize(state, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var buffer = serialized.RootElement.GetProperty("nativeProgramBuffer");
+        Assert.Equal(3, buffer.GetProperty("activeFrames").GetInt32());
+        Assert.Equal(2, buffer.GetProperty("occupancy").GetInt32());
+        Assert.Equal(1, buffer.GetProperty("underruns").GetInt32());
+        Assert.Equal(90, buffer.GetProperty("delivered").GetInt32());
+        Assert.Equal(4, buffer.GetProperty("deadlineMisses").GetInt32());
+        Assert.Equal(2, buffer.GetProperty("outputSequenceGaps").GetInt32());
+        Assert.False(buffer.GetProperty("displayPresentationVerified").GetBoolean());
+        Assert.False(buffer.TryGetProperty("destinationCompletionVerified", out _));
+        Assert.Null(NativeControlEvidence.Apply(state, null).NativeProgramBuffer);
+    }
+
+    [Fact]
     public void NativeEvidenceDoesNotEchoDesiredState()
     {
         var desired = new ControlState { ActiveSceneId = "desired", PreviewSceneId = "queued", LowerThirdOnAir = true };

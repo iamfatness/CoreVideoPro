@@ -39,6 +39,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         nameof(StudioViewModel.ProgramLowerThirdKey),
         nameof(StudioViewModel.ProgramLowerThirdEnabled), nameof(StudioViewModel.ShowInputSummary),
         nameof(StudioViewModel.ProductionMode),
+        nameof(StudioViewModel.ProgramBufferFrames), nameof(StudioViewModel.ProgramBufferRestartRequired),
     };
 
     /// <summary>Every action id this adapter maps onto the ViewModel. A test asserts this covers
@@ -62,6 +63,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "automation.magic", "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
         "automation.lowerThirds.set", "automation.captions.set",
         "browser.add", "browser.remove", "browser.reload",
+        "settings.programBuffer.set",
     };
 
     private readonly StudioViewModel _vm;
@@ -123,6 +125,8 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     {
         switch (actionId)
         {
+            case "settings.programBuffer.set":
+                return ApplyProgramBufferRequest(args.Count > 0 ? args[0] : null, _vm.SaveProgramBufferFrames);
             // ---- Zoom session -------------------------------------------------------
             case "zoom.join":
                 _vm.Settings.JoinMeetingUrl = Str(args, 0);
@@ -459,6 +463,9 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
 
         return NativeControlEvidence.Apply(new ControlState
         {
+            ProgramBufferRequestedFrames = _vm.ProgramBufferFrames,
+            ProgramBufferSessionRequestedFrames = _vm.ProgramBufferSessionRequestedFrames,
+            ProgramBufferRestartRequired = _vm.ProgramBufferRestartRequired,
             Recording = _vm.Recording,
             Streaming = _vm.Streaming,
             EngineOn = _vm.ZoomCaptureSubscribed,
@@ -602,6 +609,20 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     private static string Str(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is string s ? s : string.Empty;
 
     private static bool Bool(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is bool b && b;
+
+    public static ControlInvokeResult ApplyProgramBufferRequest(object? requested, Action<int> save)
+    {
+        // Use the Double wire schema: the registry's Int coercion rounds fractions.
+        // Validate again here so direct callers cannot bypass the exact 2|3 contract.
+        double? frames = requested switch { int i => i, long l => l, double d => d, float f => f, _ => null };
+        if (frames is not (2 or 3)) return ControlInvokeResult.Fail("Program buffer frames must be exactly 2 or 3. Changes require an app restart.");
+        try
+        {
+            save((int)frames.Value);
+            return ControlInvokeResult.Success;
+        }
+        catch (Exception ex) { return ControlInvokeResult.Fail("Program buffer setting was not saved: " + ex.Message); }
+    }
 
     private static int Int(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is int i ? i : 0;
 

@@ -19,6 +19,7 @@ internal static class NativeControlEvidence
             NativeLowerThirdSourceId = lowerThird?.SourceId,
             NativePreviewSceneId = snapshot?.PreviewScene?.SceneId,
             NativeProgramFrameCount = snapshot?.ProgramFrameCount,
+            NativeProgramBuffer = snapshot?.ProgramBuffer is { ValueKind: System.Text.Json.JsonValueKind.Object } buffer ? buffer.Clone() : null,
             NativeLowerThirdPhase = lowerThird?.KeyPhase,
             NativeLowerThirdVisible = snapshot is null ? null : lowerThird?.Visible ?? false
         };

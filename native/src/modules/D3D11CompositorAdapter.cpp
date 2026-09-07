@@ -27,6 +27,7 @@
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
+#include "modules/D3DProgramBuffer.h"
 
 #include <algorithm>
 #include <array>
@@ -96,13 +97,44 @@ class D3D11Compositor final : public ICompositor {
     initializePipeline();
   }
 
-  ~D3D11Compositor() override { stopVcamTap(); }
+  ~D3D11Compositor() override {
+    { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
+    stopVcamTap();
+  }
 
   std::string rendererName() const override { return "d3d11"; }
+  void configureProgramBuffer(int frames) override { requestedProgramFrames_.store(frames == 2 ? 2 : 3); }
+  int programBufferFrames() const override { return requestedProgramFrames_.load(); }
+  void setProgramProductionTiming(int64_t slot, int64_t anchorNs) override {
+    programProductionSlot_ = slot; programProductionAnchorNs_ = anchorNs;
+  }
+  bool latestDeliveredProgramFrame(ProgramFrame& frame) const override {
+    auto buffer = currentProgramBuffer(); return buffer && buffer->latest(frame);
+  }
+  bool takeDeliveredProgramFrame(ProgramFrame& frame, int timeoutMs) override {
+    auto buffer = currentProgramBuffer();
+    if (buffer) return buffer->take(frame, timeoutMs);
+    std::this_thread::sleep_for(std::chrono::milliseconds((std::max)(0, timeoutMs)));
+    return false;
+  }
+  ProgramBufferDiagnostics programBufferDiagnostics() const override {
+    auto buffer = currentProgramBuffer();
+    if (buffer) return buffer->diagnostics();
+    ProgramBufferDiagnostics state; state.requestedFrames = programBufferFrames();
+    state.status = programBufferFrames() > 0 ? "priming" : "unsupported"; return state;
+  }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    const auto timingStart = std::chrono::steady_clock::now();
+    auto stageStart = timingStart;
+    auto stageUs = [&stageStart]() {
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - stageStart).count();
+      stageStart = now;
+      return static_cast<long long>(elapsed);
+    };
     ++frameNumber_;
-    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
+    auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
     frame.height = deterministicPlan.height;
@@ -134,28 +166,37 @@ class D3D11Compositor final : public ICompositor {
     context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
     context_->RSSetState(rasterizerState_.get());
 
+    const auto setupUs = stageUs();
     const auto layers = resolveLayers(deterministicPlan, frames);
+    const auto resolveUs = stageUs();
+    long long uploadUs = 0;
     for (const auto& layer : layers) {
-      drawLayer(layer, deterministicPlan);
+      drawLayer(layer, deterministicPlan, &uploadUs);
     }
+    const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
     // readback. On the light ~60fps display tick we skip them — only the GPU shared
     // texture is needed for the on-screen program, and stalling the CPU on a Map
     // every frame caps the render rate far below what the GPU can do.
-    if (!renderPlan.skipCpuReadback) {
+    const bool buffered = programBufferFrames() > 0;
+    if (!renderPlan.skipCpuReadback && !buffered) {
       frame.programPixelSignature = readProgramPixelSignature(deterministicPlan.width / 2, deterministicPlan.height / 2);
       frame.preview = readProgramFramePreview();
     }
-    if (renderPlan.fullProgramReadback) {
+    const auto readbackUs = stageUs();
+    if (renderPlan.fullProgramReadback && !buffered) {
       exportVcamSharedTexture();  // fast GPU->GPU copy only; a dedicated device+thread reads it back
     } else if (vcamThread_.joinable()) {
       stopVcamTap();  // vcam disabled -> tear down the tap thread + second device so it
                       // stops spinning keyed-mutex waits that hitch the render (runs once)
     }
-    exportSharedTexture(frame);
+    const auto vcamUs = stageUs();
+    if (!buffered) exportSharedTexture(frame);
+    const auto sharedUs = stageUs();
     exportParticipantTextures(deterministicPlan, frames, frame);
+    const auto participantUs = stageUs();
     // Evict cached source textures no pass has sampled recently (participant
     // left / source unrouted). 300 program frames ≈ 5s at 60fps — long enough
     // that a source cycling through preview keeps its cache, short enough that
@@ -167,7 +208,44 @@ class D3D11Compositor final : public ICompositor {
                ? sourceTextures_.erase(it)
                : std::next(it);
     }
+    const auto evictUs = stageUs();
+    if (buffered) {
+      auto buffer = currentProgramBuffer();
+      if (!buffer || !buffer->dimensions(frame.width, frame.height, programBufferFrames())) {
+        buffer = std::make_shared<D3DProgramBuffer>(device_.get(), frame.width, frame.height, programBufferFrames(), ++programBufferGeneration_,
+            [this](const ProgramFrame& delivered) {
+              if (!delivered.programNv12Shared) return;
+              std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+              if (vcamSink_) vcamSink_(delivered.programNv12Shared, delivered.programNv12Width, delivered.programNv12Height);
+            });
+        std::shared_ptr<D3DProgramBuffer> retired;
+        { std::lock_guard<std::mutex> lock(programBufferMutex_); retired = std::exchange(programBuffer_, buffer); }
+      }
+      frame.producedAt100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+      frame.productionSlot = programProductionSlot_; frame.productionAnchorNs = programProductionAnchorNs_;
+      frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
+      buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback);
+    }
     context_->Flush();
+    const auto flushUs = stageUs();
+    const auto timingEnd = std::chrono::steady_clock::now();
+    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(timingEnd - timingStart).count();
+    // CPU wall time, including driver waits; this is not a GPU execution query.
+    // No timers, queries, flushes or allocations are added to the GPU stream.
+    if (totalUs >= 8000) {
+      ++slowProgramFrames_;
+      worstSlowProgramUs_ = (std::max)(worstSlowProgramUs_, static_cast<long long>(totalUs));
+      if (lastSlowProgramLog_.time_since_epoch().count() == 0 ||
+          timingEnd - lastSlowProgramLog_ >= std::chrono::seconds(1)) {
+        std::fprintf(stderr,
+            "[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
+            static_cast<long long>(frameNumber_), static_cast<long long>(totalUs), setupUs, resolveUs,
+            uploadUs, (std::max)(0LL, drawUs - uploadUs), readbackUs, vcamUs, sharedUs,
+            participantUs, evictUs, flushUs, layers.size(), frames.size(), !renderPlan.skipCpuReadback,
+            renderPlan.fullProgramReadback, static_cast<unsigned long long>(slowProgramFrames_), worstSlowProgramUs_);
+        lastSlowProgramLog_ = timingEnd;
+      }
+    }
     return frame;
   }
 
@@ -212,10 +290,27 @@ class D3D11Compositor final : public ICompositor {
     context_->RSSetState(rasterizerState_.get());
 
     const auto layers = resolveLayers(deterministicPlan, frames);
+    const bool bufferedProgram = programBufferFrames() > 0;
+    auto* deliveredView = bufferedProgram ? retainedProgramForMultiview() : nullptr;
+    bool programPlaced = false;
     for (const auto& layer : layers) {
+      if (bufferedProgram && layer.plan.layerId.rfind("multiview-pgm:", 0) == 0) {
+        if (!programPlaced && deliveredView && layer.plan.hasClipRect) {
+          ResolvedLayer delivered;
+          delivered.plan.layerId = "buffered-program";
+          delivered.plan.kind = "participant-video";
+          delivered.plan.rect = layer.plan.clipRect;
+          delivered.plan.hasClipRect = true;
+          delivered.plan.clipRect = layer.plan.clipRect;
+          delivered.plan.borderStyle = "none";
+          delivered.retainedProgram = deliveredView;
+          drawLayer(delivered, deterministicPlan);
+          programPlaced = true;
+        }
+        continue; // Never paint speculative current Program into the delayed bus.
+      }
       drawLayer(layer, deterministicPlan);
     }
-
     exportMultiviewSharedTexture(out);
 
     targetWidth_ = savedWidth;
@@ -280,7 +375,38 @@ class D3D11Compositor final : public ICompositor {
     CompositorRenderPlanLayer plan;
     uint32_t color = 0xff808080;
     const VideoFrame* frame = nullptr;
+    ID3D11ShaderResourceView* retainedProgram = nullptr;
   };
+  std::shared_ptr<D3DProgramBuffer> currentProgramBuffer() const {
+    std::lock_guard<std::mutex> lock(programBufferMutex_); return programBuffer_;
+  }
+  ID3D11ShaderResourceView* retainedProgramForMultiview() {
+    auto buffer = currentProgramBuffer();
+    ProgramFrameSharedTexture exported;
+    std::shared_ptr<const void> owner;
+    if (!buffer || !buffer->multiview(exported, owner)) return nullptr;
+    if (exported.sharedHandleHex != retainedProgramHandle_) {
+      retainedProgramShared_ = {}; retainedProgramKey_ = {}; retainedProgramLocal_ = {}; retainedProgramView_ = {};
+      const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::strtoull(exported.sharedHandleHex.c_str(), nullptr, 16)));
+      if (FAILED(device_->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(retainedProgramShared_.put()))) ||
+          FAILED(retainedProgramShared_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(retainedProgramKey_.put())))) return nullptr;
+      D3D11_TEXTURE2D_DESC desc{}; retainedProgramShared_->GetDesc(&desc);
+      desc.MiscFlags = 0; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      if (FAILED(device_->CreateTexture2D(&desc, nullptr, retainedProgramLocal_.put())) ||
+          FAILED(device_->CreateShaderResourceView(retainedProgramLocal_.get(), nullptr, retainedProgramView_.put()))) return nullptr;
+      retainedProgramHandle_ = exported.sharedHandleHex;
+      retainedProgramOwner_ = std::move(owner);
+      retainedProgramCopied_ = false;
+    }
+    // The producer holds this key only for a copy submission. A bounded wait
+    // avoids repeatedly missing that brief interval at a fixed render phase.
+    if (retainedProgramKey_->AcquireSync(1, 1) == S_OK) {
+      context_->CopyResource(retainedProgramLocal_.get(), retainedProgramShared_.get());
+      retainedProgramKey_->ReleaseSync(0);
+      retainedProgramCopied_ = true;
+    }
+    return retainedProgramCopied_ ? retainedProgramView_.get() : nullptr;
+  }
 
   // Per-participant keyed-mutex shared texture for the GPU multiview tiles.
   // Declared up here so member-function signatures (renderI420ToParticipantTexture)
@@ -789,7 +915,7 @@ class D3D11Compositor final : public ICompositor {
     drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
   }
 
-  void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan) {
+  void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr) {
     const compositor::LayerRect rect{
         layer.plan.rect.x, layer.plan.rect.y, layer.plan.rect.width, layer.plan.rect.height};
     const float layerAlpha = compositorLayerOpacity(layer.plan);
@@ -862,11 +988,16 @@ class D3D11Compositor final : public ICompositor {
     // their cached per-source textures (uploaded only on content change); frames
     // without one (media layers) take the legacy shared-scratch upload.
     const bool isI420 = layer.frame != nullptr && layer.frame->hasI420();
+    const auto uploadStart = uploadUs ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame) : nullptr;
-    const bool textured = sourceTex != nullptr ||
+    const bool textured = layer.retainedProgram != nullptr || sourceTex != nullptr ||
         (layer.frame != nullptr &&
          (isI420 ? uploadLayerI420Texture(*layer.frame)
                  : (layer.frame->hasPixels() && uploadLayerTexture(*layer.frame))));
+    if (uploadUs) {
+      *uploadUs += std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - uploadStart).count();
+    }
     if (textured) {
       ID3D11SamplerState* samplers[] = {samplerState_.get()};
       context_->PSSetSamplers(0, 1, samplers);
@@ -879,7 +1010,7 @@ class D3D11Compositor final : public ICompositor {
         context_->PSSetShaderResources(0, 3, views);
       } else {
         context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {sourceTex ? sourceTex->bgraSrv.get() : layerTextureView_.get()};
+        ID3D11ShaderResourceView* views[] = {layer.retainedProgram ? layer.retainedProgram : sourceTex ? sourceTex->bgraSrv.get() : layerTextureView_.get()};
         context_->PSSetShaderResources(0, 1, views);
       }
     } else {
@@ -2390,6 +2521,20 @@ class D3D11Compositor final : public ICompositor {
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;
+  std::atomic<int> requestedProgramFrames_{0};
+  int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
+  mutable std::mutex programBufferMutex_;
+  std::shared_ptr<D3DProgramBuffer> programBuffer_;
+  uint64_t programBufferGeneration_ = 0;
+  std::string retainedProgramHandle_;
+  std::shared_ptr<const void> retainedProgramOwner_;
+  ComPtrLite<ID3D11Texture2D> retainedProgramShared_, retainedProgramLocal_;
+  ComPtrLite<IDXGIKeyedMutex> retainedProgramKey_;
+  ComPtrLite<ID3D11ShaderResourceView> retainedProgramView_;
+  bool retainedProgramCopied_ = false;
+  std::chrono::steady_clock::time_point lastSlowProgramLog_{};
+  uint64_t slowProgramFrames_ = 0;
+  long long worstSlowProgramUs_ = 0;
   bool pipelineReady_ = false;
   std::string initError_;
 };
