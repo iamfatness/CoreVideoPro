@@ -162,10 +162,9 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   {
     std::lock_guard<std::mutex> lock(mutex_);
     restart = restartBeforeJoin_;
-    restartBeforeJoin_ = false;
     if (restart) {
       ++processGeneration_;
-      purgeQueuedEngineSendsLocked("join after leave");
+      purgeQueuedEngineSendsLocked("join after retired helper");
     }
   }
   if (restart) {
@@ -175,6 +174,8 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     std::lock_guard<std::mutex> lock(mutex_);
     process_.reset();
     initialized_ = false;
+    state_.reset();
+    restartBeforeJoin_ = false;
   }
   if (cancelled && cancelled()) return nullptr;
   applyJoinCredentialsFromPayload(payload);
@@ -242,7 +243,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     if (!authReady) {
       std::lock_guard<std::mutex> lock(mutex_);
       if (cancelled && cancelled()) return nullptr;
-      state_.apply({ZoomEngineEventKind::Error, "error", "", "auth", "Timed out waiting for Zoom SDK authentication."});
+      retireTimedOutJoinLocked("auth", "Timed out waiting for Zoom SDK authentication.");
       return rawCaptureSnapshotLocked();
     }
   }
@@ -278,8 +279,18 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (cancelled && cancelled()) return nullptr;
-  state_.apply({ZoomEngineEventKind::Error, "error", "", "join", "Timed out waiting for Zoom meeting join result."});
+  retireTimedOutJoinLocked("join", "Timed out waiting for Zoom meeting join result.");
   return rawCaptureSnapshotLocked();
+}
+
+void ZoomEngineRuntime::retireTimedOutJoinLocked(const char* stage, const char* message) {
+  // SDK callbacks carry no join identity. Quarantine this helper immediately;
+  // the next explicit join terminates it outside the runtime lock before restart.
+  acceptJoinEvents_ = false;
+  restartBeforeJoin_ = true;
+  ++processGeneration_;
+  purgeQueuedEngineSendsLocked("join timeout");
+  state_.apply({ZoomEngineEventKind::Error, "error", "", stage, message});
 }
 
 rpc::Json ZoomEngineRuntime::leave() {
@@ -672,7 +683,7 @@ void ZoomEngineRuntime::readerLoop() {
     std::uint64_t generation;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (!readerRunning_ || !process_ || !process_->running()) {
+      if (!readerRunning_ || restartBeforeJoin_ || !process_ || !process_->running()) {
         return;
       }
       process = process_;
@@ -693,7 +704,7 @@ void ZoomEngineRuntime::readerLoop() {
 
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (shuttingDown_ || (generation && *generation != processGeneration_)) return;
+  if (shuttingDown_ || restartBeforeJoin_ || (generation && *generation != processGeneration_)) return;
   if (event.kind == ZoomEngineEventKind::Joined && !acceptJoinEvents_) {
     // An SDK callback may arrive after Leave was accepted. Keep the current
     // snapshot left and reassert leave rather than reviving capture.

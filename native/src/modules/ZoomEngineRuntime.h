@@ -121,6 +121,8 @@ class ZoomEngineRuntime {
   void ingestAudioEventLocked(const ZoomEngineEvent& event);
   bool ensureMediaStartedLocked();
   void applyJoinCredentialsFromPayload(const rpc::Json& payload);
+  // Requires mutex_. Reject all late events until a fresh helper is installed.
+  void retireTimedOutJoinLocked(const char* stage, const char* message);
   [[nodiscard]] double runtimeElapsedMs() const;
 
   Config config_;

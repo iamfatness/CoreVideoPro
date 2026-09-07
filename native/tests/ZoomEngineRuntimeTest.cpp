@@ -647,6 +647,18 @@ TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined)
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {
+  static void markInitialized(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    runtime.initialized_ = true;
+  }
+  static std::uint64_t generation(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    return runtime.processGeneration_;
+  }
+  static void applyFromGeneration(ZoomEngineRuntime& runtime, const ZoomEngineEvent& event,
+                                 std::uint64_t generation) {
+    runtime.applyEvent(event, generation);
+  }
   static void beginShutdown(ZoomEngineRuntime& runtime) { runtime.beginShutdown(); }
   static bool ingestRunning(ZoomEngineRuntime& runtime) {
     return runtime.videoIngestRun_.load(std::memory_order_acquire);
@@ -657,6 +669,36 @@ struct ZoomEngineRuntimeTestAccess {
   }
 };
 }  // namespace corevideo::modules
+
+TEST(ZoomEngineRuntime, AuthAndJoinTimeoutsRetireHelperAndRejectLateEvents) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  setEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS", "0");
+  for (const bool alreadyAuthenticated : {false, true}) {
+    ZoomEngineRuntime runtime;
+    auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+    runtime.installEngineProcessForTest(fake);
+    if (alreadyAuthenticated) ZoomEngineRuntimeTestAccess::markInitialized(runtime);
+    const auto oldGeneration = ZoomEngineRuntimeTestAccess::generation(runtime);
+    const auto result = runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "123456789"}});
+    EXPECT_EQ(result.getString("meetingState"), "error");
+    EXPECT_GT(ZoomEngineRuntimeTestAccess::generation(runtime), oldGeneration);
+    // Both an already-read callback and a newly read callback from the retired
+    // helper must preserve the timeout; callbacks have no SDK operation ID.
+    ZoomEngineRuntimeTestAccess::applyFromGeneration(runtime, {ZoomEngineEventKind::Joined}, oldGeneration);
+    runtime.applyEngineEventForTest({ZoomEngineEventKind::Joined});
+    EXPECT_EQ(runtime.snapshot().getString("meetingState"), "error");
+    // The retry may fail to launch our intentionally missing executable, but it
+    // must first stop the still-running fake rather than reinitialize its SDK.
+    const auto retry = runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "987654321"}});
+    EXPECT_FALSE(fake->running());
+    EXPECT_EQ(retry.getString("meetingState"), "error");
+    ZoomEngineRuntimeTestAccess::applyFromGeneration(runtime, {ZoomEngineEventKind::Joined}, oldGeneration);
+    EXPECT_EQ(runtime.snapshot().getString("meetingState"), "error");
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
+}
 
 TEST(ZoomEngineRuntime, LateFrameDuringShutdownCannotReplaceJoinableIngestThread) {
   using namespace corevideo::modules;

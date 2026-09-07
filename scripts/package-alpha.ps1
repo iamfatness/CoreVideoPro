@@ -21,23 +21,52 @@ foreach ($file in @('CoreVideoPro.WinUI.exe','CoreVideoPro.WinUI.dll','coreclr.d
 foreach ($dir in @('Recordings','Logs','CrashReports','SupportBundles','publish')) {
     if (Test-Path -LiteralPath (Join-Path $publish $dir)) { throw "Unexpected runtime/build data in publish: $dir" }
 }
+foreach ($file in @('sdk.dll','corevideo-zoom-engine.exe')) {
+    if (Test-Path -LiteralPath (Join-Path $publish $file)) { throw "Publish contains a legacy root Zoom component: $file. Use a clean shell publish." }
+}
 Get-ChildItem -LiteralPath $publish | Where-Object { $_.Name -notlike 'runtime-probe*' } |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $app -Recurse -Force }
 Get-ChildItem -LiteralPath $app -Recurse -File -Filter '*.pdb' | ForEach-Object { Remove-Item -LiteralPath $_.FullName }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'native-shell/CoreVideoPro.WinUI/Assets') -Destination $app -Recurse -Force
-$nativeFiles = @('corevideo-native.exe','corevideo-zoom-engine.exe','corevideo-browser-host.exe','corevideo-plugin-host.exe','corevideo-virtualcam.dll')
+$nativeFiles = @('corevideo-native.exe','corevideo-browser-host.exe','corevideo-plugin-host.exe','corevideo-virtualcam.dll')
 foreach ($file in $nativeFiles) {
     $source = Join-Path $native $file
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Production native component missing: $file" }
     Copy-Item -LiteralPath $source -Destination $app
 }
-# The existing SDK copier protects WinUI-owned resources. Its destination is a
-# new release tree, so it cannot remove or overwrite a running app's runtime.
-if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'native-core/zoom-runtime/windows/x64/bin/sdk.dll'))) {
+# Keep the Zoom process and SDK isolated from the app-local CRT used by WinUI
+# and the main native core. Zoom uses the installed Microsoft x64 VC runtime.
+# Do not use sync-zoom-runtime-to-app.ps1 here: it also flattens SDK files into
+# the application root, which defeats this process dependency boundary.
+$sdkRoot = Join-Path $repoRoot 'native-core/zoom-runtime/windows/x64'
+$sdkSource = Join-Path $sdkRoot 'bin'
+$sdkDestination = Join-Path $app 'zoom-runtime/windows/x64'
+$sdkBin = Join-Path $app 'zoom-runtime/windows/x64/bin'
+$crtFilePattern = '^(?i:msvcp[0-9].*|msvcr[0-9].*|vcruntime[0-9].*|concrt[0-9].*|vcomp[0-9].*|ucrtbase|api-ms-win-crt-.*)\.dll$'
+if (-not (Test-Path -LiteralPath (Join-Path $sdkSource 'sdk.dll') -PathType Leaf)) {
     throw 'Stage the production Zoom SDK before packaging.'
 }
-& (Join-Path $PSScriptRoot 'sync-zoom-runtime-to-app.ps1') -AppDir $app -RuntimeDir (Join-Path $repoRoot 'native-core/zoom-runtime/windows/x64')
-# Native helpers link the desktop VC runtime dynamically. Use the installed
+# The managed readiness gate still requires these development files even for
+# packaged joins. Preserve its architecture-root contract alongside isolated bin.
+foreach ($required in @('lib/sdk.lib','h/zoom_sdk.h','h/meeting_service_interface.h',
+    'h/rawdata/zoom_rawdata_api.h','h/rawdata/rawdata_renderer_interface.h','h/rawdata/rawdata_audio_helper_interface.h')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot $required) -PathType Leaf)) {
+        throw "Staged Zoom SDK is missing a managed readiness prerequisite: $required"
+    }
+}
+if (@(Get-ChildItem -LiteralPath $sdkSource -Recurse -File | Where-Object { $_.Name -match $crtFilePattern }).Count) {
+    throw 'Staged Zoom SDK contains app-local CRT DLLs. Supply the isolated SDK without CRT copies; Zoom requires the installed Microsoft x64 VC runtime.'
+}
+New-Item -ItemType Directory -Path $sdkBin -Force | Out-Null
+Get-ChildItem -LiteralPath $sdkSource -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $sdkBin -Recurse -Force }
+Copy-Item -LiteralPath (Join-Path $sdkRoot 'h') -Destination $sdkDestination -Recurse -Force
+$sdkLib = Join-Path $sdkDestination 'lib'
+New-Item -ItemType Directory -Path $sdkLib -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $sdkRoot 'lib/sdk.lib') -Destination $sdkLib -Force
+$zoomHelper = Join-Path $native 'corevideo-zoom-engine.exe'
+if (-not (Test-Path -LiteralPath $zoomHelper -PathType Leaf)) { throw 'Production Zoom helper is missing.' }
+Copy-Item -LiteralPath $zoomHelper -Destination $sdkBin -Force
+# Non-Zoom native helpers link the desktop VC runtime dynamically. Use the installed
 # Visual Studio redistribution tree, never DLLs scavenged from System32/PATH.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw 'Visual Studio Installer vswhere.exe is required to locate licensed VC redistributables.' }
@@ -95,6 +124,10 @@ cd /d "%~dp0"
 $files = @(Get-ChildItem -LiteralPath $app -Recurse -File)
 foreach ($file in $files) {
     $relative = $file.FullName.Substring($app.Length + 1).Replace('\','/')
+    if ($relative -match '^zoom-runtime/windows/x64/bin/' -and $file.Name -match $crtFilePattern) {
+        throw "App-local CRT is forbidden inside the isolated Zoom SDK: $relative"
+    }
+    if ($relative -in @('sdk.dll','corevideo-zoom-engine.exe')) { throw "Legacy root Zoom component is forbidden: $relative" }
     if ($relative -match '(?i)(^|/)(Recordings|Logs|CrashReports|SupportBundles)(/|$)|-fake\.exe$|-tests\.exe$|\.pdb$|\.dmp$|(^|/)(production-output-preferences|zoom-oauth)|(^|/)(ffmpeg|ffprobe|ffplay)\.exe$|(^|/)(av(codec|format|util|device|filter)|swscale|swresample|postproc)-[0-9]+\.dll$') {
         throw "Disallowed public alpha content: $relative"
     }
@@ -102,7 +135,8 @@ foreach ($file in $files) {
 $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $manifest = [ordered]@{
     releaseId=$ReleaseId; sourceCommit=$commit; platform='Windows x64'; channel='alpha'; signed=$false
-    appRuntime='Bundled .NET, Windows App SDK and Visual C++ CRT'; vcRuntimeVersion=$crtVersion; mediaRuntime='Verified upstream download on first launch'
+    appRuntime='Bundled .NET, Windows App SDK and app-local Visual C++ CRT for shell/native core'; vcRuntimeVersion=$crtVersion; mediaRuntime='Verified upstream download on first launch'
+    zoomRuntime='Isolated SDK/helper; requires installed Microsoft Visual C++ v14 x64 Redistributable'
     framePerformanceAccepted=$false
     files=@($files | Sort-Object FullName | ForEach-Object { [ordered]@{
         path=$_.FullName.Substring($app.Length+1).Replace('\','/'); bytes=$_.Length
