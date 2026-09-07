@@ -99,7 +99,9 @@
                                Visibility="{x:Bind views:OhgShowPage.VisibleWhenText(ViewModel.OhgShow.PagingRefused), Mode=OneWay}"
                                Text="{x:Bind ViewModel.OhgShow.PagingRefused, Mode=OneWay}" />
 
-                    <TextBlock Foreground="{StaticResource StudioAirBrush}"
+                    <!-- Guidance/refusal text is AMBER. Air red is reserved for on-air tally;
+                         a refused action is something to read, not something on program. -->
+                    <TextBlock Foreground="{StaticResource StudioProgramBrush}"
                                FontSize="11" TextWrapping="WrapWholeWords"
                                Visibility="{x:Bind views:OhgShowPage.VisibleWhenText(ViewModel.OhgShow.LastActionStatus), Mode=OneWay}"
                                Text="{x:Bind ViewModel.OhgShow.LastActionStatus, Mode=OneWay}" />
@@ -220,10 +222,13 @@
                                                          recycled ItemsRepeater container re-bound
                                                          mid-resolution threw COMException
                                                          0x80004005 out of Selector and killed the
-                                                         app. -->
+                                                         app. ItemsSource is deliberately absent
+                                                         here too: code-behind is the ONLY writer,
+                                                         so an ElementName binding cannot resolve
+                                                         after the selection has been applied and
+                                                         wipe it. -->
                                                     <ComboBox Grid.Column="1"
                                                               x:Name="OhgRoleCombo"
-                                                              ItemsSource="{Binding ViewModel.OhgShow.Roles, ElementName=OhgShowPageRoot}"
                                                               Tag="{x:Bind}"
                                                               Loaded="OnRoleComboLoaded"
                                                               SelectionChanged="OnRoleSelectionChanged"
@@ -292,7 +297,7 @@
                                             <StackPanel Spacing="2" Padding="8,6">
                                                 <TextBlock Text="{x:Bind views:OhgShowPage.SeatNumberLabel(Slot), Mode=OneWay}"
                                                            Style="{StaticResource StudioMonoLabelDim}" />
-                                                <TextBlock Text="{x:Bind views:OhgShowPage.SeatLabel(Slot, IsOccupied, DisplayName), Mode=OneWay}"
+                                                <TextBlock Text="{x:Bind views:OhgShowPage.SeatLabel(IsOccupied, DisplayName), Mode=OneWay}"
                                                            FontSize="12" TextTrimming="CharacterEllipsis"
                                                            Foreground="{StaticResource StudioTextBrush}" />
                                             </StackPanel>

@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
+using CoreVideoPro.WinUI.Views;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -64,8 +65,70 @@ public sealed class OhgShowPageContentTests
         Assert.Contains("ViewModel.OhgShow.AddSelectedToFirstEmptyCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("ViewModel.OhgShow.RemoveSlotCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("ViewModel.OhgShow.SyncAllCommand", xaml, StringComparison.Ordinal);
-        Assert.Contains("ViewModel.OhgShow.Roles", xaml, StringComparison.Ordinal);
+
+        // Roles is NOT bound in XAML on purpose: code-behind is the only writer of the role
+        // ComboBox's ItemsSource, so an ElementName binding cannot resolve late and wipe the
+        // selection this page applies by hand.
+        var code = ReadView("OhgShowPage.xaml.cs");
+        Assert.Contains("show.Roles", code, StringComparison.Ordinal);
+        foreach (Match combo in Regex.Matches(xaml, @"<ComboBox(?=[\s/>])[^>]*>", RegexOptions.Singleline))
+        {
+            Assert.DoesNotContain("ItemsSource", combo.Value, StringComparison.Ordinal);
+        }
     }
+
+    /// <summary>
+    /// A throwing UI callback fail-fasts the process with NO managed log (CLAUDE.md, UiDispatch).
+    /// Every handler this page hooks from XAML must therefore be guarded; the guard bodies
+    /// themselves have no test seam, so this asserts the SHAPE — every handler named in the XAML
+    /// exists in the code-behind, and the file carries the guard plus its log call.
+    /// </summary>
+    [Fact]
+    public void Page_GuardsEveryUiCallback()
+    {
+        var xaml = ReadView("OhgShowPage.xaml");
+        var code = ReadView("OhgShowPage.xaml.cs");
+
+        var handlers = Regex.Matches(xaml, @"(?:Click|Loaded|SelectionChanged|ElementPrepared|Tapped)=""(\w+)""")
+            .Select(match => match.Groups[1].Value)
+            .Distinct()
+            .ToList();
+
+        Assert.NotEmpty(handlers);
+        foreach (var handler in handlers)
+        {
+            Assert.Contains(handler, code, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("LaunchLog.Write", code, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception ex)", code, StringComparison.Ordinal);
+
+        // Guarded(...) wraps the three handlers that are not already inside their own try/catch;
+        // OnRoleComboLoaded delegates to SyncRoleCombo, which is.
+        Assert.Contains("private void Guarded(", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"panelist select\"", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"seat select\"", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"role change\"", code, StringComparison.Ordinal);
+        Assert.Contains("Guarded(\"role combo realize\"", code, StringComparison.Ordinal);
+    }
+
+    // ── the one decision a guarded handler makes, extracted and tested ──
+
+    [Fact]
+    public void RoleChangeFor_SendsThePickedRoleWithThePin()
+        => Assert.Equal(("1234", "host"), OhgShowPageLogic.RoleChangeFor("panelist", "1234", "host"));
+
+    [Fact]
+    public void RoleChangeFor_SendsAnEmptyPinSoTheViewModelCanRefuseItOutLoud()
+        => Assert.Equal((string.Empty, "host"), OhgShowPageLogic.RoleChangeFor("panelist", null, "host"));
+
+    [Theory]
+    [InlineData("panelist", "panelist")]   // re-selecting the current role is not an edit
+    [InlineData("panelist", null)]         // a ComboBox mid-rebind reports no selection
+    [InlineData("panelist", "")]
+    [InlineData("panelist", "   ")]
+    public void RoleChangeFor_SendsNothingWhenThereIsNoRealChange(string current, string? picked)
+        => Assert.Null(OhgShowPageLogic.RoleChangeFor(current, "1234", picked));
 
     [Fact]
     public void Page_NeverDrivesASelectorSelectionThroughXBind()
@@ -82,12 +145,12 @@ public sealed class OhgShowPageContentTests
     }
 
     [Fact]
-    public void Page_NamesEveryButtonAndComboBoxForAutomation()
+    public void Page_NamesEveryInteractiveElementForAutomation()
     {
         var xaml = ReadView("OhgShowPage.xaml");
 
         var unnamed = new List<string>();
-        foreach (Match match in Regex.Matches(xaml, @"<(?:Button|ComboBox)(?=[\s/>])[^>]*>", RegexOptions.Singleline))
+        foreach (Match match in Regex.Matches(xaml, @"<(?:Button|ComboBox|MenuFlyoutItem|ToggleSwitch)(?=[\s/>])[^>]*>", RegexOptions.Singleline))
         {
             if (!match.Value.Contains("AutomationProperties.Name", StringComparison.Ordinal))
             {

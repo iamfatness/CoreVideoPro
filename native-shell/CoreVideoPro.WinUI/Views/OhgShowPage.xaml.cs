@@ -99,7 +99,7 @@ public sealed partial class OhgShowPage : UserControl
     public static string ShadowLabel(bool isShadowMode)
         => isShadowMode ? "SHADOW — host commands are logged, never applied" : "DRIVING HOST";
 
-    public static string SeatLabel(int slot, bool isOccupied, string? displayName)
+    public static string SeatLabel(bool isOccupied, string? displayName)
         => isOccupied && !string.IsNullOrWhiteSpace(displayName) ? displayName! : "EMPTY";
 
     public static string SeatNumberLabel(int slot) => slot.ToString();
@@ -153,19 +153,40 @@ public sealed partial class OhgShowPage : UserControl
         return element.Tag as T ?? element.DataContext as T;
     }
 
-    private void OnPanelistClick(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// The ONE shape every UI callback on this page uses. CLAUDE.md, live-QA day: a throwing
+    /// DispatcherQueue/UI callback fail-fasts the process with NO managed stack — three live
+    /// crashes decoded to an ordinary NRE inside a queued callback. A handler here can genuinely
+    /// throw: <c>SetRoleCommand</c> is an AsyncRelayCommand, so <c>Execute</c> runs synchronously
+    /// to the first await and rethrows a faulted task onto the UI thread, and
+    /// <see cref="FindDescendant{T}"/> walks a live visual tree that can be torn down underneath
+    /// it. A misbehaving dropdown is cosmetic; a fail-fast ends the show.
+    /// </summary>
+    private void Guarded(string what, Action body)
+    {
+        try
+        {
+            body();
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ohg: {what} skipped ({ex.GetType().Name}: {ex.Message})");
+        }
+    }
+
+    private void OnPanelistClick(object sender, RoutedEventArgs e) => Guarded("panelist select", () =>
     {
         if (RowFrom<OhgPanelistRowViewModel>(sender) is not { } row || Show is not { } show) return;
         show.SelectedParticipantId = row.ParticipantId;
-    }
+    });
 
-    private void OnSeatClick(object sender, RoutedEventArgs e)
+    private void OnSeatClick(object sender, RoutedEventArgs e) => Guarded("seat select", () =>
     {
         // The seat button's Command already assigns the selected panelist; selecting the seat too
         // is what makes the seat's own flyout (Remove) address the seat the operator just touched.
         if (RowFrom<OhgSlotRowViewModel>(sender) is not { } row || Show is not { } show) return;
         show.SelectedSlot = row.Slot;
-    }
+    });
 
     private void OnRoleComboLoaded(object sender, RoutedEventArgs e)
     {
@@ -173,17 +194,20 @@ public sealed partial class OhgShowPage : UserControl
     }
 
     private void OnPanelistElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
-    {
-        if (args.Element is FrameworkElement root &&
-            FindDescendant<ComboBox>(root, "OhgRoleCombo") is { } combo)
+        => Guarded("role combo realize", () =>
         {
-            SyncRoleCombo(combo);
-        }
-    }
+            if (args.Element is FrameworkElement root &&
+                FindDescendant<ComboBox>(root, "OhgRoleCombo") is { } combo)
+            {
+                SyncRoleCombo(combo);
+            }
+        });
 
     /// <summary>Applies the row's role to the ComboBox with the change handler DETACHED and only
     /// after the items exist, never assigning a value the list does not contain. See the class
-    /// remarks for the crash this shape exists to avoid.</summary>
+    /// remarks for the crash this shape exists to avoid. The ItemsSource is assigned HERE and
+    /// nowhere else — the template deliberately carries no ItemsSource binding, so there is exactly
+    /// one writer and no race between an ElementName binding resolving and this selection.</summary>
     private void SyncRoleCombo(ComboBox combo)
     {
         try
@@ -208,19 +232,23 @@ public sealed partial class OhgShowPage : UserControl
     }
 
     private void OnRoleSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_applyingRoleSelection) return;
-        if (sender is not ComboBox combo ||
-            RowFrom<OhgPanelistRowViewModel>(combo) is not { } row ||
-            combo.SelectedItem is not string role ||
-            Show is not { } show)
+        => Guarded("role change", () =>
         {
-            return;
-        }
+            if (_applyingRoleSelection) return;
+            if (sender is not ComboBox combo ||
+                RowFrom<OhgPanelistRowViewModel>(combo) is not { } row ||
+                Show is not { } show)
+            {
+                return;
+            }
 
-        if (string.Equals(role, row.Role, StringComparison.Ordinal)) return;
-        show.SetRoleCommand.Execute((row.Pin ?? string.Empty, role));
-    }
+            if (OhgShowPageLogic.RoleChangeFor(row.Role, row.Pin, combo.SelectedItem as string) is not { } change)
+            {
+                return;
+            }
+
+            show.SetRoleCommand.Execute(change);
+        });
 
     private static T? FindDescendant<T>(DependencyObject root, string name) where T : FrameworkElement
     {
