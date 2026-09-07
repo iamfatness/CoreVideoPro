@@ -19,7 +19,7 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --config vite.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:gate": "npm run contract:check && npm run typecheck && npm run typecheck:show-engine && npm run test && npm run test:native-core && npm run test:show-engine && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke && npm run test:release-evidence",
+    "test:gate": "npm run contract:check && npm run typecheck && npm run typecheck:show-engine && npm run test && npm run test:native-core && npm run test:show-engine && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke && npm run test:release-evidence && npm run test:qa-harness",
     "test:native-core": "npm run test --workspace native-core",
     "test:show-engine": "npm run test --workspace show-engine",
     "typecheck:show-engine": "npm run typecheck --workspace show-engine && npm run typecheck:tests --workspace show-engine",
@@ -50,6 +50,7 @@
     "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
     "validate:record-stream": "node ./scripts/validate-record-stream.mjs",
     "validate:tiles": "node scripts/validate-tiles.mjs",
+    "test:qa-harness": "node --test scripts/tests/av-content-analysis.test.mjs scripts/tests/av-content-decode.test.mjs scripts/tests/frame-performance.test.mjs scripts/tests/program-buffer-smoke.test.mjs",
     "test:release-evidence": "node --test scripts/tests/release-evidence.test.mjs",
     "contract:generate": "node contracts/generate.mjs",
     "contract:check": "node contracts/generate.mjs --check"

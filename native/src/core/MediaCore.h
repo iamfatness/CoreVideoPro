@@ -663,7 +663,7 @@ class MediaCore {
   };
   // Commands atomically publish owning configuration. Delivery never waits for
   // a render-held coreMutex, including when propagating Stop.
-  std::atomic<std::shared_ptr<const ProgramOutputConfiguration>> programOutputConfiguration_;
+  std::shared_ptr<const ProgramOutputConfiguration> programOutputConfiguration_;
   void publishProgramOutputConfiguration();
   std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
   int64_t lastBufferedDeliverySequence_ = 0;

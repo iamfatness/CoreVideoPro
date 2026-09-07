@@ -24,6 +24,8 @@ jobs:
         run: node contracts/generate.mjs --check
       - name: Release evidence validator tests
         run: node --test scripts/tests/release-evidence.test.mjs
+      - name: Frame and recording QA harness tests
+        run: npm run test:qa-harness
 
   # Design-token gate for the macOS shell (docs/design-handoff-macos.md).
   # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /

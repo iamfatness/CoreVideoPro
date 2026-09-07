@@ -22,7 +22,7 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <AppxPackageSigningEnabled Condition="'$(WindowsPackageType)' == 'MSIX'">false</AppxPackageSigningEnabled>
     <GenerateAppxPackageOnBuild Condition="'$(WindowsPackageType)' == 'MSIX'">true</GenerateAppxPackageOnBuild>
-    <!-- Use the installed Windows App Runtime (2.2.x) instead of bundling WinRT next to the app. -->
+    <!-- Use the installed Windows App Runtime (2.4.x) instead of bundling WinRT next to the app. -->
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <UseAppHost>true</UseAppHost>
     <!-- CoreVideo Pro brand mark: embeds in the .exe so Explorer + a pinned
@@ -33,11 +33,16 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(WindowsAppSDKSelfContained)' == 'true'">
+    <DefineConstants>$(DefineConstants);COREVIDEO_SELF_CONTAINED</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\CoreVideoPro.MediaCore\CoreVideoPro.MediaCore.csproj" />
     <ProjectReference Include="..\CoreVideoPro.Control\CoreVideoPro.Control.csproj" />
-    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.2.1" />
-    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.2.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.6" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.4.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.6" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <!-- DPAPI (ProtectedData) for credentials at rest — S4 secrets. -->

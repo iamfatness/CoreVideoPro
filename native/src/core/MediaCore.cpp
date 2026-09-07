@@ -1252,7 +1252,7 @@ void MediaCore::publishProgramOutputConfiguration() {
   config->destinations = outputDestinations_;
   config->settings = outputDestinationSettings_;
   config->expectsAudio = !audioRoutingSends_.empty();
-  programOutputConfiguration_.store(std::move(config), std::memory_order_release);
+  std::atomic_store_explicit(&programOutputConfiguration_, std::shared_ptr<const ProgramOutputConfiguration>(std::move(config)), std::memory_order_release);
 }
 
 DirectorSignals MediaCore::deriveDirectorSignals() const {
@@ -6296,7 +6296,7 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   bool bufferedFrameAvailable = false;
   if (buffered) {
     bufferedFrameAvailable = modules_.compositor->takeDeliveredProgramFrame(frame, 20);
-    const auto config = programOutputConfiguration_.load(std::memory_order_acquire);
+    const auto config = std::atomic_load_explicit(&programOutputConfiguration_, std::memory_order_acquire);
     if (config) {
       senderDestinations = config->destinations;
       senderSettings = config->settings;
