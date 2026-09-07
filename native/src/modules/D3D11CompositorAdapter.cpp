@@ -27,11 +27,14 @@
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
+#include "modules/D3DProgramBuffer.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -94,13 +97,44 @@ class D3D11Compositor final : public ICompositor {
     initializePipeline();
   }
 
-  ~D3D11Compositor() override { stopVcamTap(); }
+  ~D3D11Compositor() override {
+    { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
+    stopVcamTap();
+  }
 
   std::string rendererName() const override { return "d3d11"; }
+  void configureProgramBuffer(int frames) override { requestedProgramFrames_.store(frames == 2 ? 2 : 3); }
+  int programBufferFrames() const override { return requestedProgramFrames_.load(); }
+  void setProgramProductionTiming(int64_t slot, int64_t anchorNs) override {
+    programProductionSlot_ = slot; programProductionAnchorNs_ = anchorNs;
+  }
+  bool latestDeliveredProgramFrame(ProgramFrame& frame) const override {
+    auto buffer = currentProgramBuffer(); return buffer && buffer->latest(frame);
+  }
+  bool takeDeliveredProgramFrame(ProgramFrame& frame, int timeoutMs) override {
+    auto buffer = currentProgramBuffer();
+    if (buffer) return buffer->take(frame, timeoutMs);
+    std::this_thread::sleep_for(std::chrono::milliseconds((std::max)(0, timeoutMs)));
+    return false;
+  }
+  ProgramBufferDiagnostics programBufferDiagnostics() const override {
+    auto buffer = currentProgramBuffer();
+    if (buffer) return buffer->diagnostics();
+    ProgramBufferDiagnostics state; state.requestedFrames = programBufferFrames();
+    state.status = programBufferFrames() > 0 ? "priming" : "unsupported"; return state;
+  }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    const auto timingStart = std::chrono::steady_clock::now();
+    auto stageStart = timingStart;
+    auto stageUs = [&stageStart]() {
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - stageStart).count();
+      stageStart = now;
+      return static_cast<long long>(elapsed);
+    };
     ++frameNumber_;
-    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
+    auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
     frame.height = deterministicPlan.height;
@@ -132,28 +166,37 @@ class D3D11Compositor final : public ICompositor {
     context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
     context_->RSSetState(rasterizerState_.get());
 
+    const auto setupUs = stageUs();
     const auto layers = resolveLayers(deterministicPlan, frames);
+    const auto resolveUs = stageUs();
+    long long uploadUs = 0;
     for (const auto& layer : layers) {
-      drawLayer(layer, deterministicPlan);
+      drawLayer(layer, deterministicPlan, &uploadUs);
     }
+    const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
     // readback. On the light ~60fps display tick we skip them — only the GPU shared
     // texture is needed for the on-screen program, and stalling the CPU on a Map
     // every frame caps the render rate far below what the GPU can do.
-    if (!renderPlan.skipCpuReadback) {
+    const bool buffered = programBufferFrames() > 0;
+    if (!renderPlan.skipCpuReadback && !buffered) {
       frame.programPixelSignature = readProgramPixelSignature(deterministicPlan.width / 2, deterministicPlan.height / 2);
       frame.preview = readProgramFramePreview();
     }
-    if (renderPlan.fullProgramReadback) {
+    const auto readbackUs = stageUs();
+    if (renderPlan.fullProgramReadback && !buffered) {
       exportVcamSharedTexture();  // fast GPU->GPU copy only; a dedicated device+thread reads it back
     } else if (vcamThread_.joinable()) {
       stopVcamTap();  // vcam disabled -> tear down the tap thread + second device so it
                       // stops spinning keyed-mutex waits that hitch the render (runs once)
     }
-    exportSharedTexture(frame);
+    const auto vcamUs = stageUs();
+    if (!buffered) exportSharedTexture(frame);
+    const auto sharedUs = stageUs();
     exportParticipantTextures(deterministicPlan, frames, frame);
+    const auto participantUs = stageUs();
     // Evict cached source textures no pass has sampled recently (participant
     // left / source unrouted). 300 program frames ≈ 5s at 60fps — long enough
     // that a source cycling through preview keeps its cache, short enough that
@@ -165,7 +208,44 @@ class D3D11Compositor final : public ICompositor {
                ? sourceTextures_.erase(it)
                : std::next(it);
     }
+    const auto evictUs = stageUs();
+    if (buffered) {
+      auto buffer = currentProgramBuffer();
+      if (!buffer || !buffer->dimensions(frame.width, frame.height, programBufferFrames())) {
+        buffer = std::make_shared<D3DProgramBuffer>(device_.get(), frame.width, frame.height, programBufferFrames(), ++programBufferGeneration_,
+            [this](const ProgramFrame& delivered) {
+              if (!delivered.programNv12Shared) return;
+              std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+              if (vcamSink_) vcamSink_(delivered.programNv12Shared, delivered.programNv12Width, delivered.programNv12Height);
+            });
+        std::shared_ptr<D3DProgramBuffer> retired;
+        { std::lock_guard<std::mutex> lock(programBufferMutex_); retired = std::exchange(programBuffer_, buffer); }
+      }
+      frame.producedAt100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+      frame.productionSlot = programProductionSlot_; frame.productionAnchorNs = programProductionAnchorNs_;
+      frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
+      buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback);
+    }
     context_->Flush();
+    const auto flushUs = stageUs();
+    const auto timingEnd = std::chrono::steady_clock::now();
+    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(timingEnd - timingStart).count();
+    // CPU wall time, including driver waits; this is not a GPU execution query.
+    // No timers, queries, flushes or allocations are added to the GPU stream.
+    if (totalUs >= 8000) {
+      ++slowProgramFrames_;
+      worstSlowProgramUs_ = (std::max)(worstSlowProgramUs_, static_cast<long long>(totalUs));
+      if (lastSlowProgramLog_.time_since_epoch().count() == 0 ||
+          timingEnd - lastSlowProgramLog_ >= std::chrono::seconds(1)) {
+        std::fprintf(stderr,
+            "[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
+            static_cast<long long>(frameNumber_), static_cast<long long>(totalUs), setupUs, resolveUs,
+            uploadUs, (std::max)(0LL, drawUs - uploadUs), readbackUs, vcamUs, sharedUs,
+            participantUs, evictUs, flushUs, layers.size(), frames.size(), !renderPlan.skipCpuReadback,
+            renderPlan.fullProgramReadback, static_cast<unsigned long long>(slowProgramFrames_), worstSlowProgramUs_);
+        lastSlowProgramLog_ = timingEnd;
+      }
+    }
     return frame;
   }
 
@@ -210,10 +290,27 @@ class D3D11Compositor final : public ICompositor {
     context_->RSSetState(rasterizerState_.get());
 
     const auto layers = resolveLayers(deterministicPlan, frames);
+    const bool bufferedProgram = programBufferFrames() > 0;
+    auto* deliveredView = bufferedProgram ? retainedProgramForMultiview() : nullptr;
+    bool programPlaced = false;
     for (const auto& layer : layers) {
+      if (bufferedProgram && layer.plan.layerId.rfind("multiview-pgm:", 0) == 0) {
+        if (!programPlaced && deliveredView && layer.plan.hasClipRect) {
+          ResolvedLayer delivered;
+          delivered.plan.layerId = "buffered-program";
+          delivered.plan.kind = "participant-video";
+          delivered.plan.rect = layer.plan.clipRect;
+          delivered.plan.hasClipRect = true;
+          delivered.plan.clipRect = layer.plan.clipRect;
+          delivered.plan.borderStyle = "none";
+          delivered.retainedProgram = deliveredView;
+          drawLayer(delivered, deterministicPlan);
+          programPlaced = true;
+        }
+        continue; // Never paint speculative current Program into the delayed bus.
+      }
       drawLayer(layer, deterministicPlan);
     }
-
     exportMultiviewSharedTexture(out);
 
     targetWidth_ = savedWidth;
@@ -278,7 +375,38 @@ class D3D11Compositor final : public ICompositor {
     CompositorRenderPlanLayer plan;
     uint32_t color = 0xff808080;
     const VideoFrame* frame = nullptr;
+    ID3D11ShaderResourceView* retainedProgram = nullptr;
   };
+  std::shared_ptr<D3DProgramBuffer> currentProgramBuffer() const {
+    std::lock_guard<std::mutex> lock(programBufferMutex_); return programBuffer_;
+  }
+  ID3D11ShaderResourceView* retainedProgramForMultiview() {
+    auto buffer = currentProgramBuffer();
+    ProgramFrameSharedTexture exported;
+    std::shared_ptr<const void> owner;
+    if (!buffer || !buffer->multiview(exported, owner)) return nullptr;
+    if (exported.sharedHandleHex != retainedProgramHandle_) {
+      retainedProgramShared_ = {}; retainedProgramKey_ = {}; retainedProgramLocal_ = {}; retainedProgramView_ = {};
+      const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::strtoull(exported.sharedHandleHex.c_str(), nullptr, 16)));
+      if (FAILED(device_->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(retainedProgramShared_.put()))) ||
+          FAILED(retainedProgramShared_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(retainedProgramKey_.put())))) return nullptr;
+      D3D11_TEXTURE2D_DESC desc{}; retainedProgramShared_->GetDesc(&desc);
+      desc.MiscFlags = 0; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      if (FAILED(device_->CreateTexture2D(&desc, nullptr, retainedProgramLocal_.put())) ||
+          FAILED(device_->CreateShaderResourceView(retainedProgramLocal_.get(), nullptr, retainedProgramView_.put()))) return nullptr;
+      retainedProgramHandle_ = exported.sharedHandleHex;
+      retainedProgramOwner_ = std::move(owner);
+      retainedProgramCopied_ = false;
+    }
+    // The producer holds this key only for a copy submission. A bounded wait
+    // avoids repeatedly missing that brief interval at a fixed render phase.
+    if (retainedProgramKey_->AcquireSync(1, 1) == S_OK) {
+      context_->CopyResource(retainedProgramLocal_.get(), retainedProgramShared_.get());
+      retainedProgramKey_->ReleaseSync(0);
+      retainedProgramCopied_ = true;
+    }
+    return retainedProgramCopied_ ? retainedProgramView_.get() : nullptr;
+  }
 
   // Per-participant keyed-mutex shared texture for the GPU multiview tiles.
   // Declared up here so member-function signatures (renderI420ToParticipantTexture)
@@ -515,6 +643,11 @@ class D3D11Compositor final : public ICompositor {
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(frameSourceId, frames);
           }
+        } else if (layer.plan.hasFillColor) {
+          // A deliberately sourceless layer (e.g. the tiles wall background) —
+          // never resolves to a frame; paints the parsed configured colour
+          // instead of the default mid-grey ResolvedLayer::color.
+          layer.color = compositor::parseHexColorRgba(layer.plan.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
           layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
@@ -698,6 +831,62 @@ class D3D11Compositor final : public ICompositor {
     context_->Draw(3, 0);
   }
 
+  // Diagnostic tracer for the border pass — see the call site in drawBorderPass.
+  // OFF unless COREVIDEO_BORDER_TRACE=1. Reports, per layer, the rect the border
+  // is actually stroked around and the resulting stroke in CANVAS PIXELS.
+  //
+  // Note what this will show even on a healthy build: `stroke` is computed from
+  // min(rect.width, rect.height) in NORMALIZED units, then applied to both axes —
+  // but normalized X and Y map to different pixel scales on a 16:9 canvas, so the
+  // left/right edges come out ~1.78x thicker than the top/bottom ones. That is a
+  // real asymmetry in the existing math, not a misplacement; the trace prints both
+  // so the two can be told apart.
+  void traceBorderPass(
+      const ResolvedLayer& layer,
+      const compositor::LayerRect& rect,
+      const compositor::BorderFraming& border,
+      float strokeX,
+      float strokeY) {
+    static const bool enabled = [] {
+      const char* v = std::getenv("COREVIDEO_BORDER_TRACE");
+      return v != nullptr && v[0] == '1';
+    }();
+    if (!enabled) {
+      return;
+    }
+    static std::mutex traceMutex;
+    static std::map<std::string, std::chrono::steady_clock::time_point> lastLogged;
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(traceMutex);
+      auto it = lastLogged.find(layer.plan.layerId);
+      if (it != lastLogged.end() &&
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second).count() < 2000) {
+        return;
+      }
+      lastLogged[layer.plan.layerId] = now;
+    }
+    std::fprintf(
+        stderr,
+        "[border-trace] layer=%s kind=%s style=%s thicknessRaw=%.2f "
+        "rect=[%.4f %.4f %.4f %.4f] rectPx=[%.1f %.1f %.1fx%.1f] "
+        "strokePx=[x=%.1f y=%.1f] color=%08x\n",
+        layer.plan.layerId.c_str(),
+        layer.plan.kind.c_str(),
+        layer.plan.borderStyle.c_str(),
+        static_cast<double>(layer.plan.borderThickness),
+        static_cast<double>(rect.x), static_cast<double>(rect.y),
+        static_cast<double>(rect.width), static_cast<double>(rect.height),
+        static_cast<double>(rect.x) * targetWidth_,
+        static_cast<double>(rect.y) * targetHeight_,
+        static_cast<double>(rect.width) * targetWidth_,
+        static_cast<double>(rect.height) * targetHeight_,
+        static_cast<double>(strokeX) * targetWidth_,
+        static_cast<double>(strokeY) * targetHeight_,
+        border.colorRgba);
+    std::fflush(stderr);
+  }
+
   // Strokes a border around `rect` by drawing its four edge quads.
   void drawBorderPass(
       const ResolvedLayer& layer,
@@ -714,6 +903,11 @@ class D3D11Compositor final : public ICompositor {
     const float strokeX = std::min(stroke, rect.width * 0.5f);
     const float strokeY = std::min(stroke, rect.height * 0.5f);
     const uint32_t color = border.colorRgba;
+    // Diagnostic, opt-in via COREVIDEO_BORDER_TRACE=1 (silent otherwise).
+    // Prints what each border ACTUALLY strokes, so a "the tally border is in the
+    // wrong place" report becomes a measurement instead of pixel-archaeology.
+    // Rate-limited per layerId so a 60Hz wall cannot flood the log.
+    traceBorderPass(layer, rect, border, strokeX, strokeY);
     const float borderAlpha = std::clamp(alpha * (static_cast<float>((color >> 24) & 0xff) / 255.f), 0.f, 1.f);
     drawSolidQuad(layer, renderPlan, {rect.x, rect.y, rect.width, strokeY}, color, borderAlpha);
     drawSolidQuad(layer, renderPlan, {rect.x, rect.y + rect.height - strokeY, rect.width, strokeY}, color, borderAlpha);
@@ -721,7 +915,7 @@ class D3D11Compositor final : public ICompositor {
     drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
   }
 
-  void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan) {
+  void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr) {
     const compositor::LayerRect rect{
         layer.plan.rect.x, layer.plan.rect.y, layer.plan.rect.width, layer.plan.rect.height};
     const float layerAlpha = compositorLayerOpacity(layer.plan);
@@ -794,11 +988,16 @@ class D3D11Compositor final : public ICompositor {
     // their cached per-source textures (uploaded only on content change); frames
     // without one (media layers) take the legacy shared-scratch upload.
     const bool isI420 = layer.frame != nullptr && layer.frame->hasI420();
+    const auto uploadStart = uploadUs ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame) : nullptr;
-    const bool textured = sourceTex != nullptr ||
+    const bool textured = layer.retainedProgram != nullptr || sourceTex != nullptr ||
         (layer.frame != nullptr &&
          (isI420 ? uploadLayerI420Texture(*layer.frame)
                  : (layer.frame->hasPixels() && uploadLayerTexture(*layer.frame))));
+    if (uploadUs) {
+      *uploadUs += std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - uploadStart).count();
+    }
     if (textured) {
       ID3D11SamplerState* samplers[] = {samplerState_.get()};
       context_->PSSetSamplers(0, 1, samplers);
@@ -811,7 +1010,7 @@ class D3D11Compositor final : public ICompositor {
         context_->PSSetShaderResources(0, 3, views);
       } else {
         context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {sourceTex ? sourceTex->bgraSrv.get() : layerTextureView_.get()};
+        ID3D11ShaderResourceView* views[] = {layer.retainedProgram ? layer.retainedProgram : sourceTex ? sourceTex->bgraSrv.get() : layerTextureView_.get()};
         context_->PSSetShaderResources(0, 1, views);
       }
     } else {
@@ -2071,20 +2270,20 @@ class D3D11Compositor final : public ICompositor {
       // Read back the two small stagings into the publish buffer: Y plane rows,
       // then interleaved UV rows (NV12 layout), honoring each RowPitch. The Map
       // blocks until the draws/copies above complete.
-      std::vector<uint8_t> nv12(nv12FrameSize(w, h));
+      auto nv12 = std::make_shared<std::vector<uint8_t>>(nv12FrameSize(w, h));
       bool ok = false;
       D3D11_MAPPED_SUBRESOURCE mapY{};
       if (SUCCEEDED(ctx->Map(vcamStagY2_.get(), 0, D3D11_MAP_READ, 0, &mapY))) {
         const auto* srcY = static_cast<const uint8_t*>(mapY.pData);
         for (int row = 0; row < h; ++row) {
-          std::memcpy(nv12.data() + static_cast<size_t>(row) * w,
+          std::memcpy(nv12->data() + static_cast<size_t>(row) * w,
                       srcY + static_cast<size_t>(row) * mapY.RowPitch,
                       static_cast<size_t>(w));
         }
         ctx->Unmap(vcamStagY2_.get(), 0);
         D3D11_MAPPED_SUBRESOURCE mapUV{};
         if (SUCCEEDED(ctx->Map(vcamStagUV2_.get(), 0, D3D11_MAP_READ, 0, &mapUV))) {
-          uint8_t* dstUV = nv12.data() + static_cast<size_t>(w) * static_cast<size_t>(h);
+          uint8_t* dstUV = nv12->data() + static_cast<size_t>(w) * static_cast<size_t>(h);
           const auto* srcUV = static_cast<const uint8_t*>(mapUV.pData);
           for (int row = 0; row < h / 2; ++row) {
             std::memcpy(dstUV + static_cast<size_t>(row) * w,
@@ -2096,10 +2295,21 @@ class D3D11Compositor final : public ICompositor {
         }
       }
       if (ok) {
+        // PUSH FIRST, then store. Publishing here is what puts the virtual camera
+        // on the render cadence: the ~50Hz output worker used to poll for this
+        // frame, so a 60fps program reached the camera at 50fps. Deliberately
+        // OUTSIDE vcamNv12Mutex_ — the publish is a ~3MB memcpy, and holding the
+        // handoff lock across it would stall the output worker's takeVcamNv12.
+        {
+          std::lock_guard<std::mutex> sinkLock(vcamSinkMutex_);
+          if (vcamSink_) {
+            vcamSink_(nv12, w, h);
+          }
+        }
         std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
         vcamLatestW_ = w;
         vcamLatestH_ = h;
-        vcamLatestNv12_.swap(nv12);
+        vcamLatestNv12_ = std::move(nv12);
         ++vcamLatestGen_;
       } else if (!vcamTapErrorLogged_) {
         // Device removed / driver reset / TDR: skip frames (never crash, never
@@ -2152,15 +2362,33 @@ class D3D11Compositor final : public ICompositor {
   // mixes from it via RecordingSessionRequest::programNv12.
   [[nodiscard]] bool suppliesProgramNv12() const override { return true; }
 
+  void setVcamFrameSink(VcamFrameSink sink) override {
+    // Blocks until any in-flight sink call returns, so clearing this is a safe
+    // teardown barrier for the callee (MediaCore's publisher outlives the
+    // compositor only if the sink is cleared first — see ~MediaCore).
+    std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+    vcamSink_ = std::move(sink);
+  }
+
+  [[nodiscard]] bool publishesVcamFrames() const override { return true; }
+
   bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& w, int& h) override {
+    std::shared_ptr<const std::vector<uint8_t>> shared;
+    if (!takeVcamNv12Shared(shared, w, h)) return false;
+    outNv12 = *shared;
+    return true;
+  }
+
+  bool takeVcamNv12Shared(std::shared_ptr<const std::vector<uint8_t>>& outNv12,
+                          int& w, int& h) override {
     std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
-    if (vcamLatestNv12_.empty() || vcamLatestGen_ == vcamLastTakenGen_) {
+    if (!vcamLatestNv12_ || vcamLatestNv12_->empty() || vcamLatestGen_ == vcamLastTakenGen_) {
       return false;
     }
     vcamLastTakenGen_ = vcamLatestGen_;
     w = vcamLatestW_;
     h = vcamLatestH_;
-    outNv12 = vcamLatestNv12_;  // copy out (caller owns it)
+    outNv12 = vcamLatestNv12_;
     return true;
   }
 
@@ -2227,7 +2455,11 @@ class D3D11Compositor final : public ICompositor {
   // interleaved UV, w*h*3/2 bytes); the output worker copies it out cheaply via
   // takeVcamNv12.
   std::mutex vcamNv12Mutex_;
-  std::vector<uint8_t> vcamLatestNv12_;
+  // Set once by MediaCore, called on the tap thread. Its own mutex (never nested
+  // with vcamNv12Mutex_) so a publish never blocks the polled handoff.
+  std::mutex vcamSinkMutex_;
+  VcamFrameSink vcamSink_;
+  std::shared_ptr<const std::vector<uint8_t>> vcamLatestNv12_;
   int vcamLatestW_ = 0;
   int vcamLatestH_ = 0;
   uint64_t vcamLatestGen_ = 0;
@@ -2289,6 +2521,20 @@ class D3D11Compositor final : public ICompositor {
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;
+  std::atomic<int> requestedProgramFrames_{0};
+  int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
+  mutable std::mutex programBufferMutex_;
+  std::shared_ptr<D3DProgramBuffer> programBuffer_;
+  uint64_t programBufferGeneration_ = 0;
+  std::string retainedProgramHandle_;
+  std::shared_ptr<const void> retainedProgramOwner_;
+  ComPtrLite<ID3D11Texture2D> retainedProgramShared_, retainedProgramLocal_;
+  ComPtrLite<IDXGIKeyedMutex> retainedProgramKey_;
+  ComPtrLite<ID3D11ShaderResourceView> retainedProgramView_;
+  bool retainedProgramCopied_ = false;
+  std::chrono::steady_clock::time_point lastSlowProgramLog_{};
+  uint64_t slowProgramFrames_ = 0;
+  long long worstSlowProgramUs_ = 0;
   bool pipelineReady_ = false;
   std::string initError_;
 };

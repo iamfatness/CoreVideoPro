@@ -2,6 +2,16 @@
 
 #include <gtest/gtest.h>
 
+TEST(EngineIpcCommand, MatchesExactCommandValue) {
+  EXPECT_TRUE(ipc_command_is(R"({"cmd":"subscribe","source_uuid":"one"})", IPC_CMD_SUBSCRIBE));
+  EXPECT_TRUE(ipc_command_is(R"({ "cmd" : "unsubscribe", "source_uuid" : "one" })", IPC_CMD_UNSUBSCRIBE));
+  EXPECT_TRUE(ipc_command_is(R"({"cmd":"subscribe_audio","source_uuid":"one"})", IPC_CMD_SUBSCRIBE_AUDIO));
+
+  EXPECT_FALSE(ipc_command_is(R"({"cmd":"unsubscribe","source_uuid":"one"})", IPC_CMD_SUBSCRIBE));
+  EXPECT_FALSE(ipc_command_is(R"({"cmd":"subscribe_audio","source_uuid":"one"})", IPC_CMD_SUBSCRIBE));
+  EXPECT_FALSE(ipc_command_is(R"({"detail":"subscribe"})", IPC_CMD_SUBSCRIBE));
+}
+
 #ifndef WIN32
 
 #include <sys/mman.h>

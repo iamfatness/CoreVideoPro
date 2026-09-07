@@ -2,6 +2,7 @@
 #include "modules/AsyncOutputSender.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
+#include "modules/IsolatedOutputSender.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <utility>
@@ -587,8 +589,13 @@ class SyntheticOutputSender final : public IOutputSender {
 
 class CompositeOutputSender final : public IOutputSender {
  public:
-  explicit CompositeOutputSender(std::vector<std::unique_ptr<IOutputSender>> senders)
-      : senders_(std::move(senders)) {}
+  explicit CompositeOutputSender(std::vector<std::unique_ptr<IOutputSender>> senders,
+      std::vector<std::string> supported = {})
+      : senders_(std::move(senders)), supportedDestinations_(std::move(supported)) {}
+
+  void enableIndependentWriters() {
+    for (auto& sender : senders_) sender = std::make_unique<AsyncOutputSender>(std::move(sender));
+  }
 
   OutputSenderSession sync(
       const std::vector<std::string>& destinations,
@@ -604,8 +611,16 @@ class CompositeOutputSender final : public IOutputSender {
     }
     addMissingDestinationWarnings(combined, destinations, elapsedMs);
     finalize(combined);
-    lastSession_ = combined;
+    { std::lock_guard<std::mutex> lock(sessionMutex_); lastSession_ = combined; }
     return combined;
+  }
+
+  // Fan out on the AUDIO cadence. Senders that carry no audio inherit the
+  // no-op default, so this is safe for every member.
+  void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    for (const auto& sender : senders_) {
+      sender->submitAudio(pcm, channels, sampleRate);
+    }
   }
 
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
@@ -614,7 +629,7 @@ class CompositeOutputSender final : public IOutputSender {
       mergeInto(combined, sender->fail(destination, message, elapsedMs));
     }
     finalize(combined);
-    lastSession_ = combined;
+    { std::lock_guard<std::mutex> lock(sessionMutex_); lastSession_ = combined; }
     return combined;
   }
 
@@ -624,7 +639,7 @@ class CompositeOutputSender final : public IOutputSender {
       mergeInto(combined, sender->recover(destination, elapsedMs, reason));
     }
     finalize(combined);
-    lastSession_ = combined;
+    { std::lock_guard<std::mutex> lock(sessionMutex_); lastSession_ = combined; }
     return combined;
   }
 
@@ -633,6 +648,7 @@ class CompositeOutputSender final : public IOutputSender {
     for (const auto& sender : senders_) {
       mergeInto(combined, sender->session());
     }
+    std::lock_guard<std::mutex> lock(sessionMutex_);
     if (combined.senders.empty() && !lastSession_.senders.empty()) {
       return lastSession_;
     }
@@ -669,7 +685,7 @@ class CompositeOutputSender final : public IOutputSender {
     return value;
   }
 
-  static void addMissingDestinationWarnings(
+  void addMissingDestinationWarnings(
       OutputSenderSession& session,
       const std::vector<std::string>& destinations,
       double elapsedMs) {
@@ -680,6 +696,15 @@ class CompositeOutputSender final : public IOutputSender {
       OutputSender sender;
       sender.senderId = destination + ":program";
       sender.destination = destination;
+      if (std::find(supportedDestinations_.begin(), supportedDestinations_.end(), destination) != supportedDestinations_.end()) {
+        // A child writer has accepted the request but has not published its
+        // first snapshot yet. Absence here does not mean the module is missing.
+        sender.status = "starting";
+        sender.destinationHealth = "starting";
+        sender.startedAtMs = elapsedMs;
+        session.senders.push_back(sender);
+        continue;
+      }
       sender.status = "warning";
       sender.startedAtMs = elapsedMs;
       sender.destinationHealth = "warning";
@@ -707,6 +732,8 @@ class CompositeOutputSender final : public IOutputSender {
   }
 
   std::vector<std::unique_ptr<IOutputSender>> senders_;
+  std::vector<std::string> supportedDestinations_;
+  mutable std::mutex sessionMutex_;
   OutputSenderSession lastSession_;
 };
 
@@ -911,11 +938,27 @@ class CompositeCaptureDevice final : public ICaptureDevice {
     return result;
   }
 
+  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+    std::vector<AudioFrame> result;
+    for (const auto& device : devices_) {
+      auto frames = device->pollAudioFrames(timestampMs);
+      result.insert(result.end(), frames.begin(), frames.end());
+    }
+    return result;
+  }
+
  private:
   std::vector<std::unique_ptr<ICaptureDevice>> devices_;
 };
 
 }  // namespace
+
+std::unique_ptr<IOutputSender> createIsolatedOutputSender(
+    std::vector<std::unique_ptr<IOutputSender>> senders, std::vector<std::string> supportedDestinations) {
+  auto composite = std::make_unique<CompositeOutputSender>(std::move(senders), std::move(supportedDestinations));
+  composite->enableIndependentWriters();
+  return composite;
+}
 
 ModuleSet createStubModules() {
   ModuleSet modules;
@@ -987,17 +1030,21 @@ ModuleSet createDefaultModules() {
     modules.encoder = std::move(encoder);
   }
   std::vector<std::unique_ptr<IOutputSender>> outputSenders;
+  std::vector<std::string> supportedOutputDestinations;
   if (auto outputSender = createRtmpOutputSender()) {
     outputSenders.push_back(std::move(outputSender));
+    supportedOutputDestinations.push_back("rtmp");
   }
   if (auto srtSender = createSrtOutputSender()) {
     outputSenders.push_back(std::move(srtSender));
+    supportedOutputDestinations.push_back("srt");
   }
   if (auto ndiSender = createNdiOutputSender()) {
     outputSenders.push_back(std::move(ndiSender));
+    supportedOutputDestinations.push_back("ndi");
   }
   if (!outputSenders.empty()) {
-    modules.outputSender = std::make_unique<CompositeOutputSender>(std::move(outputSenders));
+    modules.outputSender = std::make_unique<CompositeOutputSender>(std::move(outputSenders), std::move(supportedOutputDestinations));
   }
   std::vector<std::unique_ptr<ICaptureDevice>> hardwareCaptureDevices;
   hardwareCaptureDevices.push_back(std::move(modules.captureDevice));
@@ -1060,7 +1107,12 @@ ModuleSet createLiveServerModules() {
     // FFmpeg/network backpressure must never run under the native core path.
     // The async sender keeps only the freshest frame and exposes an immediate
     // transport interrupt so Stop remains responsive even if a pipe is wedged.
-    modules.outputSender = std::make_unique<AsyncOutputSender>(std::move(modules.outputSender));
+    if (auto* composite = dynamic_cast<CompositeOutputSender*>(modules.outputSender.get())) {
+      // One worker per protocol: blocked RTMP cannot stall SRT/NDI acceptance.
+      composite->enableIndependentWriters();
+    } else {
+      modules.outputSender = std::make_unique<AsyncOutputSender>(std::move(modules.outputSender));
+    }
   }
   return modules;
 }

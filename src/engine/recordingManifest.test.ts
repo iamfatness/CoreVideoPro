@@ -84,3 +84,17 @@ describe("buildRecordingManifest", () => {
     expect(manifest.isoPlan.valid).toBe(true);
   });
 });
+
+
+it("never records command intent as confirmed output in an exported manifest", async () => {
+  const state = { ...initialProduction, recording: true };
+  expect(buildRecordingManifest(state)).toMatchObject({ active: false, status: "starting", finalized: false });
+  const snapshot = await new InMemoryMediaCoreSyncEngine().syncProduction(state, 3000);
+  snapshot.recording!.lifecycle = {
+    sessionId: "take-1", desiredActive: false, state: "finalizing", health: "healthy", finalized: false
+  };
+  expect(buildRecordingManifest(state, snapshot)).toMatchObject({
+    active: false, status: "finalizing", finalized: false,
+    lifecycle: { sessionId: "take-1", state: "finalizing" }
+  });
+});

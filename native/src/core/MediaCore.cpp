@@ -1,8 +1,11 @@
-﻿#include "core/MediaCore.h"
+#include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
+#include "compositor/TilesLayout.h"
+#include "compositor/TilesMembership.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
+#include "core/RouteSourcePolicy.h"
 #include "modules/AudioDsp.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
@@ -14,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <iterator>
 #include <map>
@@ -51,6 +55,19 @@ int64_t monotonicMs() {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count());
+}
+
+int64_t monotonic100ns() {
+  return static_cast<int64_t>(
+      std::chrono::duration_cast<std::chrono::duration<int64_t, std::ratio<1, 10'000'000>>>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+// Key parameters are normalized: a value outside 0..1 is a caller bug, and
+// clamping keeps the shader's smoothstep well-formed.
+float clampUnit(double value) {
+  return static_cast<float>(value < 0.0 ? 0.0 : (value > 1.0 ? 1.0 : value));
 }
 
 float clampColorGradeAxis(double value) {
@@ -322,7 +339,33 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 }  // namespace
 
 MediaCore::MediaCore(modules::ModuleSet modules)
-    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {}
+    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
+  // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
+  // output worker capped a 60fps program at 50fps everywhere. The sink runs on
+  // the compositor's tap thread; publishNv12 is internally locked and no-ops
+  // until start() has run, so no enabled-flag is read across threads here.
+  if (modules_.compositor && modules_.compositor->publishesVcamFrames()) {
+    compositorPublishesVcam_ = true;
+    auto* publisher = virtualCamera_.get();
+    modules_.compositor->setVcamFrameSink(
+        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height) {
+          try {
+            publisher->publishNv12Shared(std::move(nv12), width, height);
+          } catch (...) {
+          }
+        });
+  }
+}
+
+MediaCore::~MediaCore() {
+  // TEARDOWN BARRIER, not a courtesy. modules_ is declared BEFORE virtualCamera_,
+  // so the publisher is destroyed FIRST while the compositor's tap thread is
+  // still alive — a captured raw pointer would dangle. Clearing the sink blocks
+  // until any in-flight publish returns.
+  if (modules_.compositor) {
+    modules_.compositor->setVcamFrameSink(nullptr);
+  }
+}
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
@@ -369,6 +412,7 @@ rpc::Json MediaCore::health() const {
   return rpc::Json::Object{
       {"status", session.active ? "live" : "idle"},
       {"renderer", modules_.compositor->rendererName()},
+      {"renderDeadlineMisses", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
       {"programFrameHealth", lastProgramFrame_.health},
       {"encoder", session.encoderName},
       {"codec", session.codec},
@@ -479,9 +523,9 @@ bool MediaCore::zoomEngineConfigured() const {
   return zoomEngineRuntime_ && zoomEngineRuntime_->configured();
 }
 
-rpc::Json MediaCore::joinZoom(const rpc::Json& payload) {
+rpc::Json MediaCore::joinZoom(const rpc::Json& payload, const std::function<bool()>& cancelled) {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    return zoomEngineRuntime_->join(payload);
+    return zoomEngineRuntime_->join(payload, cancelled);
   }
 
   zoomJoined_ = true;
@@ -572,6 +616,7 @@ rpc::Json MediaCore::sessionState() const {
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     session = modules_.encoder->session();
   }
+  const auto buffer = modules_.compositor->programBufferDiagnostics();
   rpc::Json::Object state{
       {"sceneId", sceneId_},
       {"routeCount", routeCount_},
@@ -593,6 +638,8 @@ rpc::Json MediaCore::sessionState() const {
       {"compositorRenderer", lastProgramFrame_.renderer},
       {"programFrame",
        rpc::Json::Object{
+           {"sceneId", renderedProgramSources_.sceneId()},
+           {"videoSources", renderedProgramSources_.videoSources()},
            {"frameNumber", static_cast<double>(lastProgramFrame_.frameNumber)},
            {"renderPlanId", lastProgramFrame_.renderPlanId},
            {"renderer", lastProgramFrame_.renderer},
@@ -606,6 +653,16 @@ rpc::Json MediaCore::sessionState() const {
            {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
            {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
            {"warnings", stringArray(lastProgramFrame_.warnings)},
+       }},
+      {"compositor",
+       rpc::Json::Object{
+           {"status", lastProgramFrame_.frameNumber > 0 ? "live" : "idle"},
+           {"renderPlanId", lastProgramFrame_.renderPlanId},
+           {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
+           {"droppedFrameCount", static_cast<double>(buffer.activeFrames > 0 ?
+               buffer.underruns : renderDeadlineMisses_.load(std::memory_order_relaxed))},
+           {"renderDeadlineMisses", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
+           {"degradedFrameCount", lastProgramFrame_.health == "degraded" ? 1 : 0},
        }},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
@@ -627,6 +684,20 @@ rpc::Json MediaCore::sessionState() const {
       {"breakoutRoomName", breakoutRoomName_},
       {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
   };
+  state.emplace("programBuffer", rpc::Json::Object{
+      {"requestedFrames", buffer.requestedFrames}, {"activeFrames", buffer.activeFrames},
+      {"generation", static_cast<double>(buffer.generation)},
+      {"status", buffer.status}, {"capacity", buffer.capacity}, {"occupancy", buffer.occupancy},
+      {"produced", static_cast<double>(buffer.produced)},
+      {"delivered", static_cast<double>(buffer.delivered)},
+      {"underruns", static_cast<double>(buffer.underruns)},
+      {"overflows", static_cast<double>(buffer.overflows)},
+      {"gpuNotReady", static_cast<double>(buffer.gpuNotReady)},
+      {"deadlineMisses", static_cast<double>(buffer.deadlineMisses)},
+      {"displayUnconsumed", static_cast<double>(buffer.displayUnconsumed)},
+      {"displayBusy", static_cast<double>(buffer.displayBusy)},
+      {"outputSequenceGaps", static_cast<double>(bufferedOutputSequenceGaps_.load())},
+      {"displayPresentationVerified", false}, {"destinationCompletionVerified", false}});
   const auto zoomCapture = zoomSnapshot();
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
@@ -668,6 +739,56 @@ rpc::Json MediaCore::sessionState() const {
                                       {"composite", hasPreviewScene()},
                                   });
   }
+  // T1 (Task 4): publish the solved wall so downstream consumers see what the
+  // core actually drew, not a re-derivation with the solver they are meant to
+  // be judging (this repo has shipped that "proxy that survives the bug"
+  // failure twice — see the loudness-meter and recording-fps history above).
+  // Reads lastRenderPlan_ directly — the SAME layers the compositor just
+  // rendered — so a later pixel oracle knows exactly where to sample and the
+  // canvas editor can position drag handles without recomputing anything.
+  // `.present` alone (re-review finding A), matching the plan-cache gate and
+  // buildRenderPlanForScene's wallActive: a configured wall with NOBODY live
+  // is exactly the state worth publishing (`members: []`), not the state to
+  // hide. A node that disappears in the case worth detecting is the
+  // "multiviewer node that only appears once configured" mistake again.
+  if (tilesLayer_.present) {
+    rpc::Json::Array memberNodes;
+    for (const auto& layer : lastRenderPlan_.layers) {
+      if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) {
+        continue;
+      }
+      memberNodes.push_back(rpc::Json{rpc::Json::Object{
+          {"sourceId", rpc::Json{layer.sourceId}},
+          {"rect", rpc::Json{rpc::Json::Object{
+              {"x", rpc::Json{static_cast<double>(layer.rect.x)}},
+              {"y", rpc::Json{static_cast<double>(layer.rect.y)}},
+              {"width", rpc::Json{static_cast<double>(layer.rect.width)}},
+              {"height", rpc::Json{static_cast<double>(layer.rect.height)}},
+          }}},
+      }});
+    }
+    state.emplace("tiles", rpc::Json::Object{
+                               {"layerId", tilesLayer_.layerId},
+                               {"members", rpc::Json{memberNodes}},
+                           });
+  }
+  // The multiviewer config the core is ACTUALLY running — always published, even
+  // at defaults. `configure-multiviewer` is a ONE-SHOT the shell sends at app
+  // launch; when the core respawns under a live shell nothing re-sent it, so the
+  // fresh core sat on its `grid` default while the shell still believed
+  // `pgmPvwTop`. That silently dropped the PGM/PVW bus cells off the top of the
+  // wall and degraded it to a bare source grid, and the shell could not detect it
+  // because the applied mode was reported NOWHERE. Reporting it is what lets the
+  // shell reconcile a core generation it did not configure (2026-08-08).
+  state.emplace("multiviewer", rpc::Json::Object{
+                                   {"layoutMode", multiviewLayoutMode_},
+                                   {"tileCount", multiviewTileCount_},
+                                   {"sourceCount", static_cast<int>(multiviewSources_.size())},
+                                   {"showLabels", multiviewShowLabels_},
+                                   {"showTally", multiviewShowTally_},
+                                   {"showMeters", multiviewShowMeters_},
+                                   {"showClock", multiviewShowClock_},
+                               });
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);
@@ -874,12 +995,16 @@ void MediaCore::enqueueProgramFramePreviewEvent() {
 }
 
 void MediaCore::enqueueProgramSharedTextureEvent() {
-  // DISABLED: the program monitor uses the WinUI ScenePreviewControl composite, not
-  // the GPU shared texture, so this event is unused â€” and it was emitted at the full
-  // render rate (~125/s), flooding the shared frame-event queue and starving the
-  // 30fps Zoom video frames (high latency + drops). Re-enable if/when the program
-  // monitor goes back to the GPU shared-texture (VideoSurfaceHost) path.
-  return;
+  // Stable texture pixels update on the delivery thread. Emit only structural
+  // changes, not a JSON message for every frame.
+  const auto& texture = lastProgramFrame_.sharedTexture;
+  const auto identity = texture.sharedHandleHex + ":" + std::to_string(texture.iosurfaceId) +
+      ":" + std::to_string(texture.width) + ":" + std::to_string(texture.height);
+  if (identity == lastProgramTextureIdentity_) return;
+  const auto event = modules::programSharedTextureEvent(lastProgramFrame_);
+  if (event.isNull()) return;
+  lastProgramTextureIdentity_ = identity;
+  pendingProgramFramePreviewEvents_.emplace_back(event);
 }
 
 void MediaCore::enqueueParticipantSharedTextureEvents() {
@@ -981,7 +1106,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   const auto tCmd0 = std::chrono::steady_clock::now();
   for (const auto& command : commands) {
     const auto ci0 = std::chrono::steady_clock::now();
-    (void)applyCommand(command);
+    applyCommandMutation(command);
     const auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(
                          std::chrono::steady_clock::now() - ci0)
                          .count();
@@ -992,24 +1117,15 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   }
   const auto tCmd1 = std::chrono::steady_clock::now();
 
-  const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
-  const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
-  int additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
-  // Cap catch-up: when a sync carries a large elapsedMs (UI/transport hiccup),
-  // never render a synchronous storm of frames. A live program only needs the
-  // current frame; rendering dozens back-to-back drives the real D3D11/encoder/
-  // output path into a blocking burst that wedges the processing thread.
-  if (audioWorkerActive_) {
-    additionalTicks = std::min(additionalTicks, 2);
-  }
-  // Increment 2 (depends on the audio decouple): in the live server the render thread
-  // keeps lastProgramFrame_ fresh at ~60fps and the audio/output worker keeps the
-  // audio/output snapshot fresh, so an EMPTY poll (the 250ms media-core-sync) no
-  // longer needs to drive a synthetic tick under coreMutex â€” return the latest
-  // published snapshot without the heavy tick. Commands still render so their effect
-  // is reflected immediately; direct/test callers (no worker) always render.
-  if (audioWorkerActive_ && commands.empty()) {
-    additionalTicks = 0;
+  // Live workers own media cadence. Commands publish their applied state now;
+  // rendered frame evidence changes on the next display tick. Rendering here
+  // duplicates GPU work under coreMutex and advances animations between ticks.
+  // Preserve synthetic elapsed-time stepping for direct callers without workers.
+  int additionalTicks = 0;
+  if (!audioWorkerActive_) {
+    const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
+    const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
+    additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
   }
   for (int tick = 0; tick < additionalTicks; ++tick) {
     renderSyntheticTick();
@@ -1030,6 +1146,11 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
 }
 
 rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
+  applyCommandMutation(command);
+  return sessionState();
+}
+
+void MediaCore::applyCommandMutation(const rpc::Json& command) {
   const std::string type = command.getString("type");
   if (type == "load-scene-graph") {
     loadSceneGraph(command);
@@ -1123,7 +1244,15 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     // Pure query: the recommendation is derived from current state and surfaced
     // in the snapshot (see autoProductionState()), so there is nothing to mutate.
   }
-  return sessionState();
+  publishProgramOutputConfiguration();
+}
+
+void MediaCore::publishProgramOutputConfiguration() {
+  auto config = std::make_shared<ProgramOutputConfiguration>();
+  config->destinations = outputDestinations_;
+  config->settings = outputDestinationSettings_;
+  config->expectsAudio = !audioRoutingSends_.empty();
+  programOutputConfiguration_.store(std::move(config), std::memory_order_release);
 }
 
 DirectorSignals MediaCore::deriveDirectorSignals() const {
@@ -1315,6 +1444,106 @@ void MediaCore::setOutputProfile(const rpc::Json& command) {
   }
 }
 
+namespace {
+
+// Tiles style tokens the wall understands. An unrecognised token is a legal
+// string we did not expect, so fall back loudly rather than guess a shape.
+std::string normalizeTileAspect(const std::string& value, bool* fellBack) {
+  static const char* kKnown[] = {"16:9", "4:3", "5:4", "1:1", "3:4", "9:16", "custom"};
+  for (const char* known : kKnown) {
+    if (value == known) {
+      return value;
+    }
+  }
+  *fellBack = !value.empty();
+  return "16:9";
+}
+
+// Appends `message` only if it is not already present. `sceneValidationWarnings_`
+// is cleared per load-scene-graph but NOT per applyPreviewScene, and
+// applyPreviewScene rides the REPEATING spine sync — so a warning pushed there
+// unconditionally would grow without bound on a scene-flip loop (Magic Scene
+// runs at ~1/s). Dedupe makes every warning site idempotent regardless of which
+// path reaches it.
+void pushSceneWarningOnce(std::vector<std::string>& warnings, std::string message) {
+  if (std::find(warnings.begin(), warnings.end(), message) != warnings.end()) {
+    return;
+  }
+  warnings.push_back(std::move(message));
+}
+
+// A scene carrying BOTH ordinary routes and a tiles wall interleaves them: the
+// core emits route layers and the wall into ONE shared order namespace
+// (tiles-bg at wall.order, tile #i at wall.order + 1 + i), so a route at order
+// 2 sorts between tile 1 and tile 3 and composites a full-canvas cell over
+// individual wall tiles — on PROGRAM, and therefore in the virtual camera,
+// every recording and every stream.
+//
+// The shell cannot produce this shape any more (BuildProductionSyncContext
+// serialises an EMPTY route list for a DynamicGallery scene, by construction),
+// and the behaviour is pinned by TilesRenderPlan.RoutesAndAWallShareOneOrder
+// Namespace — but the WIRE still accepts it from any producer, silently. Say
+// so out loud, so future drift is audible instead of latent.
+void warnIfRoutesAndWallCollide(bool wallPresent,
+                                size_t routeCount,
+                                const char* busLabel,
+                                std::vector<std::string>& warnings) {
+  if (!wallPresent || routeCount == 0) {
+    return;
+  }
+  pushSceneWarningOnce(
+      warnings,
+      std::string("Scene carries BOTH ") + std::to_string(routeCount) + " route(s) and a tiles wall on the " +
+          busLabel + " bus; they share one layer-order namespace and will interleave. "
+          "A gallery scene should contribute no routes.");
+}
+
+TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>* warnings) {
+  TilesLayerState tiles;
+  tiles.present = true;
+  tiles.layerId = node.getString("layerId");
+  tiles.order = static_cast<int>(node.getNumber("order", 0.0));
+  if (const rpc::Json* rect = node.get("rect"); rect && rect->isObject()) {
+    tiles.rect = {static_cast<float>(rect->getNumber("x", 0.0)),
+                  static_cast<float>(rect->getNumber("y", 0.0)),
+                  static_cast<float>(rect->getNumber("w", 1.0)),
+                  static_cast<float>(rect->getNumber("h", 1.0))};
+  }
+  if (const rpc::Json* members = node.get("members"); members && members->isArray()) {
+    int memberIndex = 0;
+    for (const auto& member : members->asArray()) {
+      const std::string id = member.asString();
+      if (!id.empty()) {
+        tiles.members.push_back(id);
+      } else if (!member.isString()) {
+        warnings->push_back("Tiles layer member " + std::to_string(memberIndex) +
+                             " is not a string; dropping it.");
+      } else {
+        warnings->push_back("Tiles layer member " + std::to_string(memberIndex) +
+                             " is an empty string; dropping it.");
+      }
+      ++memberIndex;
+    }
+  }
+  if (const rpc::Json* style = node.get("style"); style && style->isObject()) {
+    bool aspectFellBack = false;
+    tiles.style.tileAspect = normalizeTileAspect(style->getString("tileAspect"), &aspectFellBack);
+    if (aspectFellBack) {
+      warnings->push_back("Tiles layer requested an unknown tile aspect; using 16:9.");
+    }
+    tiles.style.customAspectRatio = style->getNumber("customAspectRatio", 16.0 / 9.0);
+    tiles.style.gutterPercent = style->getNumber("gutterPercent", 0.741);
+    tiles.style.marginPercent = style->getNumber("marginPercent", 0.741);
+    const std::string background = style->getString("backgroundColor");
+    if (!background.empty()) {
+      tiles.style.backgroundColor = background;
+    }
+  }
+  return tiles;
+}
+
+}  // namespace
+
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
@@ -1324,6 +1553,10 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
   }
   sceneRoutes_.clear();
   sceneBackground_ = {};
+  // T1: reset every load — a scene that previously carried a wall must not
+  // keep it when this sync omits the `tiles` node (the stale-state class
+  // this codebase has been bitten by before; see the one-shot/respawn rule).
+  tilesLayer_ = {};
   if (const rpc::Json* background = command.get("background"); background && background->isObject()) {
     sceneBackground_.mediaAssetId = background->getString("mediaAssetId");
     sceneBackground_.mediaAssetName = background->getString("mediaAssetName");
@@ -1378,6 +1611,19 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.sourceOffsetX = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetX", 0.0))));
       state.sourceOffsetY = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetY", 0.0))));
       state.opacity = static_cast<float>((std::max)(0.0, (std::min)(1.0, route.getNumber("opacity", 1.0))));
+      if (const rpc::Json* chromaKey = route.get("chromaKey"); chromaKey && chromaKey->isObject()) {
+        // Enabled must be EXPLICIT: a route carrying key settings the operator
+        // has switched off must not key. Absent `enabled` means on, so a caller
+        // that sends settings at all is asking for them.
+        const rpc::Json* enabled = chromaKey->get("enabled");
+        state.hasChromaKey = !enabled || enabled->asBool();
+        state.chromaKey.keyR = clampUnit(chromaKey->getNumber("keyR", 0.0));
+        state.chromaKey.keyG = clampUnit(chromaKey->getNumber("keyG", 1.0));
+        state.chromaKey.keyB = clampUnit(chromaKey->getNumber("keyB", 0.0));
+        state.chromaKey.similarity = clampUnit(chromaKey->getNumber("similarity", 0.4));
+        state.chromaKey.smoothness = clampUnit(chromaKey->getNumber("smoothness", 0.1));
+        state.chromaKey.spill = clampUnit(chromaKey->getNumber("spill", 0.2));
+      }
       if (const rpc::Json* colorGrade = route.get("colorGrade"); colorGrade && colorGrade->isObject()) {
         state.hasColorGrade = true;
         state.colorGrade = readColorGrade(*colorGrade);
@@ -1403,6 +1649,10 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     sceneValidationWarnings_.push_back("Scene graph routes must be an array.");
   }
   routeCount_ = static_cast<int>(sceneRoutes_.size());
+  if (const rpc::Json* tiles = command.get("tiles"); tiles && tiles->isObject()) {
+    tilesLayer_ = parseTilesLayer(*tiles, &sceneValidationWarnings_);
+  }
+  warnIfRoutesAndWallCollide(tilesLayer_.present, sceneRoutes_.size(), "program", sceneValidationWarnings_);
   syncStillMediaDesired();
 }
 
@@ -1534,13 +1784,18 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = readIsoSourceIds(command);
   }
-  {
+  const bool recordingOwnsEncoderGeneration = recordingStatus_ == "recording";
+  if (!recordingOwnsEncoderGeneration) {
     // Encoder module mutation: guard against the audio/output worker's concurrent
     // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     configureEncoderRecordingRequest();
     modules_.encoder->start(command.getStringArray("destinations"), recordingIsoParticipantIds_);
   }
+  // start-program-output is a repeated desired-state assertion. Once a recording
+  // owns the encoder generation, restarting here closes and recreates every
+  // Program/ISO writer. Scene, Preview, Take, and roster sync must only update
+  // output routing while the active recording generation keeps running.
   if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
     encoderLifecycleStatus_ = "encoding";
     encoderLastTransition_ = "Program output encoder session started.";
@@ -1615,14 +1870,33 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
 }
 
 void MediaCore::startRecordingSession(const rpc::Json& command) {
+  // IDEMPOTENT per sessionId. start-recording-session rides the shell's
+  // REPEATING sync channel (BuildSyncCommands emits it on every batch while
+  // recording), and this handler used to restart the writer — new session
+  // folder, new MP4, all counters reset — on every delivery. With Magic Scene
+  // auto-direct flipping the preview scene ~1/s, a live meeting produced ONE
+  // 1-second recording shard PER SECOND (193 folders in ~3 minutes, none
+  // playable as a show). A repeated start for the session that is ALREADY
+  // recording is the sync channel re-asserting state, not an operator action:
+  // drop it. A stop (or a different sessionId) still restarts normally —
+  // matching the dedup-by-signature law every other repeated command follows.
+  const auto incomingSessionId = command.getString("sessionId", "");
+  if (recordingStatus_ == "recording" && !incomingSessionId.empty() &&
+      incomingSessionId == recordingSessionId_) {
+    static std::map<std::string, std::int64_t> s_dedupLogCount;
+    if (s_dedupLogCount[incomingSessionId]++ == 0) {
+      std::fprintf(stderr,
+                   "[recording] start-recording-session '%s' repeated while already "
+                   "recording — deduped (the writer keeps its session)\n",
+                   incomingSessionId.c_str());
+    }
+    return;
+  }
+  recordingCaptureEpoch100ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
   setRecordingTargets(command);
   recordingSessionId_ = command.getString("sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_);
   recordingStartedAtMs_ = command.get("startedAtMs") ? command.get("startedAtMs")->asNumber() : recordingStartedAtMs_;
-  recordingElapsedMs_ = 0;
-  recordingProgramFramesWritten_ = 0;
-  recordingIsoFramesWritten_ = 0;
-  recordingDroppedFrames_ = 0;
-  recordingAudioPacketsObserved_ = 0;
   recordingFailureCount_ = 0;
   recordingRecoveryCount_ = 0;
   recordingStatus_ = "recording";
@@ -1693,6 +1967,7 @@ void MediaCore::configureEncoderRecordingRequest() {
   // modules_.encoder->configureRecording). All callers â€” startProgramOutput,
   // setRecordingTargets, startRecordingSession â€” acquire it around the call.
   modules::RecordingSessionRequest request;
+  request.captureEpoch100ns = recordingCaptureEpoch100ns_;
   request.sessionId = recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_;
   request.targetFolder = recordingTargetFolder_;
   request.filenamePrefix = recordingFilenamePrefix_;
@@ -2560,6 +2835,35 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
     }
   }
 
+  // T1: parsed like a local (mirroring routes/background/overlays above) --
+  // NOT written into previewTilesLayer_ directly here -- so a re-send of an
+  // unchanged preview scene stays a no-op via the signature check below, and
+  // its content folds into the signature so a `tiles`-only change is never
+  // mistaken for "unchanged". Reset-then-parse: a preview scene that
+  // previously had a wall must not keep it once a sync's `tiles` node is gone
+  // -- same stale-state class as the load-scene-graph reset above. Task 4
+  // review fix (C3): this used to parse into the SAME field load-scene-graph
+  // writes (tilesLayer_) -- a single field shared by both buses; it now
+  // assigns previewTilesLayer_ below, the preview bus's own copy.
+  TilesLayerState tiles;
+  if (const rpc::Json* tilesNode = previewScene.get("tiles"); tilesNode && tilesNode->isObject()) {
+    tiles = parseTilesLayer(*tilesNode, &sceneValidationWarnings_);
+  }
+  // Deduped (pushSceneWarningOnce) — this runs on the REPEATING spine sync,
+  // before the signature early-return below, so an unconditional push would
+  // grow sceneValidationWarnings_ without bound.
+  warnIfRoutesAndWallCollide(tiles.present, routes.size(), "preview", sceneValidationWarnings_);
+  signature += "tiles:" + std::to_string(tiles.present) + ":" + tiles.layerId + ":" +
+               std::to_string(tiles.order) + ":" + std::to_string(tiles.rect.x) + "," +
+               std::to_string(tiles.rect.y) + "," + std::to_string(tiles.rect.width) + "," +
+               std::to_string(tiles.rect.height) + ":" + tiles.style.tileAspect + ":" +
+               std::to_string(tiles.style.gutterPercent) + "," + std::to_string(tiles.style.marginPercent) +
+               "," + std::to_string(tiles.style.customAspectRatio) + ":" + tiles.style.backgroundColor + ":";
+  for (const auto& member : tiles.members) {
+    signature += member + ",";
+  }
+  signature += ";";
+
   if (previewSceneActive_ && signature == previewSceneSignature_) {
     return false;  // Unchanged â€” do not churn preview state.
   }
@@ -2572,6 +2876,13 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   previewOverlayAssets_ = std::move(overlays);
   previewRouteCount_ = static_cast<int>(previewSceneRoutes_.size());
   previewOverlayCount_ = static_cast<int>(previewOverlayAssets_.size());
+  // Task 4 review fix (C3): this used to write the SAME field
+  // load-scene-graph writes (tilesLayer_), and applyPreviewScene rides the
+  // frequent spine sync — so the first preview sync carrying no `tiles` wiped
+  // the live PROGRAM wall mid-show, and one carrying a different wall put a
+  // preview-only wall on PROGRAM air. previewTilesLayer_ is the preview bus's
+  // own field; buildRenderPlanForScene is handed the right one per bus.
+  previewTilesLayer_ = std::move(tiles);
   previewSceneActive_ = true;
   // A preview-scene change is structural; force the next render's event re-emit.
   previewStructureEmitted_ = false;
@@ -2648,6 +2959,18 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     // program-plan layer's rect into the PGM sub-rect. This reuses the exact
     // program layer set (routes + overlays + captions) so the PGM cell matches
     // what the operator sees on PROGRAM.
+    if (modules_.compositor->programBufferFrames() > 0) {
+      // Always retain the cell geometry, even when the current scene is empty.
+      // D3D samples the delivered Program texture instead of recomposing intent.
+      modules::CompositorRenderPlanLayer marker;
+      marker.layerId = "multiview-pgm:buffer-cell";
+      marker.rect = {pgmRect.x, pgmRect.y, pgmRect.width, pgmRect.height};
+      marker.hasClipRect = true;
+      marker.clipRect = marker.rect;
+      marker.order = order++;
+      marker.borderStyle = "none";
+      renderPlan.layers.push_back(std::move(marker));
+    } else {
     const auto programPlan = buildCompositorRenderPlan(videoFrames);
     renderPlan.layers.reserve(programPlan.layers.size() + static_cast<size_t>(sourceCount) + 1);
     for (const auto& src : programPlan.layers) {
@@ -2664,6 +2987,7 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       layer.borderStyle = "none";
       layer.borderThickness = 0.f;
       renderPlan.layers.push_back(std::move(layer));
+    }
     }
 
     // PREVIEW cell: composite the FULL previewed scene by remapping every
@@ -3095,8 +3419,16 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"inputLevel", measuredInputLevel},
         {"outputLevel", outputLevel},
         {"gainDb", gainDb},
-        {"rmsDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel)) : deriveRmsDbfs(0)},
-        {"peakDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->peakLevel)) : derivePeakDbfs(0)},
+        // These are OUTPUT meters. A muted strip may still receive non-zero
+        // input PCM, but none of that signal reaches a bus. Publishing the raw
+        // pre-mute measurement made muted microphones appear live in the UI
+        // and control API even while the routed audio was correctly silent.
+        {"rmsDbfs", hasPcm && !channel.muted
+                        ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
+                        : deriveRmsDbfs(0)},
+        {"peakDbfs", hasPcm && !channel.muted
+                         ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
+                         : derivePeakDbfs(0)},
         // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
         // feeds the workspace GR meter.
         {"gainReductionDb",
@@ -3641,7 +3973,11 @@ rpc::Json MediaCore::overlayState() const {
         {"keyer", asset->keyer},
         {"buildInMs", asset->buildInMs},
         {"buildOutMs", asset->buildOutMs},
-        {"visible", asset->keyPhase != "hidden" && asset->keyPhase != "building-out"},
+        {"visible", asset->keyPhase != "hidden" && asset->keyPhase != "building-out" &&
+            (!isLowerThird || asset->sourceId.empty() || renderedProgramSources_.containsOverlay(
+                "overlay:" + asset->overlayId + ":lower-third", asset->sourceId,
+                asset->title, asset->org, asset->text, asset->imageUri, asset->keyPosition,
+                asset->keyer, asset->keyPhase))},
     });
   }
 
@@ -3745,6 +4081,8 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
       {"recordingVideoCodec", session.recordingVideoCodec.empty() ? session.codec : session.recordingVideoCodec},
       {"recordingAudioCodec", session.recordingAudioCodec.empty() ? "aac" : session.recordingAudioCodec},
       {"recordingAudioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
+      {"encoderQueueDroppedVideoFrames", static_cast<double>(session.encoderQueueDroppedVideoFrames)},
+      {"encoderQueueDroppedAudioPackets", static_cast<double>(session.encoderQueueDroppedAudioPackets)},
       {"targets", targets},
       {"lifecycle", lifecycle},
       {"warnings", warnings},
@@ -3832,11 +4170,21 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   }
 
   const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
-  const int64_t programFramesWritten = std::max<int64_t>(recordingProgramFramesWritten_, session.recordingVideoFrameCount);
-  const int64_t isoFramesWritten = recordingIsoFramesWritten_ > 0 ? recordingIsoFramesWritten_ : static_cast<int64_t>(isoIds.size()) * programFramesWritten;
-  const double durationMs = std::max(recordingElapsedMs_, static_cast<double>(session.recordingDurationMs));
-  const int64_t audioPacketsObserved = recordingAudioPacketsObserved_;
-  const bool audioPresent = audioPacketsObserved > 0;
+  const int64_t programFramesWritten = session.recordingVideoFrameCount;
+  int64_t isoFramesWritten = 0;
+  int64_t isoBytesWritten = 0;
+  for (const auto& iso : session.isoStreams) {
+    isoFramesWritten += iso.videoFrameCount;
+    isoBytesWritten += iso.bytesWritten;
+  }
+  const double durationMs = static_cast<double>(session.recordingDurationMs);
+  const int64_t audioPacketsObserved = session.recordingAudioPacketCount;
+  const bool audioPresent = session.recordingAudioSampleCount > 0;
+  const int64_t droppedVideoFrames = session.encoderQueueDroppedVideoFrames;
+  const int64_t totalBytesWritten = session.recordingBytesWritten;
+  const int64_t programBytesWritten = session.recordingProgramBytesWritten > 0
+                                          ? session.recordingProgramBytesWritten
+                                          : std::max<int64_t>(0, totalBytesWritten - isoBytesWritten);
   const int recordingWidth = session.recordingWidth > 0 ? session.recordingWidth : lastProgramFrame_.width;
   const int recordingHeight = session.recordingHeight > 0 ? session.recordingHeight : lastProgramFrame_.height;
   const int recordingFps = session.recordingFps > 0 ? session.recordingFps : 30;
@@ -3857,14 +4205,15 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"kind", "program"},
           {"path", programPath},
           {"status", recordingWriterStatus_},
-          {"expectedFrames", static_cast<double>(programFramesWritten + recordingDroppedFrames_)},
+          {"expectedFrames", static_cast<double>(programFramesWritten)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
           {"hasAudio", audioPresent},
+          {"audioSamples", static_cast<double>(session.recordingAudioSampleCount)},
           {"missingFrames", 0},
-          {"droppedFrames", static_cast<double>(recordingDroppedFrames_)},
-          {"bytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, programFramesWritten * 260000))},
+          {"droppedFrames", 0},
+          {"bytesWritten", static_cast<double>(programBytesWritten)},
           {"metadataValid", metadataValid},
       },
   };
@@ -3893,6 +4242,8 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"audioSamples", static_cast<double>(iso.audioSampleCount)},
           {"bytesWritten", static_cast<double>(iso.bytesWritten)},
           {"metadataValid", iso.trackOpen},
+          {"encoderPath", iso.encoderPath},
+          {"fallbackReason", iso.fallbackReason},
       };
       if (!iso.warning.empty()) {
         node.emplace("warning", iso.warning);
@@ -3900,32 +4251,34 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       streams.emplace_back(std::move(node));
     }
   } else {
-    // Stub / non-MF sink: synthesize ISO nodes from the selected ids (no real
-    // per-writer stats available).
+    // A sink without per-writer telemetry must stay explicitly unknown. The old
+    // fallback copied Program counts/bytes into every ISO and made a support
+    // bundle claim successful stems that may never have existed.
     for (const auto& participantId : isoIds) {
       streams.emplace_back(rpc::Json::Object{
           {"kind", "iso"},
           {"participantId", participantId},
           {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
-          {"status", recordingWriterStatus_},
-          {"readiness", "ready"},
-          {"framesWritten", static_cast<double>(programFramesWritten)},
+          {"status", "unreported"},
+          {"readiness", "unknown"},
+          {"framesWritten", 0},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
-          {"hasAudio", audioPresent},
-          {"bytesWritten", static_cast<double>(programFramesWritten * 140000)},
-          {"metadataValid", metadataValid},
+          {"hasAudio", false},
+          {"bytesWritten", 0},
+          {"metadataValid", false},
       });
     }
   }
 
   rpc::Json::Object recording{
       {"sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_},
-      {"active", recordingStatus_ == "recording" || recordingStatus_ == "warning"},
+      {"active", session.lifecycle ? session.lifecycle->state == "live" :
+                 recordingStatus_ == "recording" || recordingStatus_ == "warning"},
       {"status", recordingStatus_},
       {"writerStatus", recordingWriterStatus_},
       {"startedAtMs", recordingStartedAtMs_},
-      {"elapsedMs", recordingElapsedMs_},
+      {"elapsedMs", durationMs},
       {"targetFolder", recordingTargetFolder_},
       {"filenamePrefix", recordingFilenamePrefix_},
       {"format", recordingFormat_},
@@ -3937,13 +4290,25 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"targetBitrateMbps", session.targetBitrateMbps},
            {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
        }},
-      {"estimatedDiskRateMBps", 4.99},
+      {"estimatedDiskRateMBps", durationMs > 0.0
+                                     ? static_cast<double>(totalBytesWritten) / (1024.0 * 1024.0) /
+                                           (durationMs / 1000.0)
+                                     : 0.0},
       {"programPath", programPath},
       {"streams", streams},
       {"proof",
        rpc::Json::Object{
            {"durationMs", durationMs},
            {"programFrameCount", static_cast<double>(programFramesWritten)},
+           {"recordingVideoPrerollFrameCount", static_cast<double>(session.recordingVideoPrerollFrameCount)},
+           {"recordingVideoTailFrameCount", static_cast<double>(session.recordingVideoTailFrameCount)},
+           {"recordingMuxVideoFrameCount", static_cast<double>(session.recordingMuxVideoFrameCount)},
+           {"recordingAudioPrerollSampleCount", static_cast<double>(session.recordingAudioPrerollSampleCount)},
+           {"recordingAudioTailSampleCount", static_cast<double>(session.recordingAudioTailSampleCount)},
+           {"recordingRequestedAt100ns", static_cast<double>(session.recordingRequestedAt100ns)},
+           {"recordingWriterReadyAt100ns", static_cast<double>(session.recordingWriterReadyAt100ns)},
+           {"recordingMuxEpoch100ns", static_cast<double>(session.recordingMuxEpoch100ns)},
+           {"recordingStartupDroppedAudioPackets", static_cast<double>(session.recordingStartupDroppedAudioPackets)},
            {"isoFrameCount", static_cast<double>(isoFramesWritten)},
            {"audioPacketsObserved", static_cast<double>(audioPacketsObserved)},
            {"audioPresent", audioPresent},
@@ -3961,11 +4326,16 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"frameRate", recordingFps},
            {"failureCount", recordingFailureCount_},
            {"recoveryCount", recordingRecoveryCount_},
+           {"encoderQueueDroppedVideoFrames", static_cast<double>(session.encoderQueueDroppedVideoFrames)},
+           {"encoderQueueDroppedAudioPackets", static_cast<double>(session.encoderQueueDroppedAudioPackets)},
        }},
       {"totalFramesWritten", static_cast<double>(programFramesWritten + isoFramesWritten)},
-      {"totalDroppedFrames", static_cast<double>(recordingDroppedFrames_)},
-      {"totalBytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, programFramesWritten * 260000 + isoFramesWritten * 140000))},
+      {"totalDroppedFrames", static_cast<double>(droppedVideoFrames)},
+      {"totalBytesWritten", static_cast<double>(totalBytesWritten)},
   };
+  if (session.lifecycle) {
+    recording.emplace("lifecycle", contracts::toJson(*session.lifecycle));
+  }
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);
   }
@@ -4034,7 +4404,7 @@ void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
 modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   auto plan = buildRenderPlanForScene(sceneId_, routeCount_, overlayCount_, sceneBackground_, sceneRoutes_,
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
-                                      videoFrames);
+                                      videoFrames, tilesLayer_);
   plan.warnings = sceneValidationWarnings_;
   return plan;
 }
@@ -4045,7 +4415,7 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
   auto plan = buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
                                       previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
                                       previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
-                                      videoFrames);
+                                      videoFrames, previewTilesLayer_);
   // Program and Preview may hold the same asset at different playback positions.
   // Give Preview its own frame-source namespace so its held cue frame cannot be
   // replaced by Program's moving decoder (or vice versa).
@@ -4069,8 +4439,26 @@ bool MediaCore::hasPreviewScene() const {
   if (!previewSceneActive_) {
     return false;
   }
+  // Re-review finding B: the wall COUNTS as a layer. This tally used to be
+  // routes + background + overlays only, so a CoreVideo Tiles preview scene
+  // was invisible to it — and with gallery routes now guaranteed empty at
+  // serialization time (BuildProductionSyncContext), a Tiles preview with no
+  // media background and no overlay scored ZERO. The third composite never
+  // ran, the preview shared-texture handle was cleared, and the shell fell
+  // back to the single-source preview path: the operator's preview monitor
+  // simply never showed the wall it was about to take. That is the gap
+  // MediaCoreCommandBuilderTests.TilesNodeRidesSetPreviewSceneToo believes it
+  // is protecting — the node was arriving; nothing composited it.
+  //
+  // `.present`, not `present && !members.empty()`, deliberately — the same
+  // gate as buildRenderPlanForScene's wallActive (finding A). A configured
+  // wall ALWAYS emits at least its background layer, so it always contributes
+  // exactly one layer here; using the members-aware form would make the
+  // preview go dark in precisely the all-cameras-off state finding A exists
+  // to fix, and would put the two gates back out of agreement.
+  const int wallLayers = previewTilesLayer_.present ? 1 : 0;
   const int layerCount = previewRouteCount_ + (previewSceneBackground_.enabled ? 1 : 0) +
-                         static_cast<int>(previewOverlayAssets_.size());
+                         static_cast<int>(previewOverlayAssets_.size()) + wallLayers;
   return layerCount >= 1;
 }
 
@@ -4085,7 +4473,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     bool captionEnabled,
     const std::string& captionText,
     const std::string& captionSpeaker,
-    const std::vector<modules::VideoFrame>& videoFrames) const {
+    const std::vector<modules::VideoFrame>& videoFrames,
+    const TilesLayerState& wall) const {
   modules::CompositorRenderPlan renderPlan;
   renderPlan.renderPlanId = sceneId + ":" + std::to_string(routeCount) + ":" + std::to_string(overlayCount);
   renderPlan.sceneId = sceneId;
@@ -4093,6 +4482,28 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   renderPlan.height = outputHeight_;
   renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade;
+
+  // A CONFIGURED WALL OWNS THIS SCENE'S VIDEO LAYERS — with or without members.
+  //
+  // This used to read `wall.present && !wall.members.empty()`, on the theory
+  // that a members-less `tiles` node should "render exactly like no wall".
+  // That is wrong, and wrong in the on-air direction (re-review finding A,
+  // same family as the empty-plan defect below).
+  // `TilesLayerPayloadBuilder.Build` emits `members: []` whenever every guest
+  // is video-off or the roster is momentarily empty — an ORDINARY meeting
+  // state, not an edge case. With the old gate, a live Tiles scene where all
+  // cameras go off stopped suppressing the legacy full-canvas fallback AND
+  // stopped emitting its background, so PROGRAM (and therefore the virtual
+  // camera, every recording and every stream) showed an improvised grid of
+  // every decoded source. The shell can no longer accidentally mask it either:
+  // a gallery scene now serialises an EMPTY route list by construction, so
+  // `sceneRoutes` is empty and the fallback branch is exactly what runs.
+  //
+  // A configured wall with nobody live shows its BACKGROUND. That is the rule
+  // the background-above-the-admission-gate fix established; `wall.present` is
+  // the gate that actually expresses it.
+  // Regression test: TilesRenderPlan.AMemberLessWallStillOwnsTheSceneAndEmitsItsBackground.
+  const bool wallActive = wall.present;
 
   int videoLayerIndex = 0;
   const int videoLayerCount = routeCount > 0 ? routeCount : static_cast<int>(videoFrames.size());
@@ -4106,6 +4517,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     layer.mediaAssetKind = sceneBackground.mediaAssetKind;
     layer.mediaAssetPath = sceneBackground.mediaAssetPath;
     layer.mediaAssetPlaying = sceneBackground.playing;
+    layer.mediaAssetLoop = true;
     layer.order = -100;
     layer.rect = {0.f, 0.f, 1.f, 1.f};
     layer.fitMode = "fill";
@@ -4121,26 +4533,21 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
-      layer.kind = route.mode == "screen-share" ? "screen-share" : "participant-video";
+      const auto fallbackParticipantId = videoLayerIndex < static_cast<int>(videoFrames.size())
+          ? std::optional<std::string_view>(videoFrames[static_cast<size_t>(videoLayerIndex)].participantId) : std::nullopt;
+      const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
+          route.captureDeviceId, route.participantId, fallbackParticipantId});
+      layer.kind = binding.kind;
+      layer.sourceId = binding.sourceId;
+      layer.participantId = binding.participantId;
       layer.order = videoLayerIndex;
       if (!route.mediaAssetId.empty() && !route.mediaAssetPath.empty()) {
-        layer.kind = "media-video";
-        layer.sourceId = "media:" + route.mediaAssetId;
         layer.mediaAssetId = route.mediaAssetId;
         layer.mediaAssetName = route.mediaAssetName;
         layer.mediaAssetKind = route.mediaAssetKind;
         layer.mediaAssetPath = route.mediaAssetPath;
         layer.mediaPlaybackKey = route.mediaPlaybackKey;
         layer.mediaAssetPlaying = route.mediaAssetPlaying;
-      } else if (route.mode == "capture-input" && !route.captureDeviceId.empty()) {
-        layer.participantId = "capture:" + route.captureDeviceId;
-        layer.sourceId = layer.participantId;
-      } else if (!route.participantId.empty()) {
-        layer.participantId = route.participantId;
-        layer.sourceId = "zoom:" + route.participantId;
-      } else if (videoLayerIndex < static_cast<int>(videoFrames.size())) {
-        layer.participantId = videoFrames[static_cast<size_t>(videoLayerIndex)].participantId;
-        layer.sourceId = "zoom:" + layer.participantId;
       }
       if (route.hasRect) {
         layer.rect = {route.rectX, route.rectY, route.rectWidth, route.rectHeight};
@@ -4151,24 +4558,33 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.order = videoLayerIndex;
       }
       layer.fitMode = route.fitMode;
-      // Borders NEVER composite into program/preview: they exist solely to
-      // separate tiles in the MULTIVIEW (which sets its own explicit tally
-      // borders). Whatever a route carries on the wire, the feed stays clean —
-      // a green route-border frame baked into program reached the virtual
-      // camera, recordings, and streams (owner rule, 2026-07-31).
-      layer.borderStyle = "none";
+      // Scene borders are an explicit operator choice and therefore belong in
+      // Program, Preview, recordings, streams, and virtual-camera output.
+      layer.borderStyle = route.borderStyle;
       layer.borderColor = route.borderColor;
-      layer.borderThickness = 0.f;
+      layer.borderThickness = route.borderThickness;
       layer.sourceScale = route.sourceScale;
       layer.sourceOffsetX = route.sourceOffsetX;
       layer.sourceOffsetY = route.sourceOffsetY;
       layer.opacity = route.opacity;
       layer.hasColorGrade = route.hasColorGrade;
       layer.colorGrade = route.colorGrade;
+      layer.hasChromaKey = route.hasChromaKey;
+      layer.chromaKey = route.chromaKey;
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }
-  } else if (!videoFrames.empty()) {
+  } else if (!videoFrames.empty() && !wallActive) {
+    // Task 4 review fix (C2): this legacy "no routes -> show whatever frames
+    // arrived" fallback pre-dates the tiles wall and used to fire regardless
+    // of it. With `routes:[]` + `tiles` (the exact shape the wall's own
+    // scene-sync helper sends, and what T5 is specced to produce), it emitted
+    // one full-canvas layer per decoded frame at order 0..N-1, which
+    // interleaves with the wall's own tiles-bg(order 0)/tile:*(1..N) layers
+    // after sortCompositorRenderPlan — full-canvas cells compositing OVER
+    // individual wall tiles. A configured wall (`wall.present`, regardless of
+    // members or current admission — see wallActive above) now owns this
+    // scene's video layers exclusively.
     renderPlan.layers.reserve(videoFrames.size());
     for (size_t index = 0; index < videoFrames.size(); ++index) {
       modules::CompositorRenderPlanLayer layer;
@@ -4180,6 +4596,146 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       const auto layout = compositor::gridCell(static_cast<int>(videoFrames.size()), static_cast<int>(index));
       layer.rect = {layout.x, layout.y, layout.width, layout.height};
       renderPlan.layers.push_back(std::move(layer));
+    }
+  }
+
+  // T1: expand the tiles wall into per-tile render-plan layers, once per
+  // render tick (buildRenderPlanForScene runs every tick already; this adds
+  // no new frequency). This is deliberate — it is what lets a later task
+  // animate the wall: the rects simply differ each frame, with no new command
+  // required. N layers inside ONE composited texture is the multiview
+  // pattern already established in this codebase; it is NOT the retired
+  // per-tile-XAML-swap-chain pattern (CoreMessagingXP 0xc000027b).
+  //
+  // wallActive is `wall.present` — the SAME gate that suppresses the legacy
+  // fallback above, so the two can never disagree. A members-less wall falls
+  // through to the background-only plan below (finding A); it must never fall
+  // back to "render exactly like no wall", which is what put an improvised
+  // grid on air.
+  if (wallActive) {
+    const int tilesBaseOrder = wall.order;
+    // A SCENE MEDIA BACKGROUND WINS OVER THE WALL'S SOLID COLOUR (owner report,
+    // live meeting 2026-08-16: "supersource background doesn't load on tiles
+    // scene"). The scene background is emitted above at order -100; the wall's
+    // background is an OPAQUE solid at order 0 across wall.rect, which defaults
+    // to the whole canvas — so it sorted on top and painted the operator's
+    // SuperSource backdrop out entirely. Before T1 a gallery scene emitted no
+    // such layer, so this is a T1 regression, not a pre-existing gap.
+    //
+    // When the scene carries a background, IT is the wall's ground and the
+    // configured colour is not painted. That matches the reference product,
+    // where the background source draws over the background colour.
+    //
+    // The CRITICAL "a wallActive wall never emits an empty plan" rule still
+    // holds either way: with a scene background the media-background layer is
+    // in the plan, without one the tiles background below is.
+    const bool wallPaintsItsOwnBackground = !sceneBackground.enabled;
+
+    // Whole-branch review fix (CRITICAL, on-air): the background layer is
+    // emitted for EVERY active wall — BEFORE the admitted-members gate below,
+    // never inside it.
+    //
+    // This block used to sit inside `if (!admitted.empty())`, so a wall whose
+    // members were ALL stale (or whose first frames had simply not landed yet
+    // — true transiently on every single Tiles take) produced an EMPTY render
+    // plan: the legacy full-canvas fallback above is deliberately suppressed
+    // while a wall is active, and nothing else contributed a layer. An empty
+    // `renderPlan.layers` is not "draw nothing" to any of the three
+    // compositors — D3D11CompositorAdapter::resolveLayers,
+    // ProgramFramePreview's buildProgramFramePreview, and
+    // MetalCompositorAdapter::resolveLayers each carry their OWN
+    // `layers.empty()` fallback that improvises one full-canvas grid cell per
+    // DECODED FRAME. PROGRAM would then show a grid of whatever the core
+    // happened to be decoding — sources that are not on the wall at all, or
+    // exactly the frozen members the staleness veto had just rejected — and
+    // PROGRAM is inherited by the virtual camera, every recording and every
+    // stream. An active wall must therefore ALWAYS put at least its own
+    // background on the plan, so the plan is never empty and those three
+    // fallbacks can never fire under a wall.
+    // Regression test: TilesRenderPlan.AnAllStaleWallStillEmitsItsBackground.
+    if (wallPaintsItsOwnBackground) {
+    modules::CompositorRenderPlanLayer background;
+    background.layerId = "tiles-bg:" + wall.layerId;
+    background.kind = "tiles-background";
+    background.sourceId = background.layerId;
+    background.order = tilesBaseOrder;
+    background.rect = wall.rect;
+    background.fitMode = "fill";
+    // Task 4 review fix (I5): borderColor is NEVER read as a fill — with
+    // borderStyle="none"/thickness 0 nothing draws it, and a layer with no
+    // matching frame (this one has neither participantId nor mediaAssetId)
+    // renders the compositor's default mid-grey ResolvedLayer::color
+    // instead. hasFillColor/fillColor are the field both the D3D11 path and
+    // the CPU preview path actually read for a sourceless solid layer.
+    background.hasFillColor = true;
+    background.fillColor = wall.style.backgroundColor;
+    background.borderColor = wall.style.backgroundColor;
+    background.borderStyle = "none";
+    background.borderThickness = 0.f;
+    renderPlan.layers.push_back(std::move(background));
+    }
+
+    const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
+    if (!admitted.empty()) {
+      const double canvasAspect = outputHeight_ > 0
+          ? static_cast<double>(outputWidth_) / static_cast<double>(outputHeight_)
+          : 16.0 / 9.0;
+      // Task 4 review fix (M9): the solver's canvasAspectRatio describes the
+      // space the RESULT rects live in — the wall's own rect, not the full
+      // canvas. Handing it the raw canvas aspect is only correct while the
+      // wall rect happens to BE the full canvas (today's only configuration);
+      // a partial wall rect (a future task) would otherwise solve tiles for
+      // the wrong aspect and squash them once mapped into the narrower rect.
+      const double wallAspect = wall.rect.height > 0.f
+          ? canvasAspect * static_cast<double>(wall.rect.width) / static_cast<double>(wall.rect.height)
+          : canvasAspect;
+      const auto rects = compositor::solveTilesLayout(
+          static_cast<int>(admitted.size()), wallAspect, wall.style.tileAspect,
+          wall.style.customAspectRatio, wall.style.gutterPercent,
+          wall.style.marginPercent);
+
+      for (size_t index = 0; index < admitted.size() && index < rects.size(); ++index) {
+        modules::CompositorRenderPlanLayer layer;
+        layer.layerId = "tile:" + admitted[index];
+        layer.kind = "participant-video";
+        layer.sourceId = admitted[index];
+        // Tile rects are solved in the WALL's own normalized space; map them
+        // into canvas space so a wall can occupy part of the canvas beside
+        // other layers (wall.rect defaults to the full canvas).
+        layer.rect = {wall.rect.x + rects[index].x * wall.rect.width,
+                      wall.rect.y + rects[index].y * wall.rect.height,
+                      rects[index].width * wall.rect.width,
+                      rects[index].height * wall.rect.height};
+        layer.order = tilesBaseOrder + 1 + static_cast<int>(index);
+        // Fill, never letterbox — keeps a wall of mixed-aspect cameras even;
+        // a tile narrower than its camera crops the sides instead of adding bars.
+        layer.fitMode = "fill";
+        // Tiles carry NO border in this task. Scene borders composite into
+        // PROGRAM, and PROGRAM is inherited by the virtual camera, every
+        // recording, and every stream — a border here puts chrome on air.
+        // Styling arrives in a later task deliberately.
+        layer.borderStyle = "none";
+        layer.borderThickness = 0.f;
+        // Task 4 review fix (C1): strip ONLY a leading "zoom:" — capture:/
+        // browser: members keep their FULL scheme-qualified id as
+        // participantId, matching how the route path builds it
+        // (`layer.participantId = "capture:" + route.captureDeviceId;`
+        // above) and how capture/browser producers stamp VideoFrame::
+        // participantId (WinUiCaptureDeviceAdapter.cpp / BrowserSourceHost
+        // Adapter.cpp both set it to the full "capture:<id>"). The compositor
+        // matches layers to frames by EXACT participantId
+        // (frameForParticipant); stripping everything before the first colon
+        // turned "capture:dev-1" into "dev-1", which matches nothing —
+        // drawing a permanent solid placeholder — and silently, because
+        // warnUnmatchedCaptureLayer only fires for keys starting "capture:"/
+        // "media:", and "dev-1" starts with neither.
+        if (admitted[index].rfind("zoom:", 0) == 0) {
+          layer.participantId = admitted[index].substr(5);
+        } else {
+          layer.participantId = admitted[index];
+        }
+        renderPlan.layers.push_back(std::move(layer));
+      }
     }
   }
 
@@ -4210,7 +4766,20 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   for (const auto* asset : orderedOverlays) {
     modules::CompositorRenderPlanLayer layer;
     const bool isLowerThird = asset->position == "lower-third" || asset->position == "bottom-right";
+    if (isLowerThird && !asset->sourceId.empty() &&
+        std::none_of(renderPlan.layers.begin(), renderPlan.layers.end(), [&](const auto& video) {
+          return !video.hasOverlayContent && video.opacity > 0.f &&
+              (video.kind == "participant-video" || video.kind == "screen-share" || video.kind == "media-video") &&
+              (video.sourceId == asset->sourceId || video.participantId == asset->sourceId);
+        })) {
+      // A Take must not show the previous guest's name while the shell waits
+      // for rendered-source telemetry. Count this asset so the legacy fallback
+      // below cannot replace a deliberately suppressed key with a placeholder.
+      ++overlayLayerIndex;
+      continue;
+    }
     layer.layerId = "overlay:" + asset->overlayId + (isLowerThird ? ":lower-third" : ":bug");
+    layer.sourceId = asset->sourceId;
     layer.kind = "overlay";
     layer.order = static_cast<int>(renderPlan.layers.size());
     const auto layout = resolveOverlayLayout(asset->position);
@@ -4274,8 +4843,15 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   return renderPlan;
 }
 
-void MediaCore::renderDisplayTick() {
-  renderSyntheticTick(/*videoOnly=*/true);
+void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnchorNs) {
+  modules_.compositor->setProgramProductionTiming(productionSlot, productionAnchorNs);
+  // Sample file media on the scheduled content slot, before Program buffering.
+  // Work earlier in the render tick must not move source-frame selection.
+  const auto mediaPresentationTime100ns = productionSlot >= 0 && productionAnchorNs > 0
+      ? (productionAnchorNs + (productionSlot / 60) * 1'000'000'000 +
+         ((productionSlot % 60) * 1'000'000'000 + 59) / 60) / 100
+      : -1;
+  renderSyntheticTick(/*videoOnly=*/true, mediaPresentationTime100ns);
   static int64_t s_displayTickCount = 0;
   static auto s_displayTickStamp = std::chrono::steady_clock::now();
   if (++s_displayTickCount % 120 == 0) {
@@ -4287,9 +4863,13 @@ void MediaCore::renderDisplayTick() {
   }
 }
 
-void MediaCore::renderSyntheticTick(bool videoOnly) {
+void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTime100ns) {
+  if (mediaPresentationTime100ns < 0) {
+    mediaPresentationTime100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+  }
   const auto frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
-  const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * frameIntervalMs;
+  const auto frameTimestampMs = (lastProducedFrameNumber_ + 1) * frameIntervalMs;
   // Stage timing for the ~60fps display tick (videoOnly only): attributes the
   // render-thread coreMutex hold to ingest / plan / program / multiview /
   // preview so a long tick in the rig log says WHERE the time went. Averaged
@@ -4310,13 +4890,18 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   static int64_t s_subPollUs = 0;
   static int64_t s_subMergeUs = 0;
   static int s_stageTicks = 0;
+  // Preserve the stage breakdown of the slowest individual tick, not just
+  // averages that hide a texture-allocation/readback spike among cheap frames.
+  std::array<int64_t, 6> tickStages{}; // ingest, plan, program, multiview, preview, emit
   auto stageMark = std::chrono::steady_clock::now();
-  const auto markStage = [&stageMark, videoOnly](int64_t& acc) {
+  const auto markStage = [&stageMark, &tickStages, videoOnly](int64_t& acc, size_t stage) {
     if (!videoOnly) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
-    acc += std::chrono::duration_cast<std::chrono::microseconds>(now - stageMark).count();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - stageMark).count();
+    acc += elapsed;
+    tickStages[stage] += elapsed;
     stageMark = now;
   };
   // Tap the latest decoded Zoom frames (raw I420 planes) and ingest them into
@@ -4325,7 +4910,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
   if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
-    markStage(s_subFetchUs);
+    markStage(s_subFetchUs, 0);
     for (const auto& frame : decoded) {
       if (frame.hasI420()) {
         // GPU path: carry the raw I420 planes through to the compositor, which
@@ -4349,7 +4934,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     }
     // Split the per-frame store calls from the destruction of `decoded` (which
     // releases each shared I420 buffer) so a long tap says which one it is.
-    markStage(s_subStoreUs);
+    markStage(s_subStoreUs, 0);
   }
 
   // With a REAL Zoom engine configured, suppress only the SYNTHETIC FALLBACK
@@ -4358,7 +4943,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // ~16MB/frame under coreMutex (measured 26ms/tick on the Metal path). The
   // earlier all-or-nothing gate here also discarded the REAL decoded engine
   // frames ingested just above — live meetings rendered blank on macOS.
-  markStage(s_subTapUs);
+  markStage(s_subTapUs, 0);
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
   auto videoFrames = (engineLive && (!realZoom || realZoom->participantCount() == 0))
                          ? std::vector<modules::VideoFrame>{}
@@ -4373,7 +4958,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
                          std::make_move_iterator(browserFrames.begin()),
                          std::make_move_iterator(browserFrames.end()));
   }
-  markStage(s_subPollUs);
+  markStage(s_subPollUs, 0);
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
@@ -4407,7 +4992,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
-  markStage(s_subMergeUs);
+  markStage(s_subMergeUs, 0);
   // Still-image media routes (logos/bugs): inject the persistent decoded frames
   // (keyed "media:<assetId>") so program, preview bus and multiview all match
   // them like any other source frame. Cheap by construction — shared_ptr copies
@@ -4443,7 +5028,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   } else if (!latestIsoSourceFrames_.empty()) {
     latestIsoSourceFrames_.clear();
   }
-  markStage(s_stageIngestUs);
+  markStage(s_stageIngestUs, 0);
 
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
   // here: the audio mix / routing / monitor / loudness / encoder / output / recording
@@ -4455,7 +5040,114 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // reaches the mixer in the same tick as their video.
   advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
 
+  // T1 (Task 4): refresh the wall's per-member frame-age snapshot from the SAME
+  // videoFrames gather the render plan is about to consult, immediately before
+  // building the plan. Geometry bookkeeping under the same lock scope as the
+  // rest of this tick — no pixel work. Covers members of EITHER bus's wall
+  // (sourceIds are globally unique, so one combined pass is cheaper and
+  // simpler than computing it twice).
+  const bool anyWallActive = (tilesLayer_.present && !tilesLayer_.members.empty()) ||
+                             (previewTilesLayer_.present && !previewTilesLayer_.members.empty());
+  if (anyWallActive) {
+    std::vector<std::string> combinedMembers;
+    std::unordered_set<std::string> seenMembers;
+    combinedMembers.reserve(tilesLayer_.members.size() + previewTilesLayer_.members.size());
+    for (const auto& member : tilesLayer_.members) {
+      if (seenMembers.insert(member).second) {
+        combinedMembers.push_back(member);
+      }
+    }
+    for (const auto& member : previewTilesLayer_.members) {
+      if (seenMembers.insert(member).second) {
+        combinedMembers.push_back(member);
+      }
+    }
+    tilesMemberFrameAges_.clear();
+    tilesMemberFrameAges_.reserve(combinedMembers.size());
+    for (const auto& member : combinedMembers) {
+      compositor::TilesMemberFrameAge age;
+      age.sourceId = member;
+      // Task 4 review fix (M7): compare in place instead of building a fresh
+      // "zoom:"+pid std::string per (member, frame) pair — this ran up to
+      // ~(member count * frame count) allocations every tick under coreMutex.
+      // capture:/browser: frames already carry their scheme in participantId
+      // (mirrors the ISO source-key convention above); a bare Zoom
+      // participantId is compared against member's "zoom:" prefix + tail.
+      const modules::VideoFrame* matched = nullptr;
+      for (const auto& frame : videoFrames) {
+        const std::string& pid = frame.participantId;
+        const bool matches = pid.find(':') != std::string::npos
+            ? pid == member
+            : member.size() == pid.size() + 5 && member.compare(0, 5, "zoom:") == 0 &&
+                  member.compare(5, std::string::npos, pid) == 0;
+        if (matches) {
+          matched = &frame;
+          break;
+        }
+      }
+      if (matched != nullptr && (matched->hasPixels() || matched->hasI420())) {
+        age.hasFrame = true;
+        // Task 4 review fix (I4): every frame producer in this codebase
+        // re-stamps VideoFrame::timestampMs with the CURRENT tick's clock even
+        // when re-serving a held/frozen frame (see ZoomEngineRuntime.cpp,
+        // the capture adapters), so `frameTimestampMs - frame.timestampMs`
+        // was ~0 for anything that has EVER decoded — the staleness filter
+        // (Task 3) could never actually fire, and a frozen-but-subscribed
+        // guest would keep a frozen tile on the wall forever. frameId only
+        // advances on a genuinely NEW frame (the ISO dedup a few lines above
+        // relies on the same property), so age is tracked from the tick at
+        // which this member's frameId last actually CHANGED, not from the
+        // frame's own (unreliable) timestamp.
+        auto& freshness = tilesFrameFreshness_[member];
+        if (!freshness.everSeen || freshness.lastFrameId != matched->frameId) {
+          freshness.everSeen = true;
+          freshness.lastFrameId = matched->frameId;
+          freshness.lastChangedTickMs = frameTimestampMs;
+        }
+        age.lastFrameAgeMs = std::max<int64_t>(0, frameTimestampMs - freshness.lastChangedTickMs);
+      } else {
+        age.hasFrame = false;
+        // The member has no real-content frame at all this tick (departed or
+        // never arrived) — forget its freshness history so a LATER return
+        // starts fresh at age 0 rather than replaying a stale frameId's
+        // elapsed time.
+        tilesFrameFreshness_.erase(member);
+      }
+      tilesMemberFrameAges_.push_back(age);
+    }
+  } else {
+    if (!tilesMemberFrameAges_.empty()) {
+      tilesMemberFrameAges_.clear();
+    }
+    if (!tilesFrameFreshness_.empty()) {
+      tilesFrameFreshness_.clear();
+    }
+  }
+
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
+  // and the sessionState() `tiles` node both read THIS, so a consumer can never
+  // observe a wall the compositor did not also receive (see modules_.compositor->
+  // render(renderPlan, videoFrames) below, which takes this same renderPlan).
+  //
+  // Task 4 review fix (I6): this used to run unconditionally — a full deep
+  // copy of every layer (13 std::strings + overlay/grade/chroma payload each)
+  // under coreMutex, every tick, for the ~100% of scenes with no PROGRAM wall.
+  // Gated on the PROGRAM wall specifically (not anyWallActive above): every
+  // reader of lastRenderPlan_ (lastRenderPlanForTest, the sessionState()
+  // `tiles` node) is ITSELF gated on tilesLayer_.present, so a stale cached
+  // plan from a since-removed wall is never observed by anything.
+  //
+  // Re-review finding A: the gate is `.present` ALONE, matching
+  // buildRenderPlanForScene's wallActive. A members-less wall still emits a
+  // real plan (its background), and caching it is what makes that plan
+  // observable — with the old `&& !members.empty()` gate, the exact state the
+  // finding is about (every camera off) would have been invisible to
+  // lastRenderPlanForTest() and to the snapshot. The copy still only happens
+  // for a Tiles scene, so the perf rationale is unchanged.
+  if (tilesLayer_.present) {
+    lastRenderPlan_ = renderPlan;
+  }
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
   // needed on screen, and the per-frame CPU Map otherwise caps the render rate.
@@ -4465,7 +5157,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // active (the common case, incl. the perf soak) the light tick stays readback-free.
   const bool outputActive = (encoderLifecycleStatus_ == "encoding") ||
                             recordingStatus_ == "recording" || recordingStatus_ == "warning";
-  renderPlan.skipCpuReadback = videoOnly ? !outputActive : false;
+  // Buffered D3D outputs receive identity-tagged full-resolution NV12 from the
+  // preparation worker; recording must not re-enable synchronous thumbnail
+  // readback on the producer and consume its frame budget.
+  renderPlan.skipCpuReadback = videoOnly ?
+      (modules_.compositor->programBufferFrames() > 0 || !outputActive) : false;
   // The virtual camera is an output too, but it wants NATIVE resolution (it serves
   // a real webcam), not the 320x180 UI thumbnail. Gate the dedicated full-res
   // program readback on the vcam being enabled; the publisher (on the audio/output
@@ -4485,7 +5181,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       const auto previewMediaPlan = buildPreviewCompositorRenderPlan(videoFrames);
       mediaLayers.insert(mediaLayers.end(), previewMediaPlan.layers.begin(), previewMediaPlan.layers.end());
     }
-    auto mediaFrames = modules_.mediaFrames->pollMediaFrames(mediaLayers, frameTimestampMs);
+    auto mediaFrames = modules_.mediaFrames->pollMediaFramesAt100ns(mediaLayers, mediaPresentationTime100ns);
     videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());
     for (const auto& warning : modules_.mediaFrames->warnings()) {
       if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
@@ -4503,12 +5199,45 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       }
     }
   }
-  markStage(s_stagePlanUs);
-  lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
+  markStage(s_stagePlanUs, 1);
+  auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
+  lastProducedFrameNumber_ = producedFrame.frameNumber;
+  if (modules_.compositor->programBufferFrames() > 0) {
+    // Rendering queues owned pixels; only scheduled delivery advances Program.
+    modules::ProgramFrame delivered;
+    if (modules_.compositor->latestDeliveredProgramFrame(delivered)) {
+      lastProgramFrame_ = std::move(delivered);
+      if (lastProgramFrame_.renderPlanEvidence)
+        renderedProgramSources_.publish(*lastProgramFrame_.renderPlanEvidence);
+      else
+        renderedProgramSources_.invalidate();
+    }
+  } else {
+  lastProgramFrame_ = std::move(producedFrame);
+  if ((lastProgramFrame_.gpuComposed || !lastProgramFrame_.preview.bgra.empty()) &&
+      lastProgramFrame_.frameNumber > 0 && lastProgramFrame_.health != "failed" &&
+      lastProgramFrame_.renderPlanId == renderPlan.renderPlanId) {
+    renderedProgramSources_.publish(renderPlan);
+  } else {
+    // The returned frame now owns the snapshot identity. Never attach source
+    // or overlay proof from an older successful frame to this failed frame.
+    renderedProgramSources_.invalidate();
+  }
+  }
+  // Mirrored for the audio worker's PRE-LOCK engine poll: it needs a frame
+  // number to stamp audio with, but must not take coreMutex to read one.
+  lastProgramFrameNumberAtomic_.store(lastProducedFrameNumber_,
+                                      std::memory_order_relaxed);
+  // Mark a new program frame for the video-out tick. Only the COUNTER moves here
+  // (atomic, free); the wakeup itself is deliberately NOT sent under coreMutex —
+  // the caller sends it via notifyProgramFramePublished() after releasing the
+  // lock, because notifying inside it wakes a thread that immediately blocks on
+  // the very lock we still hold (measured: operator command p99 51ms -> 107ms).
+  programPublishSeq_.fetch_add(1, std::memory_order_release);
   if (!videoOnly && lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
-  markStage(s_stageProgramUs);
+  markStage(s_stageProgramUs, 2);
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
@@ -4572,7 +5301,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     lastProgramFrame_.multiviewWidth = lastMultiviewWidth_;
     lastProgramFrame_.multiviewHeight = lastMultiviewHeight_;
   }
-  markStage(s_stageMultiviewUs);
+  markStage(s_stageMultiviewUs, 3);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
   // (mirrors the program shared texture). Opt-in â€” only for a genuinely multi-layer
   // preview scene (a single passthrough source stays on the cheap WinUI single-source
@@ -4600,8 +5329,19 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     lastProgramFrame_.previewHeight = 0;
     previewStructureEmitted_ = false;
   }
-  markStage(s_stagePreviewUs);
+  markStage(s_stagePreviewUs, 4);
   if (videoOnly && ++s_stageTicks >= 120) {
+    const auto buffer = modules_.compositor->programBufferDiagnostics();
+    if (buffer.activeFrames > 0 || buffer.status == "failed") {
+      std::fprintf(stderr,
+          "[program-buffer] status=%s depth=%d occupancy=%d produced=%llu delivered=%llu underruns=%llu overflows=%llu gpuNotReady=%llu deadlineMisses=%llu displayUnconsumed=%llu displayBusy=%llu outputSequenceGaps=%llu presentationVerified=0 destinationCompletionVerified=0\n",
+          buffer.status.c_str(), buffer.activeFrames, buffer.occupancy,
+          static_cast<unsigned long long>(buffer.produced), static_cast<unsigned long long>(buffer.delivered),
+          static_cast<unsigned long long>(buffer.underruns), static_cast<unsigned long long>(buffer.overflows),
+          static_cast<unsigned long long>(buffer.gpuNotReady), static_cast<unsigned long long>(buffer.deadlineMisses),
+          static_cast<unsigned long long>(buffer.displayUnconsumed), static_cast<unsigned long long>(buffer.displayBusy),
+          static_cast<unsigned long long>(bufferedOutputSequenceGaps_.load()));
+    }
     // Delta the cumulative compositor upload counters so the line reads as
     // "uploads in the last ~2s window".
     static modules::CompositorSourceTexStats s_lastTexStats;
@@ -4655,7 +5395,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       enqueueProgramFramePreviewEvent();
       lastFrameEventEmit_ = nowTp;
     }
-    markStage(s_stageEmitUs);
+    markStage(s_stageEmitUs, 5);
+  }
+  if (videoOnly) {
+    static std::array<int64_t, 6> peakStages{};
+    static int64_t peakUs = 0;
+    static int windowTicks = 0;
+    int64_t totalUs = 0;
+    for (const auto stageUs : tickStages) totalUs += stageUs;
+    if (totalUs > peakUs) { peakUs = totalUs; peakStages = tickStages; }
+    if (++windowTicks >= 120) {
+      std::fprintf(stderr,
+          "[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
+          peakUs / 1000.0, peakStages[0] / 1000.0, peakStages[1] / 1000.0,
+          peakStages[2] / 1000.0, peakStages[3] / 1000.0, peakStages[4] / 1000.0, peakStages[5] / 1000.0);
+      peakUs = 0;
+      windowTicks = 0;
+    }
   }
   // The audio/output half (mixer->mix, routed-bus matrix + insert chains,
   // monitorOutput->render, BS.1770 loudness, encoder->submit/submitAudio,
@@ -4665,35 +5421,83 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // callers (unit tests) keep it synchronous + single-threaded so applyCommands /
   // applyCommand still publish audio/output results into the returned snapshot.
   if (!videoOnly && !audioWorkerActive_) {
-    auto work = gatherAudioOutputWork();
+    // Single-threaded test/sync path: already under coreMutex and nothing else
+    // is running, so there is no contention to avoid — poll inline.
+    auto work = gatherAudioOutputWork(pollZoomAudioUnlocked());
     const auto results = runAudioOutputWork(work);
     publishAudioOutputResults(results);
   }
 }
 
-void MediaCore::enableAudioOutputWorker() { audioWorkerActive_ = true; }
+void MediaCore::enableAudioOutputWorker() {
+  if (audioWorkerActive_) return;
+  // Latch before the first worker renders. Engine/capture toggles do not change
+  // this; a new native process is required to apply a different buffer depth.
+  const auto* configured = std::getenv("COREVIDEO_PROGRAM_BUFFER_FRAMES");
+  const int frames = configured && std::string_view(configured) == "2" ? 2 : 3;
+  modules_.compositor->configureProgramBuffer(frames);
+  publishProgramOutputConfiguration();
+  audioWorkerActive_ = true;
+}
 
 // Gather the per-tick audio/output inputs. Caller holds coreMutex (or is the
 // single-threaded test path). Polls the audio sources (zoom/engine/capture/media),
 // copies the plain-data control state the worker reads, and snapshots the current
 // program frame for the encoder/output. Touches only coreMutex-domain state.
-MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
-  AudioOutputWorkItem work;
-  work.valid = true;
-  work.frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
-  const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * work.frameIntervalMs;
-
+// Poll the Zoom sources for audio WITHOUT holding coreMutex.
+//
+// This used to run inside gatherAudioOutputWork, i.e. under coreMutex — and
+// ZoomEngineRuntime::pollCompositorAudioFrames takes the engine's own mutex_,
+// which the video ingest thread holds on its 2ms poll. So the audio worker sat
+// on the BIG lock waiting for the engine lock: measured worst 8.5ms against a
+// sub-ms budget, while every other part of the gather stayed under 0.03ms.
+// Averages hid it completely (0.16ms mean).
+//
+// Both pollers own their own mutexes (RealZoomCaptureSource::mutex_ and
+// ZoomEngineRuntime::mutex_) and zoomEngineRuntime_ is created once in the
+// constructor and never reset, so calling them unlocked is safe — the same
+// reasoning that already lets drainZoomVideoFrameEvents run off the core lock.
+std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
   std::vector<modules::AudioFrame> audioFrames = modules_.zoom->pollAudioFrames();
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto engineAudioFrames =
-        zoomEngineRuntime_->pollCompositorAudioFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 20);
+    // Frame number from the atomic mirror rather than lastProgramFrame_: one
+    // render tick of staleness is irrelevant here (this is a synthetic
+    // monotonic stamp, not a wall clock, and the worker already runs at 50Hz
+    // against a 60Hz render), and reading it under the lock is the very thing
+    // being removed.
+    const auto frameNumber = lastProgramFrameNumberAtomic_.load(std::memory_order_relaxed);
+    auto engineAudioFrames = zoomEngineRuntime_->pollCompositorAudioFrames((frameNumber + 1) * 20);
     if (!engineAudioFrames.empty()) {
-      audioFrames = engineAudioFrames;
+      audioFrames = std::move(engineAudioFrames);
     }
   }
+  return audioFrames;
+}
+
+MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
+    std::vector<modules::AudioFrame> prePolledZoomAudio) {
+  AudioOutputWorkItem work;
+  work.valid = true;
+  work.outputTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+  work.programBufferFrames = modules_.compositor->programBufferFrames();
+  work.frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
+  const auto frameTimestampMs = static_cast<int64_t>(lastProducedFrameNumber_ + 1) * work.frameIntervalMs;
+
+  // Polled BEFORE coreMutex was taken (see pollZoomAudioUnlocked).
+  std::vector<modules::AudioFrame> audioFrames = std::move(prePolledZoomAudio);
   if (modules_.audioCapture) {
     auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
     audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
+  }
+  if (modules_.captureDevice) {
+    // Audio embedded in a capture TRANSPORT. An SRT contribution feed carries its
+    // guest's audio inside the same stream, with no OS audio device to pair it
+    // with, so it arrives here rather than through the WASAPI capture-audio path.
+    // Keyed "capture:<deviceId>", so it lands in the existing routing, metering
+    // and ISO paths exactly like a paired capture input.
+    auto transportAudio = modules_.captureDevice->pollAudioFrames(frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), transportAudio.begin(), transportAudio.end());
   }
   if (modules_.mediaFrames) {
     // Media-layer audio needs the active scene layers; rebuild the plan here (it is
@@ -4863,8 +5667,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       source.sourceId = frame.participantId;
       source.pcm = &frame.pcm;
       source.channels = frame.channels;
+      bool hasStrip = false;
       for (const auto& channel : work.channels) {
         if (channel.participantId == frame.participantId) {
+          hasStrip = true;
           source.muted = channel.muted;
           source.solo = channel.solo;
           source.pan = channel.pan;
@@ -4897,6 +5703,24 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           }
           break;
         }
+      }
+      // THE FADER LAW (owner rule, 2026-08-09): no audio source reaches ANY bus
+      // without a fader. A routed source with no channel strip used to sum into
+      // master unmuted at unity — which is why "mute everything" did not silence
+      // the master: the audible path (the Zoom meeting mix) had no strip at all.
+      // When the operator has a console (channels synced), a strip-less source
+      // is DROPPED from the bus mix, loudly, so the leak names itself. Headless
+      // callers (validators, scripts) sync no channels and keep unity behavior.
+      if (!hasStrip && !work.channels.empty()) {
+        static std::map<std::string, std::int64_t> s_lastWarn;
+        auto& warned = s_lastWarn[frame.participantId];
+        if (warned++ % 250 == 0) {  // ~every 5s at 50Hz, first occurrence immediately
+          std::fprintf(stderr,
+                       "[audio] FADER LAW: routed source '%s' has NO channel strip — "
+                       "dropped from the bus mix (add a fader to make it audible)\n",
+                       frame.participantId.c_str());
+        }
+        continue;
       }
       // A3: sources with no channel-strip entry still need the compensating
       // delay (they sum into the same buses); give them their persistent DSP
@@ -5118,7 +5942,17 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           work.monitorListenBusId.empty() ? kEmptyTap : localBusTap(work.monitorListenBusId);
       const auto& routedMonitorBus = !listenBus.empty() ? listenBus : localBusTap("mon");
       const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
-      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus : modules_.mixer->monitorBusPcm();
+      // A ROUTED CONSOLE NEVER FALLS BACK TO THE UNMUTED SUM. The legacy
+      // DevSafeAudioMixer bus is every PCM frame summed with no strips, mutes,
+      // or routing — a headless-only convenience. When routing sends exist, an
+      // empty/silent mon bus means the operator MUTED things: falling back here
+      // played the raw unmuted mix the moment every strip was muted (live
+      // meeting, 2026-08-09 — "muted all sources and still hear the output").
+      // Silence is the correct sound of an all-muted console.
+      const bool consoleRouted = !work.routingSends.empty();
+      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus
+                               : consoleRouted     ? kEmptyTap
+                                                   : modules_.mixer->monitorBusPcm();
       const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());
       const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
       if (frameCount <= 0) {
@@ -5171,8 +6005,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // mixer's default program mix). Mutates the loudness members in place under
   // audioOutputMutex_; masterMeterState reads them under the same lock.
   {
+    // Routed console -> never meter the legacy unmuted sum (see the monitor
+    // fallback note above). All-muted must read as silence on the master meter.
+    static const std::vector<float> kEmptyLoudnessTap;
+    const bool loudnessConsoleRouted = !work.routingSends.empty();
     const std::vector<float>& programAudio =
-        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+        !localProgramTap.empty() ? localProgramTap
+        : loudnessConsoleRouted  ? kEmptyLoudnessTap
+                                 : modules_.mixer->monitorBusPcm();
     const int meterChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
     updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
   }
@@ -5183,119 +6023,166 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // device. It must be taken BEFORE the encoder submit below: the recorder muxes
   // from this buffer (RecordingSessionRequest::programNv12), and attaching it only
   // to the senders' copy is what left recordings muxing the 320x180 preview.
-  static std::vector<std::uint8_t> programNv12;  // output worker is single-threaded
-  static int programNv12Width = 0;
-  static int programNv12Height = 0;
+  // THE TAP IS TAKEN BY THE VIDEO TICK, NOT HERE. takeVcamNv12 yields each tap
+  // generation exactly ONCE, so two callers would starve each other; the 60Hz
+  // renderVideoOutputTick owns the take and leaves the newest frame in
+  // latestProgramNv12_. The tiny tap-reference lock is independent of DSP and
+  // output I/O, so video can never hold the audio worker's scheduling lock.
   bool hasNewProgramNv12 = false;
-  if (!work.outputDestinations.empty() || virtualCameraEnabled_ || work.recordingActive) {
-    int tapWidth = 0;
-    int tapHeight = 0;
-    hasNewProgramNv12 = modules_.compositor->takeVcamNv12(programNv12, tapWidth, tapHeight);
-    if (hasNewProgramNv12) {
-      programNv12Width = tapWidth;
-      programNv12Height = tapHeight;
-    }
+  std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12;
+  int latestProgramNv12Width = 0;
+  int latestProgramNv12Height = 0;
+  {
+    std::lock_guard<std::mutex> tapLock(programNv12Mutex_);
+    latestProgramNv12 = latestProgramNv12_;
+    latestProgramNv12Width = latestProgramNv12Width_;
+    latestProgramNv12Height = latestProgramNv12Height_;
   }
-  if (!programNv12.empty() && programNv12Width > 0 && programNv12Height > 0) {
-    work.programFrame.programNv12Width = programNv12Width;
-    work.programFrame.programNv12Height = programNv12Height;
-    work.programFrame.programNv12 = programNv12;
+  if (latestProgramNv12 && !latestProgramNv12->empty() &&
+      latestProgramNv12Width > 0 && latestProgramNv12Height > 0) {
+    hasNewProgramNv12 = true;
+    work.programFrame.programNv12Width = latestProgramNv12Width;
+    work.programFrame.programNv12Height = latestProgramNv12Height;
+    work.programFrame.programNv12Shared = latestProgramNv12;
   }
 
-  // Encoder submit (uses the program-frame snapshot), output-sender network sync,
-  // recording mux. encoder->submit early-returns when the frame carries no CPU
-  // pixels, so when no output is active (readback skipped) this is harmless.
-  modules_.encoder->submit(work.programFrame);
+  // PROGRAM VIDEO IS SUBMITTED BY THE VIDEO TICK when one is running. This
+  // worker paces on a 20ms AUDIO grid (960 samples at 48k), and submitting video
+  // here muxed the program at ~51fps while the compositor produced 60 — measured
+  // 755 frames over 14.83s in a container declaring 60. Video PTS is wall-clock
+  // (RecordingPtsClock::videoPts) and deduped by frameNumber, so submitting on a
+  // separate, faster tick cannot drift the A/V relationship; it just stops
+  // dropping ~10 frameNumbers a second. Audio still leaves from this worker.
+  const int64_t videoTimelineTimestamp100ns = monotonic100ns();
+  if (!videoOutputTickRunning_.load(std::memory_order_acquire)) {
+    work.programFrame.timelineTimestamp100ns = videoTimelineTimestamp100ns;
+    modules_.encoder->submit(work.programFrame);
+  }
   // ISO-1: each selected source's OWN video into its own MP4 (rides the same
   // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
   // drop-to-latest under back-pressure, never program A/V). Program above is
   // priority-1 and unaffected by ISO.
   if (!work.isoSources.empty()) {
+    for (auto& source : work.isoSources) {
+      source.timelineTimestamp100ns = videoTimelineTimestamp100ns;
+    }
     modules_.encoder->submitIsoVideo(work.isoSources);
   }
-  const auto session = modules_.encoder->session();
   auto outputDestinations = work.outputDestinations;
   outputDestinations.erase(
       std::remove(outputDestinations.begin(), outputDestinations.end(), std::string("recording")),
       outputDestinations.end());
   const std::vector<float>& streamBusAudio = localBusTap("stream");
-  const std::vector<float>& outputProgramAudio =
-      !streamBusAudio.empty() ? streamBusAudio
-                              : !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+  // Routed console -> silence, never the legacy unmuted sum (monitor note above).
+  static const std::vector<float> kEmptyStreamTap;
+  const bool streamConsoleRouted = !work.routingSends.empty();
+  const std::vector<float>& undelayedStreamAudio =
+      !streamBusAudio.empty()    ? streamBusAudio
+      : !localProgramTap.empty() ? localProgramTap
+      : streamConsoleRouted      ? kEmptyStreamTap
+                                 : modules_.mixer->monitorBusPcm();
   const int outputAudioChannels =
       !streamBusAudio.empty() || !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
-  const auto failOutputSenderSync = [&](const std::string& message) {
-    const auto destination =
-        std::find(outputDestinations.begin(), outputDestinations.end(), "rtmp") != outputDestinations.end()
-            ? "rtmp"
-            : !outputDestinations.empty() ? outputDestinations.front() : std::string("stream");
+  const int outputSampleRate = modules_.mixer->monitorBusSampleRate();
+  const auto& outputProgramAudio = streamOutputAudioDelay_.process(undelayedStreamAudio,
+      outputAudioChannels, outputSampleRate, work.programBufferFrames, outputSampleRate / 50);
+  // Advance the record/master delay even while not recording so a newly armed
+  // output begins with the same delayed content as the already buffered video.
+  static const std::vector<float> kEmptyProgramOutput;
+  const auto& undelayedProgramAudio = !localProgramTap.empty() ? localProgramTap
+      : !work.routingSends.empty() ? kEmptyProgramOutput : modules_.mixer->monitorBusPcm();
+  const int programOutputChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
+  const auto& delayedProgramAudio = programOutputAudioDelay_.process(undelayedProgramAudio,
+      programOutputChannels, outputSampleRate, work.programBufferFrames, outputSampleRate / 50);
+  // PROGRAM AUDIO OUT. The senders' VIDEO rides the 60Hz video tick
+  // (renderVideoOutputTick calls sync); only the PCM leaves from here, on the
+  // cadence that actually produces it. FFmpeg takes video and audio through two
+  // separate inputs, so they never had to arrive in one call — and while they
+  // did, the whole stream was paced by this 20ms audio grid.
+  if (videoOutputTickRunning_.load(std::memory_order_acquire)) {
+    if (!outputDestinations.empty() && !outputProgramAudio.empty()) {
+      try {
+        modules_.outputSender->submitAudio(outputProgramAudio, outputAudioChannels,
+                                           modules_.mixer->monitorBusSampleRate());
+      } catch (...) {
+        // Sender health is reported by the video tick's sync; never let an audio
+        // push take down the audio worker.
+      }
+    }
+  } else {
+    // No video tick (direct/unit-test callers): keep the original single-call
+    // path so applyCommands stays synchronous and self-contained.
+    const auto failOutputSenderSync = [&](const std::string& message) {
+      const auto destination =
+          std::find(outputDestinations.begin(), outputDestinations.end(), "rtmp") != outputDestinations.end()
+              ? "rtmp"
+              : !outputDestinations.empty() ? outputDestinations.front() : std::string("stream");
+      try {
+        modules_.outputSender->fail(destination, message,
+                                    static_cast<double>(work.programFrame.frameNumber * 33));
+      } catch (...) {
+      }
+    };
+    const auto& outputProgramFrame = work.programFrame;
+    const auto tOut0 = std::chrono::steady_clock::now();
     try {
-      modules_.outputSender->fail(destination, message, static_cast<double>(work.programFrame.frameNumber * 33));
+      // Wall time, never frameNumber — a frameNumber clock advanced with the
+      // tick rate and pushed a declared 30fps stream at nearly 50.
+      static const auto outputClockEpoch = std::chrono::steady_clock::now();
+      const double outputElapsedMs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - outputClockEpoch)
+              .count());
+      modules_.outputSender->sync(
+          outputDestinations,
+          &outputProgramFrame,
+          outputElapsedMs,
+          work.outputDestinationSettings,
+          outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
+          outputAudioChannels,
+          modules_.mixer->monitorBusSampleRate());
+      const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - tOut0)
+                             .count();
+      if (outMs >= 20) {
+        std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
+                     static_cast<long long>(outMs), outputDestinations.size());
+      }
+    } catch (const std::exception& ex) {
+      failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
     } catch (...) {
+      failOutputSenderSync("Output sender failed during sync.");
     }
-  };
-  // The NV12 tap was fetched once, before the encoder submit above, and is
-  // already attached to work.programFrame — the senders inherit it through this
-  // copy, so there is exactly one take (and one ~3MB copy) per tick.
-  auto outputProgramFrame = work.programFrame;
-  const auto tOut0 = std::chrono::steady_clock::now();
-  try {
-    // RTMP pacing must follow wall time, not ProgramFrame::frameNumber. The
-    // audio/output worker runs at ~50 Hz, so the old frameNumber * 33 clock
-    // advanced ~1.65 seconds per real second and pushed a declared 30 fps
-    // stream at almost 50 fps. YouTube accepts the handshake, then closes that
-    // over-speed ingest after a few seconds. Capture real monotonic time before
-    // enqueueing into AsyncOutputSender so dropped work cannot accelerate it.
-    static const auto outputClockEpoch = std::chrono::steady_clock::now();
-    const double outputElapsedMs = static_cast<double>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - outputClockEpoch)
-            .count());
-    modules_.outputSender->sync(
-        outputDestinations,
-        &outputProgramFrame,
-        outputElapsedMs,
-        work.outputDestinationSettings,
-        outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
-        outputAudioChannels,
-        modules_.mixer->monitorBusSampleRate());
-    const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - tOut0)
-                           .count();
-    if (outMs >= 20) {
-      std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
-                   static_cast<long long>(outMs), outputDestinations.size());
-    }
-  } catch (const std::exception& ex) {
-    failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
-  } catch (...) {
-    failOutputSenderSync("Output sender failed during sync.");
   }
   // Virtual Camera: publish the program frame to the SHM slot the OS reads.
-  // Same per-tick output cadence as the network senders (no shared-lock pixel
-  // work). No-op when the operator has not enabled the virtual camera.
-  if (virtualCameraEnabled_ && hasNewProgramNv12) {
+  //
+  // FALLBACK PATH ONLY. This worker ticks at ~50Hz — an AUDIO constant (960
+  // samples at 48k) — so publishing here capped a 60fps program at 50fps on
+  // every output and added up to 20ms of quantisation. Compositors that can push
+  // the tap at the render cadence do so through ICompositor::setVcamFrameSink
+  // (wired in the constructor); this runs only for those that cannot, and must
+  // never run alongside them or every frame is published twice.
+  if (virtualCameraEnabled_ && hasNewProgramNv12 && !compositorPublishesVcam_) {
     try {
-      virtualCamera_->publishNv12(programNv12.data(), programNv12Width, programNv12Height);
+      virtualCamera_->publishNv12(latestProgramNv12->data(), latestProgramNv12Width,
+                                  latestProgramNv12Height);
     } catch (...) {
     }
   }
   if (work.recordingActive) {
-    ++results.recordingProgramFramesDelta;
-    const auto isoIds = work.recordingIsoParticipantIds.empty() ? session.isoParticipantIds : work.recordingIsoParticipantIds;
-    results.recordingIsoFramesDelta += static_cast<int64_t>(isoIds.size());
-    const std::vector<float>& programAudio =
-        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
-    const int audioChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
+    // Routed console -> record silence when all-muted, never the legacy
+    // unmuted sum (monitor note above).
+    const auto& programAudio = delayedProgramAudio;
+    const int audioChannels = programOutputChannels;
     if (!programAudio.empty() && audioChannels > 0) {
       // A3: the recording PTS clock latches this at the session's first audio
       // buffer — with a latency-reporting plugin anywhere in the program path
       // (channel via alignment, bus/master directly), the whole program mix is
       // content-late by that amount and the muxed audio timeline reflects it.
       modules_.encoder->setAudioContentLatencySamples(static_cast<int>(vstActiveLatencySamples));
-      modules_.encoder->submitAudio(programAudio.data(),
+      modules_.encoder->submitAudioAt(programAudio.data(),
                                     static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
-                                    audioChannels, modules_.mixer->monitorBusSampleRate());
+                                    audioChannels, modules_.mixer->monitorBusSampleRate(), work.outputTimestamp100ns);
     }
     // ISO-2: per-source RAW-STEM audio → each ISO's own MP4 (self-contained A+V).
     // The stem is work.audioFrames[i].pcm — each source's isolated PCM, resampled
@@ -5320,10 +6207,15 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
       std::vector<modules::IsoSourceAudio> isoAudio;
       isoAudio.reserve(recordingIsoParticipantIds_.size());
+      // Timestamp the tick on the realtime audio worker, before AsyncEncoderSink
+      // queues it behind up to eight video encoders. Every ISO in this tick uses
+      // the same capture-time boundary so queue latency cannot become silence.
+      const int64_t timelineTimestamp100ns = monotonic100ns();
       for (const auto& rawId : recordingIsoParticipantIds_) {
         const std::string sourceId = normalizeIsoSourceId(rawId);
         modules::IsoSourceAudio stem;
         stem.sourceId = sourceId;
+        stem.timelineTimestamp100ns = timelineTimestamp100ns;
         const auto it = stemByCanonicalId.find(sourceId);
         if (it != stemByCanonicalId.end()) {
           const modules::AudioFrame& frame = *it->second;
@@ -5343,13 +6235,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
     }
     const auto encoderSession = modules_.encoder->session();
-    results.recordingAudioPacketsObserved = encoderSession.recordingAudioPacketCount;
     // Surface the encoder's recording warning (published into recordingWarning_
     // → snapshot recording.warning). Without this an audio WriteSample failure
     // lived only in encoderSession.warnings and the recording section looked
     // healthy while muxing a video-only MP4.
     results.recordingWarning = encoderSession.recordingWarning;
-    results.recordingElapsedMsDelta += static_cast<double>(work.frameIntervalMs);
   }
   return results;
 }
@@ -5372,9 +6262,6 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     audioMonitorFeedbackRisk_ = results.monitorFeedbackRisk;
   }
   if (results.recordingActive) {
-    recordingProgramFramesWritten_ += results.recordingProgramFramesDelta;
-    recordingIsoFramesWritten_ += results.recordingIsoFramesDelta;
-    recordingAudioPacketsObserved_ = results.recordingAudioPacketsObserved;
     if (!results.recordingWarning.empty() && recordingWarning_ != results.recordingWarning) {
       // Encoder-side failure (e.g. dropped program audio) becomes the visible
       // recording warning. Log once per distinct warning — this is the loud
@@ -5382,14 +6269,178 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
       recordingWarning_ = results.recordingWarning;
       std::fprintf(stderr, "[recording] warning: %s\n", recordingWarning_.c_str());
     }
-    recordingElapsedMs_ += results.recordingElapsedMsDelta;
   }
 }
 
 // Worker entry point: gather (brief coreMutex) â†’ work (audioOutputMutex_ only) â†’
 // publish (brief coreMutex). The render thread takes ONLY coreMutex and so is never
 // blocked by the long DSP/IO span; the worker never holds both locks at once.
+// PROGRAM VIDEO OUT, on the VIDEO cadence.
+//
+// Everything that leaves this app used to be sampled by the ~50Hz audio/output
+// worker, whose 20ms period is an audio constant (960 samples at 48k, spec 4.2)
+// with a hard-won absolute-deadline pacer behind it. Gating video on it capped a
+// 60fps program at ~51fps in recordings. Raising that worker to 60Hz would break
+// the audio block contract, so video gets its own tick.
+//
+// Lock discipline: coreMutex (brief snapshot), then videoOutputMutex_ for video
+// fan-out. Video never takes audioOutputMutex_: even a slow encoder/sender queue
+// cannot steal a 20 ms audio deadline. The async sinks provide their own queue
+// synchronization for concurrent audio/video submissions.
+void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
+  const bool buffered = modules_.compositor->programBufferFrames() > 0;
+  modules::ProgramFrame frame;
+  std::vector<std::string> senderDestinations;
+  std::vector<modules::OutputDestinationSettings> senderSettings;
+  bool senderExpectsAudio = false;
+  bool bufferedFrameAvailable = false;
+  if (buffered) {
+    bufferedFrameAvailable = modules_.compositor->takeDeliveredProgramFrame(frame, 20);
+    const auto config = programOutputConfiguration_.load(std::memory_order_acquire);
+    if (config) {
+      senderDestinations = config->destinations;
+      senderSettings = config->settings;
+      senderExpectsAudio = config->expectsAudio;
+    }
+    const bool destinationsChanged = senderDestinations != lastVideoOutDestinations_;
+    if (!bufferedFrameAvailable && !destinationsChanged) return;
+    lastVideoOutDestinations_ = senderDestinations;
+    if (bufferedFrameAvailable) {
+      if (lastBufferedDeliverySequence_ > 0 && frame.deliverySequence > lastBufferedDeliverySequence_ + 1)
+        bufferedOutputSequenceGaps_.fetch_add(frame.deliverySequence - lastBufferedDeliverySequence_ - 1);
+      lastBufferedDeliverySequence_ = frame.deliverySequence;
+    }
+  } else {
+  // Block until the compositor publishes a new program frame. The bounded wait
+  // is a liveness floor, not a cadence: it lets the tick re-evaluate output
+  // state (and deliver a sender stop) when the program is idle.
+  {
+    std::unique_lock<std::mutex> wait(videoOutWaitMutex_);
+    const auto seen = lastVideoOutPublishSeq_;
+    videoOutCv_.wait_for(wait, std::chrono::milliseconds(20), [&] {
+      return programPublishSeq_.load(std::memory_order_acquire) != seen;
+    });
+    lastVideoOutPublishSeq_ = programPublishSeq_.load(std::memory_order_acquire);
+  }
+  {
+    std::lock_guard<std::mutex> lock(coreMutex);
+    ScopedLockHoldTimer holdTimer("video.gather", LockHoldGuardrail::kDefaultBudgetUs);
+    const bool wanted = !outputDestinations_.empty() || virtualCameraEnabled_ ||
+                        recordingStatus_ == "recording" || recordingStatus_ == "warning";
+    // Keep ticking one more time after the last destination goes away: the
+    // senders are STOPPED by a sync() carrying no destinations, so returning
+    // early the instant outputs clear would strand a live stream running.
+    if (!wanted && !senderSyncActive_.load(std::memory_order_acquire)) {
+      return;
+    }
+    // EDGE-TRIGGERED on a new program frame, and this is what makes the tick
+    // correct rather than lucky (see the CV wait above). A 60Hz sampler reading
+    // a 60Hz producer is the frame-pairing problem the Zoom ingest synchroniser
+    // exists to fix, and it measured as a 51.7fps recording of a 60fps program.
+    //
+    // A DESTINATION CHANGE also has to get through, even with no new frame: the
+    // senders are started and STOPPED by sync(), so gating purely on frames
+    // would strand a live stream running after outputs clear.
+    const bool newFrame = lastProgramFrame_.frameNumber != lastVideoOutFrameNumber_;
+    const bool destinationsChanged = outputDestinations_ != lastVideoOutDestinations_;
+    if (!newFrame && !destinationsChanged) {
+      return;
+    }
+    lastVideoOutFrameNumber_ = lastProgramFrame_.frameNumber;
+    lastVideoOutDestinations_ = outputDestinations_;
+    senderDestinations = outputDestinations_;
+    senderSettings = outputDestinationSettings_;
+    // Has the operator routed ANY audio? If so the senders must be configured
+    // with a real PCM input from their first frame (see the sync call below).
+    senderExpectsAudio = !audioRoutingSends_.empty();
+    // Carries preview/dims/frameNumber/warnings, so a compositor with no NV12
+    // tap still submits exactly what the old path submitted.
+    frame = lastProgramFrame_;
+  }
+  }
+  std::lock_guard<std::mutex> lock(videoOutputMutex_);
+  int tapWidth = 0;
+  int tapHeight = 0;
+  std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12;
+  if (buffered) {
+    // The packet owns the NV12 produced from this exact GPU frame. Never pair
+    // delayed metadata with the legacy untagged latest-frame tap.
+    latestProgramNv12 = frame.programNv12Shared;
+    tapWidth = frame.programNv12Width;
+    tapHeight = frame.programNv12Height;
+    if (bufferedFrameAvailable) {
+      std::lock_guard<std::mutex> tapLock(programNv12Mutex_);
+      latestProgramNv12_ = latestProgramNv12;
+      latestProgramNv12Width_ = tapWidth;
+      latestProgramNv12Height_ = tapHeight;
+    }
+  } else if (modules_.compositor->takeVcamNv12Shared(latestProgramNv12, tapWidth, tapHeight)) {
+    std::lock_guard<std::mutex> tapLock(programNv12Mutex_);
+    latestProgramNv12_ = latestProgramNv12;
+    latestProgramNv12Width_ = tapWidth;
+    latestProgramNv12Height_ = tapHeight;
+  } else {
+    std::lock_guard<std::mutex> tapLock(programNv12Mutex_);
+    latestProgramNv12 = latestProgramNv12_;
+    tapWidth = latestProgramNv12Width_;
+    tapHeight = latestProgramNv12Height_;
+  }
+  if (latestProgramNv12 && !latestProgramNv12->empty() && tapWidth > 0 && tapHeight > 0) {
+    frame.programNv12Width = tapWidth;
+    frame.programNv12Height = tapHeight;
+    frame.programNv12Shared = latestProgramNv12;
+  }
+  if (!buffered) frame.timelineTimestamp100ns = monotonic100ns();
+  if (!buffered || bufferedFrameAvailable) modules_.encoder->submit(frame);
+
+  // Network senders: VIDEO on this cadence. Audio is pushed separately by the
+  // audio worker (outputSender->submitAudio) because FFmpeg takes the two
+  // through separate inputs. "recording" is an encoder destination, not a sender.
+  senderDestinations.erase(
+      std::remove(senderDestinations.begin(), senderDestinations.end(), std::string("recording")),
+      senderDestinations.end());
+  senderSyncActive_.store(!senderDestinations.empty(), std::memory_order_release);
+  const auto failOutputSenderSync = [&](const std::string& message) {
+    const auto destination =
+        std::find(senderDestinations.begin(), senderDestinations.end(), "rtmp") != senderDestinations.end()
+            ? "rtmp"
+            : !senderDestinations.empty() ? senderDestinations.front() : std::string("stream");
+    try {
+      modules_.outputSender->fail(destination, message, 0.0);
+    } catch (...) {
+    }
+  };
+  try {
+    // Pacing follows WALL TIME, never ProgramFrame::frameNumber: a frameNumber
+    // clock advanced with the tick rate and pushed a declared 30fps stream at
+    // nearly 50, which YouTube accepts and then closes seconds later.
+    static const auto outputClockEpoch = std::chrono::steady_clock::now();
+    const double outputElapsedMs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - outputClockEpoch)
+            .count());
+    // Carry the audio LAYOUT (never the PCM — that rides submitAudio on the
+    // audio worker). The sender bakes its audio input into the FFmpeg argument
+    // list, so it has to know on the FIRST sync whether real audio is coming;
+    // learning it later means a restart, and a restarted SRT caller is refused
+    // by a listener that already accepted one.
+    const int declaredChannels = senderExpectsAudio ? 2 : 0;
+    // Program buses are canonical 48 kHz. Reading the mutable mixer from the
+    // independent video thread would reintroduce an audio-domain data race.
+    const int declaredSampleRate = senderExpectsAudio ? 48000 : 0;
+    modules_.outputSender->sync(senderDestinations, (!buffered || bufferedFrameAvailable) ? &frame : nullptr, outputElapsedMs, senderSettings,
+                                nullptr, declaredChannels, declaredSampleRate);
+  } catch (const std::exception& ex) {
+    failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
+  } catch (...) {
+    failOutputSenderSync("Output sender failed during sync.");
+  }
+}
+
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
+  // OUTSIDE the lock: blocking on the engine mutex while holding coreMutex is
+  // what put this site 8x over its sub-ms budget.
+  auto zoomAudio = pollZoomAudioUnlocked();
   AudioOutputWorkItem work;
   {
     std::lock_guard<std::mutex> lock(coreMutex);
@@ -5398,7 +6449,7 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
     // audioOutputMutex_ only. An over-budget hold here means blocking work
     // crept back under the big lock.
     ScopedLockHoldTimer holdTimer("audio.gather", LockHoldGuardrail::kDefaultBudgetUs);
-    work = gatherAudioOutputWork();
+    work = gatherAudioOutputWork(std::move(zoomAudio));
   }
   AudioOutputResults results;
   {

@@ -1,6 +1,7 @@
 using CoreVideoPro.Control;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
+using CoreVideoPro.WinUI.ViewModels.Transport;
 using Microsoft.UI.Dispatching;
 using System.ComponentModel;
 
@@ -21,6 +22,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     private static readonly HashSet<string> FeedbackProps = new(StringComparer.Ordinal)
     {
         nameof(StudioViewModel.Recording), nameof(StudioViewModel.Streaming),
+        nameof(StudioViewModel.NativeLowerThirdStatus),
         nameof(StudioViewModel.ZoomCaptureSubscribed), nameof(StudioViewModel.EngineStatus),
         nameof(StudioViewModel.ZoomStatus), nameof(StudioViewModel.CommandStatus),
         nameof(StudioViewModel.ActiveSceneId), nameof(StudioViewModel.PreviewSceneId),
@@ -37,28 +39,31 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         nameof(StudioViewModel.ProgramLowerThirdKey),
         nameof(StudioViewModel.ProgramLowerThirdEnabled), nameof(StudioViewModel.ShowInputSummary),
         nameof(StudioViewModel.ProductionMode),
+        nameof(StudioViewModel.ProgramBufferFrames), nameof(StudioViewModel.ProgramBufferRestartRequired),
     };
 
     /// <summary>Every action id this adapter maps onto the ViewModel. A test asserts this covers
     /// <see cref="ControlActionRegistry"/> so a new registry action can't silently be unhandled.</summary>
     public static IReadOnlySet<string> SupportedActionIds { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
+        "zoom.join", "zoom.leave",
         "transport.take", "transport.transition.set",
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
-        "scene.select", "view.setMode",
+        "scene.select", "scene.dynamicGallery.create", "view.setMode",
         "input.assign", "input.name", "input.inShow.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
-        "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
+        "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
-        "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
+        "automation.magic", "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
         "automation.lowerThirds.set", "automation.captions.set",
         "browser.add", "browser.remove", "browser.reload",
+        "settings.programBuffer.set",
     };
 
     private readonly StudioViewModel _vm;
@@ -87,6 +92,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         {
             try
             {
+                // A command may have queued before Dispose closed the surface.
+                // Check on the UI thread, where disposal sets the gate, before
+                // touching any VM command or property during teardown.
+                if (_disposed)
+                {
+                    tcs.TrySetResult(ControlInvokeResult.Fail("Control surface is shutting down."));
+                    return;
+                }
                 tcs.TrySetResult(await DispatchAsync(actionId, args).ConfigureAwait(true));
             }
             catch (Exception ex)
@@ -112,24 +125,48 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     {
         switch (actionId)
         {
+            case "settings.programBuffer.set":
+                return ApplyProgramBufferRequest(args.Count > 0 ? args[0] : null, _vm.SaveProgramBufferFrames);
+            // ---- Zoom session -------------------------------------------------------
+            case "zoom.join":
+                _vm.Settings.JoinMeetingUrl = Str(args, 0);
+                if (args.Count > 1 && args[1] is string displayName && !string.IsNullOrWhiteSpace(displayName))
+                {
+                    _vm.Settings.DisplayName = displayName;
+                }
+                _vm.Settings.IsWebinar = args.Count > 2 && args[2] is bool webinar && webinar;
+                if (!_vm.Settings.JoinZoomCommand.CanExecute(null))
+                {
+                    return ControlInvokeResult.Fail("Zoom join is unavailable in the current state.");
+                }
+                await _vm.Settings.JoinZoomCommand.ExecuteAsync(null).ConfigureAwait(true);
+                return _vm.Settings.IsInMeeting
+                    ? ControlInvokeResult.Success
+                    : ControlInvokeResult.Fail(_vm.Settings.JoinStatus);
+            case "zoom.leave":
+                if (!_vm.Settings.LeaveZoomCommand.CanExecute(null))
+                {
+                    return ControlInvokeResult.Fail("Zoom leave is unavailable in the current state.");
+                }
+                await _vm.Settings.LeaveZoomCommand.ExecuteAsync(null).ConfigureAwait(true);
+                return !_vm.Settings.IsInMeeting
+                    ? ControlInvokeResult.Success
+                    : ControlInvokeResult.Fail(_vm.Settings.JoinStatus);
+
             // ---- Transport ----------------------------------------------------------
             case "transport.take":
-                if (_vm.TakeCommand.CanExecute(null))
-                {
-                    await _vm.TakeCommand.ExecuteAsync(null).ConfigureAwait(true);
-                }
-                return ControlInvokeResult.Success;
+                return await RunTake(_vm.TakeCommand.CanExecute(null), _vm.TakeForControlAsync).ConfigureAwait(true);
             case "transport.transition.set":
                 _vm.SetTakeTransitionCommand.Execute(Str(args, 0));
                 return ControlInvokeResult.Success;
             case "transport.record.toggle":
                 return await RunTransportToggle(_vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
             case "transport.record.set":
-                return await RunTransportSet(_vm.Recording, Bool(args, 0), _vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
+                return await RunOutputSet(_vm.RecordingRequested, _vm.Recording, Bool(args, 0), _vm.CanSetRecording, _vm.SetRecordingAsync, "recording").ConfigureAwait(true);
             case "transport.stream.toggle":
                 return await RunTransportToggle(_vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
             case "transport.stream.set":
-                return await RunTransportSet(_vm.Streaming, Bool(args, 0), _vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
+                return await RunOutputSet(_vm.StreamingRequested, _vm.Streaming, Bool(args, 0), _vm.CanSetStreaming, _vm.SetStreamingAsync, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":
                 return await RunTransportToggle(_vm.ToggleEngineCommand, "capture engine").ConfigureAwait(true);
             case "transport.engine.set":
@@ -151,6 +188,9 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             case "scene.select":
                 _vm.SelectSceneCommand.Execute(Str(args, 0));
                 return ControlInvokeResult.Success;
+            case "scene.dynamicGallery.create":
+                _vm.NewDynamicGalleryCommand.Execute(null);
+                return ControlInvokeResult.Success;
             case "view.setMode":
                 _vm.SetViewModeCommand.Execute(Str(args, 0));
                 return ControlInvokeResult.Success;
@@ -165,14 +205,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
 
             // ---- Graphics -----------------------------------------------------------
             case "graphics.lowerThird.toggle":
-                _vm.ToggleProgramLowerThirdCommand.Execute(null);
-                return ControlInvokeResult.Success;
+                return ApplyLowerThirdIntent(
+                    !(_vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible), true,
+                    () => _vm.ProgramLowerThirdEnabled,
+                    () => _vm.ToggleProgramLowerThirdCommand.Execute(null), () => _vm.CommandStatus);
             case "graphics.lowerThird.set":
-                if (_vm.ProgramLowerThirdEnabled != Bool(args, 0))
-                {
-                    _vm.ToggleProgramLowerThirdCommand.Execute(null);
-                }
-                return ControlInvokeResult.Success;
+                return ApplyLowerThirdIntent(Bool(args, 0), false,
+                    () => _vm.ProgramLowerThirdEnabled,
+                    () => _vm.ToggleProgramLowerThirdCommand.Execute(null), () => _vm.CommandStatus);
             case "graphics.caption.set":
                 _vm.CaptionText = Str(args, 0);
                 if (args.Count > 1 && args[1] is string speaker)
@@ -185,6 +225,21 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
 
             // ---- Audio --------------------------------------------------------------
+            case "audio.zoomMode.set":
+            {
+                var mode = Str(args, 0).Trim();
+                if (string.Equals(mode, ZoomAudioModePreference.PerGuestIsoValue, StringComparison.OrdinalIgnoreCase))
+                {
+                    _vm.SetZoomAudioMode(perGuestIso: true);
+                    return ControlInvokeResult.Success;
+                }
+                if (string.Equals(mode, ZoomAudioModePreference.ProgramMixValue, StringComparison.OrdinalIgnoreCase))
+                {
+                    _vm.SetZoomAudioMode(perGuestIso: false);
+                    return ControlInvokeResult.Success;
+                }
+                return ControlInvokeResult.Fail("mode must be 'perGuestIso' or 'programMix'.");
+            }
             case "audio.monitor.set":
                 _vm.AudioMonitoringEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
@@ -225,6 +280,8 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
 
             // ---- Automation ---------------------------------------------------------
+            case "automation.magic":
+                return RunMagicScene(_vm.RunMagicSceneCommand);
             case "automation.toggle":
                 _vm.ToggleAutomationCommand.Execute(null);
                 return ControlInvokeResult.Success;
@@ -296,6 +353,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         {
             return ControlInvokeResult.Fail($"Show Input slot {slot} is out of range (1-{_vm.ShowInputEditors.Count}).");
         }
+
+        // Operator-equivalent path (Companion/control API) — named so slot-write logs
+        // distinguish it from an in-app picker action.
+        using var _ = ShowInputWriteScope.Enter("control-api.assign");
 
         if (sourceId.StartsWith("zoom:", StringComparison.Ordinal))
         {
@@ -380,9 +441,31 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 editor.SourceId,
                 editor.DisplayName))
             .ToList();
+        var inputNames = inputs
+            .Where(input => !string.IsNullOrWhiteSpace(input.SourceId))
+            .GroupBy(input => input.SourceId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.Ordinal);
+        var audioMix = _vm.AudioMix;
+        var audioSources = audioMix.Participants
+            .Where(source => !string.IsNullOrWhiteSpace(source.ParticipantId))
+            .OrderBy(source => source.ParticipantId, StringComparer.Ordinal)
+            .Select(source => new ControlAudioSourceState(
+                source.ParticipantId,
+                inputNames.GetValueOrDefault(source.ParticipantId) ??
+                    inputNames.GetValueOrDefault($"zoom:{source.ParticipantId}") ??
+                    source.ParticipantId,
+                source.OutputLevel,
+                source.TruePeakDb,
+                source.Lufs,
+                source.Muted || source.SourceMuted,
+                source.Status))
+            .ToList();
 
-        return new ControlState
+        return NativeControlEvidence.Apply(new ControlState
         {
+            ProgramBufferRequestedFrames = _vm.ProgramBufferFrames,
+            ProgramBufferSessionRequestedFrames = _vm.ProgramBufferSessionRequestedFrames,
+            ProgramBufferRestartRequired = _vm.ProgramBufferRestartRequired,
             Recording = _vm.Recording,
             Streaming = _vm.Streaming,
             EngineOn = _vm.ZoomCaptureSubscribed,
@@ -403,9 +486,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             AutoCaptions = _vm.AutomationCaptionsEnabled,
             AudioMonitorOn = _vm.AudioMonitoringEnabled,
             AudioMonitorVolume = _vm.AudioMonitorVolume,
+            ZoomAudioMode = ZoomAudioModePreference.Format(_vm.ZoomAudioMode),
             MasterLimiterOn = _vm.MasterLimiterEnabled,
             MasteringOn = _vm.MasteringEnabled,
             MasteringTarget = _vm.MasteringTargetIndex,
+            AudioSourceCount = audioSources.Count,
+            ProgramTruePeakDbfs = _vm.MasteringMeterTruePeakDbfs,
+            ProgramLoudnessLufs = audioMix.LoudnessLufs,
+            AudioValidationSummary = _vm.AudioValidationSummary,
             VstHostStatus = _vm.VstHostStatus,
             VstPluginCount = _vm.VstPlugins.Count,
             VstHostSummary = _vm.VstPluginHostSummary,
@@ -413,7 +501,8 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             VirtualCameraStatus = _vm.VirtualCameraStatusLabel,
             VirtualCameraRawStatus = _vm.VirtualCameraRawStatus,
             Inputs = inputs,
-        };
+            AudioSources = audioSources,
+        }, _vm.NativeControlSnapshot);
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -443,6 +532,51 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         return ControlInvokeResult.Success;
     }
 
+    internal static ControlInvokeResult RunMagicScene(System.Windows.Input.ICommand command)
+    {
+        if (!command.CanExecute(null)) return ControlInvokeResult.Fail("Magic Scene is unavailable in the current state.");
+        try
+        {
+            command.Execute(null);
+            return ControlInvokeResult.Success;
+        }
+        catch (Exception ex) { return ControlInvokeResult.Fail($"Magic Scene failed: {ex.Message}"); }
+    }
+
+    internal static async Task<ControlInvokeResult> RunTake(bool canTake, Func<Task<TakeResult>> take)
+    {
+        if (!canTake)
+            return ControlInvokeResult.Fail("Take is unavailable. Queue a valid Preview scene or a changed draft and wait for any current Take to finish.");
+        try
+        {
+            var result = await take().ConfigureAwait(true);
+            return result.Succeeded ? ControlInvokeResult.Success
+                : ControlInvokeResult.Fail(result.Error ?? "Take was not confirmed by the media core.");
+        }
+        catch (Exception ex)
+        {
+            return ControlInvokeResult.Fail($"Take failed: {ex.Message}");
+        }
+    }
+
+    internal static async Task<ControlInvokeResult> RunOutputSet(
+        bool requested, bool observedLive, bool target, Func<bool, bool> canSet,
+        Func<bool, Task> set, string what)
+    {
+        // A disarmed intent is not proof that a previous Stop reached the core.
+        // Retry the explicit target while media is still live; never invert intent here.
+        if (requested == target && (target || !observedLive))
+        {
+            return ControlInvokeResult.Success;
+        }
+        if (!canSet(target))
+        {
+            return ControlInvokeResult.Fail($"Cannot set {what} right now (the control is unavailable in the current state).");
+        }
+        await set(target).ConfigureAwait(true);
+        return ControlInvokeResult.Success;
+    }
+
     private static async Task<ControlInvokeResult> RunTransportSet(
         bool current, bool target, CommunityToolkit.Mvvm.Input.IAsyncRelayCommand command, string what)
     {
@@ -459,9 +593,36 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         return ControlInvokeResult.Success;
     }
 
+    // Success confirms accepted intent, not completed animation/native pixels.
+    // The VM can reject a toggle (e.g. no eligible program source); propagate
+    // that outcome instead of making API clients wait for an impossible key.
+    internal static ControlInvokeResult ApplyLowerThirdIntent(bool requested, bool forceToggle,
+        Func<bool> readIntent, Action toggle, Func<string> readStatus)
+    {
+        if (forceToggle || readIntent() != requested) toggle();
+        if (readIntent() == requested) return ControlInvokeResult.Success;
+        var reason = readStatus();
+        return ControlInvokeResult.Fail(string.IsNullOrWhiteSpace(reason)
+            ? "Lower third request was not accepted." : reason);
+    }
+
     private static string Str(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is string s ? s : string.Empty;
 
     private static bool Bool(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is bool b && b;
+
+    public static ControlInvokeResult ApplyProgramBufferRequest(object? requested, Action<int> save)
+    {
+        // Use the Double wire schema: the registry's Int coercion rounds fractions.
+        // Validate again here so direct callers cannot bypass the exact 2|3 contract.
+        double? frames = requested switch { int i => i, long l => l, double d => d, float f => f, _ => null };
+        if (frames is not (2 or 3)) return ControlInvokeResult.Fail("Program buffer frames must be exactly 2 or 3. Changes require an app restart.");
+        try
+        {
+            save((int)frames.Value);
+            return ControlInvokeResult.Success;
+        }
+        catch (Exception ex) { return ControlInvokeResult.Fail("Program buffer setting was not saved: " + ex.Message); }
+    }
 
     private static int Int(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is int i ? i : 0;
 

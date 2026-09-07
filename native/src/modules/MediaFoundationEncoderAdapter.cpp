@@ -1,4 +1,7 @@
+#include <deque>
+#include <limits>
 #include "modules/Interfaces.h"
+#include "modules/IsoEncoderPlacement.h"
 #include "modules/RecordingPtsClock.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
@@ -31,6 +34,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -70,6 +74,17 @@ std::string canonicalVideoCodecName(const std::string& codec) {
 // sources feed NV12 so raw I420 needs no CPU color-convert (spec §2b) — a cheap
 // plane interleave (below) runs on the async encoder thread, never a lock.
 enum class VideoInput { Bgra, Nv12 };
+
+// Zoom raw I420 is requested as full-range BT.709 and the compositor's Windows
+// NV12 tap uses the same matrix/range. Preserve that contract at the MF media
+// type boundary so H.264/HEVC VUI/container metadata is not left unspecified.
+void setBt709FullRange(IMFMediaType* type) {
+  if (type == nullptr) return;
+  type->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+  type->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+  type->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+  type->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255);
+}
 
 // Cheap I420 (planar Y/U/V) -> NV12 (Y plane + interleaved UV) conversion. No
 // color-space math, just a chroma-plane interleave; runs on the async encoder
@@ -189,7 +204,8 @@ std::string jsonEscape(const std::string& in) {
 class Mp4Writer {
  public:
   bool open(const std::filesystem::path& path, int width, int height, int fps, int bitrateMbps,
-            const std::string& codec, std::string& errorOut, VideoInput videoInput = VideoInput::Bgra) {
+            const std::string& codec, std::string& errorOut, VideoInput videoInput = VideoInput::Bgra,
+            bool enableHardwareTransforms = true) {
     // RESET ALL per-session state before configuring the new sink writer. This
     // writer object is REUSED across recording sessions (every encoder start()
     // reopens it), and stream indices / audioConfigured_ describe the PREVIOUS
@@ -200,16 +216,31 @@ class Mp4Writer {
     // 2026-07-13 alpha-blocking zero-audio-recording bug: start-program-output
     // opened generation 1, start-recording-session reopened generation 2).
     sinkWriter_.Reset();
+    mediaSink_.Reset();
+    byteStream_.Reset();
+    videoOutputType_.Reset();
+    videoInputType_.Reset();
+    audioOutputType_.Reset();
+    audioInputType_.Reset();
+    enableHardwareTransforms_ = enableHardwareTransforms;
     open_ = false;
     writing_ = false;
     audioConfigured_ = false;
     videoStreamIndex_ = 0;
     audioStreamIndex_ = 0;
     videoFrameCount_ = 0;
+    videoPrerollFrameCount_ = 0; videoTailFrameCount_ = 0;
+    audioPrerollSampleCount_ = 0; audioTailSampleCount_ = 0;
     audioPacketCount_ = 0;
     audioSampleCount_ = 0;
+    muxAudioSampleCount_ = 0;
     audioWriteFailureCount_ = 0;
     bytesWritten_ = 0;
+    lastVideoBuffer_.Reset();
+    lastVideoPts100ns_ = -1;
+    lastVideoEnd100ns_ = 0;
+    lastAudioEnd100ns_ = 0;
+    maxAudioPtsEnd100ns_ = 0;
     path_ = path;
     videoInput_ = videoInput;
     // NV12 requires even luma dimensions; floor to even (Zoom I420 is already even).
@@ -219,23 +250,9 @@ class Mp4Writer {
     frameDuration100ns_ = 10'000'000LL / fps_;
     videoCodec_ = canonicalVideoCodecName(codec);
 
-    ComPtr<IMFAttributes> attributes;
-    HRESULT result = MFCreateAttributes(&attributes, 1);
-    if (FAILED(result)) {
-      errorOut = "create Sink Writer attributes: " + hresultString(result);
-      return false;
-    }
-    attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
-
-    result = MFCreateSinkWriterFromURL(path_.wstring().c_str(), nullptr, attributes.Get(), &sinkWriter_);
-    if (FAILED(result)) {
-      errorOut = "create MP4 Sink Writer: " + hresultString(result);
-      return false;
-    }
-
     // ---- Video stream ----
     ComPtr<IMFMediaType> outputType;
-    result = MFCreateMediaType(&outputType);
+    HRESULT result = MFCreateMediaType(&outputType);
     if (FAILED(result)) {
       errorOut = "create video output type: " + hresultString(result);
       return false;
@@ -247,12 +264,11 @@ class Mp4Writer {
     MFSetAttributeSize(outputType.Get(), MF_MT_FRAME_SIZE, static_cast<UINT32>(width_), static_cast<UINT32>(height_));
     MFSetAttributeRatio(outputType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(fps_), 1);
     MFSetAttributeRatio(outputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-
-    result = sinkWriter_->AddStream(outputType.Get(), &videoStreamIndex_);
-    if (FAILED(result)) {
-      errorOut = "add video stream: " + hresultString(result);
-      return false;
+    if (videoInput == VideoInput::Nv12) {
+      setBt709FullRange(outputType.Get());
     }
+
+    videoOutputType_ = outputType;
 
     ComPtr<IMFMediaType> inputType;
     result = MFCreateMediaType(&inputType);
@@ -268,6 +284,7 @@ class Mp4Writer {
       // async encoder thread — no CPU color-convert (spec §2b).
       inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
       inputType->SetUINT32(MF_MT_DEFAULT_STRIDE, static_cast<UINT32>(width_));
+      setBt709FullRange(inputType.Get());
     } else {
       inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
       // Top-down BGRA: negative stride so row 0 is the top scanline, matching the
@@ -278,11 +295,7 @@ class Mp4Writer {
     MFSetAttributeRatio(inputType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(fps_), 1);
     MFSetAttributeRatio(inputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 
-    result = sinkWriter_->SetInputMediaType(videoStreamIndex_, inputType.Get(), nullptr);
-    if (FAILED(result)) {
-      errorOut = "set video input type: " + hresultString(result);
-      return false;
-    }
+    videoInputType_ = inputType;
 
     open_ = true;
     return true;
@@ -313,11 +326,7 @@ class Mp4Writer {
     outputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, static_cast<UINT32>((audioBitrateKbps_ * 1000) / 8));
     outputType->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29);
 
-    result = sinkWriter_->AddStream(outputType.Get(), &audioStreamIndex_);
-    if (FAILED(result)) {
-      errorOut = "add AAC stream: " + hresultString(result);
-      return false;
-    }
+    audioOutputType_ = outputType;
 
     ComPtr<IMFMediaType> inputType;
     result = MFCreateMediaType(&inputType);
@@ -334,11 +343,7 @@ class Mp4Writer {
     inputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
                          static_cast<UINT32>(audioSampleRate_ * audioChannels_ * 2));
 
-    result = sinkWriter_->SetInputMediaType(audioStreamIndex_, inputType.Get(), nullptr);
-    if (FAILED(result)) {
-      errorOut = "set PCM input type: " + hresultString(result);
-      return false;
-    }
+    audioInputType_ = inputType;
 
     audioConfigured_ = true;
     return true;
@@ -348,7 +353,11 @@ class Mp4Writer {
     if (!open_ || writing_) {
       return open_;
     }
-    const HRESULT result = sinkWriter_->BeginWriting();
+    HRESULT result = createFragmentedSink(errorOut);
+    if (FAILED(result)) {
+      return false;
+    }
+    result = sinkWriter_->BeginWriting();
     if (FAILED(result)) {
       errorOut = "begin MP4 writing: " + hresultString(result);
       return false;
@@ -399,6 +408,41 @@ class Mp4Writer {
     buffer->Unlock();
     buffer->SetCurrentLength(byteCount);
 
+    // The fragmented MF sink rebases each track to its own first sample even
+    // when callers provide a shared epoch. Pin video to that epoch explicitly:
+    // if the first camera frame arrives late, hold that real frame from t=0
+    // until its actual capture PTS instead of letting MF erase the offset.
+    if (videoFrameCount_ == 0 && pts100ns > frameDuration100ns_) {
+      ComPtr<IMFMediaBuffer> black;
+      result = MFCreateMemoryBuffer(byteCount, &black);
+      BYTE* blackPixels = nullptr;
+      DWORD blackMax = 0;
+      DWORD blackLength = 0;
+      if (FAILED(result) || FAILED(black->Lock(&blackPixels, &blackMax, &blackLength))) {
+        errorOut = "allocate video pre-roll buffer: " + hresultString(result);
+        return false;
+      }
+      std::memset(blackPixels, 0, byteCount);
+      black->Unlock();
+      black->SetCurrentLength(byteCount);
+      ComPtr<IMFSample> preroll;
+      result = MFCreateSample(&preroll);
+      if (FAILED(result)) {
+        errorOut = "create video pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      preroll->AddBuffer(black.Get());
+      preroll->SetSampleTime(0);
+      preroll->SetSampleDuration(frameDuration100ns_);
+      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      if (FAILED(result)) {
+        errorOut = "write video pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      ++videoFrameCount_;
+      ++videoPrerollFrameCount_;
+    }
+
     ComPtr<IMFSample> sample;
     result = MFCreateSample(&sample);
     if (FAILED(result)) {
@@ -419,8 +463,11 @@ class Mp4Writer {
       errorOut = "write video sample: " + hresultString(result);
       return false;
     }
+    lastVideoBuffer_ = buffer;
+    lastVideoPts100ns_ = pts100ns;
+    lastVideoEnd100ns_ = pts100ns + frameDuration100ns_;
     ++videoFrameCount_;
-    bytesWritten_ += byteCount;
+    refreshBytesWritten();
     return true;
   }
 
@@ -482,6 +529,41 @@ class Mp4Writer {
     buffer->Unlock();
     buffer->SetCurrentLength(byteCount);
 
+    // See the BGRA path above: pin a late-opening Zoom ISO video stream to the
+    // recording epoch so MF cannot independently rebase it and destroy sync
+    // with the ISO audio stem's leading silence.
+    if (videoFrameCount_ == 0 && pts100ns > frameDuration100ns_) {
+      ComPtr<IMFMediaBuffer> black;
+      result = MFCreateMemoryBuffer(byteCount, &black);
+      BYTE* blackPixels = nullptr;
+      DWORD blackMax = 0;
+      DWORD blackLength = 0;
+      if (FAILED(result) || FAILED(black->Lock(&blackPixels, &blackMax, &blackLength))) {
+        errorOut = "allocate NV12 pre-roll buffer: " + hresultString(result);
+        return false;
+      }
+      std::memset(blackPixels, 0, static_cast<size_t>(dstY));
+      std::memset(blackPixels + dstY, 128, static_cast<size_t>(dstUv));
+      black->Unlock();
+      black->SetCurrentLength(byteCount);
+      ComPtr<IMFSample> preroll;
+      result = MFCreateSample(&preroll);
+      if (FAILED(result)) {
+        errorOut = "create NV12 pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      preroll->AddBuffer(black.Get());
+      preroll->SetSampleTime(0);
+      preroll->SetSampleDuration(frameDuration100ns_);
+      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      if (FAILED(result)) {
+        errorOut = "write NV12 pre-roll sample: " + hresultString(result);
+        return false;
+      }
+      ++videoFrameCount_;
+      ++videoPrerollFrameCount_;
+    }
+
     ComPtr<IMFSample> sample;
     result = MFCreateSample(&sample);
     if (FAILED(result)) {
@@ -497,8 +579,11 @@ class Mp4Writer {
       errorOut = "write NV12 sample: " + hresultString(result);
       return false;
     }
+    lastVideoBuffer_ = buffer;
+    lastVideoPts100ns_ = pts100ns;
+    lastVideoEnd100ns_ = pts100ns + frameDuration100ns_;
     ++videoFrameCount_;
-    bytesWritten_ += byteCount;
+    refreshBytesWritten();
     return true;
   }
 
@@ -506,6 +591,24 @@ class Mp4Writer {
   bool writeAudio(const float* interleaved, int frameCount, LONGLONG pts100ns, std::string& errorOut) {
     if (!writing_ || !audioConfigured_ || interleaved == nullptr || frameCount <= 0) {
       return false;
+    }
+    // Pin audio to the same epoch too. Program audio may intentionally start
+    // after video because of measured DSP/plugin content latency; without this
+    // silence MF rebases the first real packet to zero and shortens the track.
+    if (audioPacketCount_ == 0 && pts100ns > 0) {
+      const int64_t rate = std::max(1, audioSampleRate_);
+      const int64_t leadingFrames =
+          (pts100ns * rate + 10'000'000LL - 1) / 10'000'000LL;
+      if (leadingFrames > 0) {
+        const int64_t submittedSamplesBeforePreroll = audioSampleCount_;
+        if (!writeAudioSilence(leadingFrames, 0, errorOut)) {
+          return false;
+        }
+        // Operator telemetry counts submitted Program samples, not synthetic
+        // epoch padding. Keep the mux endpoint but preserve that public meaning.
+        audioSampleCount_ = submittedSamplesBeforePreroll;
+        audioPrerollSampleCount_ += leadingFrames;
+      }
     }
     pcm16_.resize(static_cast<size_t>(frameCount) * audioChannels_);
     for (size_t i = 0; i < pcm16_.size(); ++i) {
@@ -532,8 +635,12 @@ class Mp4Writer {
     buffer->Unlock();
     buffer->SetCurrentLength(byteCount);
 
+    const auto audioRate = std::max(1, audioSampleRate_);
+    // Every muxed PCM block (including preroll/tail silence) occupies adjacent
+    // integer sample indices. Round endpoints, never each block independently.
+    const LONGLONG muxPts100ns = muxAudioSampleCount_ * 10'000'000LL / audioRate;
     const LONGLONG duration100ns =
-        static_cast<LONGLONG>(frameCount) * 10'000'000LL / std::max(1, audioSampleRate_);
+        (muxAudioSampleCount_ + frameCount) * 10'000'000LL / audioRate - muxPts100ns;
     ComPtr<IMFSample> sample;
     result = MFCreateSample(&sample);
     if (FAILED(result)) {
@@ -543,7 +650,7 @@ class Mp4Writer {
     sample->AddBuffer(buffer.Get());
     // Sample-counted PTS with a shared-epoch base offset (RecordingPtsClock):
     // gapless within the track, aligned to the video timeline at its start.
-    sample->SetSampleTime(pts100ns);
+    sample->SetSampleTime(muxPts100ns);
     sample->SetSampleDuration(duration100ns);
 
     result = sinkWriter_->WriteSample(audioStreamIndex_, sample.Get());
@@ -563,7 +670,15 @@ class Mp4Writer {
     }
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
-    bytesWritten_ += byteCount;
+    muxAudioSampleCount_ += frameCount;
+    // Media Foundation's AAC transform emits one continuous sample-counted
+    // stream (including synthetic silence) even when input PTS are sparse.
+    // This cumulative endpoint therefore matches the finalized container;
+    // pts+duration did not, especially for ISO silence-fill.
+    lastAudioEnd100ns_ =
+        muxAudioSampleCount_ * 10'000'000LL / std::max(1, audioSampleRate_);
+    maxAudioPtsEnd100ns_ = std::max(maxAudioPtsEnd100ns_, pts100ns + duration100ns);
+    refreshBytesWritten();
     return true;
   }
 
@@ -596,13 +711,117 @@ class Mp4Writer {
     return true;
   }
 
-  void finalize() {
+  // Bring both tracks to one common endpoint before Finalize. Zoom camera
+  // delivery is intentionally bursty (a quiet/static participant may not hand
+  // us a fresh frame for hundreds of milliseconds), while Program audio/video
+  // traverse independently bounded queues. Without an explicit close-time
+  // reconcile, valid live takes ended with 0.4-1.7s A/V duration deltas.
+  // Preserve content: pad a short audio tail with silence, or hold the last
+  // real video buffer to the audio endpoint. No speech or real frame is cut.
+  bool reconcileTail(std::string& errorOut) {
+    if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0 ||
+        !lastVideoBuffer_) {
+      return true;
+    }
+
+    const LONGLONG targetEnd100ns = std::max(lastVideoEnd100ns_, lastAudioEnd100ns_);
+    std::fprintf(stderr,
+                 "[recording] reconcile file=%s videoEnd=%.3fs audioEnd=%.3fs "
+                 "audioPtsEnd=%.3fs muxAudioSamples=%lld rate=%d target=%.3fs\n",
+                 path_.filename().string().c_str(), lastVideoEnd100ns_ / 10'000'000.0,
+                 lastAudioEnd100ns_ / 10'000'000.0, maxAudioPtsEnd100ns_ / 10'000'000.0,
+                 static_cast<long long>(muxAudioSampleCount_), audioSampleRate_,
+                 targetEnd100ns / 10'000'000.0);
+    if (lastAudioEnd100ns_ < targetEnd100ns) {
+      const LONGLONG delta = targetEnd100ns - lastAudioEnd100ns_;
+      const int64_t rate = std::max(1, audioSampleRate_);
+      const int64_t frames =
+          (delta * rate + 10'000'000LL - 1) / 10'000'000LL;  // ceil to one PCM frame
+      if (!writeAudioSilence(frames, lastAudioEnd100ns_, errorOut)) {
+        return false;
+      }
+      audioTailSampleCount_ += frames;
+    }
+
+    if (lastVideoEnd100ns_ < targetEnd100ns) {
+      // One held sample is sufficient for VFR MP4: its PTS makes the previous
+      // real frame persist through the delivery gap, and its nominal duration
+      // lands the video endpoint on the shared audio endpoint.
+      const LONGLONG pts =
+          std::max(lastVideoPts100ns_ + 1, targetEnd100ns - frameDuration100ns_);
+      ComPtr<IMFSample> sample;
+      HRESULT result = MFCreateSample(&sample);
+      if (FAILED(result)) {
+        errorOut = "create held-tail video sample: " + hresultString(result);
+        return false;
+      }
+      sample->AddBuffer(lastVideoBuffer_.Get());
+      sample->SetSampleTime(pts);
+      sample->SetSampleDuration(frameDuration100ns_);
+      result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+      if (FAILED(result)) {
+        errorOut = "write held-tail video sample: " + hresultString(result);
+        return false;
+      }
+      lastVideoPts100ns_ = pts;
+      lastVideoEnd100ns_ = pts + frameDuration100ns_;
+      ++videoFrameCount_;
+      ++videoTailFrameCount_;
+      refreshBytesWritten();
+    }
+    return true;
+  }
+
+  bool finalize(std::string* errorOut = nullptr) {
+    HRESULT finalizeResult = S_OK;
     if (writing_ && sinkWriter_) {
-      sinkWriter_->Finalize();
+      // Finalize is documented to place end-of-segment markers itself, but
+      // several concurrent hardware H.264 transforms returned files whose
+      // processed video timestamp lagged the last accepted input by up to one
+      // second. Signal EOS explicitly and give the transform a bounded chance
+      // to drain before asking the fragmented MP4 sink to close its moov.
+      const HRESULT eosResult = sinkWriter_->NotifyEndOfSegment(MF_SINK_WRITER_ALL_STREAMS);
+      if (SUCCEEDED(eosResult)) {
+        MF_SINK_WRITER_STATISTICS stats{};
+        stats.cb = sizeof(stats);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do {
+          stats = {};
+          stats.cb = sizeof(stats);
+          if (FAILED(sinkWriter_->GetStatistics(videoStreamIndex_, &stats)) ||
+              stats.qwNumSamplesProcessed >= stats.qwNumSamplesReceived) {
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (std::chrono::steady_clock::now() < deadline);
+        std::fprintf(stderr,
+                     "[recording] drain file=%s received=%llu encoded=%llu processed=%llu "
+                     "lastReceived=%.3fs lastProcessed=%.3fs\n",
+                     path_.filename().string().c_str(),
+                     static_cast<unsigned long long>(stats.qwNumSamplesReceived),
+                     static_cast<unsigned long long>(stats.qwNumSamplesEncoded),
+                     static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
+                     stats.llLastTimestampReceived / 10'000'000.0,
+                     stats.llLastTimestampProcessed / 10'000'000.0);
+      }
+      finalizeResult = sinkWriter_->Finalize();
     }
     writing_ = false;
     open_ = false;
     sinkWriter_.Reset();
+    lastVideoBuffer_.Reset();
+    if (mediaSink_) {
+      (void)mediaSink_->Shutdown();
+    }
+    mediaSink_.Reset();
+    if (byteStream_) {
+      (void)byteStream_->Close();
+    }
+    byteStream_.Reset();
+    videoOutputType_.Reset();
+    videoInputType_.Reset();
+    audioOutputType_.Reset();
+    audioInputType_.Reset();
     // Prefer the on-disk size once the container is finalized.
     if (!path_.empty() && std::filesystem::exists(path_)) {
       std::error_code error;
@@ -611,6 +830,19 @@ class Mp4Writer {
         bytesWritten_ = static_cast<int64_t>(size);
       }
     }
+    if (FAILED(finalizeResult)) {
+      if (errorOut) {
+        *errorOut = "finalize MP4 container: " + hresultString(finalizeResult);
+      }
+      return false;
+    }
+    if ((videoFrameCount_ > 0 || audioPacketCount_ > 0) && bytesWritten_ <= 0) {
+      if (errorOut) {
+        *errorOut = "finalized MP4 is empty despite accepted media samples";
+      }
+      return false;
+    }
+    return true;
   }
 
   bool writing() const { return writing_; }
@@ -620,6 +852,10 @@ class Mp4Writer {
   int fps() const { return fps_; }
   const std::string& videoCodec() const { return videoCodec_; }
   int64_t videoFrameCount() const { return videoFrameCount_; }
+  int64_t videoPrerollFrameCount() const { return videoPrerollFrameCount_; }
+  int64_t videoTailFrameCount() const { return videoTailFrameCount_; }
+  int64_t audioPrerollSampleCount() const { return audioPrerollSampleCount_; }
+  int64_t audioTailSampleCount() const { return audioTailSampleCount_; }
   int64_t audioPacketCount() const { return audioPacketCount_; }
   int64_t audioSampleCount() const { return audioSampleCount_; }
   int audioChannels() const { return audioChannels_; }
@@ -629,8 +865,92 @@ class Mp4Writer {
   const std::filesystem::path& path() const { return path_; }
 
  private:
+  void refreshBytesWritten() {
+    // `bytesWritten` is operator-facing on-disk telemetry, not the number of
+    // uncompressed bytes handed to Media Foundation. The old raw-input counter
+    // reported ~1 GB while the live Program file was only 9 MB and every ISO
+    // file was 0 bytes, masking the actual writer failure.
+    QWORD length = 0;
+    if (byteStream_ && SUCCEEDED(byteStream_->GetLength(&length))) {
+      bytesWritten_ = static_cast<int64_t>(length);
+      return;
+    }
+    if (!path_.empty()) {
+      std::error_code error;
+      const auto size = std::filesystem::file_size(path_, error);
+      if (!error) {
+        bytesWritten_ = static_cast<int64_t>(size);
+      }
+    }
+  }
+
+  HRESULT createFragmentedSink(std::string& errorOut) {
+    HRESULT result = MFCreateFile(MF_ACCESSMODE_WRITE, MF_OPENMODE_DELETE_IF_EXIST,
+                                  MF_FILEFLAGS_NONE, path_.wstring().c_str(), &byteStream_);
+    if (FAILED(result)) {
+      errorOut = "create fragmented MP4 byte stream: " + hresultString(result);
+      return result;
+    }
+
+    result = MFCreateFMPEG4MediaSink(byteStream_.Get(), videoOutputType_.Get(),
+                                     audioConfigured_ ? audioOutputType_.Get() : nullptr,
+                                     &mediaSink_);
+    if (FAILED(result)) {
+      errorOut = "create fragmented MP4 media sink: " + hresultString(result);
+      return result;
+    }
+
+    // Keep fragments short enough that a process/power loss sacrifices at most
+    // the in-flight tail. The sink still chooses clean sample boundaries.
+    ComPtr<IMFAttributes> sinkAttributes;
+    if (SUCCEEDED(mediaSink_.As(&sinkAttributes))) {
+      (void)sinkAttributes->SetUINT64(MF_MPEG4SINK_MIN_FRAGMENT_DURATION, 10'000'000ULL);
+    }
+
+    ComPtr<IMFAttributes> writerAttributes;
+    result = MFCreateAttributes(&writerAttributes, 1);
+    if (FAILED(result)) {
+      errorOut = "create fragmented Sink Writer attributes: " + hresultString(result);
+      return result;
+    }
+    (void)writerAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+                                      enableHardwareTransforms_ ? TRUE : FALSE);
+    result = MFCreateSinkWriterFromMediaSink(mediaSink_.Get(), writerAttributes.Get(), &sinkWriter_);
+    if (FAILED(result)) {
+      errorOut = "create Sink Writer from fragmented MP4 sink: " + hresultString(result);
+      return result;
+    }
+
+    videoStreamIndex_ = 0;
+    result = sinkWriter_->SetInputMediaType(videoStreamIndex_, videoInputType_.Get(), nullptr);
+    if (FAILED(result)) {
+      errorOut = "set fragmented video input type: " + hresultString(result);
+      return result;
+    }
+    if (audioConfigured_) {
+      audioStreamIndex_ = 1;
+      result = sinkWriter_->SetInputMediaType(audioStreamIndex_, audioInputType_.Get(), nullptr);
+      if (FAILED(result)) {
+        errorOut = "set fragmented PCM input type: " + hresultString(result);
+        return result;
+      }
+    }
+    return S_OK;
+  }
+
   std::filesystem::path path_;
   ComPtr<IMFSinkWriter> sinkWriter_;
+  ComPtr<IMFMediaSink> mediaSink_;
+  ComPtr<IMFByteStream> byteStream_;
+  ComPtr<IMFMediaType> videoOutputType_;
+  ComPtr<IMFMediaType> videoInputType_;
+  ComPtr<IMFMediaType> audioOutputType_;
+  ComPtr<IMFMediaType> audioInputType_;
+  // Retain only the newest immutable input buffer. It can be referenced by a
+  // new IMFSample at Finalize to freeze the actual last frame without another
+  // full-resolution CPU copy on every live frame.
+  ComPtr<IMFMediaBuffer> lastVideoBuffer_;
+  bool enableHardwareTransforms_ = true;
   DWORD videoStreamIndex_ = 0;
   DWORD audioStreamIndex_ = 0;
   int width_ = kDefaultWidth;
@@ -642,10 +962,17 @@ class Mp4Writer {
   int audioBitrateKbps_ = 192;
   std::string videoCodec_ = "h264";
   int64_t videoFrameCount_ = 0;
+  int64_t videoPrerollFrameCount_ = 0, videoTailFrameCount_ = 0;
+  int64_t audioPrerollSampleCount_ = 0, audioTailSampleCount_ = 0;
   int64_t audioPacketCount_ = 0;
   int64_t audioSampleCount_ = 0;
+  int64_t muxAudioSampleCount_ = 0;
   int64_t audioWriteFailureCount_ = 0;
   int64_t bytesWritten_ = 0;
+  LONGLONG lastVideoPts100ns_ = -1;
+  LONGLONG lastVideoEnd100ns_ = 0;
+  LONGLONG lastAudioEnd100ns_ = 0;
+  LONGLONG maxAudioPtsEnd100ns_ = 0;
   bool open_ = false;
   bool writing_ = false;
   bool audioConfigured_ = false;
@@ -696,9 +1023,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
     closeWriters();
+    recordingStart_.begin(request_.captureEpoch100ns, (std::numeric_limits<int64_t>::max)());
+    session_.recordingMuxEpoch100ns = 0;
+    session_.recordingWriterReadyAt100ns = 0;
+    session_.recordingRequestedAt100ns = request_.captureEpoch100ns;
+    session_.recordingStartupDroppedAudioPackets = 0;
     session_.active = true;
     // Fresh session: re-decide full-res vs preview from this session's frames.
     fullResLocked_ = false;
+    nv12MismatchWarned_ = false;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
     session_.encodedFrameCount = 0;
@@ -709,6 +1042,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingBytesWritten = 0;
     session_.recordingDurationMs = 0;
     session_.recordingVideoFrameCount = 0;
+    session_.recordingVideoPrerollFrameCount = 0;
+    session_.recordingVideoTailFrameCount = 0;
+    session_.recordingMuxVideoFrameCount = 0;
+    session_.recordingAudioPrerollSampleCount = 0;
+    session_.recordingAudioTailSampleCount = 0;
     session_.recordingLastFrameNumber = 0;
     session_.recordingWidth = 0;
     session_.recordingHeight = 0;
@@ -767,23 +1105,51 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // same tap the virtual camera and RTMP consume). The writer was opened with
     // a matching NV12 media type when the request asked for it.
     if (programWritesNv12_) {
-      if (frame.programNv12.empty() || frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
+      const auto& programNv12 = frame.programNv12Bytes();
+      if (programNv12.empty() || frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
         return;  // async tap had nothing this tick — skip, never downgrade
       }
-      const auto pts = recordingClock_.videoPts(now100ns(), frame.frameNumber);
+      const LONGLONG timelineNow =
+          frame.timelineTimestamp100ns > 0 ? frame.timelineTimestamp100ns : now100ns();
+      if (!selectProgramEpoch(timelineNow)) return;
+      const auto pts = recordingClock_.videoPts(timelineNow, frame.frameNumber);
       if (!pts) {
         return;  // already muxed
       }
       std::string nv12Error;
-      if (!program_.writeVideoNv12(frame.programNv12.data(), frame.programNv12Width,
+      if (!program_.writeVideoNv12(programNv12.data(), frame.programNv12Width,
                                    frame.programNv12Height, *pts, nv12Error)) {
         setRecordingFailure("Media Foundation could not write program video", nv12Error);
         return;
       }
       ++session_.recordingVideoFrameCount;
+      session_.recordingStatus = "recording";
+      flushStartupAudio();
+      session_.recordingVideoPrerollFrameCount = program_.videoPrerollFrameCount();
+      session_.recordingVideoTailFrameCount = program_.videoTailFrameCount();
+      session_.recordingMuxVideoFrameCount = program_.videoFrameCount();
+      session_.recordingAudioPrerollSampleCount = program_.audioPrerollSampleCount();
+      session_.recordingAudioTailSampleCount = program_.audioTailSampleCount();
       session_.recordingDurationMs = recordingClock_.lastVideoPts100ns() / 10'000;
       updateBytesWritten();
       return;
+    }
+
+    // LOUD, not silently wrong: the full-resolution NV12 tap exists on this frame,
+    // yet we are about to mux BGRA. That happens when the recording size does not
+    // match the tap (MediaCore only routes NV12 at an exact 1080p match, because
+    // the tap is a pinned 1080p scale-blit and feeding a 4K writer would letterbox
+    // the show). The result is the 320x180 preview in the corner of the frame —
+    // the very defect #372/#373 fixed for 1080p — so say so instead of shipping a
+    // silently broken file. Once per session.
+    if (!programWritesNv12_ && !frame.programNv12Bytes().empty() && !nv12MismatchWarned_) {
+      nv12MismatchWarned_ = true;
+      session_.recordingWarning =
+          "Program recording is muxing the low-resolution preview: the full-resolution program "
+          "tap is " + std::to_string(frame.programNv12Width) + "x" +
+          std::to_string(frame.programNv12Height) + " but this recording is " +
+          std::to_string(request_.width) + "x" + std::to_string(request_.height) +
+          ". Record at the tap resolution for a full-quality program.";
     }
 
     const bool hasFull = !frame.programFullBgra.bgra.empty() &&
@@ -802,7 +1168,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // composed frame is muxed exactly once, timestamped at the wall time it
     // was submitted — keeping the video timeline aligned with the
     // sample-counted audio track instead of drifting monotonically apart.
-    const auto pts = recordingClock_.videoPts(now100ns(), frame.frameNumber);
+    const LONGLONG timelineNow =
+        frame.timelineTimestamp100ns > 0 ? frame.timelineTimestamp100ns : now100ns();
+    if (!selectProgramEpoch(timelineNow)) return;
+    const auto pts = recordingClock_.videoPts(timelineNow, frame.frameNumber);
     if (!pts) {
       return;  // this program frame is already in the file
     }
@@ -817,6 +1186,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // priority-1 and never regressed by ISO — the two paths are independent.
 
     ++session_.recordingVideoFrameCount;
+    session_.recordingStatus = "recording";
+    flushStartupAudio();
+    session_.recordingVideoPrerollFrameCount = program_.videoPrerollFrameCount();
+    session_.recordingVideoTailFrameCount = program_.videoTailFrameCount();
+    session_.recordingMuxVideoFrameCount = program_.videoFrameCount();
+    session_.recordingAudioPrerollSampleCount = program_.audioPrerollSampleCount();
+    session_.recordingAudioTailSampleCount = program_.audioTailSampleCount();
     session_.recordingDurationMs = recordingClock_.lastVideoPts100ns() / 10'000;
     updateBytesWritten();
   }
@@ -827,6 +1203,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override {
+    submitAudioAt(interleaved, frameCount, channels, sampleRate, now100ns());
+  }
+
+  void submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                     int64_t timelineTimestamp100ns) override {
     if (!session_.active || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
       return;
     }
@@ -859,8 +1240,26 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // A3: the clock LATCHES the plugin content latency at the first buffer
     // (see RecordingPtsClock) so a delayed program mix keeps A/V truth.
     recordingClock_.setAudioContentLatency(audioContentLatencySamples_.load(std::memory_order_relaxed));
-    const LONGLONG audioPts = recordingClock_.audioPts(now100ns(), frameCount, sampleRate);
+    const auto capturedAt = timelineTimestamp100ns > 0 ? timelineTimestamp100ns : now100ns();
+    if (!recordingStart_.epoch()) {
+      // At most32 canonical20ms packets (256KiB), never an unbounded wait for
+      // a Program frame. Larger malformed inputs do not expand this bound.
+      if (frameCount > 960 || startupAudio_.size() >= 32) {
+        ++session_.recordingStartupDroppedAudioPackets;
+        session_.recordingWarning = "Recording startup audio exceeded its bounded buffer.";
+        return;
+      }
+      startupAudio_.push_back({std::vector<float>(interleaved, interleaved + frameCount * channels), frameCount, channels, sampleRate, capturedAt});
+      return;
+    }
+    const auto boundary = recordingClock_.trimAudioToEpoch(capturedAt, frameCount, sampleRate);
+    if (boundary.retainedFrames == 0) return;
+    interleaved += static_cast<size_t>(boundary.skippedFrames) * static_cast<size_t>(channels);
+    frameCount = boundary.retainedFrames;
+    const LONGLONG audioPts = recordingClock_.audioPts(boundary.timestamp100ns, frameCount, sampleRate);
     if (program_.writeAudio(interleaved, frameCount, audioPts, error)) {
+      session_.recordingAudioPrerollSampleCount = program_.audioPrerollSampleCount();
+      session_.recordingAudioTailSampleCount = program_.audioTailSampleCount();
       session_.recordingAudioPacketCount = program_.audioPacketCount();
       session_.recordingAudioSampleCount = program_.audioSampleCount();
       session_.recordingAudioChannels = program_.audioChannels();
@@ -885,6 +1284,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // async encoder writer thread (never coreMutex / the audio worker), so the
   // I420->NV12 interleave and disk WriteSample are off every hot path.
   void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override {
+    if (!recordingStart_.epoch()) return;
     if (!session_.active || isoWriters_.empty() || sources.empty()) {
       return;
     }
@@ -909,7 +1309,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       // Per-(sourceId,frameId) dedup on the SHARED program epoch (spec 2c): the
       // audio worker re-submits each source's latest frame every tick; each real
       // decoded frame muxes exactly once, on the program timeline.
-      const auto pts = recordingClock_.videoPtsForSource(now100ns(), src.sourceId, frame.frameId);
+      const LONGLONG timelineNow =
+          src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : now100ns();
+      const auto pts = recordingClock_.videoPtsForSource(timelineNow, src.sourceId, frame.frameId);
       if (!pts) {
         continue;
       }
@@ -932,7 +1334,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         // pure-video capture source (a camera with no paired audio) opens
         // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
         // track. submitIsoAudio then skips it (audioConfigured() stays false).
-        if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input) ||
+        if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input,
+                               entry.encoderPath == IsoEncoderPath::Hardware) ||
             (entry.hasAudio &&
              !entry.writer.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
             !entry.writer.beginWriting(error)) {
@@ -973,6 +1376,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // program (spec §2c). A stem whose writer never opened (no video yet) is
   // skipped: the wall-anchored clock silence-fills the whole gap when it opens.
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
+    if (!recordingStart_.epoch()) return;
     if (!session_.active || isoWriters_.empty() || sources.empty()) {
       return;
     }
@@ -987,7 +1391,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       }
       const int rate = entry.writer.audioSampleRate();
       const int frameCount = src.frameCount > 0 && !src.pcm.empty() ? src.frameCount : 0;
-      const auto advance = recordingClock_.isoAudioAdvance(now100ns(), src.sourceId, frameCount, rate);
+      const LONGLONG timelineNow =
+          src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : now100ns();
+      const auto advance = recordingClock_.isoAudioAdvance(timelineNow, src.sourceId, frameCount, rate);
       std::string error;
       bool ok = true;
       if (advance.silenceFrames > 0) {
@@ -1090,6 +1496,21 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       isoSel.clear();
     }
 
+    std::vector<std::string> isoSourceIds;
+    isoSourceIds.reserve(isoSel.size());
+    for (const auto& selection : isoSel) {
+      isoSourceIds.push_back(selection.sourceId);
+    }
+    // Program owns the first hardware session. Place ISOs once at arm time:
+    // overflow is forced onto the software MFT before any samples are written,
+    // instead of discovering GPU exhaustion as zero-byte stems mid-show.
+    const auto isoPlacement = planIsoEncoders(
+        isoSourceIds, IsoEncoderMode::Auto,
+        IsoEncoderCapacity{.hardwareSessionLimit = 8,
+                           .reservedHardwareSessions = 1,
+                           .hardwareAvailable = true,
+                           .softwareAvailable = true});
+
     std::string error;
     // NV12 when the compositor supplies the full-resolution program tap (see
     // RecordingSessionRequest::programNv12). It is both correct — the alternative
@@ -1112,6 +1533,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       entry.sourceId = isoSel[i].sourceId;
       entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
       entry.hasAudio = isoSel[i].hasAudio;  // ISO-3: video-only for an unpaired capture source
+      entry.encoderPath = isoPlacement[i].path;
+      entry.encoderReason = isoPlacement[i].reason;
       std::string safe = sanitizeForFilename(entry.displayName, entry.sourceId);
       // Disambiguate duplicate sanitized names within a session.
       if (int& seen = nameCollisions[safe]; ++seen > 1) {
@@ -1146,11 +1569,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       return;
     }
 
-    // Fresh shared-epoch clock per recording session: the epoch anchors to the
-    // first media submitted after this point (spec 4.3). One clock serves program
-    // + every ISO writer, so a clap on program lands at the same timeline position
-    // on every ISO.
+    // Preserve request/readiness timing, then select the first real scheduled
+    // Program frame after readiness as the shared mux epoch. Startup remains
+    // outside the file; neither independent track rebasing nor black video
+    // padding may disguise writer startup latency.
+    session_.recordingRequestedAt100ns = request_.captureEpoch100ns;
+    session_.recordingWriterReadyAt100ns = now100ns();
+    session_.recordingMuxEpoch100ns = 0;
+    session_.recordingStartupDroppedAudioPackets = 0;
+    recordingStart_.begin(request_.captureEpoch100ns, session_.recordingWriterReadyAt100ns);
     recordingClock_.reset();
+    startupAudio_.clear();
+    session_.recordingStatus = "starting";
 
     writeManifest(programPath);
     refreshIsoStreams();
@@ -1205,6 +1635,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       status.audioSampleCount = iso.writer.audioSampleCount();  // ISO-2: silence + real
       status.bytesWritten = iso.writer.bytesWritten();
       status.trackOpen = iso.opened && !iso.failed;
+      status.encoderPath = isoEncoderPathId(iso.encoderPath);
+      status.fallbackReason = iso.encoderReason;
       status.warning = iso.warning;
       session_.isoStreams.push_back(std::move(status));
     }
@@ -1229,6 +1661,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     out << "{\n";
     out << "  \"sessionId\": \"" << jsonEscape(session_.recordingSessionId) << "\",\n";
     out << "  \"epochMs\": " << epochMs << ",\n";
+    out << "  \"containerMode\": \"fragmented-mp4\",\n";
+    out << "  \"crashSafe\": true,\n";
+    out << "  \"targetFragmentDurationMs\": 1000,\n";
     out << "  \"entries\": [\n";
     out << "    { \"sourceId\": \"program\", \"name\": \"Program\", \"path\": \""
         << jsonEscape(programPath.filename().string())
@@ -1241,7 +1676,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
           << jsonEscape(iso.displayName) << "\", \"path\": \""
           << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": "
-          << (iso.hasAudio ? "true" : "false") << " }";
+          << (iso.hasAudio ? "true" : "false") << ", \"encoderPath\": \""
+          << isoEncoderPathId(iso.encoderPath) << "\", \"fallbackReason\": \""
+          << jsonEscape(iso.encoderReason) << "\" }";
     }
     out << "\n  ]\n}\n";
     out.close();
@@ -1249,27 +1686,61 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void updateBytesWritten() {
-    int64_t total = program_.bytesWritten();
+    session_.recordingProgramBytesWritten = program_.bytesWritten();
+    int64_t total = session_.recordingProgramBytesWritten;
     for (const auto& iso : isoWriters_) {
       total += iso.writer.bytesWritten();
     }
     session_.recordingBytesWritten = total;
   }
 
-  // 100ns ticks on the steady clock since sink construction — the time base
-  // RecordingPtsClock anchors its shared epoch to.
+  // Absolute 100ns ticks on the process steady clock. IsoSourceAudio carries
+  // this same clock domain from the realtime submit boundary, so asynchronous
+  // writer latency never leaks into the recorded ISO timeline.
   [[nodiscard]] LONGLONG now100ns() const {
     return std::chrono::duration_cast<std::chrono::duration<LONGLONG, std::ratio<1, 10'000'000>>>(
-               std::chrono::steady_clock::now() - clockOrigin_)
+               std::chrono::steady_clock::now().time_since_epoch())
         .count();
   }
 
   void closeWriters() {
-    program_.finalize();
+    startupAudio_.clear();
+    std::string programReconcileError;
+    if (!program_.reconcileTail(programReconcileError) && session_.recordingWarning.empty()) {
+      session_.recordingWarning =
+          "Program recording could not align its A/V tail: " + programReconcileError + ".";
+      session_.recordingStatus = "warning";
+    }
+    std::string programFinalizeError;
+    const bool programFinalized = program_.finalize(&programFinalizeError);
+    session_.recordingVideoPrerollFrameCount = program_.videoPrerollFrameCount();
+    session_.recordingVideoTailFrameCount = program_.videoTailFrameCount();
+    session_.recordingMuxVideoFrameCount = program_.videoFrameCount();
+    session_.recordingAudioPrerollSampleCount = program_.audioPrerollSampleCount();
+    session_.recordingAudioTailSampleCount = program_.audioTailSampleCount();
+    if (!programFinalized) {
+      session_.recordingError = "Program recording did not finalize: " + programFinalizeError + ".";
+      if (session_.recordingWarning.empty()) session_.recordingWarning = session_.recordingError;
+      session_.recordingStatus = "warning";
+    }
     // Each ISO writer finalizes INDEPENDENTLY (its own moov) so a source that
     // dropped mid-show still leaves a playable file, no 0-byte tails (spec §4).
     for (auto& iso : isoWriters_) {
-      iso.writer.finalize();
+      std::string isoReconcileError;
+      if (!iso.writer.reconcileTail(isoReconcileError)) {
+        iso.warning = "ISO writer could not align its A/V tail for " + iso.displayName + " (" +
+                      iso.sourceId + "): " + isoReconcileError + ".";
+        raiseIsoWarning(iso.warning);
+      }
+      std::string isoFinalizeError;
+      if (!iso.writer.finalize(&isoFinalizeError)) {
+        iso.failed = true;
+        iso.warning = "ISO writer did not finalize for " + iso.displayName + " (" + iso.sourceId +
+                      "): " + isoFinalizeError + ".";
+        raiseIsoWarning(iso.warning);
+        // An earlier warning must not mask a failed container finalization.
+        if (session_.recordingError.empty()) session_.recordingError = iso.warning;
+      }
     }
     // Refresh the on-disk sizes into the ISO status before clearing.
     refreshIsoStreams();
@@ -1285,9 +1756,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingWarning = message + ": " + detail + ".";
     session_.recordingError = session_.recordingWarning;
     session_.recordingStatus = "warning";
-    program_.finalize();
+    (void)program_.finalize();
     for (auto& iso : isoWriters_) {
-      iso.writer.finalize();
+      (void)iso.writer.finalize();
     }
     isoWriters_.clear();
     isoIndexBySource_.clear();
@@ -1304,6 +1775,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     Mp4Writer writer;
     bool opened = false;
     bool failed = false;
+    IsoEncoderPath encoderPath = IsoEncoderPath::Software;
+    std::string encoderReason = "hardware-unavailable";
     bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
     int64_t videoFrameCount = 0;
     std::string warning;
@@ -1318,11 +1791,31 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   std::map<std::string, size_t> isoIndexBySource_;
   std::filesystem::path sessionDir_;
   bool sessionDirActive_ = false;
-  // Shared-epoch A/V PTS clock (spec 4.3) + the steady-clock origin its 100ns
-  // tick count is measured from. One clock serves program + ISO writers (they
-  // mux the same frames on the same timeline).
+  // Shared-epoch A/V PTS clock (spec 4.3). One clock serves program + ISO
+  // writers (they mux the same frames on the same timeline).
+  bool selectProgramEpoch(int64_t scheduled) {
+    if (!recordingStart_.select(scheduled)) return false;
+    if (session_.recordingMuxEpoch100ns == 0) {
+      session_.recordingMuxEpoch100ns = *recordingStart_.epoch();
+      recordingClock_.reset(session_.recordingMuxEpoch100ns);
+    }
+    return true;
+  }
+  void flushStartupAudio() {
+    if (startupAudio_.empty()) return;
+    auto pending = std::move(startupAudio_);
+    startupAudio_.clear();
+    for (const auto& packet : pending)
+      submitAudioAt(packet.pcm.data(), packet.frames, packet.channels, packet.rate, packet.timestamp);
+  }
+  struct StartupAudioPacket {
+    std::vector<float> pcm;
+    int frames, channels, rate;
+    int64_t timestamp;
+  };
+  std::deque<StartupAudioPacket> startupAudio_;
+  RecordingStartBoundary recordingStart_;
   RecordingPtsClock recordingClock_;
-  std::chrono::steady_clock::time_point clockOrigin_ = std::chrono::steady_clock::now();
   bool comInitialized_ = false;
   // Has this session ever muxed a FULL-RESOLUTION program frame? Once it has,
   // never fall back to the 320x180 preview (see submit): a mid-file geometry
@@ -1333,6 +1826,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // at open from RecordingSessionRequest::programNv12 and fixed for the session —
   // the writer's media type cannot change once BeginWriting has been called.
   bool programWritesNv12_ = false;
+  // One-shot: the full-res tap was present but the recording size did not match it,
+  // so this file is the low-resolution preview. Warned once per session.
+  bool nv12MismatchWarned_ = false;
   // A3: plugin content latency (atomic — the audio worker sets it, the writer
   // thread reads it; the PTS clock latches per session).
   std::atomic<int> audioContentLatencySamples_{0};

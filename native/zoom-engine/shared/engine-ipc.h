@@ -29,6 +29,30 @@
 // engine-reported truth instead of assuming the stop_media command worked.
 #define IPC_EVT_RAW_MEDIA_STATUS "raw_media_status"
 
+// Match the JSON command value, not an arbitrary substring. In particular,
+// "unsubscribe" contains "subscribe"; substring dispatch left Windows audio
+// targets alive across participant removal and rejoin.
+inline bool ipc_command_is(const std::string &line, const char *command)
+{
+    if (!command) return false;
+    const auto key = line.find("\"cmd\"");
+    if (key == std::string::npos) return false;
+    auto value = line.find(':', key + 5);
+    if (value == std::string::npos) return false;
+    ++value;
+    while (value < line.size() &&
+           (line[value] == ' ' || line[value] == '\t' ||
+            line[value] == '\r' || line[value] == '\n')) {
+        ++value;
+    }
+    if (value >= line.size() || line[value] != '"') return false;
+    ++value;
+    const std::string expected(command);
+    return line.compare(value, expected.size(), expected) == 0 &&
+           value + expected.size() < line.size() &&
+           line[value + expected.size()] == '"';
+}
+
 // Shared-memory name prefix (no leading slash — added per-platform below)
 #define IPC_SHM_PREFIX "ZoomObsPlugin_"
 
@@ -38,6 +62,28 @@ struct ShmFrameHeader {
     uint32_t height;
     uint32_t y_len;
 };
+
+// Video regions are allocated ONCE at these capacities and never grown.
+//
+// Growing a named Windows section is impossible while any reader holds a handle
+// to it: CreateFileMappingA with an existing name returns the EXISTING object at
+// its original size, so the follow-up MapViewOfFile at the larger size fails.
+// The old grow-on-demand path therefore froze every Zoom source the moment the
+// SDK ramped resolution (256x144 first frames -> 640x360 -> 1080p) with the
+// core's reader attached — ensure_shm failed silently on every subsequent frame
+// while audio kept flowing. Fixed capacity makes growth a non-event; the
+// per-frame header above still carries the real dimensions.
+//
+// Participant video is subscribed at most at 1080p (rounded to 1920x1088);
+// share raw data can arrive at the sharer's native resolution, so it gets a 4K
+// budget (3840x2176 ~ 12.4MB per frame, matching Zoom's documented ceiling).
+// Untouched pages of a pagefile-backed section cost address space, not RAM.
+inline constexpr size_t kMaxVideoShmYLen = 1920ull * 1088ull;
+inline constexpr size_t kMaxShareShmYLen = 3840ull * 2176ull;
+inline constexpr size_t i420_region_capacity(size_t max_y_len)
+{
+    return sizeof(ShmFrameHeader) + max_y_len + max_y_len / 2;
+}
 struct ShmAudioHeader {
     uint32_t sequence;
     uint32_t sample_rate;

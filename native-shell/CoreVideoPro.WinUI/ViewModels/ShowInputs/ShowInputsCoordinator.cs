@@ -56,6 +56,16 @@ public sealed class ShowInputsCoordinator
     // ── roster persistence ────────────────────────────────────────────────────────
     public void LoadShowInputRoster()
     {
+        // Persisted state restores ONLY at startup, before the operator can have touched
+        // anything. A second load (a future respawn/second-window/deferred path) would
+        // overwrite live operator changes with stale disk state — refuse it LOUDLY.
+        if (_showInputRosterLoaded)
+        {
+            LaunchLog.Write("roster: LoadShowInputRoster REFUSED — already loaded this session; " +
+                "a re-load would overwrite live operator changes with disk state");
+            return;
+        }
+
         try
         {
             var snapshot = _showInputRosterStore.Load();
@@ -100,7 +110,7 @@ public sealed class ShowInputsCoordinator
         {
             ShowInputEditors.Add(new ShowInputSlotViewModel(
                 slot,
-                _host.OnShowInputChanged,
+                OnShowInputEditorChanged,
                 _host.SetCaptureDeviceAudioSource,
                 _host.ResolveSourceDisplayName,
                 _host.SetSourceDisplayName,
@@ -108,6 +118,21 @@ public sealed class ShowInputsCoordinator
         }
 
         RefreshShowInputEditors(force: true);
+    }
+
+    /// <summary>
+    /// Every slot change with editors attached lands here (the editor VM raises it on ANY
+    /// underlying model change — operator picker, unassign, auto-assign, swaps). Persist
+    /// IMMEDIATELY and synchronously: the save used to ride only ApplyShowInputRefresh, a
+    /// COALESCED DispatcherQueuePriority.Low dispatcher callback, so an operator change
+    /// followed by a crash (four on 2026-08-09 alone) lost the pending save and the
+    /// relaunch restored the PRE-change roster over the operator's work. The roster is a
+    /// ~2 KB JSON file; a synchronous write per change is nothing.
+    /// </summary>
+    private void OnShowInputEditorChanged()
+    {
+        SaveShowInputRoster();
+        _host.OnShowInputChanged();
     }
 
     public void RefreshShowInputEditors(bool force = false)
@@ -208,28 +233,69 @@ public sealed class ShowInputsCoordinator
     /// </summary>
     public IReadOnlyList<string> ComputeEligiblePresentIsoSourceIds()
     {
+        var videoBearingZoomParticipantIds = new HashSet<string>(
+            _host.RoomParticipantsForInputs
+                .Where(participant => participant.Health != FeedHealth.VideoOff)
+                .Select(participant => participant.Id)
+                .Where(id => !string.IsNullOrWhiteSpace(id)),
+            StringComparer.Ordinal);
         var list = new List<string>();
         foreach (var editor in ShowInputEditors)
         {
-            if (editor.ShowIsoToggle && !editor.IsSourceMissing && editor.SourceId is { Length: > 0 } id)
+            if (!editor.ShowIsoToggle || editor.IsSourceMissing || editor.SourceId is not { Length: > 0 } id)
             {
-                list.Add(id);
+                continue;
             }
+
+            // An assigned Zoom participant remains available while their camera is off so the
+            // operator's slot binding survives camera churn. That is correct for Sources and
+            // multiview placeholders, but a video-off participant must not consume one of the
+            // finite ISO encoder slots and crowd out a live camera.
+            if (editor.Kind == ShowInputKind.ZoomParticipant &&
+                (editor.ParticipantId is not { Length: > 0 } participantId ||
+                 !videoBearingZoomParticipantIds.Contains(participantId)))
+            {
+                continue;
+            }
+
+            list.Add(id);
         }
 
         return list;
     }
 
     // ── auto-assign (roster → free slots) ─────────────────────────────────────────
+    // Participant ids this coordinator has already offered to auto-assign in the
+    // current meeting. Auto-assign only places ids it has NEVER seen — i.e. real
+    // newcomers. Without this memory it refilled every "not currently assigned"
+    // id on every sync tick (~1/s), so an operator's manual unassign/replace on
+    // the Sources screen was reverted within a second. Cleared when the operator
+    // explicitly re-runs auto-assign (ReapplyShowInputAutoAssign) — that request
+    // MEANS "assign everyone".
+    private readonly HashSet<string> _autoAssignSeenParticipantIds = new(StringComparer.Ordinal);
+
     public void SyncShowInputsFromMeeting(
         IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
         // Free slots whose participant left, and (when auto-assign is on) fill FREE slots
-        // with newly-joined participants without disturbing operator/capture assignments.
+        // with NEWLY-JOINED participants only — never someone the operator removed.
+        var rosterIds = participants
+            .Select(participant => participant.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToList();
+        var newcomers = rosterIds
+            .Where(id => !_autoAssignSeenParticipantIds.Contains(id))
+            .ToList();
+        // Leavers drop out of the set so a genuine leave-and-rejoin (same id,
+        // e.g. breakout return) is a newcomer again.
+        _autoAssignSeenParticipantIds.Clear();
+        _autoAssignSeenParticipantIds.UnionWith(rosterIds);
+
         ShowInputRosterService.SyncZoomParticipantSlots(
             _host.ShowInputs,
-            participants.Select(participant => participant.Id).ToList(),
-            _host.AutomationAutoAssignInputsEnabled);
+            rosterIds,
+            _host.AutomationAutoAssignInputsEnabled,
+            newcomers);
 
         RefreshShowInputEditors();
         _host.RefreshMultiviewGridTiles();
@@ -243,6 +309,10 @@ public sealed class ShowInputsCoordinator
     // assigned slot the moment the operator flips the toggle.
     public void ReapplyShowInputAutoAssign()
     {
+        // The operator flipped the toggle: that is an explicit "assign everyone
+        // now", so forget which ids were seen and fill from the whole roster
+        // (candidates omitted = every unassigned id is eligible).
+        _autoAssignSeenParticipantIds.Clear();
         ShowInputRosterService.SyncZoomParticipantSlots(
             _host.ShowInputs,
             _host.RoomParticipantsForInputs

@@ -103,10 +103,14 @@ std::wstring widen(const std::string& value) {
   if (value.empty()) {
     return {};
   }
-  const int needed = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
-  std::wstring result(needed > 0 ? needed - 1 : 0, L'\0');
-  if (needed > 1) {
-    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), needed);
+  const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.c_str(), -1, nullptr, 0);
+  std::wstring result(needed > 0 ? needed : 0, L'\0');
+  if (needed > 0) {
+    const int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.c_str(), -1,
+                                            result.data(), needed);
+    if (written <= 0) return {};
+    result.resize(static_cast<size_t>(written));
+    if (!result.empty() && result.back() == L'\0') result.pop_back();
   }
   return result;
 }

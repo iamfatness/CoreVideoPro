@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <exception>
+#include <stdexcept>
 #include <utility>
 
 namespace corevideo::modules {
@@ -13,7 +15,9 @@ AsyncEncoderSink::AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner, Options 
     : options_(options), state_(std::make_shared<State>()) {
   state_->inner = std::move(inner);
   state_->maxVideoQueue = std::max<size_t>(1, options_.maxVideoQueue);
+  state_->maxIsoVideoQueue = std::max<size_t>(1, options_.maxIsoVideoQueue);
   state_->maxAudioQueue = std::max<size_t>(1, options_.maxAudioQueue);
+  state_->maxIsoAudioQueue = std::max<size_t>(1, options_.maxIsoAudioQueue);
   if (state_->inner) {
     state_->snapshot = state_->inner->session();
   }
@@ -55,6 +59,58 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
   uint64_t seq = 0;
   {
     std::lock_guard<std::mutex> lock(state_->queueMutex);
+
+    // Re-check the recording gate while holding the same mutex used by the
+    // Stop barrier. A producer may have observed active=true immediately before
+    // Stop acquired the mutex; without this check that stale submission could
+    // land after Finalize and leak into the next recording generation.
+    const bool media = item.kind == Kind::Video || item.kind == Kind::IsoVideo ||
+                       item.kind == Kind::Audio || item.kind == Kind::IsoAudio;
+    if (media && !state_->active.load(std::memory_order_acquire)) {
+      return 0;
+    }
+
+    // Suppress held-frame re-submissions before they consume queue capacity.
+    // This is deliberately producer-side: downstream RecordingPtsClock dedup is
+    // too late to prevent starvation and misleading drop telemetry.
+    if (item.kind == Kind::Video) {
+      if (state_->hasLastProgramFrameNumber &&
+          state_->lastProgramFrameNumber == item.frame.frameNumber) {
+        return 0;
+      }
+    } else if (item.kind == Kind::IsoVideo && item.isoSources.size() == 1) {
+      const auto& source = item.isoSources.front();
+      const auto last = state_->lastIsoFrameIdBySource.find(source.sourceId);
+      if (last != state_->lastIsoFrameIdBySource.end() && last->second == source.frame.frameId) {
+        return 0;
+      }
+    } else if (item.kind == Kind::Start) {
+      // Zoom/shared-memory frame sequences may restart between meeting or
+      // recording generations, so no dedup identity crosses a Start barrier.
+      state_->hasLastProgramFrameNumber = false;
+      state_->lastIsoFrameIdBySource.clear();
+      state_->consecutiveProgramItems = 0;
+    }
+
+    if (item.kind == Kind::Configure) {
+      state_->configuredSessionId = item.request.sessionId;
+      item.generation = state_->generation + 1;
+    } else if (item.kind == Kind::Start) {
+      item.generation = ++state_->generation;
+      state_->stopRequested = false;
+      state_->active.store(true);
+      std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
+      state_->snapshot = OutputSession{};
+      state_->snapshot.destinations = item.destinations;
+      if (std::find(item.destinations.begin(), item.destinations.end(), "recording") != item.destinations.end()) {
+        state_->snapshot.lifecycle = contracts::OutputLifecycle{
+            state_->configuredSessionId + ":" + state_->epoch + ":" + std::to_string(item.generation),
+            true, "starting", "unknown", false, std::nullopt};
+      }
+    } else {
+      item.generation = state_->generation;
+    }
+
     seq = state_->nextSeq++;
     item.seq = seq;
 
@@ -64,13 +120,29 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
     if (item.kind == Kind::Video || item.kind == Kind::IsoVideo || item.kind == Kind::Audio ||
         item.kind == Kind::IsoAudio) {
       const Kind kind = item.kind;
+      // ISO video items carry exactly one source (submitIsoVideo splits the
+      // batch). Replace that source's older pending frame before applying the
+      // global cap, so a fast participant cannot evict every slower guest.
+      if (kind == Kind::IsoVideo && item.isoSources.size() == 1) {
+        const std::string& sourceId = item.isoSources.front().sourceId;
+        for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
+          if (it->generation == item.generation && it->kind == Kind::IsoVideo && it->isoSources.size() == 1 &&
+              it->isoSources.front().sourceId == sourceId) {
+            state_->queue.erase(it);
+            state_->droppedVideo.fetch_add(1);
+            break;
+          }
+        }
+      }
       // ISO audio drops-to-latest on the AUDIO budget but with its OWN pending
       // accounting (a separate Kind) so it can NEVER evict a program-audio
       // packet — program is priority-1 (spec §9). A dropped ISO-audio tick
       // becomes silence in the stem (the next tick's wall-anchored silence-fill
       // covers the gap), the timeline stays aligned, program is untouched.
-      const size_t cap =
-          (kind == Kind::Audio || kind == Kind::IsoAudio) ? state_->maxAudioQueue : state_->maxVideoQueue;
+      const size_t cap = kind == Kind::Video      ? state_->maxVideoQueue
+                         : kind == Kind::IsoVideo ? state_->maxIsoVideoQueue
+                         : kind == Kind::Audio    ? state_->maxAudioQueue
+                                                  : state_->maxIsoAudioQueue;
       size_t pending = 0;
       for (const auto& queued : state_->queue) {
         if (queued.kind == kind) {
@@ -78,23 +150,36 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         }
       }
       if (pending >= cap) {
+        // The budget belongs to the sink, not each queued take. Preserve all
+        // media accepted before an older take's Stop barrier: a new generation
+        // may replace its own pending media, but must drop its incoming item
+        // when older generations occupy the entire budget.
+        if (kind == Kind::Audio || kind == Kind::IsoAudio) {
+          state_->droppedAudio.fetch_add(1);
+        } else {
+          state_->droppedVideo.fetch_add(1);
+        }
+        bool replaced = false;
         for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
-          if (it->kind == kind) {
+          if (it->generation == item.generation && it->kind == kind) {
             state_->queue.erase(it);
-            if (kind == Kind::Audio || kind == Kind::IsoAudio) {
-              state_->droppedAudio.fetch_add(1);
-            } else {
-              // Video + IsoVideo both count as dropped video frames (ISO frames
-              // drop-to-latest under disk pressure — logged as ISO health, never
-              // program A/V, per spec §9).
-              state_->droppedVideo.fetch_add(1);
-            }
+            replaced = true;
             break;
           }
         }
+        if (!replaced) return 0;
       }
     }
 
+    // Only accepted frames become dedup identities. A held frame rejected
+    // while an older take owns the budget must be retryable after it drains.
+    if (item.kind == Kind::Video) {
+      state_->hasLastProgramFrameNumber = true;
+      state_->lastProgramFrameNumber = item.frame.frameNumber;
+    } else if (item.kind == Kind::IsoVideo && item.isoSources.size() == 1) {
+      const auto& source = item.isoSources.front();
+      state_->lastIsoFrameIdBySource[source.sourceId] = source.frame.frameId;
+    }
     state_->queue.push_back(std::move(item));
   }
   state_->queueCv.notify_one();
@@ -102,9 +187,13 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
 }
 
 bool AsyncEncoderSink::waitApplied(uint64_t seq, std::chrono::milliseconds timeout) {
+  (void)seq;
   std::unique_lock<std::mutex> lock(state_->queueMutex);
   return state_->appliedCv.wait_for(lock, timeout,
-                                    [&] { return state_->appliedSeq >= seq || state_->writerDone; });
+                                    [&] {
+                                      return (!state_->applying && state_->queue.empty()) ||
+                                             state_->writerDone;
+                                    });
 }
 
 void AsyncEncoderSink::configureRecording(const RecordingSessionRequest& request) {
@@ -120,17 +209,6 @@ void AsyncEncoderSink::configureRecording(const RecordingSessionRequest& request
 
 OutputSession AsyncEncoderSink::start(const std::vector<std::string>& destinations,
                                       const std::vector<std::string>& isoParticipantIds) {
-  // Publish active BEFORE enqueue so any submit() racing right behind this call is
-  // enqueued (ordered after the Start item) instead of dropped.
-  state_->active.store(true);
-  // Optimistically reflect the started session in the snapshot so the immediate
-  // return (and any session() read before the writer applies Start) shows active;
-  // the writer overwrites this with the wrapped sink's real session shortly.
-  {
-    std::lock_guard<std::mutex> lock(state_->snapshotMutex);
-    state_->snapshot.active = true;
-    state_->snapshot.destinations = destinations;
-  }
   Item item;
   item.kind = Kind::Start;
   item.destinations = destinations;
@@ -155,12 +233,15 @@ void AsyncEncoderSink::submitIsoVideo(const std::vector<IsoSourceVideoFrame>& so
   if (!state_->active.load() || sources.empty()) {
     return;
   }
-  // Zero-copy: the entries carry shared_ptr payloads, so this vector copy shares
-  // the source buffers (no pixel copy). Drops-to-latest with the video budget.
-  Item item;
-  item.kind = Kind::IsoVideo;
-  item.isoSources = sources;
-  enqueue(std::move(item));
+  // Split the eight-source batch so the writer can return to priority-1 Program
+  // A/V between individual ISO encodes. Payloads remain zero-copy shared_ptrs;
+  // enqueue coalesces each source to its latest pending frame.
+  for (const auto& source : sources) {
+    Item item;
+    item.kind = Kind::IsoVideo;
+    item.isoSources.push_back(source);
+    enqueue(std::move(item));
+  }
 }
 
 void AsyncEncoderSink::submitIsoAudio(const std::vector<IsoSourceAudio>& sources) {
@@ -177,6 +258,12 @@ void AsyncEncoderSink::submitIsoAudio(const std::vector<IsoSourceAudio>& sources
 }
 
 void AsyncEncoderSink::submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) {
+  submitAudioAt(interleaved, frameCount, channels, sampleRate,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100);
+}
+
+void AsyncEncoderSink::submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                                    int64_t timelineTimestamp100ns) {
   if (!state_->active.load() || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
     return;
   }
@@ -186,6 +273,7 @@ void AsyncEncoderSink::submitAudio(const float* interleaved, int frameCount, int
   item.audioFrameCount = frameCount;
   item.audioChannels = channels;
   item.audioSampleRate = sampleRate;
+  item.audioTimelineTimestamp100ns = timelineTimestamp100ns;
   enqueue(std::move(item));
 }
 
@@ -204,12 +292,42 @@ void AsyncEncoderSink::stopRecording() {
   // finalize GRACE is enforced at teardown (destructor), where no lock is held.
   Item item;
   item.kind = Kind::StopRecording;
-  enqueue(std::move(item));
+  {
+    std::lock_guard<std::mutex> lock(state_->queueMutex);
+    // Desired-state sync may repeat Stop while Finalize is blocked. One
+    // barrier per generation keeps that repetition bounded and preserves the
+    // observed finalizing/completed state. Do not use the media gate here:
+    // writer failure closes it before the required cleanup Stop is submitted.
+    if (state_->stopRequested) return;
+    state_->stopRequested = true;
+    // Close the producer gate under queueMutex, then append a FIFO control
+    // barrier. Every media item accepted before this point is written before
+    // Finalize; every racing or later submission is rejected by enqueue().
+    // The old implementation erased the pending tail here, which produced the
+    // measured ~400ms Program/ISO A/V duration mismatch at every stop.
+    state_->active.store(false, std::memory_order_release);
+    item.seq = state_->nextSeq++;
+    item.generation = state_->generation;
+    state_->queue.push_back(std::move(item));
+    std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
+    state_->snapshot.active = false;
+    if (state_->snapshot.lifecycle) {
+      state_->snapshot.lifecycle->desiredActive = false;
+      if (state_->snapshot.lifecycle->state != "failed")
+        state_->snapshot.lifecycle->state = "stopping";
+    }
+  }
+  state_->queueCv.notify_one();
 }
 
 OutputSession AsyncEncoderSink::session() const {
   std::lock_guard<std::mutex> lock(state_->snapshotMutex);
-  return state_->snapshot;
+  auto snapshot = state_->snapshot;
+  snapshot.encoderQueueDroppedVideoFrames =
+      static_cast<int64_t>(state_->droppedVideo.load(std::memory_order_relaxed));
+  snapshot.encoderQueueDroppedAudioPackets =
+      static_cast<int64_t>(state_->droppedAudio.load(std::memory_order_relaxed));
+  return snapshot;
 }
 
 uint64_t AsyncEncoderSink::droppedVideoFrames() const { return state_->droppedVideo.load(); }
@@ -225,6 +343,10 @@ bool AsyncEncoderSink::drainForTest(std::chrono::milliseconds timeout) {
 }
 
 void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
+  uint64_t failedGeneration = 0;
+  std::string generationFailure;
+  int64_t startVideoCount = 0;
+  bool madeProgress = false;
   for (;;) {
     Item item;
     {
@@ -236,13 +358,63 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
         state->appliedCv.notify_all();
         return;
       }
-      item = std::move(state->queue.front());
-      state->queue.pop_front();
+      auto selected = state->queue.begin();
+      const auto isControl = [](Kind kind) {
+        return kind == Kind::Configure || kind == Kind::Start || kind == Kind::StopRecording;
+      };
+      // Never reorder across a control barrier. Within the media run before the
+      // next barrier, give Program weighted priority but never absolute
+      // priority. Absolute priority starved ISO forever under a continuous
+      // Program A/V feed. Four Program writes per ISO write keeps Program
+      // favored while guaranteeing every coalesced ISO source makes progress.
+      if (!isControl(selected->kind)) {
+        const auto barrier = std::find_if(state->queue.begin(), state->queue.end(),
+                                          [&](const Item& queued) { return isControl(queued.kind); });
+        const auto programAudio = std::find_if(
+            state->queue.begin(), barrier, [](const Item& queued) { return queued.kind == Kind::Audio; });
+        const auto programVideo = std::find_if(
+            state->queue.begin(), barrier, [](const Item& queued) { return queued.kind == Kind::Video; });
+        const auto iso = std::find_if(state->queue.begin(), barrier, [](const Item& queued) {
+          return queued.kind == Kind::IsoVideo || queued.kind == Kind::IsoAudio;
+        });
+        constexpr size_t kMaxProgramBurst = 4;
+        const bool haveProgram = programAudio != barrier || programVideo != barrier;
+        if (iso != barrier && (!haveProgram || state->consecutiveProgramItems >= kMaxProgramBurst)) {
+          selected = iso;
+          state->consecutiveProgramItems = 0;
+        } else if (programAudio != barrier) {
+          selected = programAudio;
+          ++state->consecutiveProgramItems;
+        } else if (programVideo != barrier) {
+          selected = programVideo;
+          ++state->consecutiveProgramItems;
+        } else {
+          // Only ISO work remains in this media run.
+          selected = iso != barrier ? iso : selected;
+          state->consecutiveProgramItems = 0;
+        }
+      } else {
+        state->consecutiveProgramItems = 0;
+      }
+      item = std::move(*selected);
+      state->queue.erase(selected);
+      state->applying = true;
     }
 
-    // Apply against the wrapped sink WITHOUT holding queueMutex — this is the
-    // (potentially blocking) I/O the async layer exists to keep off the worker.
-    if (state->inner) {
+    // Finalization remains pending until the actual writer returns. Only this
+    // generation may publish; queued old media/Stop must not revive a new take.
+    if (item.kind == Kind::StopRecording) {
+      std::lock_guard<std::mutex> queueLock(state->queueMutex);
+      std::lock_guard<std::mutex> lock(state->snapshotMutex);
+      if (state->snapshot.lifecycle && item.generation == state->generation &&
+          state->snapshot.lifecycle->state != "failed")
+        state->snapshot.lifecycle->state = "finalizing";
+    }
+    OutputSession fresh;
+    std::string failure;
+    try {
+      if (!state->inner) throw std::runtime_error("Recording writer is unavailable");
+      if (item.generation != failedGeneration || item.kind == Kind::StopRecording) {
       switch (item.kind) {
         case Kind::Configure:
           state->inner->configureRecording(item.request);
@@ -260,38 +432,75 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           state->inner->submitIsoAudio(item.isoAudioSources);
           break;
         case Kind::Audio:
-          state->inner->submitAudio(item.audioPcm.data(), item.audioFrameCount, item.audioChannels,
-                                    item.audioSampleRate);
+          state->inner->submitAudioAt(item.audioPcm.data(), item.audioFrameCount, item.audioChannels,
+                                    item.audioSampleRate, item.audioTimelineTimestamp100ns);
           break;
         case Kind::StopRecording:
           state->inner->stopRecording();
           break;
       }
-    }
-
-    // Refresh the published snapshot from the wrapped session. NOTE: do NOT touch
-    // `active` here — it is owned by start() (set true synchronously) and the
-    // wrapped session's `active` LAGS behind the queue, so refreshing it from here
-    // could clobber the flag back to false between start() and the writer applying
-    // Start, causing a racing submit() to wrongly drop a frame.
-    OutputSession fresh;
-    if (state->inner) {
+      }
       fresh = state->inner->session();
+      if (item.kind == Kind::Start) {
+        startVideoCount = fresh.recordingVideoFrameCount;
+        madeProgress = false;
+      }
+      // encodedFrameCount includes attempted submissions in the MF adapter;
+      // only successfully written recording frames establish output truth.
+      madeProgress = madeProgress || fresh.recordingVideoFrameCount > startVideoCount;
+      // Configure may retain the previous take's terminal error until Start
+      // resets the wrapped session. It cannot poison the next generation.
+      if (item.kind != Kind::Configure)
+        failure = item.generation == failedGeneration ? generationFailure : fresh.recordingError;
+    } catch (const std::exception& ex) {
+      failure = ex.what();
+    } catch (...) {
+      failure = "Unknown recording writer failure";
+    }
+    if (!failure.empty()) {
+      failedGeneration = item.generation;
+      generationFailure = failure;
     }
     {
+      // Same lock order as producer-side Start/Stop publication.
+      std::lock_guard<std::mutex> queueLock(state->queueMutex);
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
-      state->snapshot = fresh;
-      // Keep `active` sticky once start() has run: the wrapped session's active flag
-      // lags the queue, so a snapshot refresh triggered by an earlier item (e.g. the
-      // queued Configure) must not report the session as inactive after start().
-      if (state->active.load()) {
-        state->snapshot.active = true;
+      if (item.generation == state->generation && state->snapshot.lifecycle &&
+          (item.kind != Kind::Configure || !failure.empty())) {
+        auto lifecycle = *state->snapshot.lifecycle;
+        if (!failure.empty()) {
+          lifecycle.state = "failed";
+          lifecycle.health = "failed";
+          lifecycle.error = failure;
+          state->active.store(false);
+        } else if (lifecycle.state != "failed") {
+          if (item.kind == Kind::StopRecording) {
+            lifecycle.finalized = madeProgress;
+            lifecycle.state = madeProgress ? "completed" : "failed";
+            lifecycle.health = madeProgress ? "healthy" : "failed";
+            if (!madeProgress) lifecycle.error = "Recording stopped before any media was written";
+          } else if (lifecycle.desiredActive) {
+            lifecycle.state = madeProgress ? "live" : "starting";
+            lifecycle.health = madeProgress ? "healthy" : "unknown";
+          }
+          if (!fresh.recordingWarning.empty() && lifecycle.health == "healthy")
+            lifecycle.health = "degraded";
+        }
+        fresh.lifecycle = std::move(lifecycle);
+        fresh.active = fresh.lifecycle->state == "live";
+        state->snapshot = std::move(fresh);
+      } else if (item.generation == state->generation && !state->snapshot.lifecycle) {
+        // Non-recording encoder use retains its legacy observed sink state.
+        state->snapshot = std::move(fresh);
       }
     }
 
     {
       std::lock_guard<std::mutex> lock(state->queueMutex);
-      state->appliedSeq = item.seq;  // monotonic; dropped seqs are skipped over
+      // Diagnostic last-applied sequence. Media scheduling may reorder work
+      // within a control-barrier run, so drainForTest uses queue+applying state.
+      state->appliedSeq = item.seq;
+      state->applying = false;
     }
     state->appliedCv.notify_all();
   }

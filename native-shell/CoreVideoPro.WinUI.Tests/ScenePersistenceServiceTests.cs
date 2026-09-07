@@ -9,7 +9,21 @@ public sealed class ScenePersistenceServiceTests
     [Fact]
     public void SceneRoundTripsThroughPersistedDtoAndJson()
     {
-        var scene = new Scene { Id = "custom-abc12345", Name = "Interview wide", Layout = "two-up" };
+        var scene = new Scene
+        {
+            Id = "custom-abc12345",
+            Name = "Interview wide",
+            Layout = "dynamic-gallery",
+            DynamicGallery = new DynamicGallerySettings
+            {
+                MaxTiles = 8,
+                TileAspect = "4:3",
+                BorderShape = "rounded",
+                BorderColor = "#FF8800",
+                BorderThickness = 4,
+                GlowSize = 12
+            }
+        };
         var routes = new List<SourceRoute>
         {
             new()
@@ -49,6 +63,12 @@ public sealed class ScenePersistenceServiceTests
         var restoredScene = Assert.Single(reloaded!.CustomScenes);
         Assert.Equal("custom-abc12345", restoredScene.Id);
         Assert.Equal("Interview wide", restoredScene.Name);
+        var restoredGallery = ScenePersistenceService.SceneFromPersisted(restoredScene).DynamicGallery;
+        Assert.NotNull(restoredGallery);
+        Assert.Equal(8, restoredGallery!.MaxTiles);
+        Assert.Equal("4:3", restoredGallery.TileAspect);
+        Assert.Equal("rounded", restoredGallery.BorderShape);
+        Assert.Equal(12, restoredGallery.GlowSize, 3);
 
         var restored = restoredScene.Routes.Select(ScenePersistenceService.FromPersisted).ToList();
         Assert.Equal(2, restored.Count);

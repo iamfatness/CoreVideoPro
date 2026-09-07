@@ -66,6 +66,12 @@ MAX_ENGINE_TAP_MS = 2.0
 # measuring an architecture that no longer exists. Everything ABOVE the cushion is
 # still real latency and still gated. If frame sync is ever disabled by default,
 # put these back to 16.7/33.3.
+# A Take rides a media-core-sync round trip. Anything the operator can feel as
+# lag between pressing Take and program changing is a defect for a switcher.
+# The muxed file must actually carry the configured rate. 0.95 allows startup
+# and finalisation edges, not a whole 10fps of missing pictures.
+MIN_RECORDED_FPS_RATIO = 0.95
+MAX_COMMAND_P99_MS = 100.0
 MAX_LATENCY_P50_MS = 33.3   # 2 frames at 60p (1 of them is the frame-sync cushion)
 MAX_LATENCY_P99_MS = 50.0   # 3 frames at 60p
 # Fraction of DECODED frames that must actually reach the compositor.
@@ -96,6 +102,7 @@ class Core:
         self.events = []
         self.stderr = []
         self.next_id = 1
+        self.round_trips = []  # (type, seconds) per answered request
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
 
@@ -118,13 +125,17 @@ class Core:
         rid = f"drill-{self.next_id}"
         self.next_id += 1
         body = dict(body, id=rid)
+        started = time.time()
         self.proc.stdin.write(json.dumps(body, separators=(",", ":")) + "\n")
         self.proc.stdin.flush()
-        deadline = time.time() + timeout
+        deadline = started + timeout
+        # 1ms poll: this now measures OPERATOR RESPONSIVENESS (the round trip a
+        # Take rides), so a 10ms poll would be most of the number being measured.
         while time.time() < deadline:
             if rid in self.responses:
+                self.round_trips.append((body.get("type", "?"), time.time() - started))
                 return self.responses[rid]
-            time.sleep(0.01)
+            time.sleep(0.001)
         return None
 
     def sync(self, commands, elapsed_ms):
@@ -284,13 +295,24 @@ def main():
     # the show was configured for (a 320x180 preview upscaled into a 1080p
     # container is the failure the RTMP path shipped for months).
     if artifact and os.path.exists(artifact) and os.path.getsize(artifact) > 1024:
-        probe = subprocess.run(
-            ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,nb_frames",
-             "-of", "default=nw=1:nk=1", artifact],
-            capture_output=True, text=True)
-        fields = [line for line in probe.stdout.split() if line]
-        if probe.returncode != 0 or len(fields) < 2:
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,nb_frames",
+                 "-of", "default=nw=1:nk=1", artifact],
+                capture_output=True, text=True)
+        except FileNotFoundError:
+            # LOUD, not a traceback and NEVER a silent skip: without ffprobe the
+            # playability gate cannot run, so the drill must not report success.
+            # It failed this way on macos-14 runners, which ship no ffmpeg.
+            failures.append(
+                "ffprobe is not installed, so the recording could not be checked "
+                "for playability — install ffmpeg on this machine/runner")
+            probe = None
+        fields = [line for line in probe.stdout.split() if line] if probe else []
+        if probe is None:
+            pass  # already reported above
+        elif probe.returncode != 0 or len(fields) < 2:
             failures.append(
                 f"recording is UNPLAYABLE ({os.path.getsize(artifact)} bytes on "
                 f"disk, ffprobe: {(probe.stderr or '').strip()[:120]}) — an "
@@ -304,6 +326,45 @@ def main():
             else:
                 print(f"PASS recording playable, {width}x{height}, "
                       f"{os.path.getsize(artifact)} bytes")
+                # RECORDED FRAME RATE. "Playable at 1920x1080" and "60fps
+                # sustained" are both true while the FILE runs at 50 — the
+                # compositor rate is not the muxed rate. encoder->submit is
+                # called from the ~50Hz audio/output worker, whose 20ms period
+                # is an AUDIO constant (960 samples at 48k), so program video is
+                # muxed at the AUDIO cadence. A container that DECLARES 60 while
+                # holding 50 is exactly the kind of true-but-misleading pair this
+                # drill exists to catch.
+                probe_rate = subprocess.run(
+                    ["ffprobe", "-hide_banner", "-v", "error", "-count_frames",
+                     "-select_streams", "v:0", "-show_entries",
+                     "stream=nb_read_frames,duration", "-of", "default=nw=1",
+                     artifact], capture_output=True, text=True)
+                # Parse BY NAME: ffprobe emits fields in its own order, not the
+                # order requested, so positional parsing silently reads the
+                # duration as a frame count.
+                fields = {}
+                for line in probe_rate.stdout.splitlines():
+                    if "=" in line:
+                        name, _, value = line.partition("=")
+                        fields[name.strip()] = value.strip()
+                if fields:
+                    try:
+                        frames = int(fields.get("nb_read_frames", "0"))
+                        seconds = float(fields.get("duration", "0"))
+                    except ValueError:
+                        frames, seconds = 0, 0.0
+                    if seconds > 0.5 and frames > 0:
+                        actual = frames / seconds
+                        ok_rate = actual >= TARGET_OUTPUT_FPS * MIN_RECORDED_FPS_RATIO
+                        print(f"{'PASS' if ok_rate else 'FAIL'} recorded rate "
+                              f"{actual:.1f}fps of {TARGET_OUTPUT_FPS:.0f} "
+                              f"({frames} frames / {seconds:.2f}s)")
+                        if not ok_rate:
+                            failures.append(
+                                f"recording muxed {actual:.1f}fps while the compositor "
+                                f"produced {TARGET_OUTPUT_FPS:.0f} — encoder->submit "
+                                f"rides the ~50Hz audio worker, so the file is off-spec "
+                                f"no matter what the container declares")
     else:
         failures.append(f"recording produced no artifact (path={artifact or 'none'})")
 
@@ -314,23 +375,54 @@ def main():
     else:
         failures.append(f"multiview missing bus cells (roles={sorted(roles)})")
 
+    # PER SITE. Several sites emit this line, so taking whichever logged last
+    # conflated them — a render-tick ratio could be reported as an audio one and
+    # vice versa. Keep the latest counters for each site and gate on the WORST,
+    # naming it, so the number points at something actionable.
+    per_site = {}
+    for line in core.stderr:
+        if "lock-guardrail" not in line or "over-budget" not in line:
+            continue
+        try:
+            site = line.split(" at '")[1].split("'")[0]
+            parts = line.split("over-budget ")[1].split(" of ")
+            per_site[site] = (int(parts[0]), int(parts[1].split(" ")[0]))
+        except (IndexError, ValueError):
+            continue
+    worst_site = ""
     over = 0
     total = 0
-    for line in core.stderr:
-        if "lock-guardrail" in line and "over-budget" in line:
-            parts = line.split("over-budget ")[1].split(" of ")
-            over = int(parts[0])
-            total = int(parts[1].split(" ")[0])
+    for site, (site_over, site_total) in per_site.items():
+        if site_total and site_over / site_total >= (over / total if total else 0):
+            worst_site, over, total = site, site_over, site_total
     if total:
         ratio = over / total
         verdict = "PASS" if ratio <= MAX_OVER_BUDGET_RATIO else "FAIL"
-        print(f"{verdict} coreMutex over-budget {over}/{total} ({ratio:.0%})")
+        print(f"{verdict} coreMutex over-budget {over}/{total} ({ratio:.0%}) "
+              f"worst site '{worst_site}'")
         if ratio > MAX_OVER_BUDGET_RATIO:
             failures.append(
                 f"render tick over budget on {ratio:.0%} of holds "
                 f"(max {MAX_OVER_BUDGET_RATIO:.0%}) — this starves the RPC queue")
     else:
         print("PASS coreMutex never exceeded its budget")
+
+    # OPERATOR RESPONSIVENESS. Every frame-path metric here measures
+    # source->program; none of them can see the command path a Take rides. A
+    # comment in the core claims media-core-sync holds the core lock 50-100ms,
+    # which would be felt as a laggy cut, so measure it rather than assume.
+    syncs = sorted(ms for name, ms in core.round_trips if name == "media-core-sync")
+    if syncs:
+        p50 = syncs[len(syncs) // 2] * 1000
+        p99 = syncs[min(len(syncs) - 1, int(len(syncs) * 0.99))] * 1000
+        worst = syncs[-1] * 1000
+        ok = p99 <= MAX_COMMAND_P99_MS
+        print(f"{'PASS' if ok else 'FAIL'} operator command round-trip p50 {p50:.1f}ms / "
+              f"p99 {p99:.1f}ms / worst {worst:.1f}ms ({len(syncs)} syncs)")
+        if not ok:
+            failures.append(
+                f"media-core-sync p99 {p99:.1f}ms exceeds {MAX_COMMAND_P99_MS:.0f}ms — "
+                f"a Take that takes this long is felt by the operator")
 
     if timeouts:
         print(f"FAIL {timeouts} request(s) timed out")
@@ -403,6 +495,24 @@ def main():
         print(f"Source->program latency ({len(lat_lines)} windows):")
         for line in lat_lines:
             print(f"  {line}")
+    # DID THE HARNESS ACTUALLY SOURCE THE LOAD IT WAS ASKED FOR? The delivery
+    # ratio below is (frames the compositor saw) / (frames we ASKED the fake
+    # engine to produce). If the engine could not produce them — a CI VM cannot
+    # decode 8x1080p60, ~1.5GB/s — the ratio collapses and reads as "the core
+    # lost your frames", which is a false accusation against the core. Measured
+    # on a macos-14 runner: ~250 of 480 frames/s sourced, reported as "51%
+    # delivered". Parse the rate the core actually received and say so.
+    ingest_rates = []
+    for line in [l for l in core.stderr if "[zoom-ingest]" in l][-3:]:
+        try:
+            ingest_rates.append(float(line.split("]")[1].strip().split()[0]))
+        except (IndexError, ValueError):
+            continue
+    sourced_fps = sorted(ingest_rates)[len(ingest_rates) // 2] if ingest_rates else None
+    requested_fps = args.load * TARGET_OUTPUT_FPS
+    harness_short = (sourced_fps is not None and requested_fps > 0
+                     and sourced_fps < requested_fps * 0.9)
+
     if args.load and lat_lines:
         # Each window covers ~2s; a partial first window (join still settling) is
         # warm-up, not steady state, so judge on windows that saw a full window's
@@ -420,12 +530,21 @@ def main():
         if steady:
             worst_p50 = max(w[0] for w in steady)
             worst_p99 = max(w[1] for w in steady)
-            delivery = min(w[2] for w in steady) / expected
+            # MEDIAN, not min. A single window can dip when the machine is busy
+            # (a concurrent build was enough to read 52% once), and a gate that
+            # fails on one hiccup gets ignored — which is worse than no gate.
+            # The systemic failure this exists to catch (the 8ms ingest poll
+            # losing ~30% of frames on EVERY window) moves the median, so this
+            # still catches it. The worst window is printed either way so a real
+            # excursion stays visible instead of being averaged away.
+            counts = sorted(w[2] for w in steady)
+            delivery = counts[len(counts) // 2] / expected
+            worst_delivery = counts[0] / expected
             ok = (worst_p50 <= MAX_LATENCY_P50_MS and worst_p99 <= MAX_LATENCY_P99_MS
                   and delivery >= MIN_FRAME_DELIVERY)
             print(f"{'PASS' if ok else 'FAIL'} source->render p50 {worst_p50:.1f}ms / "
                   f"p99 {worst_p99:.1f}ms, {delivery:.0%} of decoded frames delivered "
-                  f"({len(steady)} steady windows)")
+                  f"(worst window {worst_delivery:.0%}, {len(steady)} steady windows)")
             if worst_p50 > MAX_LATENCY_P50_MS:
                 failures.append(
                     f"source->render p50 {worst_p50:.1f}ms exceeds two frames "
@@ -435,9 +554,19 @@ def main():
                 failures.append(
                     f"source->render p99 {worst_p99:.1f}ms exceeds three frames")
             if delivery < MIN_FRAME_DELIVERY:
-                failures.append(
-                    f"only {delivery:.0%} of decoded frames reached the compositor — "
-                    f"sources lose motion even though fps still reads 60")
+                # Still a FAILURE either way — this run proved nothing and must
+                # not read green. Only the attribution changes.
+                if harness_short:
+                    failures.append(
+                        f"the HARNESS could not source the load: {sourced_fps:.0f} of "
+                        f"{requested_fps:.0f} frames/s reached the core "
+                        f"({sourced_fps / requested_fps:.0%}), so the {delivery:.0%} "
+                        f"delivery figure is NOT attributable to the core — re-run on "
+                        f"hardware that can sustain {args.load}x1080p60")
+                else:
+                    failures.append(
+                        f"only {delivery:.0%} of decoded frames reached the compositor — "
+                        f"sources lose motion even though fps still reads 60")
     ingest_lines = [l for l in core.stderr if "[zoom-ingest]" in l]
     if ingest_lines:
         print("Zoom ingest (last 3 windows):")

@@ -104,6 +104,7 @@ function participantsOf(snapshot) {
 
 function buildSpinePayload(participants) {
   const subscriptions = [
+    { participantId: participants[0].id, kind: "meeting-audio", purpose: "program", priority: 0 },
     ...participants.map((p, i) => ({ participantId: p.id, kind: "participant-video", purpose: i === 0 ? "active-speaker" : "program", priority: 10 + i })),
     ...participants.map((p, i) => ({ participantId: p.id, kind: "participant-audio", purpose: "mix", priority: 40 + i })),
   ];

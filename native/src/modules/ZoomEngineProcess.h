@@ -3,6 +3,7 @@
 #include "modules/ZoomEngineClient.h"
 
 #include <optional>
+#include <functional>
 #include <string>
 
 namespace corevideo::modules {
@@ -15,6 +16,7 @@ struct ZoomEngineProcessOptions {
   // with another process on the shared "ZoomObsPlugin_" base name (chiefly the
   // OBS zoom plugin). Empty => the client generates one in start().
   std::string instanceToken;
+  std::function<bool()> cancelled;
 };
 
 // Builds a process-unique IPC token (host pid + a monotonic spawn counter) so
@@ -38,6 +40,9 @@ class ZoomEngineProcessClient {
   // connects to its pipe/socket IPC. This is not used by the default stub path.
   bool start(const ZoomEngineProcessOptions& options);
   virtual void stop();
+  // Close IPC before process teardown: cancellation must not wait for a quit
+  // write to a wedged engine pipe.
+  void terminate();
   [[nodiscard]] virtual bool running() const;
   [[nodiscard]] virtual std::string lastError() const;
 
@@ -51,13 +56,16 @@ class ZoomEngineProcessClient {
   [[nodiscard]] const std::string& instanceToken() const { return instanceToken_; }
 
  private:
-  bool connectIpc(int timeoutMs);
+  bool connectIpc(int timeoutMs, const std::function<bool()>& cancelled);
   void closeIpc();
   void setError(std::string message);
 
 #if defined(_WIN32)
   void* processHandle_ = nullptr;
   void* threadHandle_ = nullptr;
+  // Kill-on-close job ownership guarantees the Meeting SDK helper cannot
+  // outlive a crashed/force-terminated media core and retain Zoom callbacks.
+  void* jobHandle_ = nullptr;
   void* parentToEngine_ = nullptr;
   void* engineToParent_ = nullptr;
 #else

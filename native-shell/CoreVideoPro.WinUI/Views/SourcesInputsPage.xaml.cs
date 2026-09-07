@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using CoreVideoPro.WinUI;
 using CoreVideoPro.WinUI.Models;
@@ -121,19 +123,85 @@ public sealed partial class SourcesInputsPage : UserControl
         }
     }
 
+    // Apply the row's current role once the container exists, instead of letting
+    // x:Bind push it during ProcessBindings.
+    //
+    // THIS CRASHED THE APP (2026-08-09, twice in ten minutes). x:Bind drove
+    // Selector.SelectedValue from a phased binding update and it threw
+    // COMException 0x80004005 straight out of set_SelectedValue — unhandled, so
+    // the process died; the dumps bucket as
+    // STOWED_EXCEPTION_80004003_CoreMessagingXP.dll!DispatcherQueue::DeferInvokeCallback,
+    // the 0xc000027b fail-fast this file's siblings already fight. The rows live
+    // in an ItemsRepeater, so a container gets recycled and re-bound while its
+    // ItemsSource binding is still resolving, and assigning a SelectedValue the
+    // ComboBox does not yet contain is what throws.
+    //
+    // Rules kept here: never assign before the items exist, never assign a value
+    // that is not in the list, and never let this escape as an unhandled
+    // exception — a wrong dropdown is a cosmetic bug, a crash ends the show.
+    private void OnProductionRoleComboLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ComboBox combo || combo.Tag is not FeedHealthRow row)
+        {
+            return;
+        }
+
+        SyncProductionRoleCombo(combo, row);
+    }
+
+    private void OnFeedHealthElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
+    {
+        if (args.Element is not FrameworkElement root ||
+            FindDescendant<ComboBox>(root, "ProductionRoleCombo") is not { } combo ||
+            combo.Tag is not FeedHealthRow row)
+        {
+            return;
+        }
+
+        SyncProductionRoleCombo(combo, row);
+    }
+
+    private void SyncProductionRoleCombo(ComboBox combo, FeedHealthRow row)
+    {
+        try
+        {
+            // ElementName bindings inside a recycled ItemsRepeater template are
+            // not guaranteed to resolve before Loaded. Make the page view-model
+            // authoritative and suppress write-back while rebinding the row.
+            var options = ViewModel?.ProductionRoleAssignmentOptions;
+            if (options is null) return;
+
+            combo.SelectionChanged -= OnProductionRoleChanged;
+            combo.ItemsSource = options;
+            var roleId = row.ProductionRoleId ?? string.Empty;
+            if (!options.Any(option => option.Value == roleId))
+            {
+                roleId = string.Empty;
+            }
+            combo.SelectedValue = roleId;
+            combo.SelectionChanged += OnProductionRoleChanged;
+        }
+        catch (Exception ex)
+        {
+            combo.SelectionChanged -= OnProductionRoleChanged;
+            combo.SelectionChanged += OnProductionRoleChanged;
+            LaunchLog.Write($"sources: production-role selection skipped ({ex.GetType().Name}: {ex.Message})");
+        }
+    }
+
     private void OnProductionRoleChanged(object sender, SelectionChangedEventArgs e)
     {
         // Tag (x:Bind), not DataContext (null inside the ItemsRepeater). The
         // view-model no-ops when the value matches, which also swallows the
         // initial programmatic selection at row realization.
         if (sender is not ComboBox combo ||
-            combo.Tag is not string participantId ||
+            combo.Tag is not FeedHealthRow row ||
             combo.SelectedValue is not string roleId)
         {
             return;
         }
 
-        ViewModel?.SetParticipantProductionRole(participantId, roleId);
+        ViewModel?.SetParticipantProductionRole(row.ParticipantId, roleId);
     }
 
     private void OnShowInputMicChanged(object sender, SelectionChangedEventArgs e)

@@ -288,15 +288,7 @@ public sealed partial class TransportViewModel : ObservableObject
             .Select(tap => (double?)tap.PeakDbfs)
             .FirstOrDefault();
 
-    private static int DbfsToMeterLevel(double dbfs)
-    {
-        if (!double.IsFinite(dbfs) || dbfs <= -90)
-        {
-            return 0;
-        }
-
-        return Math.Clamp((int)Math.Round((dbfs + 60) / 60 * 100), 0, 100);
-    }
+    private static int DbfsToMeterLevel(double dbfs) => AudioMeterScale.ToLevel(dbfs);
 
     private static string? FormatMeasuredPeakLabel(double? leftPeakDbfs, double? rightPeakDbfs)
     {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "modules/Interfaces.h"
+#include "modules/ZoomActiveSpeakerDirector.h"
 #include "modules/ZoomEngineClient.h"
 #include "rpc/Json.h"
 
@@ -47,6 +48,8 @@ struct ZoomEngineRuntimeSnapshot {
 class ZoomEngineRuntimeState {
  public:
   void apply(const ZoomEngineEvent& event);
+  void apply(const ZoomEngineEvent& event, std::uint64_t nowMs);
+  void advanceActiveSpeaker(std::uint64_t nowMs);
   void reset();
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
@@ -67,6 +70,7 @@ class ZoomEngineRuntimeState {
 
  private:
   void addWarning(const std::string& warning);
+  void refreshSpeakerFrameReadiness();
 
   std::string meetingState_ = "idle";
   bool sdkAuthenticated_ = false;
@@ -77,6 +81,7 @@ class ZoomEngineRuntimeState {
   std::map<std::string, ZoomEngineSubscriptionStats> subscriptionStats_;
   std::vector<std::string> events_;
   std::vector<std::string> warnings_;
+  ZoomActiveSpeakerDirector speakerDirector_;
 };
 
 }  // namespace corevideo::modules

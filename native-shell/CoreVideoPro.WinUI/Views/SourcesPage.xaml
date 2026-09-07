@@ -70,6 +70,31 @@
                                     CommandParameter="studio" />
                         </Grid>
 
+                        <!-- The editor owns scene selection now; operators no longer
+                             have to bounce back to Studio just to choose a canvas. -->
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="ScenePicker" ItemsSource="{x:Bind ViewModel.SceneItems, Mode=OneWay}"
+                                      DisplayMemberPath="Name" SelectedValuePath="Id"
+                                      SelectedValue="{x:Bind ViewModel.PreviewSceneId, Mode=OneWay}"
+                                      SelectionChanged="OnPreviewSceneSelectionChanged"
+                                      Header="Template to edit" HorizontalAlignment="Stretch" />
+                            <Button Grid.Column="1" Content="Edit Program"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    VerticalAlignment="Bottom"
+                                    Command="{x:Bind ViewModel.SelectSceneCommand}"
+                                    CommandParameter="{x:Bind ViewModel.ActiveSceneId, Mode=OneWay}"
+                                    ToolTipService.ToolTip="Load a protected off-air draft of the current Program scene into this editor" />
+                            <Button Grid.Column="2" Content="+ CoreVideo Tiles"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    VerticalAlignment="Bottom"
+                                    Command="{x:Bind ViewModel.NewDynamicGalleryCommand}" />
+                        </Grid>
+
                         <!-- Scene create/save row: name a new scene from the current canvas arrangement -->
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -212,7 +237,80 @@
 
                     <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Spacing="8">
-                            <TextBlock Text="Pick a scene on the Studio tab to populate sources."
+                            <Border Background="#101820" BorderBrush="{StaticResource StudioBorderBrush}"
+                                    BorderThickness="1" CornerRadius="6" Padding="10">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="SuperSource background" FontWeight="SemiBold" FontSize="12" />
+                                    <ComboBox ItemsSource="{x:Bind ViewModel.SuperSourceBackgroundOptions, Mode=OneWay}"
+                                              SelectedValue="{x:Bind ViewModel.PreviewSceneBackgroundAssetId, Mode=TwoWay}"
+                                              SelectedValuePath="Value"
+                                              DisplayMemberPath="Label"
+                                              PlaceholderText="No background"
+                                              HorizontalAlignment="Stretch" />
+                                    <TextBlock Text="{x:Bind ViewModel.SuperSourceBackgroundSummary, Mode=OneWay}"
+                                               FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="#101820" BorderBrush="{StaticResource StudioAccentBrush}"
+                                    BorderThickness="1" CornerRadius="6" Padding="10"
+                                    Visibility="{x:Bind ViewModel.IsPreviewDynamicGallery, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="CoreVideo Tiles" FontWeight="Bold" FontSize="13"
+                                               Foreground="{StaticResource StudioAccentBrush}" />
+                                    <TextBlock Text="Live Zoom participants fill this wall automatically and reflow as the roster changes."
+                                               FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <NumberBox Header="Max tiles" Value="{x:Bind ViewModel.GalleryMaxTiles, Mode=TwoWay}"
+                                                   Minimum="1" Maximum="64" SmallChange="1" SpinButtonPlacementMode="Compact" />
+                                        <ComboBox Grid.Column="1" Header="Tile shape"
+                                                  ItemsSource="{x:Bind ViewModel.GalleryTileAspectOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.GalleryTileAspect, Mode=TwoWay}"
+                                                  SelectedValuePath="Value" DisplayMemberPath="Label" />
+                                    </Grid>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <NumberBox Header="Gutter (%)" Value="{x:Bind ViewModel.GalleryGutterPercent, Mode=TwoWay}"
+                                                   Minimum="0" Maximum="10" SmallChange="0.1" SpinButtonPlacementMode="Compact" />
+                                        <NumberBox Grid.Column="1" Header="Margin (%)" Value="{x:Bind ViewModel.GalleryMarginPercent, Mode=TwoWay}"
+                                                   Minimum="0" Maximum="20" SmallChange="0.1" SpinButtonPlacementMode="Compact" />
+                                    </Grid>
+                                    <TextBlock Text="Border" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <ComboBox Header="Shape" ItemsSource="{x:Bind ViewModel.GalleryBorderShapeOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.GalleryBorderShape, Mode=TwoWay}"
+                                                  SelectedValuePath="Value" DisplayMemberPath="Label" />
+                                        <NumberBox Grid.Column="1" Header="Thickness" Value="{x:Bind ViewModel.GalleryBorderThickness, Mode=TwoWay}"
+                                                   Minimum="0" Maximum="12" SmallChange="1" SpinButtonPlacementMode="Compact" />
+                                    </Grid>
+                                    <TextBox Header="Border color" Text="{x:Bind ViewModel.GalleryBorderColor, Mode=TwoWay}"
+                                             PlaceholderText="#000000" />
+                                    <TextBlock Text="Glow" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <NumberBox Header="Size" Value="{x:Bind ViewModel.GalleryGlowSize, Mode=TwoWay}"
+                                                   Minimum="0" Maximum="64" SmallChange="1" SpinButtonPlacementMode="Compact" />
+                                        <NumberBox Grid.Column="1" Header="Intensity" Value="{x:Bind ViewModel.GalleryGlowIntensity, Mode=TwoWay}"
+                                                   Minimum="0" Maximum="100" SmallChange="5" SpinButtonPlacementMode="Compact" />
+                                    </Grid>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <TextBox Header="Glow color" Text="{x:Bind ViewModel.GalleryGlowColor, Mode=TwoWay}"
+                                                 PlaceholderText="#FFFFFF" />
+                                        <NumberBox Grid.Column="1" Header="Softness" Value="{x:Bind ViewModel.GalleryGlowSoftness, Mode=TwoWay}"
+                                                   Minimum="0" Maximum="100" SmallChange="5" SpinButtonPlacementMode="Compact" />
+                                    </Grid>
+                                    <CheckBox Content="Animate roster changes"
+                                              IsChecked="{x:Bind ViewModel.GalleryAnimateLayout, Mode=TwoWay}" />
+                                    <NumberBox Header="Animation duration (ms)" Value="{x:Bind ViewModel.GalleryAnimationDurationMs, Mode=TwoWay}"
+                                               Minimum="100" Maximum="2000" SmallChange="50" SpinButtonPlacementMode="Compact" />
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock Text="Choose a template above or click Edit Program to populate the canvas."
                                        FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords"
                                        Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
 
@@ -248,8 +346,10 @@
                                                 </Grid>
                                                 <StackPanel Spacing="2">
                                                     <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                    <ComboBox ItemsSource="{x:Bind ParticipantOptions}"
-                                                              SelectedValue="{x:Bind ParticipantId, Mode=TwoWay}"
+                                                    <ComboBox Tag="{x:Bind}"
+                                                              ItemsSource="{x:Bind ParticipantOptions, Mode=OneWay}"
+                                                              SelectedValue="{x:Bind ParticipantId, Mode=OneWay}"
+                                                              SelectionChanged="OnLayerSourceSelectionChanged"
                                                               SelectedValuePath="Value"
                                                               DisplayMemberPath="Label"
                                                               IsEnabled="{x:Bind IsParticipantPickerEnabled, Mode=OneWay}"
@@ -279,9 +379,32 @@
                                                                    SpinButtonPlacementMode="Hidden" />
                                                     </Grid>
                                                 </StackPanel>
-                                                <!-- No border controls here: borders never composite into the
-                                                     program/preview feeds — they exist solely to separate tiles
-                                                     in the multiview (owner rule, 2026-07-31). -->
+                                                <Border Background="#101820" BorderBrush="#22303A"
+                                                        BorderThickness="1" CornerRadius="6" Padding="8">
+                                                    <StackPanel Spacing="6">
+                                                        <TextBlock Text="Border" FontSize="10" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                                        <Grid ColumnSpacing="6">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="86" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <ComboBox ItemsSource="{x:Bind BorderStyleOptions}"
+                                                                      SelectedValue="{x:Bind BorderStyle, Mode=TwoWay}"
+                                                                      SelectedValuePath="Value"
+                                                                      DisplayMemberPath="Label"
+                                                                      HorizontalAlignment="Stretch" />
+                                                            <NumberBox Grid.Column="1"
+                                                                       Header="Width"
+                                                                       Value="{x:Bind BorderThickness, Mode=TwoWay}"
+                                                                       Minimum="0" Maximum="12" SmallChange="1"
+                                                                       SpinButtonPlacementMode="Compact" />
+                                                        </Grid>
+                                                        <TextBox Header="Color"
+                                                                 Text="{x:Bind BorderColor, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                                 PlaceholderText="#44C1A1" />
+                                                    </StackPanel>
+                                                </Border>
                                                 <StackPanel Spacing="2">
                                                     <TextBlock Text="Fit" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                                     <ComboBox ItemsSource="{x:Bind FitModeOptions}"

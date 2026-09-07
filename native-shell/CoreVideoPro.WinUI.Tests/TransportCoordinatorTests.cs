@@ -1,3 +1,4 @@
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.ViewModels.Transport;
@@ -16,12 +17,68 @@ namespace CoreVideoPro.WinUI.Tests;
 /// </summary>
 public sealed class TransportCoordinatorTests
 {
-    private static (TransportCoordinator Coordinator, FakeMediaCoreBridge Bridge, FakeTransportHost Host) Build()
+    private static (TransportCoordinator Coordinator, FakeMediaCoreBridge Bridge, FakeTransportHost Host) Build(
+        int recordingSyncRetryAttempts = 120,
+        int recordingSyncRetryDelayMs = 250)
     {
         var bridge = new FakeMediaCoreBridge();
         var host = new FakeTransportHost();
-        var coordinator = new TransportCoordinator(bridge, host, host);
+        var coordinator = new TransportCoordinator(
+            bridge,
+            host,
+            host,
+            recordingSyncRetryAttempts,
+            recordingSyncRetryDelayMs);
         return (coordinator, bridge, host);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitStop_RetriesFailedStopWithoutRearming(bool recording)
+    {
+        var (coordinator, _, host) = Build();
+        host.Recording = recording;
+        host.Streaming = !recording;
+        host.SyncThrows = new InvalidOperationException("stop did not reach core");
+        Func<bool, Task> set = recording ? coordinator.SetRecordingAsync : coordinator.SetStreamingAsync;
+        await set(false);
+        Assert.False(recording ? host.Recording : host.Streaming);
+        Assert.Equal(1, host.SyncCallCount);
+
+        host.SyncThrows = null;
+        host.HoldSync = true;
+        var retry = StudioControlSurface.RunOutputSet(false, true, false, _ => true, set, "output");
+        Assert.Equal(2, host.SyncCallCount);
+        Assert.False(recording ? host.Recording : host.Streaming);
+        host.ReleaseSync();
+        await retry;
+        Assert.False(recording ? host.Recording : host.Streaming);
+        Assert.Contains(recording ? "Recording stop requested" : "Streaming stopped", host.OutputStatus);
+    }
+
+    [Theory]
+    [InlineData(false, false, false, 0)]
+    [InlineData(true, false, true, 0)]
+    [InlineData(false, true, false, 1)]
+    [InlineData(true, true, false, 1)]
+    [InlineData(false, false, true, 1)]
+    public async Task ExplicitOutputSet_PreservesIdempotencyAndPassesTarget(bool requested, bool live, bool target, int expectedCalls)
+    {
+        var calls = new List<bool>();
+        await StudioControlSurface.RunOutputSet(requested, live, target, _ => true,
+            value => { calls.Add(value); return Task.CompletedTask; }, "output");
+        Assert.Equal(expectedCalls, calls.Count);
+        Assert.All(calls, value => Assert.Equal(target, value));
+    }
+
+    [Fact]
+    public async Task ExplicitOutputSet_DoesNotRunWhileUnavailable()
+    {
+        var called = false;
+        await StudioControlSurface.RunOutputSet(false, true, false, _ => false,
+            _ => { called = true; return Task.CompletedTask; }, "output");
+        Assert.False(called);
     }
 
     // ---------------------------------------------------------------- Recording
@@ -107,7 +164,55 @@ public sealed class TransportCoordinatorTests
         Assert.StartsWith("Recording start failed:", host.OutputStatus);
     }
 
+    [Fact]
+    public async Task ToggleRecording_StopWaitsForBusyStartAndKeepsCommandGuarded()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 6, recordingSyncRetryDelayMs: 1);
+        host.Recording = true;
+        host.SyncFailuresRemaining = 3;
+
+        var toggle = coordinator.ToggleRecordingAsync();
+
+        Assert.False(host.Recording);                           // stop intent is sticky immediately
+        Assert.True(coordinator.RecordingToggleInFlight);       // second click cannot re-arm
+
+        await toggle;
+
+        Assert.False(host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+        Assert.Equal(4, host.SyncCallCount);
+        Assert.Equal("Recording stop requested — finalizing.", host.OutputStatus);
+    }
+
+    [Fact]
+    public async Task ToggleRecording_StopRetryExhaustionNeverRearmsRecording()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 2, recordingSyncRetryDelayMs: 1);
+        host.Recording = true;
+        host.SyncFailuresRemaining = int.MaxValue;
+
+        await coordinator.ToggleRecordingAsync();
+
+        Assert.False(host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+        Assert.Equal(3, host.SyncCallCount);                    // initial attempt plus two retries
+        Assert.Contains("stop remains armed", host.OutputStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
     // ---------------------------------------------------------------- Streaming
+
+    [Fact]
+    public async Task ToggleStreaming_FailedStopKeepsDesiredStateDisarmed()
+    {
+        var (coordinator, _, host) = Build();
+        host.Streaming = true;
+        host.SyncThrows = new InvalidOperationException("connection lost during stop");
+
+        await coordinator.ToggleStreamingAsync();
+
+        Assert.False(host.Streaming);
+        Assert.StartsWith("Streaming stop failed:", host.OutputStatus);
+    }
 
     [Fact]
     public async Task ToggleStreaming_ArmsAndProvesStart_WhenSenderGoesLive()
@@ -187,6 +292,155 @@ public sealed class TransportCoordinatorTests
         Assert.False(host.Streaming);                          // rolled back
         Assert.False(coordinator.StreamToggleInFlight);
         Assert.StartsWith("Streaming start failed:", host.OutputStatus);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("deleted-scene")]
+    public async Task Take_InvalidPreviewCannotPoisonProgram(string? preview)
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = preview!;
+        await coordinator.TakeAsync();
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal(0, host.SyncCallCount);
+        Assert.Equal(0, host.PromoteCallCount);
+        Assert.Contains("unavailable", host.CommandStatus);
+    }
+
+    [Fact]
+    public async Task Take_BusySyncRetriesSameProgramWithoutSwappingAgain()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 3, recordingSyncRetryDelayMs: 1);
+        host.PreviewSceneId = "interview";
+        host.SyncFailuresRemaining = 2;
+        await coordinator.TakeAsync();
+        Assert.Equal(new[] { "interview", "interview", "interview" }, host.SyncedProgramIds);
+        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal(1, host.TakeVersionIncrements);
+        Assert.Equal(0, host.RollbackCount);
+        Assert.Equal("Program updated", host.OutputStatus);
+    }
+
+    [Fact]
+    public async Task Take_DoubleInvocationWhileAwaitingSyncDoesNotSwapBack()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        host.HoldSync = true;
+        var first = coordinator.TakeAsync();
+        await coordinator.TakeAsync();
+        Assert.Equal("interview", host.ActiveSceneId);
+        Assert.Equal(1, host.SyncCallCount);
+        host.ReleaseSync();
+        await first;
+    }
+
+    [Fact]
+    public async Task Take_FailureRestoresPriorProgramAndRetainsPreviewForRetry()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        host.SyncThrows = new InvalidOperationException("native rejected scene");
+        await coordinator.TakeAsync();
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(1, host.RollbackCount);
+        Assert.Contains("previous local Program restored", host.CommandStatus);
+        host.SyncThrows = null;
+        await coordinator.TakeAsync();
+        Assert.Equal("interview", host.ActiveSceneId);
+    }
+
+    [Fact]
+    public async Task Take_ExhaustedBackpressureRestoresProgramInsteadOfClaimingSuccess()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 2, recordingSyncRetryDelayMs: 1);
+        host.PreviewSceneId = "interview";
+        host.SyncFailuresRemaining = 10;
+        await coordinator.TakeAsync();
+        Assert.Equal(2, host.SyncCallCount);
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(1, host.RollbackCount);
+        Assert.NotEqual("Program updated", host.OutputStatus);
+    }
+
+    [Fact]
+    public async Task TakeApi_DisabledControlFailsWithoutInvokingTake()
+    {
+        var invoked = false;
+        var result = await StudioControlSurface.RunTake(false, () =>
+        {
+            invoked = true;
+            return Task.FromResult(TakeResult.Success);
+        });
+        Assert.False(result.Ok);
+        Assert.False(invoked);
+        Assert.Contains("unavailable", result.Error);
+    }
+
+    [Fact]
+    public async Task TakeApi_ReportsEachInvocationOutcomeInsteadOfPriorSuccess()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        var success = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.True(success.Ok);
+        host.SyncThrows = new InvalidOperationException("core rejected next scene");
+        var failure = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(failure.Ok);
+        Assert.Contains("core rejected next scene", failure.Error);
+        Assert.Contains("not confirmed", failure.Error);
+    }
+
+    [Fact]
+    public async Task TakeApi_ConcurrentInvocationCannotBorrowFirstCompletion()
+    {
+        var (coordinator, _, host) = Build();
+        host.PreviewSceneId = "interview";
+        host.HoldSync = true;
+        var first = StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        var duplicate = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(duplicate.Ok);
+        Assert.Contains("already in progress", duplicate.Error);
+        Assert.False(first.IsCompleted);
+        host.ReleaseSync();
+        Assert.True((await first).Ok);
+        Assert.Equal(1, host.SyncCallCount);
+    }
+
+    [Fact]
+    public async Task TakeApi_OfflineLocalSelectionIsNotReportedAsOnAirSuccess()
+    {
+        var (coordinator, bridge, host) = Build();
+        bridge.Running = false;
+        host.PreviewSceneId = "interview";
+        var result = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(result.Ok);
+        Assert.Contains("offline", result.Error);
+        Assert.Equal(0, host.SyncCallCount);
+    }
+
+    [Fact]
+    public async Task TakeApi_ExhaustedBusySyncFails()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryAttempts: 1);
+        host.PreviewSceneId = "interview";
+        host.SyncFailuresRemaining = 1;
+        var result = await StudioControlSurface.RunTake(true, coordinator.TakeAsync);
+        Assert.False(result.Ok);
+        Assert.Contains("busy", result.Error);
+        Assert.Equal("intro", host.ActiveSceneId);
+    }
+
+    [Fact]
+    public async Task TakeApi_UnexpectedCommandExceptionReturnsFailure()
+    {
+        var result = await StudioControlSurface.RunTake(true, () => throw new InvalidOperationException("route preparation failed"));
+        Assert.False(result.Ok);
+        Assert.Contains("route preparation failed", result.Error);
     }
 
     // ---------------------------------------------------------------- Take
@@ -279,7 +533,7 @@ public sealed class TransportCoordinatorTests
 
         public string EngineStatus { private get; set; } = string.Empty;
 
-        public string CommandStatus { private get; set; } = string.Empty;
+        public string CommandStatus { get; set; } = string.Empty;
 
         public string OutputStatus { get; set; } = "Outputs idle";
 
@@ -297,10 +551,14 @@ public sealed class TransportCoordinatorTests
 
         public string TakeTransitionLabel => "Fade";
 
+        public bool IsSceneAvailable(string? sceneId) => sceneId is "intro" or "interview";
+
         // --- test knobs ---
         public bool HoldSync { get; set; }
 
         public Exception? SyncThrows { get; set; }
+
+        public int SyncFailuresRemaining { get; set; }
 
         public NativeMediaCoreStateSnapshot SyncResult { get; set; } = new();
 
@@ -312,12 +570,15 @@ public sealed class TransportCoordinatorTests
 
         // --- observed counters ---
         public int SyncCallCount { get; private set; }
+        public List<string> SyncedProgramIds { get; } = [];
 
         public int PromoteCallCount { get; private set; }
 
         public int TakeVersionIncrements { get; private set; }
 
         public int CopyPreviewRoutesCallCount { get; private set; }
+
+        public int RollbackCount { get; private set; }
 
         public int UnsubscribeCallCount { get; private set; }
 
@@ -329,7 +590,18 @@ public sealed class TransportCoordinatorTests
         public void RunOnUiThread(Action action) => action();
 
         // --- ITransportHost ---
-        public bool HasPendingProgramMediaCue(string sceneId) => HasPendingCue;
+        public bool HasPendingPreviewChanges(string sceneId) => HasPendingCue;
+
+        public Func<Func<bool>> CaptureTakeRollback()
+        {
+            var program = ActiveSceneId;
+            var preview = PreviewSceneId;
+            return () => () => { ActiveSceneId = program; PreviewSceneId = preview; RollbackCount++; return true; };
+        }
+
+        public void BeginTakeMutation() { }
+        public void EndTakeMutation() { }
+        public void RequestTakeReconciliation() { }
 
         public void CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesCallCount++;
 
@@ -344,6 +616,13 @@ public sealed class TransportCoordinatorTests
         public async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
         {
             SyncCallCount++;
+            SyncedProgramIds.Add(ActiveSceneId);
+            if (SyncFailuresRemaining > 0)
+            {
+                SyncFailuresRemaining--;
+                throw new MediaCoreSyncInFlightException();
+            }
+
             if (HoldSync)
             {
                 _syncGate = new TaskCompletionSource<bool>();
@@ -358,7 +637,7 @@ public sealed class TransportCoordinatorTests
             return SyncResult;
         }
 
-        public Dictionary<string, object?> BuildSpinePayload() => new() { ["spine"] = true };
+        public Task<Dictionary<string, object?>> BuildSpinePayloadAsync(CancellationToken cancellationToken) => Task.FromResult(new Dictionary<string, object?> { ["spine"] = true });
 
         public void UnsubscribeZoomCapture(string status)
         {
@@ -442,7 +721,7 @@ public sealed class TransportCoordinatorTests
         public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 #pragma warning restore CS0067
 
-        public void ConfigureZoomSpineSync(Func<Dictionary<string, object?>>? payloadFactory) =>
+        public void ConfigureZoomSpineSync(Func<CancellationToken, Task<Dictionary<string, object?>>>? payloadFactory) =>
             SpineCallbackInstalled = payloadFactory is not null;
 
         public Task<NativeMediaCoreProfile?> StartAsync(CancellationToken cancellationToken = default) =>

@@ -8,7 +8,15 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class ZoomMediaSpinePayloadBuilder
 {
-    public const int DefaultMaxVideoSubscriptions = 6;
+    // 8, matching the product's advertised maxParticipantFeeds. This was 6, which
+    // silently left the 7th and 8th camera-on participants with NO raw video
+    // subscription at all — they showed as frozen/placeholder tiles with no error
+    // anywhere (live meeting, 2026-08-09: seven cameras on, Susan Cho never
+    // subscribed). If the SDK refuses the extra subscriptions, the engine's
+    // per-participant downgrade ladder handles it LOUDLY (video_subscribe code +
+    // video_resolution_downgraded), so the cap must not pre-censor what the SDK
+    // might grant.
+    public const int DefaultMaxVideoSubscriptions = 8;
 
     public sealed record BuildInput
     {
@@ -26,6 +34,8 @@ public static class ZoomMediaSpinePayloadBuilder
         /// so it no longer fires automatically on meeting join.
         /// </summary>
         public bool StartCapture { get; init; }
+        public IReadOnlyList<MediaCoreSceneRouteWire> ProgramSceneRoutes { get; init; } = [];
+        public IReadOnlyList<MediaCoreSceneRouteWire> PreviewSceneRoutes { get; init; } = [];
 
         /// <summary>
         /// Ordered Show Input roster that drives the core-composited GPU multiview. Delivered on
@@ -40,7 +50,11 @@ public static class ZoomMediaSpinePayloadBuilder
         var participants = FilterParticipants(input.Participants, input.SelectedBreakoutRoomId)
             .Select(MapParticipant)
             .ToList();
-        var subscriptions = BuildSubscriptions(participants, input.MaxVideoSubscriptions);
+        var subscriptions = BuildSubscriptions(
+            participants,
+            input.MaxVideoSubscriptions,
+            input.ProgramSceneRoutes,
+            input.PreviewSceneRoutes);
         var readiness = BuildReadiness(input);
         var warnings = new List<string>();
         if (!input.EngineRunning)
@@ -165,19 +179,73 @@ public static class ZoomMediaSpinePayloadBuilder
 
     private static List<Dictionary<string, object?>> BuildSubscriptions(
         IReadOnlyList<Dictionary<string, object?>> participants,
-        int maxVideoSubscriptions)
+        int maxVideoSubscriptions,
+        IReadOnlyList<MediaCoreSceneRouteWire> programSceneRoutes,
+        IReadOnlyList<MediaCoreSceneRouteWire> previewSceneRoutes)
     {
         var subscriptions = new List<Dictionary<string, object?>>();
-        var videoCount = Math.Min(maxVideoSubscriptions, participants.Count);
-        for (var index = 0; index < videoCount; index++)
+        if (participants.Count > 0)
         {
-            var participant = participants[index];
-            var participantId = participant["sdkUserId"]?.ToString() ?? string.Empty;
+            // The meeting mix is an audio source in its own right. Do not make
+            // its lifetime depend on an active-speaker video subscription.
             subscriptions.Add(new Dictionary<string, object?>
             {
-                ["participantId"] = participantId,
+                ["participantId"] = participants[0]["sdkUserId"]?.ToString() ?? string.Empty,
+                ["kind"] = "meeting-audio",
+                ["purpose"] = "program",
+                ["priority"] = 0
+            });
+        }
+        // Spend the finite raw-video budget in show order: directed speaker,
+        // Program, queued Preview, then multiview-only roster feeds. This makes
+        // a Take warm even when its participant sits beyond the roster cap.
+        var participantIds = participants
+            .Select(participant => participant["sdkUserId"]?.ToString() ?? string.Empty)
+            .Where(participantId => participantId.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+        var videoCandidates = new List<(string ParticipantId, string Purpose)>();
+        var seenVideoParticipants = new HashSet<string>(StringComparer.Ordinal);
+
+        void AddVideoCandidate(string? participantId, string purpose)
+        {
+            if (string.IsNullOrWhiteSpace(participantId) ||
+                !participantIds.Contains(participantId) ||
+                !seenVideoParticipants.Add(participantId))
+            {
+                return;
+            }
+
+            videoCandidates.Add((participantId, purpose));
+        }
+
+        var activeSpeaker = participants.FirstOrDefault(participant =>
+            participant.TryGetValue("talking", out var talking) && talking is true);
+        AddVideoCandidate(activeSpeaker?["sdkUserId"]?.ToString(), "active-speaker");
+
+        foreach (var route in programSceneRoutes)
+        {
+            AddVideoCandidate(route.ParticipantId, "program");
+        }
+
+        foreach (var route in previewSceneRoutes)
+        {
+            AddVideoCandidate(route.ParticipantId, "preview");
+        }
+
+        foreach (var participant in participants)
+        {
+            AddVideoCandidate(participant["sdkUserId"]?.ToString(), "multiview");
+        }
+
+        var videoCount = Math.Min(Math.Max(0, maxVideoSubscriptions), videoCandidates.Count);
+        for (var index = 0; index < videoCount; index++)
+        {
+            var candidate = videoCandidates[index];
+            subscriptions.Add(new Dictionary<string, object?>
+            {
+                ["participantId"] = candidate.ParticipantId,
                 ["kind"] = "participant-video",
-                ["purpose"] = index == 0 ? "active-speaker" : "program",
+                ["purpose"] = candidate.Purpose,
                 ["priority"] = 10 + index
             });
         }

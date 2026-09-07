@@ -298,6 +298,19 @@ uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
       mixHash(hash, layer.colorGrade.saturation);
       mixHash(hash, layer.colorGrade.temperature);
     }
+    // The key must participate in the signature exactly like the grade does:
+    // this hash is the change-detection key for the whole render plan, so a
+    // parameter missing from it is a parameter an operator can move without
+    // anything downstream noticing.
+    mixHash(hash, layer.hasChromaKey ? 1 : 0);
+    if (layer.hasChromaKey) {
+      mixHash(hash, layer.chromaKey.keyR);
+      mixHash(hash, layer.chromaKey.keyG);
+      mixHash(hash, layer.chromaKey.keyB);
+      mixHash(hash, layer.chromaKey.similarity);
+      mixHash(hash, layer.chromaKey.smoothness);
+      mixHash(hash, layer.chromaKey.spill);
+    }
     mixHash(hash, compositorLayerOpacity(layer));
   }
   return hash == 0 ? 1u : hash;
@@ -364,6 +377,12 @@ void fillSyntheticProgramFramePreview(
           color = compositor::colorFromParticipantId("media:" + layer.mediaAssetId);
           const std::string frameSourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
           frameForLayer = findFrameForParticipant(frames, frameSourceId);
+        } else if (layer.hasFillColor) {
+          // Mirrors the D3D11 resolveLayers branch: a deliberately sourceless
+          // layer (the tiles wall background) paints its configured colour
+          // instead of the default placeholder grey. frameForLayer stays
+          // null, so the synthetic-fill branch below paints `color`.
+          color = compositor::parseHexColorRgba(layer.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
           color = compositor::colorFromParticipantId(frameForLayer->participantId);

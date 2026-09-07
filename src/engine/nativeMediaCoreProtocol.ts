@@ -13,6 +13,7 @@ export type NativeMediaCoreCapability =
   | "audio-monitor-output"
   | "program-recording"
   | "iso-recording"
+  | "tiles-layer"
   | "rtmp-output"
   | "ndi-output"
   | "srt-output"
@@ -445,6 +446,7 @@ export type NativeMediaCoreRecordingStream = {
 };
 
 export type NativeMediaCoreRecordingSession = {
+  lifecycle?: import("./generated/lifecycle").OutputLifecycle;
   sessionId: string;
   active: boolean;
   status: "recording" | "warning" | "stopped" | "failed";

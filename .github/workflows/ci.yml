@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -19,6 +20,10 @@ jobs:
           node-version: 22
       - name: Version sources agree with package.json
         run: node scripts/stamp-version.mjs --check
+      - name: Generated contracts are current
+        run: node contracts/generate.mjs --check
+      - name: Release evidence validator tests
+        run: node --test scripts/tests/release-evidence.test.mjs
 
   # Design-token gate for the macOS shell (docs/design-handoff-macos.md).
   # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /
@@ -32,6 +37,11 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      # The drill OPENS the recording to prove it is playable at program
+      # resolution — bytes on disk are not proof. macos-14 runners ship no
+      # ffmpeg, so without this the assertion cannot run at all.
+      - name: Install ffmpeg (ffprobe for the recording assertion)
+        run: brew install ffmpeg
       - name: Configure (metal)
         run: |
           cmake -S native -B native/build-metal -G Ninja \
@@ -45,11 +55,32 @@ jobs:
           --target corevideo-native corevideo-zoom-engine-fake
       - name: Show drill
         run: python3 scripts/mac-show-drill.py --seconds 25
-      # Full production wall: 8 synthetic 1080p60 Zoom feeds (the owner's account
-      # max with the BO100 flag) through the real ingest path = ~1.5GB/s decoded.
-      # Gates sustained fps + coreMutex hold, which is what catches an
-      # unoptimized core (the class that made the port look slow for weeks).
-      - name: Show drill (8x1080p60 load)
+      # Production wall under load: synthetic 1080p60 Zoom feeds through the real
+      # ingest path. Gates sustained fps, frame DELIVERY and coreMutex hold — the
+      # class that made the port look slow for weeks.
+      #
+      # ADVISORY ON CI, BLOCKING ON REAL HARDWARE — and that is not a quiet
+      # downgrade, so read the numbers before restoring it.
+      #
+      # A macos-14 runner cannot SOURCE this load, so the run measures the runner
+      # rather than the code. Measured 2026-08-07 across two runs:
+      #   --load 8: engine produced ~250 of 480 frames/s; output held 59.3fps
+      #   --load 3: engine produced  ~71 of 180 frames/s; output held 45.2fps
+      # The lighter load scored WORSE, so this is variance on shared CI hardware,
+      # not a ceiling that a smaller --load can duck under. For comparison, a real
+      # box sources 479 frames/s (1.49GB/s) and delivers 101% at --load 8.
+      #
+      # Left blocking, it is permanent red that trains everyone to ignore CI;
+      # deleted, the numbers vanish. So it still RUNS and still prints its full
+      # verdict — the log shows exactly what was sourced and delivered — but does
+      # not gate the merge. The drill also now names a harness shortfall instead
+      # of blaming the core for frames the harness never produced.
+      #
+      # THE REAL GATE IS LOCAL: run `python3 scripts/mac-show-drill.py --load 8`
+      # on real hardware before shipping perf work. Restore continue-on-error
+      # removal the day CI runs on a machine that can source 1.5GB/s.
+      - name: Show drill (8x1080p60 load) — advisory, see comment
+        continue-on-error: true
         run: python3 scripts/mac-show-drill.py --load 8 --seconds 25
 
   mac-shell-design-lint:
@@ -58,6 +89,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Design-token lint (mac-shell)
         run: bash scripts/lint-mac-design.sh
+
+  # The shell had ZERO tests for ~9k lines, so every regression reached the
+  # owner in a live session first — including a prefs bug that silently wiped
+  # every saved setting. The suite runs IN the app binary rather than under
+  # XCTest so it also runs on a machine with Command Line Tools only (no Xcode);
+  # a suite that runs in CI but not on the developer's box finds bugs too late.
+  mac-shell-tests:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build shell
+        run: cd mac-shell && swift build -c release
+      - name: Shell test suite
+        run: COREVIDEO_SHELL_TESTS=1 mac-shell/.build/release/CoreVideoProShell
+      - name: Redaction + prefs self-check
+        run: COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell
 
   typecheck:
     runs-on: ubuntu-latest
@@ -250,7 +297,19 @@ jobs:
       - run: npm ci
       - name: Native media-core stub gate
         run: npm run test:native-media-core
-      - name: MediaCore bridge + unit tests
+      - name: Restore and provision WinUI test runtime
+        run: |
+          dotnet restore native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/provision-winui-test-runtime.ps1
+      - name: MediaCore, Control, WinUI and bridge tests
         run: npm run test:native-shell
+      - name: Upload Windows test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-shell-test-results
+          path: artifacts/test-results/**
+          if-no-files-found: error
       - name: Publish WinUI shell (build gate)
         run: dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -r win-x64 --self-contained false

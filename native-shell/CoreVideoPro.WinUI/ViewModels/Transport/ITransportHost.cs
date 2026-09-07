@@ -30,6 +30,8 @@ public interface ITransportHost
 {
     // --- transport bound state (the command bodies read/write these; they stay
     //     [ObservableProperty] on StudioViewModel so XAML x:Bind is unchanged) ---
+    // These legacy host names carry DESIRED activity. The shell implements them
+    // using RecordingRequested/StreamingRequested, never its live indicators.
     bool Recording { get; set; }
 
     bool Streaming { get; set; }
@@ -57,10 +59,15 @@ public interface ITransportHost
 
     string TakeTransitionLabel { get; }
 
-    /// <summary>Wraps the original <c>_livePreviewDraft is not null &amp;&amp;
-    /// HasPendingProgramMediaCue(GetMutableRoutes(sceneId), _livePreviewDraft)</c> guard so the
-    /// draft stays private to StudioViewModel.</summary>
-    bool HasPendingProgramMediaCue(string sceneId);
+    bool IsSceneAvailable(string? sceneId);
+
+    bool HasPendingPreviewChanges(string sceneId);
+
+    Func<Func<bool>> CaptureTakeRollback();
+
+    void BeginTakeMutation();
+    void EndTakeMutation();
+    void RequestTakeReconciliation();
 
     void CopyPreviewRoutesToScene(string sceneId);
 
@@ -75,7 +82,7 @@ public interface ITransportHost
 
     Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null);
 
-    Dictionary<string, object?> BuildSpinePayload();
+    Task<Dictionary<string, object?>> BuildSpinePayloadAsync(CancellationToken cancellationToken);
 
     void UnsubscribeZoomCapture(string status);
 

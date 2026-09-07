@@ -91,6 +91,43 @@ function send(type, payload = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function participantsOf(snapshot) {
+  const raw = snapshot?.zoom?.participants ?? snapshot?.participants ?? [];
+  return raw
+    .map((p) => ({
+      id: String(p.userId ?? p.id ?? ""),
+      name: String(p.displayName ?? p.name ?? ""),
+      videoOn: p.videoOn !== false,
+    }))
+    .filter((p) => p.id && p.videoOn);
+}
+
+function buildSpinePayload(participants) {
+  const subscriptions = [
+    {
+      participantId: participants[0].id,
+      kind: "meeting-audio",
+      purpose: "program",
+      priority: 0,
+    },
+    ...participants.map((p, index) => ({
+      participantId: p.id,
+      kind: "participant-video",
+      purpose: index === 0 ? "active-speaker" : "program",
+      priority: 10 + index,
+    })),
+  ];
+  return {
+    readiness: { status: "ready", platform: "windows", sdkVersion: "fake-engine", checks: [], blockers: [], warnings: [], summary: "record-audio validation" },
+    participants: participants.map((p) => ({ sdkUserId: p.id, displayName: p.name, role: "guest", videoOn: true, muted: false, talking: true, audioLevel: 60, networkQuality: "good" })),
+    subscriptions,
+    startCapture: true,
+    blocked: false,
+    warnings: [],
+    summary: `${participants.length} participants, ${subscriptions.length} subscriptions`,
+  };
+}
+
 function recordingState(snapshot) {
   const rec = snapshot?.recording ?? {};
   return {
@@ -101,6 +138,60 @@ function recordingState(snapshot) {
     audioPackets: Number(rec.proof?.audioPacketsObserved ?? 0),
     artifact: rec.artifactPath ?? null,
     encoderWarnings: snapshot?.encoderSession?.warnings ?? [],
+  };
+}
+
+// PIXELS, not just packets. Every recording check in this repo asserted that
+// streams EXIST and that their container start/duration line up — and none ever
+// looked at an actual pixel. That let the program recording mux the 320x180 UI
+// thumbnail into a 1920x1080 writer for months: the whole show sat in a corner of
+// a black frame while every validator stayed green (a 2026-07-13 recording:
+// 8995 frames, mean luma 4/255).
+//
+// Two cheap assertions close that hole. Decode to 8x8 gray (64 cells/frame):
+//   * the frame must not be BLACK — median cell luma above a floor;
+//   * content must not be CONFINED TO A CORNER — most cells must carry signal.
+// A thumbnail in the corner of a 1080p frame lights ~2 of 64 cells, so the
+// coverage check is what actually catches that defect; the luma floor catches a
+// wholly black recording.
+function programPixelVerdict(artifactPath, ffmpegBin) {
+  const out = spawnSync(ffmpegBin,
+    ["-v", "error", "-i", artifactPath, "-vf", "scale=8:8", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+    { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
+  if (out.status !== 0 || !out.stdout?.length) {
+    return { available: false, pass: true };  // cannot decode: skip, never fail blind
+  }
+  const cells = 64;
+  const frames = Math.floor(out.stdout.length / cells);
+  if (frames === 0) return { available: false, pass: true };
+  // Sample up to 60 frames spread across the file, skipping the first second
+  // (startup frames can legitimately be black before the first composite).
+  const first = Math.min(frames - 1, 50);
+  const step = Math.max(1, Math.floor((frames - first) / 60));
+  const frameMeans = [];
+  const coverages = [];
+  for (let f = first; f < frames; f += step) {
+    let sum = 0;
+    let lit = 0;
+    for (let i = 0; i < cells; i += 1) {
+      const v = out.stdout[f * cells + i];
+      sum += v;
+      if (v > 10) lit += 1;
+    }
+    frameMeans.push(sum / cells);
+    coverages.push(lit / cells);
+  }
+  const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const medianLuma = median(frameMeans);
+  const medianCoverage = median(coverages);
+  const MIN_LUMA = 8;        // a black program
+  const MIN_COVERAGE = 0.5;  // a program confined to part of the frame
+  return {
+    available: true,
+    medianLuma: Number(medianLuma.toFixed(1)),
+    medianCoverage: Number(medianCoverage.toFixed(2)),
+    sampled: frameMeans.length,
+    pass: medianLuma >= MIN_LUMA && medianCoverage >= MIN_COVERAGE,
   };
 }
 
@@ -143,7 +234,23 @@ try {
     payload: { meetingNumber: "1234567890", displayName: "record-audio-proof" },
   });
   console.log("Joined        : fake engine (deterministic tones)");
-  await sleep(3000);  // engine spin-up + first tones
+  await sleep(1000);
+
+  let participants = [];
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    const snapshot = (await send("zoom-snapshot")).snapshot;
+    participants = participantsOf(snapshot);
+    if (participants.length > 0) {
+      await send("zoom-media-spine-sync", {
+        spinePayload: buildSpinePayload(participants),
+        elapsedMs: Date.now() - startedAt,
+      });
+      break;
+    }
+    await sleep(500);
+  }
+  if (participants.length === 0) throw new Error("fake engine did not present a video participant");
+  await sleep(2000);  // audio/video subscriptions + first ring packets
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
@@ -151,7 +258,7 @@ try {
       {
         type: "load-scene-graph",
         sceneId: "record-audio-validation",
-        routes: [{ routeId: "program", mode: "fixed", audioRole: "mix", participantId: "speaker-1" }],
+        routes: [{ routeId: "program", mode: "fixed", audioRole: "mix", participantId: participants[0].id }],
       },
       {
         type: "sync-audio-routing-matrix",
@@ -224,6 +331,22 @@ try {
     const verdict = ffprobeVerdict(artifactAbsolute);
     console.log(`ffprobe       : ${JSON.stringify(verdict)}`);
     if (!verdict.pass) failures.push(`ffprobe A/V check failed: ${JSON.stringify(verdict)}`);
+
+    // Does the recording actually SHOW the program? (see programPixelVerdict)
+    const ffmpegBin = ["ffmpeg", "C:\\ffmpeg\\bin\\ffmpeg.exe"].find((bin) => {
+      const probe = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 10000 });
+      return !probe.error && probe.status === 0;
+    });
+    if (ffmpegBin) {
+      const pixels = programPixelVerdict(artifactAbsolute, ffmpegBin);
+      console.log(`pixels        : ${JSON.stringify(pixels)}`);
+      if (!pixels.pass) {
+        failures.push(
+          `recorded program is black or confined to part of the frame ` +
+          `(median luma ${pixels.medianLuma}, coverage ${pixels.medianCoverage}) — ` +
+          `the recording is not showing the composed program`);
+      }
+    }
   } else {
     failures.push("no recording artifact path in the snapshot");
   }

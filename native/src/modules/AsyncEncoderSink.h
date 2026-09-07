@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -32,16 +33,18 @@ namespace corevideo::modules {
 //     `maxVideoQueue`, the OLDEST pending frame is dropped (drop-to-latest) so
 //     the recording degrades to a lower effective fps instead of the worker
 //     stalling or memory growing without bound.
+//     Caps cover ALL queued generations. If older stopped takes hold the entire
+//     budget, new incoming media is dropped instead, preserving their tail.
 //   - submitAudio: enqueue and return. Audio drops are audible, so the audio cap
 //     is generous; beyond `maxAudioQueue` the oldest packet is dropped.
 //   - configureRecording / start: NON-BLOCKING. They are re-emitted every sync
 //     while recording, so a blocking wait would couple the command thread to the
 //     writer's queue drain each tick. Ordering (container open ahead of frames)
-//     is preserved by the single FIFO queue; start() returns an optimistic
-//     active snapshot the writer reconciles with the wrapped session shortly.
-//   - stopRecording: NON-BLOCKING. The caller holds coreMutex, so it only enqueues
-//     the stop and returns instantly (the operator's stop must never stall under
-//     load); the writer finalizes the container asynchronously. The bounded
+//     is preserved by the single FIFO queue; start() returns starting until
+//     the writer reports actual output progress.
+//   - stopRecording: NON-BLOCKING. The caller holds coreMutex, so it closes the
+//     producer gate and enqueues a FIFO barrier. Already-accepted media drains
+//     before asynchronous Finalize, preserving the take's A/V tail. The bounded
 //     finalize GRACE is enforced at teardown (destructor), where no lock is held.
 //   - session(): returns a thread-safe snapshot the writer refreshes after every
 //     applied item (eventually consistent within a few frames — fine for the
@@ -57,10 +60,17 @@ namespace corevideo::modules {
 class AsyncEncoderSink final : public IEncoderSink {
  public:
   struct Options {
-    // Max pending VIDEO frames before drop-to-latest kicks in.
+    // Max pending PROGRAM video frames before drop-to-latest kicks in.
     size_t maxVideoQueue = 6;
-    // Max pending AUDIO packets before the oldest is dropped.
+    // ISO video is enqueued one source per item and coalesced by sourceId. Eight
+    // slots retain at most the latest frame for each supported Zoom ISO.
+    size_t maxIsoVideoQueue = 8;
+    // Max pending PROGRAM audio packets before the oldest is dropped.
     size_t maxAudioQueue = 96;
+    // ISO audio is wall-clock anchored and silence-fills a dropped tick. A small
+    // queue is therefore both safe and essential: one item fans out to every
+    // armed ISO AAC writer.
+    size_t maxIsoAudioQueue = 4;
     // Bounded wait for teardown's writer join (the finalize grace at shutdown).
     std::chrono::milliseconds finalizeGrace{4000};
   };
@@ -79,6 +89,8 @@ class AsyncEncoderSink final : public IEncoderSink {
   void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override;
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override;
   void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override;
+  void submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                     int64_t timelineTimestamp100ns) override;
   // A3: forwarded straight to the inner sink — the interface contract makes
   // the implementation thread-safe (an atomic store), so no queue item.
   void setAudioContentLatencySamples(int latencySamples) override;
@@ -100,6 +112,7 @@ class AsyncEncoderSink final : public IEncoderSink {
   struct Item {
     Kind kind;
     uint64_t seq = 0;
+    uint64_t generation = 0;
     // Configure
     RecordingSessionRequest request;
     // Start
@@ -116,6 +129,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     int audioFrameCount = 0;
     int audioChannels = 0;
     int audioSampleRate = 0;
+    int64_t audioTimelineTimestamp100ns = 0;
   };
 
   // All state the (possibly-detached) writer thread touches. Held by shared_ptr
@@ -129,8 +143,27 @@ class AsyncEncoderSink final : public IEncoderSink {
     std::deque<Item> queue;
     uint64_t nextSeq = 1;
     uint64_t appliedSeq = 0;
+    uint64_t generation = 0;
+    std::string configuredSessionId = "recording";
+    // Separate from active: a failed writer still needs one cleanup/finalize.
+    bool stopRequested = true;
+    std::string epoch = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    bool applying = false;
     bool stop = false;
     bool writerDone = false;
+
+    // Producer-side held-frame suppression. MediaCore intentionally re-submits
+    // the latest Program/ISO frame from the audio tick; letting those identical
+    // frames enter the bounded queue made them look like real drops and could
+    // keep the writer permanently busy with work the mux clock would discard.
+    bool hasLastProgramFrameNumber = false;
+    int64_t lastProgramFrameNumber = 0;
+    std::map<std::string, int64_t> lastIsoFrameIdBySource;
+
+    // Weighted fairness for the single writer. Strict Program priority starved
+    // every ISO whenever Program audio/video arrived continuously (the live
+    // eight-source failure wrote one ISO frame, then never serviced ISO again).
+    size_t consecutiveProgramItems = 0;
 
     std::atomic<bool> active{false};
     std::atomic<uint64_t> droppedVideo{0};
@@ -140,7 +173,9 @@ class AsyncEncoderSink final : public IEncoderSink {
     OutputSession snapshot;
 
     size_t maxVideoQueue = 6;
+    size_t maxIsoVideoQueue = 8;
     size_t maxAudioQueue = 96;
+    size_t maxIsoAudioQueue = 4;
   };
 
   // Enqueue `item`, assigning it a seq. Applies the drop policy for Video/Audio.

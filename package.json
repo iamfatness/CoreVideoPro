@@ -19,7 +19,7 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --config vite.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:gate": "npm run typecheck && npm run typecheck:show-engine && npm run test && npm run test:native-core && npm run test:show-engine && npm run verify:barrel:show-engine && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke",
+    "test:gate": "npm run contract:check && npm run typecheck && npm run typecheck:show-engine && npm run test && npm run test:native-core && npm run test:show-engine && npm run verify:barrel:show-engine && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke && npm run test:release-evidence",
     "test:native-core": "npm run test --workspace native-core",
     "test:show-engine": "npm run test --workspace show-engine",
     "typecheck:show-engine": "npm run typecheck --workspace show-engine && npm run typecheck:tests --workspace show-engine",
@@ -27,7 +27,7 @@
     "verify:barrel:show-engine": "npm run verify:barrel --workspace show-engine",
     "test:native-media-core": "powershell -ExecutionPolicy Bypass -File scripts/test-native.ps1",
     "test:native-recording-proof": "node scripts/native-recording-proof.mjs",
-    "test:native-shell": "dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj && dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj && powershell -ExecutionPolicy Bypass -File native-shell/test-media-core-bridge.ps1",
+    "test:native-shell": "dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj --logger trx --results-directory artifacts/test-results/mediacore && dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj --logger trx --results-directory artifacts/test-results/control && dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj -p:WindowsAppSDKBootstrapAutoInitializeOptions_Default=false -p:WindowsAppSDKBootstrapAutoInitializeOptions_None=true --blame-hang-timeout 2m --blame-hang-dump-type mini --logger trx --results-directory artifacts/test-results/winui && powershell -ExecutionPolicy Bypass -File native-shell/test-media-core-bridge.ps1",
     "test:native-shell-smoke": "powershell -ExecutionPolicy Bypass -File scripts/test-native-shell-smoke.ps1",
     "test:native-shell-dev-readiness": "powershell -ExecutionPolicy Bypass -File scripts/test-native-shell-dev-readiness.ps1",
     "test:studio-workflow": "powershell -ExecutionPolicy Bypass -File scripts/test-studio-workflow.ps1",
@@ -49,7 +49,11 @@
     "stamp:version:check": "node scripts/stamp-version.mjs --check",
     "release:notes": "node scripts/release-notes.mjs",
     "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
-    "validate:record-stream": "node ./scripts/validate-record-stream.mjs"
+    "validate:record-stream": "node ./scripts/validate-record-stream.mjs",
+    "validate:tiles": "node scripts/validate-tiles.mjs",
+    "test:release-evidence": "node --test scripts/tests/release-evidence.test.mjs",
+    "contract:generate": "node contracts/generate.mjs",
+    "contract:check": "node contracts/generate.mjs --check"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",

@@ -7,6 +7,64 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class NativeMediaCoreStateMapperTests
 {
+    [Theory]
+    [InlineData("snapshot")]
+    [InlineData("state")]
+    public void PreviewSceneSurvivesRealWireParserAndMapper(string envelope)
+    {
+        using var response = JsonDocument.Parse("{\"ok\":true,\"" + envelope + "\":" + """
+            {"health":null,"profile":null,"sceneId":"native-program","previewScene":{
+              "sceneId":"native-preview","routeCount":2,"layerCount":3,"composite":true}}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var commands = new[] { MediaCoreCommandBuilder.BuildPreviewSceneCommand("desired-preview", []) };
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(commands, 100, 3, wire);
+        Assert.Equal("native-program", snapshot.SceneId);
+        Assert.NotNull(snapshot.PreviewScene);
+        Assert.Equal("native-preview", snapshot.PreviewScene.SceneId);
+        Assert.Equal(2, snapshot.PreviewScene.RouteCount);
+        Assert.Equal(3, snapshot.PreviewScene.LayerCount);
+        Assert.True(snapshot.PreviewScene.Composite);
+    }
+
+    [Fact]
+    public void MissingNativePreviewDoesNotInventObservedPreviewFromCommand()
+    {
+        using var response = JsonDocument.Parse("""{"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"native-program"}}""");
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var commands = new[] { MediaCoreCommandBuilder.BuildPreviewSceneCommand("desired-preview", []) };
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(commands, 100, 3, wire);
+        Assert.Null(snapshot.PreviewScene);
+    }
+
+    [Fact]
+    public void NestedProgramFramePreservesActualSceneAndSourcesAcrossCommandAcknowledgment()
+    {
+        using var response = JsonDocument.Parse("""
+            {"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"new-scene","programFrameCount":10,
+            "programFrame":{"frameNumber":9,"sceneId":"old-scene","renderPlanId":"old-scene:2:0","health":"live",
+            "videoSources":[{"layerId":"speaker","sourceId":"zoom:jamal","participantId":"jamal","kind":"participant-video"}]}}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response)!;
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        Assert.Equal("new-scene", snapshot.SceneId);
+        Assert.Equal("old-scene", snapshot.ProgramFrame?.SceneId);
+        Assert.Equal(9, snapshot.ProgramFrame?.FrameNumber);
+        Assert.Equal("zoom:jamal", Assert.Single(snapshot.ProgramFrame!.VideoSources!).SourceId);
+    }
+
+    [Fact]
+    public void LegacyFrameCannotInventActualSourceOrSceneFromDesiredCommands()
+    {
+        using var response = JsonDocument.Parse("""{"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"desired","programFrameCount":10,"renderPlanId":"desired:2:0"}}""");
+        var wire = CoreProtocolParser.TryParseWireState(response)!;
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        Assert.Null(snapshot.ProgramFrame?.SceneId);
+        Assert.Null(snapshot.ProgramFrame?.VideoSources);
+    }
+
     private static readonly IReadOnlyList<NativeMediaCoreCommand> Commands =
     [
         new()
@@ -440,7 +498,7 @@ public sealed class NativeMediaCoreStateMapperTests
     }
 
     [Fact]
-    public void NativeCaptureAudioWarningsStillPromoteToAudioMixWarnings()
+    public void OptionalCaptureAudioWarningsStayScopedToTheCaptureSource()
     {
         var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
         {
@@ -494,9 +552,7 @@ public sealed class NativeMediaCoreStateMapperTests
             }
         });
 
-        Assert.Contains(
-            "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
-            snapshot.AudioMixSession.Warnings);
+        Assert.Empty(snapshot.AudioMixSession.Warnings);
         Assert.Equal("ready", snapshot.AudioMixSession.PluginHost.Status);
         Assert.Equal("Curves AQ Stereo", Assert.Single(snapshot.AudioMixSession.PluginHost.Plugins).ClassNames[0]);
         Assert.True(snapshot.AudioMixSession.MasteringEnabled);
@@ -504,9 +560,12 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal(-14.6, snapshot.AudioMixSession.MasterMeter.IntegratedLufs);
         Assert.Equal(-1.4, snapshot.AudioMixSession.MasterMeter.TruePeakDbfs);
         Assert.Equal(3000, snapshot.AudioMixSession.MasterMeter.WindowMs);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
             snapshot.Diagnostics.Warnings);
+        Assert.Contains(
+            "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
+            snapshot.Diagnostics.CaptureAudioSources.Warnings);
         Assert.DoesNotContain(
             snapshot.Diagnostics.Warnings,
             warning => warning.StartsWith("Capture audio:", StringComparison.Ordinal));
@@ -607,5 +666,27 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("live", snapshot.VirtualCamera.Status);
         Assert.True(snapshot.VirtualCamera.Enabled);
         Assert.Equal(1280, snapshot.VirtualCamera.Resolution.Width);
+    }
+
+    [Fact]
+    public void CarriesNativeRenderDropsIntoTransportAndSupportTelemetry()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(
+            Commands,
+            3000,
+            12,
+            new NativeMediaCoreWireState
+            {
+                ProgramFrameCount = 120,
+                Compositor = new NativeMediaCoreCompositorState
+                {
+                    Status = "live",
+                    ProgramFrameCount = 120,
+                    DroppedFrameCount = 1499
+                }
+            });
+
+        Assert.Equal(1499, snapshot.Compositor.DroppedFrameCount);
+        Assert.Equal(1499, snapshot.Diagnostics.Compositor.DroppedFrameCount);
     }
 }

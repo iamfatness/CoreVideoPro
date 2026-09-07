@@ -41,7 +41,8 @@
                     <TextBlock Text="Zoom feed health" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.FeedHealthSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.FeedHealthRows, Mode=OneWay}">
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.FeedHealthRows, Mode=OneWay}"
+                                   ElementPrepared="OnFeedHealthElementPrepared">
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:FeedHealthRow">
                                 <Grid ColumnSpacing="8" Padding="0,4">
@@ -49,15 +50,27 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
                                     <StackPanel Spacing="2">
                                         <TextBlock Text="{x:Bind Name}" FontSize="12" FontWeight="SemiBold" />
                                         <!-- R1: assign a production role (session-only). Role-targeted
                                              scene layers and the core director follow this. -->
-                                        <ComboBox ItemsSource="{Binding ViewModel.ProductionRoleAssignmentOptions, ElementName=SourcesInputsRoot}"
+                                        <!-- SelectedValue is applied in code-behind (OnProductionRoleComboLoaded),
+                                             NOT by x:Bind. Pushing it through x:Bind's phased ProcessBindings
+                                             threw COMException 0x80004005 out of Selector.set_SelectedValue and
+                                             killed the app: these rows live in an ItemsRepeater, so a recycled
+                                             container can be re-bound while its ItemsSource binding is still
+                                             resolving, and selecting a value the ComboBox does not have yet
+                                             throws. Tag carries the whole row so the handler has both ids. -->
+                                        <ComboBox x:Name="ProductionRoleCombo"
+                                                  ItemsSource="{Binding ViewModel.ProductionRoleAssignmentOptions, ElementName=SourcesInputsRoot}"
                                                   SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
-                                                  SelectedValue="{x:Bind ProductionRoleId}"
-                                                  Tag="{x:Bind ParticipantId}"
+                                                  Tag="{x:Bind}"
+                                                  Loaded="OnProductionRoleComboLoaded"
                                                   SelectionChanged="OnProductionRoleChanged"
                                                   FontSize="10" MinWidth="110" Padding="6,2,6,2" />
                                     </StackPanel>
@@ -68,6 +81,19 @@
                                                    Foreground="{StaticResource StudioMutedBrush}"
                                                    Visibility="{x:Bind NeedsAttention, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                                     </StackPanel>
+                                    <Border Grid.Row="1" Grid.ColumnSpan="2" Margin="0,5,0,0"
+                                            Background="#0C1118" BorderBrush="#22303A"
+                                            BorderThickness="1" CornerRadius="4" Padding="7,5">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{x:Bind DiagnosticSummary}" FontSize="10"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
+                                            <TextBlock Text="{x:Bind RecommendedAction}" FontSize="10"
+                                                       Foreground="#F0A85C"
+                                                       TextWrapping="WrapWholeWords"
+                                                       Visibility="{x:Bind HasRecommendedAction, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </Border>
                                 </Grid>
                             </DataTemplate>
                         </ItemsRepeater.ItemTemplate>
@@ -283,6 +309,13 @@
                                Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
                     <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
+                    <!-- An in-show input whose source no longer exists (unplugged display,
+                         changed camera id) is dropped from the multiview silently, leaving
+                         an unexplained placeholder tile. Say so. Scalar string + Visibility
+                         only — never a snapshot-rate bound collection (0xc000027b). -->
+                    <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
+                             Message="{x:Bind ViewModel.ShowInputWarning, Mode=OneWay}"
+                             Visibility="{x:Bind ViewModel.ShowInputWarningVisibility, Mode=OneWay}" />
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />

@@ -27,9 +27,15 @@ public sealed class ZoomMediaSpineSnapshotMergerTests
             [
                 new ZoomMediaSpineSubscription
                 {
+                    ParticipantId = "operator-1",
                     Kind = "participant-video",
                     Status = "subscribed",
-                    FramesReceived = 3
+                    LastResultCode = "ok",
+                    DeliveredWidth = 1280,
+                    DeliveredHeight = 720,
+                    DeliveredFps = 30,
+                    FramesReceived = 3,
+                    FrameFresh = true
                 }
             ]
         };
@@ -41,6 +47,10 @@ public sealed class ZoomMediaSpineSnapshotMergerTests
         Assert.Equal("operator-1", merged.Participants[0].UserId);
         Assert.Equal("operator-1", merged.ActiveSpeakerId);
         Assert.True(merged.SourceSnapshot.SubscribedSourceCount >= 1);
+        var subscription = Assert.Single(merged.ZoomSubscriptions);
+        Assert.Equal("operator-1", subscription.ParticipantId);
+        Assert.Equal(1280, subscription.DeliveredWidth);
+        Assert.True(subscription.FrameFresh);
     }
 
     [Fact]

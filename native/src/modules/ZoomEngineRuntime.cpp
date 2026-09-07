@@ -2,6 +2,7 @@
 
 #include "config/ZoomMeetingSdkConfig.h"
 #include "engine-ipc.h"
+#include "modules/LumaRangeProbe.h"
 #include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
@@ -31,6 +32,11 @@ int envInt(const char* name, int fallback) {
 
 std::string participantIdString(std::uint32_t id) {
   return id == 0 ? std::string{} : std::to_string(id);
+}
+
+std::uint64_t monotonicMs() {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 std::string meetingIdFromJoinPayload(const rpc::Json& payload) {
@@ -104,10 +110,12 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
 }
 
 bool ZoomEngineRuntime::configured() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   return !config_.executablePath.empty();
 }
 
 void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload) {
+  std::lock_guard<std::mutex> lock(mutex_);
   config_ = loadConfig();
   const auto payloadJwt = payload.getString("sdkJwt");
   const auto payloadZak = payload.getString("userZak");
@@ -120,7 +128,6 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     config_.userZak = payloadZak;
   }
   if (!payloadJwt.empty() && initialized_) {
-    std::lock_guard<std::mutex> lock(mutex_);
     if (process_ && process_->running()) {
       enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
     }
@@ -136,16 +143,37 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
   }
 }
 
-rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
+rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<bool()>& cancelled) {
   if (!configured()) {
     return nullptr;
   }
 
+  if (cancelled && cancelled()) return nullptr;
+  bool restart;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    restart = restartBeforeJoin_;
+    restartBeforeJoin_ = false;
+    if (restart) {
+      ++processGeneration_;
+      purgeQueuedEngineSendsLocked("join after leave");
+    }
+  }
+  if (restart) {
+    // Rejoin uses a fresh SDK process. Old callbacks have no operation identity,
+    // so they must be retired before accepting results for the next meeting.
+    stopReader(); // no coreMutex or runtime mutex held while terminating/joining
+    std::lock_guard<std::mutex> lock(mutex_);
+    process_.reset();
+    initialized_ = false;
+  }
+  if (cancelled && cancelled()) return nullptr;
   applyJoinCredentialsFromPayload(payload);
 
   const auto meetingId = meetingIdFromJoinPayload(payload);
   if (meetingId.empty()) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
     return rpc::Json::Object{
         {"meetingState", "error"},
         {"participants", rpc::Json::Array{}},
@@ -154,14 +182,17 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     };
   }
 
-  if (!ensureStarted()) {
+  if (!ensureStarted(cancelled)) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
     return rawCaptureSnapshotLocked();
   }
 
   bool waitForAuth = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
+    acceptJoinEvents_ = true;
     if (!process_ || !process_->running()) {
       return rawCaptureSnapshotLocked();
     }
@@ -188,6 +219,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     while (std::chrono::steady_clock::now() < authDeadline) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (cancelled && cancelled()) return nullptr;
         if (state_.sdkAuthenticated()) {
           authReady = true;
           break;
@@ -200,6 +232,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     }
     if (!authReady) {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (cancelled && cancelled()) return nullptr;
       state_.apply({ZoomEngineEventKind::Error, "error", "", "auth", "Timed out waiting for Zoom SDK authentication."});
       return rawCaptureSnapshotLocked();
     }
@@ -207,6 +240,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
     ZoomEngineJoinCommand command;
     command.meetingId = meetingId;
     command.displayName = payload.getString("displayName", "CoreVideo Pro");
@@ -224,6 +258,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
   while (std::chrono::steady_clock::now() < deadline) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (cancelled && cancelled()) return nullptr;
       const auto snapshot = state_.snapshot();
       if (snapshot.meetingState == "in-meeting" || snapshot.meetingState == "error") {
         return rawCaptureSnapshotLocked();
@@ -233,6 +268,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  if (cancelled && cancelled()) return nullptr;
   state_.apply({ZoomEngineEventKind::Error, "error", "", "join", "Timed out waiting for Zoom meeting join result."});
   return rawCaptureSnapshotLocked();
 }
@@ -243,6 +279,8 @@ rpc::Json ZoomEngineRuntime::leave() {
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  acceptJoinEvents_ = false;
+  restartBeforeJoin_ = true;
   if (process_ && process_->running()) {
     enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
   }
@@ -320,7 +358,16 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       }
       const auto kind = request.getString("kind");
       const auto purpose = request.getString("purpose");
-      command.sourceUuid = kind + "-" + participantId + "-" + purpose;
+      // Video identity must survive Preview -> Program promotion. Including
+      // purpose in the UUID tore down the warmed SHM subscription on every
+      // Take, exactly when the operator needed its retained latest frame.
+      if (kind == "participant-video") {
+        command.sourceUuid = kind + "-" + participantId + "-camera";
+      } else if (kind == "screen-share") {
+        command.sourceUuid = kind + "-" + participantId + "-share";
+      } else {
+        command.sourceUuid = kind + "-" + participantId + "-" + purpose;
+      }
       command.mode = kind == "screen-share" ? "screenshare" : "";
       // Resolution by purpose (0=360P, 1=720P, 2=1080P). TARGET is 1080p60 for EVERY
       // participant (product spec). But N concurrent 1080P raw subscriptions overloaded
@@ -337,7 +384,8 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       }
       // Audio subscriptions have no resolution concept; key them at -1 so a video
       // and an audio subscription for the same source don't alias.
-      const int subscriptionKey = (kind == "participant-audio") ? -1 : command.resolution;
+      const bool isAudioSubscription = kind == "participant-audio" || kind == "meeting-audio";
+      const int subscriptionKey = isAudioSubscription ? -1 : command.resolution;
       desired[command.sourceUuid] = subscriptionKey;
 
       const auto existing = sentSubscriptions_.find(command.sourceUuid);
@@ -349,12 +397,12 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       // slow/wedged engine pipe must never extend that hold. The dedup map is
       // updated at enqueue time; the single FIFO sender preserves order, so
       // "marked sent" still means "delivered exactly once, in order".
-      if (kind == "participant-audio") {
+      if (isAudioSubscription) {
         // ISO audio: each participant's audio target carries THAT participant's
         // one-way stream, so the mixer gets a real per-channel signal (faders,
         // mutes, meters per participant). Without isolate every target receives
         // the same meeting mix N times over.
-        command.isolateAudio = true;
+        command.isolateAudio = kind == "participant-audio";
         enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeAudioCommand(command));
       } else {
         enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeCommand(command));
@@ -393,6 +441,12 @@ std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t tim
     drainAudioStreamLocked(uuid, ref);
   }
   auto frames = state_.pollCompositorAudioFrames(timestampMs);
+  for (auto& frame : frames) {
+    // Zoom delivers 10 ms raw packets into a 20 ms program clock. Opt every
+    // Zoom channel (meeting mix and participant ISO) into the full-tick feed
+    // cushion; other audio producers keep their zero-latency behavior.
+    frame.requiresSteadyFeedPriming = true;
+  }
   // Overlay real decoded PCM: a participant with pending audio gets ONE
   // coalesced PCM frame (all samples ingested since the last poll), replacing
   // the metadata-only placeholder the state emits from packet counters.
@@ -408,6 +462,7 @@ std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t tim
     frame.channels = pending.channels;
     frame.timestampMs = timestampMs;
     frame.sampleCount = static_cast<int>(pending.pcm.size() / static_cast<std::size_t>(pending.channels));
+    frame.requiresSteadyFeedPriming = true;
     frame.pcm = std::move(pending.pcm);
     pending.pcm.clear();  // defined-empty after the move
     const auto existing = std::find_if(frames.begin(), frames.end(), [&](const AudioFrame& candidate) {
@@ -539,7 +594,7 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
   return frames;
 }
 
-bool ZoomEngineRuntime::ensureStarted() {
+bool ZoomEngineRuntime::ensureStarted(const std::function<bool()>& cancelled) {
   std::shared_ptr<ZoomEngineProcessClient> client;
   std::string executablePath;
   int connectTimeoutMs = 0;
@@ -570,14 +625,15 @@ bool ZoomEngineRuntime::ensureStarted() {
   // spawn — the studio keeps compositing while the engine boots. Together with
   // the RPC server routing zoom-join around coreMutex, this closes the
   // "whole studio freezes for the length of every join" P0.
-  const bool started = client->start({executablePath, connectTimeoutMs});
+  const bool started = client->start({executablePath, connectTimeoutMs, {}, cancelled});
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (processGeneration_ != generationAtStart) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if ((cancelled && cancelled()) || processGeneration_ != generationAtStart) {
     // Superseded mid-start (test process installed / another restart): discard
     // the freshly spawned process rather than clobbering the newer one.
-    client->stop();
-    return process_ && process_->running();
+    lock.unlock();
+    client->terminate();
+    return false;
   }
   if (!started) {
     state_.apply({ZoomEngineEventKind::Error, "error", "", "launch", client->lastError()});
@@ -603,27 +659,38 @@ void ZoomEngineRuntime::startReaderLocked() {
 
 void ZoomEngineRuntime::readerLoop() {
   while (true) {
+    std::shared_ptr<ZoomEngineProcessClient> process;
+    std::uint64_t generation;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!readerRunning_ || !process_ || !process_->running()) {
         return;
       }
+      process = process_;
+      generation = processGeneration_;
     }
 
-    auto event = process_->readEvent();
+    auto event = process->readEvent();
     if (!event) {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (readerRunning_) {
-        state_.apply({ZoomEngineEventKind::Error, "error", "", "read", process_ ? process_->lastError() : "Zoom engine stopped."});
+      if (readerRunning_ && generation == processGeneration_) {
+        state_.apply({ZoomEngineEventKind::Error, "error", "", "read", process->lastError()});
       }
       return;
     }
-    applyEvent(*event);
+    applyEvent(*event, generation);
   }
 }
 
-void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
+void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (generation && *generation != processGeneration_) return;
+  if (event.kind == ZoomEngineEventKind::Joined && !acceptJoinEvents_) {
+    // An SDK callback may arrive after Leave was accepted. Keep the current
+    // snapshot left and reassert leave rather than reviving capture.
+    enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
+    return;
+  }
   state_.apply(event);
   if (event.kind == ZoomEngineEventKind::Joined) {
     // Only auto-start raw media on join if the operator already enabled capture
@@ -643,13 +710,13 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
 void ZoomEngineRuntime::applyEngineEventForTest(const ZoomEngineEvent& event) { applyEvent(event); }
 
 void ZoomEngineRuntime::stopReader() {
+  std::shared_ptr<ZoomEngineProcessClient> process;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     readerRunning_ = false;
-    if (process_) {
-      process_->stop();
-    }
+    process = std::move(process_);
   }
+  if (process) process->terminate();
   if (reader_.joinable()) {
     reader_.join();
   }
@@ -804,6 +871,7 @@ std::uint64_t ZoomEngineRuntime::droppedEngineSendCountForTest() const {
 
 rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
   ++fallbackTick_;
+  state_.advanceActiveSpeaker(monotonicMs());
   const auto snapshot = state_.snapshot();
   rpc::Json::Array participants;
   for (const auto& participant : snapshot.participants) {
@@ -838,6 +906,7 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
 }
 
 rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, double elapsedMs) {
+  state_.advanceActiveSpeaker(monotonicMs());
   const auto runtime = state_.snapshot();
   rpc::Json::Array subscriptions;
   const rpc::Json* requested = payload.get("subscriptions");
@@ -969,6 +1038,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::uint32_t height = 0;
     std::uint32_t sequence = 0;
     bool buildThumbnail = false;
+    bool probeLumaRange = false;
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -985,8 +1055,19 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
         if (!shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_),
                                   zoomEngineI420FrameByteSize(ref.width, ref.height))) {
           delete opened;
-          continue;  // not created yet; retry next poll
+          // LOUD past ~2s of consecutive failures (this path polls at render
+          // rate). "Not created yet" is normal for the first few polls; a
+          // stream that has announced dimensions but stays unmappable is a
+          // frozen source, and this used to retry in complete silence.
+          if (++ref.regionOpenFailures == 120 || ref.regionOpenFailures % 600 == 0) {
+            std::fprintf(stderr,
+                         "[zoom-ingest] %s: video shm STILL unmappable after %d polls "
+                         "(%ux%u announced) — source is frozen, engine region missing or undersized\n",
+                         uuid.c_str(), ref.regionOpenFailures, ref.width, ref.height);
+          }
+          continue;  // retry next poll
         }
+        ref.regionOpenFailures = 0;
         ref.regionOpaque = std::shared_ptr<void>(opened, [](void* pointer) {
           auto* region = static_cast<ShmRegion*>(pointer);
           shm_region_destroy(*region);
@@ -1002,7 +1083,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
                                   nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail});
+                      buildThumbnail, !ref.lumaRangeProbed});
     }
   }
 
@@ -1013,6 +1094,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::optional<ZoomEngineRgbaFrame> frame;
     std::shared_ptr<const std::vector<std::uint8_t>> i420Shared;
     std::chrono::steady_clock::time_point observedAt{};
+    LumaRangeProbe lumaRange;
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
@@ -1032,6 +1114,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     if (result.frame && !result.frame->i420.empty()) {
       result.i420Shared =
           std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
+      if (job.probeLumaRange && result.i420Shared->size() >=
+                                    static_cast<std::size_t>(job.width) * job.height) {
+        result.lumaRange = probeLumaRange(result.i420Shared->data(), job.width, job.height,
+                                          job.width, 8);
+      }
     }
   }
 
@@ -1068,6 +1155,17 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       continue;
     }
     stream->second.lastSequence = result.job.sequence;
+    if (result.job.probeLumaRange && result.lumaRange.sampled > 0) {
+      stream->second.lumaRangeProbed = true;
+      std::fprintf(stderr,
+                   "[zoom-color] source=%s participant=%u requested=bt709-full "
+                   "luma_min=%u luma_max=%u below16=%u above235=%u sampled=%u\n",
+                   result.job.uuid.c_str(), result.job.participantId,
+                   static_cast<unsigned>(result.lumaRange.minimum),
+                   static_cast<unsigned>(result.lumaRange.maximum),
+                   result.lumaRange.below16, result.lumaRange.above235,
+                   result.lumaRange.sampled);
+    }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
                             std::move(result.i420Shared), result.observedAt);
   }
@@ -1156,16 +1254,12 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   //    NOTE Zoom gates these server-side (silence suppression: packets stop
   //    and resume between talk bursts), so they are inherently choppy for
   //    non-active speakers.
-  //  - The MEETING MIX (the engine mirrors mixed audio onto the active-
-  //    speaker video target) - continuous, Zoom-processed program audio.
+  //  - The MEETING MIX ("meeting-audio-*", its own raw-audio target) -
+  //    continuous, Zoom-processed program audio.
   //    Ingested as the dedicated "zoom-mix" source so it gets its own
-  //    mixer row and routing. Other video-target mirrors stay dropped
-  //    (ingesting every mirror would sum the same signal repeatedly).
+  //    mixer row and routing without depending on any video subscription.
   const bool isIso = event.sourceUuid.rfind("participant-audio-", 0) == 0;
-  static const std::string kMixSuffix = "-active-speaker";
-  const bool isMix = event.sourceUuid.size() > kMixSuffix.size() &&
-                     event.sourceUuid.compare(event.sourceUuid.size() - kMixSuffix.size(),
-                                              kMixSuffix.size(), kMixSuffix) == 0;
+  const bool isMix = event.sourceUuid.rfind("meeting-audio-", 0) == 0;
   if (event.participantId == 0 || event.byteLength == 0 || (!isIso && !isMix)) {
     return;
   }
@@ -1175,7 +1269,9 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   // held open - the per-event open/drain/close cycle lost hundreds of
   // packets per source at 500 events/s (soak-measured).
   if (isMix && event.sourceUuid != mixStreamUuid_) {
-    // ONE live mix stream at a time: two concurrent -active-speaker streams
+    // ONE live mix stream at a time: a roster-anchor change can briefly leave
+    // two meeting-audio targets alive while the subscribe/unsubscribe commands
+    // cross the engine pipe. Never interleave them into zoom-mix.
     // draining into pendingAudio_["zoom-mix"] interleave two different
     // signals packet-by-packet (soak run 11: phase chaos at every packet
     // seam). Speaker changes hand the mix over sequentially instead.

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "compositor/TilesMembership.h"
 #include "core/Director.h"
+#include "core/RenderedProgramSources.h"
+#include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
 #include "modules/PluginHostClient.h"
@@ -15,18 +18,51 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace corevideo::core {
 
+// Tiles wall layer (T1, docs/2026-08-15-corevideo-tiles-T1-core-wall):
+// declared at namespace scope (NOT nested in MediaCore, unlike SceneRouteState)
+// because MediaCore::tilesLayerForTest() returns a const reference to it from
+// the public section, which needs the type complete at that point in the
+// single-pass class parse — a nested definition further down (beside
+// SceneRouteState) would still be an incomplete type there and fail to compile.
+struct TilesStyle {
+  std::string tileAspect = "16:9";     // 16:9|4:3|5:4|1:1|3:4|9:16|custom
+  double customAspectRatio = 16.0 / 9.0;
+  double gutterPercent = 0.741;
+  double marginPercent = 0.741;
+  std::string backgroundColor = "#000000";
+};
+
+struct TilesLayerState {
+  bool present = false;
+  std::string layerId;
+  int order = 0;
+  // NOTE the namespace: MediaCore.h is in `corevideo::core`, the rect type is
+  // in `corevideo::modules`. Both CompositorLayerRect and the compositor's
+  // LayerRect are {x, y, width, height} floats with identical layout, so
+  // braced conversion between them in Task 4 is safe — but the qualification
+  // is not optional and will not compile without it.
+  modules::CompositorLayerRect rect{0.f, 0.f, 1.f, 1.f};
+  std::vector<std::string> members;   // ordered "zoom:<pid>" / "capture:<id>"
+  TilesStyle style;
+};
+
 class MediaCore {
  public:
   explicit MediaCore(modules::ModuleSet modules = modules::createDefaultModules());
+  // Clears the compositor's vcam sink before members are destroyed (see the
+  // definition — the publisher outlives nothing without it).
+  ~MediaCore();
 
   [[nodiscard]] rpc::Json profile() const;
   [[nodiscard]] rpc::Json sessionState() const;
@@ -47,7 +83,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json removeBrowserSource(const std::string& browserId, std::string& error);
   [[nodiscard]] rpc::Json reloadBrowserSource(const std::string& browserId, std::string& error);
   [[nodiscard]] rpc::Json browserSourcesState() const;
-  [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
+  [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload, const std::function<bool()>& cancelled = {});
   // True when a real Zoom engine subprocess is configured. Lock-free (the
   // runtime pointer and its executable path are fixed at construction). The
   // RPC server uses this to route zoom-join AROUND coreMutex: in this mode
@@ -74,10 +110,10 @@ class MediaCore {
   // Light, video-only render tick for the operator program display. Renders the
   // GPU compositor and emits the shared-texture handle, but skips the audio mix,
   // monitor/output senders, encoder submit and base64 preview readback — i.e. no
-  // blocking I/O — so it can run at ~60fps on the command-processing thread
-  // without starving RPC command handling. The full renderSyntheticTick (encoder/
-  // recording/streaming/audio) still runs on the host-sync cadence.
-  void renderDisplayTick();
+  // blocking I/O — driven at ~60fps by the dedicated display worker under
+  // coreMutex. Live command batches apply state without rendering; the next
+  // display tick publishes the corresponding frame. Audio/output has its own worker.
+  void renderDisplayTick(int64_t productionSlot = -1, int64_t productionAnchorNs = 0);
 
   // Phase 2 audio/output decouple. The audio mix, routed-bus matrix, monitor
   // device render, BS.1770 loudness, encoder submit, output-sender network sync
@@ -90,9 +126,27 @@ class MediaCore {
   // `coreMutex` is the JsonRpcServer's single big lock; lock order is
   // coreMutex(outer) → audioOutputMutex_(inner). Call WITHOUT either lock held.
   void renderAudioOutputTick(std::mutex& coreMutex);
-  // Marks that a dedicated audio/output worker thread now drives renderAudioOutputTick,
-  // so the synchronous command-thread path (renderSyntheticTick(videoOnly=false) and
-  // the empty-poll tick in applyCommands) stops doing the audio/output work itself.
+  // Program VIDEO out on the video cadence (60Hz), so recordings/senders are not
+  // sampled through the audio worker's 20ms grid. Call setVideoOutputTickRunning
+  // before driving it, or the audio worker will submit video too.
+  void renderVideoOutputTick(std::mutex& coreMutex);
+  // Wake the video-out tick after a render. MUST be called with coreMutex
+  // RELEASED — notifying under it wakes a thread that instantly blocks on it.
+  void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
+  // Render pacer telemetry arrives from JsonRpcServer's render thread outside
+  // coreMutex. Keep a monotonic atomic total so UI/support evidence cannot lose
+  // the 120-frame summaries that are printed and then reset in the log loop.
+  void reportRenderDeadlineMisses(int64_t count) {
+    if (count > 0) {
+      renderDeadlineMisses_.fetch_add(count, std::memory_order_relaxed);
+    }
+  }
+  void setVideoOutputTickRunning(bool running) {
+    videoOutputTickRunning_.store(running, std::memory_order_release);
+  }
+  // Enables live worker ownership: audio/output drives renderAudioOutputTick and
+  // the display worker drives video rendering. Command batches and startup command
+  // helpers stop rendering synthetic ticks, including nonempty batches and polls.
   // Direct/unit-test callers leave this false so applyCommands stays synchronous.
   void enableAudioOutputWorker();
 
@@ -119,6 +173,44 @@ class MediaCore {
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
 
+  // T1: the PROGRAM-bus tiles wall parsed off the load-scene-graph command,
+  // and the scene validation warnings a bad/unrecognised value gets recorded
+  // into (loud, never silent — see parseTilesLayer in MediaCore.cpp).
+  const TilesLayerState& tilesLayerForTest() const { return tilesLayer_; }
+  // Task 4 review fix (C3): the PREVIEW bus's own wall (applyPreviewScene),
+  // now a SEPARATE field from tilesLayer_ above — see previewTilesLayer_'s
+  // declaration for why sharing one field was a live-show bug, not just a
+  // test-seam gap.
+  const TilesLayerState& previewTilesLayerForTest() const { return previewTilesLayer_; }
+  const std::vector<std::string>& sceneValidationWarningsForTest() const {
+    return sceneValidationWarnings_;
+  }
+  // Task 4: injects the per-member frame-age snapshot the wall expansion
+  // consults to decide who is drawn (compositor::admitTilesMembers). In
+  // production this is populated from the live videoFrames gather each render
+  // tick (see renderSyntheticTick); tests drive it directly since a unit test
+  // has no real decoded frames to age.
+  //
+  // Also refreshes lastRenderPlanForTest()'s cached plan. A full render tick
+  // (renderSyntheticTick) would immediately re-derive tilesMemberFrameAges_
+  // from the live videoFrames gather and overwrite what this call just set
+  // (empty in a bare test core, with no real source) before the plan is even
+  // built -- so this calls buildCompositorRenderPlan directly, the same
+  // production builder the tick uses, without going through that gather.
+  // Tests call this AFTER loading the scene and expect lastRenderPlanForTest()
+  // to reflect it immediately, with no further command in between.
+  void setTilesMemberFrameAgesForTest(std::vector<compositor::TilesMemberFrameAge> ages) {
+    tilesMemberFrameAges_ = std::move(ages);
+    lastRenderPlan_ = buildCompositorRenderPlan({});
+  }
+  // buildRenderPlanForScene takes 10+ arguments (MediaCore.cpp) — do NOT try to
+  // call it directly from a test. This exposes what the render tick actually
+  // built (assigned at the buildCompositorRenderPlan call site), so the test
+  // observes the production path's own output rather than a fabricated call.
+  const modules::CompositorRenderPlan& lastRenderPlanForTest() const {
+    return lastRenderPlan_;
+  }
+
   // A2 (round-2 PR 2): param bridge + state persistence commands, called by
   // JsonRpcServer's dedicated routes (hence public). All control-plane — they
   // touch only leaf mutexes and the client's dedicated param/state events,
@@ -139,6 +231,9 @@ class MediaCore {
   void injectPendingVstStates();
 
  private:
+  // Batch commands apply in order, then capture one response. Building and
+  // discarding a full session snapshot per command repeatedly takes module locks.
+  void applyCommandMutation(const rpc::Json& command);
   void loadSceneGraph(const rpc::Json& command);
   void setParticipantTransform(const rpc::Json& command);
   void setOverlayAsset(const rpc::Json& command);
@@ -224,7 +319,7 @@ class MediaCore {
   void syncStillMediaDesired();
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
-  void renderSyntheticTick(bool videoOnly = false);
+  void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1);
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
   void enqueueParticipantSharedTextureEvents();
@@ -289,6 +384,8 @@ class MediaCore {
     float opacity = 1.f;
     bool hasColorGrade = false;
     modules::CompositorColorGrade colorGrade;
+    bool hasChromaKey = false;
+    modules::CompositorChromaKey chromaKey;
   };
 
   struct SceneBackgroundState {
@@ -319,6 +416,54 @@ class MediaCore {
   std::string sceneId_ = "unloaded";
   std::vector<SceneRouteState> sceneRoutes_;
   SceneBackgroundState sceneBackground_;
+  // T1: the parsed PROGRAM-bus tiles wall layer (present==false when the
+  // current scene carries none — reset every load-scene-graph sync so a wall
+  // from a PRIOR scene can never survive a sync that omits it).
+  //
+  // Task 4 review fix (C3): this used to be ALSO written by applyPreviewScene
+  // — a single field shared by both buses, read unconditionally by
+  // buildRenderPlanForScene. Since applyPreviewScene rides the frequent spine
+  // sync (not just an operator action), the first preview sync carrying no
+  // `tiles` silently wiped the live PROGRAM wall mid-show, and one carrying a
+  // DIFFERENT wall put a preview-only wall on air. previewTilesLayer_ below is
+  // now the preview bus's own copy; buildRenderPlanForScene takes the wall to
+  // expand as an explicit parameter (mirroring sceneRoutes), so each bus can
+  // only ever see its own.
+  TilesLayerState tilesLayer_;
+  // Task 4 review fix (C3): the PREVIEW bus's own tiles wall, parsed by
+  // applyPreviewScene. See tilesLayer_ above for why this must be a SEPARATE
+  // field rather than shared.
+  TilesLayerState previewTilesLayer_;
+  // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
+  // every render tick from the live videoFrames gather (renderSyntheticTick,
+  // under coreMutex — geometry bookkeeping, not pixel work). Covers members of
+  // EITHER bus's wall (sourceIds are globally unique, so sharing this list is
+  // safe and avoids computing it twice).
+  std::vector<compositor::TilesMemberFrameAge> tilesMemberFrameAges_;
+  // Task 4 review fix (I4): per-sourceId "when did this member's frame last
+  // ACTUALLY change" bookkeeping, keyed off frameId rather than a producer's
+  // re-stamped timestampMs (every frame producer in this codebase re-stamps
+  // `timestampMs` with the current tick's clock even when re-serving a held/
+  // frozen frame — see ZoomEngineRuntime.cpp and the capture adapters — so
+  // `frameTimestampMs - frame.timestampMs` is ~0 for ANY live-but-frozen
+  // source and the staleness filter (Task 3) could never actually fire). A
+  // frameId only advances on a genuinely new frame (the ISO dedup relies on
+  // the same property), so this is the source of truth for "is this member's
+  // picture actually moving." Erased when a member stops appearing in
+  // videoFrames at all, so a later return starts fresh rather than replaying
+  // stale history.
+  struct TilesFrameFreshness {
+    bool everSeen = false;
+    int64_t lastFrameId = -1;
+    int64_t lastChangedTickMs = 0;
+  };
+  std::unordered_map<std::string, TilesFrameFreshness> tilesFrameFreshness_;
+  // Task 4: the render plan the render tick actually built, cached for
+  // lastRenderPlanForTest() and for the sessionState() `tiles` node — both
+  // read the CORE's own produced layers rather than re-deriving with the
+  // solver, so a test/consumer can never observe a plan the compositor did
+  // not also receive.
+  modules::CompositorRenderPlan lastRenderPlan_;
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;
@@ -369,7 +514,12 @@ class MediaCore {
       bool captionEnabled,
       const std::string& captionText,
       const std::string& captionSpeaker,
-      const std::vector<modules::VideoFrame>& videoFrames) const;
+      const std::vector<modules::VideoFrame>& videoFrames,
+      // Task 4 review fix (C3): explicit per-bus wall, mirroring how `routes`
+      // is already per-bus rather than a shared member. The PROGRAM caller
+      // passes tilesLayer_, the PREVIEW caller passes previewTilesLayer_ —
+      // never the same field for both.
+      const TilesLayerState& wall) const;
   // Builds the render plan for the PREVIEW scene from the preview-scene members,
   // mirroring buildCompositorRenderPlan for the program scene.
   [[nodiscard]] modules::CompositorRenderPlan buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
@@ -435,12 +585,19 @@ class MediaCore {
   modules::StreamingTruePeakMeterState programTruePeakMeterR_;
   std::chrono::steady_clock::time_point lastLoudnessCompute_{};
   modules::ProgramFrame lastProgramFrame_;
+  int64_t lastProducedFrameNumber_ = 0;
+  std::string lastProgramTextureIdentity_;
+  RenderedProgramSources renderedProgramSources_;
+  // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
+  // pre-lock engine poll (see pollZoomAudioUnlocked).
+  std::atomic<std::int64_t> lastProgramFrameNumberAtomic_{0};
   std::string encoderLifecycleStatus_ = "idle";
   std::string encoderLastTransition_ = "Encoder session idle.";
   double encoderPreparedAtMs_ = 0;
   double encoderStartedAtMs_ = 0;
   double encoderStoppedAtMs_ = 0;
   std::string recordingSessionId_;
+  int64_t recordingCaptureEpoch100ns_ = 0;
   std::string recordingStatus_ = "stopped";
   std::string recordingWriterStatus_ = "stopped";
   std::string recordingTargetFolder_ = "Recordings/CoreVideo Pro/native-core";
@@ -457,11 +614,6 @@ class MediaCore {
   // lock. The audio worker's gather picks the selected sources into the ISO work.
   std::map<std::string, modules::VideoFrame> latestIsoSourceFrames_;
   double recordingStartedAtMs_ = 0;
-  double recordingElapsedMs_ = 0;
-  int64_t recordingProgramFramesWritten_ = 0;
-  int64_t recordingIsoFramesWritten_ = 0;
-  int64_t recordingDroppedFrames_ = 0;
-  int64_t recordingAudioPacketsObserved_ = 0;
   int recordingFailureCount_ = 0;
   int recordingRecoveryCount_ = 0;
   std::string recordingError_;
@@ -481,6 +633,50 @@ class MediaCore {
       std::make_unique<modules::StillMediaFrameCache>();
   std::unique_ptr<modules::IVirtualCameraPublisher> virtualCamera_ = modules::createVirtualCameraPublisher();
   bool virtualCameraEnabled_ = false;
+  // The compositor pushes the tap at render cadence, so the output worker must
+  // not publish it too (that would double every frame).
+  bool compositorPublishesVcam_ = false;
+  // Set while a 60Hz video tick is driving program video out; the audio worker
+  // then submits audio only. Atomic: read by the audio worker, written by the
+  // server thread that owns the tick's lifetime.
+  std::atomic<bool> videoOutputTickRunning_{false};
+  // True while the senders have destinations. Lets the video tick run one more
+  // time after outputs clear, so the stop-carrying sync() is actually delivered.
+  std::atomic<bool> senderSyncActive_{false};
+  std::atomic<int64_t> renderDeadlineMisses_{0};
+  // The newest program NV12 tap. Video owns output submission independently of
+  // audio; this small mutex protects only the shared immutable tap reference and
+  // dimensions, never DSP, encoder or sender work.
+  mutable std::mutex programNv12Mutex_;
+  // takeVcamNv12 hands out each generation once, so exactly one caller may take.
+  // Edge-trigger state for the video tick (coreMutex-guarded): the last program
+  // frame it published, so a tick with nothing new costs one comparison instead
+  // of a ProgramFrame copy and a duplicate submit.
+  int64_t lastVideoOutFrameNumber_ = -1;
+  // Destinations the tick last synced. A change must reach the senders even on a
+  // tick with no new frame — that is how they get STOPPED.
+  std::vector<std::string> lastVideoOutDestinations_;
+  struct ProgramOutputConfiguration {
+    std::vector<std::string> destinations;
+    std::vector<modules::OutputDestinationSettings> settings;
+    bool expectsAudio = false;
+  };
+  // Commands atomically publish owning configuration. Delivery never waits for
+  // a render-held coreMutex, including when propagating Stop.
+  std::atomic<std::shared_ptr<const ProgramOutputConfiguration>> programOutputConfiguration_;
+  void publishProgramOutputConfiguration();
+  std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
+  int64_t lastBufferedDeliverySequence_ = 0;
+  // Program-frame publish signal. The render thread bumps the counter and
+  // notifies; the video-out tick waits on it instead of polling, so it wakes
+  // once per real frame rather than acquiring coreMutex on a timer.
+  std::atomic<uint64_t> programPublishSeq_{0};
+  std::condition_variable videoOutCv_;
+  std::mutex videoOutWaitMutex_;
+  uint64_t lastVideoOutPublishSeq_ = 0;
+  std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12_;
+  int latestProgramNv12Width_ = 0;
+  int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
@@ -604,8 +800,12 @@ class MediaCore {
   // ---- Phase 2 audio/output decouple (gather → work → publish) ----
   // Per-tick inputs gathered under `coreMutex` (plain-data copies + freshly polled
   // audio frames + a copy of the current program frame for the encoder/output).
+  ProgramAudioDelay programOutputAudioDelay_;
+  ProgramAudioDelay streamOutputAudioDelay_;
   struct AudioOutputWorkItem {
     bool valid = false;
+    int64_t outputTimestamp100ns = 0;
+    int programBufferFrames = 0;
     int64_t frameIntervalMs = 16;
     std::vector<modules::AudioFrame> audioFrames;
     std::vector<ParticipantAudioChannelInput> channels;
@@ -645,28 +845,30 @@ class MediaCore {
     // C7b: per-source compressor gain reduction this tick (dB, >0 only).
     std::map<std::string, double> compGainReductionDbBySource;
     bool recordingActive = false;
-    int64_t recordingProgramFramesDelta = 0;
-    int64_t recordingIsoFramesDelta = 0;
-    int64_t recordingAudioPacketsObserved = 0;
     // Encoder-side recording warning (e.g. "Media Foundation dropped program
     // audio: ..."), published into recordingWarning_ so the snapshot's
     // `recording.warning` surfaces encoder failures. Before this, a recording
     // muxing ZERO audio packets showed a clean recording section for its whole
     // duration (2026-07-13 alpha-blocking zero-audio bug).
     std::string recordingWarning;
-    double recordingElapsedMsDelta = 0.0;
   };
   // Gather reads `coreMutex`-domain state (members + zoom/capture/media modules);
   // run touches ONLY `audioOutputMutex_`-domain modules (mixer/monitorOutput/encoder/
   // outputSender) + the BS.1770 loudness members; publish writes `coreMutex`-domain
   // published members. The caller owns the locking (so the same trio serves both the
   // worker — phased/locked — and the synchronous test path — single-threaded, no locks).
-  [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork();
+  [[nodiscard]] std::vector<modules::AudioFrame> pollZoomAudioUnlocked();
+  [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork(
+      std::vector<modules::AudioFrame> prePolledZoomAudio);
   [[nodiscard]] AudioOutputResults runAudioOutputWork(AudioOutputWorkItem& work);
   void publishAudioOutputResults(const AudioOutputResults& results);
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,
   // outputSender) + the BS.1770 loudness accumulators. Lock order: coreMutex → this.
   mutable std::mutex audioOutputMutex_;
+  // Video encoder/sender submission must never make the 20 ms audio worker wait.
+  // The concrete sinks are asynchronous/thread-safe; this lock only serializes
+  // video ticks with each other.
+  mutable std::mutex videoOutputMutex_;
   // Set once (before threads start) when a dedicated worker drives the audio/output
   // tick; flips the command-thread path to video-only. Plain bool: written before the
   // worker/render/command threads exist, then only read.

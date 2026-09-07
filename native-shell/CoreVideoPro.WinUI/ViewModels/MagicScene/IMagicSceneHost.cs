@@ -40,6 +40,8 @@ public interface IMagicSceneHost
 
     bool IsInMeeting { get; }
 
+    bool IsMediaCoreRunning { get; }
+
     // --- command status + take ---
     string CommandStatus { set; }
 

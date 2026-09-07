@@ -392,7 +392,7 @@ function Write-SigningDocs {
   Write-Host "     New-SelfSignedCertificate -Type Custom -Subject `"$CertSubject`" -KeyUsage DigitalSignature -FriendlyName `"CoreVideo Pro Dev`" -CertStoreLocation `"$CertStore`" -TextExtension @(`"2.5.29.37={text}1.3.6.1.5.5.7.3.3`")" -ForegroundColor DarkGray
   Write-Host "  3. Trust it: certmgr.msc -> Trusted People -> import the .cer export." -ForegroundColor DarkGray
   Write-Host "  4. Sign: signtool sign /fd SHA256 /a /n `"CoreVideo Pro Dev`" `"$PackagePath`"" -ForegroundColor DarkGray
-  Write-Host "  Unsigned install still works: Add-AppxPackage -Path `"$PackagePath`" -AllowUnsigned" -ForegroundColor DarkGray
+  Write-Host "  An unsigned package retaining this publisher identity cannot be installed; sign it first." -ForegroundColor DarkGray
   Write-Host "  Production signing: re-run with -Mode production (see the env contract in this script's header)." -ForegroundColor DarkGray
 }
 

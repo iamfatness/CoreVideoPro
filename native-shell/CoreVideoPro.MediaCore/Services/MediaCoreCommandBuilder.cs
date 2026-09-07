@@ -16,12 +16,13 @@ public static class MediaCoreCommandBuilder
             BuildZoomSourceRosterCommand(context.Participants),
             BuildActiveSpeakerCommand(context.Participants),
             BuildScreenShareCommand(context.Participants),
-            BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes, context.SceneBackground),
+            BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes, context.SceneBackground, context.TilesLayer),
             BuildPreviewSceneCommand(
                 context.PreviewSceneId ?? context.ActiveSceneId,
                 context.PreviewSceneRoutes,
                 context.PreviewSceneBackground,
-                context.PreviewColorGrade),
+                context.PreviewColorGrade,
+                context.PreviewTilesLayer),
             BuildMultiviewLayoutCommand(
                 context.MultiviewSources,
                 context.MultiviewCanvasWidth,
@@ -63,6 +64,15 @@ public static class MediaCoreCommandBuilder
             {
                 ["reason"] = "Production outputs armed."
             }));
+        }
+
+        // Recording owns the file-writer generation. Arm/finalize it before the
+        // repeated program-output assertion so scene/Preview/Take sync cannot
+        // open a throwaway Program/ISO generation and immediately replace it.
+        commands.AddRange(BuildRecordingCommands(context));
+
+        if (outputCommand is not null)
+        {
             commands.Add(outputCommand);
             commands.Add(Command("start-encoder-session", new Dictionary<string, object?>()));
         }
@@ -73,20 +83,20 @@ public static class MediaCoreCommandBuilder
                 ["reason"] = "Outputs disabled in production state."
             }));
         }
-
-        commands.AddRange(BuildRecordingCommands(context));
         return commands;
     }
 
     public static NativeMediaCoreCommand BuildSceneGraphCommand(
         string sceneId,
         IReadOnlyList<MediaCoreSceneRouteWire> routes,
-        MediaCoreSceneBackgroundWire? background = null) =>
+        MediaCoreSceneBackgroundWire? background = null,
+        MediaCoreTilesLayerWire? tiles = null) =>
         Command("load-scene-graph", new Dictionary<string, object?>
         {
             ["sceneId"] = sceneId,
             ["background"] = SerializeSceneBackground(background),
-            ["routes"] = routes.Select(SerializeSceneRoute).ToList()
+            ["routes"] = routes.Select(SerializeSceneRoute).ToList(),
+            ["tiles"] = SerializeTilesLayer(tiles)
         });
 
     /// <summary>
@@ -99,7 +109,8 @@ public static class MediaCoreCommandBuilder
         string sceneId,
         IReadOnlyList<MediaCoreSceneRouteWire> routes,
         MediaCoreSceneBackgroundWire? background = null,
-        MediaCoreColorGradeWire? colorGrade = null) =>
+        MediaCoreColorGradeWire? colorGrade = null,
+        MediaCoreTilesLayerWire? tiles = null) =>
         Command("set-preview-scene", new Dictionary<string, object?>
         {
             ["sceneId"] = sceneId,
@@ -114,8 +125,35 @@ public static class MediaCoreCommandBuilder
                     ["saturation"] = colorGrade.Saturation,
                     ["temperature"] = colorGrade.Temperature
                 },
-            ["routes"] = routes.Select(SerializeSceneRoute).ToList()
+            ["routes"] = routes.Select(SerializeSceneRoute).ToList(),
+            ["tiles"] = SerializeTilesLayer(tiles)
         });
+
+    /// <summary>
+    /// T1 core wall: the "tiles" node (layerId/order/members/style — see
+    /// <c>MediaCoreTilesLayerWire</c>). Deliberately carries NO rect — the shell no longer
+    /// solves tile layout, so the core's rect defaults (full canvas) apply. Field names
+    /// here (w/h would live under "rect" if ever added) must match
+    /// MediaCore.cpp's parseTilesLayer exactly; a mismatch is silent (an unparsed field
+    /// just takes its C++ default).
+    /// </summary>
+    private static Dictionary<string, object?>? SerializeTilesLayer(MediaCoreTilesLayerWire? tiles) =>
+        tiles is null
+            ? null
+            : new Dictionary<string, object?>
+            {
+                ["layerId"] = tiles.LayerId,
+                ["order"] = tiles.Order,
+                ["members"] = tiles.Members,
+                ["style"] = new Dictionary<string, object?>
+                {
+                    ["tileAspect"] = tiles.TileAspect,
+                    ["customAspectRatio"] = tiles.CustomAspectRatio,
+                    ["gutterPercent"] = tiles.GutterPercent,
+                    ["marginPercent"] = tiles.MarginPercent,
+                    ["backgroundColor"] = tiles.BackgroundColor
+                }
+            };
 
     private static Dictionary<string, object?>? SerializeSceneBackground(MediaCoreSceneBackgroundWire? background) =>
         background is null
@@ -604,11 +642,21 @@ public static class MediaCoreCommandBuilder
         var isoSourceIds = (IReadOnlyList<string>)(targets.IsoSourceIds ?? []);
         // Session-id suffix: prefer the canonical ISO selection, else the legacy bare ids,
         // else "program" (program-only). Sanitized so a `capture:<id>` never breaks the id.
+        //
+        // SORTED, deliberately: the core dedups repeated start-recording-session by
+        // sessionId, and the resolver emits ids in ROSTER order — so a roster flap
+        // that merely REORDERED the same selection minted a "different" session and
+        // restarted the writer mid-recording (live meeting 2026-08-09: a burst of
+        // 1-second recording shards while the roster settled). Sorting makes the
+        // session identity order-insensitive; a genuine selection CHANGE still
+        // produces a new id and restarts (which is how ISO writers re-arm).
         var isoSuffixSource = isoSourceIds.Count > 0
             ? isoSourceIds
             : (IReadOnlyList<string>)targets.IsoParticipantIds;
         var isoSuffix = isoSuffixSource.Count > 0
-            ? string.Join("-", isoSuffixSource.Select(id => id.Replace(':', '-')))
+            ? string.Join("-", isoSuffixSource
+                .Select(id => id.Replace(':', '-'))
+                .OrderBy(id => id, StringComparer.Ordinal))
             : "program";
         var sessionId = $"{targets.FilenamePrefix}-{isoSuffix}";
 

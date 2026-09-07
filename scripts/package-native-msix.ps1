@@ -211,6 +211,17 @@ function Copy-PublishLayout {
   New-Item -ItemType Directory -Path $Destination -Force | Out-Null
   Copy-Item -Path (Join-Path $PublishDir "*") -Destination $Destination -Recurse -Force
 
+  # A developer may have launched the default publish output in place. Never
+  # let recordings, logs, crash reports, or support bundles flow into a fallback
+  # MSIX layout from that mutable directory.
+  foreach ($name in @("Recordings", "Logs", "CrashReports", "SupportBundles")) {
+    $runtimeData = Join-Path $Destination $name
+    if (Test-Path $runtimeData) {
+      Remove-Item $runtimeData -Recurse -Force
+      Write-Host "[pack:native:msix] excluded runtime/user data directory: $name" -ForegroundColor Yellow
+    }
+  }
+
   $builtExe = Join-Path $Destination "CoreVideoPro.WinUI.exe"
   $renamedExe = Join-Path $Destination $productExe
   if (Test-Path $builtExe) {
@@ -228,7 +239,7 @@ function Write-InstallScripts {
   )
 
   $installMsix = @"
-# Install CoreVideo Pro MSIX demo (unsigned / dev certificate).
+# Install a signed CoreVideo Pro MSIX.
 param(
   [string]`$PackagePath = (Join-Path `$PSScriptRoot "CoreVideoPro.msix")
 )
@@ -238,26 +249,24 @@ if (-not (Test-Path `$PackagePath)) {
   throw "MSIX not found: `$PackagePath"
 }
 
-Write-Host "Installing `$PackagePath (AllowUnsigned)..." -ForegroundColor Cyan
-Add-AppxPackage -Path `$PackagePath -AllowUnsigned
+`$signature = Get-AuthenticodeSignature -LiteralPath `$PackagePath
+if (`$signature.Status -eq "NotSigned") {
+  throw "The package is unsigned but retains its signing publisher identity. Sign it with scripts/sign-native-msix.ps1 before installing."
+}
+
+Write-Host "Installing signed package `$PackagePath..." -ForegroundColor Cyan
+Add-AppxPackage -Path `$PackagePath
 Write-Host "Installed. Launch 'CoreVideo Pro' from the Start menu." -ForegroundColor Green
 "@
 
   $installLayout = @"
-# Register CoreVideo Pro MSIX layout (unsigned; for CI when MakeAppx/signing is unavailable).
+# A loose layout with the signing publisher identity cannot be registered
+# unsigned. Use the unpackaged executable for local smoke tests instead.
 param(
   [string]`$LayoutDir = `$PSScriptRoot
 )
 
-`$ErrorActionPreference = "Stop"
-`$manifest = Join-Path `$LayoutDir "AppxManifest.xml"
-if (-not (Test-Path `$manifest)) {
-  throw "AppxManifest.xml not found in layout: `$LayoutDir"
-}
-
-Write-Host "Registering layout from `$LayoutDir (AllowUnsigned)..." -ForegroundColor Cyan
-Add-AppxPackage -Register -Path `$manifest -AllowUnsigned
-Write-Host "Registered. Launch 'CoreVideo Pro' from the Start menu." -ForegroundColor Green
+throw "This layout retains its signing publisher identity and cannot be registered unsigned. Launch 'CoreVideo Pro.exe' directly for a local smoke test."
 "@
 
   if (-not $LayoutOnly) {
@@ -403,6 +412,6 @@ if ($stagedNative) {
   Write-Host "  Media core: missing" -ForegroundColor Red
 }
 Write-Host ""
-Write-Host "Signing: unsigned demo package (AppxPackageSigningEnabled=false)." -ForegroundColor Yellow
-Write-Host "  Local install: powershell -File artifacts/native/install-msix.ps1" -ForegroundColor DarkGray
-Write-Host "  Or: Add-AppxPackage -Path artifacts/native/CoreVideoPro.msix -AllowUnsigned" -ForegroundColor DarkGray
+Write-Host "Signing: unsigned release candidate retaining the manifest publisher identity." -ForegroundColor Yellow
+Write-Host "  Sign before install: powershell -File scripts/sign-native-msix.ps1" -ForegroundColor DarkGray
+Write-Host "  Local smoke without trust setup: launch artifacts/native/msix-layout/'CoreVideo Pro.exe' directly." -ForegroundColor DarkGray

@@ -28,6 +28,20 @@ public sealed partial class AudioLevelMeter : UserControl
             typeof(AudioLevelMeter),
             new PropertyMetadata(18, OnMeterPropertyChanged));
 
+    public static readonly DependencyProperty IsMutedProperty =
+        DependencyProperty.Register(
+            nameof(IsMuted),
+            typeof(bool),
+            typeof(AudioLevelMeter),
+            new PropertyMetadata(false, OnMutedPropertyChanged));
+
+    public static readonly DependencyProperty ShowDbfsScaleProperty =
+        DependencyProperty.Register(
+            nameof(ShowDbfsScale),
+            typeof(bool),
+            typeof(AudioLevelMeter),
+            new PropertyMetadata(false, OnMeterPropertyChanged));
+
     private static readonly SolidColorBrush DimBrush = new(Windows.UI.Color.FromArgb(255, 21, 30, 34));
     private static readonly SolidColorBrush GreenBrush = new(Windows.UI.Color.FromArgb(255, 46, 210, 116));
     private static readonly SolidColorBrush YellowBrush = new(Windows.UI.Color.FromArgb(255, 245, 190, 69));
@@ -52,6 +66,16 @@ public sealed partial class AudioLevelMeter : UserControl
     {
         InitializeComponent();
         Loaded += (_, _) => RenderSegments();
+        // Re-fit on ANY size change: segments scale to the available column (see
+        // RenderSegments). Without this, a window restored from fullscreen kept
+        // the fullscreen-sized stack and clipped the green end of every meter.
+        SizeChanged += (_, e) =>
+        {
+            if (e.NewSize.Height > 0 || e.NewSize.Width > 0)
+            {
+                RenderSegments();
+            }
+        };
         Unloaded += (_, _) => StopDecayTimer();
     }
 
@@ -73,6 +97,18 @@ public sealed partial class AudioLevelMeter : UserControl
         set => SetValue(SegmentCountProperty, value);
     }
 
+    public bool IsMuted
+    {
+        get => (bool)GetValue(IsMutedProperty);
+        set => SetValue(IsMutedProperty, value);
+    }
+
+    public bool ShowDbfsScale
+    {
+        get => (bool)GetValue(ShowDbfsScaleProperty);
+        set => SetValue(ShowDbfsScaleProperty, value);
+    }
+
     private static void OnLevelPropertyChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
     {
         if (dependencyObject is AudioLevelMeter meter)
@@ -89,9 +125,35 @@ public sealed partial class AudioLevelMeter : UserControl
         }
     }
 
+    private static void OnMutedPropertyChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        if (dependencyObject is not AudioLevelMeter meter)
+        {
+            return;
+        }
+
+        if (meter.IsMuted)
+        {
+            // Mute is a routing discontinuity, not a release-ballistics event.
+            // Drop both the live bar and peak hold immediately so the console
+            // never implies that muted audio is reaching Program.
+            meter._displayedLevel = 0;
+            meter._peakLevel = 0;
+            meter._peakSetAt = DateTimeOffset.MinValue;
+            meter.StopDecayTimer();
+            if (meter.IsLoaded)
+            {
+                meter.RenderSegments();
+            }
+            return;
+        }
+
+        meter.OnLevelChanged();
+    }
+
     private void OnLevelChanged()
     {
-        var target = Math.Clamp(Level, 0, 100);
+        var target = IsMuted ? 0 : Math.Clamp(Level, 0, 100);
         if (target >= _displayedLevel)
         {
             _displayedLevel = target;  // instant attack
@@ -141,7 +203,7 @@ public sealed partial class AudioLevelMeter : UserControl
 
     private void DecayTick()
     {
-        var target = Math.Clamp(Level, 0, 100);
+        var target = IsMuted ? 0 : Math.Clamp(Level, 0, 100);
         var changed = false;
 
         if (_displayedLevel > target)
@@ -180,12 +242,59 @@ public sealed partial class AudioLevelMeter : UserControl
             ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
             : -1;
 
+        // SCALE TO THE SPACE WE HAVE. Fixed 7px segments + 2px spacing need a
+        // 324px column at 36 segments; any smaller window CLIPPED the stack —
+        // and because the low/green segments sit at the visual bottom, exactly
+        // the audible part of the meter vanished ("meters don't work when not
+        // in full screen", 2026-08-09). Shrink spacing first, then segment
+        // size, then segment COUNT — never overflow, never render nothing.
+        var availableMain = IsVertical ? RootGrid.ActualHeight : RootGrid.ActualWidth;
+        double spacing = 2;
+        double segMain = IsVertical ? 7 : 4;
+        if (availableMain > 0)
+        {
+            if (IsVertical)
+            {
+                // Keep the segment bar and the dB scale on the same responsive
+                // height instead of pinning a fixed-size bar to the bottom.
+                var layout = Models.AudioMeterScale.FitVerticalSegments(availableMain, count);
+                count = layout.SegmentCount;
+                segMain = layout.SegmentSize;
+                spacing = layout.Spacing;
+                activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
+                peakSegment = _peakLevel > 0
+                    ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
+                    : -1;
+            }
+            else
+            {
+                if ((segMain + spacing) * count > availableMain)
+                {
+                    spacing = 1;
+                }
+                var perSegment = (availableMain - spacing * (count - 1)) / count;
+                if (perSegment < segMain)
+                {
+                    segMain = Math.Max(2, Math.Floor(perSegment));
+                }
+                var fits = (int)Math.Floor((availableMain + spacing) / (segMain + spacing));
+                if (fits < count && fits >= 4)
+                {
+                    count = fits;
+                    activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
+                    peakSegment = _peakLevel > 0
+                        ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
+                        : -1;
+                }
+            }
+        }
+
         var panel = new StackPanel
         {
             Orientation = IsVertical ? Orientation.Vertical : Orientation.Horizontal,
             HorizontalAlignment = IsVertical ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
-            VerticalAlignment = IsVertical ? VerticalAlignment.Stretch : VerticalAlignment.Center,
-            Spacing = 2
+            VerticalAlignment = IsVertical ? VerticalAlignment.Bottom : VerticalAlignment.Center,
+            Spacing = spacing
         };
 
         for (var visualIndex = 0; visualIndex < count; visualIndex++)
@@ -197,15 +306,74 @@ public sealed partial class AudioLevelMeter : UserControl
 
             panel.Children.Add(new Border
             {
-                Width = IsVertical ? 14 : 4,
-                Height = IsVertical ? 7 : 10,
+                Width = IsVertical ? 14 : segMain,
+                Height = IsVertical ? segMain : 10,
                 CornerRadius = new CornerRadius(1.5),
                 Background = isActive || isPeakHold ? BrushFor(normalized) : DimBrush
             });
         }
 
         RootGrid.Children.Clear();
-        RootGrid.Children.Add(panel);
+        if (IsVertical && ShowDbfsScale && availableMain > 0)
+        {
+            var host = new Grid
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch
+            };
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(panel, 0);
+            host.Children.Add(panel);
+
+            var scale = BuildVerticalDbfsScale(availableMain);
+            Grid.SetColumn(scale, 1);
+            host.Children.Add(scale);
+            RootGrid.Children.Add(host);
+        }
+        else
+        {
+            RootGrid.Children.Add(panel);
+        }
+    }
+
+    private static Canvas BuildVerticalDbfsScale(double height)
+    {
+        var canvas = new Canvas { Height = height };
+        // Short master rails cannot legibly carry the full broadcast scale.
+        // Keep the endpoints and midpoint there; progressively add the
+        // standard marks as physical height permits.
+        IReadOnlyList<double> ticks = height < 60
+            ? [0, -30, -60]
+            : height < 100
+                ? [0, -12, -24, -36, -48, -60]
+                : Models.AudioMeterScale.MajorTicksDbfs;
+        foreach (var dbfs in ticks)
+        {
+            var level = Models.AudioMeterScale.ToLevel(dbfs) / 100.0;
+            var y = Math.Clamp((1 - level) * height, 0, height);
+            var tick = new Border
+            {
+                Width = 4,
+                Height = 1,
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(180, 126, 145, 156))
+            };
+            Canvas.SetLeft(tick, 0);
+            Canvas.SetTop(tick, Math.Clamp(y, 0, Math.Max(0, height - 1)));
+            canvas.Children.Add(tick);
+
+            var label = new TextBlock
+            {
+                Text = dbfs.ToString("0"),
+                FontSize = 7,
+                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(220, 160, 177, 187))
+            };
+            Canvas.SetLeft(label, 6);
+            Canvas.SetTop(label, Math.Clamp(y - 6, 0, Math.Max(0, height - 12)));
+            canvas.Children.Add(label);
+        }
+
+        return canvas;
     }
 
     private static SolidColorBrush BrushFor(double normalized) =>

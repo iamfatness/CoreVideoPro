@@ -1052,6 +1052,166 @@ TEST(AudioDsp, SteadyFeedReshapesJitteryPacketsWithoutHoldingAudio) {
   }
 }
 
+TEST(AudioDsp, ZoomSteadyFeedPrimesOneTickAndNeverEmitsPartialBlocks) {
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  float sequence = 0.0f;
+  const auto makeFrame = [&sequence](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "zoom-iso";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.requiresSteadyFeedPriming = true;
+    for (int index = 0; index < samples; ++index) {
+      frame.pcm.push_back(sequence++);
+    }
+    frame.sampleCount = samples;
+    return frame;
+  };
+
+  std::vector<float> emitted;
+  const auto tick = [&](int packetSamples) {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    if (packetSamples > 0) {
+      frames.push_back(makeFrame(packetSamples));
+    }
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    for (const auto& frame : frames) {
+      if (!frame.pcm.empty()) {
+        EXPECT_EQ(frame.pcm.size(), 960u);
+        emitted.insert(emitted.end(), frame.pcm.begin(), frame.pcm.end());
+      }
+    }
+  };
+
+  tick(480);   // first 10 ms SDK packet is held, never sent as a short bus
+  EXPECT_TRUE(emitted.empty());
+  tick(1440);  // two ticks buffered: still building the transparent cushion
+  EXPECT_TRUE(emitted.empty());
+  tick(960);   // three ticks buffered: emit 20 ms and retain a 40 ms cushion
+  EXPECT_EQ(emitted.size(), 960u);
+  tick(480);   // 10 ms arrival + cushion still emits one complete tick
+  tick(480);
+  EXPECT_EQ(emitted.size(), 2880u);
+  for (size_t index = 1; index < emitted.size(); ++index) {
+    EXPECT_GE(emitted[index], emitted[index - 1]);
+  }
+  EXPECT_TRUE(states["zoom-iso"].primed);
+  EXPECT_EQ(states["zoom-iso"].primeEvents, 1u);
+  EXPECT_GE(states["zoom-iso"].partialBlocksPrevented, 1u);
+  EXPECT_EQ(states["zoom-iso"].clockCorrectionEvents, 0u);
+}
+
+TEST(AudioDsp, ZoomSteadyFeedDoesNotReprimeUnderContinuousClockPhaseJitter) {
+  // Live Zoom reproduction (Jamal, 2026-08-15): the SDK supplies 10 ms
+  // packets while the program worker polls every 20 ms. Depending on phase,
+  // a poll sees 480 then 1440 frames even though the source is continuous.
+  // The old strict dequeue drained its reserve and re-primed ~16 times/sec,
+  // inserting an audible hole each time.
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  float sequence = 0.0f;
+  const auto makeFrame = [&sequence](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "jamal";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.requiresSteadyFeedPriming = true;
+    frame.pcm.reserve(static_cast<size_t>(samples));
+    for (int index = 0; index < samples; ++index) {
+      frame.pcm.push_back(sequence++);
+    }
+    frame.sampleCount = samples;
+    return frame;
+  };
+
+  size_t fullBlocks = 0;
+  for (int tick = 0; tick < 2000; ++tick) {
+    // Equal long-term rate (960/tick), deliberately hostile poll phase.
+    const int arrivals[] = {480, 1440, 480, 1440, 960, 960};
+    std::vector<corevideo::modules::AudioFrame> frames;
+    frames.push_back(makeFrame(arrivals[tick % 6]));
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    if (!frames[0].pcm.empty()) {
+      EXPECT_EQ(frames[0].pcm.size(), 960u);
+      ++fullBlocks;
+    }
+  }
+
+  EXPECT_EQ(states["jamal"].primeEvents, 1u);
+  EXPECT_TRUE(states["jamal"].primed);
+  EXPECT_GE(fullBlocks, 1996u);  // only startup priming may be silent
+  EXPECT_EQ(states["jamal"].clockCorrectionEvents, 0u);
+}
+
+TEST(AudioDsp, SteadyFeedRetainsBoundedWorkerRecoveryWithoutSheddingSpeech) {
+  // A 500 ms worker stall is recoverable by the audio pacer's immediate ticks.
+  // The feed must retain that burst instead of applying the old 120 ms cap and
+  // permanently cutting most of a spoken phrase.
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  corevideo::modules::AudioFrame burst;
+  burst.participantId = "jamal";
+  burst.sampleRate = 48000;
+  burst.channels = 1;
+  burst.requiresSteadyFeedPriming = true;
+  burst.pcm.assign(25u * 960u, 0.25f);
+  burst.sampleCount = static_cast<int>(burst.pcm.size());
+
+  std::vector<corevideo::modules::AudioFrame> frames{burst};
+  corevideo::modules::steadyAudioFrameFeed(frames, states);
+  EXPECT_EQ(states["jamal"].shedSamples, 0u);
+  EXPECT_TRUE(states["jamal"].primed);
+
+  // Immediate catch-up ticks drain the retained FIFO with no new source packet.
+  for (int tick = 0; tick < 30; ++tick) {
+    std::vector<corevideo::modules::AudioFrame> catchup;
+    corevideo::modules::steadyAudioFrameFeed(catchup, states);
+  }
+  EXPECT_EQ(states["jamal"].shedSamples, 0u);
+  EXPECT_TRUE(states["jamal"].fifo.empty());
+}
+
+TEST(AudioDsp, ZoomSteadyFeedReprimesAfterARealGap) {
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  const auto makeFrame = [](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "zoom-iso";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.requiresSteadyFeedPriming = true;
+    frame.pcm.assign(static_cast<size_t>(samples), 0.25f);
+    frame.sampleCount = samples;
+    return frame;
+  };
+  const auto tick = [&](int samples) {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    frames.push_back(makeFrame(samples));
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    return frames;
+  };
+
+  (void)tick(960);                 // held for the cushion
+  (void)tick(960);                 // second reserve tick
+  auto out = tick(960);            // first exact block
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  out = tick(0);                   // drain the first reserve tick
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  out = tick(0);                   // drain the second reserve tick
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  out = tick(0);                   // genuinely dry: disarm
+  EXPECT_TRUE(out[0].pcm.empty());
+  EXPECT_FALSE(states["zoom-iso"].primed);
+
+  out = tick(480);                 // resumed half-block is held
+  EXPECT_TRUE(out[0].pcm.empty());
+  out = tick(1440);                // two ticks: still restoring the cushion
+  EXPECT_TRUE(out[0].pcm.empty());
+  out = tick(960);                 // re-prime to three ticks, then emit exactly one
+  ASSERT_EQ(out[0].pcm.size(), 960u);
+  EXPECT_TRUE(states["zoom-iso"].primed);
+  EXPECT_EQ(states["zoom-iso"].primeEvents, 2u);
+  EXPECT_LT(out[0].pcm[0], 0.02f);  // existing 5 ms resume fade still applies
+  EXPECT_EQ(out[0].pcm[400], 0.25f);
+}
+
 TEST(SpscRing, PushPopWrapFullAndDryProperties) {
   corevideo::modules::SpscRing ring(8);  // tiny capacity to force wrap + full
   float in[16];

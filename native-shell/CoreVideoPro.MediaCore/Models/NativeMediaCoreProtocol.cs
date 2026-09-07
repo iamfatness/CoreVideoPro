@@ -145,12 +145,21 @@ public sealed record NativeMediaCoreProgramSharedTexture
     public int FrameNumber { get; init; }
 }
 
+public sealed record NativeMediaCoreRenderedVideoSource
+{
+    public string LayerId { get; init; } = string.Empty;
+    public string SourceId { get; init; } = string.Empty;
+    public string ParticipantId { get; init; } = string.Empty;
+    public string Kind { get; init; } = string.Empty;
+}
+
 public sealed record NativeMediaCoreProgramFrame
 {
     public int FrameNumber { get; init; }
     public double TimestampMs { get; init; }
     public required string RenderPlanId { get; init; }
     public string? SceneId { get; init; }
+    public IReadOnlyList<NativeMediaCoreRenderedVideoSource>? VideoSources { get; init; }
     public int Width { get; init; }
     public int Height { get; init; }
     public int Fps { get; init; }
@@ -265,6 +274,8 @@ public sealed class NativeMediaCoreEncoderSession
     public required string Status { get; init; }
     public string? RenderPlanId { get; init; }
     public int ProgramFrameCount { get; init; }
+    public long EncoderQueueDroppedVideoFrames { get; init; }
+    public long EncoderQueueDroppedAudioPackets { get; init; }
     public IReadOnlyList<NativeMediaCoreEncoderTarget> Targets { get; init; } = [];
     public NativeMediaCoreEncoderLifecycle Lifecycle { get; init; } = new() { Status = "idle", LastTransition = "idle" };
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -342,6 +353,8 @@ public sealed class NativeMediaCoreRecordingStream
     public long AudioSamples { get; init; }
     public int DroppedFrames { get; init; }
     public long BytesWritten { get; init; }
+    public string? EncoderPath { get; init; }
+    public string? FallbackReason { get; init; }
     /// <summary>True when this ISO carries an audio track (a paired capture mic / Zoom stem).</summary>
     public bool HasAudio { get; init; }
     public string? Warning { get; init; }
@@ -349,6 +362,7 @@ public sealed class NativeMediaCoreRecordingStream
 
 public sealed record NativeMediaCoreRecordingSession
 {
+    public CoreVideoPro.MediaCore.Contracts.OutputLifecycle? Lifecycle { get; init; }
     public required string SessionId { get; init; }
     public bool Active { get; init; }
     public required string Status { get; init; }
@@ -382,6 +396,8 @@ public sealed class NativeMediaCoreRecordingProof
     public long AudioSampleCount { get; init; }
     public int AudioChannels { get; init; }
     public int AudioSampleRate { get; init; }
+    public long EncoderQueueDroppedVideoFrames { get; init; }
+    public long EncoderQueueDroppedAudioPackets { get; init; }
     public bool MetadataValid { get; init; }
     public string? ContainerFormat { get; init; }
     public string? VideoCodec { get; init; }
@@ -727,8 +743,18 @@ public sealed record NativeMediaCoreAutoProduction
     public string Rationale { get; init; } = string.Empty;
 }
 
+public sealed record NativeMediaCorePreviewScene
+{
+    public string? SceneId { get; init; }
+    public int RouteCount { get; init; }
+    public int LayerCount { get; init; }
+    public bool Composite { get; init; }
+}
+
 public sealed record NativeMediaCoreStateSnapshot
 {
+    public JsonElement? ProgramBuffer { get; init; }
+    public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }
     public int RouteCount { get; init; }
     public int FrameCount { get; init; }
@@ -812,6 +838,10 @@ public sealed record NativeMediaCoreStateSnapshot
     /// <summary>Live Zoom roster from media-core sync when the engine is connected.</summary>
     public string? ActiveSpeakerId { get; init; }
     public IReadOnlyList<RawParticipantEvent> Participants { get; init; } = [];
+    /// <summary>Latest per-source Zoom SDK subscription evidence, retained for
+    /// operator-facing source diagnostics instead of being collapsed into only
+    /// aggregate frame counters.</summary>
+    public IReadOnlyList<ZoomMediaSpineSubscription> ZoomSubscriptions { get; init; } = [];
 }
 
 public sealed class NativeMediaCoreValidation

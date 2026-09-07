@@ -13,7 +13,7 @@ namespace CoreVideoPro.WinUI.ViewModels.Transport;
 /// </summary>
 public static class TransportStatusFormatter
 {
-    public static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
+    public static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) => false;
 
     public static string FormatStreamSyncRetryExhaustedStatus(bool requestedStarting) =>
         requestedStarting
@@ -29,10 +29,10 @@ public static class TransportStatusFormatter
             return false;
         }
 
-        return requestedDestinations.Any(destination =>
+        return requestedDestinations.All(destination =>
             snapshot.OutputSenderSession.Senders.Any(sender =>
                 sender.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
-                sender.Status is "starting" or "live") ||
+                sender.Status == "live") ||
             snapshot.OutputHealth.Any(item =>
                 item.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
                 item.Status == "live"));
@@ -50,6 +50,15 @@ public static class TransportStatusFormatter
         }
 
         if (IsStreamingStartProven(snapshot, requestedDestinations))
+        {
+            return false;
+        }
+
+        // An accepted sender can take longer than the command's short observation
+        // window to connect. Keep it armed without calling it proven/live.
+        if (snapshot.OutputSenderSession.Senders.Any(sender =>
+            requestedDestinations.Contains(sender.Destination, StringComparer.OrdinalIgnoreCase) &&
+            sender.Status is "starting" or "live"))
         {
             return false;
         }
@@ -106,6 +115,11 @@ public static class TransportStatusFormatter
 
     public static bool TryFormatRecordingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
     {
+        if (snapshot.Recording?.Lifecycle is { State: "failed" } lifecycle)
+        {
+            failureStatus = FormatRecordingFailureStatus("start", new InvalidOperationException(lifecycle.Error ?? "Recording writer failed."));
+            return true;
+        }
         var detail = snapshot.OutputHealth
             .Where(item =>
                 item.Status is "failed" or "warning" &&
@@ -129,6 +143,13 @@ public static class TransportStatusFormatter
 
     public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
     {
+        // Failure of one destination must not stop another healthy output. Individual
+        // sender errors remain in the snapshot and output-health readouts.
+        if (snapshot.OutputSenderSession.Senders.Any(sender => sender.Status is "live" or "starting"))
+        {
+            failureStatus = string.Empty;
+            return false;
+        }
         var detail = snapshot.OutputSenderSession.Senders
             .Where(static sender => sender.Status is "failed" or "warning")
             .Select(BuildOutputSenderFailureDetail)

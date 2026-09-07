@@ -307,6 +307,9 @@ public sealed class RawParticipantEvent
 
 public sealed class NativeMediaCoreWireState
 {
+    public System.Text.Json.JsonElement? ProgramBuffer { get; init; }
+    public NativeMediaCoreProgramFrame? ProgramFrame { get; init; }
+    public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }
     public int? RouteCount { get; init; }
     public int? TransformCount { get; init; }
@@ -330,6 +333,7 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
     public NativeMediaCoreMediaPlaybackState? MediaPlayback { get; init; }
     public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }
+    public NativeMediaCoreCompositorState? Compositor { get; init; }
     public NativeMediaCoreProgramSharedTexture? ProgramSharedTexture { get; init; }
     public string? MeetingState { get; init; }
     public string? BreakoutRoomId { get; init; }

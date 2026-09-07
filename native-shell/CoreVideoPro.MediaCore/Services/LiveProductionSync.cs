@@ -49,6 +49,7 @@ public static class LiveProductionSync
         public string? LowerThirdTitle { get; init; }
         public string? LowerThirdOrg { get; init; }
         public bool? Recording { get; init; }
+        public bool? RecordingRequested { get; init; }
         public bool? Streaming { get; init; }
         public string? OutputStatus { get; init; }
         public string? OutputSessionStatus { get; init; }
@@ -65,8 +66,8 @@ public static class LiveProductionSync
     {
         var captionCue = snapshot.CaptionTrack.CurrentCue;
         var lowerThird = ResolveProgramLowerThird(snapshot, context);
-        var recording = snapshot.Recording?.Active == true || context.RecordingRequested;
-        var streaming = IsStreamingLive(snapshot) || context.StreamingRequested;
+        var recording = OutputLifecycleReadModel.IsRecordingLive(snapshot.Recording);
+        var streaming = IsStreamingLive(snapshot);
         var outputStatus = MediaCoreBridgeService.SummarizeOutputs(snapshot);
         var outputSessionStatus = SummarizeOutputSession(snapshot);
         var meetingStateLabel = ResolveMeetingStateLabel(snapshot);
@@ -85,6 +86,7 @@ public static class LiveProductionSync
             LowerThirdTitle = lowerThird.Title,
             LowerThirdOrg = lowerThird.Org,
             Recording = recording,
+            RecordingRequested = snapshot.Recording?.Lifecycle?.State is "failed" or "interrupted" ? false : null,
             Streaming = streaming,
             OutputStatus = outputStatus,
             OutputSessionStatus = outputSessionStatus,
@@ -249,16 +251,19 @@ public static class LiveProductionSync
     {
         if (snapshot.OutputSenderSession.Status is "live" or "warning" &&
             snapshot.OutputSenderSession.Senders.Any(sender =>
-                sender.Status is "live" or "starting" ||
-                sender.Status == "warning" && !IsUnavailableOutputSenderWarning(sender)))
+                sender.Status is "live" ||
+                sender.Status == "warning" && sender.FramesSent > 0 && !IsUnavailableOutputSenderWarning(sender)))
         {
             return snapshot.OutputSenderSession.ActiveSenderCount > 0;
         }
 
         return snapshot.OutputHealth.Any(item =>
             item.Destination is not "recording" &&
-            (item.Status == "live" ||
-             item.Status == "warning" && !IsUnavailableOutputHealthWarning(item.Message)));
+            item.Status == "live" &&
+            // Prefer concrete sender observations over a stale aggregate label.
+            !snapshot.OutputSenderSession.Senders.Any(sender =>
+                sender.Destination.Equals(item.Destination, StringComparison.OrdinalIgnoreCase) &&
+                sender.Status is not "live"));
     }
 
     private static bool IsUnavailableOutputSenderWarning(NativeMediaCoreOutputSender sender)
@@ -310,6 +315,10 @@ public static class LiveProductionSync
 
     public static string SummarizeRecordStat(NativeMediaCoreStateSnapshot snapshot, bool recording)
     {
+        if (snapshot.Recording?.Lifecycle is not null)
+        {
+            return OutputLifecycleReadModel.RecordingStatus(snapshot.Recording);
+        }
         if (!recording && snapshot.Recording?.Active != true)
         {
             return "Idle";
@@ -420,6 +429,10 @@ public static class LiveProductionSync
 
     public static string SummarizeOutputSession(NativeMediaCoreStateSnapshot snapshot)
     {
+        if (snapshot.Recording?.Lifecycle is not null)
+        {
+            return MediaCoreBridgeService.SummarizeLifecycleOutputs(snapshot);
+        }
         if (snapshot.Recording?.Active == true)
         {
             var path = ResolveRecordingPath(snapshot) ?? snapshot.Recording.ProgramPath;

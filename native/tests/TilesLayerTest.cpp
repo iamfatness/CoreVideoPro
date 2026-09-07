@@ -1,0 +1,189 @@
+#include "core/MediaCore.h"
+#include "rpc/Json.h"
+
+#include <gtest/gtest.h>
+
+#include <string>
+
+// T1 (docs/2026-08-15-corevideo-tiles-T1-core-wall): the core parses a
+// `tiles` layer off the scene-sync command into state. Nothing renders yet
+// -- these tests only pin the parse + the reset-on-omit behavior.
+//
+// NOTE on the source of these commands: the plan brief for this task wrote
+// its example commands as raw JSON text fed through Json::parse() + a
+// mutating .set("type", ...) call. Neither exists on rpc::Json (parse()
+// returns std::optional<Json> and there is no setter) -- the codebase's
+// actual pattern, used throughout MediaCoreCommandTest.cpp, is to build the
+// command directly as a Json::Object/Json::Array literal. That is what this
+// file does; the field names/values match the brief's JSON exactly.
+
+namespace {
+
+using corevideo::core::MediaCore;
+using corevideo::rpc::Json;
+
+// loadSceneGraph is PRIVATE (MediaCore.h) -- drive it the way
+// MediaCoreCommandTest already does: applyCommands with a load-scene-graph
+// command, which also exercises the real dispatch path rather than a back
+// door.
+void loadScene(MediaCore& core, Json command) {
+  (void)core.applyCommands(Json::Array{std::move(command)});
+}
+
+// A minimal load-scene-graph command carrying one tiles layer.
+Json sceneWithTilesCommand() {
+  return Json::Object{
+      {"type", "load-scene-graph"},
+      {"sceneId", "scene-1"},
+      {"routes", Json::Array{}},
+      {"tiles",
+       Json::Object{
+           {"layerId", "tiles:scene-1"},
+           {"order", 0},
+           {"rect", Json::Object{{"x", 0.0}, {"y", 0.0}, {"w", 1.0}, {"h", 1.0}}},
+           {"members", Json::Array{"zoom:101", "zoom:102", "capture:cam-a"}},
+           {"style",
+            Json::Object{
+                {"tileAspect", "4:3"},
+                {"gutterPercent", 1.5},
+                {"marginPercent", 2.0},
+                {"backgroundColor", "#101418"},
+            }},
+       }},
+  };
+}
+
+// Same shape as sceneWithTilesCommand, but as a set-preview-scene command (the
+// second parse site, MediaCore.cpp's applyPreviewScene -- driven by an actual
+// scene id so the signature-fold dedup doesn't treat it as a repeat).
+Json previewSceneWithTilesCommand(const char* sceneId) {
+  return Json::Object{
+      {"type", "set-preview-scene"},
+      {"sceneId", sceneId},
+      {"routes", Json::Array{}},
+      {"tiles",
+       Json::Object{
+           {"layerId", "tiles:preview"},
+           {"order", 0},
+           {"rect", Json::Object{{"x", 0.0}, {"y", 0.0}, {"w", 1.0}, {"h", 1.0}}},
+           {"members", Json::Array{"zoom:201"}},
+       }},
+  };
+}
+
+}  // namespace
+
+TEST(TilesLayer, LoadSceneGraphParsesMembersAndStyleInOrder) {
+  MediaCore core;
+  loadScene(core, sceneWithTilesCommand());
+
+  const auto& tiles = core.tilesLayerForTest();
+  ASSERT_TRUE(tiles.present);
+  EXPECT_EQ(tiles.layerId, "tiles:scene-1");
+  ASSERT_EQ(tiles.members.size(), 3u);
+  EXPECT_EQ(tiles.members[0], "zoom:101");
+  EXPECT_EQ(tiles.members[2], "capture:cam-a");
+  EXPECT_EQ(tiles.style.tileAspect, "4:3");
+  // No EXPECT_DOUBLE_EQ in this repo's vendored gtest (see AudioMasteringTest.cpp).
+  EXPECT_NEAR(tiles.style.gutterPercent, 1.5, 1e-9);
+  EXPECT_EQ(tiles.style.backgroundColor, "#101418");
+}
+
+TEST(TilesLayer, AbsentTilesNodeLeavesTheLayerUnset) {
+  MediaCore core;
+  loadScene(core, Json::Object{{"type", "load-scene-graph"}, {"sceneId", "s"}, {"routes", Json::Array{}}});
+  EXPECT_FALSE(core.tilesLayerForTest().present);
+}
+
+// A scene that previously had a wall must not keep it when the next sync
+// omits it -- stale walls are the respawn/one-shot failure class in
+// miniature.
+TEST(TilesLayer, ReloadWithoutTilesClearsThePreviousWall) {
+  MediaCore core;
+  loadScene(core, sceneWithTilesCommand());
+  ASSERT_TRUE(core.tilesLayerForTest().present);
+  loadScene(core, Json::Object{{"type", "load-scene-graph"}, {"sceneId", "s2"}, {"routes", Json::Array{}}});
+  EXPECT_FALSE(core.tilesLayerForTest().present);
+}
+
+// An unknown aspect token is a legal value we did not expect; fall back
+// rather than guess, and say so.
+TEST(TilesLayer, UnknownAspectFallsBackTo16x9AndWarns) {
+  MediaCore core;
+  loadScene(core, Json::Object{
+                       {"type", "load-scene-graph"},
+                       {"sceneId", "s"},
+                       {"routes", Json::Array{}},
+                       {"tiles", Json::Object{
+                                     {"members", Json::Array{"zoom:1"}},
+                                     {"style", Json::Object{{"tileAspect", "banana"}}},
+                                 }},
+                   });
+  EXPECT_EQ(core.tilesLayerForTest().style.tileAspect, "16:9");
+  EXPECT_FALSE(core.sceneValidationWarningsForTest().empty());
+}
+
+// A rejected member is a dropped entry, not a silently-shrunk list -- the
+// binding constraint is "a rejected member ... emits a warning; it never
+// disappears quietly." A non-string element (number, null) and a genuinely
+// empty string must all drop AND warn; the well-formed member must survive.
+TEST(TilesLayer, InvalidMembersAreDroppedWithWarnings) {
+  MediaCore core;
+  loadScene(core, Json::Object{
+                       {"type", "load-scene-graph"},
+                       {"sceneId", "s"},
+                       {"routes", Json::Array{}},
+                       {"tiles", Json::Object{
+                                     {"members", Json::Array{"zoom:1", 42, nullptr, ""}},
+                                 }},
+                   });
+  const auto& tiles = core.tilesLayerForTest();
+  ASSERT_EQ(tiles.members.size(), 1u);
+  EXPECT_EQ(tiles.members[0], "zoom:1");
+  EXPECT_FALSE(core.sceneValidationWarningsForTest().empty());
+}
+
+// The second parse site (applyPreviewScene, driven by set-preview-scene / the
+// zoom-media-spine-sync `previewScene` object) needs the identical guarantee
+// as ReloadWithoutTilesClearsThePreviousWall above: a preview scene that
+// previously carried a wall must not keep it once a resync's `tiles` node is
+// gone. This is the literal failure mode the plan names -- "a wall works on
+// load and vanishes on the next preview sync" -- covering the signature-fold
+// reset design (tilesLayer_ is only committed alongside the other locals when
+// the computed signature changes; folding tiles into that signature is what
+// keeps a tiles-only change from being mistaken for "unchanged").
+// Task 4 review fix (C3): this originally asserted against tilesLayerForTest()
+// (the PROGRAM field) because Task 1's applyPreviewScene wrote its wall into
+// that SAME shared field. That was a live-show bug in its own right, not just
+// a test-seam quirk: applyPreviewScene rides the frequent spine sync (not
+// just an operator action), so the first preview sync carrying no `tiles`
+// silently wiped the LIVE PROGRAM wall mid-show. previewTilesLayer_ is now
+// the preview bus's own field; this test asserts the identical reset
+// guarantee against previewTilesLayerForTest() instead.
+TEST(TilesLayer, PreviewSceneReloadWithoutTilesClearsThePreviousWall) {
+  MediaCore core;
+  loadScene(core, previewSceneWithTilesCommand("preview-1"));
+  ASSERT_TRUE(core.previewTilesLayerForTest().present);
+  loadScene(core, Json::Object{
+                       {"type", "set-preview-scene"},
+                       {"sceneId", "preview-2"},
+                       {"routes", Json::Array{}},
+                   });
+  EXPECT_FALSE(core.previewTilesLayerForTest().present);
+}
+
+// Task 4 review fix (C3), the regression this whole split exists to prevent:
+// a PROGRAM wall must survive an unrelated PREVIEW-bus sync that carries no
+// `tiles` node — proving the two buses no longer share one field.
+TEST(TilesLayer, APreviewSyncWithNoWallNeverTouchesTheLiveProgramWall) {
+  MediaCore core;
+  loadScene(core, sceneWithTilesCommand());
+  ASSERT_TRUE(core.tilesLayerForTest().present);
+  loadScene(core, Json::Object{
+                       {"type", "set-preview-scene"},
+                       {"sceneId", "preview-1"},
+                       {"routes", Json::Array{}},
+                   });
+  EXPECT_TRUE(core.tilesLayerForTest().present);
+  EXPECT_EQ(core.tilesLayerForTest().layerId, "tiles:scene-1");
+}

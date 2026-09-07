@@ -28,7 +28,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private const int MaxSrtIngestSources = 8;
     private const double DefaultAudioMonitorVolume = 0.75;
 
-    private readonly MediaCoreBridgeService _bridge = new();
+    private readonly MediaCoreBridgeService _bridge;
     private readonly MediaBinService _mediaBinService = new();
     private readonly CaptureDeviceDiscoveryService _captureDiscovery = new();
     private readonly AudioCaptureDeviceDiscoveryService _audioCaptureDiscovery = new();
@@ -50,13 +50,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // UpdateProgramLowerThirdKey so a refresh for the same target never restarts the slide
     // (the displayed key lags behind during a build-out). Empty when hidden.
     private string _lowerThirdTargetSourceId = string.Empty;
-    private long _lowerThirdKeyChangeTickMs;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
     private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
     private string? _lastAudioTelemetrySignature;
     private readonly Dictionary<string, List<string>> _audioProcessingInserts = new(StringComparer.Ordinal);
-    private readonly IProductionOutputPreferencesStore _outputPreferencesStore = CreateProductionOutputPreferencesStore();
+    private readonly IProductionOutputPreferencesStore _outputPreferencesStore;
+    private readonly StudioStartupBootstrap _startupBootstrap;
     private bool _outputPreferencesLoaded;
     private bool _programLowerThirdAutomationSuppressed;
     private bool _applyingStreamingProfile;
@@ -96,6 +96,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string _previewSceneId = "speaker-slides";
+
+    // ItemsSource replacement briefly drives the WinUI ComboBox's two-way
+    // SelectedValue to null. Keep the last stable scene key so that transient
+    // selection loss never invalidates the view model or recursively rebuilds
+    // SceneItems until the native stack overflows.
+    private string _lastValidPreviewSceneId = "speaker-slides";
+    private bool _previewSceneSelectionRestoreScheduled;
 
     [ObservableProperty]
     private string _sceneBuilderName = "Speaker + Slides";
@@ -265,6 +272,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public Microsoft.UI.Xaml.Visibility RecordingDiskWarningVisibility =>
         string.IsNullOrWhiteSpace(RecordingDiskWarning)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    // An in-show input pointing at a source that no longer exists (a display that was
+    // unplugged, a camera that changed id). The slot is dropped from the multiview
+    // silently, so without this the operator only ever sees an unexplained placeholder
+    // tile — the owner rig sat like that for a week on "screen:3". Null when every
+    // in-show assignment resolves.
+    [ObservableProperty]
+    private string? _showInputWarning;
+
+    partial void OnShowInputWarningChanged(string? value) =>
+        OnPropertyChanged(nameof(ShowInputWarningVisibility));
+
+    public Microsoft.UI.Xaml.Visibility ShowInputWarningVisibility =>
+        string.IsNullOrWhiteSpace(ShowInputWarning)
             ? Microsoft.UI.Xaml.Visibility.Collapsed
             : Microsoft.UI.Xaml.Visibility.Visible;
 
@@ -765,6 +788,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // `this` as its IShowInputsHost) before the first LoadShowInputRoster/InitializeShowInputEditors.
     private global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator _showInputsCoordinator = null!;
     private bool _multiviewGridRefreshScheduled;
+    // True while Engine is ON but Zoom has not yet granted raw media (recording
+    // permission pending) — drives the loud waiting status in ApplyMeetingFields.
+    private bool _awaitingRecordingPrivilege;
+
+    // Zoom→program audio topology (owner decision 2026-08-09). Persists via
+    // ProductionOutputPreferences.ZoomAudioMode (prefs v9) and is restored into
+    // this backing field by ApplyProductionOutputPreferences; v10 makes
+    // independently routed ISO stems the product default.
+    private ZoomAudioMode _zoomAudioMode = ZoomAudioMode.PerGuestIso;
+    public ZoomAudioMode ZoomAudioMode => _zoomAudioMode;
+    public bool IsPerGuestIsoAudio => _zoomAudioMode == ZoomAudioMode.PerGuestIso;
+
+    public void SetZoomAudioMode(bool perGuestIso)
+    {
+        var mode = perGuestIso ? ZoomAudioMode.PerGuestIso : ZoomAudioMode.ProgramMix;
+        if (mode == _zoomAudioMode)
+        {
+            return;
+        }
+        _zoomAudioMode = mode;
+        OnPropertyChanged(nameof(ZoomAudioMode));
+        OnPropertyChanged(nameof(IsPerGuestIsoAudio));
+        CommandStatus = perGuestIso
+            ? "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program)."
+            : "Zoom program mix: Zoom's combined, echo-cancelled mix routes to program; guest strips meter only.";
+        // v9: the topology is operator intent — it survives the launch.
+        SaveProductionOutputPreferences();
+        // The seeded sends change shape — push the new routing to the core now.
+        _ = TrySyncMediaCoreAsync();
+    }
     private bool _canvasInteractionActive;
     private bool _refreshingSceneBackgroundSelection;
     private bool _applyingDualCaptureSelection;
@@ -892,7 +945,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(EnabledGraphics));
     }
 
-    private readonly List<ParticipantAudioMix> _audioMixChannels = [];
+    // REFERENCE-SWAP ONLY — never mutate this list in place. RefreshAudioMixChannels
+    // is called from BuildProductionSyncContext, which runs on BACKGROUND sync
+    // threads (spine timer, transport retries, ConfigureAwait(false) continuations)
+    // as well as the dispatcher. In-place Clear+AddRange raced every UI-thread
+    // enumeration: it planted the null that crashed the app at 19:00 and then threw
+    // "Source array was not long enough" four times a second once the consumers
+    // were guarded (2026-08-09). The writer builds a complete new list and swaps
+    // the reference; readers capture the reference once and enumerate a list that
+    // is never subsequently mutated. `volatile` orders the publish.
+    private volatile List<ParticipantAudioMix> _audioMixChannels = [];
 
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
@@ -976,9 +1038,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string PreviewSceneSummary => ResolveOnAirSceneLabel(PreviewSceneId);
 
     public string LowerThirdKeyStatus =>
+        LowerThirdPhaseSyncPending ? "Lower third sync pending — media core has not confirmed the key" :
         $"{ProgramLowerThirdKey.PhaseLabel} - {ProgramLowerThirdKey.SourceLabel}";
 
     public string LowerThirdKeySummary =>
+        LowerThirdPhaseSyncPending ? "Lower third requested; waiting for media core confirmation." :
         ProgramLowerThirdKey.IsVisible
             ? $"{ProgramLowerThirdKey.SourceName} keyed from program source"
             : "Lower-third key follows the active program source.";
@@ -990,6 +1054,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FormatStudioLowerThirdActionLabel(ProgramLowerThirdKey.IsVisible);
 
     public string StudioLowerThirdCompactStatus =>
+        LowerThirdPhaseSyncPending ? "Sync pending" :
         ProgramLowerThirdKey.IsVisible
             ? FormatLowerThirdPhaseLabel(ProgramLowerThirdKey.Phase)
             : ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not null
@@ -997,6 +1062,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : "No source";
 
     public string StudioLowerThirdSourceLabel =>
+        LowerThirdPhaseSyncPending ? "Lower third sync pending; waiting for media core" :
         ProgramLowerThirdKey.IsVisible
             ? $"{ProgramLowerThirdKey.SourceName} - {ProgramLowerThirdKey.PhaseLabel}"
             : ResolveProgramLowerThirdSource(ProgramSceneRoutes) is { } source
@@ -1337,8 +1403,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "Streaming encoder ready."
             : "Streaming encoder not found. Choose the folder containing ffmpeg.exe.";
 
-    public StudioViewModel()
+    public StudioViewModel() : this(StudioStartupBootstrap.Create(CreateProductionOutputPreferencesStore()))
     {
+    }
+
+    private StudioViewModel(StudioStartupBootstrap startup)
+    {
+        _startupBootstrap = startup;
+        _bridge = startup.Bridge;
+        _outputPreferencesStore = startup.Store;
+        _startupProgramBufferFrames = _programBufferFrames = startup.ProgramBufferFrames;
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
         AudioRoutingMatrix.RouteChanged += OnAudioRoutingMatrixChanged;
         AudioRoutingMatrix.BusOutputsChanged += () => _ = TrySyncMediaCoreAsync();
@@ -1380,11 +1454,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _zoomOAuthCoordinator = new ZoomOAuthAppCoordinator(
             _zoomOAuth,
             Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
-        _zoomOAuthCoordinator.Initialize();
         if (Environment.ProcessPath is { } exePath)
         {
-            _zoomOAuthCoordinator.TryRegisterProtocolHandler(exePath, out _);
+            if (_zoomOAuthCoordinator.TryRegisterProtocolHandler(exePath, out var protocolError))
+            {
+                LaunchLog.Write($"oauth: registered callback protocols for {Path.GetFileName(exePath)}");
+            }
+            else
+            {
+                LaunchLog.Write($"oauth: callback protocol registration failed: {protocolError}");
+            }
         }
+        _zoomOAuthCoordinator.Initialize();
 
         Settings = new SettingsViewModel(
             _bridge,
@@ -1470,6 +1551,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<SceneDisplayItem> SceneItems { get; private set; } = [];
 
+    public IReadOnlyList<RouteSelectOption> GalleryTileAspectOptions { get; } =
+    [
+        new() { Value = "16:9", Label = "16:9" },
+        new() { Value = "4:3", Label = "4:3" },
+        new() { Value = "5:4", Label = "5:4" },
+        new() { Value = "1:1", Label = "Square" },
+        new() { Value = "3:4", Label = "Portrait 3:4" },
+        new() { Value = "9:16", Label = "Portrait 9:16" },
+        new() { Value = "custom", Label = "Custom" }
+    ];
+
+    public IReadOnlyList<RouteSelectOption> GalleryBorderShapeOptions { get; } =
+    [
+        new() { Value = "square", Label = "Square" },
+        new() { Value = "rounded", Label = "Rounded" }
+    ];
+
+    public bool IsPreviewDynamicGallery => PreviewScene.DynamicGallery is not null;
+    public double GalleryMaxTiles { get => PreviewScene.DynamicGallery?.MaxTiles ?? 16; set => UpdateGallery(s => s.MaxTiles = (int)Math.Clamp(Math.Round(value), 1, 64)); }
+    public string GalleryTileAspect { get => PreviewScene.DynamicGallery?.TileAspect ?? "16:9"; set => UpdateGallery(s => s.TileAspect = DynamicGalleryLayoutService.NormalizeAspectPreset(value)); }
+    public double GalleryCustomAspectRatio { get => PreviewScene.DynamicGallery?.CustomAspectRatio ?? 16.0 / 9.0; set => UpdateGallery(s => s.CustomAspectRatio = Math.Clamp(value, 0.25, 4)); }
+    public double GalleryGutterPercent { get => PreviewScene.DynamicGallery?.GutterPercent ?? 0.741; set => UpdateGallery(s => s.GutterPercent = Math.Clamp(value, 0, 10)); }
+    public double GalleryMarginPercent { get => PreviewScene.DynamicGallery?.MarginPercent ?? 0.741; set => UpdateGallery(s => s.MarginPercent = Math.Clamp(value, 0, 20)); }
+    public string GalleryBorderShape { get => PreviewScene.DynamicGallery?.BorderShape ?? "square"; set => UpdateGallery(s => s.BorderShape = value == "rounded" ? "rounded" : "square"); }
+    public string GalleryBorderColor { get => PreviewScene.DynamicGallery?.BorderColor ?? "#000000"; set => UpdateGallery(s => s.BorderColor = SceneRoutingService.NormalizeBorderColor(value)); }
+    public double GalleryBorderThickness { get => PreviewScene.DynamicGallery?.BorderThickness ?? 0; set => UpdateGallery(s => s.BorderThickness = Math.Clamp(value, 0, 32)); }
+    public string GalleryGlowColor { get => PreviewScene.DynamicGallery?.GlowColor ?? "#FFFFFF"; set => UpdateGallery(s => s.GlowColor = SceneRoutingService.NormalizeBorderColor(value)); }
+    public double GalleryGlowSize { get => PreviewScene.DynamicGallery?.GlowSize ?? 0; set => UpdateGallery(s => s.GlowSize = Math.Clamp(value, 0, 64)); }
+    public double GalleryGlowIntensity { get => PreviewScene.DynamicGallery?.GlowIntensity ?? 100; set => UpdateGallery(s => s.GlowIntensity = Math.Clamp(value, 0, 100)); }
+    public double GalleryGlowSoftness { get => PreviewScene.DynamicGallery?.GlowSoftness ?? 0; set => UpdateGallery(s => s.GlowSoftness = Math.Clamp(value, 0, 100)); }
+    public bool GalleryAnimateLayout { get => PreviewScene.DynamicGallery?.AnimateLayout ?? false; set => UpdateGallery(s => s.AnimateLayout = value); }
+    public double GalleryAnimationDurationMs { get => PreviewScene.DynamicGallery?.AnimationDurationMs ?? 350; set => UpdateGallery(s => s.AnimationDurationMs = (int)Math.Clamp(Math.Round(value), 100, 2000)); }
+
     public IReadOnlyList<Participant> RoomVideoParticipants { get; private set; }
 
     // All in-room participants (incl. video-off) for the Sources/Inputs picker.
@@ -1477,9 +1591,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<Participant> SceneParticipants => RoomVideoParticipants;
 
-    public Scene ProgramScene => Scenes.First(s => s.Id == ActiveSceneId);
+    // Mirrors PreviewScene's fallback chain below. This was a bare
+    // Scenes.First(predicate), which throws InvalidOperationException the moment
+    // ActiveSceneId names a scene that is not in the list — the same failure
+    // shape that put "Sequence contains no matching element" in launch.log on
+    // 2026-08-15. PreviewScene was hardened against it; this was not, and it is
+    // a property read from XAML, so the throw surfaces as an unhandled crash on
+    // a binding thread. The final Scenes.First() keeps the non-null contract.
+    public Scene ProgramScene =>
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, ActiveSceneId, StringComparison.Ordinal)) ??
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
+        Scenes.First();
 
-    public Scene PreviewScene => Scenes.First(s => s.Id == PreviewSceneId);
+    public Scene PreviewScene =>
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, _lastValidPreviewSceneId, StringComparison.Ordinal)) ??
+        Scenes.FirstOrDefault(s => string.Equals(s.Id, ActiveSceneId, StringComparison.Ordinal)) ??
+        Scenes.First();
 
     [ObservableProperty]
     private string _currentRoomLabel;
@@ -1497,9 +1625,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ? "Start or stop Zoom video capture for this meeting."
         : "Join a Zoom meeting before starting capture.";
 
-    public string RecordingLabel => Recording ? "Recording" : "Record";
+    public string RecordingLabel => Recording ? "Recording" : RecordingRequested ? "Starting…" : "Record";
 
-    public string StreamingLabel => Streaming ? "Streaming" : "Stream";
+    public string StreamingLabel => Streaming ? "Streaming" : StreamingRequested ? "Starting…" : "Stream";
 
     public IReadOnlyList<string> StreamRtmpProtocolOptions { get; } = ["rtmps", "rtmp"];
 
@@ -2667,7 +2795,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ConfigureMultiviewerAsync()
     {
-        if (!_bridge.Running)
+        if (!_bridge.Running || _bridge.Profile is null)
         {
             return;
         }
@@ -3461,8 +3589,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    partial void OnActiveSceneIdChanged(string value)
+    partial void OnActiveSceneIdChanged(string oldValue, string value)
     {
+        if (!_scenes.Any(scene => string.Equals(scene.Id, value, StringComparison.Ordinal)))
+        {
+            // Never let a transient selection reset poison the program bus.
+            if (_scenes.Any(scene => string.Equals(scene.Id, oldValue, StringComparison.Ordinal)))
+            {
+                ActiveSceneId = oldValue;
+            }
+            return;
+        }
         RefreshSceneItems();
         OnPropertyChanged(nameof(ProgramScene));
         OnPropertyChanged(nameof(ProgramSceneSummary));
@@ -3474,10 +3611,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnPreviewSceneIdChanged(string value)
     {
+        // Replacing SceneItems briefly drives the bound ComboBox selection to
+        // null. Never run scene refresh against that transient invalid key.
+        if (string.IsNullOrWhiteSpace(value) ||
+            !_scenes.Any(scene => string.Equals(scene.Id, value, StringComparison.Ordinal)))
+        {
+            SchedulePreviewSceneSelectionRestore();
+            return;
+        }
+
+        _lastValidPreviewSceneId = value;
+        MagicScene.NotifyPreviewSceneChanged();
         // S2b: cueing a different scene abandons any uncommitted edits to the
         // live scene (the draft belongs to the previously cued scene).
         DiscardLivePreviewDraft();
         SceneBuilderName = PreviewScene.Name;
+        NotifyDynamicGalleryPropertiesChanged();
         RefreshSceneItems();
         RefreshSceneBackgroundSelection();
         OnPropertyChanged(nameof(PreviewScene));
@@ -3490,10 +3639,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // multi-layer preview bus (mirrors how program scene changes sync). Discrete user
         // action, so a single sync — no flood. Backpressure is transient (the periodic sync
         // reapplies), so swallow the in-flight signal.
-        if (_bridge.Running)
+        if (_bridge.Running && _bridge.Profile is not null && _takeMutationDepth == 0)
         {
             _ = SyncPreviewSceneChangeAsync();
         }
+    }
+
+    private void SchedulePreviewSceneSelectionRestore()
+    {
+        if (_previewSceneSelectionRestoreScheduled)
+        {
+            return;
+        }
+
+        _previewSceneSelectionRestoreScheduled = true;
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
+        {
+            _previewSceneSelectionRestoreScheduled = false;
+            if (_scenes.Any(scene => string.Equals(scene.Id, PreviewSceneId, StringComparison.Ordinal)))
+            {
+                return;
+            }
+
+            var fallback = _scenes.FirstOrDefault(scene =>
+                    string.Equals(scene.Id, _lastValidPreviewSceneId, StringComparison.Ordinal)) ??
+                _scenes.FirstOrDefault(scene =>
+                    string.Equals(scene.Id, ActiveSceneId, StringComparison.Ordinal)) ??
+                _scenes.FirstOrDefault();
+            if (fallback is not null)
+            {
+                PreviewSceneId = fallback.Id;
+            }
+        }, "scene-selection.restore");
     }
 
     private async Task SyncPreviewSceneChangeAsync()
@@ -3509,7 +3686,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LaunchLog.Write($"preview-scene sync failed: {ex.Message}");
+            LaunchLog.WriteException("preview-scene sync failed", ex);
         }
     }
 
@@ -3580,8 +3757,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void SelectScene(string sceneId)
     {
+        var scene = Scenes.FirstOrDefault(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
+        if (scene is null)
+        {
+            CommandStatus = "Select an available scene to queue on preview";
+            return;
+        }
+        MagicScene.NotifyManualSceneSelection();
         PreviewSceneId = sceneId;
-        CommandStatus = $"{Scenes.First(s => s.Id == sceneId).Name} queued on preview";
+        CommandStatus = $"{scene.Name} queued on preview";
         SchedulePreviewRoutingRefresh();
     }
 
@@ -3672,10 +3856,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public bool CanTake =>
-        PreviewSceneId != ActiveSceneId ||
-        (_livePreviewDraft is not null &&
-         string.Equals(_livePreviewDraftSceneId, ActiveSceneId, StringComparison.Ordinal) &&
-         HasPendingProgramMediaCue(GetMutableRoutes(ActiveSceneId), _livePreviewDraft));
+        Scenes.Any(scene => string.Equals(scene.Id, PreviewSceneId, StringComparison.Ordinal)) &&
+        Scenes.Any(scene => string.Equals(scene.Id, ActiveSceneId, StringComparison.Ordinal)) &&
+        (PreviewSceneId != ActiveSceneId || HasPendingPreviewTake);
 
     public string TakeTransitionLabel => TakeTransitionMode switch
     {
@@ -3761,6 +3944,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private void NewDynamicGallery()
+    {
+        var newId = NewCustomSceneId();
+        var galleryNumber = _scenes.Count(scene => scene.DynamicGallery is not null) + 1;
+        var scene = new Scene
+        {
+            Id = newId,
+            Name = galleryNumber == 1 ? "CoreVideo Tiles" : $"CoreVideo Tiles {galleryNumber}",
+            Layout = "dynamic-gallery",
+            Automation = "Auto-reflow Zoom gallery",
+            DynamicGallery = new DynamicGallerySettings()
+        };
+
+        _scenes.Add(scene);
+        _sceneRoutes[newId] = [];
+        ReconcileDynamicGalleryRoutes(scene, _sceneRoutes[newId]);
+        RefreshSceneItems();
+        PreviewSceneId = newId;
+        ActiveTab = StudioTab.Sources;
+        CommandStatus = $"{scene.Name} created with {RoomVideoParticipants.Count} live Zoom sources";
+        SchedulePreviewRoutingRefresh();
+        SaveProductionOutputPreferences();
+    }
+
+    [RelayCommand]
     private void DuplicateScene(string? sceneId)
     {
         var source = _scenes.FirstOrDefault(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
@@ -3775,7 +3983,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Id = newId,
             Name = ScenePersistenceService.MakeUniqueSceneName($"{source.Name} copy", _scenes.Select(s => s.Name)),
             Layout = source.Layout,
-            Automation = "Custom canvas"
+            Automation = source.DynamicGallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
+            DynamicGallery = source.DynamicGallery?.Clone()
         };
 
         _scenes.Add(scene);
@@ -3819,7 +4028,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Id = newId,
             Name = trimmed ?? $"Saved scene {sceneNumber}",
             Layout = PreviewScene.Layout,
-            Automation = "Custom canvas"
+            Automation = PreviewScene.DynamicGallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
+            DynamicGallery = PreviewScene.DynamicGallery?.Clone()
         };
 
         _scenes.Add(scene);
@@ -3895,7 +4105,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Name = name,
             Layout = scene.Layout,
             Automation = scene.Automation,
-            DurationLabel = scene.DurationLabel
+            DurationLabel = scene.DurationLabel,
+            DynamicGallery = scene.DynamicGallery
         };
 
         OnPropertyChanged(nameof(ProgramScene));
@@ -3912,7 +4123,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // generated [RelayCommand] (CanExecute = CanTake, shared with Scenes/MagicScene) so XAML and
     // the external TakeCommand.NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanTake))]
-    private Task TakeAsync() => _transportCoordinator.TakeAsync();
+    private Task TakeAsync()
+    {
+        MagicScene.NotifyManualSceneSelection();
+        return _transportCoordinator.TakeAsync();
+    }
 
     [RelayCommand]
     private void SetTakeTransition(string? transitionMode)
@@ -3986,7 +4201,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 "local-machine-audio",
                 ResolveLocalAudioRoutingSourceLabel(SelectedLocalAudioCaptureDeviceName)));
         }
-        AddUniqueRoutingSource(sources, new RoutingSource("zoom-mix", "Zoom meeting mix (program default)"));
+        AddUniqueRoutingSource(sources, new RoutingSource(
+            "zoom-mix",
+            "Zoom meeting mix (fallback mode)",
+            DefaultUnrouted: IsPerGuestIsoAudio));
         AddUniqueRoutingSource(sources, new RoutingSource("media", "Media playback"));
         AudioRoutingMatrix.Build(sources);
         RefreshAudioProcessingTargets();
@@ -3998,8 +4216,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         foreach (var input in ShowInputs.Where(IsShowInputAudioSource))
         {
             var sourceId = ResolveAudioRoutingMatrixSourceId(FormatInputSourceId(input.SlotNumber));
-            // Z1: ISO streams default unrouted (the meeting mix is program default).
-            AddUniqueRoutingSource(sources, new RoutingSource(sourceId, $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)} (ISO)", DefaultUnrouted: true));
+            // Product default: each ISO stem reaches Program L/R through its own
+            // strip. In explicit ProgramMix mode the stems stage unrouted so the
+            // Zoom mix is never summed with delayed duplicates of the same voice.
+            AddUniqueRoutingSource(sources, new RoutingSource(
+                sourceId,
+                $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)} (ISO)",
+                DefaultUnrouted: !IsPerGuestIsoAudio));
         }
 
         foreach (var captureDevice in CaptureDevices
@@ -4493,7 +4716,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void SetParticipantProductionRole(string participantId, string? roleId)
     {
-        var participant = RoomVideoParticipants.FirstOrDefault(item =>
+        var participant = RoomParticipantsForInputs.FirstOrDefault(item =>
             string.Equals(item.Id, participantId, StringComparison.Ordinal));
         if (participant is null)
         {
@@ -5963,12 +6186,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            CommandStatus = ex.Message;
+            RunOnUiThread(() => CommandStatus = ex.Message);
+            LaunchLog.WriteException("media-core sync", ex);
         }
     }
 
     private void QueueProductionSyncRetry(string reason)
     {
+        if (_shutdownPrepared) return;
         var version = Interlocked.Increment(ref _productionSyncRetryVersion);
         LaunchLog.Write($"media-core sync deferred reason={reason}; request={version}");
         EnsureProductionSyncRetryWorker();
@@ -5989,7 +6214,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var handledVersion = 0;
         try
         {
-            while (_bridge.Running)
+            while (!_shutdownPrepared && _bridge.Running)
             {
                 var requestedVersion = Volatile.Read(ref _productionSyncRetryVersion);
                 if (requestedVersion == handledVersion)
@@ -5998,10 +6223,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 var synced = await RetryDeferredProductionSyncAsync(
-                        () => _bridge.Running,
+                        () => !_shutdownPrepared && _bridge.Running,
                         () => Volatile.Read(ref _applyingProductionPatch),
                         async () => { await SyncActiveSceneAsync().ConfigureAwait(false); },
-                        CancellationToken.None)
+                        _syncShutdownCancellation.Token)
                     .ConfigureAwait(false);
                 if (!synced)
                 {
@@ -6012,13 +6237,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LaunchLog.Write($"media-core deferred sync completed request={handledVersion}");
             }
         }
+        catch (OperationCanceledException) when (_shutdownPrepared) { }
         catch (Exception ex)
         {
             // A non-contention failure should be visible to the operator, but should not
             // spin forever. A later edit creates a new request and gets another attempt.
             handledVersion = Volatile.Read(ref _productionSyncRetryVersion);
             RunOnUiThread(() => CommandStatus = ex.Message);
-            LaunchLog.Write($"media-core deferred sync failed request={handledVersion}: {ex.Message}");
+            LaunchLog.WriteException("media-core deferred sync", ex, handledVersion.ToString());
         }
         finally
         {
@@ -6026,7 +6252,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
             // Close the handoff race: if an edit arrived while this worker was completing,
             // its version differs and a new worker is guaranteed to pick it up.
-            if (_bridge.Running && Volatile.Read(ref _productionSyncRetryVersion) != handledVersion)
+            if (!_shutdownPrepared && _bridge.Running && Volatile.Read(ref _productionSyncRetryVersion) != handledVersion)
             {
                 EnsureProductionSyncRetryWorker();
             }
@@ -6097,13 +6323,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task EnsureMediaCoreRunningAsync(string startingStatus)
     {
-        if (_bridge.Running)
+        _syncShutdownCancellation.Token.ThrowIfCancellationRequested();
+        // Process creation precedes protocol readiness. A second startup edit
+        // must await StartAsync's existing child handshake rather than send its
+        // production sync through a pipe that has not been validated yet.
+        if (_bridge.Running && _bridge.Profile is not null)
         {
             return;
         }
 
         RunOnUiThread(() => EngineStatus = startingStatus);
-        await _bridge.StartAsync().ConfigureAwait(false);
+        await _bridge.StartAsync(_syncShutdownCancellation.Token).ConfigureAwait(false);
         RunOnUiThread(() =>
         {
             Settings.RefreshSdkReadiness();
@@ -6326,6 +6556,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try
             {
                 LaunchLog.Write(string.Format("capture: screen connect requested {0}", device.Id));
+                await EnsureMediaCoreRunningAsync("Preparing capture...").ConfigureAwait(false);
                 var statuses = await _bridge.ConnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
                 var match = statuses.FirstOrDefault(s => s.Id == device.Id);
                 LaunchLog.Write(string.Format("capture: screen connect response {0}: statuses={1} match={2}", device.Id, statuses.Count, match?.ConnectionState ?? "none"));
@@ -6416,6 +6647,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
+            await EnsureMediaCoreRunningAsync("Preparing capture...").ConfigureAwait(false);
             // outputSourceId = device.Id: the core keys the camera's frames by the
             // SHELL's routing id, not its own MF-enumerated id, so the native frame
             // (`capture:<device.Id>`) matches the multiview/scene routing instead of
@@ -6795,6 +7027,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyDualCaptureSelection();
     }
 
+    // THE THIRD SOURCE-STUFFER DIED HERE (owner-reported three times on 2026-08-09:
+    // "the Sources screen keeps putting the local webcams back into Inputs 1 and 2").
+    //
+    // This method used to write the primary/secondary dual-capture selection STRAIGHT
+    // into ShowInputs[0] and ShowInputs[1] (slots 1-2) via ApplyCaptureDeviceToShowInputSlot
+    // (slot.Kind = webcam kind, slot.CaptureDeviceId = device.Id, slot.InShow = true —
+    // unconditionally, clobbering whatever the operator had placed there). And
+    // RefreshDualCaptureSourceOptions AUTO-PICKS the first two connected capture devices
+    // — the operator's local webcams — whenever no selection resolves, so the pair ran
+    // as a pure background stuffer on EVERY capture-fleet pass: device-watcher events,
+    // opening the Inputs tab (OnActiveTabChanged), every capture connect (incl. the
+    // auto-connect storm after a relaunch), SRT virtual-device refresh. NOTHING in the
+    // UI binds Primary/Secondary/DualCapture* any more (the SRC-1 unified picker
+    // replaced the dual-capture combos), so no operator action was involved at all —
+    // and the coalesced roster save then PERSISTED the stomp, which is why relaunches
+    // restored webcams over the operator's saved Zoom guests. launch.log fingerprint,
+    // live meeting 2026-08-09: 20:05:32 operator sets slots 1-2 to Zoom guests →
+    // 20:05:44 both flip back to UvcWebcam; again at 20:11:41; and 800 ms after the
+    // 20:01:43 relaunch the freshly RESTORED roster was stomped before the operator
+    // touched anything. It survived the two earlier fixes because it is neither the
+    // auto-assign refill (ShowInputRosterService) nor EnsureAssignedSlotsForInShow.
+    //
+    // THE LAW (owner, stated three times that day): sources appear in slots by
+    // OPERATOR action or by NEWCOMER auto-assign ONLY. This path now only maintains
+    // the dual-capture summary text; it touches no slot. Do not resurrect the write.
     private void ApplyDualCaptureSelection()
     {
         if (_applyingDualCaptureSelection)
@@ -6813,42 +7070,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SecondaryCaptureDeviceId = secondary?.Id;
             }
 
-            ApplyCaptureDeviceToShowInputSlot(0, primary);
-            ApplyCaptureDeviceToShowInputSlot(1, secondary);
             UpdateDualCaptureSummary();
-            RefreshShowInputEditors();
-            RefreshMultiviewGridTiles();
-            QueueSelectedCaptureDevicesOnline();
         }
         finally
         {
             _applyingDualCaptureSelection = false;
         }
-    }
-
-    private void ApplyCaptureDeviceToShowInputSlot(int slotIndex, CaptureDevice? device)
-    {
-        if (slotIndex < 0 || slotIndex >= ShowInputs.Count)
-        {
-            return;
-        }
-
-        var slot = ShowInputs[slotIndex];
-        if (device is null)
-        {
-            if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam)
-            {
-                slot.Kind = ShowInputKind.Unassigned;
-                slot.CaptureDeviceId = null;
-                slot.InShow = false;
-            }
-
-            return;
-        }
-
-        slot.Kind = ResolveShowInputKind(device);
-        slot.CaptureDeviceId = device.Id;
-        slot.InShow = true;
     }
 
     private void UpdateDualCaptureSummary()
@@ -6888,6 +7115,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var screens = new List<CaptureDevice>();
         try
         {
+            await EnsureMediaCoreRunningAsync("Preparing capture devices...").ConfigureAwait(false);
             var nativeDevices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
             foreach (var native in nativeDevices)
             {
@@ -7032,13 +7260,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CaptureDevices.Remove(device);
         }
 
-        foreach (var slot in ShowInputs.Where(slot =>
-            slot.Kind == ShowInputKind.SrtIngest &&
-            string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+        using (ShowInputWriteScope.Enter("srt-device-removed"))
         {
-            slot.Kind = ShowInputKind.Unassigned;
-            slot.CaptureDeviceId = null;
-            slot.InShow = false;
+            foreach (var slot in ShowInputs.Where(slot =>
+                slot.Kind == ShowInputKind.SrtIngest &&
+                string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+            {
+                slot.Kind = ShowInputKind.Unassigned;
+                slot.CaptureDeviceId = null;
+                slot.InShow = false;
+            }
         }
 
         foreach (var route in _sceneRoutes.Values.SelectMany(routes => routes)
@@ -7101,8 +7332,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Scenes,
             AutomationPreferScreenShare,
             (int)Math.Round(AutomationPanelParticipantThreshold));
-        FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(RoomVideoParticipants, _participantProductionRoles);
-        FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
+        FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(
+            RoomParticipantsForInputs,
+            _participantProductionRoles,
+            _bridge.LastSnapshot?.ZoomSubscriptions);
+        FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomParticipantsForInputs);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
         AutoProductionReadout = MagicScene.BuildAutoProductionReadout();
@@ -8142,8 +8376,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshAudioMixChannels()
     {
-        var existing = _audioMixChannels
-            .Where(channel => !string.IsNullOrWhiteSpace(channel.ParticipantId))
+        // Snapshot + null-guard FIRST. A null slipped into _audioMixChannels on
+        // 2026-08-09 (7 snapshot-rate refreshes threw NREs the dispatcher
+        // hardening absorbed, then a synchronous Audio-tab click hit the same
+        // null and killed the app). The suspected planter is a cross-thread
+        // mutation racing this GroupBy over the bare List — so copy the list
+        // once, drop nulls LOUDLY, and never let this pipeline throw again.
+        var channelsSnapshot = _audioMixChannels.ToArray();
+        var nullCount = channelsSnapshot.Count(channel => channel is null);
+        if (nullCount > 0)
+        {
+            LaunchLog.Write($"audio-mix: {nullCount} NULL channel(s) in _audioMixChannels " +
+                            $"(thread={Environment.CurrentManagedThreadId}, dispatcherAccess={_dispatcher.HasThreadAccess}) — dropped; find the writer");
+        }
+        var existing = channelsSnapshot
+            .Where(channel => channel is not null && !string.IsNullOrWhiteSpace(channel.ParticipantId))
             .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var merged = ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing).ToList();
@@ -8162,6 +8409,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 existing.TryGetValue(nativeChannel.ParticipantId, out var prior);
+                var sourceMuted = RoomParticipantsForInputs.FirstOrDefault(participant =>
+                    string.Equals(participant.Id, nativeChannel.ParticipantId, StringComparison.Ordinal))?.IsMuted ??
+                    prior?.SourceMuted ?? false;
                 var channel = new ParticipantAudioMix
                 {
                     ParticipantId = nativeChannel.ParticipantId,
@@ -8176,6 +8426,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     // flickering per tick (attack-from-silence at every block seam).
                     // Suppression is operator-only: preserve the prior choice.
                     NoiseSuppression = prior?.NoiseSuppression ?? false,
+                    SourceMuted = sourceMuted,
                     Muted = prior?.Muted ?? nativeChannel.Muted,
                     Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
                     Lufs = nativeChannel.RmsDbfs,
@@ -8201,8 +8452,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mergedById[sourceId] = BuildWaitingForPcmAudioMixChannel(sourceId, prior);
         }
 
-        _audioMixChannels.Clear();
-        _audioMixChannels.AddRange(mergedById.Values);
+        // Atomic publish (see the field comment): a fully built list, one swap.
+        _audioMixChannels = mergedById.Values.ToList();
 
         // C7d (owner: workspace controls silently dead): the processing
         // workspace edits the SELECTED channel — with no selection every
@@ -8238,6 +8489,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Pan = prior?.Pan ?? 0,
             Solo = prior?.Solo ?? false,
             NoiseSuppression = prior?.NoiseSuppression ?? false,
+            SourceMuted = prior?.SourceMuted ?? false,
             Muted = prior?.Muted ?? false,
             Status = "waiting-for-pcm",
             Lufs = -120,
@@ -8250,9 +8502,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var syncContext = BuildProductionSyncContext();
         var participants = syncContext.Participants;
-        if (_bridge.LastSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true &&
-            _bridge.LastSnapshot.Participants is { Count: > 0 } liveParticipants)
+        var nativeSnapshot = _bridge.LastSnapshot;
+        if (nativeSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true &&
+            nativeSnapshot.Participants is { Count: > 0 } liveParticipants)
         {
+            var directedSpeakerId = nativeSnapshot.ActiveSpeakerId;
             participants = liveParticipants
                 .Select(participant => new MediaCoreParticipantWire(
                     participant.UserId,
@@ -8260,8 +8514,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     participant.Role ?? "guest",
                     participant.BreakoutRoomId ?? _currentRoomId,
                     participant.BreakoutRoomName ?? _currentRoomName,
-                    string.Equals(participant.UserId, _bridge.LastSnapshot.ActiveSpeakerId, StringComparison.Ordinal) ||
-                    participant.Talking == true,
+                    !string.IsNullOrWhiteSpace(directedSpeakerId)
+                        ? string.Equals(participant.UserId, directedSpeakerId, StringComparison.Ordinal)
+                        : participant.Talking == true,
                     participant.Muted == true,
                     participant.SharingScreen == true,
                     participant.AudioLevel ?? 0,
@@ -8287,7 +8542,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             new ZoomMediaSpinePayloadBuilder.BuildInput
             {
                 Participants = participants,
-                Recording = Recording,
+                Recording = RecordingRequested,
                 SelectedBreakoutRoomId = _currentRoomId,
                 EngineRunning = ZoomCaptureSubscribed,
                 // Explicit opt-in: raw capture (and the Zoom recording-rights
@@ -8296,37 +8551,47 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 OAuthSignedIn = Settings.ZoomOAuthSignedIn,
                 SdkVersion = _bridge.Profile?.Name ?? "zoom-engine",
                 SdkRuntimeReady = !Settings.SdkIsBlocked,
+                ProgramSceneRoutes = syncContext.SceneRoutes,
+                PreviewSceneRoutes = syncContext.PreviewSceneRoutes,
                 Multiview = multiview
             });
     }
 
     private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
     {
-        var scene = Scenes.First(s => s.Id == ActiveSceneId);
-        var syncContext = BuildProductionSyncContext();
-        var commands = MediaCoreCommandBuilder.BuildSyncCommands(syncContext);
-        if (!string.IsNullOrWhiteSpace(reason))
+        // Capture and submit together on the binding thread: deferred workers and
+        // post-await callers must never enumerate the live route/roster/audio collections.
+        var pending = await CaptureUiOwnedAsync(() =>
         {
-            LaunchLog.Write(
-                $"media-core sync batch reason={reason} " +
-                $"recording={syncContext.Recording} streaming={syncContext.Streaming} " +
-                $"destinations={FormatStreamDestinationTelemetry(syncContext.StreamDestinations)} " +
-                $"commands={string.Join(",", commands.Select(command => command.Type))}");
-        }
-        // ConfigureAwait(true): resume on the CALLER'S context. UI callers (Engine On/Off,
-        // command handlers) then run ApplyLiveProductionPatch on the real binding thread,
-        // which is more reliable than the captured _dispatcher (the recurring off-thread
-        // set_OutputStatus crash came through here in a re-entrant Engine-On path where the
-        // guard's HasThreadAccess was bypassed). Off-thread callers have no UI context, so
-        // they resume on the pool and ApplyLiveProductionPatch's own guard marshals them.
-        var snapshot = await _bridge.SyncAsync(commands).ConfigureAwait(true);
-        ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
-        RunOnUiThread(() => CommandStatus = $"{scene.Name} synced to media core");
+            var scene = Scenes.FirstOrDefault(s => s.Id == ActiveSceneId)
+                ?? throw new InvalidOperationException("Program scene is unavailable. Select a valid scene before taking.");
+            var context = BuildProductionSyncContext();
+            var commands = MediaCoreCommandBuilder.BuildSyncCommands(context);
+            var version = ++_productionSyncCaptureVersion;
+            if (!string.IsNullOrWhiteSpace(reason))
+                LaunchLog.Write($"media-core sync batch reason={reason} request={version} recording={context.Recording} streaming={context.Streaming} commands={string.Join(",", commands.Select(command => command.Type))}");
+            return (Version: version, SceneId: scene.Id, SceneName: scene.Name, LowerThirdRevision: _lowerThirdFreshness.Revision, Response: _bridge.SyncAsync(commands));
+        }).ConfigureAwait(false);
+
+        var snapshot = await pending.Response.ConfigureAwait(false);
+        await CaptureUiOwnedAsync(() =>
+        {
+            // A queued response must not apply an older request's patch to a newer
+            // operator scene/intent. Its native snapshot remains available on the bridge.
+            ObserveLowerThirdProgramIntent();
+            if (pending.SceneId == ActiveSceneId)
+                _lowerThirdFreshness.Acknowledge(pending.LowerThirdRevision, snapshot.ProgramFrame?.FrameNumber ?? 0);
+            if (pending.Version != _productionSyncCaptureVersion || pending.SceneId != ActiveSceneId) return false;
+            ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
+            CommandStatus = $"{pending.SceneName} synced to media core";
+            return true;
+        }).ConfigureAwait(false);
         return snapshot;
     }
 
     private MediaCoreProductionSyncContext BuildProductionSyncContext()
     {
+        ObserveLowerThirdProgramIntent();
         var resolvedSceneProgramRoutes = GetMutableRoutes(ActiveSceneId)
             .Select(ResolveRouteFromShowInput)
             .ToList();
@@ -8335,9 +8600,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 resolvedSceneProgramRoutes,
                 _onAirBrowserOverlayIds)
             .ToList();
-        var sceneRoutes = resolvedProgramRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
-            .ToList();
+        // T1 core wall (whole-branch review fix): a CoreVideo Tiles (dynamic-gallery)
+        // scene contributes an EMPTY route list AT SERIALIZATION TIME, by construction.
+        //
+        // The core emits route layers and the wall into ONE shared order namespace
+        // (tiles-bg at wall.order, tile #i at wall.order + 1 + i), so a surviving
+        // gallery route at order 2 sorts BETWEEN tile 1 and tile 3 and composites a
+        // full-canvas cell over individual wall tiles — on PROGRAM, and therefore in
+        // the virtual camera, every recording and every stream.
+        // ReconcileDynamicGalleryRoutes() empties the route list too, but it cannot be
+        // the guarantee: it runs on a COALESCED Low-priority dispatch (so
+        // OnPreviewSceneIdChanged only SCHEDULES it before firing the sync
+        // immediately), persisted pre-T1 scenes restore `<sceneId>-tile-<pid>` routes
+        // verbatim at load, and it self-suppresses while `_canvasInteractionActive`
+        // — which does NOT gate BuildTilesLayerWire, so the wall still ships. Dropping
+        // the routes HERE, where the wire is built, makes the invariant hold for every
+        // one of those paths without depending on a UI refresh pass having run.
+        // Core-side characterization of what the interleave WOULD be:
+        // TilesRenderPlan.RoutesAndAWallShareOneOrderNamespace.
+        var sceneRoutes = ProgramScene.DynamicGallery is not null
+            ? new List<MediaCoreSceneRouteWire>()
+            : resolvedProgramRoutes
+                .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
+                .ToList();
 
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
@@ -8350,9 +8635,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 resolvedScenePreviewRoutes,
                 _previewBrowserOverlayIds)
             .ToList();
-        var previewSceneRoutes = resolvedPreviewRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
-            .ToList();
+        // Same by-construction rule as the program routes above — the preview bus is
+        // composited from its own scene graph and interleaves identically.
+        var previewSceneRoutes = PreviewScene.DynamicGallery is not null
+            ? new List<MediaCoreSceneRouteWire>()
+            : resolvedPreviewRoutes
+                .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
+                .ToList();
 
         var participants = RoomVideoParticipants
             .Select(participant => new MediaCoreParticipantWire(
@@ -8414,7 +8703,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
         audioRoutingSends = EnsureDefaultZoomAudioRoutingSends(
             audioRoutingSends,
-            RoomParticipantsForInputs.Select(participant => participant.Id).ToList())
+            RoomParticipantsForInputs.Select(participant => participant.Id).ToList(),
+            _zoomAudioMode)
             .ToList();
         // Default/fallback sends are synthesized after the matrix rows above.
         // Attach each bus's insert chain here so MASTER VST processing remains
@@ -8457,14 +8747,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : [];
         var multiviewGrid = ShowInputRosterService.ResolveGridShape(multiviewSources.Count);
 
+        // An in-show input whose source no longer exists is silently dropped from the
+        // multiview list — the operator just gets a placeholder tile and no reason. On
+        // the owner rig slot 3 pointed at "screen:3" after the display count changed and
+        // sat unresolved for a week. Scalar string + Visibility only (the sanctioned
+        // 0xc000027b-safe shape) — never a snapshot-rate bound collection.
+        var unresolvedInputs = ShowInputRosterService.DescribeUnresolvedAssignments(
+            ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets);
+        ShowInputWarning = unresolvedInputs.Count == 0 ? null : string.Join(" ", unresolvedInputs);
+
         return new MediaCoreProductionSyncContext
         {
             ActiveSceneId = ActiveSceneId,
             SceneRoutes = sceneRoutes,
             SceneBackground = BuildSceneBackgroundWire(ActiveSceneId),
+            // T1 core wall: the shell sends WHO is eligible for a tile (membership
+            // policy only, TilesLayerPayloadBuilder), never a solved rect — the core
+            // owns layout. Built from the SAME ProgramScene/PreviewScene + roster the
+            // route wires above are resolved from, so the wall and the rest of the
+            // scene-sync command agree on which scene/roster generation they carry.
+            TilesLayer = BuildTilesLayerWire(ProgramScene),
             PreviewSceneId = PreviewSceneId,
             PreviewSceneRoutes = previewSceneRoutes,
             PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId),
+            PreviewTilesLayer = BuildTilesLayerWire(PreviewScene),
             PreviewColorGrade = new MediaCoreColorGradeWire(
                 ColorGrade.Lut,
                 ColorGrade.Exposure,
@@ -8477,8 +8783,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MultiviewColumns = multiviewGrid.Columns,
             MultiviewRows = multiviewGrid.Rows,
             Participants = participants,
-            Recording = Recording,
-            Streaming = Streaming,
+            Recording = RecordingRequested,
+            Streaming = StreamingRequested,
             StreamDestinations = BuildSelectedStreamDestinations(validatedOnly: true),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
@@ -8670,7 +8976,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var sourceIds = new List<string>();
         sourceIds.AddRange(RoomVideoParticipants.Select(participant => participant.Id));
-        sourceIds.AddRange(_audioMixChannels.Select(channel => channel.ParticipantId));
+        sourceIds.AddRange(_audioMixChannels.Where(channel => channel is not null).Select(channel => channel.ParticipantId));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(PreviewSceneRoutes));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(ProgramSceneRoutes));
 
@@ -8789,9 +9095,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // summed it twice at ~110ms skew (the measured internal echo). The
     // MEETING MIX ("zoom-mix") carries the program defaults instead; ISO rows
     // stay visible in the matrix for deliberate per-speaker routing.
+    /// <summary>
+    /// Seed the Zoom→program audio routing for the selected mode (owner decision
+    /// 2026-08-09, superseding Z1's fixed "zoom-mix → program"):
+    ///
+    /// <see cref="ZoomAudioMode.ProgramMix"/> — Zoom's own mixed bus (echo-cancelled,
+    /// continuous) rides to program; per-guest stems stay unrouted (metering/ISO only).
+    /// The original Z1 topology, now one of two modes.
+    ///
+    /// <see cref="ZoomAudioMode.PerGuestIso"/> — each guest's ISOLATED stem routes to
+    /// program through their own strip, so the operator's faders/mutes/EQ genuinely
+    /// shape program audio per guest. zoom-mix sends to program buses are REMOVED in
+    /// this mode — stems + the mix summed together double every voice. Stems are
+    /// server-gated by Zoom (silence between talk bursts), which is correct for a mix.
+    /// New guests are covered automatically: this runs on every sync context build.
+    /// </summary>
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultZoomAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
-        IReadOnlyList<string> zoomParticipantIds)
+        IReadOnlyList<string> zoomParticipantIds,
+        ZoomAudioMode zoomAudioMode = ZoomAudioMode.PerGuestIso)
     {
         if (zoomParticipantIds.Count == 0)
         {
@@ -8800,6 +9122,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
         var completed = sends.ToList();
+
+        if (zoomAudioMode == ZoomAudioMode.PerGuestIso)
+        {
+            // Doubling guard: the meeting mix must not sum with the stems.
+            completed.RemoveAll(send =>
+                string.Equals(send.SourceId, "zoom-mix", StringComparison.Ordinal) &&
+                requiredBusIds.Any(bus => string.Equals(send.BusId, bus, StringComparison.OrdinalIgnoreCase)));
+
+            foreach (var participantId in zoomParticipantIds)
+            {
+                if (string.IsNullOrWhiteSpace(participantId))
+                {
+                    continue;
+                }
+                foreach (var busId in requiredBusIds)
+                {
+                    if (!completed.Any(send =>
+                            string.Equals(send.SourceId, participantId, StringComparison.Ordinal) &&
+                            string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        completed.Add(new MediaCoreAudioRoutingSendWire(participantId, busId, 0));
+                    }
+                }
+            }
+
+            return completed;
+        }
+
+        // ProgramMix: complete zoom-mix onto every program bus. No stem removal
+        // needed here — this seeder SYNTHESIZES its additions per sync (they are
+        // never written back to the matrix), so ISO-mode stem sends simply stop
+        // being generated on flip-back. A stem send the OPERATOR routed in the
+        // matrix deliberately (e.g. one guest's lav alongside the mix) survives,
+        // which the RoutesTheMeetingMixNotIsoParticipants test pins.
         foreach (var busId in requiredBusIds)
         {
             if (!completed.Any(send =>
@@ -8849,7 +9205,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return new MediaCoreAudioMixChannelWire(
             sourceId,
             Math.Clamp(participant?.AudioLevel ?? mix?.OutputLevel ?? 0, 0, 100),
-            participant?.IsMuted ?? mix?.Muted ?? false,
+            ResolveEffectiveAudioMute(participant?.IsMuted ?? mix?.SourceMuted, mix?.Muted),
             mix?.NoiseSuppression ?? false,
             Math.Abs(manualGain) < 0.05 ? null : manualGain,
             NormalizeMixerPan(mix?.Pan ?? 0),
@@ -8857,6 +9213,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mix?.PluginInserts ?? [],
             mix?.InsertSettings);
     }
+
+    public static bool ResolveEffectiveAudioMute(bool? sourceMuted, bool? mixMuted) =>
+        sourceMuted == true || mixMuted == true;
 
     public static bool IsConfiguredCaptureAudioSource(MediaCoreCaptureAudioSourceWire source) =>
         source.Embedded ||
@@ -8901,8 +9260,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "local-machine-audio"
             : $"capture:{source.CaptureDeviceId}";
 
+    // FADER LAW (owner rule, 2026-08-09): every PCM-bearing routed source gets a
+    // channel strip. "zoom-mix" used to be excluded here — but it is THE audible
+    // Zoom path (Z1 routes zoom-mix → program; per-participant stems are
+    // unrouted), so the operator's mixer showed nine faders that controlled
+    // nothing audible while the actual meeting audio had no fader at all.
+    // Muting every strip and still hearing audio on master was this line.
+    // "active-speaker" / "screen-share" stay excluded: they are role ALIASES
+    // that resolve to other sources, not PCM sources themselves.
     public static bool IsConcreteAudioMixSourceId(string sourceId) =>
-        !string.Equals(sourceId, "zoom-mix", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "active-speaker", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "screen-share", StringComparison.OrdinalIgnoreCase);
 
@@ -9328,15 +9694,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SyncOutputProfileChangeAsync()
     {
-        if (Streaming && ValidateStreamDestinations() is { Length: > 0 } validationError)
+        if (StreamingRequested && ValidateStreamDestinations() is { Length: > 0 } validationError)
         {
             LaunchLog.Write($"stream: profile change blocked invalid destination ({validationError})");
             var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
             RunOnUiThread(() =>
             {
-                Streaming = false;
+                StreamingRequested = false;
                 RefreshOutputStatus();
-                OutputStatus = $"{failureStatus} Streaming stopped.";
+                OutputStatus = $"{failureStatus} Streaming stopping.";
                 OutputSessionStatus = OutputStatus;
             });
 
@@ -9369,7 +9735,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamSrtSummary));
         SaveProductionOutputPreferences();
 
-        if (!Streaming || !_bridge.Running)
+        if (!StreamingRequested || !_bridge.Running)
         {
             return;
         }
@@ -9377,9 +9743,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (ValidateStreamDestinations() is { Length: > 0 } validationError)
         {
             var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
-            Streaming = false;
+            StreamingRequested = false;
             RefreshOutputStatus();
-            OutputStatus = $"{failureStatus} Streaming stopped.";
+            OutputStatus = $"{failureStatus} Streaming stopping.";
             OutputSessionStatus = OutputStatus;
             try
             {
@@ -9420,7 +9786,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
         SaveProductionOutputPreferences();
 
-        if (!Recording || !_bridge.Running)
+        if (!RecordingRequested || !_bridge.Running)
         {
             return;
         }
@@ -9449,24 +9815,58 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RunOnUiThread(Action action)
     {
-        if (_dispatcher.HasThreadAccess)
-        {
-            action();
-            return;
-        }
-
-        _dispatcher.TryEnqueue(() => action());
+        // UiDispatch catches + logs callback exceptions. A raw TryEnqueue callback
+        // that throws bypasses every managed handler and fail-fasts the process
+        // with 0xc000027b — three live-meeting crashes on 2026-08-09 decoded to
+        // exactly that (see UiDispatch).
+        UiDispatch.Run(_dispatcher, () => { if (!_shutdownPrepared) action(); }, "StudioViewModel");
     }
 
     private void OnBridgeStatusChanged(string status) =>
         RunOnUiThread(() => EngineStatus = status);
 
+    // A ProfileChanged is a NEW CORE GENERATION — the initial handshake, or a supervisor
+    // RESPAWN after the core died. `configure-multiviewer` is a one-shot sent only by
+    // StartMediaCoreOnLaunchAsync, so a respawned core kept its `grid` default while this
+    // shell still believed `pgmPvwTop`: the PROGRAM and PREVIEW bus cells vanished off the
+    // top of the multiviewer and the wall degraded to a bare source grid. That also made
+    // tile-click-to-preview and the preview layer editor LOOK broken — both still worked,
+    // but there was no PVW cell left to show their result. The source roster survived
+    // because set-multiview-layout rides the frequent spine sync; only the layout MODE was
+    // lost. Reproduced end-to-end by killing corevideo-native.exe under a live shell
+    // (2026-08-08). Re-arm through the EXISTING debounce, which already carries the
+    // backpressure retry for the startup burst.
     private void OnBridgeProfileChanged(NativeMediaCoreProfile profile) =>
         RunOnUiThread(() =>
         {
             OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
             OnPropertyChanged(nameof(NativeAudioRuntimeStatus));
+            ScheduleMultiviewerConfigResend();
+            ReannounceCaptureShmToNewCore();
         });
+
+    // Second half of the same respawn class: register-capture-shm is announced ONLY
+    // when CaptureDeviceSharedMemoryWriter creates a buffer (MappingChanged). A core
+    // respawn does not touch the shell's mapping, so the registration was never
+    // re-sent — the bridge went on writing capture frames at full rate into shared
+    // memory the fresh core had no record of, and those cameras sat on the placeholder
+    // tile forever. Core-side captures (screen/WGC) recovered on their own because the
+    // new core re-enumerates them, which is why only SOME tiles stayed blank.
+    private void ReannounceCaptureShmToNewCore()
+    {
+        foreach (var mapping in CaptureDeviceSharedMemoryWriter.LiveMappings())
+        {
+            if (string.IsNullOrEmpty(mapping.ShmName))
+            {
+                continue;
+            }
+
+            // Fire-and-forget per device, mirroring OnCaptureDeviceFrameReceived: a
+            // failure here must never block the UI thread or the other devices.
+            _ = _bridge.RegisterCaptureShmAsync(
+                mapping.DeviceId, mapping.ShmName, mapping.Width, mapping.Height);
+        }
+    }
 
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
@@ -9480,6 +9880,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         else if (health.Recovering)
         {
+            InterruptOutputSessions();
             EngineStatus = $"Media core recovering (restart {health.RestartCount})";
         }
 
@@ -9597,6 +9998,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplySnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
     {
+        if (_shutdownPrepared) return;
         // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
         // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
         var _swTotal = System.Diagnostics.Stopwatch.StartNew();
@@ -9663,6 +10065,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         Tm("audioReadouts");
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
+        RefreshProgramLowerThirdKeyPosition();
+        ReconcileLowerThirdPhaseSync(snapshot);
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
         MaybeLogAudioTelemetry(snapshot);
         Tm("audioTelemetry");
@@ -9671,6 +10075,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (!ZoomCaptureSubscribed)
         {
+            // Output sessions are independent of Zoom capture. Keep observed state and
+            // terminal-failure disarming current even when only local inputs are used.
+            ApplyOutputLifecyclePatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
             LogIfSlow("notSubscribed");
             return;
         }
@@ -9701,8 +10108,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ActiveSceneId = ActiveSceneId,
             ActiveSceneLayout = ProgramScene.Layout,
             CurrentBreakoutRoomId = _currentRoomId,
-            RecordingRequested = Recording,
-            StreamingRequested = Streaming,
+            RecordingRequested = RecordingRequested,
+            StreamingRequested = StreamingRequested,
             Participants = RoomVideoParticipants
                 .Select(participant => new LiveProductionSync.LiveProductionParticipantContext
                 {
@@ -9780,7 +10187,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var message = stopped
                 ? "Capture stopped — Zoom recording indicator cleared"
                 : "Capture stop sent — Zoom has not confirmed raw media stopped";
-            _dispatcher.TryEnqueue(() =>
+            UiDispatch.Run(_dispatcher, () =>
             {
                 if (ZoomCaptureSubscribed || !Settings.IsInMeeting)
                 {
@@ -9789,12 +10196,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
                 EngineStatus = message;
                 CommandStatus = message;
-            });
+            }, "zoom-stop-capture.confirm");
         }
         catch (Exception ex)
         {
             LaunchLog.Write($"zoom-stop-capture: failed {ex.GetType().Name}: {ex.Message}");
-            _dispatcher.TryEnqueue(() =>
+            UiDispatch.Run(_dispatcher, () =>
             {
                 if (ZoomCaptureSubscribed || !_bridge.Running)
                 {
@@ -9804,7 +10211,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 EngineStatus = $"{fallbackStatus} — engine stop failed: {ex.Message}";
-            });
+            }, "zoom-stop-capture.failure");
         }
     }
 
@@ -9813,6 +10220,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         UnsubscribeZoomCapture(status);
         Recording = false;
         Streaming = false;
+        RecordingRequested = false;
+        StreamingRequested = false;
         _bridge.Stop();
         EngineStatus = status;
         Settings.RefreshSdkReadiness();
@@ -9823,6 +10232,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyLiveProductionPatch(LiveProductionSync.StudioLiveProductionPatch patch)
     {
+        if (_shutdownPrepared) return;
         // This sets x:Bound VM properties (OutputStatus, Recording, ZoomStatus, ...).
         // Callers reach here from SyncActiveSceneAsync's `await ....ConfigureAwait(false)`
         // continuation, i.e. a thread-pool thread — setting a bound property off the UI
@@ -9830,7 +10240,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // thread; this was the recurring ~30-60s crash.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(() => ApplyLiveProductionPatch(patch));
+            UiDispatch.Run(_dispatcher, () => ApplyLiveProductionPatch(patch), "ApplyLiveProductionPatch");
             return;
         }
 
@@ -9841,25 +10251,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
         ApplyCaptionAndLowerThirdPatch(patch);
 
-        if (patch.Recording is { } recording)
-        {
-            Recording = recording;
-        }
-
-        if (patch.Streaming is { } streaming)
-        {
-            Streaming = streaming;
-        }
-
-        if (patch.OutputStatus is { Length: > 0 } outputStatus)
-        {
-            OutputStatus = outputStatus;
-        }
-
-        if (patch.OutputSessionStatus is { Length: > 0 } outputSessionStatus)
-        {
-            OutputSessionStatus = outputSessionStatus;
-        }
+        ApplyOutputLifecyclePatch(patch);
 
         if (patch.ZoomStatus is { Length: > 0 } zoomStatus)
         {
@@ -9961,6 +10353,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var _mfb = new System.Text.StringBuilder();
             void MfT(string n) { _mfb.Append(n).Append('=').Append(_mf.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms "); _mf.Restart(); }
             ZoomStatus = "Zoom Live";
+            // WAITING STATES MUST BE LOUD. Zoom hands over raw video only after
+            // the host grants recording permission; until then every tile is
+            // black with no error anywhere — indistinguishable from broken
+            // ("No video from zoom", live meeting 2026-08-09: 37 dark seconds).
+            // Tell the operator exactly what is being waited on, and clear it
+            // the moment raw media goes live. Scalar prop, changes at state
+            // transitions only — no snapshot-rate churn (0xc000027b rules).
+            var rawMediaActive = Settings.RawMediaActive;
+            if (ZoomCaptureSubscribed && rawMediaActive != true)
+            {
+                if (!_awaitingRecordingPrivilege)
+                {
+                    _awaitingRecordingPrivilege = true;
+                    EngineStatus = "Waiting for Zoom recording permission — ask the host to allow recording.";
+                }
+            }
+            else if (_awaitingRecordingPrivilege && rawMediaActive == true)
+            {
+                _awaitingRecordingPrivilege = false;
+                EngineStatus = "Zoom capture live.";
+            }
             CurrentRoomLabel = _currentRoomName;
             ApplyCaptionAndLowerThirdPatch(patch);
             MfT("captionLT");
@@ -10016,6 +10429,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         LowerThirdName = string.Empty;
         LowerThirdTitle = string.Empty;
         LowerThirdOrg = string.Empty;
+        _lowerThirdKeyTransitionCts?.Cancel();
+        _lowerThirdTargetSourceId = string.Empty;
+        LowerThirdPhaseSyncPending = false;
         ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
         _captionTranscriptPatches.Clear();
         CaptionTranscript = [];
@@ -10195,6 +10611,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .GroupBy(participant => participant.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var rows = _audioMixChannels
+            .Where(channel => channel is not null)  // same null-planter guard as RefreshAudioMixChannels
             .OrderBy(channel => ResolveAudioRowSortKey(channel.ParticipantId, participantsById))
             .Select(mix =>
             {
@@ -10207,7 +10624,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     BreakoutRoomName = "Native PCM",
                     Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
                     AudioLevel = mix.OutputLevel,
-                    IsMuted = mix.Muted
+                    IsMuted = mix.Muted || mix.SourceMuted
                 };
 
                 return new AudioParticipantRow
@@ -10216,11 +10633,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Name = participant.Name,
                     Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
                     OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
+                    MeterLevel = AudioMeterScale.ToLevel(mix.TruePeakDb, mix.Muted || mix.SourceMuted),
                     ManualGainDb = NormalizeMixerGain(mix.ManualGainDb),
                     Pan = NormalizeMixerPan(mix.Pan),
                     Lufs = NormalizeMeterDb(mix.Lufs),
                     TruePeakDb = NormalizeMeterDb(mix.TruePeakDb),
                     Muted = mix.Muted,
+                    EffectiveMuted = mix.Muted || mix.SourceMuted,
                     IsSolo = mix.Solo,
                     GainLabel = $"{(NormalizeMixerGain(mix.ManualGainDb) > 0 ? "+" : "")}{NormalizeMixerGain(mix.ManualGainDb):0.0} dB",
                     PanLabel = Math.Abs(NormalizeMixerPan(mix.Pan)) < 0.01
@@ -10235,7 +10654,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                         ? "No inserts"
                         : string.Join(" + ", mix.PluginInserts),
                     MuteButtonLabel = mix.Muted ? "Unmute" : "Mute",
-                    MuteStateLabel = mix.Muted ? "Muted" : "Live",
+                    MuteStateLabel = mix.Muted ? "Muted in mix" : mix.SourceMuted ? "Source muted" : "Live",
                     IsSelected = mix.ParticipantId == SelectedParticipantId
                 };
             })
@@ -10282,7 +10701,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BreakoutRoomName = "Native PCM",
                 Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
                 AudioLevel = mix.OutputLevel,
-                IsMuted = mix.Muted
+                IsMuted = mix.Muted || mix.SourceMuted
             };
         var gain = NormalizeMixerGain(mix.ManualGainDb);
         var pan = NormalizeMixerPan(mix.Pan);
@@ -10295,11 +10714,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Name = participant.Name,
             Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
             OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
+            MeterLevel = AudioMeterScale.ToLevel(truePeak, mix.Muted || mix.SourceMuted),
             ManualGainDb = gain,
             Pan = pan,
             Lufs = lufs,
             TruePeakDb = truePeak,
             Muted = mix.Muted,
+            EffectiveMuted = mix.Muted || mix.SourceMuted,
             IsSolo = mix.Solo,
             GainLabel = $"{(gain > 0 ? "+" : "")}{gain:0.0} dB",
             PanLabel = Math.Abs(pan) < 0.01
@@ -10314,7 +10735,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? "No inserts"
                 : string.Join(" + ", mix.PluginInserts),
             MuteButtonLabel = mix.Muted ? "Unmute" : "Mute",
-            MuteStateLabel = mix.Muted ? "Muted" : "Live",
+            MuteStateLabel = mix.Muted ? "Muted in mix" : mix.SourceMuted ? "Source muted" : "Live",
             IsSelected = mix.ParticipantId == SelectedParticipantId
         });
     }
@@ -10332,11 +10753,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         target.Name = source.Name;
         target.Subtitle = source.Subtitle;
         target.OutputLevel = source.OutputLevel;
+        target.MeterLevel = source.MeterLevel;
         target.ManualGainDb = source.ManualGainDb;
         target.Pan = source.Pan;
         target.Lufs = source.Lufs;
         target.TruePeakDb = source.TruePeakDb;
         target.Muted = source.Muted;
+        target.EffectiveMuted = source.EffectiveMuted;
         target.IsSolo = source.IsSolo;
         target.GainLabel = source.GainLabel;
         target.PanLabel = source.PanLabel;
@@ -10644,7 +11067,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // 0xc000027b). Marshal defensively; runs inline when already on the UI thread.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(RefreshSurfaceBindings);
+            UiDispatch.Run(_dispatcher, RefreshSurfaceBindings, "RefreshSurfaceBindings");
             return;
         }
 
@@ -10766,11 +11189,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _multiviewGridRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _multiviewGridRefreshScheduled = false;
             RefreshMultiviewGridTiles();
-        });
+        }, "multiview-grid.coalesced");
     }
 
     private static IProductionOutputPreferencesStore CreateProductionOutputPreferencesStore()
@@ -10807,15 +11230,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
-            var preferences = _outputPreferencesStore.Load();
-            if (preferences is not null)
-            {
-                ApplyProductionOutputPreferences(preferences);
-            }
+            var loaded = _startupBootstrap.Loaded;
+            ProductionPreferencesWarning = ProductionPreferencesNotice.For(loaded.Status);
+            if (_startupBootstrap.LoadError is { } loadError) LaunchLog.WriteException("prefs: startup load failed", loadError);
+            _startupBootstrap.Restore(ApplyProductionOutputPreferences);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Output settings are best-effort; defaults must still allow startup.
+            ProductionPreferencesWarning = ProductionPreferencesNotice.RestoreFailure;
+            LaunchLog.Write($"prefs: startup restore failed ({ex.GetType().Name})");
         }
         finally
         {
@@ -10905,6 +11328,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtPassphrase = StreamSrtPassphrase,
             CanvasResolution = CanvasResolution,
             CanvasFps = CanvasFps,
+            ProgramBufferFrames = ProgramBufferFrames,
             LocalAudioSourceEnabled = LocalAudioSourceEnabled,
             SelectedLocalAudioCaptureDeviceId = SelectedLocalAudioCaptureDeviceId,
             AudioMonitoringEnabled = AudioMonitoringEnabled,
@@ -10965,6 +11389,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             IsoRecordingSourceIds = _showInputsCoordinator.IsoSelectedSourceIds
                 .OrderBy(id => id, StringComparer.Ordinal)
                 .ToList(),
+            // v9: the Zoom→program audio topology persists across launches.
+            ZoomAudioMode = ZoomAudioModePreference.Format(_zoomAudioMode),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -11006,6 +11432,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamSrtPassphrase = preferences.StreamSrtPassphrase ?? StreamSrtPassphrase;
         CanvasResolution = preferences.CanvasResolution ?? CanvasResolution;
         CanvasFps = preferences.CanvasFps ?? CanvasFps;
+        ProgramBufferFrames = preferences.ProgramBufferFrames;
         _localAudioSourceEnabled = preferences.LocalAudioSourceEnabled;
         _selectedLocalAudioCaptureDeviceId = preferences.SelectedLocalAudioCaptureDeviceId ?? SelectedLocalAudioCaptureDeviceId;
         _audioMonitoringEnabled = preferences.AudioMonitoringEnabled;
@@ -11111,6 +11538,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         OnPropertyChanged(nameof(IsoRecordingEnabled));
         RefreshIsoReadouts();
+
+        // v9: restore the Zoom→program audio topology via the BACKING field (same
+        // reason as vcam/ISO above — the setter calls TrySyncMediaCoreAsync and the
+        // core isn't up yet). No respawn re-arm is needed: the seeder
+        // (EnsureDefaultZoomAudioRoutingSends) synthesizes its sends on EVERY
+        // sync-context build, so the mode is continuously re-asserted rather than
+        // sent once — a respawned core picks it up on the next sync.
+        _zoomAudioMode = ZoomAudioModePreference.Parse(preferences.ZoomAudioMode);
+        OnPropertyChanged(nameof(ZoomAudioMode));
+        OnPropertyChanged(nameof(IsPerGuestIsoAudio));
+        if (_zoomAudioMode == ZoomAudioMode.PerGuestIso)
+        {
+            // Loud, not silent: tell the operator which topology they came up in
+            // rather than making them notice a switch position. ProgramMix says
+            // nothing — it's the default, and a line every launch is noise.
+            CommandStatus = "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program).";
+        }
 
         RestoreMasteringFromPreferences(preferences);
 
@@ -11304,11 +11748,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _showInputRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _showInputRefreshScheduled = false;
             ApplyShowInputRefresh();
-        });
+        }, "show-inputs.coalesced");
     }
 
     private void ApplyShowInputRefresh()
@@ -11318,6 +11762,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var active = ShowInputs.Where(slot => slot.InShow).ToList();
         if (active.Count > ShowInputRosterService.MaxMultiviewBoxes)
         {
+            using var _ = ShowInputWriteScope.Enter("refresh-truncate");
             foreach (var slot in active.Skip(ShowInputRosterService.MaxMultiviewBoxes))
             {
                 slot.InShow = false;
@@ -11330,7 +11775,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         SaveShowInputRoster();
-        CommandStatus = "Show input roster updated";
+        // HONEST WALL MATH (owner, 2026-08-09): the pgmPvwTop multiviewer has 8
+        // source cells — PGM and PVW occupy two of the 10 boxes — while Sources
+        // allows 10 inputs in-show. The 9th and 10th silently never displayed.
+        // Until a >8 layout exists (owner leans "8 is the practical wall"), say
+        // exactly what is shown instead of letting two sources vanish.
+        var inShowCount = ShowInputs.Count(slot => slot.InShow);
+        CommandStatus = inShowCount > 8
+            ? $"Show input roster updated — multiviewer shows the first 8 of {inShowCount} in-show sources (PGM + PVW use two cells)"
+            : "Show input roster updated";
     }
 
     private void QueueSelectedCaptureDevicesOnline()
@@ -11454,8 +11907,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
     }
 
-    private MediaAsset? ResolveSceneBackgroundAsset(string sceneId)
+    // sceneId is NULLABLE in practice even though the callers' properties are not:
+    // the Sources-page scene ComboBox two-way-binds SelectedValue to PreviewSceneId,
+    // and WinUI reports SelectedValue == null for an instant while ItemsSource is
+    // being replaced (RefreshSceneItems). That null is written straight back into
+    // PreviewSceneId, whose setter refreshes the canvas editor, which lands here —
+    // and Dictionary.TryGetValue(null) THROWS ArgumentNullException like an indexer,
+    // it does not return false. Crash repro: click "Tiles" on the Scenes tab.
+    // Same family as the SourcesInputsPage role-ComboBox crash (see CLAUDE.md).
+    // This guard stops the crash; the real fix is to stop the two-way binding
+    // writing null into PreviewSceneId at all.
+    private MediaAsset? ResolveSceneBackgroundAsset(string? sceneId)
     {
+        if (string.IsNullOrEmpty(sceneId))
+        {
+            return null;
+        }
+
         if (!_sceneBackgroundAssetIds.TryGetValue(sceneId, out var assetId))
         {
             return null;
@@ -11479,7 +11947,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             PreviewSceneBackgroundAssetId = SceneBackgroundSelectionService.ResolveSelectedAssetId(
-                PreviewSceneId,
+                PreviewScene.Id,
                 _sceneBackgroundAssetIds,
                 FindMediaAsset,
                 IsVisualMediaAsset);
@@ -11548,22 +12016,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void EnsureAssignedSlotsForInShow()
     {
-        var defaultParticipant = RoomVideoParticipants.FirstOrDefault()?.Id;
-        var defaultCapture = CaptureDevices.FirstOrDefault(device => device.IsConnected) ??
-            CaptureDevices.FirstOrDefault();
-
+        // NEVER INVENT A SOURCE (owner-reported, 2026-08-09: "sources 1 and 2
+        // keep flipping back to the local cameras"). This used to stuff the
+        // first participant — or the first connected capture device, i.e. the
+        // operator's webcams — into ANY in-show slot without an assignment, and
+        // it runs at the top of every roster refresh: unassigning a slot put a
+        // webcam straight back within a second. It was the second, more
+        // aggressive sibling of the auto-assign refill fixed earlier today.
+        // An in-show slot with nothing assigned has nothing to show — it leaves
+        // the show. Sources appear in slots by OPERATOR action (the picker) or
+        // by roster auto-assign of NEWCOMERS, never by this fallback.
+        using var _ = ShowInputWriteScope.Enter("refresh-leave-show");
         foreach (var slot in ShowInputs.Where(slot => slot.InShow && !slot.IsAssigned))
         {
-            if (!string.IsNullOrWhiteSpace(defaultParticipant))
-            {
-                slot.Kind = ShowInputKind.ZoomParticipant;
-                slot.ParticipantId = defaultParticipant;
-            }
-            else if (defaultCapture is not null)
-            {
-                slot.Kind = ResolveShowInputKind(defaultCapture);
-                slot.CaptureDeviceId = defaultCapture.Id;
-            }
+            slot.InShow = false;
         }
     }
 
@@ -11631,6 +12097,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // gone or which duplicate a lower slot get cleared automatically, LOGGED.
     private void SweepGhostShowInputAssignments()
     {
+        using var _ = ShowInputWriteScope.Enter("ghost-sweep");
         var swept = 0;
         foreach (var slot in ShowInputs)
         {
@@ -11693,6 +12160,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void AssignConnectedCaptureDeviceToShowInput(CaptureDevice device)
     {
+        using var _ = ShowInputWriteScope.Enter("device-connect");
         var targetKind = ResolveShowInputKind(device);
         LaunchLog.Write(string.Format("assign: {0} kind={1} slots={2} freeInShow={3} freeParked={4}", device.Id, targetKind,
             ShowInputs.Count,
@@ -11763,7 +12231,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // inline when already on the UI thread.
         if (!_dispatcher.HasThreadAccess)
         {
-            _dispatcher.TryEnqueue(RefreshMultiviewGridTiles);
+            UiDispatch.Run(_dispatcher, RefreshMultiviewGridTiles, "RefreshMultiviewGridTiles");
             return;
         }
 
@@ -12002,11 +12470,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private List<SourceRoute> GetMutableRoutes(string sceneId)
+    // TOTAL BY CONSTRUCTION — this had TWO ways to kill the process, and both
+    // have been observed in the wild:
+    //   * a null sceneId  -> Dictionary.TryGetValue THROWS ArgumentNullException
+    //     (it does not return false, unlike what the non-nullable parameter
+    //     suggests). Crash 2026-08-16 07:18: changing an SRT ingest Mode fires
+    //     OnSrtIngestSourcePropertyChanged -> RefreshPreviewRoutingState ->
+    //     RefreshSceneCompositionState -> here, with no preview scene selected.
+    //   * an UNKNOWN sceneId -> Scenes.First throws InvalidOperationException
+    //     ("Sequence contains no matching element"), which is the 2026-08-15
+    //     14:05 unhandled entry in launch.log.
+    // A caller asking for the routes of no scene, or of a scene that is gone,
+    // gets an empty list — that is the honest answer and it cannot take the app
+    // down. Nothing is cached for those cases, so a scene appearing later still
+    // builds its defaults normally.
+    private List<SourceRoute> GetMutableRoutes(string? sceneId)
     {
+        if (string.IsNullOrEmpty(sceneId))
+        {
+            return [];
+        }
+
         if (!_sceneRoutes.TryGetValue(sceneId, out var routes))
         {
-            var scene = Scenes.First(item => item.Id == sceneId);
+            var scene = Scenes.FirstOrDefault(item => item.Id == sceneId);
+            if (scene is null)
+            {
+                return [];
+            }
+
             routes = SceneRoutingService
                 .GetRouteDefaults(scene, existingRoutes: null, RoomVideoParticipants)
                 .Select(route => route.Clone())
@@ -12092,11 +12584,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _previewRoutingRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
         {
             _previewRoutingRefreshScheduled = false;
             RefreshPreviewRoutingState();
-        });
+        }, "preview-routing.coalesced");
     }
 
     private void RefreshPreviewRoutingState()
@@ -12114,13 +12606,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // Preview may be editing a draft of the on-air scene. Refreshing from the
         // stored program routes here silently erased newly added overlay layers.
         var mutableRoutes = isPreview ? GetPreviewEditableRoutes() : GetMutableRoutes(sceneId);
+        if (scene.DynamicGallery is not null)
+        {
+            ReconcileDynamicGalleryRoutes(scene, mutableRoutes);
+        }
         var defaults = SceneRoutingService.GetRouteDefaults(
             scene,
             mutableRoutes,
             RoomVideoParticipants);
 
-        ReconcileRoutes(mutableRoutes, defaults);
-        SceneCanvasLayoutService.EnsureCanvasRects(mutableRoutes, scene.Layout);
+        if (scene.DynamicGallery is null)
+        {
+            ReconcileRoutes(mutableRoutes, defaults);
+            SceneCanvasLayoutService.EnsureCanvasRects(mutableRoutes, scene.Layout);
+        }
         var workingRoutes = mutableRoutes.Select(ResolveRouteFromShowInput).ToList();
 
         if (isPreview)
@@ -12143,6 +12642,131 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // T1 core wall: the core now solves the tile grid itself every frame
+    // (compositor::expandTilesLayer, MediaCore.cpp parseTilesLayer/expandTilesLayer)
+    // from the "tiles" node (TilesLayerPayloadBuilder — membership policy: roster +
+    // video-off filter + max-tiles cap, in roster order). A gallery scene therefore
+    // contributes NO scene routes at all; the core suppresses its legacy full-canvas
+    // fallback whenever a wall is present, so leaving old per-participant tile routes
+    // behind here would double-draw. This method's only remaining job is enforcing
+    // that a DynamicGallery scene's route list stays empty — it used to ALSO solve
+    // rects (DynamicGalleryLayoutService.BuildRects) and mint one SourceRoute per
+    // participant; that logic moved into the core and TilesLayerPayloadBuilder.
+    // DynamicGalleryLayoutService itself is UNCHANGED and stays live as the reference
+    // implementation the C++ port (buildTilesGrid) is tested against — do not delete it.
+    //
+    // NOT THE GUARANTEE (whole-branch review): this is a UI-side tidy-up that runs on a
+    // coalesced Low-priority dispatch and self-suppresses while `_canvasInteractionActive`,
+    // so it cannot be what keeps gallery routes off the wire. The wire-level invariant
+    // ("a gallery scene serializes an empty route list") is enforced by construction in
+    // BuildProductionSyncContext, where the route wires are actually built.
+    private void ReconcileDynamicGalleryRoutes(Scene scene, List<SourceRoute> routes)
+    {
+        if (scene.DynamicGallery is null || _canvasInteractionActive)
+        {
+            return;
+        }
+
+        routes.Clear();
+    }
+
+    /// <summary>
+    /// Flattens <see cref="TilesLayerPayloadBuilder"/>'s output into the MediaCore-project
+    /// wire record <see cref="MediaCoreTilesLayerWire"/> for a scene-sync command. Null for
+    /// any non-gallery scene (TilesLayerPayloadBuilder.Build returns null).
+    /// </summary>
+    private MediaCoreTilesLayerWire? BuildTilesLayerWire(Scene scene)
+    {
+        var payload = TilesLayerPayloadBuilder.Build(scene, RoomVideoParticipants);
+        if (payload is null)
+        {
+            return null;
+        }
+
+        return new MediaCoreTilesLayerWire(
+            payload.LayerId,
+            payload.Order,
+            payload.Members,
+            payload.Style.TileAspect,
+            payload.Style.CustomAspectRatio,
+            payload.Style.GutterPercent,
+            payload.Style.MarginPercent,
+            payload.Style.BackgroundColor);
+    }
+
+    // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
+    // repro 2026-08-16: a live meeting, Sources tab, a Tiles scene selected;
+    // dump CoreVideoPro.WinUI.exe.38368.dmp is c00000fd STACK OVERFLOW with
+    // RECURRING_STACK across Update_ViewModel_GalleryTileAspect →
+    // Selector.set_SelectedValue → the setter → here).
+    // The cycle: a Gallery* setter calls UpdateGallery, which raises
+    // PropertyChanged for EVERY gallery property; XAML pushes the value into the
+    // ComboBox's SelectedValue; that binding is Mode=TwoWay, so it writes the
+    // value straight back into the setter, which calls UpdateGallery again.
+    // WinUI does not short-circuit the echo, so nothing terminates it.
+    // Dropping the re-entrant write is correct: it is the binding echoing back a
+    // value the model already holds.
+    // Third instance of the Selector.SelectedValue + x:Bind family in this
+    // codebase (SourcesInputsPage role ComboBox; the scene ComboBox writing null
+    // into PreviewSceneId). See CLAUDE.md.
+    private bool _updatingGallery;
+
+    private void UpdateGallery(Action<DynamicGallerySettings> update)
+    {
+        if (_updatingGallery)
+        {
+            return;
+        }
+
+        if (PreviewScene.DynamicGallery is not { } settings)
+        {
+            return;
+        }
+
+        _updatingGallery = true;
+        try
+        {
+            UpdateGalleryCore(settings, update);
+        }
+        finally
+        {
+            _updatingGallery = false;
+        }
+    }
+
+    private void UpdateGalleryCore(DynamicGallerySettings settings, Action<DynamicGallerySettings> update)
+    {
+        update(settings);
+        var routes = GetPreviewEditableRoutes();
+        ReconcileDynamicGalleryRoutes(PreviewScene, routes);
+        NotifyDynamicGalleryPropertiesChanged();
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(PreviewScene, routes.Select(ResolveRouteFromShowInput).ToList());
+        CommandStatus = $"{PreviewScene.Name} gallery updated on Preview";
+        SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
+        SaveProductionOutputPreferences();
+    }
+
+    private void NotifyDynamicGalleryPropertiesChanged()
+    {
+        OnPropertyChanged(nameof(IsPreviewDynamicGallery));
+        OnPropertyChanged(nameof(GalleryMaxTiles));
+        OnPropertyChanged(nameof(GalleryTileAspect));
+        OnPropertyChanged(nameof(GalleryCustomAspectRatio));
+        OnPropertyChanged(nameof(GalleryGutterPercent));
+        OnPropertyChanged(nameof(GalleryMarginPercent));
+        OnPropertyChanged(nameof(GalleryBorderShape));
+        OnPropertyChanged(nameof(GalleryBorderColor));
+        OnPropertyChanged(nameof(GalleryBorderThickness));
+        OnPropertyChanged(nameof(GalleryGlowColor));
+        OnPropertyChanged(nameof(GalleryGlowSize));
+        OnPropertyChanged(nameof(GalleryGlowIntensity));
+        OnPropertyChanged(nameof(GalleryGlowSoftness));
+        OnPropertyChanged(nameof(GalleryAnimateLayout));
+        OnPropertyChanged(nameof(GalleryAnimationDurationMs));
+    }
+
     // NOT force: forcing re-ran the full building-out -> building-in slide on EVERY
     // refresh, and this fires ~continuously (snapshot applies, active-speaker changes,
     // scene refreshes call it from ~9 sites). That made the lower third perpetually slide
@@ -12162,7 +12786,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _programLowerThirdAutomationSuppressed,
             Graphics.Any(graphic => graphic.Enabled && graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)));
 
-        if (!lowerThirdEnabled || source is null)
+        if (source is null)
+        {
+            _lowerThirdKeyTransitionCts?.Cancel();
+            _lowerThirdTargetSourceId = string.Empty;
+            if (ProgramLowerThirdKey.IsVisible)
+            {
+                ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
+                _ = TrySyncMediaCoreAsync();
+            }
+            return;
+        }
+        if (!lowerThirdEnabled)
         {
             // Keep the shell preview and compositor on the same out phase.
             // Jumping directly to hidden made the UI vanish while the native
@@ -12201,17 +12836,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        // Debounce backstop: if the resolver still churns (co-program route order flicker),
-        // never restart the slide more than ~once/sec. The sync storm from rapid re-keys --
-        // each fires a full media-core sync batch -- is what caused the operator latency.
-        // First show (no target yet) is never debounced, so a genuine show is instant.
-        var nowMs = Environment.TickCount64;
-        if (!force && _lowerThirdTargetSourceId.Length > 0 &&
-            nowMs - _lowerThirdKeyChangeTickMs < 1200)
-        {
-            return;
-        }
-        _lowerThirdKeyChangeTickMs = nowMs;
+        // The old source has left actual Program. Never animate its name over
+        // the replacement while waiting for the new source's build-in.
+        if (ProgramLowerThirdKey.IsVisible && _lowerThirdTargetSourceId != source.SourceId)
+            ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
 
         LaunchLog.Write($"lower-third: key -> '{source.SourceId}' (name '{source.SourceName}')");
         _lowerThirdTargetSourceId = source.SourceId;
@@ -12304,7 +12932,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            CommandStatus = ex.Message;
+            cancellationToken.ThrowIfCancellationRequested();
+            RecoverLowerThirdPhaseSyncFailure(ex);
             return false;
         }
     }
@@ -12400,87 +13029,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private LowerThirdSource? ResolveProgramLowerThirdSource(IReadOnlyList<SourceRoute> workingRoutes)
     {
-        var sources = workingRoutes
-            .OrderBy(route => route.ZIndex)
-            .Select(ResolveLowerThirdSource)
-            .Where(source => source is not null)
-            .Cast<LowerThirdSource>()
-            .ToList();
-
-        if (sources.Count == 0)
+        // Working routes express intent; only native frame attribution tells us
+        // which source actually occupies Program (including gallery/fallback).
+        ObserveLowerThirdProgramIntent();
+        var frame = _bridge.LastSnapshot?.ProgramFrame;
+        if (!_lowerThirdFreshness.Accepts(frame)) return null;
+        var source = RenderedLowerThirdSourceResolver.Resolve(ActiveSceneId,
+            frame, _lowerThirdTargetSourceId,
+            RoomVideoParticipants, CaptureDevices);
+        if (source is null) return null;
+        if (source.SourceId.StartsWith("capture:", StringComparison.Ordinal))
         {
-            return null;
+            var device = CaptureDevices.First(item => "capture:" + item.Id == source.SourceId);
+            return new LowerThirdSource(source.SourceId,
+                ResolveSourceDisplayName(source.SourceId, device.Name), string.Empty, string.Empty, false, false);
         }
-
-        // Stickiness: keep the source the lower third is ALREADY showing as long as it is
-        // still on program. Without this the choice ping-ponged between two co-program
-        // sources whose route order flickers (active-speaker re-sorting upstream re-orders
-        // ZIndex every ~1s), which changed the target and restarted the slide every tick =
-        // the residual loop. A genuine change (the current source leaves program) still
-        // re-picks below, so it keeps following manual cuts. (2026-07-11)
-        var current = sources.FirstOrDefault(source =>
-            string.Equals(source.SourceId, _lowerThirdTargetSourceId, StringComparison.Ordinal));
-        if (current is not null)
-        {
-            return current;
-        }
-
-        // No sticky source (first show, or the current one left program): pick
-        // DETERMINISTICALLY, ordered by SourceId -- NOT the ZIndex route order, which the
-        // active-speaker/fake-engine churn re-sorts every tick. A stable tiebreak means two
-        // co-program sources can't alternate the choice, so it can't ping-pong.
-        return sources.Where(source => !source.IsScreenShare)
-                      .OrderBy(source => source.SourceId, StringComparer.Ordinal)
-                      .FirstOrDefault()
-               ?? sources.OrderBy(source => source.SourceId, StringComparer.Ordinal).First();
-    }
-
-    private LowerThirdSource? ResolveLowerThirdSource(SourceRoute route)
-    {
-        if (route.Mode == SourceRouteMode.CaptureDevice && route.CaptureDeviceId is { Length: > 0 } captureDeviceId)
-        {
-            var device = CaptureDevices.FirstOrDefault(item =>
-                string.Equals(item.Id, captureDeviceId, StringComparison.Ordinal));
-            if (device is null)
-            {
-                return null;
-            }
-
-            var captureSourceId = ShowInputRosterService.CaptureSourceId(device.Id);
-            return new LowerThirdSource(
-                captureSourceId,
-                ResolveSourceDisplayName(captureSourceId, device.Name),
-                // A camera source has no presenter role/org -- leave the secondary lines
-                // blank so the lower third shows just the (operator-assignable) name
-                // instead of the device kind ("UVC", from device.Vendor) and resolution.
-                string.Empty,
-                string.Empty,
-                IsActiveSpeaker: false,
-                IsScreenShare: false);
-        }
-
-        var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
-        if (participant is null)
-        {
-            return null;
-        }
-
-        var isScreenShare = route.Mode == SourceRouteMode.ScreenShare || participant.IsScreenSharing;
-        var title = isScreenShare
-            ? "Screen share"
-            : string.IsNullOrWhiteSpace(participant.Title)
-                ? participant.RoleLabel
-                : participant.Title;
-
-        return new LowerThirdSource(
-            participant.Id,
-            ResolveSourceDisplayName(ShowInputRosterService.ZoomSourceId(participant.Id), participant.Name),
-            title,
-            string.IsNullOrWhiteSpace(participant.BreakoutRoomName)
-                ? participant.RoleLabel
-                : participant.BreakoutRoomName,
-            participant.IsActiveSpeaker,
-            isScreenShare);
+        var participant = RoomVideoParticipants.First(item => item.Id == source.ParticipantId);
+        var isScreenShare = source.Kind == "screen-share";
+        return new LowerThirdSource(source.SourceId,
+            ResolveSourceDisplayName(source.SourceId, participant.Name),
+            isScreenShare ? "Screen share" : string.IsNullOrWhiteSpace(participant.Title) ? participant.RoleLabel : participant.Title,
+            string.IsNullOrWhiteSpace(participant.BreakoutRoomName) ? participant.RoleLabel : participant.BreakoutRoomName,
+            participant.IsActiveSpeaker, isScreenShare);
     }
 
     private static void ReconcileRoutes(List<SourceRoute> mutableRoutes, IReadOnlyList<SourceRoute> defaults)
@@ -12512,7 +13082,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             for (var index = 0; index < routes.Count; index++)
             {
-                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs, VisualMediaAssets);
+                PreviewCanvasLayers[index].SyncFromRoute(
+                    routes[index],
+                    RoomVideoParticipants,
+                    CaptureDevices,
+                    ShowInputs,
+                    VisualMediaAssets);
                 PreviewCanvasLayers[index].SetSurface(ResolveLayerSurface(routes[index], index));
             }
 
@@ -12558,6 +13133,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(PreviewSlotCount));
         OnPropertyChanged(nameof(HasPreviewSlotEditors));
         OnPropertyChanged(nameof(SceneBuilderSlotSummary));
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
     }
 
     private IReadOnlyList<ParticipantSurfaceTile> BuildSceneTiles(
@@ -12592,17 +13169,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var tilesByParticipant = MultiviewTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
         if (ResolveRouteTile(resolved, tilesByParticipant, isProgramScene: false) is { } tile)
         {
-            return tile.Surface with
-            {
-                SurfaceKey = $"scene-layer-{index + 1}:{tile.Surface.SurfaceKey}",
-                Kind = VideoSurfaceKind.Multiview,
-                Title = $"{index + 1}. {tile.Participant.Name}"
-            };
+            return VideoSurfacePresentationRules.ToSceneLayerSurface(
+                tile.Surface,
+                index,
+                $"{index + 1}. {tile.Participant.Name}");
         }
 
         return VideoSurfaceState.Waiting(
             VideoSurfaceKind.Multiview,
-            $"scene-layer-{index + 1}",
+            VideoSurfacePresentationRules.SceneLayerPlaceholderKey(index),
             $"Source {index + 1}") with
             {
                 DetailLine = resolved.Mode switch
@@ -13272,7 +13847,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Name = scene.Name,
             Layout = layout,
             Automation = scene.Automation,
-            DurationLabel = scene.DurationLabel
+            DurationLabel = scene.DurationLabel,
+            DynamicGallery = scene.DynamicGallery
         };
 
         OnPropertyChanged(nameof(ProgramScene));
@@ -13296,7 +13872,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         layer.ApplyRoute();
         SceneRoutingService.ApplyNormalizeRouteUpdate(routes[layer.LayerIndex], RoomVideoParticipants);
         ApplyKnownColorGradeToRoute(routes[layer.LayerIndex]);
-        layer.SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs, VisualMediaAssets);
+        layer.SyncFromRoute(
+            routes[layer.LayerIndex],
+            RoomVideoParticipants,
+            CaptureDevices,
+            ShowInputs,
+            VisualMediaAssets);
         layer.SetSurface(ResolveLayerSurface(routes[layer.LayerIndex], layer.LayerIndex));
 
         CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";
@@ -13367,34 +13948,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
-        MagicScene.Stop();
-        _bridge.HealthChanged -= OnBridgeHealthChanged;
-        _bridge.StatusChanged -= OnBridgeStatusChanged;
-        _bridge.ProfileChanged -= OnBridgeProfileChanged;
-        _bridge.SnapshotChanged -= OnSnapshotChanged;
-        _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
-        _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
-        _bridge.ProgramSharedTextureReceived -= OnProgramSharedTextureReceived;
-        _bridge.PreviewSharedTextureReceived -= OnPreviewSharedTextureReceived;
-        _bridge.ParticipantSharedTextureReceived -= OnParticipantSharedTextureReceived;
-        _bridge.MultiviewSharedTextureReceived -= OnMultiviewSharedTextureReceived;
-        CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
-        _surfaces.SurfacesChanged -= OnSurfacesChanged;
-        SrtIngestSources.CollectionChanged -= OnSrtIngestSourcesChanged;
-        foreach (var source in SrtIngestSources)
+        if (!_shutdownPrepared)
         {
-            source.PropertyChanged -= OnSrtIngestSourcePropertyChanged;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            try
+            {
+                await UiOwnedSnapshot.CaptureAsync(() => { PrepareForShutdown(); return true; },
+                    _dispatcher.HasThreadAccess, action => _dispatcher.TryEnqueue(() => action()), timeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception error) { LaunchLog.WriteException("shutdown UI preparation unavailable", error); }
         }
-
-        ForceShutdownMediaCore();
-
-        _surfaces.Dispose();
-        _captureFrameReader.Dispose();
-        _captureDiscovery.Dispose();
-        _audioCaptureDiscovery.Dispose();
-        _audioRenderDiscovery.Dispose();
-        _zoomOAuthCoordinator.Dispose();
-        await _bridge.DisposeAsync().ConfigureAwait(false);
+        void DisposeResource(string name, Action dispose)
+        {
+            try { dispose(); }
+            catch (Exception error) { LaunchLog.WriteException($"shutdown: {name}", error); }
+        }
+        DisposeResource("media core stop", ForceShutdownMediaCore);
+        DisposeResource("surfaces", _surfaces.Dispose);
+        DisposeResource("capture reader", _captureFrameReader.Dispose);
+        DisposeResource("capture discovery", _captureDiscovery.Dispose);
+        DisposeResource("audio capture discovery", _audioCaptureDiscovery.Dispose);
+        DisposeResource("audio render discovery", _audioRenderDiscovery.Dispose);
+        DisposeResource("OAuth coordinator", _zoomOAuthCoordinator.Dispose);
+        try { await _bridge.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception error) { LaunchLog.WriteException("shutdown: bridge dispose", error); }
         LaunchLog.Write("shutdown: studio view model disposed");
     }
 
@@ -13403,7 +13980,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             _bridge.ConfigureZoomSpineSync(null);
-            _surfaces.SetZoomCaptureSubscribed(false);
             if (_bridge.Running)
             {
                 LaunchLog.Write("shutdown: stopping media core");
@@ -13560,7 +14136,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // the texture in-core), so it neither loops nor floods.
     private void SyncMultiviewLayoutIfChanged()
     {
-        if (!MultiviewGpuEnabled || !_bridge.Running)
+        if (!MultiviewGpuEnabled || !_bridge.Running || _bridge.Profile is null)
         {
             return;
         }

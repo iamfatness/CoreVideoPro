@@ -28,8 +28,12 @@ public sealed partial class MainWindow : Window
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
     private bool _allowWindowClose;
+    // App releases its window reference on Closed; the fallback must outlive it.
+    private static System.Threading.Timer? _shutdownWatchdogTimer;
 
     public StudioViewModel ViewModel { get; }
+
+    internal bool IsShuttingDown => _shutdownStarted || _allowWindowClose;
 
     public MainWindow()
     {
@@ -120,20 +124,27 @@ public sealed partial class MainWindow : Window
                 port = configured;
             }
 
-            var lan = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_LAN"), "1", StringComparison.Ordinal);
+            var oscLanRequested = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_LAN"), "1", StringComparison.Ordinal);
+            var oscTrustedNetwork = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_TRUSTED_NETWORK"), "1", StringComparison.Ordinal);
+            var oscLan = oscLanRequested && oscTrustedNetwork;
+            if (oscLanRequested && !oscTrustedNetwork)
+            {
+                LaunchLog.Write("control: OSC remains on loopback. Unauthenticated LAN OSC requires COREVIDEO_OSC_TRUSTED_NETWORK=1 on a trusted network.");
+            }
 
             _controlSurface = new StudioControlSurface(ViewModel, _dispatcher);
 
             _controlServer = new OscControlServer(_controlSurface, new OscControlServerOptions
             {
                 ListenPort = port,
-                BindAddress = lan ? IPAddress.Any : IPAddress.Loopback
+                BindAddress = oscLan ? IPAddress.Any : IPAddress.Loopback
             });
             _controlServer.Start();
-            LaunchLog.Write($"control: OSC server listening on {(lan ? "0.0.0.0" : "127.0.0.1")}:{_controlServer.BoundPort}");
+            LaunchLog.Write($"control: OSC server listening on {(oscLan ? "0.0.0.0" : "127.0.0.1")}:{_controlServer.BoundPort}");
 
             // HTTP + WebSocket API sharing the same surface. Loopback needs no privileges;
-            // LAN ("+") may require a Windows urlacl. Optional bearer token for LAN safety.
+            // LAN ("+") may require a Windows urlacl and always requires a bearer token.
+            var httpLan = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_HTTP_LAN"), "1", StringComparison.Ordinal);
             var httpPort = 8011;
             if (int.TryParse(Environment.GetEnvironmentVariable("COREVIDEO_HTTP_PORT"), out var httpConfigured) &&
                 httpConfigured is > 0 and < 65536)
@@ -146,11 +157,11 @@ public sealed partial class MainWindow : Window
                 _httpControlServer = new HttpControlServer(_controlSurface, new HttpControlServerOptions
                 {
                     ListenPort = httpPort,
-                    Host = lan ? "+" : "127.0.0.1",
+                    Host = httpLan ? "+" : "127.0.0.1",
                     AuthToken = Environment.GetEnvironmentVariable("COREVIDEO_CONTROL_TOKEN")
                 });
                 _httpControlServer.Start();
-                LaunchLog.Write($"control: HTTP/WS API listening on http://{(lan ? "+" : "127.0.0.1")}:{httpPort}/ (GET /manifest, /state, /ws; POST /invoke)");
+                LaunchLog.Write($"control: HTTP/WS API listening on http://{(httpLan ? "+" : "127.0.0.1")}:{httpPort}/ (GET /manifest, /state, /ws; POST /invoke)");
             }
             catch (Exception ex)
             {
@@ -166,15 +177,19 @@ public sealed partial class MainWindow : Window
 
     private async Task StopControlServerAsync()
     {
+        // Its feedback timer and VM subscriptions are UI-owned. Close the
+        // command gate before any asynchronous socket teardown or VM disposal.
+        TryShutdownStep("control surface", () => _controlSurface?.Dispose());
+        _controlSurface = null;
         if (_httpControlServer is not null)
         {
             try
             {
-                await _httpControlServer.DisposeAsync().ConfigureAwait(false);
+                await _httpControlServer.DisposeAsync().ConfigureAwait(true);
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                LaunchLog.WriteException("shutdown: control server disposal", ex);
             }
 
             _httpControlServer = null;
@@ -184,18 +199,16 @@ public sealed partial class MainWindow : Window
         {
             try
             {
-                await _controlServer.DisposeAsync().ConfigureAwait(false);
+                await _controlServer.DisposeAsync().ConfigureAwait(true);
             }
-            catch
+            catch (Exception ex)
             {
-                // best effort
+                LaunchLog.WriteException("shutdown: control server disposal", ex);
             }
 
             _controlServer = null;
         }
 
-        _controlSurface?.Dispose();
-        _controlSurface = null;
     }
 
     private void OnWindowActivated(object sender, WindowActivatedEventArgs args)
@@ -210,6 +223,7 @@ public sealed partial class MainWindow : Window
 
     private void OnRootContentLoaded(object sender, RoutedEventArgs args)
     {
+        if (IsShuttingDown) return;
         WindowChromeService.Apply(this, _appWindow);
     }
 
@@ -294,42 +308,48 @@ public sealed partial class MainWindow : Window
             LaunchLog.Write($"telemetry: session-end flush skipped ({ex.Message})");
         }
 
-        ApplicationLifecycle.PrepareShutdown();
-        using var watchdog = new System.Threading.Timer(
+        // Keep the timer rooted until the process actually exits. Disposing it
+        // after Close would leave a lingering SDK thread without a fallback.
+        _shutdownWatchdogTimer = new System.Threading.Timer(
             _ => ApplicationLifecycle.ForceExit(),
             null,
             ShutdownWatchdog,
             Timeout.InfiniteTimeSpan);
 
+        // Detach XAML and UI timers before starting worker disposal. Each step
+        // is independent: a closed control must not skip media-core cleanup.
+        TryShutdownStep("activation", ApplicationLifecycle.PrepareShutdown);
+        TryShutdownStep("resource monitor", StopResourceMonitoring);
+        TryShutdownStep("window chrome", () => WindowChromeService.ClearScheduledReapply(this));
+        TryShutdownStep("workspace detach", () => RootContent.ViewModel = null);
+        TryShutdownStep("UI preparation", () => ViewModel.PrepareForShutdown());
+
+        var cleanupSucceeded = false;
         try
         {
-            StopResourceMonitoring();
-            await StopControlServerAsync().ConfigureAwait(false);
-            WindowChromeService.ClearScheduledReapply(this);
-            RootContent.ViewModel = null;
-            await Task.Run(async () =>
-                {
-                    await ViewModel.DisposeAsync().ConfigureAwait(false);
-                })
+            // Control sockets and blocking process teardown can drain together.
+            // The UI continuation is required for AppWindow handlers and Close.
+            await Task.WhenAll(
+                    StopControlServerAsync(),
+                    Task.Run(async () => await ViewModel.DisposeAsync().ConfigureAwait(false)))
                 .WaitAsync(ShutdownTimeout)
-                .ConfigureAwait(false);
+                .ConfigureAwait(true);
+            cleanupSucceeded = true;
             LaunchLog.Write("shutdown: resources released");
-        }
-        catch (TimeoutException)
-        {
-            LaunchLog.Write("shutdown: dispose timed out — forcing media core stop");
-            try
-            {
-                await ViewModel.ForceStopMediaCoreAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                LaunchLog.Write($"shutdown: force media core stop failed ({ex.Message})");
-            }
         }
         catch (Exception ex)
         {
-            LaunchLog.Write($"shutdown: dispose failed ({ex.Message})");
+            LaunchLog.WriteException("shutdown: cleanup failed; forcing media core stop", ex);
+            try
+            {
+                await Task.Run(() => ViewModel.ForceStopMediaCoreAsync())
+                    .WaitAsync(TimeSpan.FromSeconds(1))
+                    .ConfigureAwait(true);
+            }
+            catch (Exception stopError)
+            {
+                LaunchLog.WriteException("shutdown: force media core stop failed", stopError);
+            }
         }
         finally
         {
@@ -338,28 +358,42 @@ public sealed partial class MainWindow : Window
             {
                 _appWindow.Closing -= OnAppWindowClosing;
             }
-            catch
+            catch (Exception ex)
             {
-                // Best effort.
+                LaunchLog.WriteException("shutdown: detach closing handler", ex);
             }
 
             try
             {
                 Close();
+                if (cleanupSucceeded)
+                {
+                    // Normal shutdown stays on the UI thread and lets WinUI
+                    // leave its event loop. The watchdog is only a last resort
+                    // if native background resources keep the process alive.
+                    Application.Current.Exit();
+                }
             }
             catch (Exception ex)
             {
-                LaunchLog.Write($"shutdown: Close() failed ({ex.Message})");
+                cleanupSucceeded = false;
+                LaunchLog.WriteException("shutdown: Close failed", ex);
             }
 
-            ApplicationLifecycle.ForceExit();
+            if (!cleanupSucceeded) ApplicationLifecycle.ForceExit();
         }
+    }
+
+    private static void TryShutdownStep(string name, Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { LaunchLog.WriteException($"shutdown: {name} failed", ex); }
     }
 
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
-        StopResourceMonitoring();
-        WindowChromeService.ClearScheduledReapply(this);
+        TryShutdownStep("resource monitor", StopResourceMonitoring);
+        TryShutdownStep("window chrome", () => WindowChromeService.ClearScheduledReapply(this));
         App.NotifyMainWindowClosed();
     }
 }

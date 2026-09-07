@@ -63,8 +63,11 @@ std::string wideToUtf8(const wchar_t* wide) {
   if (needed <= 1) {
     return {};
   }
-  std::string out(static_cast<size_t>(needed - 1), '\0');
-  ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr, nullptr);
+  std::string out(static_cast<size_t>(needed), '\0');
+  const int written = ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr, nullptr);
+  if (written <= 0) return {};
+  out.resize(static_cast<size_t>(written));
+  if (!out.empty() && out.back() == '\0') out.pop_back();
   return out;
 }
 
@@ -472,6 +475,8 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     }
     double depthAccum = 0.0;
     int depthSamples = 0;
+    const size_t primeFrames = static_cast<size_t>(deviceSampleRate_ * 0.060);  // 60 ms
+    bool ringPrimed = false;
     while (renderRun_.load(std::memory_order_acquire)) {
       if (::WaitForSingleObject(renderEvent_, 500) != WAIT_OBJECT_0) {
         continue;  // periodic timeout keeps shutdown responsive
@@ -491,14 +496,24 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
           break;
         }
         pullScratch_.resize(static_cast<size_t>(chunk) * 2);
-        const size_t real = ring_.pop(pullScratch_.data(), chunk);
-        if (real < chunk) {
+        // A short pop must be real silence, not stale samples left in the reused
+        // scratch vector. The latter was an audible repeat/click even though the
+        // telemetry incorrectly called it silence.
+        std::fill(pullScratch_.begin(), pullScratch_.end(), 0.f);
+        if (!ringPrimed && ring_.depthFrames() >= primeFrames) {
+          ringPrimed = true;
+        }
+        const size_t real = ringPrimed ? ring_.pop(pullScratch_.data(), chunk) : 0;
+        if (ringPrimed && real < chunk) {
           ringDryFrames_ += static_cast<int64_t>(chunk - real);
           const auto events = ringDryEvents_.fetch_add(1, std::memory_order_relaxed) + 1;
           if (events == 1 || events % 200 == 0) {
             std::fprintf(stderr, "[monitor] ring dry #%lld (%u frames silence; device '%s')\n",
                          static_cast<long long>(events), chunk - static_cast<UINT32>(real), deviceName_.c_str());
           }
+          // Restore the standing cushion after a genuine starvation instead of
+          // alternating tiny real/stale fragments on every device callback.
+          ringPrimed = false;
         }
         writeDeviceBlock(buffer, chunk, pullScratch_.data());
         renderClient_->ReleaseBuffer(chunk, 0);
@@ -657,7 +672,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   int64_t framesRendered_ = 0;
   // Pull-model state (spec §3): SPSC ring between the audio worker (producer)
   // and the device-paced render thread (consumer).
-  SpscRing ring_{16384};  // ~340ms capacity @48k; standing target 60ms
+  SpscRing ring_{32768};  // ~680ms capacity @48k; survives bounded 500ms catch-up
   HANDLE renderEvent_ = nullptr;
   std::thread renderThread_;
   std::atomic<bool> renderRun_{false};

@@ -1,0 +1,105 @@
+# Architecture branch validation
+
+Local validation on Windows, September 5–6, 2026. These are working-branch
+results, not evidence for a signed release candidate.
+
+| Check | Result |
+| --- | --- |
+| Native portable suite | 619 passed, including 18 asynchronous encoder lifecycle cases |
+| WinUI suite | 750 passed; TRX retained under `artifacts/test-results/winui` |
+| MediaCore suite | 487 passed, including real child-process handshake/restart cases |
+| Control suite | 53 passed |
+| Renderer unit / integration | 1,739 / 111 passed |
+| Node protocol runtime | 88 passed |
+| TypeScript show engine | 417 passed |
+| Release evidence validator | 22 passed |
+| Shared lifecycle fixtures | 56 wire cases in C++, C#, both TypeScript consumers and Swift |
+| TypeScript checks / contract regeneration | Passed |
+| Real Windows native Release build | Passed with D3D11, Media Foundation and Zoom SDK adapters |
+| WinUI Release publish | Passed; existing analyzer warnings remain |
+| Stub process bridge smoke | Passed with an explicitly selected stub binary |
+| macOS shell CI | Build passed; 173 checks passed |
+| macOS native CI | Stub and Metal/AVFoundation/CoreAudio/capture configurations passed their suites |
+
+## Process responsiveness
+
+The fake engine injects separate 30-second authentication and join stalls. Each
+stage measures 40 Ping and Stop round trips and sends 128 MiB of input. Stop p95
+was 14.58 ms during authentication and 17.33 ms during join; maximums were 19.75
+and 18.29 ms. Peak private memory stayed below 4.3 MB in these runs. Cancellation
+worked and an incompatible Leave request did not cancel the current operation.
+
+This proves synthetic process responsiveness for the exercised workload. It does
+not establish real Zoom render cadence, Take effect latency, or slow-client
+outbound backpressure. Mailbox overload limits are covered separately by native
+tests. The reproducible harness is [validate-command-responsiveness.mjs](../scripts/validate-command-responsiveness.mjs).
+
+## Real recording
+
+A generated 1920×1080 color-bar scene and silent stereo audio were recorded with
+Media Foundation and D3D11. The harness observed the matching session become live,
+accepted Stop, waited for completed/finalized, then required ffprobe metadata,
+full ffmpeg decoding, and varied decoded image content. Both runs passed these
+checks and produced H.264 video plus 48 kHz stereo AAC.
+
+The isolated run delivered about 51.13 effective frames/second with 65 encoder
+queue drops under a configured 60fps profile. An equivalent build of the original
+`660f626` commit, with matching adapter flags/compiler/SDK and no source changes,
+delivered 50.72 fps with 62 drops. The throughput ceiling exists in the baseline;
+these short runs do not indicate a branch regression or establish statistical
+equivalence. Successful finalization is not a 60fps acceptance result. A/V duration
+agreement in silent generated content is not a lip-sync or intelligibility test.
+See the [recording proof procedure](recording-finalization-validation.md).
+
+## Remaining evidence
+
+The macOS media drill still misses its 60fps recording requirement. Branch CI runs
+reported 19.3 and 24.1 fps; historical main runs reported 29.4 and 25.4 fps. This
+establishes an existing failing gate but shared-runner variation does not exclude
+a regression statistically. The frame-rate requirement remains unchanged.
+
+Real Zoom
+multi-participant ingest, simultaneous recording/streaming, per-destination faults,
+physical camera disconnection, disk exhaustion, the two-hour soak and clean-machine
+installation remain unverified for this candidate. The release workflow requires
+the controlled-rig evidence described in [release-evidence.md](release-evidence.md).
+
+Full generated legacy-protocol coverage, durable participant identity/native Take,
+and outbound backpressure remain implementation work in the
+[remediation plan](architecture-remediation-plan.md). They are not hidden behind
+the automated test totals.
+
+## PR review follow-up
+
+The follow-up fixes six review findings: shared media queue budgets across
+recording generations; output lifecycle polling while Zoom capture is off;
+explicit Windows Stop retries; macOS recording command reconciliation;
+request-only Windows handshakes; and successful PowerShell release harnesses
+that do not set a native exit code.
+
+The encoder retains media already accepted before an older Stop barrier. When
+older generations fill a media budget, incoming media from a newer take is
+dropped and counted until capacity returns. A new take only becomes live after
+the writer reports progress. The regression holds the writer stalled across
+100 recording generations and checks the preserved tail and subsequent recovery.
+
+Stop retries send an explicit false target rather than toggling an already-false
+intent back to true. macOS also guards asynchronous completions so an older
+command cannot overwrite newer intent. Windows output polling applies its output
+fields independently of Zoom capture subscription. Explicit handshakes may pass
+the startup gate; ordinary application commands still require a validated profile.
+Both solicited and unsolicited incompatible handshakes terminate the rejected child
+without an automatic restart, and profile publication is bound to the originating
+process.
+
+Follow-up local validation: 621 native tests (20 asynchronous encoder cases),
+489 MediaCore tests (11 handshake cases), 758 WinUI tests, and 23 release-evidence
+tests passed. The harness regression executes the workflow's PowerShell invocation
+with normal success, stale exit status, explicit script failure, an exception, and
+a failed native child. The macOS policy adds 29 checks to the hosted Swift suite;
+design lint passed locally, where no Swift compiler is installed. The remaining
+recording-cadence and controlled-rig acceptance requirements above are unchanged.
+
+Final merge review added coverage for delayed live snapshots after successful or
+failed Stop: those snapshots must preserve stopped intent, while observed media
+still permits an explicit Stop retry. A later explicit Start can arm a new take.

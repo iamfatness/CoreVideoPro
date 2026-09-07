@@ -1,6 +1,9 @@
 #pragma once
 
+#include "contracts/Lifecycle.h"
+
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -74,6 +77,10 @@ struct IsoSourceVideoFrame {
   std::string sourceId;
   std::string displayName;
   VideoFrame frame;
+  // Submission time in the same steady-clock/100ns domain as ProgramFrame and
+  // IsoSourceAudio. The async writer must stamp media from capture/submission
+  // time, never from however long this source waited behind other ISO encoders.
+  int64_t timelineTimestamp100ns = 0;
 };
 
 // One selected ISO source's RAW-STEM audio for a single encoder tick (ISO-2).
@@ -91,6 +98,12 @@ struct IsoSourceAudio {
   int frameCount = 0;
   int channels = 0;
   int sampleRate = 48000;
+  // Capture/submission time on std::chrono::steady_clock, expressed as 100ns
+  // ticks since that clock's epoch. The encoder is asynchronous: using the
+  // writer-thread processing time turns queue latency into muxed silence and
+  // makes ISO files longer than Program under multi-encoder load. Zero is
+  // accepted for direct/test callers and makes the sink sample its clock.
+  int64_t timelineTimestamp100ns = 0;
 };
 
 struct AudioFrame {
@@ -103,6 +116,12 @@ struct AudioFrame {
   double peakLevel = 0.0;
   double noiseFloorDb = -60.0;
   bool voiceActive = true;
+  // Zoom raw audio arrives as 10 ms SDK packets while the program mixer runs
+  // on a 20 ms clock. Those independent clocks need a permanent one-tick
+  // cushion, just like Zoom video keeps a one-frame sync cushion. Producers
+  // that set this flag opt into full-tick priming in steadyAudioFrameFeed;
+  // local/media/capture sources keep their existing zero-latency behavior.
+  bool requiresSteadyFeedPriming = false;
   // Optional interleaved float PCM payload in full-scale range [-1, 1] with
   // `channels` channels (so `pcm.size()` is `sampleCount * channels` when
   // present). When non-empty, the audio DSP core measures real RMS/peak from
@@ -204,6 +223,20 @@ struct MultiviewTileRect {
   std::string tally = "none";
 };
 
+struct CompositorRenderPlan;
+
+struct ProgramBufferDiagnostics {
+  int requestedFrames = 3;
+  int activeFrames = 0;
+  int capacity = 0;
+  int occupancy = 0;
+  uint64_t produced = 0, delivered = 0, underruns = 0, overflows = 0;
+  uint64_t gpuNotReady = 0, deadlineMisses = 0;
+  uint64_t displayUnconsumed = 0, displayBusy = 0;
+  uint64_t generation = 0;
+  std::string status = "unsupported";
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -228,6 +261,14 @@ struct ProgramFrame {
   int programNv12Width = 0;
   int programNv12Height = 0;
   std::vector<uint8_t> programNv12;
+  // Zero-copy ownership path for the Windows program tap. ProgramFrame is copied
+  // into recorder and sender queues every frame; sharing this immutable 1080p
+  // buffer avoids several redundant ~3 MB copies per output. The vector above
+  // remains as the compatibility and test path.
+  std::shared_ptr<const std::vector<uint8_t>> programNv12Shared;
+  [[nodiscard]] const std::vector<uint8_t>& programNv12Bytes() const noexcept {
+    return programNv12Shared ? *programNv12Shared : programNv12;
+  }
   ProgramFrameSharedTexture sharedTexture;
   std::vector<ParticipantSharedTexture> participantSharedTextures;
   // Core-composited multiview grid: one keyed-mutex DXGI shared texture holding
@@ -245,6 +286,19 @@ struct ProgramFrame {
   ProgramFrameSharedTexture previewSharedTexture;
   int previewWidth = 0;
   int previewHeight = 0;
+  // Submission time on std::chrono::steady_clock, expressed as 100ns ticks.
+  // Kept at the tail to preserve existing positional aggregate initializers.
+  // Recording sinks use it instead of writer-thread time so encoder/disk queue
+  // latency cannot stretch the Program video timeline away from audio.
+  int64_t timelineTimestamp100ns = 0;
+  int64_t deliverySequence = 0;
+  int64_t producedAt100ns = 0;
+  int64_t deliveredAt100ns = 0;
+  int64_t productionSlot = -1;
+  int64_t productionAnchorNs = 0;
+  // Retain GPU resources and attribution for this exact buffered frame.
+  std::shared_ptr<const void> gpuOwner;
+  std::shared_ptr<const CompositorRenderPlan> renderPlanEvidence;
 };
 
 struct CompositorLayerRect {
@@ -259,6 +313,27 @@ struct CompositorColorGrade {
   float contrast = 0.f;
   float saturation = 0.f;
   float temperature = 0.f;
+};
+
+// Per-layer chroma key (the green/blue screen keyer).
+//
+// The core advertised a "chroma-key" capability — and listed it as REQUIRED —
+// while implementing none of it: the only command carrying a chromaKey payload
+// discarded it (setParticipantTransform takes an UNNAMED rpc::Json), there were
+// no key fields on the render plan, and neither shader had keying math. Anything
+// gating on that capability got a true answer that meant nothing.
+//
+// `similarity` is the chroma distance at which a pixel becomes fully
+// transparent; `smoothness` widens the transition either side of it so edges do
+// not alias; `spill` pulls the key hue out of surviving pixels (green fringing
+// on hair and shoulders). All normalized 0..1.
+struct CompositorChromaKey {
+  float keyR = 0.f;
+  float keyG = 1.f;   // green screen by default
+  float keyB = 0.f;
+  float similarity = 0.4f;
+  float smoothness = 0.1f;
+  float spill = 0.2f;
 };
 
 // Overlay-raster payload for an overlay/lower-third/caption layer. These fields
@@ -313,8 +388,16 @@ struct CompositorRenderPlanLayer {
   std::string mediaAssetPath;
   std::string mediaPlaybackKey;
   bool mediaAssetPlaying = false;
+  // Backgrounds are continuous show elements; stingers/clips remain one-shot.
+  // Kept on the shared render layer so SuperSource and Tiles use the same
+  // playback contract rather than inventing independent loop controls.
+  bool mediaAssetLoop = false;
   bool hasColorGrade = false;
   CompositorColorGrade colorGrade;
+  // Keying is per-LAYER, not per-participant: the same camera can be keyed in
+  // one scene and not another, which a per-participant model cannot express.
+  bool hasChromaKey = false;
+  CompositorChromaKey chromaKey;
   // Set for overlay/lower-third/caption layers. Empty (default) for video
   // sources, which leaves overlay rendering on the prior solid-fill fallback.
   bool hasOverlayContent = false;
@@ -323,6 +406,16 @@ struct CompositorRenderPlanLayer {
   // layers use this so animated overlays cannot escape their monitor cell.
   bool hasClipRect = false;
   CompositorLayerRect clipRect;
+  // Explicit solid-fill colour for a layer with no source frame at all (e.g.
+  // the tiles wall background). Both the D3D11 compositor (resolveLayers) and
+  // the CPU preview path (buildProgramFramePreview) honor this when set,
+  // parsing it with the same compositor::parseHexColorRgba() used for
+  // brand/border colors elsewhere. A layer with a real participant/media
+  // source ignores this and uses its frame (or the colorFromParticipantId()
+  // debug placeholder) instead — this is ONLY for layers that are
+  // deliberately sourceless.
+  bool hasFillColor = false;
+  std::string fillColor = "#808080";
 };
 
 struct CompositorRenderPlan {
@@ -360,11 +453,15 @@ struct IsoStreamStatus {
   int64_t audioSampleCount = 0;  // 0 until ISO-2 muxes per-source audio
   int64_t bytesWritten = 0;
   bool trackOpen = false;        // the writer opened + began writing its video track
+  std::string encoderPath;       // "hardware" or "software" placement for this ISO
+  std::string fallbackReason;    // e.g. hardware-capacity-exhausted
   std::string warning;           // per-source open/write failure (empty = healthy)
 };
 
 struct OutputSession {
   bool active = false;
+  // Present only when the sink reports observed writer lifecycle.
+  std::optional<contracts::OutputLifecycle> lifecycle;
   std::vector<std::string> destinations;
   std::vector<std::string> isoParticipantIds;
   // Per-session subfolder + manifest (ISO-1 folder scheme, spec §5). Empty for
@@ -387,8 +484,18 @@ struct OutputSession {
   std::string recordingQuality;
   std::string recordingArtifactPath;
   int64_t recordingBytesWritten = 0;
+  int64_t recordingProgramBytesWritten = 0;
   int64_t recordingDurationMs = 0;
   int64_t recordingVideoFrameCount = 0;
+  int64_t recordingVideoPrerollFrameCount = 0;
+  int64_t recordingVideoTailFrameCount = 0;
+  int64_t recordingMuxVideoFrameCount = 0;
+  int64_t recordingRequestedAt100ns = 0;
+  int64_t recordingWriterReadyAt100ns = 0;
+  int64_t recordingMuxEpoch100ns = 0;
+  int64_t recordingStartupDroppedAudioPackets = 0;
+  int64_t recordingAudioPrerollSampleCount = 0;
+  int64_t recordingAudioTailSampleCount = 0;
   int64_t recordingLastFrameNumber = 0;
   int recordingWidth = 0;
   int recordingHeight = 0;
@@ -404,6 +511,11 @@ struct OutputSession {
   bool recordingMetadataValid = false;
   std::string recordingWarning;
   std::string recordingError;
+  // Truth from the async writer queue. These are cumulative for the encoder
+  // session and let the UI/support bundle surface back-pressure that was
+  // previously visible only in stderr logs.
+  int64_t encoderQueueDroppedVideoFrames = 0;
+  int64_t encoderQueueDroppedAudioPackets = 0;
 };
 
 // One selected ISO source at recording start: the canonical id + the roster
@@ -424,6 +536,8 @@ struct IsoSourceSelection {
 };
 
 struct RecordingSessionRequest {
+  // Steady-clock capture boundary; zero retains legacy first-media epoch.
+  int64_t captureEpoch100ns = 0;
   std::string sessionId = "native-recording-session";
   std::string targetFolder = "Recordings/CoreVideo Pro/native-core";
   std::string filenamePrefix = "program";
@@ -616,6 +730,14 @@ class ICompositor {
   virtual ~ICompositor() = default;
   virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
+  // Startup-only configuration. Unsupported compositors report zero active
+  // frames, so consumers must not introduce an unmatched audio delay.
+  virtual void configureProgramBuffer(int /*frames*/) {}
+  virtual void setProgramProductionTiming(int64_t /*slot*/, int64_t /*anchorNs*/) {}
+  [[nodiscard]] virtual int programBufferFrames() const { return 0; }
+  virtual bool latestDeliveredProgramFrame(ProgramFrame& /*out*/) const { return false; }
+  virtual bool takeDeliveredProgramFrame(ProgramFrame& /*out*/, int /*timeoutMs*/) { return false; }
+  [[nodiscard]] virtual ProgramBufferDiagnostics programBufferDiagnostics() const { return {}; }
   // Virtual camera: the render thread does a cheap GPU->GPU copy of the program
   // into a keyed-mutex shared texture (via the render plan's fullProgramReadback
   // flag); a dedicated device+thread reads it back AND converts it to NV12 off
@@ -628,6 +750,16 @@ class ICompositor {
     (void)width;
     (void)height;
     return false;
+  }
+  // Ownership-preserving output fan-out. D3D11 returns its immutable tap buffer
+  // directly so recorder, stream and virtual camera can share it. Older
+  // compositors bridge through their existing copy-out implementation.
+  virtual bool takeVcamNv12Shared(std::shared_ptr<const std::vector<uint8_t>>& outNv12,
+                                  int& width, int& height) {
+    std::vector<uint8_t> copy;
+    if (!takeVcamNv12(copy, width, height)) return false;
+    outNv12 = std::make_shared<const std::vector<uint8_t>>(std::move(copy));
+    return true;
   }
   // Composites the multiview grid into a second keyed-mutex DXGI shared texture
   // (the whole grid in one texture, the OBS/broadcast-multiviewer model) and
@@ -665,12 +797,42 @@ class ICompositor {
   // Recording uses it to mux real program pixels rather than the 320x180
   // preview; without it the whole show lands in a corner of a black frame.
   [[nodiscard]] virtual bool suppliesProgramNv12() const { return false; }
+
+  // PUSH the program tap at the RENDER cadence instead of waiting to be polled.
+  //
+  // The virtual camera used to be published by the ~50Hz audio/output worker,
+  // which polls takeVcamNv12 once per tick. That worker's 20ms period is an
+  // AUDIO constant (960 samples at 48k), and gating video on it meant a 60fps
+  // program reached every output at 50fps — measured 2026-08-07: render thread
+  // 59.7fps, output worker 49.7Hz, virtual camera published 50.0fps. That is 10
+  // discarded frames a second AND up to 20ms of quantisation on a path whose
+  // whole budget is one 16.7ms frame.
+  //
+  // The sink is invoked on the tap thread the moment a new NV12 frame exists,
+  // holding NO compositor lock. The callee must be cheap and must not block on
+  // the render thread. Setting or clearing the sink waits for any in-flight
+  // call, so clear it before the callee is destroyed.
+  // Ownership is shared so the tap can hand the same immutable NV12 frame to
+  // multiple outputs without a 3 MB memcpy on its cadence. In particular, the
+  // virtual-camera publisher queues this buffer to its own latest-frame worker;
+  // a slow Windows Frame Server consumer must never pace streaming/recording.
+  using VcamFrameBuffer = std::shared_ptr<const std::vector<std::uint8_t>>;
+  using VcamFrameSink = std::function<void(VcamFrameBuffer nv12, int width, int height)>;
+  virtual void setVcamFrameSink(VcamFrameSink /*sink*/) {}
+  // Does this compositor push frames to that sink? When it does, MediaCore must
+  // NOT also publish from the output worker or every frame is published twice.
+  [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }
 };
 
 class IMediaFrameSource {
  public:
   virtual ~IMediaFrameSource() = default;
   virtual std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) = 0;
+  // Exact monotonic presentation time for scheduled media. Legacy adapters
+  // retain their millisecond contract through this additive default.
+  virtual std::vector<VideoFrame> pollMediaFramesAt100ns(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestamp100ns) {
+    return pollMediaFrames(layers, timestamp100ns / 10000);
+  }
   virtual std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) {
     (void)layers;
     (void)timestampMs;
@@ -763,6 +925,13 @@ class IEncoderSink {
     (void)channels;
     (void)sampleRate;
   }
+  // Preserve the producer timestamp across asynchronous writers. Legacy sinks
+  // retain their existing audio behavior through this default forwarding seam.
+  virtual void submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                             int64_t timelineTimestamp100ns) {
+    (void)timelineTimestamp100ns;
+    submitAudio(interleaved, frameCount, channels, sampleRate);
+  }
   // A3 (VST latency compensation): the program-audio content latency added by
   // an active out-of-process plugin, in samples at the program rate. The
   // recording PTS clock latches it at the FIRST audio buffer of a session so
@@ -798,6 +967,17 @@ class IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) = 0;
+  // Push program AUDIO alone, on the AUDIO cadence, decoupled from sync()'s video
+  // cadence. Video and audio reach FFmpeg through SEPARATE inputs (a raw video
+  // pipe and a PCM audio pipe), so they never needed to arrive together — but
+  // carrying audio as a sync() argument tied both to one call, and that call was
+  // the ~50Hz audio worker's. A 60fps program was therefore streamed at 50fps.
+  // The video tick now calls sync() (video), the audio worker calls this.
+  //
+  // Senders that carry audio must treat "we have real audio" as STICKY state set
+  // here, not as "this sync() call happened to carry PCM" — otherwise a video-only
+  // sync looks like audio disappearing and restarts the encoder process.
+  virtual void submitAudio(const std::vector<float>& /*pcm*/, int /*channels*/, int /*sampleRate*/) {}
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
   virtual OutputSenderSession session() const = 0;
@@ -831,6 +1011,13 @@ class ICaptureDevice {
   virtual std::vector<CaptureDeviceInfo> disconnect(const std::string&) { return enumerate(); }
   virtual std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>&) { return enumerate(); }
   virtual std::vector<VideoFrame> pollVideoFrames(int64_t) { return {}; }
+  // Audio EMBEDDED in the capture transport itself, keyed "capture:<deviceId>"
+  // like every other capture source. Local cameras and cards pair a separate
+  // WASAPI input instead (CaptureAudioSourceConfig), but an SRT contribution feed
+  // carries its guest's audio inside the same stream and there is no OS audio
+  // device to pair with it. Defaults to empty, so only transports that actually
+  // carry audio implement it.
+  virtual std::vector<AudioFrame> pollAudioFrames(int64_t) { return {}; }
 };
 
 struct ModuleSet {
@@ -875,6 +1062,9 @@ std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();
 std::unique_ptr<IOutputSender> createSrtOutputSender();
+// SRT delivery over the shared FFmpeg sender (same pipeline as RTMP, MPEG-TS
+// container, srt:// endpoint). Defined in RtmpOutputSenderAdapter.cpp.
+std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();

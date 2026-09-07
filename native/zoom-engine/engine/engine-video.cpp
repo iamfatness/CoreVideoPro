@@ -180,8 +180,16 @@ bool ParticipantSubscription::ensure_shm(SourceTarget &target,
     if (total < y_len) return false;
     if (target.shm.ptr && target.shm.size >= total) return true;
 
+    // Allocate at FULL CAPACITY, never frame-sized: a named Windows section
+    // cannot grow while the core holds a read handle (CreateFileMappingA
+    // returns the existing small object and the larger MapViewOfFile fails),
+    // so sizing regions to the first ramp frame froze every source at the
+    // moment Zoom raised its resolution. See engine-ipc.h.
+    const size_t capacity = i420_region_capacity(kMaxVideoShmYLen);
+    if (total > capacity) return false;  // >1080p on a 1080p subscription: drop loud, never truncate
+
     const std::string region_name = EngineIpc::shm_prefix() + source_uuid;
-    return shm_region_create(target.shm, region_name, total);
+    return shm_region_create(target.shm, region_name, capacity);
 }
 
 void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
@@ -208,15 +216,21 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
         SourceTarget &target = *entry.second;
 
         if (!ensure_shm(target, source_uuid, y_len) || !target.shm.ptr) {
-            if (target.frame_count == 0) {
+            // LOUD on the first failure and ~every 10s at 30fps — NEVER gated on
+            // frame_count==0. The old gate is why the resolution-ramp freeze was
+            // invisible: frames flowed at 256x144, ensure_shm failed on the grow
+            // to 640x360, and every subsequent frame failed with no log at all.
+            if (target.shm_fail_count++ % 300 == 0) {
                 EngineIpc::write(
                     R"({"cmd":"debug","stage":"video_shm_create_failed","source_uuid":")" +
                     source_uuid + R"(","participant_id":)" +
                     std::to_string(m_participant_id) + R"(,"w":)" +
-                    std::to_string(w) + R"(,"h":)" + std::to_string(h) + "}");
+                    std::to_string(w) + R"(,"h":)" + std::to_string(h) +
+                    R"(,"fail_count":)" + std::to_string(target.shm_fail_count) + "}");
             }
             continue;
         }
+        target.shm_fail_count = 0;
 
         auto *hdr    = static_cast<ShmFrameHeader *>(target.shm.ptr);
         auto *pixels = static_cast<char *>(target.shm.ptr) + sizeof(ShmFrameHeader);

@@ -43,7 +43,8 @@ public static class ZoomMediaSpineSnapshotMerger
         return merged with
         {
             SourceSnapshot = sourceSnapshot,
-            Diagnostics = merged.Diagnostics with { SourceSnapshot = sourceSnapshot }
+            Diagnostics = merged.Diagnostics with { SourceSnapshot = sourceSnapshot },
+            ZoomSubscriptions = spine.Subscriptions
         };
     }
 

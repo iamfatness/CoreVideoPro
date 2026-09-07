@@ -94,6 +94,10 @@ ZoomEngineProcessClient::~ZoomEngineProcessClient() {
 bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
   stop();
   lastError_.clear();
+  if (options.cancelled && options.cancelled()) {
+    setError("Zoom join cancelled.");
+    return false;
+  }
   if (options.executablePath.empty()) {
     setError("Zoom engine executable path is empty.");
     return false;
@@ -119,7 +123,7 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
       nullptr,
       nullptr,
       FALSE,
-      CREATE_NO_WINDOW,
+      CREATE_NO_WINDOW | CREATE_SUSPENDED,
       nullptr,
       workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
       &startupInfo,
@@ -128,8 +132,50 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
     setError(windowsError("CreateProcessA"));
     return false;
   }
+
+  // Put the helper in a private kill-on-close job before it executes any SDK
+  // code. If corevideo-native is force-killed, Windows closes this last job
+  // handle and terminates the helper immediately; otherwise the orphan keeps
+  // Zoom's callback/runtime ownership for several seconds and the replacement
+  // helper fails InitSDK with code 14.
+  HANDLE job = CreateJobObjectA(nullptr, nullptr);
+  if (!job) {
+    const auto error = windowsError("CreateJobObjectA");
+    TerminateProcess(processInfo.hProcess, 1);
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    setError(error);
+    return false;
+  }
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    const auto error = windowsError("SetInformationJobObject");
+    TerminateProcess(processInfo.hProcess, 1);
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    CloseHandle(job);
+    setError(error);
+    return false;
+  }
+  if (!AssignProcessToJobObject(job, processInfo.hProcess)) {
+    const auto error = windowsError("AssignProcessToJobObject");
+    TerminateProcess(processInfo.hProcess, 1);
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    CloseHandle(job);
+    setError(error);
+    return false;
+  }
+
   processHandle_ = processInfo.hProcess;
   threadHandle_ = processInfo.hThread;
+  jobHandle_ = job;
+  if (ResumeThread(processInfo.hThread) == static_cast<DWORD>(-1)) {
+    setError(windowsError("ResumeThread"));
+    stop();
+    return false;
+  }
 #else
   const pid_t pid = fork();
   if (pid < 0) {
@@ -148,11 +194,16 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
   processId_ = static_cast<int>(pid);
 #endif
 
-  if (!connectIpc(options.connectTimeoutMs)) {
+  if (!connectIpc(options.connectTimeoutMs, options.cancelled)) {
     stop();
     return false;
   }
   return true;
+}
+
+void ZoomEngineProcessClient::terminate() {
+  closeIpc();
+  stop();
 }
 
 void ZoomEngineProcessClient::stop() {
@@ -171,6 +222,7 @@ void ZoomEngineProcessClient::stop() {
   }
   closeHandle(threadHandle_);
   closeHandle(processHandle_);
+  closeHandle(jobHandle_);
 #else
   if (processId_ > 0) {
     int status = 0;
@@ -245,7 +297,7 @@ std::optional<ZoomEngineEvent> ZoomEngineProcessClient::readEvent() {
   return event;
 }
 
-bool ZoomEngineProcessClient::connectIpc(int timeoutMs) {
+bool ZoomEngineProcessClient::connectIpc(int timeoutMs, const std::function<bool()>& cancelled) {
 #if defined(_WIN32)
   const std::string pipeP2E = ipc_pipe_p2e(instanceToken_);
   const std::string pipeE2P = ipc_pipe_e2p(instanceToken_);
@@ -255,6 +307,11 @@ bool ZoomEngineProcessClient::connectIpc(int timeoutMs) {
 #endif
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   while (std::chrono::steady_clock::now() < deadline) {
+    if (cancelled && cancelled()) {
+      setError("Zoom join cancelled.");
+      closeIpc();
+      return false;
+    }
 #if defined(_WIN32)
     if (!parentToEngine_) {
       if (WaitNamedPipeA(pipeP2E.c_str(), 100)) {

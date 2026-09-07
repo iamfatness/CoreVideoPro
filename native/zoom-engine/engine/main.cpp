@@ -435,11 +435,12 @@ static std::string zchar_to_utf8(const zchar_t *name)
     int len = WideCharToMultiByte(CP_UTF8, 0, name, -1,
                                   nullptr, 0, nullptr, nullptr);
     if (len <= 0) return {};
-    std::string out(static_cast<size_t>(len - 1), '\0');
-    if (!out.empty()) {
-        WideCharToMultiByte(CP_UTF8, 0, name, -1, &out[0], len,
-                            nullptr, nullptr);
-    }
+    std::string out(static_cast<size_t>(len), '\0');
+    const int written = WideCharToMultiByte(CP_UTF8, 0, name, -1, out.data(), len,
+                                            nullptr, nullptr);
+    if (written <= 0) return {};
+    out.resize(static_cast<size_t>(written));
+    if (!out.empty() && out.back() == '\0') out.pop_back();
     return out;
 #else
     return name;
@@ -1049,6 +1050,27 @@ public:
     {
         EngineIpc::write(R"({"cmd":"debug","stage":"record_privilege_changed","can_record":)" +
             std::string(can_rec ? "true" : "false") + "}");
+        // Zoom grants recording privilege through TWO paths: the request popup
+        // (onLocalRecordingPrivilegeRequestStatus, handled below) and a direct
+        // privilege change (host uses the participant "Allow record" menu, or a
+        // role change). This handler used to only LOG the second path — so when
+        // the host granted that way, every deferred video/audio subscription
+        // just sat there and the operator stared at black tiles until they
+        // toggled Capture off/on by hand (live meeting, 2026-08-09: 37 dark
+        // seconds ended by a manual toggle). Same recipe as the granted-request
+        // path, gated on "we want raw media and do not have it yet" so the two
+        // paths cannot double-start.
+        if (!can_rec || !m_raw_media_requested || m_raw_media_active ||
+            !m_meeting_svc || !*m_meeting_svc)
+            return;
+        auto *rec = (*m_meeting_svc)->GetMeetingRecordingController();
+        if (!rec) return;
+        const ZOOMSDK::SDKError start_raw = rec->StartRawRecording();
+        EngineIpc::write(
+            R"({"cmd":"debug","stage":"start_raw_recording_after_privilege_change","code":)" +
+            std::to_string(static_cast<int>(start_raw)) + "}");
+        if (start_raw == ZOOMSDK::SDKERR_SUCCESS)
+            resubscribe_raw_media("record_privilege_changed");
     }
     void onLocalRecordingPrivilegeRequestStatus(
         ZOOMSDK::RequestLocalRecordingStatus status) override
@@ -1363,7 +1385,7 @@ int main(int argc, char **argv)
         } else if (line.find(IPC_CMD_STOP_MEDIA) != std::string::npos) {
             meeting_event.stop_raw_media("manual_stop");
 
-        } else if (line.find(IPC_CMD_SUBSCRIBE_AUDIO) != std::string::npos) {
+        } else if (ipc_command_is(line, IPC_CMD_SUBSCRIBE_AUDIO)) {
             std::string uuid = json_str(line, "source_uuid");
             uint32_t    pid  = json_uint(line, "participant_id");
             const bool isolate_audio =
@@ -1375,7 +1397,15 @@ int main(int argc, char **argv)
                                              isolate_audio, audience_audio);
             }
 
-        } else if (line.find(IPC_CMD_SUBSCRIBE) != std::string::npos) {
+        } else if (ipc_command_is(line, IPC_CMD_UNSUBSCRIBE)) {
+            std::string uuid = json_str(line, "source_uuid");
+            if (is_valid_source_uuid(uuid)) {
+                video_engine.unsubscribe(uuid);
+                share_engine.unsubscribe(uuid);
+                EngineAudio::instance().remove(uuid);
+            }
+
+        } else if (ipc_command_is(line, IPC_CMD_SUBSCRIBE)) {
             std::string uuid = json_str(line, "source_uuid");
             uint32_t    pid  = json_uint(line, "participant_id");
             uint32_t    res  = json_uint(line, "resolution");
@@ -1390,18 +1420,9 @@ int main(int argc, char **argv)
                     share_engine.subscribe(uuid, e2p);
                 } else {
                     video_engine.subscribe(pid, uuid, e2p, res);
-                    EngineAudio::instance().init(e2p, uuid, pid,
-                                                 isolate_audio, audience_audio);
                 }
             }
 
-        } else if (line.find(IPC_CMD_UNSUBSCRIBE) != std::string::npos) {
-            std::string uuid = json_str(line, "source_uuid");
-            if (is_valid_source_uuid(uuid)) {
-                video_engine.unsubscribe(uuid);
-                share_engine.unsubscribe(uuid);
-                EngineAudio::instance().remove(uuid);
-            }
         }
     }
 

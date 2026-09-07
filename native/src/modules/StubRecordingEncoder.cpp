@@ -1,6 +1,7 @@
 #include "modules/Interfaces.h"
 
 #include <algorithm>
+#include <mutex>
 #include <sstream>
 
 namespace corevideo::modules {
@@ -25,6 +26,7 @@ int64_t bytesPerProgramFrame(const RecordingSessionRequest& request) {
 class StubRecordingEncoderSink final : public IEncoderSink {
  public:
   void configureRecording(const RecordingSessionRequest& request) override {
+    std::lock_guard<std::mutex> lock(mutex_);
     request_ = request;
     if (!request.isoParticipantIds.empty()) {
       session_.isoParticipantIds = request.isoParticipantIds;
@@ -43,6 +45,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
   }
 
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
+    std::lock_guard<std::mutex> lock(mutex_);
     session_.active = true;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
@@ -58,6 +61,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingQuality = request_.quality;
     session_.recordingArtifactPath.clear();
     session_.recordingBytesWritten = 0;
+    session_.recordingProgramBytesWritten = 0;
     session_.recordingDurationMs = 0;
     session_.recordingVideoFrameCount = 0;
     session_.recordingLastFrameNumber = 0;
@@ -90,6 +94,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
   }
 
   void submit(const ProgramFrame& frame) override {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!session_.active) {
       return;
     }
@@ -105,12 +110,14 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingWidth = request_.width > 0 ? request_.width : frame.width;
     session_.recordingHeight = request_.height > 0 ? request_.height : frame.height;
     session_.recordingBytesWritten = session_.recordingVideoFrameCount * bytesPerProgramFrame(request_);
+    session_.recordingProgramBytesWritten = session_.recordingBytesWritten;
     session_.recordingMetadataValid = session_.recordingWidth > 0 && session_.recordingHeight > 0 && session_.recordingFps > 0 &&
                                       !session_.recordingContainerFormat.empty() && !session_.recordingVideoCodec.empty() &&
                                       !session_.recordingAudioCodec.empty();
   }
 
   void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!session_.active || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
       return;
     }
@@ -125,9 +132,11 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingAudioChannels = channels;
     session_.recordingAudioSampleRate = sampleRate;
     session_.recordingBytesWritten += static_cast<int64_t>(frameCount) * channels * 2;  // 16-bit muxed PCM
+    session_.recordingProgramBytesWritten = session_.recordingBytesWritten;
   }
 
   void stopRecording() override {
+    std::lock_guard<std::mutex> lock(mutex_);
     // Mirror the Media Foundation sink: a stopped recording is finalized (no
     // more frames/audio accumulate against it) but the encoder session itself
     // stays valid for streaming destinations.
@@ -136,9 +145,16 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     }
   }
 
-  OutputSession session() const override { return session_; }
+  OutputSession session() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return session_;
+  }
 
  private:
+  // RPC tests can run the synchronous stub directly on the separate video and
+  // audio workers. Their outer locks differ; protect the sink's request and
+  // snapshot together so telemetry never races a partially applied submission.
+  mutable std::mutex mutex_;
   RecordingSessionRequest request_;
   OutputSession session_;
 };

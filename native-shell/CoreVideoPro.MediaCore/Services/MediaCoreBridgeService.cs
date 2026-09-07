@@ -10,15 +10,28 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private Timer? _spineSyncTimer;
     private double _elapsedMs;
     private NativeMediaCoreStateSnapshot? _lastSnapshot;
-    private Func<Dictionary<string, object?>>? _spinePayloadFactory;
+    private Func<CancellationToken, Task<Dictionary<string, object?>>>? _spinePayloadFactory;
     private bool _spineSyncInFlight;
+    private long _spineFactoryVersion;
+    private CancellationTokenSource? _spineFactoryCancellation;
 
     public MediaCoreBridgeService(MediaCoreSupervisor? supervisor = null)
     {
         _supervisor = supervisor ?? new MediaCoreSupervisor();
-        _supervisor.HealthChanged += health => HealthChanged?.Invoke(health);
+        _supervisor.HealthChanged += health =>
+        {
+            if (health.Recovering)
+            {
+                // Do not let the periodic desired-state payload start a new recording
+                // generation against color bars before Zoom has rejoined.
+                StopSpineSync();
+            }
+
+            HealthChanged?.Invoke(health);
+        };
         _supervisor.StatusChanged += status => StatusChanged?.Invoke(status);
         _supervisor.ProfileChanged += profile => ProfileChanged?.Invoke(profile);
+        _supervisor.ZoomRecovered += PublishCaptureSnapshot;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);
@@ -57,6 +70,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         }
     }
 
+    public void ConfigureProgramBufferFrames(int frames) => _supervisor.ConfigureProgramBufferFrames(frames);
+
     public async Task<NativeMediaCoreProfile?> StartAsync(CancellationToken cancellationToken = default)
     {
         var profile = await _supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
@@ -67,33 +82,22 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public void Stop()
     {
         StopPolling();
-        StopSpineSync();
+        ConfigureZoomSpineSync(null);
         _supervisor.Stop();
         lock (_gate)
         {
             _lastSnapshot = null;
             _elapsedMs = 0;
             _spinePayloadFactory = null;
+            _spineFactoryVersion++;
         }
     }
 
-    public void ConfigureZoomSpineSync(Func<Dictionary<string, object?>>? payloadFactory)
+    public void ConfigureZoomSpineSync(Func<CancellationToken, Task<Dictionary<string, object?>>>? payloadFactory)
     {
-        lock (_gate)
-        {
-            _spinePayloadFactory = payloadFactory;
-        }
-
-        if (payloadFactory is null)
-        {
-            StopSpineSync();
-            return;
-        }
-
-        if (Running)
-        {
-            StartSpineSync();
-        }
+        lock (_gate) { _spinePayloadFactory = payloadFactory; _spineFactoryVersion++; }
+        StopSpineSync();
+        if (payloadFactory is not null && Running) StartSpineSync();
     }
 
     public MediaCoreSupervisor Supervisor => _supervisor;
@@ -327,6 +331,10 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     public static string SummarizeOutputs(NativeMediaCoreStateSnapshot snapshot)
     {
+        if (snapshot.Recording?.Lifecycle is not null)
+        {
+            return SummarizeLifecycleOutputs(snapshot);
+        }
         var failedOutput = snapshot.OutputHealth
             .FirstOrDefault(item =>
                 item.Status is "failed" or "warning" &&
@@ -376,7 +384,48 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             return $"Recording {snapshot.Recording.ProgramPath}";
         }
 
-        return "Outputs idle";
+        var starting = snapshot.OutputSenderSession.Senders
+            .Where(sender => sender.Status == "starting")
+            .Select(sender => sender.Destination.ToUpperInvariant()).ToList();
+        return starting.Count > 0 ? $"Starting: {string.Join(", ", starting)}" : "Outputs idle";
+    }
+
+    internal static string SummarizeLifecycleOutputs(NativeMediaCoreStateSnapshot snapshot)
+    {
+        // Recording lifecycle is always present in the new core, including when
+        // only streaming. Compose independent outputs instead of letting idle
+        // recording or one failed destination hide the remaining live output.
+        var observations = snapshot.OutputHealth
+            .Where(item => !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
+            .Select(item => (Destination: item.Destination, Status: item.Status, Detail: (string?)item.Message))
+            .Concat(snapshot.OutputSenderSession.Senders.Select(sender =>
+                (Destination: sender.Destination, Status: sender.Status, Detail: sender.Warning ?? sender.LastError)))
+            .GroupBy(item => item.Destination, StringComparer.OrdinalIgnoreCase);
+        var parts = new List<string>();
+        var live = new List<string>();
+        var starting = new List<string>();
+        foreach (var destination in observations)
+        {
+            var failure = destination.FirstOrDefault(item => item.Status == "failed");
+            if (failure == default) failure = destination.FirstOrDefault(item => item.Status == "warning");
+            if (failure != default)
+            {
+                var detail = string.IsNullOrWhiteSpace(failure.Detail)
+                    ? destination.Select(item => item.Detail).FirstOrDefault(item => !string.IsNullOrWhiteSpace(item))
+                    : failure.Detail;
+                parts.Add($"{destination.Key.ToUpperInvariant()} output {failure.Status}" +
+                    (string.IsNullOrWhiteSpace(detail) ? string.Empty : $": {NormalizeOutputFailureMessage(detail)}"));
+            }
+            else if (destination.Any(item => item.Status == "live")) live.Add(destination.Key.ToUpperInvariant());
+            else if (destination.Any(item => item.Status == "starting")) starting.Add(destination.Key.ToUpperInvariant());
+        }
+        if (snapshot.Recording?.Lifecycle?.State != "idle")
+            parts.Add(OutputLifecycleReadModel.RecordingStatus(snapshot.Recording));
+        if (live.Count > 0) parts.Add($"Live: {string.Join(", ", live)}");
+        if (starting.Count > 0) parts.Add($"Starting: {string.Join(", ", starting)}");
+        var warning = snapshot.OutputSenderSession.Warnings.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item));
+        if (parts.Count == 0 && warning is not null) parts.Add($"Output warning: {NormalizeOutputFailureMessage(warning)}");
+        return parts.Count > 0 ? string.Join(" · ", parts) : "Outputs idle";
     }
 
     private static string NormalizeOutputFailureMessage(string? message)
@@ -440,26 +489,41 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     private void StartSpineSync()
     {
-        StopSpineSync();
+        CancellationTokenSource? retired;
         lock (_gate)
         {
-            if (_spinePayloadFactory is null)
+            if (_spineSyncTimer is not null && _spineFactoryCancellation is not null) return;
+            _spineSyncTimer?.Dispose();
+            _spineSyncTimer = null;
+            retired = _spineFactoryCancellation;
+            _spineFactoryCancellation = null;
+            _spineFactoryVersion++;
+            // Keep the desired factory through recovery, but create a fresh epoch
+            // only while running. Timer creation and Stop share this same gate.
+            if (_spinePayloadFactory is not null && Running)
             {
-                return;
+                _spineFactoryCancellation = new CancellationTokenSource();
+                _spineSyncTimer = new Timer(_ => _ = SpineSyncLoopAsync(), null,
+                    TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
             }
         }
-
-        _spineSyncTimer = new Timer(
-            _ => _ = SpineSyncLoopAsync(),
-            null,
-            TimeSpan.FromMilliseconds(500),
-            TimeSpan.FromMilliseconds(500));
+        retired?.Cancel();
+        retired?.Dispose();
     }
 
     private void StopSpineSync()
     {
-        _spineSyncTimer?.Dispose();
-        _spineSyncTimer = null;
+        CancellationTokenSource? retired;
+        lock (_gate)
+        {
+            _spineSyncTimer?.Dispose();
+            _spineSyncTimer = null;
+            retired = _spineFactoryCancellation;
+            _spineFactoryCancellation = null;
+            _spineFactoryVersion++;
+        }
+        retired?.Cancel();
+        retired?.Dispose();
     }
 
     private async Task PollLoopAsync()
@@ -501,40 +565,42 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     private async Task SpineSyncLoopAsync()
     {
-        if (!Running || _spineSyncInFlight)
-        {
-            return;
-        }
-
-        Func<Dictionary<string, object?>>? factory;
-        NativeMediaCoreStateSnapshot? snapshot;
+        Func<CancellationToken, Task<Dictionary<string, object?>>>? factory;
+        long version;
+        CancellationToken cancellationToken;
         lock (_gate)
         {
+            if (_spineSyncInFlight || _spinePayloadFactory is null || _spineFactoryCancellation is null ||
+                _lastSnapshot?.MeetingState != "in_meeting" || !Running) return;
             factory = _spinePayloadFactory;
-            snapshot = _lastSnapshot;
+            version = _spineFactoryVersion;
+            cancellationToken = _spineFactoryCancellation!.Token;
+            _spineSyncInFlight = true;
         }
-
-        if (factory is null ||
-            snapshot?.MeetingState is not { } meetingState ||
-            !meetingState.Equals("in_meeting", StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        _spineSyncInFlight = true;
         try
         {
-            AdvanceElapsed(500);
-            await SyncZoomMediaSpineAsync(factory(), cancellationToken: CancellationToken.None)
-                .ConfigureAwait(false);
+            var payload = await factory(cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false);
+            Task<ZoomMediaSpineNativeSnapshot> response;
+            lock (_gate)
+            {
+                // Validate and submit as one ordered operation relative to Stop or
+                // reconfiguration. No UI work or snapshot callbacks run under this lock.
+                if (version != _spineFactoryVersion || !Running) return;
+                _elapsedMs += 500;
+                response = _supervisor.SyncZoomMediaSpineAsync(payload, _elapsedMs, cancellationToken);
+            }
+            var spine = await response.ConfigureAwait(false);
+            lock (_gate) { if (version != _spineFactoryVersion) return; }
+            PublishSpineSnapshot(spine);
         }
-        catch
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception error)
         {
-            // Spine sync is best-effort while the meeting is live.
+            DiagnosticLog.WriteException("media-core.log", "spine sync failed", error);
         }
         finally
         {
-            _spineSyncInFlight = false;
+            lock (_gate) { _spineSyncInFlight = false; }
         }
     }
 
@@ -599,7 +665,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public async ValueTask DisposeAsync()
     {
         StopPolling();
-        StopSpineSync();
+        ConfigureZoomSpineSync(null);
         await _supervisor.DisposeAsync().ConfigureAwait(false);
     }
 }

@@ -57,6 +57,7 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <TextBlock Text="Source mixer" Style="{StaticResource OperatorSectionTitle}"
@@ -75,7 +76,17 @@
                                               Tag="setup" Click="OnAudioModeClicked"
                                               ToolTipService.ToolTip="Devices, monitoring, and processing" />
                             </StackPanel>
-                            <Button Grid.Column="1" Content="Pop out mixer"
+                            <!-- Zoom audio topology (owner decision 2026-08-09): OFF = Zoom's own
+                                 program mix rides to master (echo-cancelled, continuous); ON = each
+                                 guest's ISOLATED stem routes through their strip, so the faders
+                                 genuinely shape program audio per guest. -->
+                            <ToggleSwitch Grid.Column="1" Margin="0,0,16,0"
+                                          AutomationProperties.Name="Per-guest ISO audio to program"
+                                          OnContent="Per-guest ISO" OffContent="Zoom program mix"
+                                          IsOn="{x:Bind ViewModel.IsPerGuestIsoAudio, Mode=OneWay}"
+                                          Toggled="OnZoomAudioModeToggled"
+                                          ToolTipService.ToolTip="Route each guest's isolated audio through their fader instead of Zoom's combined mix" />
+                            <Button Grid.Column="2" Content="Pop out mixer"
                                     Style="{StaticResource OperatorGhostButton}"
                                     MinWidth="132"
                                     Visibility="{x:Bind ShowPopOutButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
@@ -897,7 +908,7 @@
 
         <!-- U2b: the default-routing rule, stated instead of implied. -->
         <TextBlock Grid.Row="3" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords"
-                   Text="New sources route to Master, Program L/R, Stream, and Monitor automatically (Zoom ISO channels stay unrouted until you route them). Click an empty cell to route; click a routed cell to select it and set its level. Hover a bus for what it does." />
+                   Text="New sources—including Zoom ISO stems—route to Master, Program L/R, Stream, and Monitor automatically. In Zoom program-mix fallback mode, ISO stems stay unrouted to prevent doubled voices. Click an empty cell to route; click a routed cell to select it and set its level." />
     </Grid>
 
     <!-- ===== C4b: THE CONSOLE (SHOW mode) — fixed, full-viewport, no scroll ===== -->
@@ -1346,7 +1357,7 @@
                                         <Grid Grid.Row="3" ColumnSpacing="4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="16" />
+                                                <ColumnDefinition Width="42" />
                                             </Grid.ColumnDefinitions>
                                             <Slider Orientation="Vertical" Minimum="-24" Maximum="24" StepFrequency="0.5"
                                                     Value="{x:Bind ManualGainDb, Mode=OneWay}"
@@ -1355,11 +1366,14 @@
                                                     HorizontalAlignment="Center"
                                                     VerticalAlignment="Stretch" />
                                             <controls:AudioLevelMeter Grid.Column="1"
-                                                                      Level="{x:Bind OutputLevel, Mode=OneWay}"
+                                                                      Level="{x:Bind MeterLevel, Mode=OneWay}"
+                                                                      IsMuted="{x:Bind EffectiveMuted, Mode=OneWay}"
                                                                       IsVertical="True"
+                                                                      ShowDbfsScale="True"
                                                                       SegmentCount="36"
-                                                                      Width="16"
-                                                                      VerticalAlignment="Stretch" />
+                                                                      Width="42"
+                                                                      VerticalAlignment="Stretch"
+                                                                      ToolTipService.ToolTip="{x:Bind MuteStateLabel, Mode=OneWay}" />
                                         </Grid>
 
                                         <Button Grid.Row="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"

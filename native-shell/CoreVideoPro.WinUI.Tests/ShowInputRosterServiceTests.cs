@@ -707,6 +707,49 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void SyncZoomParticipantSlots_DoesNotReAddAnOperatorRemovedParticipant()
+    {
+        // THE SOURCES-SCREEN REVERT BUG (live meeting, 2026-08-09). The operator
+        // unassigns/replaces a guest; the next meeting sync (~1/s) used to stuff
+        // that guest straight back into the first free slot because the fill pass
+        // considered EVERY not-currently-assigned roster id. The fill must only
+        // consider the CANDIDATES the coordinator passes (ids it has never seen
+        // — real newcomers).
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.ZoomParticipant;
+        slots[0].ParticipantId = "p-kept";
+        slots[0].InShow = true;
+        // "p-removed" was just manually unassigned by the operator: on the board
+        // roster-wise, but NOT a newcomer.
+
+        ShowInputRosterService.SyncZoomParticipantSlots(
+            slots,
+            ["p-kept", "p-removed", "p-new"],
+            autoAssign: true,
+            autoAssignCandidates: ["p-new"]);
+
+        // The removed guest stays off the board; the genuine newcomer fills the
+        // first free slot instead.
+        Assert.DoesNotContain(slots, s => s.ParticipantId == "p-removed");
+        Assert.Equal("p-new", slots[1].ParticipantId);
+        Assert.True(slots[1].InShow);
+    }
+
+    [Fact]
+    public void SyncZoomParticipantSlots_NullCandidatesPreservesFillEveryoneForTheToggle()
+    {
+        // ReapplyShowInputAutoAssign (the operator flipping the toggle) MEANS
+        // "assign everyone" — omitted candidates must keep the old behavior.
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+
+        ShowInputRosterService.SyncZoomParticipantSlots(
+            slots, ["p-a", "p-b"], autoAssign: true);
+
+        Assert.Equal("p-a", slots[0].ParticipantId);
+        Assert.Equal("p-b", slots[1].ParticipantId);
+    }
+
+    [Fact]
     public void SyncZoomParticipantSlots_FreesLeftParticipantsAndKeepsOthersStable()
     {
         var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
@@ -857,4 +900,47 @@ public sealed class ShowInputRosterServiceTests
             SourceKind = sourceKind,
             DriverName = driverName
         };
+
+    // The owner rig ran from 2026-07-31 with slot 3 assigned to "screen:3" after the
+    // display count changed. The slot was silently dropped from the multiview sources,
+    // so the operator saw a placeholder tile every tick and was told nothing. An
+    // unresolvable assignment must be describable so the UI can say so.
+    [Fact]
+    public void DescribeUnresolvedAssignmentsNamesStaleCaptureAssignmentsButNotDepartedGuests()
+    {
+        var staleScreen = new ShowInputSlot { SlotNumber = 3 };
+        staleScreen.Kind = ShowInputKind.Screen;
+        staleScreen.CaptureDeviceId = "screen:3";
+        staleScreen.InShow = true;
+
+        var liveCam = new ShowInputSlot { SlotNumber = 1 };
+        liveCam.Kind = ShowInputKind.UvcWebcam;
+        liveCam.CaptureDeviceId = "cam-1";
+        liveCam.InShow = true;
+
+        // A guest who left is normal show traffic, not a misconfiguration.
+        var departedGuest = new ShowInputSlot { SlotNumber = 2 };
+        departedGuest.Kind = ShowInputKind.ZoomParticipant;
+        departedGuest.ParticipantId = "guest-gone";
+        departedGuest.InShow = true;
+
+        // Not in the show: nothing to warn about even though it is unresolvable.
+        var benchedStale = new ShowInputSlot { SlotNumber = 4 };
+        benchedStale.Kind = ShowInputKind.Screen;
+        benchedStale.CaptureDeviceId = "screen:9";
+        benchedStale.InShow = false;
+
+        var devices = new List<CaptureDevice>
+        {
+            Device("cam-1", "Cam 1", "uvc", 1920, 1080, 60, connected: true),
+            Device("screen:0", "Display 1", "screen", 2560, 1440, 60, connected: true),
+        };
+
+        var warnings = ShowInputRosterService.DescribeUnresolvedAssignments(
+            [staleScreen, liveCam, departedGuest, benchedStale], [], devices);
+
+        Assert.Single(warnings);
+        Assert.Contains("Input 3", warnings[0]);
+        Assert.Contains("screen:3", warnings[0]);
+    }
 }

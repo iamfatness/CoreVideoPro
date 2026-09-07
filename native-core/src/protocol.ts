@@ -1,6 +1,28 @@
+export type { OutputLifecycle, OperationStatus, ProtocolVersion, ProtocolFailure } from './generated/lifecycle.js';
+
 export type MediaCoreRouteMode = "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
 export type MediaCoreAudioRole = "mix" | "isolated" | "audience";
 export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
+
+// T1 (docs/2026-08-15-corevideo-tiles-T1-core-wall): the tiles wall layer
+// carried off the scene-sync command. Note the wire/struct mismatch is
+// deliberate -- `w`/`h` here, `width`/`height` on the core's TilesLayerState;
+// the core parse bridges it.
+export type TilesStyleWire = {
+  tileAspect?: "16:9" | "4:3" | "5:4" | "1:1" | "3:4" | "9:16" | "custom";
+  customAspectRatio?: number;
+  gutterPercent?: number;
+  marginPercent?: number;
+  backgroundColor?: string;
+};
+
+export type TilesLayerWire = {
+  layerId?: string;
+  order?: number;
+  rect?: { x: number; y: number; w: number; h: number };
+  members: string[];
+  style?: TilesStyleWire;
+};
 export const coreRequestTypes = ["sync", "snapshot", "tick", "zoom-join", "zoom-leave", "zoom-stop-capture", "zoom-snapshot", "zoom-media-spine-sync"] as const;
 export const coreEventTypes = ["zoom-video-frame", "program-frame-preview", "program-shared-texture"] as const;
 export const zoomMediaSpineSyncTypeNames = ["ZoomMediaSpineSyncPayload", "ZoomMediaSpineNativeSnapshot"] as const;
@@ -269,6 +291,7 @@ export type MediaCoreRecordingStream = {
 };
 
 export type MediaCoreRecordingSession = {
+  lifecycle?: import("./generated/lifecycle.js").OutputLifecycle;
   sessionId: string;
   active: boolean;
   status: MediaCoreRecordingStatus;
@@ -481,6 +504,7 @@ export type MediaCoreCommand =
         borderThickness?: number;
         colorGrade?: MediaCoreColorGrade;
       }>;
+      tiles?: TilesLayerWire;
     }
   | {
       type: "set-participant-transform";

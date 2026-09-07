@@ -26,15 +26,25 @@ public sealed class TransportCoordinator
     private readonly IMediaCoreBridge _bridge;
     private readonly ITransportHost _host;
     private readonly ITransportDispatcher _dispatcher;
+    private readonly int _recordingSyncRetryAttempts;
+    private readonly int _recordingSyncRetryDelayMs;
 
     private bool _recordingToggleInFlight;
     private bool _streamToggleInFlight;
+    private bool _takeInFlight;
 
-    public TransportCoordinator(IMediaCoreBridge bridge, ITransportHost host, ITransportDispatcher dispatcher)
+    public TransportCoordinator(
+        IMediaCoreBridge bridge,
+        ITransportHost host,
+        ITransportDispatcher dispatcher,
+        int recordingSyncRetryAttempts = 120,
+        int recordingSyncRetryDelayMs = 250)
     {
         _bridge = bridge;
         _host = host;
         _dispatcher = dispatcher;
+        _recordingSyncRetryAttempts = Math.Max(1, recordingSyncRetryAttempts);
+        _recordingSyncRetryDelayMs = Math.Max(1, recordingSyncRetryDelayMs);
     }
 
     /// <summary>In-flight guard for the Record toggle. StudioViewModel's
@@ -73,7 +83,7 @@ public sealed class TransportCoordinator
                 }
 
                 _host.EngineStatus = "Requesting Zoom capture…";
-                _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayload);
+                _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayloadAsync);
                 _host.ZoomCaptureSubscribed = true;
                 _host.NotifySurfacesCaptureSubscribed(true, _bridge.Profile?.Renderer);
                 _host.NotifySurfacesPreviewParticipant(_host.SelectedParticipantId);
@@ -115,47 +125,85 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task TakeAsync()
+    public async Task<TakeResult> TakeAsync()
     {
-        var previousProgramSceneId = _host.ActiveSceneId;
-        var takenSceneId = _host.PreviewSceneId;
-
-        // Cueing media while Preview and Program reference the same scene creates an
-        // off-air draft. A conventional Take must still put that cue on air; the old
-        // scene-id-only CanTake rule disabled the button and stranded the operator.
-        // Commit only the pending draft in this case, then run the normal media
-        // promotion so the held Preview frame restarts from frame zero on Program.
-        if (string.Equals(previousProgramSceneId, takenSceneId, StringComparison.Ordinal) &&
-            _host.HasPendingProgramMediaCue(takenSceneId))
+        if (_takeInFlight) return TakeResult.Failed("A Take is already in progress.");
+        _takeInFlight = true;
+        try
         {
-            _host.CopyPreviewRoutesToScene(takenSceneId);
-        }
-        else
-        {
-            _host.ActiveSceneId = takenSceneId;
-            _host.PreviewSceneId = previousProgramSceneId;
-        }
+            var previousProgramSceneId = _host.ActiveSceneId;
+            var takenSceneId = _host.PreviewSceneId;
+            if (!_host.IsSceneAvailable(previousProgramSceneId) || !_host.IsSceneAvailable(takenSceneId))
+            {
+                const string unavailable = "Take unavailable - select an available Preview scene.";
+                _host.CommandStatus = unavailable;
+                return TakeResult.Failed(unavailable);
+            }
 
-        _host.IncrementProgramMediaPlaybackTakeVersion();
-        _host.PromoteProgramMediaRouteToPlayback();
-        _host.RefreshPreviewRoutingState();
-        _host.CommandStatus = $"{_host.ProgramSceneSummary} taken with {_host.TakeTransitionLabel.ToLowerInvariant()}";
-        _host.OutputStatus = "Program updated";
-
-        if (_bridge.Running)
-        {
+            var sealRollback = _host.CaptureTakeRollback();
+            _host.BeginTakeMutation();
             try
             {
-                await _host.SyncActiveSceneAsync().ConfigureAwait(false);
+                if (previousProgramSceneId == takenSceneId && _host.HasPendingPreviewChanges(takenSceneId))
+                    _host.CopyPreviewRoutesToScene(takenSceneId);
+                else
+                {
+                    _host.ActiveSceneId = takenSceneId;
+                    _host.PreviewSceneId = previousProgramSceneId;
+                }
+                _host.IncrementProgramMediaPlaybackTakeVersion();
+                _host.PromoteProgramMediaRouteToPlayback();
+                _host.RefreshPreviewRoutingState();
             }
-            catch (Exception ex)
+            finally { _host.EndTakeMutation(); }
+            var rollback = sealRollback();
+
+            if (!_bridge.Running)
             {
-                _dispatcher.RunOnUiThread(() => _host.CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
+                const string offline = "Program selected locally; Take was not sent because the media core is offline.";
+                _host.OutputStatus = offline;
+                return TakeResult.Failed(offline);
             }
+            // Swap once. Backpressure retries the resulting state, never the toggle.
+            for (var attempt = 0; attempt < _recordingSyncRetryAttempts; attempt++)
+            {
+                try
+                {
+                    await _host.SyncActiveSceneAsync("take").ConfigureAwait(true);
+                    _host.OutputStatus = "Program updated";
+                    return TakeResult.Success;
+                }
+                catch (MediaCoreSyncInFlightException)
+                {
+                    _host.CommandStatus = "Take waiting for media core...";
+                    if (attempt + 1 < _recordingSyncRetryAttempts)
+                        await Task.Delay(_recordingSyncRetryDelayMs).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    var restored = rollback();
+                    if (restored) _host.RequestTakeReconciliation();
+                    var failure = restored
+                        ? $"Take was not confirmed; previous local Program restored. Verify live output before retrying. {ex.Message}"
+                        : $"Take was not confirmed; newer local edits preserved. Verify live output. {ex.Message}";
+                    _host.CommandStatus = failure;
+                    return TakeResult.Failed(failure);
+                }
+            }
+            var rolledBack = rollback();
+            if (rolledBack) _host.RequestTakeReconciliation();
+            var exhausted = rolledBack
+                ? "Take could not reach the busy media core. Previous local Program restored; retry Take."
+                : "Take could not reach the busy media core; newer local edits preserved.";
+            _host.CommandStatus = exhausted;
+            return TakeResult.Failed(exhausted);
         }
+        finally { _takeInFlight = false; }
     }
 
-    public async Task ToggleRecordingAsync()
+    public Task ToggleRecordingAsync() => SetRecordingAsync(!_host.Recording);
+
+    public async Task SetRecordingAsync(bool starting)
     {
         if (_recordingToggleInFlight)
         {
@@ -164,7 +212,6 @@ public sealed class TransportCoordinator
 
         _recordingToggleInFlight = true;
         _host.NotifyRecordingCommandCanExecuteChanged();
-        var starting = !_host.Recording;
         var previousRecording = _host.Recording;
         LaunchLog.Write(
             $"recording: toggle requested action={(starting ? "start" : "stop")} " +
@@ -185,6 +232,8 @@ public sealed class TransportCoordinator
                 if (preflight.ShouldBlock)
                 {
                     LaunchLog.Write($"recording: start BLOCKED by disk pre-flight — {preflight.Message}");
+                    _recordingToggleInFlight = false;
+                    _host.NotifyRecordingCommandCanExecuteChanged();
                     _host.OutputStatus = preflight.Message;
                     _host.OutputSessionStatus = _host.OutputStatus;
                     _host.RefreshOutputStatus();
@@ -225,7 +274,7 @@ public sealed class TransportCoordinator
 
             _dispatcher.RunOnUiThread(() =>
             {
-                _host.OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
+                _host.OutputStatus = starting ? "Recording start requested." : "Recording stop requested — finalizing.";
                 _host.OutputSessionStatus = _host.OutputStatus;
             });
         }
@@ -237,7 +286,11 @@ public sealed class TransportCoordinator
                 _host.OutputSessionStatus = _host.OutputStatus;
             });
             LaunchLog.Write($"recording: {(starting ? "start" : "stop")} deferred because media core sync is in flight");
-            _ = RetryRecordingSyncAsync(starting);
+            // A multi-ISO start can legitimately hold the core sync for several seconds
+            // while its writers come up. Await the retry so the Record command stays
+            // guarded; fire-and-forget let a second operator click invert the requested
+            // state before the first stop had reached the core.
+            await RetryRecordingSyncAsync(starting).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -246,7 +299,10 @@ public sealed class TransportCoordinator
             LaunchLog.Write($"recording: {action} failed {ex.GetType().Name}: {ex.Message}");
             _dispatcher.RunOnUiThread(() =>
             {
-                _host.Recording = previousRecording;
+                // Starting may safely roll back. Stopping is a safety intent: never
+                // restore Recording=true merely because the core was momentarily busy.
+                // The periodic production sync will continue carrying Recording=false.
+                _host.Recording = starting ? previousRecording : false;
                 _host.RefreshOutputStatus();
                 _host.OutputStatus = failureStatus;
                 _host.OutputSessionStatus = _host.OutputStatus;
@@ -302,9 +358,9 @@ public sealed class TransportCoordinator
 
     private async Task RetryRecordingSyncAsync(bool starting)
     {
-        for (var attempt = 0; attempt < 5; attempt++)
+        for (var attempt = 0; attempt < _recordingSyncRetryAttempts; attempt++)
         {
-            await Task.Delay(150).ConfigureAwait(false);
+            await Task.Delay(_recordingSyncRetryDelayMs).ConfigureAwait(false);
             try
             {
                 var snapshot = await _host.SyncActiveSceneAsync().ConfigureAwait(false);
@@ -323,7 +379,7 @@ public sealed class TransportCoordinator
 
                 _dispatcher.RunOnUiThread(() =>
                 {
-                    _host.OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
+                    _host.OutputStatus = starting ? "Recording start requested." : "Recording stop requested — finalizing.";
                     _host.OutputSessionStatus = _host.OutputStatus;
                     _host.RefreshOutputStatus();
                 });
@@ -338,7 +394,9 @@ public sealed class TransportCoordinator
                 var failureStatus = TransportStatusFormatter.FormatRecordingFailureStatus(starting ? "start" : "stop", ex);
                 _dispatcher.RunOnUiThread(() =>
                 {
-                    _host.Recording = TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(starting);
+                    _host.Recording = starting
+                        ? TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(true)
+                        : false;
                     _host.RefreshOutputStatus();
                     _host.OutputStatus = failureStatus;
                     _host.OutputSessionStatus = _host.OutputStatus;
@@ -352,10 +410,14 @@ public sealed class TransportCoordinator
             }
         }
 
-        var exhaustedStatus = TransportStatusFormatter.FormatRecordingSyncRetryExhaustedStatus(starting);
+        var exhaustedStatus = starting
+            ? TransportStatusFormatter.FormatRecordingSyncRetryExhaustedStatus(true)
+            : "Recording stopping - media core is busy; stop remains armed.";
         _dispatcher.RunOnUiThread(() =>
         {
-            _host.Recording = TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(starting);
+            _host.Recording = starting
+                ? TransportStatusFormatter.ResolveRecordingStateAfterFailedRetry(true)
+                : false;
             _host.RefreshOutputStatus();
             _host.OutputStatus = exhaustedStatus;
             _host.OutputSessionStatus = _host.OutputStatus;
@@ -367,7 +429,9 @@ public sealed class TransportCoordinator
         }
     }
 
-    public async Task ToggleStreamingAsync()
+    public Task ToggleStreamingAsync() => SetStreamingAsync(!_host.Streaming);
+
+    public async Task SetStreamingAsync(bool starting)
     {
         if (_streamToggleInFlight)
         {
@@ -376,7 +440,6 @@ public sealed class TransportCoordinator
 
         _streamToggleInFlight = true;
         _host.NotifyStreamingCommandCanExecuteChanged();
-        var starting = !_host.Streaming;
         var requestedDestinations = _host.BuildSelectedStreamDestinations(validatedOnly: true);
         LaunchLog.Write(
             $"stream: toggle requested action={(starting ? "start" : "stop")} " +
@@ -476,7 +539,8 @@ public sealed class TransportCoordinator
                 LaunchLog.Write($"stream: {action} failed {ex.GetType().Name}: {ex.Message}");
                 _dispatcher.RunOnUiThread(() =>
                 {
-                    _host.Streaming = previousStreaming;
+                    // A failed Stop must not let the next state sync re-arm the sender.
+                    _host.Streaming = starting && previousStreaming;
                     _host.RefreshOutputStatus();
                     _host.OutputStatus = failureStatus;
                     _host.OutputSessionStatus = _host.OutputStatus;

@@ -30,6 +30,9 @@ struct ShellApp: App {
         // package): seeds every secret shape the product handles, exports a REAL
         // support bundle to a temp dir and greps it. Runs before any UI.
         //   COREVIDEO_SHELL_SELFCHECK=1 .build/release/CoreVideoProShell
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TESTS"] != nil {
+            ShellTests.runAndExit()
+        }
         if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_SELFCHECK"] != nil {
             DiagnosticsSelfCheck.runAndExit()
         }
@@ -766,9 +769,88 @@ struct SceneRail: View {
                     .stroke(Studio.accent.opacity(0.6), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            SuperSourceBackgroundPicker()
             Spacer()
         }
         .modifier(StudioPanel())
+    }
+}
+
+/// SuperSource background for the PREVIEW scene — the scene the operator is
+/// building, matching where WinUI puts it on the Studio rail. The core
+/// composites it full-canvas behind every route ("media-background", order
+/// -100), and it is per-scene, so the summary always names which scene it
+/// describes rather than reading like a global setting.
+struct SuperSourceBackgroundPicker: View {
+    @EnvironmentObject var model: AppModel
+
+    var scene: SceneDef? {
+        model.scenes.first(where: { $0.id == model.previewSceneId })
+            ?? model.scenes.first(where: { $0.id == model.programSceneId })
+    }
+
+    var selected: MediaAsset? {
+        guard let id = scene?.backgroundAssetId, !id.isEmpty else { return nil }
+        return model.mediaAssets.first(where: { $0.id == id })
+    }
+
+    // Stills only: a background is composited behind every route for the whole
+    // scene, and the core enables it only with a real asset PATH.
+    var options: [MediaAsset] {
+        model.mediaAssets.filter { $0.kind == "image" || $0.kind == "background" }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SuperSource background")
+                .font(.grotesk(11, .semibold)).foregroundStyle(Studio.secondary)
+            Menu {
+                Button("No background") {
+                    if let scene { model.setSceneBackground(sceneId: scene.id, assetId: "") }
+                }
+                if !options.isEmpty { Divider() }
+                ForEach(options) { asset in
+                    Button(asset.name) {
+                        if let scene {
+                            model.setSceneBackground(sceneId: scene.id, assetId: asset.id)
+                        }
+                    }
+                }
+            } label: {
+                Text(selected?.name ?? "No background")
+                    .font(.grotesk(11))
+                    .foregroundStyle(selected == nil ? Studio.secondary : Studio.textPrimary)
+                    .lineLimit(1)
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(scene == nil)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
+
+            // Say WHICH scene this applies to, and say plainly when the bin has
+            // nothing to offer rather than presenting an empty menu.
+            Text(summary)
+                .font(.grotesk(10)).foregroundStyle(Studio.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Import background media") { model.selectedTab = .media }
+                .buttonStyle(GhostButtonStyle())
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.top, 6)
+    }
+
+    var summary: String {
+        guard let scene else { return "No scene selected." }
+        if options.isEmpty {
+            return "No still images in the media bin — import one to use as a "
+                + "background for \(scene.name)."
+        }
+        if let selected {
+            return "\(selected.name) sits behind every source in \(scene.name)."
+        }
+        return "No SuperSource background for \(scene.name)."
     }
 }
 
@@ -1285,6 +1367,20 @@ struct OutputsStatusRow: View {
             OutputColumn(title: "RECORD",
                          value: recording ? "MP4" : "—",
                          detail: recording ? "recording" : "Idle")
+            // Dropped frames sit next to RECORD because that is what they
+            // compromise. Amber the moment ANY frame is lost — a silent "0" is
+            // the only acceptable healthy state, so a non-zero count must draw
+            // the eye rather than blend in.
+            if recording || model.recordingDroppedFrames > 0 {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("FRAME DROPS").font(.plexMono(8, .bold))
+                        .foregroundStyle(Studio.secondary)
+                    Text(model.droppedFramesLabel)
+                        .font(.grotesk(10, .semibold))
+                        .foregroundStyle(model.recordingDroppedFrames > 0
+                                         ? Studio.amber : Studio.textPrimary)
+                }
+            }
             if recording, let started = model.recordingStartedAt {
                 TimelineView(.periodic(from: started, by: 1)) { context in
                     OutputColumn(
@@ -1628,6 +1724,74 @@ struct StepCard: View {
     }
 }
 
+/// Green/blue screen keying for one source. The core keys per ROUTE, but an
+/// operator reasons per SOURCE — "that camera is on a green screen" — so the
+/// setting lives on the slot and the shell attaches it to every route bound to
+/// it when the scene graph is built.
+struct ChromaKeyControl: View {
+    @EnvironmentObject var model: AppModel
+    let slot: ShowInputSlot
+
+    var index: Int? { model.slots.firstIndex(where: { $0.id == slot.id }) }
+
+    var body: some View {
+        Menu {
+            Toggle("Key this source", isOn: Binding(
+                get: { slot.keyEnabled },
+                set: { value in
+                    guard let index else { return }
+                    model.slots[index].keyEnabled = value
+                    model.syncScenes()
+                }))
+            if slot.keyEnabled {
+                Divider()
+                // Presets first: the overwhelming majority of shoots are one of
+                // these two, and typing a hex code mid-show is not a workflow.
+                Button("Green screen") { setColor("#00ff00") }
+                Button("Blue screen") { setColor("#0000ff") }
+                Divider()
+                slider("Similarity", \.keySimilarity)
+                slider("Smoothness", \.keySmoothness)
+                slider("Spill", \.keySpill)
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Circle()
+                    .fill(Color(brandHex: slot.keyColorHex) ?? Studio.accent)
+                    .frame(width: 7, height: 7)
+                    .opacity(slot.keyEnabled ? 1 : 0.25)
+                Text("Key").font(.grotesk(11))
+                    .foregroundStyle(slot.keyEnabled ? Studio.textPrimary : Studio.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(slot.keyEnabled ? "Chroma key on" : "Chroma key off")
+    }
+
+    func setColor(_ hex: String) {
+        guard let index else { return }
+        model.slots[index].keyColorHex = hex
+        model.syncScenes()
+    }
+
+    /// syncScenes is already coalesced, so dragging a key parameter cannot
+    /// flood the command queue.
+    func slider(_ label: String, _ path: WritableKeyPath<ShowInputSlot, Double>) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("\(label) \(String(format: "%.2f", slot[keyPath: path]))")
+                .font(.plexMono(10))
+            Slider(value: Binding(
+                get: { slot[keyPath: path] },
+                set: { value in
+                    guard let index else { return }
+                    model.slots[index][keyPath: path] = value
+                    model.syncScenes()
+                }), in: 0...1)
+        }
+    }
+}
+
 struct SlotRow: View {
     @EnvironmentObject var model: AppModel
     let slot: ShowInputSlot
@@ -1710,6 +1874,35 @@ struct SlotRow: View {
                     }))
                     .textFieldStyle(StudioFieldStyle())
                     .frame(width: 150)
+                // Pair a microphone (capture only). A card's video and audio are
+                // separate devices; without this a capture source is silent and
+                // its ISO is video-only, because MediaCore::isoSourceHasAudio
+                // looks for exactly this pairing.
+                if slot.kind == "capture" {
+                    Menu {
+                        Button("No audio") { model.pairAudio(slotId: slot.id, device: nil) }
+                        Divider()
+                        ForEach(model.audioInputs) { device in
+                            Button(device.name) {
+                                model.pairAudio(slotId: slot.id, device: device)
+                            }
+                        }
+                    } label: {
+                        Text(slot.audioDeviceName.isEmpty
+                             ? "Pair a microphone" : slot.audioDeviceName)
+                            .font(.grotesk(11))
+                            .foregroundStyle(slot.audioDeviceName.isEmpty
+                                             ? Studio.secondary : Studio.textPrimary)
+                            .lineLimit(1)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 160)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Studio.border, lineWidth: 1))
+                }
+                ChromaKeyControl(slot: slot)
                 Toggle("ISO", isOn: Binding(
                     get: { slot.iso },
                     set: { _ in model.toggleSlotIso(slot.id) }))
@@ -1723,61 +1916,8 @@ struct SlotRow: View {
     }
 }
 
-struct OverlaysPane: View {
-    @EnvironmentObject var model: AppModel
-
-    var onAir: Bool {
-        model.lowerThirdPhase == "on-air" || model.lowerThirdPhase == "building-in"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Overlays").font(.grotesk(14, .semibold))
-            Text("LOWER THIRD")
-                .font(.plexMono(10, .bold))
-                .foregroundStyle(Studio.secondary)
-            TextField("Name", text: $model.lowerThirdName)
-                .textFieldStyle(StudioFieldStyle())
-            TextField("Title", text: $model.lowerThirdTitle)
-                .textFieldStyle(StudioFieldStyle())
-            Picker("Position", selection: $model.lowerThirdPosition) {
-                Text("Lower left").tag("lower-left")
-                Text("Lower right").tag("lower-right")
-                Text("Center").tag("lower-center")
-            }
-            .pickerStyle(.segmented)
-            HStack {
-                Button(onAir ? "Hide" : "Show") {
-                    onAir ? model.hideLowerThird() : model.showLowerThird()
-                }
-                .disabled(model.lowerThirdName.isEmpty && !onAir)
-                .tint(onAir ? .red : Studio.accent)
-                Text(model.lowerThirdPhase)
-                    .font(.plexMono(10))
-                    .foregroundStyle(onAir ? Studio.accent : Studio.secondary)
-                Spacer()
-                Text("\(model.overlaysOnAir) on air")
-                    .font(.plexMono(10))
-                    .foregroundStyle(Studio.secondary)
-            }
-            Divider()
-            Text("LOGO BUG")
-                .font(.plexMono(10, .bold))
-                .foregroundStyle(Studio.secondary)
-            if let bug = model.logoBug {
-                HStack {
-                    Text(bug.name).font(.grotesk(12))
-                    Spacer()
-                    Button("Remove") { model.toggleLogoBug(bug) }.font(.grotesk(11))
-                }
-            } else {
-                Text("Pick a still on the Media tab and tap “Bug” to key it top-right.")
-                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
-            }
-        }
-        .modifier(StudioPanel())
-    }
-}
+// OverlaysPane now lives in Overlays.swift (Live keyer + Brand kit +
+// Captions). The old stub here was lower-third fields and a hint line.
 
 struct MediaPane: View {
     @EnvironmentObject var model: AppModel

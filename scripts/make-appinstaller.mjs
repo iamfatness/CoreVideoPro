@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // make-appinstaller.mjs — D4 update channel: emit the .appinstaller XML (and
 // optionally latest.json) for a released MSIX. Called by the D5 release
 // pipeline with:

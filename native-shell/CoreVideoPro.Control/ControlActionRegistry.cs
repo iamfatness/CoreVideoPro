@@ -136,6 +136,16 @@ public static class ControlActionRegistry
 
         return new List<ControlAction>
         {
+            // ---- Zoom session -----------------------------------------------------------
+            new("zoom.join", "Join Zoom", "Join a Zoom meeting through the embedded Meeting SDK.",
+                new[]
+                {
+                    new ControlParam("meetingUrl", s, true, "Zoom meeting URL or ID"),
+                    new ControlParam("displayName", s, false, "Optional participant display name"),
+                    new ControlParam("webinar", b, false, "Join as a webinar attendee")
+                }),
+            new("zoom.leave", "Leave Zoom", "Leave the current embedded Zoom meeting."),
+
             // ---- Transport --------------------------------------------------------------
             new("transport.take", "Take", "Cut/transition Preview to Program."),
             new("transport.transition.set", "Set transition", "Set the Take transition (cut/fade/dip/wipe).",
@@ -160,6 +170,8 @@ public static class ControlActionRegistry
             // ---- Scenes / view ----------------------------------------------------------
             new("scene.select", "Select scene", "Cue a scene to Preview by id.",
                 new[] { new ControlParam("sceneId", s, true) }),
+            new("scene.dynamicGallery.create", "Create CoreVideo Tiles",
+                "Create a dynamic CoreVideo Tiles scene and cue it to Preview."),
             new("view.setMode", "Set view mode", "Set the operator view (program/preview/programPreview/multiview).",
                 new[] { new ControlParam("mode", s, true) }),
 
@@ -197,8 +209,12 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("graphicId", s, true) }),
 
             // ---- Audio ------------------------------------------------------------------
+            new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",
+                new[] { new ControlParam("mode", s, true, "perGuestIso | programMix") }),
             new("audio.monitor.set", "Audio monitor", "Enable/disable the audio monitor.",
                 new[] { new ControlParam("on", b, true) }),
+            new("settings.programBuffer.set", "Program buffer depth", "Save 2 or 3 frames for the next app launch. Does not change the running buffer. Read saved/session/restart state from /state.",
+                [new("frames", ControlParamType.Double, Description: "Exactly 2 or 3; fractional values are rejected.")]),
             new("audio.monitor.volume", "Monitor volume", "Set the audio monitor volume (0.0-1.0).",
                 new[] { new ControlParam("volume", d, true, "0.0-1.0") }),
             new("audio.masterLimiter.set", "Master limiter", "Enable/disable the master limiter.",
@@ -224,6 +240,7 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("on", b, true) }),
 
             // ---- Automation -------------------------------------------------------------
+            new("automation.magic", "Magic Scene", "Run the one-shot Magic Scene command using the current source roster."),
             new("automation.toggle", "Automation toggle", "Toggle production automation on/off."),
             new("automation.autoTake.set", "Auto-take", "Toggle automation auto-take.",
                 new[] { new ControlParam("on", b, true) }),

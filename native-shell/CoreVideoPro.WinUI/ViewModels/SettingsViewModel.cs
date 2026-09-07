@@ -739,7 +739,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             _drainOAuthCallback?.Invoke();
             await RefreshOAuthStatusAsync().ConfigureAwait(false);
 
-            if (!_bridge.Running)
+            if (!_bridge.Running || _bridge.Profile is null)
             {
                 SetJoinProgress(ZoomMeetingState.Joining, "Preparing Zoom…");
                 LaunchLog.Write("zoom-join: starting media core");
@@ -771,7 +771,12 @@ public sealed partial class SettingsViewModel : ObservableObject
                 catch (Exception authEx)
                 {
                     LaunchLog.Write($"zoom-join: credential error {authEx.Message}");
-                    SetJoinFailure("Zoom sign-in could not be completed. Sign out, sign in, and try again.");
+                    // EnsureJoinCredentialsAsync clears an invalid/revoked grant so it
+                    // cannot trap the operator in a retry loop. Reflect that cleared
+                    // state immediately instead of leaving the page showing Sign out
+                    // until the next app launch.
+                    await RefreshOAuthStatusAsync().ConfigureAwait(false);
+                    SetJoinFailure("Zoom sign-in expired. Sign in with Zoom and try again.");
                     return;
                 }
             }
@@ -787,6 +792,9 @@ public sealed partial class SettingsViewModel : ObservableObject
                 IsWebinar,
                 sdkJwt,
                 userZak).ConfigureAwait(false);
+
+            snapshot = await ZoomJoinReconciliation.ObserveLateJoinAsync(
+                snapshot, token => _bridge.GetZoomSnapshotAsync(token)).ConfigureAwait(false);
 
             LaunchLog.Write(
                 $"zoom-join: snapshot meetingState={snapshot.MeetingState} participants={snapshot.Participants.Count} warnings={(snapshot.Warnings?.Count ?? 0)}");
@@ -880,12 +888,19 @@ public sealed partial class SettingsViewModel : ObservableObject
                 var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
                 ApplyCaptureSnapshot(snapshot);
                 JoinStatus = "Disconnected from Zoom.";
-                // _bridge.Stop() tears down the media-core child (kill-tree +
-                // WaitForExit(1500) under the supervisor gate) - run it off the
-                // UI thread, exactly like the app-exit path (MainWindow.
-                // ShutdownAsync wraps disposal in Task.Run). Inline it here and
-                // leave-meeting freezes the operator console for ~1.5s.
-                await Task.Run(_bridge.Stop).ConfigureAwait(true);
+                // The MEDIA CORE STAYS UP. This used to _bridge.Stop() — a
+                // kill-tree of the whole core child — so leaving a Zoom meeting
+                // silently killed every capture device, the virtual camera, the
+                // program render and any recording, and the supervisor treated
+                // it as a deliberate stop so nothing respawned: the studio sat
+                // "unstable" (endless deferred syncs) until an app restart
+                // (live session, 2026-08-09: core log ends the second the leave
+                // ran; shell limped for 93 minutes). The kill was a sledgehammer
+                // from the era when the Zoom ENGINE could not be trusted to die;
+                // the engine is its own subprocess with the G4-ordered teardown
+                // now, and zoom-leave above already makes it exit cleanly. A
+                // meeting is one SOURCE — leaving it must not tear down the
+                // switcher. _bridge.Stop() remains the APP-EXIT path only.
             }
             else
             {
@@ -907,8 +922,14 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>Engine-reported raw-media state from the latest zoom snapshot
+    /// (null until the engine reports). Drives the "waiting for Zoom recording
+    /// permission" status in the studio.</summary>
+    public bool? RawMediaActive { get; private set; }
+
     public void ApplyCaptureSnapshot(RawCaptureSnapshot snapshot)
     {
+        RawMediaActive = snapshot.RawMediaActive;
         MeetingState = ParseMeetingState(snapshot.MeetingState);
         LiveParticipantCount = snapshot.Participants.Count;
         RefreshZoomEngineEvidence(_bridge.LastSnapshot, throttle: true);
@@ -1370,13 +1391,9 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private void RunOnUiThread(Action action)
     {
-        if (_dispatcher.HasThreadAccess)
-        {
-            action();
-            return;
-        }
-
-        _dispatcher.TryEnqueue(() => action());
+        // See UiDispatch: a throwing TryEnqueue callback fail-fasts the process
+        // with no managed log. Route through the hardened dispatcher.
+        UiDispatch.Run(_dispatcher, action, "SettingsViewModel");
     }
 
     private void SetJoinProgress(ZoomMeetingState state, string status) =>

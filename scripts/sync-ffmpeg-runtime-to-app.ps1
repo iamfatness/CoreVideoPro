@@ -67,7 +67,7 @@ if (-not (Test-Path $AppDir)) {
 
 $sourceDir = Resolve-FfmpegBinDir -Override $FfmpegBinDir
 if (-not $sourceDir) {
-  $warning = "FFmpeg runtime not found. Set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing ffmpeg.exe for RTMP runtime packaging."
+  $warning = "FFmpeg runtime not found. Set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing ffmpeg.exe for RTMP/SRT output and production MOV playback."
   Write-FfmpegRuntimeManifest -Status "missing" -SourceDir $null -CopiedDlls @() -MissingPatterns @("ffmpeg.exe") -Warning $warning
   Write-Warning "[ffmpeg-runtime] $warning"
   return

@@ -1,6 +1,7 @@
 #include "modules/ZoomEngineState.h"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace corevideo::modules {
@@ -14,9 +15,18 @@ std::string frameWarningPrefix(const ZoomEngineSubscriptionStats& stats) {
   return "Zoom video frame ingest for participant " + stats.participantId + " (" + stats.sourceUuid + ")";
 }
 
+std::uint64_t monotonicMs() {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 }  // namespace
 
 void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
+  apply(event, monotonicMs());
+}
+
+void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t nowMs) {
   switch (event.kind) {
     case ZoomEngineEventKind::Ready:
       events_.emplace_back("Zoom engine ready.");
@@ -55,7 +65,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
                  : !event.stage.empty() ? "Zoom engine failed during " + event.stage + "."
                                         : "Zoom engine reported an error.");
       break;
-    case ZoomEngineEventKind::Participants:
+    case ZoomEngineEventKind::Participants: {
       participants_.clear();
       screenShareParticipantId_ = 0;
       for (const auto& participant : event.participants) {
@@ -64,20 +74,30 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
           screenShareParticipantId_ = participant.id;
         }
       }
-      activeSpeakerId_ = event.activeSpeakerId;
-      if (activeSpeakerId_ == 0) {
+      auto rawSpeakerId = event.activeSpeakerId;
+      if (rawSpeakerId == 0) {
         const auto talking = std::find_if(event.participants.begin(), event.participants.end(), [](const auto& participant) {
           return participant.isTalking;
         });
         if (talking != event.participants.end()) {
-          activeSpeakerId_ = talking->id;
+          rawSpeakerId = talking->id;
         }
       }
+      speakerDirector_.updateRoster(event.participants, rawSpeakerId, nowMs);
+      activeSpeakerId_ = speakerDirector_.directedSpeakerId();
       events_.emplace_back("Zoom roster updated.");
       break;
-    case ZoomEngineEventKind::ActiveSpeaker:
-      activeSpeakerId_ = event.participantId;
+    }
+    case ZoomEngineEventKind::ActiveSpeaker: {
+      std::vector<ZoomEngineParticipant> roster;
+      roster.reserve(participants_.size());
+      for (const auto& [_, participant] : participants_) {
+        roster.push_back(participant);
+      }
+      speakerDirector_.updateRoster(roster, event.participantId, nowMs);
+      activeSpeakerId_ = speakerDirector_.directedSpeakerId();
       break;
+    }
     case ZoomEngineEventKind::RawMediaStatus:
       rawMediaActive_ = event.rawMediaActive;
       events_.emplace_back(event.rawMediaActive
@@ -108,6 +128,11 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
   }
 }
 
+void ZoomEngineRuntimeState::advanceActiveSpeaker(std::uint64_t nowMs) {
+  speakerDirector_.tick(nowMs);
+  activeSpeakerId_ = speakerDirector_.directedSpeakerId();
+}
+
 void ZoomEngineRuntimeState::recordFrameIngestSuccess(const std::string& sourceUuid,
                                                       std::uint32_t participantId,
                                                       std::uint32_t width,
@@ -132,6 +157,7 @@ void ZoomEngineRuntimeState::recordFrameIngestSuccess(const std::string& sourceU
   stats.lastFrameAtMs = observedAtMs;
   stats.lastFrameAgeMs = 0.0;
   stats.frameFresh = true;
+  refreshSpeakerFrameReadiness();
 }
 
 void ZoomEngineRuntimeState::recordFrameIngestFailure(const std::string& sourceUuid,
@@ -143,6 +169,7 @@ void ZoomEngineRuntimeState::recordFrameIngestFailure(const std::string& sourceU
   stats.kind = "participant-video";
   ++stats.malformedFrameCount;
   stats.frameFresh = false;
+  refreshSpeakerFrameReadiness();
   addWarning(frameWarningPrefix(stats) + " was malformed or unavailable" + (reason.empty() ? "." : ": " + reason + "."));
 }
 
@@ -156,6 +183,21 @@ void ZoomEngineRuntimeState::refreshFrameFreshness(double nowMs, double staleAft
     if (!stats.frameFresh) {
       addWarning(frameWarningPrefix(stats) + " is stale.");
     }
+  }
+  refreshSpeakerFrameReadiness();
+}
+
+void ZoomEngineRuntimeState::refreshSpeakerFrameReadiness() {
+  for (const auto& [participantId, _] : participants_) {
+    const auto participantIdText = participantIdString(participantId);
+    const bool hasFreshFrame = std::any_of(
+        subscriptionStats_.begin(), subscriptionStats_.end(),
+        [&](const auto& entry) {
+          const auto& stats = entry.second;
+          return stats.kind == "participant-video" &&
+                 stats.participantId == participantIdText && stats.frameFresh;
+        });
+    speakerDirector_.setFrameFresh(participantId, hasFreshFrame);
   }
 }
 
@@ -173,6 +215,7 @@ void ZoomEngineRuntimeState::reset() {
   sdkAuthenticated_ = false;
   rawMediaActive_ = false;
   activeSpeakerId_ = 0;
+  speakerDirector_.reset();
   screenShareParticipantId_ = 0;
   participants_.clear();
   subscriptionStats_.clear();

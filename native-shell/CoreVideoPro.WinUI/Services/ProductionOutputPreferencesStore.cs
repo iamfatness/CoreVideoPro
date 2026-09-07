@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.WinUI.Services;
 
@@ -30,7 +31,32 @@ public sealed class ProductionOutputPreferences
     // "zoom:<pid>"/"capture:<id>"). Older files migrate with enabled=false + an
     // empty set = program-only (byte-identical to the pre-ISO product). Not
     // secret-bearing (source ids are per-meeting handles, not credentials).
-    public const int CurrentVersion = 8;
+    // v9 (2026-08-10, follow-up to PR #397): the Zoom→program audio topology
+    // persists — "programMix" (Zoom's own echo-cancelled mix rides the program
+    // buses; the long-standing Z1 default) or "perGuestIso" (each guest's stem
+    // routes through their own strip and zoom-mix leaves the program buses).
+    // Older files migrate with the field absent = programMix, so every existing
+    // profile behaves exactly as it did before the upgrade. Stored as a string,
+    // not a bool: an unrecognized value falls back to programMix (see
+    // ZoomAudioModePreference). Not secret-bearing.
+    // Downgrade (verified, matches every prior bump): an older v8 build reading
+    // this file ignores the unknown ZoomAudioMode member, does not migrate
+    // (9 < 8 is false), and on its next save rewrites Version: 8 with the field
+    // dropped. Returning to a v9 build then reads the field absent -> programMix.
+    // That is the safe direction, so no downgrade guard is needed.
+    // v10 (2026-08-14): per-guest ISO is now the product default. Existing
+    // profiles migrate once from programMix so Zoom ISO sources automatically
+    // reach MASTER + Program L/R through their own faders. The operator can
+    // still explicitly select Zoom program mix after migration.
+    // v11: startup-only Program buffer depth, default three frames.
+    public const int CurrentVersion = 11;
+
+    private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
+    public int ProgramBufferFrames
+    {
+        get => _programBufferFrames;
+        set => _programBufferFrames = ProgramBufferPreference.Normalize(value);
+    }
 
     public int Version { get; set; } = CurrentVersion;
     public string? FfmpegBinDirectory { get; set; }
@@ -125,6 +151,11 @@ public sealed class ProductionOutputPreferences
     // capture: ids are stable across sessions. Not secret-bearing.
     public List<string> IsoRecordingSourceIds { get; set; } = [];
 
+    // v10: the operator's Zoom→program audio topology. Null/absent/unrecognized =
+    // "perGuestIso". Read and written ONLY through ZoomAudioModePreference so the
+    // wire strings are spelled in exactly one place.
+    public string? ZoomAudioMode { get; set; } = ZoomAudioModePreference.PerGuestIsoValue;
+
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops
     // (new/save/update/remove/duplicate) — not on every canvas drag; unsaved
@@ -185,7 +216,28 @@ public sealed class PersistedScene
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Layout { get; set; } = string.Empty;
+    public PersistedDynamicGallerySettings? DynamicGallery { get; set; }
     public List<PersistedSceneRoute> Routes { get; set; } = [];
+}
+
+public sealed class PersistedDynamicGallerySettings
+{
+    public bool AutoFill { get; set; } = true;
+    public int MaxTiles { get; set; } = 16;
+    public string TileAspect { get; set; } = "16:9";
+    public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
+    public double GutterPercent { get; set; } = 0.741;
+    public double MarginPercent { get; set; } = 0.741;
+    public string BorderShape { get; set; } = "square";
+    public string BorderColor { get; set; } = "#000000";
+    public double BorderThickness { get; set; }
+    public double CornerRadius { get; set; } = 16;
+    public string GlowColor { get; set; } = "#FFFFFF";
+    public double GlowSize { get; set; }
+    public double GlowIntensity { get; set; } = 100;
+    public double GlowSoftness { get; set; }
+    public bool AnimateLayout { get; set; }
+    public int AnimationDurationMs { get; set; } = 350;
 }
 
 public sealed class PersistedSceneRoute
@@ -292,6 +344,15 @@ public static class ProductionOutputPreferencesSerializer
                 preferences.LocalAudioSourceEnabled = false;
             }
 
+            if (preferences.Version < 10)
+            {
+                // Product-default migration: old profiles wrote programMix even
+                // when the operator never made a topology choice. Move them once
+                // to independently routed ISO stems; a later explicit switch back
+                // to programMix persists at v10 and is not touched again.
+                preferences.ZoomAudioMode = ZoomAudioModePreference.PerGuestIsoValue;
+            }
+
             if (preferences.Version < ProductionOutputPreferences.CurrentVersion)
             {
                 preferences.Version = ProductionOutputPreferences.CurrentVersion;
@@ -307,11 +368,17 @@ public static class ProductionOutputPreferencesSerializer
     }
 }
 
+public enum ProductionPreferencesLoadStatus { Loaded, Missing, Corrupt, Unreadable, Recovered }
+
+public sealed record ProductionPreferencesLoadResult(
+    ProductionPreferencesLoadStatus Status, ProductionOutputPreferences? Preferences,
+    ProductionPreferencesLoadStatus? PrimaryFailure = null);
+
 public sealed class FileProductionOutputPreferencesStore : IProductionOutputPreferencesStore
 {
     public const string DefaultFileName = "production-output-preferences.json";
 
-    private readonly string _filePath;
+    private readonly AtomicJsonFile _file;
     private readonly Func<string, string>? _protectSecret;
     private readonly Func<string, string>? _unprotectSecret;
 
@@ -326,78 +393,106 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
         Func<string, string>? protectSecret = null,
         Func<string, string>? unprotectSecret = null)
     {
-        _filePath = Path.Combine(folderPath, fileName ?? DefaultFileName);
+        _file = new AtomicJsonFile(Path.Combine(folderPath, fileName ?? DefaultFileName));
         _protectSecret = protectSecret;
         _unprotectSecret = unprotectSecret;
     }
 
-    public void Save(ProductionOutputPreferences preferences)
+    internal FileProductionOutputPreferencesStore(string folderPath, Action<string> beforeReplace,
+        Func<string, string>? protectSecret = null, Func<string, string>? unprotectSecret = null)
     {
-        var directory = Path.GetDirectoryName(_filePath);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var json = ProductionOutputPreferencesSerializer.Serialize(preferences);
-        if (_protectSecret is not null)
-        {
-            json = ProductionOutputPreferencesSerializer.ProtectSecretFields(json, _protectSecret);
-        }
-
-        File.WriteAllText(_filePath, json);
+        _file = new AtomicJsonFile(Path.Combine(folderPath, DefaultFileName), beforeReplace);
+        _protectSecret = protectSecret;
+        _unprotectSecret = unprotectSecret;
     }
 
-    public ProductionOutputPreferences? Load()
+    public void Save(ProductionOutputPreferences preferences) => _file.Locked(() =>
     {
-        if (!File.Exists(_filePath))
+        SaveLocked(preferences);
+        return true;
+    });
+
+    private string Protect(string json) => _protectSecret is null ? json :
+        ProductionOutputPreferencesSerializer.ProtectSecretFields(json, _protectSecret);
+
+    private void SaveLocked(ProductionOutputPreferences preferences)
+    {
+        // Serialize/protect before touching either durable file. Reject non-finite
+        // values or encryption failures without disturbing the existing show.
+        var json = Protect(ProductionOutputPreferencesSerializer.Serialize(preferences));
+        var previous = Read(_file.Path, out var previousJson, out _);
+        if (previous.Status == ProductionPreferencesLoadStatus.Unreadable)
+            throw new IOException("The existing production preferences could not be read; save cancelled.");
+        _file.Write(json, previous.Preferences is null ? null : Protect(previousJson!));
+    }
+
+    public ProductionOutputPreferences? Load() => LoadWithResult().Preferences;
+
+    public ProductionPreferencesLoadResult LoadWithResult() => _file.Locked(() =>
+    {
+        var result = Read(_file.Path, out _, out var migrated);
+        if (result.Preferences is null)
         {
-            return null;
+            var backup = Read(_file.BackupPath, out _, out migrated);
+            if (backup.Preferences is not null)
+                result = new(ProductionPreferencesLoadStatus.Recovered, backup.Preferences, result.Status);
+            else
+            {
+                // Missing both files is normal first launch. All other failures
+                // are logged for operators/support instead of silently disappearing.
+                if (result.Status == ProductionPreferencesLoadStatus.Missing &&
+                    backup.Status != ProductionPreferencesLoadStatus.Missing)
+                    result = backup;
+                if (result.Status != ProductionPreferencesLoadStatus.Missing)
+                    LaunchLog.Write($"prefs: load failed ({result.Status}); no usable backup; defaults will be used");
+                return result;
+            }
         }
 
+        var preferences = result.Preferences!;
+        var hadPlaintextSecret = false;
+        if (_unprotectSecret is not null)
+        {
+            preferences.StreamRtmpStreamKey = UnprotectField(nameof(preferences.StreamRtmpStreamKey),
+                preferences.StreamRtmpStreamKey, ref hadPlaintextSecret);
+            preferences.StreamSrtPassphrase = UnprotectField(nameof(preferences.StreamSrtPassphrase),
+                preferences.StreamSrtPassphrase, ref hadPlaintextSecret);
+        }
+
+        if (result.Status == ProductionPreferencesLoadStatus.Recovered)
+            LaunchLog.Write($"prefs: recovered production preferences from backup (primary {result.PrimaryFailure})");
+
+        // Recovery does not replace an unreadable primary: it may be a transient
+        // sharing/permissions problem. A corrupt/missing primary can be repaired.
+        if ((result.Status == ProductionPreferencesLoadStatus.Recovered &&
+             result.PrimaryFailure != ProductionPreferencesLoadStatus.Unreadable) ||
+            (result.Status == ProductionPreferencesLoadStatus.Loaded &&
+             (migrated || (_protectSecret is not null && hadPlaintextSecret))))
+        {
+            try { SaveLocked(preferences); }
+            catch (Exception ex)
+            {
+                LaunchLog.Write($"prefs: durable re-save failed (keeping loaded preferences): {ex.GetType().Name}");
+            }
+        }
+        return result;
+    });
+
+    private static ProductionPreferencesLoadResult Read(string path, out string? json, out bool migrated)
+    {
+        json = null;
+        migrated = false;
         try
         {
-            var preferences = ProductionOutputPreferencesSerializer.Deserialize(
-                File.ReadAllText(_filePath), out var migratedFromOlderVersion);
-            if (preferences is null)
-            {
-                return null;
-            }
-
-            var hadPlaintextSecret = false;
-            if (_unprotectSecret is not null)
-            {
-                preferences.StreamRtmpStreamKey =
-                    UnprotectField(nameof(preferences.StreamRtmpStreamKey), preferences.StreamRtmpStreamKey, ref hadPlaintextSecret);
-                preferences.StreamSrtPassphrase =
-                    UnprotectField(nameof(preferences.StreamSrtPassphrase), preferences.StreamSrtPassphrase, ref hadPlaintextSecret);
-            }
-
-            // Migration (beta spec S4): plaintext secrets or an older schema
-            // version re-save encrypted at the new version. Best-effort — a
-            // failed rewrite must never lose working preferences.
-            if (_protectSecret is not null && (hadPlaintextSecret || migratedFromOlderVersion))
-            {
-                try
-                {
-                    Save(preferences);
-                }
-                catch (Exception ex)
-                {
-                    LaunchLog.Write($"prefs: encrypted re-save failed (keeping loaded preferences): {ex.Message}");
-                }
-            }
-
-            return preferences;
+            json = File.ReadAllText(path);
+            var preferences = ProductionOutputPreferencesSerializer.Deserialize(json, out migrated);
+            return new(preferences is null ? ProductionPreferencesLoadStatus.Corrupt :
+                ProductionPreferencesLoadStatus.Loaded, preferences);
         }
-        catch (IOException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return null;
-        }
+        catch (FileNotFoundException) { return new(ProductionPreferencesLoadStatus.Missing, null); }
+        catch (DirectoryNotFoundException) { return new(ProductionPreferencesLoadStatus.Missing, null); }
+        catch (IOException) { return new(ProductionPreferencesLoadStatus.Unreadable, null); }
+        catch (UnauthorizedAccessException) { return new(ProductionPreferencesLoadStatus.Unreadable, null); }
     }
 
     private string? UnprotectField(string fieldName, string? stored, ref bool hadPlaintextSecret)

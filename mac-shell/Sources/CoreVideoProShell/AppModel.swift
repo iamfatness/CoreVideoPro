@@ -32,12 +32,19 @@ struct SceneRoute {
     var captureDeviceId: String?
     var rect: (x: Double, y: Double, w: Double, h: Double)?
     var zIndex: Int
+    // Chroma key node, attached from the SOURCE's settings when the route is
+    // built. The core keys per ROUTE (the same camera can be keyed in one scene
+    // and not another), but an operator reasons per SOURCE — "that camera is on
+    // a green screen" — so the setting lives on the slot and is applied to every
+    // route bound to it.
+    var chromaKey: JSONObject?
 
     var json: JSONObject {
         var object: JSONObject = [
             "routeId": routeId, "mode": mode, "audioRole": audioRole,
             "fitMode": "fill", "opacity": 1.0, "zIndex": zIndex,
         ]
+        if let chromaKey { object["chromaKey"] = chromaKey }
         if let participantId { object["participantId"] = participantId }
         if let captureDeviceId { object["captureDeviceId"] = captureDeviceId }
         if let rect {
@@ -56,6 +63,11 @@ struct SceneDef: Identifiable {
     let name: String
     let layout: String
     var layers: [SceneLayer] = []
+    // SuperSource background: a media asset composited full-canvas BEHIND every
+    // route (the core renders it as a "media-background" layer at order -100).
+    // Per-scene, exactly like Windows — the picker on the Studio rail describes
+    // the selected scene, not a global setting.
+    var backgroundAssetId = ""
 }
 
 // One canvas layer: a slot binding plus its normalized rect/fit/opacity —
@@ -103,6 +115,19 @@ struct ShowInputSlot: Identifiable, Equatable {
     var inShow = false
     var iso = false
     var offline = false         // source vanished from the roster/devices
+    // A capture card's video and its audio are SEPARATE devices; this is the
+    // operator's pairing. Empty means "no audio" — which the core reads as a
+    // deliberately video-only source, not a mistake.
+    var audioDeviceId = ""
+    var audioDeviceName = ""
+    // Green/blue screen keying for this source. Defaults match the core's
+    // (green, 0.4 similarity, 0.1 smoothness, 0.2 spill) so an operator who
+    // just switches it on gets a sane key rather than a blank frame.
+    var keyEnabled = false
+    var keyColorHex = "#00ff00"
+    var keySimilarity = 0.4
+    var keySmoothness = 0.1
+    var keySpill = 0.2
 }
 
 // Per-channel built-in inserts. Names and keys are the CORE's contract
@@ -227,6 +252,29 @@ struct RosterParticipant: Identifiable, Equatable {
     // field MediaCore::deriveDirectorSignals reads. Defaulted so the memberwise
     // init stays source-compatible.
     var sharingScreen = false
+
+    // PURE, so it can be tested without a running core. This mapping is the one
+    // that shipped an empty roster in a live meeting: the shell read
+    // id/name/hasVideo while BOTH engine paths emit
+    // userId/displayName/videoOn/muted/talking
+    // (ZoomEngineRuntime::rawCaptureSnapshotLocked, the same shape the WinUI
+    // shell consumes). Both spellings are accepted and both are covered by
+    // tests, because getting this wrong looks like "nobody is in the meeting".
+    static func parse(_ entries: [JSONObject],
+                      assignedIds: Set<String> = []) -> [RosterParticipant] {
+        entries.compactMap { entry in
+            guard let idValue = entry["userId"] ?? entry["id"] else { return nil }
+            let id = "\(idValue)"
+            return RosterParticipant(
+                id: id,
+                name: entry["displayName"] as? String ?? (entry["name"] as? String ?? id),
+                hasVideo: entry["videoOn"] as? Bool ?? (entry["hasVideo"] as? Bool ?? false),
+                muted: entry["muted"] as? Bool ?? (entry["isMuted"] as? Bool ?? false),
+                talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
+                assigned: assignedIds.contains(id),
+                sharingScreen: entry["sharingScreen"] as? Bool ?? false)
+        }
+    }
 }
 
 @MainActor
@@ -238,10 +286,23 @@ final class AppModel: ObservableObject {
     @Published var roster: [RosterParticipant] = []
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
+    @Published var recordingDesired = false
+    private var recordingCommands = RecordingCommandPolicy()
     @Published var recordingStartedAt: Date?
     @Published var recordingArtifactPath = ""
     @Published var recordingWarning = ""
     @Published var masterLevel = 0
+    @Published var recordingDroppedFrames = 0
+    @Published var recordingFramesWritten = 0
+
+    /// Windows' "0 (0.0%)" readout. Percentage of ATTEMPTED frames, so it stays
+    /// meaningful whether a show ran four minutes or four hours.
+    var droppedFramesLabel: String {
+        let attempted = recordingFramesWritten + recordingDroppedFrames
+        guard attempted > 0 else { return "0" }
+        let percent = Double(recordingDroppedFrames) / Double(attempted) * 100
+        return String(format: "%d (%.1f%%)", recordingDroppedFrames, percent)
+    }
     @Published var strips: [AudioStrip] = []
     @Published var channelInserts: [String: ChannelInserts] = [:]
     // VST3 plug-in inserts — all logic lives in VstInserts.swift (stored
@@ -351,9 +412,20 @@ final class AppModel: ObservableObject {
         prefs.recentMeetings = recentMeetings
         prefs.webinar = webinar
         prefs.colorGrade = [gradeExposure, gradeContrast, gradeSaturation, gradeTemperature]
+        prefs.overlays = overlays
+        prefs.capturePairings = slots
+            .filter { !$0.audioDeviceId.isEmpty }
+            .map { CapturePairing(slotId: $0.id, audioDeviceId: $0.audioDeviceId,
+                                  audioDeviceName: $0.audioDeviceName) }
+        prefs.chromaKeys = slots.filter(\.keyEnabled).map {
+            PersistedChromaKey(slotId: $0.id, colorHex: $0.keyColorHex,
+                               similarity: $0.keySimilarity,
+                               smoothness: $0.keySmoothness, spill: $0.keySpill)
+        }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
+                           backgroundAssetId: scene.backgroundAssetId,
                            layers: scene.layers.map { layer in
                                PersistedLayer(id: layer.id, slotId: layer.slotId,
                                               x: layer.x, y: layer.y,
@@ -367,6 +439,22 @@ final class AppModel: ObservableObject {
 
     private func restorePrefs() {
         let prefs = ShellPrefs.load()
+        overlays = prefs.overlays ?? OverlaysState()
+        for key in prefs.chromaKeys ?? [] {
+            if let index = slots.firstIndex(where: { $0.id == key.slotId }) {
+                slots[index].keyEnabled = true
+                slots[index].keyColorHex = key.colorHex
+                slots[index].keySimilarity = key.similarity
+                slots[index].keySmoothness = key.smoothness
+                slots[index].keySpill = key.spill
+            }
+        }
+        for pairing in prefs.capturePairings ?? [] {
+            if let index = slots.firstIndex(where: { $0.id == pairing.slotId }) {
+                slots[index].audioDeviceId = pairing.audioDeviceId
+                slots[index].audioDeviceName = pairing.audioDeviceName
+            }
+        }
         if prefs.colorGrade.count == 4 {
             gradeExposure = prefs.colorGrade[0]
             gradeContrast = prefs.colorGrade[1]
@@ -404,7 +492,8 @@ final class AppModel: ObservableObject {
                                         x: layer.x, y: layer.y,
                                         width: layer.width, height: layer.height,
                                         fitMode: layer.fitMode, opacity: layer.opacity)
-                         })
+                         },
+                         backgroundAssetId: saved.backgroundAssetId)
             }
         }
         streamKey = StreamKeychain.load()
@@ -442,9 +531,13 @@ final class AppModel: ObservableObject {
         } else {
             refreshZoomSignedIn()
         }  // after the bin so the logo bug can re-resolve
+        // Bind weak->strong BEFORE the Task, not inside it: `[weak self]` makes
+        // `self` a mutable optional in the closure body, and a Task capturing
+        // that var is "reference to captured var 'self' in concurrently-executing
+        // code" (an error under strict concurrency). The guard makes it a `let`.
         Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                guard let self else { return }
                 let prefs = self.currentPrefs()
                 if prefs != self.lastSavedPrefs {
                     prefs.save()
@@ -486,12 +579,19 @@ final class AppModel: ObservableObject {
                     self?.onConnected()
                 }
                 if case .exited(let code) = status {
+                    self?.recordingCommands.interrupted()
+                    self?.recordingDesired = false
+                    self?.streamingDesired = false
+                    self?.recordingStatus = "interrupted"
+                    self?.streamStatus = "interrupted"
+                    self?.streamDetail = "Media core exited; output continuity was interrupted."
                     self?.pushWarning("media core exited (code \(code)) — relaunching")
                 }
             }
         }
         bridge.onEvent = { [weak self] event in
-            Task { @MainActor in self?.handleEvent(event) }
+            guard let self else { return }
+            Task { @MainActor in self.handleEvent(event) }
         }
         bridge.onStderrLine = { line in
             // Core stderr is the diagnostic firehose. LaunchServices launches
@@ -524,6 +624,8 @@ final class AppModel: ObservableObject {
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
+        audioInputs = AudioInputs.available()
+        reassertCaptureAudio()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -553,15 +655,17 @@ final class AppModel: ObservableObject {
         // an unbounded sync backlog). Status/meters are fine at 2Hz; the
         // program surface rides push events.
         syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.syncTick() }
+            guard let self else { return }
+            Task { @MainActor in await self.syncTick() }
         }
         zoomTimer?.invalidate()
         zoomTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.zoomTick() }
+            guard let self else { return }
+            Task { @MainActor in await self.zoomTick() }
         }
     }
 
-    private func elapsedMs() -> Int {
+    func elapsedMs() -> Int {
         Int(Date().timeIntervalSince(startedAt) * 1000)
     }
 
@@ -617,12 +721,22 @@ final class AppModel: ObservableObject {
             refreshSlotHealth()
         }
         if let recording = snapshot["recording"] as? JSONObject {
-            let nextStatus = recording["status"] as? String ?? "idle"
+            let nextStatus = RecordingLifecycleReadModel.status(recording)
+            recordingCommands.observe(nextStatus)
+            recordingDesired = recordingCommands.desired
             if nextStatus == "recording", recordingStatus != "recording" {
                 recordingStartedAt = Date()
             }
             recordingStatus = nextStatus
             recordingArtifactPath = recording["artifactPath"] as? String ?? recordingArtifactPath
+            // FRAME DROPS. The core has always published these; nothing read
+            // them, so a recording could be losing frames with no sign of it
+            // anywhere in the operator's view. A dropped frame is a compromised
+            // master — it belongs on the status strip, not buried in Diagnose.
+            recordingDroppedFrames =
+                (recording["totalDroppedFrames"] as? NSNumber)?.intValue ?? recordingDroppedFrames
+            recordingFramesWritten =
+                (recording["totalFramesWritten"] as? NSNumber)?.intValue ?? recordingFramesWritten
             let warning = recording["warning"] as? String ?? ""
             if !warning.isEmpty, warning != recordingWarning {
                 pushWarning("recording: \(warning)")
@@ -707,18 +821,7 @@ final class AppModel: ObservableObject {
         if let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
-            roster = participants.compactMap { entry in
-                guard let idValue = entry["userId"] ?? entry["id"] else { return nil }
-                let id = "\(idValue)"
-                return RosterParticipant(
-                    id: id,
-                    name: entry["displayName"] as? String ?? (entry["name"] as? String ?? id),
-                    hasVideo: entry["videoOn"] as? Bool ?? (entry["hasVideo"] as? Bool ?? false),
-                    muted: entry["muted"] as? Bool ?? (entry["isMuted"] as? Bool ?? false),
-                    talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
-                    assigned: assignedIds.contains(id),
-                    sharingScreen: entry["sharingScreen"] as? Bool ?? false)
-            }
+            roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
             // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
             // zero clicks. Manual unassigns are respected via the tombstones.
@@ -890,7 +993,25 @@ final class AppModel: ObservableObject {
     @Published var canvasHeight = 1080
     @Published var canvasFps = 60
     @Published var streamBitrateMbps = 6.0
+    @Published var overlays = OverlaysState()
+    @Published var audioInputs: [AudioInputDevice] = []
+    var captureAudioSyncTask: Task<Void, Never>?
+    var brandSyncTask: Task<Void, Never>?
+    /// How many keyed graphics are on air (the WinUI "N on air" readout).
+    var lowerThirdOnAirCount: Int {
+        (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
+    }
+
     @Published var streamCodec = "h264"
+
+    /// Codecs this build can actually ENCODE, per the core's EncoderPolicy:
+    /// HEVC encode is not shipped on any platform, and AV1 is non-Apple only, so
+    /// macOS is H.264 via VideoToolbox and nothing else. Offering an unsupported
+    /// codec is a control that silently does nothing — the operator picks it,
+    /// the core refuses it, and the stream is not what the UI claims.
+    static let supportedStreamCodecs: [(id: String, label: String)] = [
+        ("h264", "H.264 (VideoToolbox)"),
+    ]
     @Published var recordFormat = "mp4"
     @Published var recordPrefix = "show"
     @Published var multiviewTileCount = 10  // ATEM-style 10-way wall
@@ -924,8 +1045,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // Counts pushes that actually made it PAST the debounce. Exists so the
+    // coalescing can be asserted: a slider emits a change per frame, and one
+    // request per delta is what starved the command queue until every request
+    // timed out. Incremented before the bridge guard so the behaviour is
+    // observable without a running core.
+    private(set) var colorGradePushCount = 0
+
     @MainActor
     private func pushColorGrade() async {
+        colorGradePushCount += 1
         guard let bridge else { return }
         _ = try? await bridge.request([
             "type": "media-core-sync", "elapsedMs": elapsedMs(),
@@ -1216,6 +1345,36 @@ final class AppModel: ObservableObject {
 
     // `isProgram` so only the PROGRAM bus honors a cut — preview keeps showing
     // its cued scene, exactly like a switcher's cut bus.
+    /// The `chromaKey` node for a slot, or nil when keying is off.
+    ///
+    /// Sent ONLY when enabled: the core treats a chromaKey object without an
+    /// explicit `enabled:false` as "key this", so shipping settings for a
+    /// switched-off key would punch holes in a live program.
+    func chromaKeyNode(for slot: ShowInputSlot) -> JSONObject? {
+        guard slot.keyEnabled else { return nil }
+        let rgb = Self.rgbComponents(slot.keyColorHex)
+        return [
+            "enabled": true,
+            "keyR": rgb.r, "keyG": rgb.g, "keyB": rgb.b,
+            "similarity": slot.keySimilarity,
+            "smoothness": slot.keySmoothness,
+            "spill": slot.keySpill,
+        ]
+    }
+
+    /// "#rrggbb" to 0..1 components. Falls back to green — the common case, and
+    /// never a black key, which would key shadows out of every source.
+    static func rgbComponents(_ hex: String) -> (r: Double, g: Double, b: Double) {
+        let cleaned = hex.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "#", with: "")
+        guard cleaned.count == 6, let value = UInt32(cleaned, radix: 16) else {
+            return (0, 1, 0)
+        }
+        return (Double((value >> 16) & 0xff) / 255.0,
+                Double((value >> 8) & 0xff) / 255.0,
+                Double(value & 0xff) / 255.0)
+    }
+
     private func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
         if sceneId == Self.soloSceneA || sceneId == Self.soloSceneB {
             guard let slotId = soloSlotId,
@@ -1231,6 +1390,7 @@ final class AppModel: ObservableObject {
                 route.mode = "capture-input"
                 route.captureDeviceId = slot.sourceId
             }
+            route.chromaKey = chromaKeyNode(for: slot)
             return [route.json]
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
@@ -1254,6 +1414,7 @@ final class AppModel: ObservableObject {
                         route.mode = "capture-input"
                         route.captureDeviceId = slot.sourceId
                     }
+                    route.chromaKey = chromaKeyNode(for: slot)
                 }
                 var json = route.json
                 json["fitMode"] = layer.fitMode
@@ -1292,6 +1453,7 @@ final class AppModel: ObservableObject {
                     route.mode = "capture-input"
                     route.captureDeviceId = slot.sourceId
                 }
+                route.chromaKey = chromaKeyNode(for: slot)
             }
             return route.json
         }
@@ -1508,20 +1670,54 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The `background` node for a scene, or nil when it has none.
+    ///
+    /// The core enables a background only when BOTH mediaAssetId and
+    /// mediaAssetPath are non-empty, and warns when an id arrives without a
+    /// path — so an asset that has vanished from the bin must send nothing
+    /// rather than a half-populated node that trips that warning every sync.
+    func backgroundPayload(for sceneId: String) -> JSONObject? {
+        guard let scene = scenes.first(where: { $0.id == sceneId }),
+              !scene.backgroundAssetId.isEmpty,
+              let asset = mediaAssets.first(where: { $0.id == scene.backgroundAssetId })
+        else { return nil }
+        return [
+            "mediaAssetId": asset.id,
+            "mediaAssetName": asset.name,
+            "mediaAssetKind": asset.kind,
+            "mediaAssetPath": asset.filePath,
+            "playing": true,
+        ]
+    }
+
+    func setSceneBackground(sceneId: String, assetId: String) {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+        scenes[index].backgroundAssetId = assetId
+        syncScenes()
+    }
+
     private func pushScenes() async {
         guard let bridge else { return }
         var commands: [JSONObject] = []
         if !programSceneId.isEmpty {
-            commands.append([
+            var graph: JSONObject = [
                 "type": "load-scene-graph", "sceneId": programSceneId,
                 "routes": buildRoutes(for: programSceneId, isProgram: true),
-            ])
+            ]
+            if let background = backgroundPayload(for: programSceneId) {
+                graph["background"] = background
+            }
+            commands.append(graph)
         }
         if !previewSceneId.isEmpty {
-            commands.append([
+            var preview: JSONObject = [
                 "type": "set-preview-scene", "sceneId": previewSceneId,
                 "routes": buildRoutes(for: previewSceneId),
-            ])
+            ]
+            if let background = backgroundPayload(for: previewSceneId) {
+                preview["background"] = background
+            }
+            commands.append(preview)
         }
         guard !commands.isEmpty else { return }
         do {
@@ -1560,7 +1756,8 @@ final class AppModel: ObservableObject {
             return
         }
         autoTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.evaluateAutoDirect() }
+            guard let self else { return }
+            Task { @MainActor in self.evaluateAutoDirect() }
         }
     }
 
@@ -1727,7 +1924,7 @@ final class AppModel: ObservableObject {
     }
 
     private var isRecordingActive: Bool {
-        recordingStatus == "recording" || recordingStatus == "warning"
+        recordingDesired
     }
 
     func toggleStreaming() {
@@ -1908,7 +2105,8 @@ final class AppModel: ObservableObject {
             "sourceId": "mac:manual", "sourceName": lowerThirdName,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-in",
-            "buildInMs": 250, "buildOutMs": 200, "keyer": "downstream",
+            "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,
+            "keyer": "downstream",
         ])
     }
 
@@ -1922,16 +2120,31 @@ final class AppModel: ObservableObject {
             "sourceId": "mac:manual", "sourceName": lowerThirdName,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-out",
-            "buildInMs": 250, "buildOutMs": 200, "keyer": "downstream",
+            "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,
+            "keyer": "downstream",
         ])
+        // Wait the operator's OWN build-out time (plus a little) before the
+        // retire ack, or a long build-out is cut off mid-animation.
+        let settle = UInt64(max(50, overlays.buildOutMs) + 40) * 1_000_000
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 220_000_000)
+            try? await Task.sleep(nanoseconds: settle)
             self?.sendOverlay([
                 "type": "set-overlay-asset", "overlayId": "key:lower-third",
                 "text": "", "position": "lower-third", "enabled": false,
                 "keyPhase": "hidden", "buildInMs": 250, "buildOutMs": 200,
-                "keyer": "downstream",
+                "keyer": "downstream",  // retire ack: timing is irrelevant here
             ])
+        }
+    }
+
+    /// Build out then straight back in, so a style or timing change becomes
+    /// visible without the operator toggling the key twice.
+    func rebuildLowerThird() {
+        hideLowerThird()
+        let settle = UInt64(max(50, overlays.buildOutMs) + 120) * 1_000_000
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: settle)
+            await MainActor.run { self?.showLowerThird() }
         }
     }
 
@@ -2041,7 +2254,9 @@ final class AppModel: ObservableObject {
 
     func toggleRecording() {
         guard let bridge else { return }
-        let stop = recordingStatus == "recording" || recordingStatus == "warning"
+        let operation = recordingCommands.begin()
+        let stop = operation.stop
+        recordingDesired = recordingCommands.desired
         Task {
             do {
                 if stop {
@@ -2079,7 +2294,11 @@ final class AppModel: ObservableObject {
                         ],
                     ])
                 }
+                recordingCommands.finish(operation, failed: false)
+                recordingDesired = recordingCommands.desired
             } catch {
+                guard recordingCommands.finish(operation, failed: true) else { return }
+                recordingDesired = recordingCommands.desired
                 pushWarning("recording command failed: \(error.localizedDescription)")
             }
         }
@@ -2108,15 +2327,12 @@ final class AppModel: ObservableObject {
             do {
                 // Both commands take a `payload` wrapper (JsonRpcServer).
                 if device.connectionState == "connected" {
-                    _ = try await bridge.request([
-                        "type": "disconnect-capture-device",
-                        "payload": ["deviceId": device.id],
-                    ])
+                    _ = try await bridge.request(
+                        CoreCommands.disconnectCaptureDevice(deviceId: device.id))
                 } else {
-                    _ = try await bridge.request([
-                        "type": "connect-capture-device",
-                        "payload": ["deviceId": device.id, "outputSourceId": device.id],
-                    ])
+                    _ = try await bridge.request(
+                        CoreCommands.connectCaptureDevice(deviceId: device.id,
+                                                          outputSourceId: device.id))
                 }
                 syncSpine()  // multiview sources include connected capture devices
             } catch {

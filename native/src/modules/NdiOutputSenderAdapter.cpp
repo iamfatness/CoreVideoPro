@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/NdiPixelConvert.h"
 #include "modules/NdiSourceName.h"
 
 #include <algorithm>
@@ -364,9 +365,13 @@ class NdiOutputSender final : public IOutputSender {
       sender_.lastResultCode = "waiting-for-frame";
       return snapshot();
     }
-    if (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty()) {
+    const bool hasProgramPixels =
+        (!frame->programNv12Bytes().empty() && frame->programNv12Width > 0 && frame->programNv12Height > 0) ||
+        (!frame->programFullBgra.bgra.empty() && frame->programFullBgra.width > 0) ||
+        (!frame->preview.bgra.empty() && frame->preview.width > 0 && frame->preview.height > 0);
+    if (!hasProgramPixels) {
       sender_.status = "warning";
-      sender_.warning = "NDI sender is waiting for composed BGRA program pixels.";
+      sender_.warning = "NDI sender is waiting for composed program pixels.";
       sender_.destinationHealth = "warning";
       sender_.lastResultCode = "frame-pixels-missing";
       sender_.lastError = sender_.warning;
@@ -460,19 +465,49 @@ class NdiOutputSender final : public IOutputSender {
     return true;
   }
 
+  // Publish the FULL-RESOLUTION program. This used to send `frame.preview` — the
+  // 320x180 UI thumbnail — so every NDI receiver (Studio Monitor, OBS NDI) saw a
+  // postage stamp instead of the show. Same defect the program recorder had: the
+  // preview is a UI artifact, not the program. Source order:
+  //   1. programNv12      — the Windows GPU tap (also feeds vcam + RTMP)
+  //   2. programFullBgra  — the macOS Metal full readback
+  //   3. preview          — last resort, and now LOUD in the snapshot
   void submitProgramVideo(const ProgramFrame& frame) {
-    convertBgraToUyvy(frame.preview.bgra.data(), frame.preview.width, frame.preview.height, uyvyBuffer_);
+    int width = 0;
+    int height = 0;
+    const auto& programNv12 = frame.programNv12Bytes();
+    if (!programNv12.empty() && frame.programNv12Width > 0 && frame.programNv12Height > 0 &&
+        nv12ToUyvy(programNv12.data(), frame.programNv12Width, frame.programNv12Height,
+                   programNv12.size(), uyvyBuffer_)) {
+      width = frame.programNv12Width;
+      height = frame.programNv12Height;
+      videoSourceDetail_ = "program-nv12";
+    } else if (!frame.programFullBgra.bgra.empty() && frame.programFullBgra.width > 0 &&
+               frame.programFullBgra.height > 0) {
+      convertBgraToUyvy(frame.programFullBgra.bgra.data(), frame.programFullBgra.width,
+                        frame.programFullBgra.height, uyvyBuffer_);
+      width = frame.programFullBgra.width;
+      height = frame.programFullBgra.height;
+      videoSourceDetail_ = "program-bgra";
+    } else {
+      convertBgraToUyvy(frame.preview.bgra.data(), frame.preview.width, frame.preview.height,
+                        uyvyBuffer_);
+      width = frame.preview.width;
+      height = frame.preview.height;
+      videoSourceDetail_ = "PREVIEW-THUMBNAIL";  // never silent: receivers see a postage stamp
+    }
+
     NDIlib_video_frame_v2_t video{};
-    video.xres = frame.preview.width;
-    video.yres = frame.preview.height;
+    video.xres = width;
+    video.yres = height;
     video.FourCC = NDIlib_FourCC_type_UYVY;
     video.frame_rate_N = configuredFps_ * 1000;
     video.frame_rate_D = 1000;
-    video.picture_aspect_ratio = static_cast<float>(frame.preview.width) / static_cast<float>((std::max)(1, frame.preview.height));
+    video.picture_aspect_ratio = static_cast<float>(width) / static_cast<float>((std::max)(1, height));
     video.frame_format_type = NDIlib_frame_format_type_progressive;
     video.timecode = INT64_MAX;  // NDIlib_send_timecode_synthesize
     video.p_data = uyvyBuffer_.data();
-    video.line_stride_in_bytes = frame.preview.width * 2;
+    video.line_stride_in_bytes = width * 2;
     video.p_metadata = nullptr;
     video.timestamp = 0;
     api_.send_video(sendInstance_, &video);
@@ -553,7 +588,8 @@ class NdiOutputSender final : public IOutputSender {
       // wrong; instead encode it into runtimeDetail so the snapshot carries the
       // real connection counter without a protocol change.
       sender.runtimeDetail = runtimeDetail_ + " connections=" + std::to_string(connectionCount_) +
-                             " source=\"" + configuredSourceName_ + "\"";
+                             " source=\"" + configuredSourceName_ + "\"" +
+                             " video=" + videoSourceDetail_;
       session.senders.push_back(sender);
       if (sender.status == "live" || sender.status == "warning" || sender.status == "starting") {
         session.activeSenderCount = 1;
@@ -582,6 +618,10 @@ class NdiOutputSender final : public IOutputSender {
   int configuredFps_ = 30;
   int connectionCount_ = 0;
   std::vector<uint8_t> uyvyBuffer_;
+  // Which program source the last frame came from. Surfaced in the snapshot so
+  // a fallback to the 320x180 preview is visible instead of silently shipping a
+  // postage stamp to every receiver.
+  std::string videoSourceDetail_ = "none";
   std::vector<float> audioBuffer_;
   OutputSender sender_;
 };

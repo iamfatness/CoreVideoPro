@@ -38,10 +38,9 @@ class LockHoldGuardrail {
   // The threading contract: un-sanctioned coreMutex holds stay under 1ms.
   static constexpr long long kDefaultBudgetUs = 1000;
   // Sanctioned long-hold sites (each is a deliberate design decision):
-  //  - cmd.handle: a command-carrying media-core-sync legitimately renders a
-  //    capped catch-up of synthetic ticks under the lock (plan §6 increment 2);
-  //    the existing `[cmd] held core lock` warning fires at 30ms, so the
-  //    guardrail budget sits above it as a regression backstop.
+  //  - cmd.handle: command mutation and snapshot copying, without live render
+  //    catch-up. Retain the existing budget as a regression backstop above the
+  //    `[cmd] held core lock` warning at 30ms.
   static constexpr long long kCommandHandleBudgetUs = 50'000;
   //  - render.display-tick: the video-only GPU tick typically holds ~1-2ms;
   //    half a 60fps frame budget is the alarm line.

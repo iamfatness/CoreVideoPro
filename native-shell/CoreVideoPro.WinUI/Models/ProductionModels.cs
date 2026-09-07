@@ -85,6 +85,52 @@ public sealed class Scene
     public string Layout { get; init; } = string.Empty;
     public string Automation { get; init; } = string.Empty;
     public string DurationLabel { get; init; } = "—";
+    public DynamicGallerySettings? DynamicGallery { get; init; }
+}
+
+/// <summary>
+/// First-class settings for a CoreVideo Tiles scene. Keeping these values on
+/// the scene lets the wall reflow when the Zoom roster changes without losing
+/// the operator's styling choices.
+/// </summary>
+public sealed class DynamicGallerySettings
+{
+    public bool AutoFill { get; set; } = true;
+    public int MaxTiles { get; set; } = 16;
+    public string TileAspect { get; set; } = "16:9";
+    public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
+    public double GutterPercent { get; set; } = 0.741;
+    public double MarginPercent { get; set; } = 0.741;
+    public string BorderShape { get; set; } = "square";
+    public string BorderColor { get; set; } = "#000000";
+    public double BorderThickness { get; set; }
+    public double CornerRadius { get; set; } = 16;
+    public string GlowColor { get; set; } = "#FFFFFF";
+    public double GlowSize { get; set; }
+    public double GlowIntensity { get; set; } = 100;
+    public double GlowSoftness { get; set; }
+    public bool AnimateLayout { get; set; }
+    public int AnimationDurationMs { get; set; } = 350;
+
+    public DynamicGallerySettings Clone() => new()
+    {
+        AutoFill = AutoFill,
+        MaxTiles = MaxTiles,
+        TileAspect = TileAspect,
+        CustomAspectRatio = CustomAspectRatio,
+        GutterPercent = GutterPercent,
+        MarginPercent = MarginPercent,
+        BorderShape = BorderShape,
+        BorderColor = BorderColor,
+        BorderThickness = BorderThickness,
+        CornerRadius = CornerRadius,
+        GlowColor = GlowColor,
+        GlowSize = GlowSize,
+        GlowIntensity = GlowIntensity,
+        GlowSoftness = GlowSoftness,
+        AnimateLayout = AnimateLayout,
+        AnimationDurationMs = AnimationDurationMs
+    };
 }
 
 public enum StudioViewMode
@@ -131,6 +177,17 @@ public sealed class InsertSlotItem
     public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn || IsProcessing ? LiveBrush : PendingBrush;
 }
 
+/// <summary>How Zoom audio reaches the program buses (owner decision 2026-08-09,
+/// superseding Z1's fixed topology). ProgramMix = Zoom's own mixed bus (echo-cancelled,
+/// continuous) rides to master; stems stay unrouted. PerGuestIso = each guest's isolated
+/// stem routes through their own strip, so faders/mutes/EQ shape program per guest, and
+/// zoom-mix is removed from program buses (summing both doubles every voice).</summary>
+public enum ZoomAudioMode
+{
+    ProgramMix,
+    PerGuestIso,
+}
+
 public sealed class FeedHealthRow
 {
     public required string ParticipantId { get; init; }
@@ -142,6 +199,18 @@ public sealed class FeedHealthRow
     public required string BadgeColor { get; init; }
     public string? Detail { get; init; }
     public bool NeedsAttention { get; init; }
+    public string VideoSubscriptionStatus { get; init; } = "not-requested";
+    public string VideoResultCode { get; init; } = "pending";
+    public string DeliveredVideo { get; init; } = "No frames";
+    public int VideoFramesReceived { get; init; }
+    public string AudioSubscriptionStatus { get; init; } = "not-requested";
+    public int AudioPacketsReceived { get; init; }
+    public double LastFrameAgeMs { get; init; } = -1;
+    public int StaleFrameCount { get; init; }
+    public int MalformedFrameCount { get; init; }
+    public string DiagnosticSummary { get; init; } = "No Zoom subscription evidence yet.";
+    public string RecommendedAction { get; init; } = string.Empty;
+    public bool HasRecommendedAction => !string.IsNullOrWhiteSpace(RecommendedAction);
 }
 
 public sealed class CaptureDeviceInput
@@ -591,11 +660,13 @@ public sealed class AudioParticipantRow : ObservableObject
     private string _name = string.Empty;
     private string _subtitle = string.Empty;
     private int _outputLevel;
+    private int _meterLevel;
     private double _manualGainDb;
     private double _pan;
     private double _lufs;
     private double _truePeakDb;
     private bool _muted;
+    private bool _effectiveMuted;
     private bool _isSolo;
     private string _gainLabel = string.Empty;
     private string _panLabel = string.Empty;
@@ -611,11 +682,13 @@ public sealed class AudioParticipantRow : ObservableObject
     public string Name { get => _name; set => SetProperty(ref _name, value); }
     public string Subtitle { get => _subtitle; set => SetProperty(ref _subtitle, value); }
     public int OutputLevel { get => _outputLevel; set => SetProperty(ref _outputLevel, value); }
+    public int MeterLevel { get => _meterLevel; set => SetProperty(ref _meterLevel, value); }
     public double ManualGainDb { get => _manualGainDb; set => SetProperty(ref _manualGainDb, value); }
     public double Pan { get => _pan; set => SetProperty(ref _pan, value); }
     public double Lufs { get => _lufs; set => SetProperty(ref _lufs, value); }
     public double TruePeakDb { get => _truePeakDb; set => SetProperty(ref _truePeakDb, value); }
     public bool Muted { get => _muted; set => SetProperty(ref _muted, value); }
+    public bool EffectiveMuted { get => _effectiveMuted; set => SetProperty(ref _effectiveMuted, value); }
     public bool IsSolo { get => _isSolo; set => SetProperty(ref _isSolo, value); }
     public string GainLabel { get => _gainLabel; set => SetProperty(ref _gainLabel, value); }
     public string PanLabel { get => _panLabel; set => SetProperty(ref _panLabel, value); }
@@ -637,6 +710,9 @@ public sealed class ParticipantAudioMix
     public double Pan { get; set; }
     public bool Solo { get; set; }
     public required bool NoiseSuppression { get; init; }
+    // Upstream source state (for example Zoom's microphone mute). Kept
+    // separate from Muted, which is the operator's console/mix mute.
+    public bool SourceMuted { get; set; }
     public bool Muted { get; set; }
     public required string Status { get; init; }
     public double Lufs { get; set; } = -60;
@@ -808,7 +884,8 @@ public static class ProductionStateHelper
 
     public static IReadOnlyList<FeedHealthRow> BuildFeedHealthRows(
         IReadOnlyList<Participant> participants,
-        IReadOnlyDictionary<string, string>? productionRoles = null) =>
+        IReadOnlyDictionary<string, string>? productionRoles = null,
+        IReadOnlyList<ZoomMediaSpineSubscription>? subscriptions = null) =>
         participants.Select(p =>
         {
             var (label, color, detail, attention) = p.Health switch
@@ -827,6 +904,30 @@ public static class ProductionStateHelper
                 ? assigned
                 : null;
 
+            var participantSubscriptions = (subscriptions ?? [])
+                .Where(subscription => string.Equals(subscription.ParticipantId, p.Id, StringComparison.Ordinal))
+                .ToList();
+            var video = participantSubscriptions.FirstOrDefault(subscription =>
+                subscription.Kind is "participant-video" or "screen-share");
+            var audio = participantSubscriptions.FirstOrDefault(subscription =>
+                subscription.Kind == "participant-audio");
+            var deliveredVideo = video is { DeliveredWidth: > 0, DeliveredHeight: > 0 }
+                ? $"{video.DeliveredWidth}x{video.DeliveredHeight} @ {video.DeliveredFps}fps"
+                : "No frames";
+            var videoStatus = video?.Status ?? "not-requested";
+            var videoResult = video?.LastResultCode ?? "pending";
+            var action = video switch
+            {
+                { Warning.Length: > 0 } => video.Warning,
+                { Status: "failed" } => $"Reassign or resubscribe this source ({videoResult}).",
+                { FramesReceived: 0 } when p.Health != FeedHealth.VideoOff => "Capture is on but no video frame has arrived; verify Zoom recording permission and resubscribe.",
+                { FrameFresh: false, FramesReceived: > 0 } => "The last Zoom frame is stale; resubscribe or reduce requested feed load.",
+                _ => string.Empty
+            };
+            var diagnosticSummary =
+                $"Video {videoStatus} · {deliveredVideo} · {video?.FramesReceived ?? 0} frames · " +
+                $"Audio {audio?.Status ?? "not-requested"} · {audio?.AudioPacketsReceived ?? 0} packets";
+
             return new FeedHealthRow
             {
                 ParticipantId = p.Id,
@@ -836,7 +937,18 @@ public static class ProductionStateHelper
                 StatusLabel = label,
                 BadgeColor = color,
                 Detail = detail,
-                NeedsAttention = attention
+                NeedsAttention = attention || !string.IsNullOrWhiteSpace(action),
+                VideoSubscriptionStatus = videoStatus,
+                VideoResultCode = videoResult,
+                DeliveredVideo = deliveredVideo,
+                VideoFramesReceived = video?.FramesReceived ?? 0,
+                AudioSubscriptionStatus = audio?.Status ?? "not-requested",
+                AudioPacketsReceived = audio?.AudioPacketsReceived ?? 0,
+                LastFrameAgeMs = video?.LastFrameAgeMs ?? -1,
+                StaleFrameCount = video?.StaleFrameCount ?? 0,
+                MalformedFrameCount = video?.MalformedFrameCount ?? 0,
+                DiagnosticSummary = diagnosticSummary,
+                RecommendedAction = action ?? string.Empty
             };
         }).ToList();
 
@@ -922,8 +1034,19 @@ public static class ProductionStateHelper
         bool preferScreenShare = true,
         int panelParticipantThreshold = 4)
     {
+        // The native director has no shell policy inputs (its panel cutoff is
+        // fixed at three and screen sharing always wins). Keep its richer speaker
+        // decisions only when they agree with the operator's layout preferences.
+        var threshold = Math.Clamp(panelParticipantThreshold, 2, 10);
+        var nativeScene = nativeRecommendation?.RecommendedSceneId;
+        var conflictsWithPolicy =
+            (nativeScene == "speaker-slides" && !preferScreenShare) ||
+            (nativeScene == "panel" && participants.Count < threshold) ||
+            (nativeScene == "interview" && participants.Count >= threshold);
         if (nativeRecommendation is not null &&
-            !string.IsNullOrWhiteSpace(nativeRecommendation.RecommendedSceneId) &&
+            !string.IsNullOrWhiteSpace(nativeScene) &&
+            scenes.Any(scene => scene.Id == nativeScene) &&
+            !conflictsWithPolicy &&
             participants.Count > 0)
         {
             return new AutoProductionState
@@ -986,16 +1109,17 @@ public static class ProductionStateHelper
                 return new ParticipantAudioMix
                 {
                     ParticipantId = prior.ParticipantId,
-                    OutputLevel = participant.AudioLevel,
+                    OutputLevel = 0,  // honest meters: roster activity is not a level
                     GainDb = prior.GainDb,
                     ManualGainDb = prior.ManualGainDb,
                     Pan = prior.Pan,
                     Solo = prior.Solo,
                     NoiseSuppression = prior.NoiseSuppression,
+                    SourceMuted = participant.IsMuted,
                     Muted = prior.Muted,
                     Status = prior.Status,
-                    Lufs = EstimateParticipantLufs(participant.AudioLevel, prior.Muted),
-                    TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, prior.Muted),
+                    Lufs = -120,
+                    TruePeakDb = -120,
                     PluginInserts = prior.PluginInserts.ToList()
                 };
             }
@@ -1003,7 +1127,7 @@ public static class ProductionStateHelper
             return new ParticipantAudioMix
             {
                 ParticipantId = participant.Id,
-                OutputLevel = participant.AudioLevel,
+                OutputLevel = 0,  // honest meters: roster activity is not a level
                 GainDb = 0,
                 ManualGainDb = 0,
                 Pan = 0,
@@ -1013,20 +1137,15 @@ public static class ProductionStateHelper
                 // a flickering gate and processing NOBODY asked for. Channels are
                 // CLEAN by default; the operator adds processing deliberately.
                 NoiseSuppression = false,
-                Muted = participant.IsMuted,
+                SourceMuted = participant.IsMuted,
+                Muted = false,
                 Status = participant.IsMuted ? "muted" : "balanced",
-                Lufs = EstimateParticipantLufs(participant.AudioLevel, participant.IsMuted),
-                TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, participant.IsMuted),
+                Lufs = -120,
+                TruePeakDb = -120,
                 PluginInserts = []
             };
         }).ToList();
     }
-
-    private static double EstimateParticipantLufs(int level, bool muted) =>
-        muted || level <= 0 ? -60 : Math.Clamp(-34 + level * 0.22, -60, -10);
-
-    private static double EstimateTruePeakDb(int level, bool muted) =>
-        muted || level <= 0 ? -60 : Math.Clamp(-30 + level * 0.28, -60, -1);
 
     public static string BuildAudioMixSummary(IReadOnlyList<Participant> participants) =>
         participants.Count == 0

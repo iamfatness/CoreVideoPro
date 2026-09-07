@@ -23,9 +23,67 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
         var participants = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["participants"]);
         Assert.Equal(2, participants.Count);
         var subscriptions = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["subscriptions"]);
-        Assert.Equal(4, subscriptions.Count);
+        Assert.Equal(5, subscriptions.Count);
+        Assert.Contains(subscriptions, subscription =>
+            subscription["kind"]?.ToString() == "meeting-audio" &&
+            subscription["purpose"]?.ToString() == "program");
         Assert.Contains(subscriptions, subscription => subscription["kind"]?.ToString() == "participant-video");
         Assert.Equal(2, subscriptions.Count(subscription => subscription["kind"]?.ToString() == "participant-audio"));
+    }
+
+    [Fact]
+    public void BuildRequestsMeetingMixWhenVideoSubscriptionsAreDisabled()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            MaxVideoSubscriptions = 0,
+            Participants =
+            [
+                new MediaCoreParticipantWire("p1", "Alex", "host", "main", "Main", true, false, false, 70, "live")
+            ]
+        });
+
+        var subscriptions = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["subscriptions"]);
+        Assert.Contains(subscriptions, subscription => subscription["kind"]?.ToString() == "meeting-audio");
+        Assert.DoesNotContain(subscriptions, subscription => subscription["kind"]?.ToString() == "participant-video");
+    }
+
+    [Fact]
+    public void BuildWarmsProgramAndPreviewRoutesAheadOfRosterOnlyFeeds()
+    {
+        var participants = Enumerable.Range(1, 10)
+            .Select(index => new MediaCoreParticipantWire(
+                $"p{index}", $"Guest {index}", "guest", "main", "Main",
+                index == 1, false, false, index == 1 ? 70 : 0, "live"))
+            .ToList();
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            MaxVideoSubscriptions = 3,
+            Participants = participants,
+            ProgramSceneRoutes =
+            [
+                new MediaCoreSceneRouteWire("program-guest", "fixed", "isolated", "p9")
+            ],
+            PreviewSceneRoutes =
+            [
+                new MediaCoreSceneRouteWire("preview-guest", "fixed", "isolated", "p10")
+            ]
+        });
+
+        var subscriptions = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["subscriptions"]);
+        var video = subscriptions
+            .Where(subscription => subscription["kind"]?.ToString() == "participant-video")
+            .ToList();
+        Assert.Equal(3, video.Count);
+        Assert.Equal("p1", video[0]["participantId"]);
+        Assert.Equal("active-speaker", video[0]["purpose"]);
+        Assert.Equal("p9", video[1]["participantId"]);
+        Assert.Equal("program", video[1]["purpose"]);
+        Assert.Equal("p10", video[2]["participantId"]);
+        Assert.Equal("preview", video[2]["purpose"]);
+        Assert.DoesNotContain(video, subscription => subscription["participantId"]?.ToString() == "p2");
     }
 
     [Fact]

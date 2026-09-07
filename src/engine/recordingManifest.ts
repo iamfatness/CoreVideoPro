@@ -2,7 +2,10 @@ import type { OutputDestination, Participant, ProductionState } from "../domain/
 import type { NativeMediaCoreRecordingSession, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 import { isoOutputPath, planIsoRecording, summarizeIsoPlan } from "./isoRecording";
 
-export type RecordingManifestStatus = "idle" | "recording" | "warning" | "stopped" | "failed";
+import { recordingReadModel, type RecordingObservedStatus } from "./recordingReadModel";
+import type { OutputLifecycle } from "./generated/lifecycle";
+
+export type RecordingManifestStatus = RecordingObservedStatus;
 
 export type RecordingManifestTrack = {
   kind: "program" | "iso";
@@ -25,6 +28,8 @@ export type RecordingManifest = {
   sessionId?: string;
   status: RecordingManifestStatus;
   active: boolean;
+  lifecycle?: OutputLifecycle;
+  finalized: boolean;
   meetingTitle: string;
   sceneId?: string;
   startedAtMs?: number;
@@ -74,6 +79,7 @@ export type RecordingManifest = {
 
 export function buildRecordingManifest(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): RecordingManifest {
   const recording = mediaCore?.recording;
+  const observed = recordingReadModel(recording, state.recording);
   const tracks = buildTracks(state.participants, recording);
   const outputProfile = mediaCore?.outputProfile ?? selectedOutputProfile(state);
   const isoParticipants = state.recordingSettings.isoParticipantIds
@@ -93,8 +99,10 @@ export function buildRecordingManifest(state: ProductionState, mediaCore?: Nativ
   return {
     manifestId: `manifest-${slugify(state.meetingTitle)}-${recording?.sessionId ?? "idle"}`,
     sessionId: recording?.sessionId,
-    status: recording?.status ?? (state.recording ? "warning" : "idle"),
-    active: recording?.active ?? state.recording,
+    status: observed.status,
+    active: observed.active,
+    lifecycle: observed.lifecycle,
+    finalized: observed.finalized,
     meetingTitle: state.meetingTitle,
     sceneId: mediaCore?.sceneId ?? state.activeSceneId,
     startedAtMs: recording?.startedAtMs,
@@ -185,6 +193,7 @@ function buildWarnings(recording: NativeMediaCoreRecordingSession | undefined, t
   return [
     recording?.warning,
     recording?.error,
+    recording?.lifecycle?.error,
     ...tracks.map((track) => track.warning),
     ...isoPlanWarnings
   ].filter(Boolean) as string[];

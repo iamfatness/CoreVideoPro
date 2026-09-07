@@ -1,6 +1,10 @@
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
+#include "core/AnchoredFrameDeadlineTracker.h"
+#include "rpc/CommandMailbox.h"
+#include "contracts/Lifecycle.h"
+#include <random>
 
 #include <atomic>
 #include <chrono>
@@ -20,6 +24,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <avrt.h>
 #include <timeapi.h>
 #endif
 
@@ -45,7 +50,11 @@ Json::Array commandBatch(const Json& request) {
 
 }  // namespace
 
-JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore) : mediaCore_(mediaCore) {}
+JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler)
+    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)) {
+  std::random_device random;
+  processEpoch_ = std::to_string(random()) + "-" + std::to_string(random());
+}
 
 Json JsonRpcServer::handshake() const {
   return Json::Object{
@@ -53,18 +62,24 @@ Json JsonRpcServer::handshake() const {
       {"ok", true},
       {"type", "handshake"},
       {"profile", mediaCore_.profile()},
+      {"protocolVersion", contracts::toJson(contracts::ProtocolVersion{1, 0})},
+      {"processEpoch", processEpoch_},
   };
 }
 
 Json JsonRpcServer::handle(const Json& request) {
   const Json id = requestId(request);
   const std::string type = request.getString("type");
+  if (const auto* version = request.get("protocolVersion"); version && !contracts::validateProtocolVersion(*version)) {
+    return failure(id, "incompatible-protocol", "Unsupported protocol version; this core supports major 1.");
+  }
   if (type.empty()) {
     return failure(id, "protocol-error", "Request is missing a type field.");
   }
 
   if (hasType(request, "handshake")) {
-    return success(id, Json::Object{{"type", "handshake"}, {"profile", mediaCore_.profile()}});
+    return success(id, Json::Object{{"type", "handshake"}, {"profile", mediaCore_.profile()},
+        {"protocolVersion", contracts::toJson(contracts::ProtocolVersion{1, 0})}, {"processEpoch", processEpoch_}});
   }
 
   if (hasType(request, "ping")) {
@@ -98,7 +113,7 @@ Json JsonRpcServer::handle(const Json& request) {
                        });
   }
 
-  if (hasType(request, "zoom-leave")) {
+  if (hasType(request, "zoom-leave") || hasType(request, "zoom-cancel")) {
     return success(id, Json::Object{
                            {"type", "zoom-leave"},
                            {"snapshot", mediaCore_.leaveZoom()},
@@ -394,35 +409,45 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   std::mutex inMx;
   std::condition_variable inCv;
-  // INSTRUMENTATION: stamp each request as the reader enqueues it so the command
-  // loop can report queue-wait (dequeue - enqueue) separately from handle duration.
-  std::deque<std::pair<std::string, Stamp>> inQ;
+  CommandMailbox inQ;
   std::atomic<bool> inputClosed{false};
-
-  // Priority relief for control commands under a command backlog. The C# bridge
-  // re-emits the FULL, level-triggered production state every media-core-sync
-  // (scene routes, overlays, audio mix AND control commands like start/stop-
-  // recording), so when the command loop falls behind (soak: gaming + agent
-  // builds -> ~174s backlog, stop-recording queued >3min), every queued sync
-  // except the newest is stale. `pendingSyncs` counts syncs waiting in inQ so the
-  // loop can skip the expensive applyCommands/render pass for a sync that already
-  // has a newer one behind it — the newest sync carries the current intent — and
-  // reach stop-recording promptly instead of replaying minutes of stale state.
-  std::atomic<long long> pendingSyncs{0};
-  const auto isSyncLine = [](const std::string& line) {
-    return line.find("media-core-sync") != std::string::npos;
-  };
-
+  // The reader parses once, rejects overload explicitly, and never guesses command
+  // types from text inside a payload. getline's individual-line limit is handled
+  // below before JSON parsing; queued wire storage has a separate byte bound.
   std::thread reader([&] {
     std::string line;
-    while (std::getline(input, line)) {
-      const bool sync = isSyncLine(line);
+    // A 1 MiB VST state blob grows under base64; leave room for its envelope.
+    constexpr std::size_t maxLineBytes = 4 * 1024 * 1024;
+    while (input.good()) {
+      line.clear();
+      bool oversized = false;
+      char ch;
+      while (input.get(ch) && ch != '\n') {
+        if (line.size() < maxLineBytes) line.push_back(ch);
+        else oversized = true;
+      }
+      if (oversized) {
+        enqueueResponse(failure(Json("unknown"), "request-too-large", "Control request exceeds 4 MiB.").stringify());
+        continue;
+      }
+      if (line.empty()) continue;
+      std::string error;
+      auto request = Json::parse(line, &error);
+      if (!request) {
+        enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
+        continue;
+      }
+      std::optional<Json> superseded;
+      CommandMailbox::Result result;
       {
         std::lock_guard<std::mutex> lock(inMx);
-        inQ.emplace_back(std::move(line), std::chrono::steady_clock::now());
+        result = inQ.push({*request, line.size(), std::chrono::steady_clock::now()}, superseded);
       }
-      if (sync) {
-        pendingSyncs.fetch_add(1, std::memory_order_relaxed);
+      if (result == CommandMailbox::Result::overloaded) {
+        enqueueResponse(failure(requestId(*request), "control-overloaded", "Command mailbox is full; request was not accepted.").stringify());
+      } else if (superseded) {
+        enqueueResponse(success(requestId(*superseded), Json::Object{
+            {"type", superseded->getString("type")}, {"superseded", true}}).stringify());
       }
       inCv.notify_one();
     }
@@ -431,15 +456,6 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   });
 
   enqueueResponse(handshake().stringify());
-
-  // The shared-texture handle is tiny and drives the 60fps GPU program present; the
-  // render thread drains it every frame. The base64 zoom-frame/preview payloads are
-  // heavy and only a UI thumbnail, so this loop pumps them on a throttled cadence.
-  auto pumpHeavyFrameEvents = [&] {
-    for (const auto& event : mediaCore_.drainProgramFramePreviewEvents()) {
-      enqueueFrame(event.stringify());
-    }
-  };
 
   // The render thread, this command loop, and the audio/output worker (below) touch
   // MediaCore. coreMutex serializes fast in-memory state + the GPU/video path; the
@@ -455,6 +471,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // work. Engine pipe writes happen ONLY on the runtime's dedicated sender thread
   // (increment 3) — no engine I/O ever runs under coreMutex.
   std::mutex coreMutex;
+  // Give an already-waiting command the next lock acquisition. This replaces
+  // a fixed post-render sleep, which consumed frame time even with no command.
+  // Both callers run on the single RPC loop thread; multiple command workers
+  // would require a waiter count instead of this single-waiter flag.
+  std::atomic<bool> commandWaitingForCore{false};
+  std::condition_variable coreHandoff;
+  const auto lockCommandCore = [&] {
+    commandWaitingForCore.store(true, std::memory_order_release);
+    std::unique_lock<std::mutex> lock(coreMutex);
+    commandWaitingForCore.store(false, std::memory_order_release);
+    coreHandoff.notify_one();
+    return lock;
+  };
 
   // Flip MediaCore to worker mode: the heavy audio/output half no longer runs on the
   // command thread inside renderSyntheticTick — the audioOutputThread below drives it.
@@ -467,9 +496,6 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
-    // Past this per-tick render cost the loop is saturated and must yield.
-    constexpr long long kRenderYieldThresholdMs = 12;
-    constexpr long long kRenderYieldMs = 6;
     long long frames = 0;
     long long lockWaitUs = 0;
     long long renderUs = 0;
@@ -483,16 +509,28 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // so a late frame is followed by a SHORTER wait and the average holds 60,
     // with bounded catch-up (same discipline as the audio worker's pacer) so a
     // genuinely overrunning tick can't build unpayable debt.
-    constexpr long long kFrameBudgetUs = 16666;  // 60fps
+    constexpr long long kFrameBudgetUs = 16666;  // legacy interval diagnostic only
     constexpr int kMaxCatchUpFrames = 3;
-    // A 60.0 AVERAGE can still hide judder: one 33ms frame plus one 0ms frame
-    // averages perfectly and looks broken on motion. Broadcast switchers are
-    // judged on DROPPED frames, not mean fps, so count intervals that ran past
-    // 1.5x budget (a frame the operator/stream actually lost) and keep the worst.
+    // Preserve the legacy late-interval diagnostic for log compatibility. It
+    // counts gaps >1.5 periods, not exact dropped output frames. Anchored CPU
+    // completion deadlines below count smaller overruns and skipped slots too.
     long long lateFrames = 0;
     long long worstFrameUs = 0;
     auto lastFrameStart = std::chrono::steady_clock::now();
-    auto nextDeadline = std::chrono::steady_clock::now() + std::chrono::microseconds(kFrameBudgetUs);
+    const auto cadenceAnchor = std::chrono::steady_clock::now();
+    core::AnchoredFrameDeadlineTracker cadence;
+    const auto elapsedNs = [&] {
+      return static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - cadenceAnchor).count());
+    };
+    const auto reportCadence = [&](const char* phase) {
+      std::fprintf(stderr,
+          "[render-deadlines] metricVersion=anchored-deadline-v1 stage=cpu-submission phase=%s elapsedNs=%lld completedSlots=%lld deadlineMisses=%lld skippedSlots=%lld maxLatenessNs=%lld gpuCompletionVerified=0 outputDeliveryVerified=0\n",
+          phase, static_cast<long long>(elapsedNs()), static_cast<long long>(cadence.completedSlots()),
+          static_cast<long long>(cadence.deadlineMisses()), static_cast<long long>(cadence.skippedSlots()),
+          static_cast<long long>(cadence.maximumCompletionLatenessNs()));
+    };
+    reportCadence("begin");
 #ifdef _WIN32
     // Raise the system timer resolution to 1ms so sub-frame sleeps in this loop are
     // accurate. The Windows default (~15.6ms) rounds any sleep up to a full tick, which
@@ -502,23 +540,30 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
       {
-        const auto intervalUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(t0 - lastFrameStart).count();
+        // Explicit long long: microseconds::rep is `long` on Linux/GCC and
+        // `long long` on MSVC, so an `auto` here makes the std::max below a
+        // deduction failure that breaks the Linux build only.
+        const long long intervalUs = static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t0 - lastFrameStart).count());
         if (intervalUs > kFrameBudgetUs * 3 / 2) {
           ++lateFrames;
         }
         worstFrameUs = (std::max)(worstFrameUs, intervalUs);
         lastFrameStart = t0;
       }
-      long long tickRenderMs = 0;
       {
         std::unique_lock<std::mutex> lock(coreMutex);
+        coreHandoff.wait(lock, [&] {
+          return !commandWaitingForCore.load(std::memory_order_acquire) || stopping.load();
+        });
+        if (stopping.load()) break;
         // Increment 6 guardrail: sanctioned long-hold site — the video-only GPU
         // tick typically holds ~1-2ms; warn (rate-capped) past half a frame.
         core::ScopedLockHoldTimer holdGuard("render.display-tick",
                                             core::LockHoldGuardrail::kRenderTickBudgetUs);
         const auto t1 = std::chrono::steady_clock::now();
-        mediaCore_.renderDisplayTick();
+        mediaCore_.renderDisplayTick(cadence.slotIndex(),
+            std::chrono::duration_cast<std::chrono::nanoseconds>(cadenceAnchor.time_since_epoch()).count());
         // The event drain + stringify + enqueue below runs UNDER coreMutex but
         // outside MediaCore's own stage instrumentation, so it was invisible in
         // the "[render] stages" line — the unaccounted remainder of a long tick.
@@ -553,22 +598,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           std::fprintf(stderr, "[render] STALL lockWait=%lldms render=%lldms\n",
                        static_cast<long long>(holdLockMs), static_cast<long long>(holdRenderMs));
         }
-        tickRenderMs = holdRenderMs;
       }
-      // COMMAND PRIORITY. A saturated tick (a real show: several 1080p Zoom
-      // feeds plus capture sources pushed this to ~34ms) exceeds the frame
-      // budget, so the pacer below sleeps zero and this loop re-acquires
-      // coreMutex immediately — the lock is then held ~100% of wall time and
-      // NO request can ever acquire it, so every shell command times out
-      // (joins, scene syncs, assigns). Yield a fixed slice with the lock
-      // RELEASED whenever the tick overran. Dropping a frame is invisible;
-      // a timed-out command breaks the app.
-      if (tickRenderMs > kRenderYieldThresholdMs) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(kRenderYieldMs));
-      }
+      // Wake the program-video-out worker HERE — coreMutex is released. Doing it
+      // inside the scope above woke a thread that immediately blocked on the lock
+      // we still held, and cost operator command p99 51ms -> 107ms.
+      mediaCore_.notifyProgramFramePublished();
+      const auto previousMisses = cadence.deadlineMisses();
+      cadence.recordCompletion(elapsedNs());
+      mediaCore_.reportRenderDeadlineMisses(cadence.deadlineMisses() - previousMisses);
+      // Command fairness is handled by coreHandoff above. The pacer uses only
+      // remaining deadline slack; never add six milliseconds to a costly frame.
       if (++frames >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        reportCadence("sample");
         std::fprintf(stderr,
                      "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
                      "dropped=%lld  worst=%.1fms  (avg/frame over %lld)\n",
@@ -591,7 +634,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // (Win10 1803+) gives ~0.5ms wakeup precision without burning the CPU; only a
       // ~200us yield tail remains to absorb the residual jitter. Heavy iterations
       // (work >= budget) blow past the deadline and run flat out, as before.
-      const auto deadline = nextDeadline;
+      const auto deadline = cadenceAnchor + std::chrono::nanoseconds(cadence.nextDeadlineOffsetNs());
 #ifdef _WIN32
       static thread_local HANDLE pacerTimer = ::CreateWaitableTimerExW(
           nullptr, nullptr,
@@ -635,16 +678,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         // Tiny tail to absorb timer overshoot; yield keeps it civil.
         std::this_thread::yield();
       }
-      nextDeadline += std::chrono::microseconds(kFrameBudgetUs);
-      // Bounded catch-up: if the tick genuinely overran (heavy show, thermal
-      // throttle) don't try to reclaim unbounded lost frames by free-running —
-      // re-anchor and keep real-time cadence from here.
-      const auto afterPace = std::chrono::steady_clock::now();
-      if (nextDeadline + std::chrono::microseconds(kFrameBudgetUs * kMaxCatchUpFrames) <
-          afterPace) {
-        nextDeadline = afterPace + std::chrono::microseconds(kFrameBudgetUs);
-      }
+      // Bounded catch-up preserves the original clock and accounts every slot
+      // it abandons, rather than silently resetting the clock after a stall.
+      mediaCore_.reportRenderDeadlineMisses(cadence.advance(elapsedNs(), kMaxCatchUpFrames));
     }
+    reportCadence("end"); // includes the final partial 120-frame window
   });
 
   // Dedicated Zoom-frame pump: drains the engine frame queue -> stdout on its own
@@ -670,6 +708,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // takes coreMutex only briefly (gather/publish) and audioOutputMutex_ for the long
   // DSP/IO span, NEVER both at once, so the render thread is never blocked by it.
   std::thread audioOutputThread([&] {
+#ifdef _WIN32
+    // The worker is the program audio clock, not background application work.
+    // MMCSS protects its 20 ms deadline from render/UI/build pressure without
+    // using an unbounded time-critical priority.
+    DWORD audioTaskIndex = 0;
+    HANDLE audioMmcss = ::AvSetMmThreadCharacteristicsW(L"Pro Audio", &audioTaskIndex);
+    if (audioMmcss != nullptr) {
+      (void)::AvSetMmThreadPriority(audioMmcss, AVRT_PRIORITY_HIGH);
+    }
+#endif
     constexpr long long kAudioBudgetUs = 20000;  // 50Hz
     long long ticks = 0;
     long long workUs = 0;
@@ -686,16 +734,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // re-anchored the grid to now on every blown deadline, on the premise that
     // "audio sources are drained whole, so skipped grid slots carry no lost
     // samples". That premise is false downstream: steadyAudioFrameFeed emits
-    // at most ONE tick of samples per tick and sheds its FIFO past 6 ticks, so
+    // at most ONE tick of samples per tick and used to shed its FIFO past 6 ticks, so
     // every skipped slot permanently loses 20ms of real-time audio. Measured on
     // the recording mux: ~48.2 ticks/s → the MP4 audio track ran 3.1% short of
     // video (925ms drift over a 30s recording). Now a blown deadline runs the
     // next tick IMMEDIATELY (no sleep) until the grid is regained — each
     // catch-up tick still drains exactly one 960-frame block, so the spec-4.2
     // fixed block size (and every DSP invariant behind it) is untouched. Only
-    // when hopelessly behind (> 5 ticks ≈ 100ms, still inside the 6-tick feed
-    // FIFO) re-anchor and accept the shed — that path now logs, rate-capped.
-    constexpr long long kMaxCatchupBehindUs = kAudioBudgetUs * 5;
+    // Only re-anchor after 500 ms. The feed now retains 640 ms, allowing ordinary
+    // control/render stalls to run catch-up ticks and preserve every PCM block.
+    constexpr long long kMaxCatchupBehindUs = kAudioBudgetUs * 25;
     long long reanchors = 0;
     auto lastReanchorLog = std::chrono::steady_clock::now();
     auto deadline = std::chrono::steady_clock::now();
@@ -722,7 +770,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           ++reanchors;
           if (now - lastReanchorLog > std::chrono::seconds(5)) {
             std::fprintf(stderr,
-                         "[audioOut] pacer re-anchored %lld time(s): worker >100ms behind, real-time audio shed\n",
+                         "[audioOut] pacer re-anchored %lld time(s): worker >500ms behind, real-time audio shed\n",
                          reanchors);
             lastReanchorLog = now;
             reanchors = 0;
@@ -733,10 +781,115 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         std::this_thread::sleep_until(deadline);
       }
     }
+#ifdef _WIN32
+    if (audioMmcss != nullptr) {
+      ::AvRevertMmThreadCharacteristics(audioMmcss);
+    }
+#endif
+  });
+
+  // Dedicated PROGRAM VIDEO OUT worker. Everything leaving the app used to be
+  // sampled by the audio worker above, whose 20ms period is an AUDIO constant —
+  // so a 60fps program was recorded and streamed at ~51fps. Raising that worker
+  // to 60Hz would break the 960-sample block contract (spec 4.2) that its pacer
+  // exists to hold, so video gets its own grid at the OUTPUT frame rate.
+  //
+  // Same absolute-deadline pacer as the audio worker and for the same reason: a
+  // relative sleep_for adds the Windows overshoot (~1ms even at
+  // timeBeginPeriod(1)) to every period, which can only approach the target from
+  // below. Unlike audio there is nothing to "catch up" — a late video tick has
+  // no buffered samples to shed — so a blown deadline just re-anchors.
+  mediaCore_.setVideoOutputTickRunning(true);
+  std::thread videoOutputThread([&] {
+    // NO PACER. renderVideoOutputTick BLOCKS until the compositor publishes a new
+    // program frame (bounded ~20ms so it can still re-evaluate output state when
+    // the program is idle), so the wait IS the pacing. Two paced designs were
+    // measured and both were wrong: at 60Hz the sampler aliased against the 60Hz
+    // producer and muxed 51.7fps, and at 120Hz the extra coreMutex acquisitions
+    // dropped the 8x1080p60 drill to 57.4fps with a 141ms command p99.
+    long long ticks = 0;
+    long long workUs = 0;
+    auto rateStamp = std::chrono::steady_clock::now();
+    while (!stopping.load()) {
+      const auto t0 = std::chrono::steady_clock::now();
+      mediaCore_.renderVideoOutputTick(coreMutex);  // blocks until a new frame
+      workUs += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - t0)
+                    .count();
+      if (++ticks >= 120) {
+        const auto now = std::chrono::steady_clock::now();
+        const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        // `work` here INCLUDES the wait for the next frame, so it tracks the
+        // frame interval rather than the cost of a submit.
+        std::fprintf(stderr, "[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+                     sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
+        ticks = 0;
+        workUs = 0;
+        rateStamp = now;
+      }
+    }
+  });
+
+  // One lifecycle worker owns potentially blocking join/auth. The command loop
+  // keeps servicing Take/Stop/Leave; pending work is bounded to one join.
+  std::mutex joinMx;
+  std::condition_variable joinCv;
+  std::optional<std::pair<Json, std::uint64_t>> pendingJoin;
+  std::atomic<std::uint64_t> joinGeneration{0};
+  bool joinWorkerStopping = false;
+  bool joinBusy = false;
+  std::thread joinWorker([&] {
+    for (;;) {
+      Json request;
+      std::uint64_t generation;
+      {
+        std::unique_lock<std::mutex> lock(joinMx);
+        joinCv.wait(lock, [&] { return joinWorkerStopping || pendingJoin.has_value(); });
+        if (joinWorkerStopping && !pendingJoin) return;
+        request = std::move(pendingJoin->first);
+        generation = pendingJoin->second;
+        pendingJoin.reset();
+      }
+      const auto cancelled = [&] { return joinGeneration.load() != generation; };
+      const auto operationId = "zoom-join-" + std::to_string(generation);
+      const bool async = request.get("asyncOperation") && request.get("asyncOperation")->asBool();
+      Json response;
+      try {
+        const auto snapshot = joinHandler_ ? joinHandler_(*request.get("payload"), cancelled) :
+            mediaCore_.joinZoom(*request.get("payload"), cancelled);
+        if (cancelled()) {
+          response = failure(requestId(request), "operation-cancelled", "Zoom join was cancelled.");
+        } else {
+          auto operation = contracts::OperationStatus{processEpoch_, operationId,
+              snapshot.getString("meetingState") == "in_meeting" ? "completed" : "failed", {}};
+          response = success(requestId(request), Json::Object{{"type", "zoom-join"},
+              {"snapshot", snapshot}, {"operation", contracts::toJson(operation)}});
+        }
+      } catch (const std::exception& error) {
+        response = failure(requestId(request), "zoom-join-failed", error.what());
+      } catch (...) {
+        response = failure(requestId(request), "zoom-join-failed", "Zoom lifecycle worker failed.");
+      }
+      // Serialize final publication with Leave/cancel invalidation. A completion
+      // cannot pass its generation check and then overtake an accepted Leave.
+      std::lock_guard<std::mutex> completionLock(joinMx);
+      if (cancelled()) response = failure(requestId(request), "operation-cancelled", "Zoom join was cancelled.");
+      if (async) {
+        const auto* ok = response.get("ok");
+        const auto* snapshot = response.get("snapshot");
+        const std::string state = cancelled() ? "cancelled" :
+            (ok && ok->asBool() && snapshot && snapshot->getString("meetingState") == "in_meeting" ? "completed" : "failed");
+        enqueueResponse(Json(Json::Object{{"type", "operation-completed"},
+            {"operation", contracts::toJson(contracts::OperationStatus{processEpoch_, operationId, state, {}})},
+            {"result", response}}).stringify());
+      } else {
+        enqueueResponse(response.stringify());
+      }
+      joinBusy = false;
+    }
   });
 
   auto lastPump = std::chrono::steady_clock::now();
-  long long coalescedSyncs = 0;
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(inMx);
@@ -749,90 +902,55 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // Drain ALL queued commands before rendering so a burst (e.g. the Zoom join
     // sequence) is serviced immediately and is never paced by the display tick.
     for (;;) {
-      std::string line;
+      std::optional<Json> request;
       Stamp enqueuedAt;
       {
         std::lock_guard<std::mutex> lock(inMx);
-        if (inQ.empty()) {
-          break;
-        }
-        line = std::move(inQ.front().first);
-        enqueuedAt = inQ.front().second;
-        inQ.pop_front();
+        if (inQ.empty()) break;
+        auto entry = inQ.pop();
+        request = std::move(entry.request);
+        enqueuedAt = entry.enqueuedAt;
       }
-      if (line.empty()) {
-        continue;
-      }
-      // Balance the pendingSyncs counter using the SAME cheap classification the
-      // reader used to increment it. `syncsQueuedAfter` is how many newer syncs
-      // are still waiting behind this one.
-      const bool wasSync = isSyncLine(line);
-      const long long syncsQueuedAfter =
-          wasSync ? (pendingSyncs.fetch_sub(1, std::memory_order_relaxed) - 1) : 0;
-      // Queue-wait: how long this request sat in inQ before the command loop got to
-      // it (i.e. the loop was busy handling earlier commands or pumping frames).
       const auto dequeuedAt = std::chrono::steady_clock::now();
       const auto queueWaitMs =
           std::chrono::duration_cast<std::chrono::milliseconds>(dequeuedAt - enqueuedAt).count();
-      std::string error;
-      auto request = Json::parse(line, &error);
-      if (!request) {
-        // Ungated: a request that failed to parse (e.g. a truncated/split large line)
-        // is answered with id="unknown", so the bridge's real request id never matches
-        // and it times out. Surface the length + error to catch line-protocol breakage.
-        std::fprintf(stderr, "[parse-dbg] FAILED len=%zu err='%s' head='%.60s'\n",
-                     line.size(), error.c_str(), line.c_str());
-        enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
-      } else {
+      {
         const std::string reqType = request->getString("type");
-        const bool syncRequest = reqType == "media-core-sync" || reqType == "native-media-core-sync" ||
-                                 request->get("commands") != nullptr;
-        if (wasSync && syncRequest && syncsQueuedAfter > 0) {
-          // Coalesce: a newer full-state sync is already queued, so this batch is
-          // superseded. Answer with the current snapshot (so the bridge's waiter
-          // still resolves — never a timeout) but skip the expensive apply/render
-          // pass. This is the backlog-relief "priority lane": the newest sync,
-          // which carries level-triggered control commands (stop-recording), is
-          // reached immediately instead of behind minutes of stale syncs.
-          Json snapshot;
-          {
-            std::lock_guard<std::mutex> lock(coreMutex);
-            core::ScopedLockHoldTimer holdGuard("cmd.coalesced-sync",
-                                                core::LockHoldGuardrail::kCommandHandleBudgetUs);
-            snapshot = mediaCore_.sessionState();
-          }
-          const std::string syncType =
-              reqType == "native-media-core-sync" ? "native-media-core-sync" : "media-core-sync";
-          enqueueResponse(
-              success(requestId(*request), Json::Object{{"type", syncType}, {"snapshot", snapshot}}).stringify());
-          if (++coalescedSyncs % 64 == 1) {
-            std::fprintf(stderr, "[cmd] coalesced %lld stale media-core-sync batch(es) (backlog relief)\n",
-                         static_cast<long long>(coalescedSyncs));
+        Json response;
+        std::chrono::steady_clock::time_point h0, h1;
+        if ((reqType == "zoom-leave" || reqType == "zoom-cancel") &&
+            (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
+          std::lock_guard<std::mutex> lock(joinMx);
+          ++joinGeneration; // invalidate auth/spawn waits before applying Leave
+        }
+        if (reqType == "zoom-join" && (joinHandler_ || mediaCore_.zoomEngineConfigured()) &&
+            request->get("payload") && request->get("payload")->isObject() &&
+            (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
+          std::lock_guard<std::mutex> lock(joinMx);
+          if (joinBusy) {
+            enqueueResponse(failure(requestId(*request), "operation-in-progress",
+                "A Zoom join is already in progress; cancel or leave before retrying.").stringify());
+          } else {
+            joinBusy = true;
+            const auto generation = ++joinGeneration;
+            if (request->get("asyncOperation") && request->get("asyncOperation")->asBool()) {
+              enqueueResponse(success(requestId(*request), Json::Object{{"type", "zoom-join"},
+                  {"operation", contracts::toJson(contracts::OperationStatus{processEpoch_,
+                      "zoom-join-" + std::to_string(generation), "accepted", {}})}}).stringify());
+            }
+            pendingJoin = std::make_pair(*request, generation);
+            joinCv.notify_one();
           }
           continue;
-        }
-        std::string responseStr;
-        std::chrono::steady_clock::time_point h0, h1;
-        if (reqType == "zoom-join" && mediaCore_.zoomEngineConfigured()) {
-          // The real-engine join blocks on process spawn + SDK auth + join
-          // handshake (observed 6.4s) and MediaCore::joinZoom is a PURE
-          // passthrough to ZoomEngineRuntime (its own lock discipline, no
-          // MediaCore state) — so run it WITHOUT coreMutex. Previously this
-          // single command froze the render thread — and with it the whole
-          // studio (program/preview/multiview) — for the entire join.
-          h0 = std::chrono::steady_clock::now();
-          responseStr = handle(*request).stringify();
-          h1 = std::chrono::steady_clock::now();
         } else {
-          std::lock_guard<std::mutex> lock(coreMutex);
-          // Increment 6 guardrail: sanctioned long-hold site — command-carrying
-          // syncs legitimately render a capped catch-up of synthetic ticks under
-          // the lock; the budget is a regression backstop above the 30ms [cmd]
-          // warning below.
+          auto lock = lockCommandCore();
+          // Commands apply state and copy a snapshot under the lock; live render
+          // cadence belongs to the display worker. Keep the existing budget as
+          // a regression backstop above the 30ms [cmd] warning below.
           core::ScopedLockHoldTimer holdGuard("cmd.handle",
                                               core::LockHoldGuardrail::kCommandHandleBudgetUs);
           h0 = std::chrono::steady_clock::now();
-          responseStr = handle(*request).stringify();
+          response = handle(*request);
           h1 = std::chrono::steady_clock::now();
         }
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
@@ -853,6 +971,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
                        static_cast<long long>(lockWaitMs), static_cast<long long>(heldMs),
                        static_cast<long long>(queueWaitMs + lockWaitMs + heldMs));
         }
+        // handle() returns an owning snapshot. Serialization can be expensive
+        // for a full production sync, and does not need to block the renderer.
+        const auto serializeStart = std::chrono::steady_clock::now();
+        auto responseStr = response.stringify();
+        const auto serializeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - serializeStart).count();
+        if (serializeMs >= 30) {
+          std::fprintf(stderr, "[response] '%s' serialize=%lldms bytes=%zu (outside core lock)\n",
+                       reqType.c_str(), static_cast<long long>(serializeMs), responseStr.size());
+        }
         enqueueResponse(responseStr);
       }
     }
@@ -868,30 +996,44 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
     // The render thread drives the display render + shared-texture pump. Here we
     // only pump the heavy base64 frame/preview events, on a throttled cadence so
-    // they don't starve responses. Lock the core while draining its queues.
+    // they don't starve responses. Only move the owning event snapshots while
+    // holding coreMutex; serialize and enqueue them after releasing it.
     if (now - lastPump >= kFramePumpInterval) {
       const auto p0 = std::chrono::steady_clock::now();
+      std::vector<Json> previewEvents;
       {
-        std::lock_guard<std::mutex> lock(coreMutex);
-        // Increment 6 guardrail: sanctioned long-hold site (base64 preview
-        // stringify on the throttled pump).
+        auto lock = lockCommandCore();
+        // The drain moves owning JSON values and leaves the producer queue empty.
         core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
                                             core::LockHoldGuardrail::kFramePumpBudgetUs);
-        pumpHeavyFrameEvents();
+        previewEvents = mediaCore_.drainProgramFramePreviewEvents();
+      }
+      const auto drainedAt = std::chrono::steady_clock::now();
+      for (const auto& event : previewEvents) {
+        enqueueFrame(event.stringify());
       }
       const auto pumpMs =
           std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p0).count();
-      // pumpHeavyFrameEvents runs on the command loop under coreMutex; if it ever
-      // blocks for long it stalls both command handling and the render thread.
+      // Distinguish lock acquisition/drain from serialization/writer queue work.
       if (pumpMs >= 200) {
-        std::fprintf(stderr, "[pump] pumpHeavyFrameEvents %lldms (blocks command loop + render)\n",
-                     static_cast<long long>(pumpMs));
+        const auto drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(drainedAt - p0).count();
+        std::fprintf(stderr, "[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
+                     static_cast<long long>(pumpMs), static_cast<long long>(drainMs),
+                     static_cast<long long>(pumpMs - drainMs));
       }
       lastPump = now;
     }
   }
 
+  {
+    std::lock_guard<std::mutex> lock(joinMx);
+    ++joinGeneration;
+    joinWorkerStopping = true;
+  }
+  joinCv.notify_one();
+  joinWorker.join(); // waits only for cancellation-aware spawn/auth teardown, never coreMutex
   stopping.store(true);
+  coreHandoff.notify_all();
   outCv.notify_one();
   if (renderThread.joinable()) {
     renderThread.join();
@@ -899,6 +1041,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   if (zoomPumpThread.joinable()) {
     zoomPumpThread.join();
   }
+  if (videoOutputThread.joinable()) {
+    videoOutputThread.join();
+  }
+  mediaCore_.setVideoOutputTickRunning(false);
   if (audioOutputThread.joinable()) {
     audioOutputThread.join();
   }
