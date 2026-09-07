@@ -62,3 +62,15 @@ public sealed record ShowEngineHealth(
 /// "error". A refusal is NOT an error (see <c>show-engine/src/actions.ts</c>) — the engine correctly
 /// saying no — so the two carry different payload fields and stay distinguishable to the caller.</summary>
 public sealed record ShowEngineActionResult(string Kind, string? Reason, string? Message);
+
+/// <summary>One Zoom participant, mirroring <c>show-engine/src/contracts.ts</c>'s <c>Participant</c>
+/// field-for-field — this is exactly what a <c>zoomEvent {kind:"roster"}</c> request carries per
+/// entry (<see cref="ShowEngineBridge.PublishRoster"/>).</summary>
+public sealed record ShowEngineParticipant(
+    string ParticipantId,
+    string RawName,
+    bool Online,
+    bool VideoOn,
+    bool AudioOn,
+    bool HandRaised,
+    int ZoomRole);
