@@ -1,3 +1,5 @@
+using System.Linq;
+using System.Net;
 using CoreVideoPro.Control;
 using CoreVideoPro.Control.Osc;
 using Xunit;
@@ -6,6 +8,51 @@ namespace CoreVideoPro.Control.Tests;
 
 public sealed class OscControlRoutingTests
 {
+    [Fact]
+    public async Task Router_RefusesLoopbackOnlyActionsFromLanSenders_AndLogsNothingSilently()
+    {
+        var surface = new FakeControlSurface();
+        var provider = new FakeActionProvider("p", OscExposure.LoopbackOnly, new ControlAction("ohg.program.cut", "Cut", "…"));
+        var router = new OscControlRouter(surface, catalog: new ControlCatalog(new[] { provider }));
+
+        var lan = await router.RouteAsync(new OscMessage("/cvp/ohg/program/cut"), new IPEndPoint(IPAddress.Parse("192.168.1.20"), 5000));
+        Assert.NotNull(lan);
+        Assert.False(lan!.Ok);
+        Assert.Contains("not exposed to LAN", lan.Error);
+        Assert.Empty(surface.Invocations);
+
+        var local = await router.RouteAsync(new OscMessage("/cvp/ohg/program/cut"), new IPEndPoint(IPAddress.Loopback, 5000));
+        Assert.True(local!.Ok);
+        Assert.Single(surface.Invocations);
+    }
+
+    [Fact]
+    public async Task Router_InvokesEveryProviderActionThroughItsOscAddress()   // authoring rule 10
+    {
+        var surface = new FakeControlSurface();
+        var actions = new[]
+        {
+            new ControlAction("ohg.a.one", "1", "…"),
+            new ControlAction("ohg.a.two", "2", "…", new[] { new ControlParam("pin", ControlParamType.String) }),
+            new ControlAction("ohg.a.three", "3", "…", new[] { new ControlParam("on", ControlParamType.Bool) })
+        };
+        var catalog = new ControlCatalog(new[] { new FakeActionProvider("p", OscExposure.Lan, actions) });
+        var router = new OscControlRouter(surface, catalog: catalog);
+        var map = new OscAddressMap();
+        var manifest = ControlManifest.Build(catalog: catalog);
+
+        foreach (var action in actions)
+        {
+            object[] args = action.Params.Count == 0 ? Array.Empty<object>() : new object[] { action.Params[0].Type == ControlParamType.Bool ? 1 : "0042" };
+            var result = await router.RouteAsync(new OscMessage(map.ActionIdToAddress(action.Id), args));
+            Assert.True(result!.Ok, action.Id);
+            Assert.Contains(manifest.Actions, m => m.Id == action.Id && m.OscAddress == map.ActionIdToAddress(action.Id));
+        }
+        Assert.Equal(actions.Select(a => a.Id), surface.Invocations.Select(i => i.ActionId));
+        Assert.Equal("0042", surface.Invocations[1].Args[0]);   // string param stays a string — no leading-zero loss
+        Assert.Equal(true, surface.Invocations[2].Args[0]);
+    }
+
     [Fact]
     public void AddressMap_MapsActionIdsToAddressesAndBack()
     {

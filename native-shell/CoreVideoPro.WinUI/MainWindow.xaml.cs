@@ -1,5 +1,9 @@
+using CoreVideoPro.Control;
 using CoreVideoPro.Control.Http;
 using CoreVideoPro.Control.Osc;
+using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.ShowEngine;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI;
@@ -24,6 +28,14 @@ public sealed partial class MainWindow : Window
     private StudioControlSurface? _controlSurface;
     private OscControlServer? _controlServer;
     private HttpControlServer? _httpControlServer;
+    private ShowEngineBridge? _showEngineBridge;
+    // The supervisor the bridge wraps. Held HERE rather than made the bridge's property, because
+    // the bridge does not own it (it is handed one in its constructor and unhooks its events on
+    // Dispose, nothing more) and giving it ownership would change the disposal contract of every
+    // caller that constructs the pair. It owns the child PROCESS handle, so it must be disposed on
+    // the shutdown path or the show engine outlives the shell.
+    private ShowEngineSupervisor? _showEngineSupervisor;
+    private Action<NativeMediaCoreStateSnapshot>? _showEngineRosterPublisher;
     private UpdateNotificationService.UpdateOffer? _updateOffer;
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
@@ -132,13 +144,18 @@ public sealed partial class MainWindow : Window
                 LaunchLog.Write("control: OSC remains on loopback. Unauthenticated LAN OSC requires COREVIDEO_OSC_TRUSTED_NETWORK=1 on a trusted network.");
             }
 
-            _controlSurface = new StudioControlSurface(ViewModel, _dispatcher);
+            // The OHG show engine is optional and must NEVER be able to stop the app launching:
+            // StartShowEngine swallows everything into the launch log and returns the static-only
+            // catalog on any failure (spec §6.4 "the app launches regardless").
+            var catalog = StartShowEngine(out var ohgAdapter);
+
+            _controlSurface = new StudioControlSurface(ViewModel, _dispatcher, _showEngineBridge, ohgAdapter);
 
             _controlServer = new OscControlServer(_controlSurface, new OscControlServerOptions
             {
                 ListenPort = port,
                 BindAddress = oscLan ? IPAddress.Any : IPAddress.Loopback
-            });
+            }, catalog);
             _controlServer.Start();
             LaunchLog.Write($"control: OSC server listening on {(oscLan ? "0.0.0.0" : "127.0.0.1")}:{_controlServer.BoundPort}");
 
@@ -159,7 +176,7 @@ public sealed partial class MainWindow : Window
                     ListenPort = httpPort,
                     Host = httpLan ? "+" : "127.0.0.1",
                     AuthToken = Environment.GetEnvironmentVariable("COREVIDEO_CONTROL_TOKEN")
-                });
+                }, catalog);
                 _httpControlServer.Start();
                 LaunchLog.Write($"control: HTTP/WS API listening on http://{(httpLan ? "+" : "127.0.0.1")}:{httpPort}/ (GET /manifest, /state, /ws; POST /invoke)");
             }
@@ -175,12 +192,233 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    // ---- OHG show engine startup (Plan 7a Task 11, brief's ordered paragraph) --------
+    //
+    // Order: config store -> Exists -> Load -> Validate against the shell's scene ids ->
+    // resolve node/entry paths -> bridge over a supervisor -> host adapter over the ViewModel
+    // facade -> catalog -> roster/active-speaker/capacity intake -> fire-and-forget StartAsync.
+    //
+    // EVERY failure is a LaunchLog line and a fall back to ControlCatalog.StaticOnly. The app
+    // runs without OHG; it never fails to launch because of it.
+    private ControlCatalog StartShowEngine(out OhgHostAdapter? adapter)
+    {
+        adapter = null;
+        try
+        {
+            var folder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CoreVideoPro");
+            var store = new ShowConfigStore(folder);
+            if (!store.Exists)
+            {
+                // The overwhelmingly common case: no show configured. Silent by design - this is
+                // not a failure, and a line here would appear in every launch log forever.
+                return ControlCatalog.StaticOnly;
+            }
+
+            var config = store.Load(out var loadError);
+            if (config is null)
+            {
+                LaunchLog.Write($"ohg: show config could not be read ({loadError}) - show engine disabled");
+                return ControlCatalog.StaticOnly;
+            }
+
+            var sceneIds = new HashSet<string>(ViewModel.Scenes.Select(scene => scene.Id), StringComparer.Ordinal);
+            var validationError = ShowConfigValidator.Validate(config, sceneIds);
+            if (validationError is not null)
+            {
+                LaunchLog.Write($"ohg: show config is invalid ({validationError}) - show engine disabled");
+                return ControlCatalog.StaticOnly;
+            }
+
+            var paths = ShowEnginePaths.Resolve(
+                File.Exists,
+                AppContext.BaseDirectory,
+                MediaCorePaths.RepoRoot,
+                Environment.GetEnvironmentVariable,
+                FindNodeOnPath);
+            if (paths is null)
+            {
+                LaunchLog.Write("ohg: no packaged or dev show-engine host was found (set COREVIDEO_NODE_EXE + COREVIDEO_SHOW_ENGINE_DIR, or build show-engine) - show engine disabled");
+                return ControlCatalog.StaticOnly;
+            }
+
+            // The engine reads ONE config file. Materialize the effective document (statePath
+            // defaulted in) beside the source rather than mutating what the operator edits.
+            var effectiveConfigPath = Path.Combine(folder, "ohg-show-config.effective.json");
+            File.WriteAllText(effectiveConfigPath, store.MaterializeEngineConfig(config));
+
+            var oscExposure = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_OHG_LAN"), "1", StringComparison.Ordinal)
+                ? OscExposure.Lan
+                : OscExposure.LoopbackOnly;
+
+            var supervisor = new ShowEngineSupervisor(
+                new ProcessShowEngineChildFactory(),
+                new ShowEngineRestartPolicy(),
+                Task.Delay,
+                () => DateTimeOffset.UtcNow);
+            var bridge = new ShowEngineBridge(supervisor, oscExposure);
+            bridge.Log += (_, line) => LaunchLog.Write($"ohg[{line.Level}]: {line.Message}");
+            _showEngineBridge = bridge;
+            _showEngineSupervisor = supervisor;
+
+            adapter = new OhgHostAdapter(
+                new StudioViewModelOhgFacade(ViewModel, LaunchLog.Write),
+                config.Shell,
+                LaunchLog.Write,
+                // Seeded so the FIRST setPreview of a look resolves: the engine cues a look on
+                // preview one seq BEFORE the applyLook that names its scene (Task 13).
+                ShowConfigLooks.PresetsByLookId(config.Engine));
+
+            // Roster + active speaker ride the core's snapshot stream (spec 6.2). This handler
+            // runs on the media-core READER thread; every Publish on the bridge is lock-guarded
+            // and does no UI work, so it deliberately does NOT marshal.
+            _showEngineRosterPublisher = snapshot =>
+            {
+                try
+                {
+                    bridge.PublishRoster(OhgParticipantMapper.Map(
+                        snapshot.Participants ?? System.Array.Empty<RawParticipantEvent>()));
+                    bridge.PublishActiveSpeaker(snapshot.ActiveSpeakerId);
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write($"ohg: roster publish failed ({ex.Message})");
+                }
+            };
+            ViewModel.MediaCoreBridge.SnapshotChanged += _showEngineRosterPublisher;
+            bridge.PublishCapacity(ViewModel.ShowInputEditors.Count);
+
+            var request = new ShowEngineSpawnRequest(
+                paths.NodeExe,
+                paths.EntryScript,
+                effectiveConfigPath,
+                paths.WorkingDirectory,
+                // Empty = inherit this process's environment; ProcessShowEngineChild merges.
+                new Dictionary<string, string>(StringComparer.Ordinal));
+
+            // NEVER blocks the launch: the engine takes seconds to handshake and a slow start
+            // must not hold the window. It is still OBSERVED — an unawaited task that faults
+            // would otherwise take the failure to the grave (the supervisor's own health is the
+            // operator-facing signal; this line is the one in the launch log).
+            _ = bridge.StartAsync(request, CancellationToken.None).ContinueWith(
+                task => LaunchLog.Write($"ohg: engine start faulted: {task.Exception?.GetBaseException().Message}"),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
+            LaunchLog.Write($"ohg: show engine starting ({paths.Source}) node={paths.NodeExe} entry={paths.EntryScript} driveHost={config.Shell.DriveHost}");
+            return new ControlCatalog(new[] { bridge });
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("ohg: show engine startup failed - running without it", ex);
+
+            // A failure PART-WAY through leaves a bridge and possibly a roster subscription
+            // behind. Running "without OHG" has to mean it: unhook and drop them, or the core's
+            // snapshot stream keeps feeding a bridge nothing else references.
+            if (_showEngineRosterPublisher is { } orphanedPublisher)
+            {
+                try { ViewModel.MediaCoreBridge.SnapshotChanged -= orphanedPublisher; }
+                catch (Exception unhookError) { LaunchLog.Write($"ohg: roster unsubscribe failed ({unhookError.Message})"); }
+                _showEngineRosterPublisher = null;
+            }
+
+            try { _showEngineBridge?.Dispose(); }
+            catch (Exception disposeError) { LaunchLog.Write($"ohg: bridge disposal failed ({disposeError.Message})"); }
+            _showEngineBridge = null;
+
+            try { _showEngineSupervisor?.Dispose(); }
+            catch (Exception disposeError) { LaunchLog.Write($"ohg: supervisor disposal failed ({disposeError.Message})"); }
+            _showEngineSupervisor = null;
+
+            adapter = null;
+            return ControlCatalog.StaticOnly;
+        }
+    }
+
+    /// <summary>node.exe on PATH (spec 6.4 candidate 3). Null when it is not there, which simply
+    /// drops the dev candidate from the resolver.</summary>
+    private static string? FindNodeOnPath()
+    {
+        try
+        {
+            var path = Environment.GetEnvironmentVariable("PATH");
+            if (string.IsNullOrEmpty(path))
+            {
+                return null;
+            }
+
+            foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var candidate = Path.Combine(directory.Trim(PathQuote), "node.exe");
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ohg: PATH scan for node.exe failed ({ex.Message})");
+        }
+
+        return null;
+    }
+
+    // PATH entries may be quoted on Windows.
+    private const char PathQuote = '"';
+
+    private async Task StopShowEngineAsync()
+    {
+        var bridge = _showEngineBridge;
+        _showEngineBridge = null;
+        if (bridge is null)
+        {
+            return;
+        }
+
+        if (_showEngineRosterPublisher is { } publisher)
+        {
+            TryShutdownStep("ohg roster publisher", () => ViewModel.MediaCoreBridge.SnapshotChanged -= publisher);
+            _showEngineRosterPublisher = null;
+        }
+
+        try
+        {
+            // Off the UI thread: StopAsync sends a graceful shutdown then kills the tree.
+            await Task.Run(() => bridge.StopAsync()).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("shutdown: OHG show engine stop", ex);
+        }
+
+        TryShutdownStep("ohg bridge", bridge.Dispose);
+
+        // The supervisor LAST: it kill-trees anything StopAsync left alive and cancels the
+        // lifetime token every parked recovery is waiting on. Without it a supervisor that was
+        // mid-backoff at shutdown would still be holding a spawn intent.
+        if (_showEngineSupervisor is { } supervisor)
+        {
+            _showEngineSupervisor = null;
+            TryShutdownStep("ohg supervisor", supervisor.Dispose);
+        }
+    }
+
     private async Task StopControlServerAsync()
     {
         // Its feedback timer and VM subscriptions are UI-owned. Close the
         // command gate before any asynchronous socket teardown or VM disposal.
+        // Disposing it FIRST also unhooks the show engine's snapshot/health/host-command
+        // handlers, so nothing arrives at a ViewModel that is being torn down.
         TryShutdownStep("control surface", () => _controlSurface?.Dispose());
         _controlSurface = null;
+
+        // Then the show engine, still BEFORE the control servers: it is a child PROCESS whose
+        // teardown does a graceful shutdown then a kill-tree, so it rides Task.Run and never
+        // the UI thread (CLAUDE.md, G4 teardown order).
+        await StopShowEngineAsync().ConfigureAwait(true);
         if (_httpControlServer is not null)
         {
             try

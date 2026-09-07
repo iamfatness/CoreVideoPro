@@ -52,11 +52,11 @@ public sealed class HttpControlServer : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
 
-    public HttpControlServer(IControlSurface surface, HttpControlServerOptions? options = null)
+    public HttpControlServer(IControlSurface surface, HttpControlServerOptions? options = null, ControlCatalog? catalog = null)
     {
         _surface = surface;
         _options = options ?? new HttpControlServerOptions();
-        _router = new HttpControlRouter(surface);
+        _router = new HttpControlRouter(surface, catalog);
     }
 
     public int ListenPort => _options.ListenPort;

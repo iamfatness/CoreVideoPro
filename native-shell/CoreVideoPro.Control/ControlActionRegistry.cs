@@ -17,9 +17,9 @@ public static class ControlActionRegistry
 
     public static IReadOnlyList<ControlAction> Actions => AllActions;
 
-    public static bool TryGet(string actionId, out ControlAction action) => ById.TryGetValue(actionId, out action!);
+    public static bool TryGet(string actionId, out ControlAction action) => ControlCatalog.StaticOnly.TryGet(actionId, out action);
 
-    public static bool Contains(string actionId) => ById.ContainsKey(actionId);
+    public static bool Contains(string actionId) => ControlCatalog.StaticOnly.Contains(actionId);
 
     /// <summary>Validates and coerces raw positional args (as delivered by a transport) against
     /// the action's param schema. Returns the coerced values, or an error string. Extra trailing
@@ -28,102 +28,7 @@ public static class ControlActionRegistry
         string actionId,
         IReadOnlyList<object?> rawArgs,
         out IReadOnlyList<object?> bound,
-        out string? error)
-    {
-        bound = System.Array.Empty<object?>();
-        if (!TryGet(actionId, out var action))
-        {
-            error = $"Unknown action '{actionId}'.";
-            return false;
-        }
-
-        var result = new object?[action.Params.Count];
-        for (var i = 0; i < action.Params.Count; i++)
-        {
-            var param = action.Params[i];
-            var raw = i < rawArgs.Count ? rawArgs[i] : null;
-            if (raw is null)
-            {
-                if (param.Required)
-                {
-                    error = $"Action '{actionId}' requires parameter '{param.Name}' at position {i}.";
-                    return false;
-                }
-
-                result[i] = null;
-                continue;
-            }
-
-            if (!TryCoerce(raw, param.Type, out var coerced))
-            {
-                error = $"Action '{actionId}' parameter '{param.Name}' must be {param.Type} (got '{raw}').";
-                return false;
-            }
-
-            result[i] = coerced;
-        }
-
-        bound = result;
-        error = null;
-        return true;
-    }
-
-    private static bool TryCoerce(object raw, ControlParamType type, out object? value)
-    {
-        value = null;
-        try
-        {
-            switch (type)
-            {
-                case ControlParamType.String:
-                    value = raw as string ?? System.Convert.ToString(raw, System.Globalization.CultureInfo.InvariantCulture);
-                    return value is not null;
-                case ControlParamType.Int:
-                    value = raw switch
-                    {
-                        int i => i,
-                        long l => (int)l,
-                        double d => (int)System.Math.Round(d),
-                        float f => (int)System.MathF.Round(f),
-                        bool b => b ? 1 : 0,
-                        string s when int.TryParse(s, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsed) => parsed,
-                        _ => (object?)null
-                    };
-                    return value is not null;
-                case ControlParamType.Double:
-                    value = raw switch
-                    {
-                        double d => d,
-                        float f => (double)f,
-                        int i => (double)i,
-                        long l => (double)l,
-                        string s when double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed) => parsed,
-                        _ => (object?)null
-                    };
-                    return value is not null;
-                case ControlParamType.Bool:
-                    value = raw switch
-                    {
-                        bool b => b,
-                        int i => i != 0,
-                        long l => l != 0,
-                        double d => System.Math.Abs(d) > double.Epsilon,
-                        float f => System.MathF.Abs(f) > float.Epsilon,
-                        string s when bool.TryParse(s, out var parsed) => parsed,
-                        string s when s is "1" => true,
-                        string s when s is "0" => false,
-                        _ => (object?)null
-                    };
-                    return value is not null;
-                default:
-                    return false;
-            }
-        }
-        catch
-        {
-            return false;
-        }
-    }
+        out string? error) => ControlCatalog.StaticOnly.TryBind(actionId, rawArgs, out bound, out error);
 
     private static readonly ControlParam[] None = System.Array.Empty<ControlParam>();
 
@@ -263,6 +168,10 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("browserId", s, true, "browser:<n>") }),
             new("browser.reload", "Reload browser source", "Reload a browser source's page by id.",
                 new[] { new ControlParam("browserId", s, true, "browser:<n>") }),
+
+            // ---- OHG show engine (shell-owned; the ohg.* actions come from the engine's own
+            // manifest through ControlCatalog, never from this static list) ------------------
+            new("showEngine.restart", "Restart show engine", "Restart the OHG show engine subprocess (used after it gives up, or after a config change)."),
         };
     }
 }

@@ -35,11 +35,11 @@ public sealed class OscControlServer : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _receiveLoop;
 
-    public OscControlServer(IControlSurface surface, OscControlServerOptions? options = null)
+    public OscControlServer(IControlSurface surface, OscControlServerOptions? options = null, ControlCatalog? catalog = null)
     {
         _surface = surface;
         _options = options ?? new OscControlServerOptions();
-        _router = new OscControlRouter(surface, _options.AddressMap);
+        _router = new OscControlRouter(surface, _options.AddressMap, catalog);
     }
 
     /// <summary>The port actually bound (useful when ListenPort is 0 for an ephemeral test port).</summary>
@@ -89,7 +89,11 @@ public sealed class OscControlServer : IAsyncDisposable
             {
                 try
                 {
-                    await _router.RouteAsync(message, cancellationToken).ConfigureAwait(false);
+                    var result = await _router.RouteAsync(message, received.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
+                    if (result is { Ok: false })
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[osc] refused from {received.RemoteEndPoint}: {result.Error}");
+                    }
                 }
                 catch (OperationCanceledException)
                 {

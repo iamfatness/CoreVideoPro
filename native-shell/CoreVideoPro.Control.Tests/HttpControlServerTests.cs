@@ -43,6 +43,51 @@ public sealed class HttpControlServerTests
     }
 
     [Fact]
+    public async Task ProviderAction_ReachesSurface_AndManifestListsFeedbackFields()
+    {
+        var surface = new FakeControlSurface();
+        var provider = new FakeActionProvider("p", OscExposure.Lan, new ControlAction("ohg.program.cut", "Cut", "…"))
+        {
+            FeedbackFieldTemplates = new[] { "ohg/program/mode" }
+        };
+        var catalog = new ControlCatalog(new[] { provider });
+        var port = GetFreePort();
+        await using var server = new HttpControlServer(surface, new HttpControlServerOptions { ListenPort = port }, catalog);
+        server.Start();
+
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+
+        var invoke = await http.PostAsync("invoke",
+            new StringContent("{\"action\":\"ohg.program.cut\",\"args\":[]}", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, invoke.StatusCode);
+        var (actionId, _) = Assert.Single(surface.Invocations);
+        Assert.Equal("ohg.program.cut", actionId);
+
+        var manifest = await http.GetStringAsync("manifest");
+        Assert.Contains("ohg.program.cut", manifest);
+        Assert.Contains("ohg/program/mode", manifest);
+    }
+
+    [Fact]
+    public async Task State_SerializesOhgVerbatim()
+    {
+        var surface = new FakeControlSurface
+        {
+            State = ControlState.Empty with
+            {
+                Ohg = JsonDocument.Parse("{\"revision\":7,\"slots\":[]}").RootElement.Clone()
+            }
+        };
+        var port = GetFreePort();
+        await using var server = new HttpControlServer(surface, new HttpControlServerOptions { ListenPort = port });
+        server.Start();
+
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+        var state = await http.GetStringAsync("state");
+        Assert.Contains("\"ohg\":{\"revision\":7,\"slots\":[]}", state);
+    }
+
+    [Fact]
     public async Task WebSocket_ReceivesInitialStateAndPushesUpdates()
     {
         var surface = new FakeControlSurface { State = ControlState.Empty with { Recording = false } };

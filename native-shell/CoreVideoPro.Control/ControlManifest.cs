@@ -41,13 +41,15 @@ public sealed record ControlManifest(
         "multiviewLayoutMode", "multiviewTileCount",
         "automationOn", "autoTake", "autoAssignInputs", "autoLowerThirds", "autoCaptions",
         "audioMonitorOn", "audioMonitorVolume", "masterLimiterOn",
-        "input/{slot}/inShow", "input/{slot}/kind", "input/{slot}/source", "input/{slot}/name"
+        "input/{slot}/inShow", "input/{slot}/kind", "input/{slot}/source", "input/{slot}/name",
+        "ohg/health/engine", "ohg/shadow/lastCommand"
     };
 
-    public static ControlManifest Build(OscAddressMap? addressMap = null)
+    public static ControlManifest Build(OscAddressMap? addressMap = null, ControlCatalog? catalog = null)
     {
         var map = addressMap ?? new OscAddressMap();
-        var actions = ControlActionRegistry.Actions
+        var cat = catalog ?? ControlCatalog.StaticOnly;
+        var actions = cat.Actions
             .Select(action => new ControlManifestAction(
                 action.Id,
                 action.Title,
@@ -58,7 +60,7 @@ public sealed record ControlManifest(
                     .ToList()))
             .ToList();
 
-        return new ControlManifest(SchemaVersion, map.Root, actions, StateFields);
+        return new ControlManifest(SchemaVersion, map.Root, actions, cat.FeedbackFields);
     }
 
     public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);

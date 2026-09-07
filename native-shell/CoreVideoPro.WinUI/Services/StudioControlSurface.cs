@@ -1,4 +1,5 @@
 using CoreVideoPro.Control;
+using CoreVideoPro.ShowEngine;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
 using CoreVideoPro.WinUI.ViewModels.Transport;
@@ -64,28 +65,75 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "automation.lowerThirds.set", "automation.captions.set",
         "browser.add", "browser.remove", "browser.reload",
         "settings.programBuffer.set",
+        // Shell-owned OHG action (spec §6.3): restarting the show engine is a SHELL concern, not
+        // an engine action — a dead engine could not answer one. Every `ohg.*` id comes from the
+        // engine's own manifest at handshake and is deliberately NOT listed here; the 1:1
+        // coverage test pins this set against the STATIC registry only.
+        "showEngine.restart",
     };
 
     private readonly StudioViewModel _vm;
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _feedbackTimer;
+    private readonly ShowEngineBridge? _bridge;
+    private readonly OhgHostAdapter? _ohgAdapter;
     private bool _disposed;
 
-    public StudioControlSurface(StudioViewModel viewModel, DispatcherQueue dispatcher)
+    /// <summary>The OHG show engine is OPTIONAL (both trailing arguments null = the app has no
+    /// show config, which is the default). Nothing about the existing surface changes when it is
+    /// absent; an `ohg.*` invoke simply fails with a plain reason.</summary>
+    public StudioControlSurface(
+        StudioViewModel viewModel,
+        DispatcherQueue dispatcher,
+        ShowEngineBridge? bridge = null,
+        OhgHostAdapter? ohgAdapter = null)
     {
         _vm = viewModel;
         _dispatcher = dispatcher;
+        _bridge = bridge;
+        _ohgAdapter = ohgAdapter;
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _feedbackTimer = _dispatcher.CreateTimer();
         _feedbackTimer.IsRepeating = false;
         _feedbackTimer.Interval = FeedbackDebounce;
         _feedbackTimer.Tick += (_, _) => StateChanged?.Invoke(this, GetState());
+
+        if (_bridge is null)
+        {
+            return;
+        }
+
+        // ALL THREE fire on the show engine's READER THREAD (spec §6.1). Every one of them is
+        // marshaled through UiDispatch, never a raw TryEnqueue with a throwing body — a throwing
+        // queued callback fail-fasts the process with no managed log (CLAUDE.md).
+        _bridge.SnapshotChanged += OnBridgeSnapshotChanged;
+        _bridge.HealthChanged += OnBridgeHealthChanged;
+        _bridge.HostCommand += OnBridgeHostCommand;
     }
 
     public event EventHandler<ControlState>? StateChanged;
 
+    /// <summary>True for an action the OHG show engine owns. Spec §3: `ohg.*` invokes never
+    /// touch the UI thread — they go straight to the bridge, which talks to another process.
+    /// The DOT is part of the prefix on purpose: "ohgx.y" is somebody else's namespace and must
+    /// keep falling through to the ViewModel switch (where it fails honestly).</summary>
+    public static bool IsBridgeAction(string? id) => id is not null && id.StartsWith("ohg.", StringComparison.Ordinal);
+
     public Task<ControlInvokeResult> InvokeAsync(string actionId, IReadOnlyList<object?> args, CancellationToken cancellationToken = default)
     {
+        // Marshal-free paths, taken BEFORE the dispatcher enqueue below.
+        if (IsBridgeAction(actionId))
+        {
+            return _bridge is null
+                ? Task.FromResult(ControlInvokeResult.Fail(NoShowEngine))
+                : _bridge.InvokeAsync(actionId, args, cancellationToken);
+        }
+
+        if (string.Equals(actionId, RestartActionId, StringComparison.Ordinal))
+        {
+            return RestartShowEngineAsync(cancellationToken);
+        }
+
         var tcs = new TaskCompletionSource<ControlInvokeResult>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         async void RunOnUi()
@@ -461,7 +509,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 source.Status))
             .ToList();
 
-        return NativeControlEvidence.Apply(new ControlState
+        var state = NativeControlEvidence.Apply(new ControlState
         {
             ProgramBufferRequestedFrames = _vm.ProgramBufferFrames,
             ProgramBufferSessionRequestedFrames = _vm.ProgramBufferSessionRequestedFrames,
@@ -503,6 +551,114 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             Inputs = inputs,
             AudioSources = audioSources,
         }, _vm.NativeControlSnapshot);
+
+        return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapter?.ShadowLastCommand);
+    }
+
+    private static readonly ShowEngineHealth StoppedHealth =
+        new(ShowEngineState.Stopped, Generation: 0, RestartCount: 0, LastError: null, LastCrashAt: null);
+
+    /// <summary>Spec §7's state node, as a pure projection so it is unit-testable without a
+    /// DispatcherQueue. `Ohg`/`OhgFields` stay NULL until the engine has published a snapshot —
+    /// an absent node is honest about "nothing to report", where an empty object would read as
+    /// "a show with nothing in it". `OhgEngineHealth` is ALWAYS present.</summary>
+    public static ControlState WithOhg(
+        ControlState baseState,
+        ShowEngineSnapshot? latest,
+        ShowEngineHealth health,
+        string? shadowLast)
+        => baseState with
+        {
+            Ohg = latest?.Snapshot,
+            OhgFields = latest?.Fields,
+            OhgEngineHealth = health.State.ToString().ToLowerInvariant(),
+            OhgShadowLastCommand = shadowLast ?? string.Empty,
+        };
+
+    // ---- OHG show engine (Plan 7a Task 11, spec §3/§7/§8) ---------------------------
+
+    internal const string RestartActionId = "showEngine.restart";
+    internal const string NoShowEngine = "OHG show engine is not configured";
+
+    /// <summary>The shell action behind the workspace's Restart button. Marshal-free like the
+    /// `ohg.*` forwards — the supervisor owns its own threading, and a restart must work even
+    /// when the UI thread is the thing that is wedged.</summary>
+    private async Task<ControlInvokeResult> RestartShowEngineAsync(CancellationToken cancellationToken)
+    {
+        if (_bridge is null)
+        {
+            return ControlInvokeResult.Fail(NoShowEngine);
+        }
+
+        try
+        {
+            await _bridge.RestartAsync(cancellationToken).ConfigureAwait(false);
+            return ControlInvokeResult.Success;
+        }
+        catch (Exception ex)
+        {
+            // RestartAsync throws when the engine was never started (nothing to restart) — a
+            // legitimate refusal, not a crash.
+            return ControlInvokeResult.Fail(ex.Message);
+        }
+    }
+
+    // Reader thread -> the EXISTING 150 ms feedback debounce, so an engine ticking at 4 Hz
+    // coalesces into the same push rate as every other feedback source.
+    private void OnBridgeSnapshotChanged(object? sender, ShowEngineSnapshot snapshot) => ScheduleFeedbackPush();
+
+    private void OnBridgeHealthChanged(object? sender, ShowEngineHealth health) => ScheduleFeedbackPush();
+
+    private void ScheduleFeedbackPush() => UiDispatch.Run(_dispatcher, () =>
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _feedbackTimer.Stop();
+        _feedbackTimer.Start();
+    }, "control-surface.ohg-feedback");
+
+    // Host commands DO touch the ViewModel, so they marshal (spec §3). ApplyAsync never throws
+    // by contract; the wrapper below is belt-and-braces because this body runs inside a queued
+    // dispatcher callback.
+    //
+    // AND THEY RUN ONE AT A TIME, IN SEQ ORDER. Marshaling alone only orders the STARTS: `cut` and
+    // `auto` await TakeAsync, and the next command's `applyLook` would otherwise run inside that
+    // await and rewrite the preview draft mid-take — putting the wrong guest on air. The queue
+    // holds each command until its predecessor has fully finished, awaits included.
+    private void OnBridgeHostCommand(object? sender, ShowEngineHostCommand command)
+        => UiDispatch.Run(
+            _dispatcher,
+            () => _ = _ohgCommands.Enqueue(() => ApplyHostCommandAsync(command)),
+            "control-surface.ohg-host-command");
+
+    /// <summary>Serializes <see cref="ApplyHostCommandAsync"/> across awaits. Enqueued from inside
+    /// the UiDispatch callback above, so every link runs on the UI thread.</summary>
+    private readonly SequentialAsyncQueue _ohgCommands = new(
+        ex => LaunchLog.Write($"ohg: host command queue link failed :: {ex}"));
+
+    private async Task ApplyHostCommandAsync(ShowEngineHostCommand command)
+    {
+        if (_disposed || _ohgAdapter is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var refusal = await _ohgAdapter.ApplyAsync(command).ConfigureAwait(true);
+            if (refusal is { Length: > 0 })
+            {
+                // Operator-visible: a refused host command must never be silent.
+                _vm.CommandStatus = refusal;
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ohg: host command '{command?.Name}' threw :: {ex}");
+        }
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -637,6 +793,13 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
 
         _disposed = true;
         _vm.PropertyChanged -= OnViewModelPropertyChanged;
+        if (_bridge is not null)
+        {
+            _bridge.SnapshotChanged -= OnBridgeSnapshotChanged;
+            _bridge.HealthChanged -= OnBridgeHealthChanged;
+            _bridge.HostCommand -= OnBridgeHostCommand;
+        }
+
         _feedbackTimer.Stop();
     }
 }

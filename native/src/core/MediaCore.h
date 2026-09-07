@@ -663,7 +663,10 @@ class MediaCore {
   };
   // Commands atomically publish owning configuration. Delivery never waits for
   // a render-held coreMutex, including when propagating Stop.
-  std::atomic<std::shared_ptr<const ProgramOutputConfiguration>> programOutputConfiguration_;
+  // Use the shared_ptr atomic free functions for libc++ versions that do not
+  // implement the C++20 atomic<shared_ptr> specialization. Every concurrent
+  // access to this pointer must use those functions.
+  std::shared_ptr<const ProgramOutputConfiguration> programOutputConfiguration_;
   void publishProgramOutputConfiguration();
   std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
   int64_t lastBufferedDeliverySequence_ = 0;
