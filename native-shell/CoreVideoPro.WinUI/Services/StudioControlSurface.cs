@@ -117,7 +117,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     /// touch the UI thread — they go straight to the bridge, which talks to another process.
     /// The DOT is part of the prefix on purpose: "ohgx.y" is somebody else's namespace and must
     /// keep falling through to the ViewModel switch (where it fails honestly).</summary>
-    public static bool IsBridgeAction(string id) => id.StartsWith("ohg.", StringComparison.Ordinal);
+    public static bool IsBridgeAction(string? id) => id is not null && id.StartsWith("ohg.", StringComparison.Ordinal);
 
     public Task<ControlInvokeResult> InvokeAsync(string actionId, IReadOnlyList<object?> args, CancellationToken cancellationToken = default)
     {

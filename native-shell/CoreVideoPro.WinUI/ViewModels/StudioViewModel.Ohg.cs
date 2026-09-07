@@ -1,5 +1,5 @@
 using CoreVideoPro.MediaCore.Services;
-using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
@@ -19,17 +19,23 @@ namespace CoreVideoPro.WinUI.ViewModels;
 /// (<c>GetPreviewEditableRoutes</c> — the S2b draft, so a scene that is live on PROGRAM is
 /// untouched until Take/Update) and republishes through the SAME path
 /// (<c>SyncPreviewCanvasLayers</c> + <c>PublishPreviewCompositionState</c> +
-/// <c>SchedulePreviewRoutingRefresh</c> + <c>SyncLiveSceneEditIfNeeded</c>).
+/// <c>SchedulePreviewRoutingRefresh</c> + <c>SyncLiveSceneEditIfNeeded</c>). The per-route
+/// rewrite itself lives in <see cref="OhgRouteSlotWriter"/>, pure and unit-tested.
 /// </summary>
 public sealed partial class StudioViewModel
 {
+    /// <summary>The media-core bridge, exposed ONLY so app startup can subscribe the OHG roster
+    /// publisher to the same snapshot stream the ViewModel consumes. Read-only handle; nothing
+    /// outside the ViewModel may command the core through it.</summary>
+    internal IMediaCoreBridge MediaCoreBridge => _bridge;
+
     /// <summary>
     /// Point the named PREVIEW routes at Show Input slots. Semantics (the Task 10 adapter
     /// contract):
     /// <list type="bullet">
     /// <item>a route id present with a slot ⇒ that route carries Show Input <c>slot</c>;</item>
     /// <item>a route id present with <c>null</c> ⇒ that route carries NOTHING
-    /// (<see cref="SourceRouteMode.None"/>) — an explicitly empty box;</item>
+    /// (<c>SourceRouteMode.None</c>) — an explicitly empty box;</item>
     /// <item>a route id ABSENT from the dictionary is left exactly as it was — "not this look's
     /// business" (which is why an EMPTY dictionary rewrites nothing at all).</item>
     /// </list>
@@ -38,11 +44,6 @@ public sealed partial class StudioViewModel
     /// <para>MUST be called on the UI thread — it mutates bound collections and raises
     /// PropertyChanged.</para>
     /// </summary>
-    /// <summary>The media-core bridge, exposed ONLY so app startup can subscribe the OHG roster
-    /// publisher to the same snapshot stream the ViewModel consumes. Read-only handle; nothing
-    /// outside the ViewModel may command the core through it.</summary>
-    internal IMediaCoreBridge MediaCoreBridge => _bridge;
-
     internal IReadOnlyList<string> SetPreviewRouteSlots(IReadOnlyDictionary<string, int?> routeSlots)
     {
         if (routeSlots is null || routeSlots.Count == 0)
@@ -63,7 +64,13 @@ public sealed partial class StudioViewModel
                 continue;
             }
 
-            ApplySlotToRoute(route, slot);
+            // The roster slot is resolved HERE (not at publish time) so an unassigned slot still
+            // clears the route's previous source — publish-time resolution returns early on an
+            // unassigned slot and would leave the last guest on air.
+            var resolvedSlot = slot is { } slotNumber
+                ? ShowInputs.FirstOrDefault(candidate => candidate.SlotNumber == slotNumber)
+                : null;
+            OhgRouteSlotWriter.ApplyOhgSlotToRoute(route, slot, resolvedSlot);
             changed = true;
         }
 
@@ -81,33 +88,5 @@ public sealed partial class StudioViewModel
         SchedulePreviewRoutingRefresh();
         SyncLiveSceneEditIfNeeded(PreviewSceneId);
         return missing;
-    }
-
-    /// <summary>Writes one slot onto one stored route. The stored route only records WHICH slot;
-    /// the concrete participant/capture device is resolved per publish by
-    /// <c>ResolveRouteFromShowInput</c> → <c>ShowInputRosterService.ApplySlotRoute</c>, so a slot
-    /// whose occupant changes needs no rewrite here.</summary>
-    private static void ApplySlotToRoute(SourceRoute route, int? slot)
-    {
-        // A role-targeted route short-circuits ResolveRouteFromShowInput entirely (R1), so a slot
-        // written under a surviving role id would be silently ignored. Clearing it is the same
-        // thing the canvas picker does when you choose an input over a role.
-        route.ProductionRoleId = null;
-        route.SpotlightIndex = null;
-
-        if (slot is not { } slotNumber)
-        {
-            route.Mode = SourceRouteMode.None;
-            route.ShowInputSlotNumber = null;
-            route.ParticipantId = null;
-            route.CaptureDeviceId = null;
-            return;
-        }
-
-        route.ShowInputSlotNumber = slotNumber;
-        // Fixed is the stored placeholder; ApplySlotRoute rewrites Mode (and the id fields) on the
-        // resolved CLONE per publish according to the slot's kind. What matters here is only that
-        // the stored mode is not None, which would drop the layer before resolution.
-        route.Mode = SourceRouteMode.Fixed;
     }
 }

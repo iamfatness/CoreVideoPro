@@ -32,7 +32,8 @@ public sealed class StudioControlSurfaceOhgForwardingTests
     [InlineData("showEngine.restart")]  // a SHELL action, handled by the surface, not forwarded
     [InlineData("Ohg.panelist.add")]    // ordinal, case-sensitive
     [InlineData("")]
-    public void EverythingElseIsNotABridgeAction(string id)
+    [InlineData(null)]
+    public void EverythingElseIsNotABridgeAction(string? id)
         => Assert.False(StudioControlSurface.IsBridgeAction(id));
 
     // ---- WithOhg ---------------------------------------------------------------------

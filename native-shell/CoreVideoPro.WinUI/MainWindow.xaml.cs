@@ -288,8 +288,14 @@ public sealed partial class MainWindow : Window
                 new Dictionary<string, string>(StringComparer.Ordinal));
 
             // NEVER blocks the launch: the engine takes seconds to handshake and a slow start
-            // must not hold the window.
-            _ = bridge.StartAsync(request, CancellationToken.None);
+            // must not hold the window. It is still OBSERVED — an unawaited task that faults
+            // would otherwise take the failure to the grave (the supervisor's own health is the
+            // operator-facing signal; this line is the one in the launch log).
+            _ = bridge.StartAsync(request, CancellationToken.None).ContinueWith(
+                task => LaunchLog.Write($"ohg: engine start faulted: {task.Exception?.GetBaseException().Message}"),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
 
             LaunchLog.Write($"ohg: show engine starting ({paths.Source}) node={paths.NodeExe} entry={paths.EntryScript} driveHost={config.Shell.DriveHost}");
             return new ControlCatalog(new[] { bridge });
@@ -297,6 +303,21 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             LaunchLog.WriteException("ohg: show engine startup failed - running without it", ex);
+
+            // A failure PART-WAY through leaves a bridge and possibly a roster subscription
+            // behind. Running "without OHG" has to mean it: unhook and drop them, or the core's
+            // snapshot stream keeps feeding a bridge nothing else references.
+            if (_showEngineRosterPublisher is { } orphanedPublisher)
+            {
+                try { ViewModel.MediaCoreBridge.SnapshotChanged -= orphanedPublisher; }
+                catch (Exception unhookError) { LaunchLog.Write($"ohg: roster unsubscribe failed ({unhookError.Message})"); }
+                _showEngineRosterPublisher = null;
+            }
+
+            try { _showEngineBridge?.Dispose(); }
+            catch (Exception disposeError) { LaunchLog.Write($"ohg: bridge disposal failed ({disposeError.Message})"); }
+            _showEngineBridge = null;
+
             adapter = null;
             return ControlCatalog.StaticOnly;
         }
@@ -364,15 +385,17 @@ public sealed partial class MainWindow : Window
 
     private async Task StopControlServerAsync()
     {
-        // OHG first: the show engine is a child PROCESS, and it must be told to go away before
-        // the transports that feed it are torn down. Its teardown does a kill-tree +
-        // WaitForExit, so it rides Task.Run and never the UI thread (CLAUDE.md, G4 teardown).
-        await StopShowEngineAsync().ConfigureAwait(true);
-
         // Its feedback timer and VM subscriptions are UI-owned. Close the
         // command gate before any asynchronous socket teardown or VM disposal.
+        // Disposing it FIRST also unhooks the show engine's snapshot/health/host-command
+        // handlers, so nothing arrives at a ViewModel that is being torn down.
         TryShutdownStep("control surface", () => _controlSurface?.Dispose());
         _controlSurface = null;
+
+        // Then the show engine, still BEFORE the control servers: it is a child PROCESS whose
+        // teardown does a graceful shutdown then a kill-tree, so it rides Task.Run and never
+        // the UI thread (CLAUDE.md, G4 teardown order).
+        await StopShowEngineAsync().ConfigureAwait(true);
         if (_httpControlServer is not null)
         {
             try
