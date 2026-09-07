@@ -35,4 +35,12 @@ public sealed record ShowEngineSpawnRequest(
     string EntryScript,
     string ConfigPath,
     string WorkingDirectory,
-    IReadOnlyDictionary<string, string> Environment);
+    IReadOnlyDictionary<string, string> Environment)
+{
+    /// <summary>Extra argv appended AFTER the fixed <c>--config &lt;path&gt; --generation &lt;n&gt;</c>
+    /// pair. Empty for a normal show. Its one production-adjacent use is the host's
+    /// <c>--conformance</c> mode (Plan 7a Task 13), which the WinUI adapter conformance test spawns
+    /// through this same real supervisor + child rather than a second, differently-shaped launcher —
+    /// a test that spawned the engine its own way would stop proving the spawn path works.</summary>
+    public IReadOnlyList<string> ExtraArgs { get; init; } = Array.Empty<string>();
+}

@@ -45,6 +45,7 @@ public sealed class ProcessShowEngineChild : IShowEngineChild
         startInfo.ArgumentList.Add(request.ConfigPath);
         startInfo.ArgumentList.Add("--generation");
         startInfo.ArgumentList.Add(generation.ToString());
+        foreach (var extra in request.ExtraArgs) startInfo.ArgumentList.Add(extra);
 
         foreach (var pair in request.Environment) startInfo.Environment[pair.Key] = pair.Value;
 
@@ -61,7 +62,8 @@ public sealed class ProcessShowEngineChild : IShowEngineChild
         };
 
         _log.Append($"[show-engine] spawn gen {generation}: {request.NodeExe} {request.EntryScript} " +
-                    $"--config {request.ConfigPath}");
+                    $"--config {request.ConfigPath} --generation {generation} " +
+                    string.Join(' ', request.ExtraArgs));
 
         if (!_process.Start())
         {
