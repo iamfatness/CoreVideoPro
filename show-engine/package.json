@@ -5,12 +5,19 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "show-engine-host": "dist/host/main.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.test.json",
-    "verify:barrel": "npm run build && node scripts/verify-dist-barrel.mjs"
+    "verify:barrel": "npm run build && node scripts/verify-dist-barrel.mjs",
+    "smoke:host": "node scripts/smoke-host.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
