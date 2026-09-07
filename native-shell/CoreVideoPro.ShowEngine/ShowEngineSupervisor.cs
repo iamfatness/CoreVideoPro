@@ -162,19 +162,21 @@ public sealed class ShowEngineSupervisor : IDisposable
 
     public void Dispose()
     {
+        IShowEngineChild? child;
         lock (_gate)
         {
             if (_disposed) return;
             _disposed = true;
             _stopping = true;
+            child = _child;
         }
 
         try { _lifetime.Cancel(); } catch { /* best effort */ }
-        var child = _child;
         if (child is not null) TeardownChild(child, kill: true);
         RejectAll(new ObjectDisposedException(nameof(ShowEngineSupervisor)));
         _lifetime.Dispose();
-        _stdinGate.Dispose();
+        // _stdinGate is deliberately NOT disposed: an in-flight write may still be inside it, and a
+        // disposed SemaphoreSlim turns that into an ObjectDisposedException on a shutdown path.
     }
 
     // ------------------------------------------------------------------ requests
@@ -226,7 +228,9 @@ public sealed class ShowEngineSupervisor : IDisposable
         }
         finally
         {
-            _pending.TryRemove(id, out _);
+            // Cancelling the abandoned completion is what stops a timed-out request from leaving
+            // behind a task nothing will ever complete (and, later, a JsonDocument nothing disposes).
+            if (_pending.TryRemove(id, out var abandoned)) abandoned.Completion.TrySetCanceled();
             // Releases a parked timeout delay so it cannot leak past this request.
             try { scope.Cancel(); } catch { /* best effort */ }
         }
@@ -301,13 +305,24 @@ public sealed class ShowEngineSupervisor : IDisposable
                 }
                 else
                 {
-                    var second = _delay(_options.HandshakeTimeout, scope.Token);
+                    // The real host (hostLoop.ts, the "handshake" request case) answers {id, ok:true}
+                    // and THEN emits the handshake EVENT, so the manifest arrives on the FOLLOWING
+                    // line. Ordinary request timing applies to that wait, not the announcement budget.
+                    var second = _delay(_options.RequestTimeout, scope.Token);
                     await Task.WhenAny(handshakeSignal.Task, second).ConfigureAwait(false);
+                    if (!handshakeSignal.Task.IsCompleted)
+                    {
+                        AbortStart(child, "show engine acknowledged the handshake but never sent one",
+                            terminal: false);
+                        return false;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                FailStart(child, $"show engine handshake failed: {ex.Message}");
+                // A write error or a handshake TIMEOUT is transient - the engine may simply have been
+                // slow to boot. It goes through the ordinary recovery path, not the terminal one.
+                AbortStart(child, $"show engine handshake failed: {ex.Message}", terminal: false);
                 return false;
             }
         }
@@ -322,22 +337,22 @@ public sealed class ShowEngineSupervisor : IDisposable
 
         if (!handshakeSignal.Task.IsCompletedSuccessfully)
         {
-            FailStart(child, "show engine did not handshake");
+            AbortStart(child, "show engine did not handshake", terminal: false);
             return false;
         }
 
         var root = handshakeSignal.Task.Result;
         if (!ShowEngineProtocol.TryParseHandshake(root, out var handshake, out var error))
         {
-            FailStart(child, error ?? "unreadable show engine handshake");
+            AbortStart(child, error ?? "unreadable show engine handshake", terminal: false);
             return false;
         }
 
         if (handshake.ProtocolVersion != ShowEngineProtocol.SupportedProtocolVersion)
         {
-            // NOT a transient fault: a newer engine will never become compatible by restarting, so this
-            // is Failed with no respawn, exactly like a config error.
-            FailStart(child, $"unsupported protocol version {handshake.ProtocolVersion}");
+            // NOT a transient fault: a newer engine will never become compatible by restarting, so
+            // this is terminal with no respawn, exactly like a config error (exit 78).
+            AbortStart(child, $"unsupported protocol version {handshake.ProtocolVersion}", terminal: true);
             return false;
         }
 
@@ -355,11 +370,27 @@ public sealed class ShowEngineSupervisor : IDisposable
         return true;
     }
 
-    private void FailStart(IShowEngineChild child, string error)
+    /// <summary>End a start that did not reach Running. Only TWO conditions are
+    /// <paramref name="terminal"/> - an unsupported protocol version and exit 78 - because neither can
+    /// be fixed by restarting. Everything else (a handshake timeout, a write error, an unreadable
+    /// manifest) is transient and takes the ordinary recovery path, so a slow-booting engine is never
+    /// permanently written off.</summary>
+    private void AbortStart(IShowEngineChild child, string error, bool terminal)
     {
+        var claimed = TryClaimEnded(child, out var request);
         TeardownChild(child, kill: true);
         RejectPendingFor(child, new InvalidOperationException(error));
-        SetHealth(h => h with { State = ShowEngineState.Failed, LastError = error });
+
+        // Superseded (recovery already spawned a successor) or stopping: publish nothing.
+        if (!claimed) return;
+
+        if (terminal)
+        {
+            SetHealth(h => h with { State = ShowEngineState.Failed, LastError = error });
+            return;
+        }
+
+        BeginRecovery(error, request);
     }
 
     // ------------------------------------------------------------------ reader loop
@@ -419,18 +450,36 @@ public sealed class ShowEngineSupervisor : IDisposable
                     break;
 
                 case ShowEngineProtocol.LineKind.Handshake:
-                    lock (_gate) { _handshakeSignal?.TrySetResult(doc.RootElement.Clone()); }
+                    lock (_gate)
+                    {
+                        if (ReferenceEquals(_child, child))
+                        {
+                            _handshakeSignal?.TrySetResult(doc.RootElement.Clone());
+                        }
+                    }
+
                     break;
 
                 case ShowEngineProtocol.LineKind.Snapshot:
+                    // A snapshot the host published just before it crashed is still in the pipe while
+                    // the successor is already publishing NEWER ones. Delivering it would move the
+                    // show state BACKWARDS, so a detached child's snapshots are dropped.
+                    if (!IsCurrent(child)) break;
                     Raise(SnapshotReceived, ShowEngineProtocol.ParseSnapshot(doc.RootElement));
                     break;
 
                 case ShowEngineProtocol.LineKind.HostCommand:
                     var command = ShowEngineProtocol.ParseHostCommand(doc.RootElement);
-                    // A host command from a generation that is no longer current would act on a show
-                    // state the engine that sent it no longer describes. Drop it, and COUNT it.
-                    if (command.Generation != Volatile.Read(ref _currentGeneration))
+                    // A host command from an engine that is no longer ours would act on show state its
+                    // sender no longer describes. Drop it, and COUNT it.
+                    //
+                    // CHILD IDENTITY IS THE PRIMARY GUARD, not the generation number:
+                    // _currentGeneration is written only on a successful handshake and is never
+                    // cleared, so all through Recovering + backoff + spawn it still names the DEAD
+                    // generation - a stale command draining out of that child's pipe would sail
+                    // straight through a number-only check. The generation compare stays as a second
+                    // belt, for a LIVE child that echoes a generation we did not give it.
+                    if (!IsCurrent(child) || command.Generation != Volatile.Read(ref _currentGeneration))
                     {
                         Interlocked.Increment(ref _staleHostCommandsDropped);
                         break;
@@ -440,7 +489,14 @@ public sealed class ShowEngineSupervisor : IDisposable
                     break;
 
                 case ShowEngineProtocol.LineKind.Log:
-                    Raise(LogReceived, ShowEngineProtocol.ParseLog(doc.RootElement));
+                    // Log lines are inert diagnostics, and the last of them are the whole reason a
+                    // detached child is drained to EOF at all - so they are TAGGED rather than
+                    // dropped. A consumer can always tell a dead generation's text from the live
+                    // engine's, and can never mistake either for state.
+                    var log = ShowEngineProtocol.ParseLog(doc.RootElement);
+                    Raise(LogReceived, IsCurrent(child)
+                        ? log
+                        : log with { Message = $"[gen {child.Generation}, exited] {log.Message}" });
                     break;
 
                 case ShowEngineProtocol.LineKind.Malformed:
@@ -518,21 +574,28 @@ public sealed class ShowEngineSupervisor : IDisposable
                 missed = 0;
                 _policy.RecordHealthy(_now());
             }
-            catch (TimeoutException)
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
             {
+                return;   // teardown - the exit watcher owns whatever happens next
+            }
+            catch (Exception ex)
+            {
+                // EVERY failed beat counts, not only a timeout. An engine that answers ok:false to a
+                // ping surfaces here as an InvalidOperationException, and treating that as "stop
+                // watching" would silently disable the watchdog against a host that is answering but
+                // broken - the worst of both failure modes, and invisible.
+                Raise(LogReceived, new ShowEngineLogLine("warn",
+                    $"show engine heartbeat failed: {ex.Message}"));
+
                 if (++missed < _options.MissedHeartbeatsBeforeHang) continue;
 
-                // A child that accepts stdin but never answers is WORSE than a crashed one: it holds the
-                // show hostage with no exit code. Treat it as exit -1 and take the recovery path.
+                // A child that accepts stdin but cannot answer it is WORSE than a crashed one: it
+                // holds the show hostage with no exit code. Treat it as exit -1 and recover.
                 Raise(LogReceived, new ShowEngineLogLine("warn",
-                    $"show engine missed {missed} heartbeats — treating as a hang"));
+                    $"show engine missed {missed} heartbeats - treating as a hang"));
                 child.Kill();
                 OnChildEnded(child, exitCode: -1);
                 return;
-            }
-            catch
-            {
-                return;   // cancelled, disposed, or the child died — the exit watcher owns it
             }
         }
     }
@@ -552,32 +615,57 @@ public sealed class ShowEngineSupervisor : IDisposable
         OnChildEnded(child, exitCode);
     }
 
+    /// <summary>
+    /// One child ended - crashed, exited, or was killed as a hang. THE DETACH IS THE CLAIM: the test
+    /// and the detach happen in a single _gate acquisition, so exactly one caller can ever proceed.
+    /// Two callers legitimately race here - the hang path calls this directly, and the Kill() it just
+    /// issued also completes Exited and wakes <see cref="WatchExitAsync"/> into the same call - and a
+    /// check-then-detach would let BOTH through: RestartCount would move by two, two RecoverAsync
+    /// would run, and the second spawn would overwrite _child, leaving the first engine process
+    /// running with nobody left to tear it down.
+    /// </summary>
     private void OnChildEnded(IShowEngineChild child, int exitCode)
     {
-        ShowEngineSpawnRequest? request;
-        lock (_gate)
-        {
-            if (_stopping || _disposed || !ReferenceEquals(_child, child)) return;
-            request = _request;
-        }
+        if (!TryClaimEnded(child, out var request)) return;
 
-        // The process is already gone (or was just killed by the hang path), so this only DETACHES it.
-        // Its reader loop is deliberately left running to drain whatever is still in the pipe; the
-        // generation guard below is what keeps those late lines from touching the new child's state.
-        DetachChild(child);
+        // The process is already gone (or was just killed by the hang path), so the claim above only
+        // DETACHED it. Its reader loop is deliberately left running to drain whatever is still in the
+        // pipe; the child-identity guards in HandleLine are what keep those late lines from touching
+        // the successor's state.
         RejectPendingFor(child, new InvalidOperationException("Show engine exited."));
 
-        var crashedAt = _now();
-        SetHealth(h => h with { RestartCount = h.RestartCount + 1, LastCrashAt = crashedAt });
-
-        // Spec §9: exit 78 is the engine rejecting its CONFIG. Restarting cannot fix a bad config, so
-        // there is no backoff and no respawn — just a loud, terminal state that names the log.
+        // Spec section 9: exit 78 is the engine rejecting its CONFIG. Restarting cannot fix a bad
+        // config, so there is no backoff and no respawn - just a loud, terminal state that names the
+        // log. Health is published ONCE, already terminal: never an intermediate Running-with-a-
+        // bumped-restart-count that a consumer could latch.
         if (exitCode == 78)
         {
             SetHealth(h => h with
             {
                 State = ShowEngineState.Failed,
-                LastError = "show engine rejected its config (exit 78) — see show-engine.log"
+                RestartCount = h.RestartCount + 1,
+                LastCrashAt = _now(),
+                LastError = "show engine rejected its config (exit 78) - see show-engine.log"
+            });
+            return;
+        }
+
+        BeginRecovery($"show engine exited with code {exitCode}", request);
+    }
+
+    /// <summary>Publish the crash exactly once and hand off to the backoff. The caller must already
+    /// have claimed the child through <see cref="TryClaimEnded"/>.</summary>
+    private void BeginRecovery(string error, ShowEngineSpawnRequest? request)
+    {
+        var crashedAt = _now();
+        if (request is null)
+        {
+            SetHealth(h => h with
+            {
+                State = ShowEngineState.Failed,
+                RestartCount = h.RestartCount + 1,
+                LastCrashAt = crashedAt,
+                LastError = "no spawn request to recover with"
             });
             return;
         }
@@ -585,16 +673,26 @@ public sealed class ShowEngineSupervisor : IDisposable
         SetHealth(h => h with
         {
             State = ShowEngineState.Recovering,
-            LastError = $"show engine exited with code {exitCode}"
+            RestartCount = h.RestartCount + 1,
+            LastCrashAt = crashedAt,
+            LastError = error
         });
 
-        if (request is null)
-        {
-            SetHealth(h => h with { State = ShowEngineState.Failed, LastError = "no spawn request to recover with" });
-            return;
-        }
-
         _ = Task.Run(() => RecoverAsync(request), CancellationToken.None);
+    }
+
+    /// <summary>Atomically test-and-detach: returns true exactly once per child, and only while the
+    /// supervisor is neither stopping nor disposed.</summary>
+    private bool TryClaimEnded(IShowEngineChild child, out ShowEngineSpawnRequest? request)
+    {
+        lock (_gate)
+        {
+            request = _request;
+            if (_stopping || _disposed || !ReferenceEquals(_child, child)) return false;
+            _child = null;
+            _childScope = null;
+            return true;
+        }
     }
 
     private async Task RecoverAsync(ShowEngineSpawnRequest request)
@@ -684,18 +782,28 @@ public sealed class ShowEngineSupervisor : IDisposable
         Raise(HealthChanged, updated);
     }
 
-    /// <summary>Raise an event without letting a subscriber's exception take the reader loop — or the
-    /// process — with it (this repo's queued-callback fail-fast rule, applied at the source).</summary>
-    private static void Raise<T>(Action<T>? handler, T payload)
+    /// <summary>True while <paramref name="child"/> is still the supervisor's current child.</summary>
+    private bool IsCurrent(IShowEngineChild child)
+    {
+        lock (_gate) return ReferenceEquals(_child, child);
+    }
+
+    /// <summary>Raise an event without letting a subscriber's exception take the reader loop - or the
+    /// process - with it (this repo's queued-callback fail-fast rule, applied at the source). The
+    /// swallowed fault is REPORTED on <see cref="LogReceived"/>, except when LogReceived is itself the
+    /// handler that threw, which would recurse.</summary>
+    private void Raise<T>(Action<T>? handler, T payload)
     {
         if (handler is null) return;
         try
         {
             handler(payload);
         }
-        catch
+        catch (Exception ex)
         {
-            // A consumer's fault is never the supervisor's.
+            if (typeof(T) == typeof(ShowEngineLogLine)) return;
+            Raise(LogReceived, new ShowEngineLogLine("error",
+                $"a show engine {typeof(T).Name} subscriber threw: {ex.Message}"));
         }
     }
 }

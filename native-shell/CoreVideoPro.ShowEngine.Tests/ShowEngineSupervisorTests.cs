@@ -65,19 +65,102 @@ public sealed class ShowEngineSupervisorTests
     [Fact]
     public async Task Start_FallsBackToAnExplicitHandshakeRequest()
     {
+        // The REAL host shape (show-engine/src/host/hostLoop.ts, the "handshake" request case): it
+        // answers {id, ok:true} and THEN emits the handshake EVENT on the following line. The
+        // supervisor must ride out that second line rather than treating the bare ack as the manifest.
         var factory = new FakeChildFactory { PreloadHandshake = _ => false };
         var delays = new DelayController();
         delays.SetImmediate(Options.HandshakeTimeout);   // no unsolicited handshake arrives -> fall back
         factory.Configure = child => child.Responder = line =>
             FakeShowEngineChild.TypeOf(line) == "handshake"
-                ? new[] { TestLines.HandshakeResponse(IdOf(line), child.Generation) }
+                ? new[] { TestLines.OkResponse(IdOf(line)), TestLines.HandshakeEvent(child.Generation) }
                 : Array.Empty<string>();
 
         using var sup = NewSupervisor(factory, delays);
         await sup.StartAsync(Request, CancellationToken.None);
 
         Assert.Equal(ShowEngineState.Running, sup.Health.State);
+        Assert.Equal(1, sup.Health.Generation);
         Assert.Contains(factory.Child(1).Written, l => FakeShowEngineChild.TypeOf(l) == "handshake");
+        Assert.Equal(1, factory.SpawnCount);
+    }
+
+    [Fact]
+    public async Task HandshakeTimeout_Recovers_RatherThanFailingTerminally()
+    {
+        // A handshake that never lands is TRANSIENT (a slow-booting engine), unlike a version mismatch
+        // or exit 78. It must respawn through the policy, not be written off.
+        var factory = new FakeChildFactory { PreloadHandshake = _ => false };
+        var delays = new DelayController();
+        delays.SetImmediate(Options.HandshakeTimeout, Options.RequestTimeout);
+        var policy = new OneRetryPolicy();
+
+        var states = new List<ShowEngineState>();
+        using var sup = NewSupervisor(factory, delays, policy);
+        sup.HealthChanged += h => { lock (states) states.Add(h.State); };
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        await WaitUntil(() => sup.Health.State == ShowEngineState.Failed, "the retry budget to run out");
+
+        Assert.Equal(2, factory.SpawnCount);                       // it RESPAWNED, so it was not terminal
+        lock (states) Assert.Contains(ShowEngineState.Recovering, states);
+        Assert.Equal(2, sup.Health.RestartCount);
+        Assert.Contains("press Restart", sup.Health.LastError);
+    }
+
+    [Fact]
+    public async Task StaleHostCommand_DuringTheRecoveryWindow_IsDropped()
+    {
+        // The window the generation NUMBER cannot cover: gen 1 has died, gen 2 is spawned but has not
+        // handshaked, so _currentGeneration still reads 1 — a gen-1 command draining out of the dead
+        // child would pass a number-only check. Child identity is what closes it.
+        var factory = new FakeChildFactory { PreloadHandshake = g => g == 1 };
+        var delays = new DelayController();          // HandshakeTimeout parks: gen 2 never handshakes
+        using var sup = NewSupervisor(factory, delays);
+
+        var commands = new List<ShowEngineHostCommand>();
+        sup.HostCommandReceived += c => { lock (commands) commands.Add(c); };
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        var gen1 = factory.Child(1);
+
+        gen1.SignalExit(3);                          // stdout stays open: the pipe is still draining
+        await WaitUntil(() => factory.SpawnCount == 2, "the successor to be spawned");
+        Assert.Equal(ShowEngineState.Recovering, sup.Health.State);
+        Assert.Equal(1, sup.Health.Generation);      // still names the DEAD generation
+
+        gen1.Push(TestLines.HostCommandEvent(generation: 1, seq: 4, name: "cut"));
+        await WaitUntil(() => sup.StaleHostCommandsDropped == 1, "the mid-recovery command to be dropped");
+        Assert.Empty(commands);
+    }
+
+    [Fact]
+    public async Task StaleChildSnapshots_AreDropped_AndItsLogsAreTagged()
+    {
+        var factory = new FakeChildFactory { PreloadHandshake = g => g == 1 };
+        var delays = new DelayController();
+        using var sup = NewSupervisor(factory, delays);
+
+        var snapshots = new List<ShowEngineSnapshot>();
+        var logs = new List<ShowEngineLogLine>();
+        sup.SnapshotReceived += x => { lock (snapshots) snapshots.Add(x); };
+        sup.LogReceived += l => { lock (logs) logs.Add(l); };
+
+        await sup.StartAsync(Request, CancellationToken.None);
+        var gen1 = factory.Child(1);
+        gen1.SignalExit(3);
+        await WaitUntil(() => factory.SpawnCount == 2, "the successor to be spawned");
+
+        gen1.Push(TestLines.SnapshotEvent(1, 99));
+        gen1.Push(TestLines.LogEvent("error", "dying words"));
+        await WaitUntil(() => { lock (logs) return logs.Any(l => l.Message.Contains("dying words")); },
+            "the dead child's log line");
+
+        // The stale snapshot would have moved show state BACKWARDS, so it is dropped...
+        lock (snapshots) Assert.Empty(snapshots);
+        // ...but its log line still arrives, TAGGED with the generation that is gone.
+        var tagged = logs.Single(l => l.Message.Contains("dying words"));
+        Assert.Equal("[gen 1, exited] dying words", tagged.Message);
     }
 
     [Fact]
@@ -201,7 +284,41 @@ public sealed class ShowEngineSupervisorTests
         await WaitUntil(() => factory.SpawnCount == 2, "the hang to trigger a respawn");
         Assert.True(factory.Child(1).Killed);
         Assert.Equal(ShowEngineState.Recovering, sup.Health.State);
+        // Kill() also completes Exited, so the hang path and the exit watcher both reach OnChildEnded.
+        // Exactly ONE may claim the child: a second claim would double the count and orphan a process.
         Assert.Equal(1, sup.Health.RestartCount);
+        Assert.Equal(2, factory.SpawnCount);
+    }
+
+    [Fact]
+    public async Task PingAnsweredNotOk_StillTripsTheHangWatchdog()
+    {
+        // A host that ANSWERS but answers ok:false used to be the worst case: the heartbeat's bare
+        // catch returned, silently disabling the watchdog against a broken-but-responsive engine.
+        var factory = new FakeChildFactory { PreloadHandshake = g => g == 1 };
+        var delays = new DelayController();
+        factory.Configure = child => child.Responder = line =>
+            FakeShowEngineChild.TypeOf(line) == "ping"
+                ? new[] { TestLines.ErrorResponse(IdOf(line), "engine is wedged") }
+                : Array.Empty<string>();
+
+        var logs = new List<ShowEngineLogLine>();
+        using var sup = NewSupervisor(factory, delays);
+        sup.LogReceived += l => { lock (logs) logs.Add(l); };
+
+        await sup.StartAsync(Request, CancellationToken.None);
+
+        for (var beat = 0; beat < Options.MissedHeartbeatsBeforeHang; beat++)
+        {
+            await WaitUntil(() => delays.ParkedCount(Options.HeartbeatInterval) > 0, "heartbeat wait");
+            delays.Release(Options.HeartbeatInterval);
+        }
+
+        await WaitUntil(() => factory.SpawnCount == 2, "the failed beats to trigger a respawn");
+        Assert.True(factory.Child(1).Killed);
+        Assert.Equal(ShowEngineState.Recovering, sup.Health.State);
+        Assert.Equal(1, sup.Health.RestartCount);      // claimed exactly once, never twice
+        lock (logs) Assert.Contains(logs, l => l.Message.Contains("engine is wedged"));
     }
 
     [Fact]
@@ -265,6 +382,18 @@ public sealed class ShowEngineSupervisorTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => sup.SendAsync("ping", null, CancellationToken.None));
+    }
+
+    /// <summary>Grants exactly one respawn, then gives up — so a never-handshaking engine terminates
+    /// the test instead of hot-looping through the stub policy's unconditional TimeSpan.Zero.</summary>
+    private sealed class OneRetryPolicy : ShowEngineRestartPolicy
+    {
+        private int _calls;
+
+        public override TimeSpan? NextDelay(DateTimeOffset now) =>
+            Interlocked.Increment(ref _calls) == 1 ? TimeSpan.Zero : null;
+
+        public override int ConsecutiveFailures => Volatile.Read(ref _calls);
     }
 
     private static string IdOf(string line)
