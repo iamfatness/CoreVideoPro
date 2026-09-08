@@ -391,16 +391,6 @@ public sealed class OhgSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task ImportLegacyAsync_IsAStubForTask11()
-    {
-        var vm = MakeViewModel(out _);
-
-        await vm.ImportLegacyCommand.ExecuteAsync(null);
-
-        Assert.Equal("Import is not wired yet (Task 11)", vm.SaveStatus);
-    }
-
-    [Fact]
     public void Constructor_LoadsExistingConfigWhenPresent()
     {
         var store = new ShowConfigStore(_dir);
@@ -470,5 +460,40 @@ public sealed class OhgSettingsViewModelTests : IDisposable
 
         Assert.Equal(3, edit.Boxes);
         Assert.Equal(3.0, look.BoxesValue);
+    }
+
+    // -- Task 11: legacy Isadora importer wiring --
+
+    [Fact]
+    public async Task ImportLegacyAsync_RefreshesMirrorsAndReportsSaveStatus()
+    {
+        var vm = MakeViewModel(out _);
+
+        const string mukanaJs = """
+            var mukanaUrl = "https://hoka.pxclabs.com/phpsdk/php-panel-rest.php?event=officehours&req=panelists";
+            """;
+
+        await vm.ImportLegacyCommand.ExecuteAsync((null, mukanaJs));
+
+        Assert.Equal("https://hoka.pxclabs.com/phpsdk/php-panel-rest.php", vm.MukanaBaseUrl);
+        Assert.Equal("officehours", vm.MukanaEvent);
+        Assert.True(vm.RegistryEnabled);
+        Assert.True(vm.HandsQueueEnabled);
+        Assert.True(vm.QuestionFeedEnabled);
+        Assert.Equal(vm.Model.MukanaBaseUrl, vm.MukanaBaseUrl);
+        Assert.Equal(vm.Model.MukanaEvent, vm.MukanaEvent);
+        Assert.StartsWith("Imported:", vm.SaveStatus, StringComparison.Ordinal);
+        Assert.Equal(vm.Model.Looks.Count, vm.Looks.Count);
+    }
+
+    [Fact]
+    public async Task ImportLegacyAsync_NullInputs_StillReportsImportedWithNotFoundDetails()
+    {
+        var vm = MakeViewModel(out _);
+
+        await vm.ImportLegacyCommand.ExecuteAsync((null, null));
+
+        Assert.StartsWith("Imported:", vm.SaveStatus, StringComparison.Ordinal);
+        Assert.Contains("Not found:", vm.SaveStatus, StringComparison.Ordinal);
     }
 }

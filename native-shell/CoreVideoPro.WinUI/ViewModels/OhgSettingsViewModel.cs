@@ -252,13 +252,92 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
         NeedsAppRestart = !_engineStartedAtLaunch;
     }
 
-    /// <summary>Stub for Plan 7b Task 11, which replaces this with the real legacy-Isadora
-    /// import.</summary>
+    /// <summary>Plan 7b Task 11 — runs the pure <see cref="IsadoraConfigImporter"/> over
+    /// <see cref="Model"/> (starting from a deep copy, so a failed/partial import never corrupts
+    /// the live model until this returns), replaces <see cref="Model"/>'s fields field-by-field
+    /// (the window/other bindings hold this exact reference, so it must stay valid), refreshes the
+    /// bindable mirrors and the <see cref="Looks"/> rows, and reports the honesty trail in
+    /// <see cref="SaveStatus"/>.</summary>
     [RelayCommand]
-    private Task ImportLegacyAsync()
+    private Task ImportLegacyAsync((string? InfrastructureJs, string? MukanaJs) texts)
     {
-        SaveStatus = "Import is not wired yet (Task 11)";
+        var result = IsadoraConfigImporter.Import(texts.InfrastructureJs, texts.MukanaJs, Model);
+        ApplyImportedModel(result.Model);
+
+        SaveStatus = "Imported: " + string.Join("; ", result.Found)
+            + (result.NotFound.Count > 0 ? " · Not found: " + string.Join("; ", result.NotFound) : "");
+
         return Task.CompletedTask;
+    }
+
+    /// <summary>Copies every field of <paramref name="imported"/> onto <see cref="Model"/> (the
+    /// reference stays the one the window/x:Binds already hold), then re-seeds the bindable
+    /// mirrors and the <see cref="Looks"/> rows from it — the same "load Model into
+    /// mirrors/rows" shape the constructor uses.</summary>
+    private void ApplyImportedModel(OhgConfigEditModel imported)
+    {
+        Model.RegistryEnabled = imported.RegistryEnabled;
+        Model.HandsQueueEnabled = imported.HandsQueueEnabled;
+        Model.QuestionFeedEnabled = imported.QuestionFeedEnabled;
+        Model.MukanaBaseUrl = imported.MukanaBaseUrl;
+        Model.MukanaEvent = imported.MukanaEvent;
+        Model.PanelistsIntervalMs = imported.PanelistsIntervalMs;
+        Model.HandsIntervalMs = imported.HandsIntervalMs;
+        Model.QuestionIntervalMs = imported.QuestionIntervalMs;
+        Model.MaxBackoffMs = imported.MaxBackoffMs;
+        Model.Capacity = imported.Capacity;
+        Model.UtilityPinBase = imported.UtilityPinBase;
+        Model.GalleryCells = imported.GalleryCells;
+        Model.SkipRoles = imported.SkipRoles;
+        Model.Looks = imported.Looks;
+        Model.DriveHost = imported.DriveHost;
+        Model.PresetSolo = imported.PresetSolo;
+        Model.PresetActiveSpeaker = imported.PresetActiveSpeaker;
+        Model.PresetBlack = imported.PresetBlack;
+        Model.PresetGallery = imported.PresetGallery;
+        Model.DefaultTransition = imported.DefaultTransition;
+        Model.TallyUrl = imported.TallyUrl;
+        Model.Extra = imported.Extra;
+
+        registryEnabled = Model.RegistryEnabled;
+        handsQueueEnabled = Model.HandsQueueEnabled;
+        questionFeedEnabled = Model.QuestionFeedEnabled;
+        mukanaBaseUrl = Model.MukanaBaseUrl ?? "";
+        mukanaEvent = Model.MukanaEvent ?? "";
+        panelistsIntervalMs = Model.PanelistsIntervalMs;
+        handsIntervalMs = Model.HandsIntervalMs;
+        questionIntervalMs = Model.QuestionIntervalMs;
+        maxBackoffMs = Model.MaxBackoffMs;
+        driveHost = Model.DriveHost;
+        presetSolo = Model.PresetSolo;
+        presetActiveSpeaker = Model.PresetActiveSpeaker;
+        presetBlack = Model.PresetBlack;
+        presetGallery = Model.PresetGallery;
+        defaultTransition = Model.DefaultTransition;
+        tallyUrl = Model.TallyUrl ?? "";
+
+        OnPropertyChanged(nameof(RegistryEnabled));
+        OnPropertyChanged(nameof(HandsQueueEnabled));
+        OnPropertyChanged(nameof(QuestionFeedEnabled));
+        OnPropertyChanged(nameof(MukanaBaseUrl));
+        OnPropertyChanged(nameof(MukanaEvent));
+        OnPropertyChanged(nameof(PanelistsIntervalMs));
+        OnPropertyChanged(nameof(HandsIntervalMs));
+        OnPropertyChanged(nameof(QuestionIntervalMs));
+        OnPropertyChanged(nameof(MaxBackoffMs));
+        OnPropertyChanged(nameof(DriveHost));
+        OnPropertyChanged(nameof(PresetSolo));
+        OnPropertyChanged(nameof(PresetActiveSpeaker));
+        OnPropertyChanged(nameof(PresetBlack));
+        OnPropertyChanged(nameof(PresetGallery));
+        OnPropertyChanged(nameof(DefaultTransition));
+        OnPropertyChanged(nameof(TallyUrl));
+
+        Looks.Clear();
+        foreach (var look in Model.Looks)
+        {
+            Looks.Add(new OhgLookEditorViewModel(look));
+        }
     }
 
     /// <summary>Every <c>engine</c> look's box count must fit the engine's fixed layout

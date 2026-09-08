@@ -367,6 +367,63 @@ public sealed partial class ProductionSettingsWindow : Window
     private static readonly string[] TallySources = ["boxes", "activeSpeaker"];
     private static readonly string[] BoxFills = ["queue", "manual"];
 
+    // Plan 7b Task 11 — one-shot import from the two legacy Isadora config files. The Click
+    // handler itself stays SYNC and routed through Guarded (the house rule every OHG UI callback
+    // here follows), dispatching the actual async picker/import work as a fire-and-forget task
+    // that carries its own try/catch (an unobserved exception on a fire-and-forget task is as
+    // fatal as a throwing TryEnqueue callback - CLAUDE.md's UiDispatch rule).
+    private void OnOhgImportLegacyClicked(object sender, RoutedEventArgs args)
+        => Guarded("ohg import legacy show", () => _ = RunOhgImportLegacyAsync());
+
+    /// <summary>Two optional <see cref="Windows.Storage.Pickers.FileOpenPicker"/>s
+    /// (infrastructure, then mukana; cancelling either just leaves that text null, per D4's
+    /// "tolerant extraction" rule), then <see cref="OhgSettingsViewModel.ImportLegacyCommand"/>
+    /// runs the pure importer and refreshes the section.</summary>
+    private async Task RunOhgImportLegacyAsync()
+    {
+        try
+        {
+            if (OhgSettings is null)
+            {
+                return;
+            }
+
+            var infrastructureJs = await PickLegacyIsadoraTextAsync();
+            var mukanaJs = await PickLegacyIsadoraTextAsync();
+            await OhgSettings.ImportLegacyCommand.ExecuteAsync((infrastructureJs, mukanaJs));
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ohg: import legacy show skipped ({ex.GetType().Name}: {ex.Message})");
+        }
+    }
+
+    /// <summary>Opens a <see cref="Windows.Storage.Pickers.FileOpenPicker"/> for one legacy `.js`
+    /// file and returns its text, or null on cancel/failure (an optional input, per D4).</summary>
+    private async Task<string?> PickLegacyIsadoraTextAsync()
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FileOpenPicker
+            {
+                SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Desktop,
+            };
+            picker.FileTypeFilter.Add(".js");
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+            var file = await picker.PickSingleFileAsync();
+            if (file is null)
+            {
+                return null;
+            }
+            return await Windows.Storage.FileIO.ReadTextAsync(file);
+        }
+        catch
+        {
+            // Picker can throw if the shell COM apartment is busy; treat as "not provided".
+            return null;
+        }
+    }
+
     // Pick the folder where recordings are written. The whole path plumbing already
     // exists (RecordingTargetFolder -> targetFolder wire -> core resolveTargetDir); this
     // just gives the operator a real folder picker instead of hand-typing a path.
