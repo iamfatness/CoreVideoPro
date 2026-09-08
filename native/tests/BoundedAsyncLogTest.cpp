@@ -11,6 +11,23 @@
 #include <fcntl.h>
 #endif
 
+namespace {
+// These tests have one producer. The logger intentionally uses try_lock, so
+// startup contention may drop a write before the sink ever sees it. Retry ONLY
+// that confirmed drop: retrying an accepted write would invoke one-shot promises
+// (or close a descriptor) twice and invalidate the assertions below.
+bool writeOnceAccepted(corevideo::core::BoundedAsyncLog& logger, std::string_view message) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  do {
+    const auto before = logger.stats().dropped;
+    logger.write(message);
+    if (logger.stats().dropped == before) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;
+}
+}
+
 TEST(BoundedAsyncLog, BlockedSinkCannotBlockProducerOrShutdownAndQueueStaysBounded) {
   using corevideo::core::BoundedAsyncLog;
   struct SinkState {
@@ -28,7 +45,8 @@ TEST(BoundedAsyncLog, BlockedSinkCannotBlockProducerOrShutdownAndQueueStaysBound
     state->changed.notify_all();
     return true;
   });
-  logger->write("first\n");
+  const bool accepted = writeOnceAccepted(*logger, "first\n");
+  const auto startupDrops = logger->stats().dropped;
   bool entered;
   {
     std::unique_lock<std::mutex> lock(state->mutex);
@@ -48,10 +66,11 @@ TEST(BoundedAsyncLog, BlockedSinkCannotBlockProducerOrShutdownAndQueueStaysBound
   }
   state->changed.notify_all();
   const auto stats = producer.get();
+  EXPECT_TRUE(accepted);
   EXPECT_TRUE(entered);
   EXPECT_TRUE(completedWhileBlocked);
   EXPECT_EQ(stats.queued, BoundedAsyncLog::kCapacity);
-  EXPECT_EQ(stats.dropped, 10000u - BoundedAsyncLog::kCapacity);
+  EXPECT_EQ(stats.dropped - startupDrops, 10000u - BoundedAsyncLog::kCapacity);
 }
 
 TEST(BoundedAsyncLog, OversizedMessagesAreTruncatedAndSinkFailuresAreCounted) {
@@ -62,7 +81,7 @@ TEST(BoundedAsyncLog, OversizedMessagesAreTruncatedAndSinkFailuresAreCounted) {
     result->set_value(std::string(message));
     return false;
   });
-  logger.write(std::string(10000, 'x'));
+  ASSERT_TRUE(writeOnceAccepted(logger, std::string(10000, 'x')));
   ASSERT_TRUE(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
   const auto message = future.get();
   EXPECT_EQ(message.size(), BoundedAsyncLog::kMessageBytes - 1);
@@ -87,7 +106,9 @@ TEST(BoundedAsyncLog, ClosedPipeIsCountedWithoutTerminatingProcess) {
     completed->set_value();
     return written;
   });
-  logger.write("closed pipe\n");
+  const bool accepted = writeOnceAccepted(logger, "closed pipe\n");
+  if (!accepted) ::close(pipeEnds[1]); // No queued callback owns it on this path.
+  ASSERT_TRUE(accepted);
   ASSERT_TRUE(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (logger.stats().sinkFailures == 0 && std::chrono::steady_clock::now() < deadline)
