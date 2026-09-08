@@ -15,6 +15,7 @@
 #include <windows.h>
 #else
 #include <cerrno>
+#include <fcntl.h>
 #include <csignal>
 #include <pthread.h>
 #include <unistd.h>
@@ -35,7 +36,7 @@ struct BoundedAsyncLog::State {
 
 BoundedAsyncLog::BoundedAsyncLog(Sink sink) : state_(std::make_shared<State>(std::move(sink))) {
   std::thread([state = state_] {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)
     // A closed diagnostic pipe is a sink failure, not permission to terminate
     // the media process. Mask on this dedicated worker only; no global handler.
     sigset_t signals;
@@ -94,6 +95,27 @@ BoundedAsyncLog::Stats BoundedAsyncLog::stats() const {
   return {state_->dropped.load(), state_->truncated.load(), state_->sinkFailures.load(), state_->size};
 }
 
+#if !defined(_WIN32)
+bool writeDiagnosticDescriptor(int descriptor, std::string_view message) noexcept {
+#if defined(__APPLE__)
+  // Darwin's EPIPE path sends SIGPIPE to the process, not just this worker.
+  // A thread signal mask cannot protect other threads; suppress it on the fd.
+  int configured;
+  do { configured = ::fcntl(descriptor, F_SETNOSIGPIPE, 1); }
+  while (configured < 0 && errno == EINTR);
+  if (configured < 0) return false; // Never attempt an unprotected Darwin write.
+#endif
+  std::size_t offset = 0;
+  while (offset < message.size()) {
+    const auto count = ::write(descriptor, message.data() + offset, message.size() - offset);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) return false;
+    offset += static_cast<std::size_t>(count);
+  }
+  return true;
+}
+#endif
+
 namespace {
 BoundedAsyncLog& processLog() {
   // Intentionally process lifetime: do not enter CRT teardown with a worker
@@ -104,14 +126,7 @@ BoundedAsyncLog& processLog() {
     return WriteFile(GetStdHandle(STD_ERROR_HANDLE), message.data(),
         static_cast<DWORD>(message.size()), &written, nullptr) && written == message.size();
 #else
-    std::size_t offset = 0;
-    while (offset < message.size()) {
-      const auto count = ::write(STDERR_FILENO, message.data() + offset, message.size() - offset);
-      if (count < 0 && errno == EINTR) continue;
-      if (count <= 0) return false;
-      offset += static_cast<std::size_t>(count);
-    }
-    return true;
+    return writeDiagnosticDescriptor(STDERR_FILENO, message);
 #endif
   });
   return *logger;

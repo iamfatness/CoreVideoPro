@@ -8,6 +8,7 @@
 #include <thread>
 #if !defined(_WIN32)
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 
 TEST(BoundedAsyncLog, BlockedSinkCannotBlockProducerOrShutdownAndQueueStaysBounded) {
@@ -81,10 +82,10 @@ TEST(BoundedAsyncLog, ClosedPipeIsCountedWithoutTerminatingProcess) {
   auto completed = std::make_shared<std::promise<void>>();
   auto future = completed->get_future();
   corevideo::core::BoundedAsyncLog logger([writeFd = pipeEnds[1], completed](std::string_view message) {
-    const auto written = ::write(writeFd, message.data(), message.size());
+    const bool written = corevideo::core::writeDiagnosticDescriptor(writeFd, message);
     ::close(writeFd);
     completed->set_value();
-    return written >= 0;
+    return written;
   });
   logger.write("closed pipe\n");
   ASSERT_TRUE(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
@@ -92,5 +93,24 @@ TEST(BoundedAsyncLog, ClosedPipeIsCountedWithoutTerminatingProcess) {
   while (logger.stats().sinkFailures == 0 && std::chrono::steady_clock::now() < deadline)
     std::this_thread::yield();
   EXPECT_EQ(logger.stats().sinkFailures, 1u);
+}
+TEST(BoundedAsyncLog, DescriptorSinkWritesBytesAndRejectsInvalidDescriptor) {
+  int pipeEnds[2];
+  ASSERT_EQ(::pipe(pipeEnds), 0);
+  const bool written = corevideo::core::writeDiagnosticDescriptor(pipeEnds[1], "message");
+#if defined(__APPLE__)
+  const int noSigpipe = ::fcntl(pipeEnds[1], F_GETNOSIGPIPE);
+#endif
+  char bytes[7]{};
+  const auto received = written ? ::read(pipeEnds[0], bytes, sizeof(bytes)) : -1;
+  ::close(pipeEnds[0]);
+  ::close(pipeEnds[1]);
+  EXPECT_TRUE(written);
+  EXPECT_EQ(received, 7);
+  EXPECT_EQ(std::string(bytes, sizeof(bytes)), std::string("message"));
+#if defined(__APPLE__)
+  EXPECT_EQ(noSigpipe, 1);
+#endif
+  EXPECT_FALSE(corevideo::core::writeDiagnosticDescriptor(-1, "invalid"));
 }
 #endif

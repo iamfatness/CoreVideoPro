@@ -31,6 +31,12 @@ class BoundedAsyncLog {
   std::shared_ptr<State> state_;
 };
 
+#if !defined(_WIN32)
+// Called on the diagnostic worker: Linux relies on its SIGPIPE mask; Darwin
+// suppresses process-directed SIGPIPE on this descriptor before writing.
+[[nodiscard]] bool writeDiagnosticDescriptor(int descriptor, std::string_view message) noexcept;
+#endif
+
 void nativeLogf(const char* format, ...) noexcept;
 [[nodiscard]] BoundedAsyncLog::Stats nativeLogStats();
 
