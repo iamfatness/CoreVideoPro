@@ -4,17 +4,6 @@ using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
 
-/// <summary>
-/// Plan 7b Task 10 — the seam behind <c>StudioControlSurface.ReplaceOhgAdapter</c>.
-///
-/// The surface runs host commands through a <c>SequentialAsyncQueue</c>, so a command can sit
-/// enqueued across an <c>await</c> while the operator saves a new show config. The controller
-/// ruling is that a link resolves the adapter WHEN IT RUNS, not when it was enqueued — otherwise a
-/// command that started queueing before the Save would apply the OLD look→scene presets after the
-/// engine has already been restarted onto the new ones, putting the wrong scene on air.
-///
-/// Capturing the adapter at enqueue time is the mutation this file exists for.
-/// </summary>
 public sealed class OhgAdapterSlotTests
 {
     [Fact]
@@ -25,83 +14,66 @@ public sealed class OhgAdapterSlotTests
     {
         var slot = new OhgAdapterSlot();
         var first = Adapter();
-        var second = Adapter();
-
         slot.Replace(first);
         Assert.Same(first, slot.Current);
-
-        slot.Replace(second);
-        Assert.Same(second, slot.Current);
-
         slot.Replace(null);
         Assert.Null(slot.Current);
     }
 
-    /// <summary>The whole point: a link that reads <see cref="OhgAdapterSlot.Current"/> at RUN
-    /// time sees a replacement made after it was enqueued but before it ran.</summary>
     [Fact]
-    public async Task AnEnqueuedLinkSeesTheAdapterThatIsCurrentWhenItRuns()
+    public async Task QueuedOldPayloadIsDiscardedAfterSettingsSwap()
     {
         var slot = new OhgAdapterSlot();
-        var oldAdapter = Adapter();
-        var newAdapter = Adapter();
-        slot.Replace(oldAdapter);
-
+        slot.Replace(Adapter());
+        var oldBinding = slot.Capture();
+        var queue = new SequentialAsyncQueue(_ => { });
         var gate = new TaskCompletionSource();
-        OhgHostAdapter? seen = null;
-
-        // The link is CREATED while `oldAdapter` is current...
-        var link = Task.Run(async () =>
+        var blocked = queue.Enqueue(() => gate.Task);
+        OhgHostAdapter? applied = null;
+        var queued = queue.Enqueue(() =>
         {
-            await gate.Task;
-            seen = slot.Current;
+            applied = slot.Resolve(oldBinding, 1, 2);
+            return Task.CompletedTask;
         });
-
-        // ...and the swap lands before it is allowed to run.
-        slot.Replace(newAdapter);
+        var replacement = Adapter();
+        slot.Replace(replacement, 2);
         gate.SetResult();
-        await link;
-
-        Assert.Same(newAdapter, seen);
+        await Task.WhenAll(blocked, queued);
+        Assert.Null(applied);
+        Assert.Same(replacement, slot.Resolve(slot.Capture(), 2, 2));
     }
 
     [Fact]
-    public void TheSurfaceResolvesTheAdapterThroughTheSlot()
+    public void OldEngineCannotUseNewBindingBetweenSwapAndRestart()
     {
-        var code = ReadService("StudioControlSurface.cs");
-
-        Assert.Contains("public void ReplaceOhgAdapter(", code, StringComparison.Ordinal);
-
-        // The resolution must happen INSIDE the apply body. Capturing it at enqueue time (a local
-        // in OnBridgeHostCommand handed to the link) still mentions the slot elsewhere in the file,
-        // so the assertion is scoped to the method that actually applies the command.
-        var body = MethodBody(code, "ApplyHostCommandAsync");
-        Assert.Contains("_ohgAdapterSlot.Current", body, StringComparison.Ordinal);
-
-        // The old captured field must be gone: a `readonly OhgHostAdapter? _ohgAdapter` cannot be
-        // swapped, and a local captured at enqueue time reintroduces the stale-adapter bug.
-        Assert.DoesNotContain("readonly OhgHostAdapter? _ohgAdapter;", code, StringComparison.Ordinal);
+        var slot = new OhgAdapterSlot();
+        var replacement = Adapter();
+        slot.Replace(replacement, 2);
+        var binding = slot.Capture();
+        Assert.Null(slot.Resolve(binding, 1, 1));
+        Assert.Same(replacement, slot.Resolve(binding, 2, 2));
     }
 
-    /// <summary>The text of a method's body, by brace matching from its declaration.</summary>
-    private static string MethodBody(string code, string methodName)
+    [Fact]
+    public void RestartWithoutSettingsSwapRejectsRetiredEngineGeneration()
     {
-        var declaration = code.IndexOf($"Task {methodName}(", StringComparison.Ordinal);
-        Assert.True(declaration >= 0, $"Could not find a declaration for {methodName}.");
-
-        var open = code.IndexOf('{', declaration);
-        Assert.True(open >= 0, $"Could not find a body for {methodName}.");
-
-        var depth = 0;
-        for (var index = open; index < code.Length; index++)
-        {
-            if (code[index] == '{') depth++;
-            else if (code[index] == '}' && --depth == 0) return code[open..(index + 1)];
-        }
-
-        throw new Xunit.Sdk.XunitException($"Unbalanced braces reading the body of {methodName}.");
+        var slot = new OhgAdapterSlot();
+        slot.Replace(Adapter());
+        var binding = slot.Capture();
+        Assert.Null(slot.Resolve(binding, 1, 2));
+        Assert.Same(slot.Current, slot.Resolve(binding, 2, 2));
     }
 
+    [Fact]
+    public void ReplacingEvenTheSameAdapterRetiresQueuedBinding()
+    {
+        var slot = new OhgAdapterSlot();
+        var adapter = Adapter();
+        slot.Replace(adapter);
+        var retired = slot.Capture();
+        slot.Replace(adapter);
+        Assert.Null(slot.Resolve(retired, 1, 1));
+    }
     private static OhgHostAdapter Adapter()
         => new(
             new SlotFacade(),

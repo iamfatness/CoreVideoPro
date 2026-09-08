@@ -632,22 +632,21 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     // await and rewrite the preview draft mid-take — putting the wrong guest on air. The queue
     // holds each command until its predecessor has fully finished, awaits included.
     private void OnBridgeHostCommand(object? sender, ShowEngineHostCommand command)
-        => UiDispatch.Run(
-            _dispatcher,
-            () => _ = _ohgCommands.Enqueue(() => ApplyHostCommandAsync(command)),
+    {
+        var binding = _ohgAdapterSlot.Capture();
+        UiDispatch.Run(_dispatcher,
+            () => _ = _ohgCommands.Enqueue(() => ApplyHostCommandAsync(command, binding)),
             "control-surface.ohg-host-command");
-
+    }
     /// <summary>Serializes <see cref="ApplyHostCommandAsync"/> across awaits. Enqueued from inside
     /// the UiDispatch callback above, so every link runs on the UI thread.</summary>
     private readonly SequentialAsyncQueue _ohgCommands = new(
         ex => LaunchLog.Write($"ohg: host command queue link failed :: {ex}"));
 
-    private async Task ApplyHostCommandAsync(ShowEngineHostCommand command)
+    private async Task ApplyHostCommandAsync(ShowEngineHostCommand command, OhgAdapterSlot.Binding binding)
     {
-        // Resolved HERE, not captured when the link was enqueued: a Save in Settings can swap the
-        // adapter while this link is still queued behind an awaiting take, and the engine has by
-        // then been restarted onto the new config (OhgAdapterSlot's remarks).
-        var adapter = _ohgAdapterSlot.Current;
+        // Reject commands queued before a settings swap or engine restart.
+        var adapter = _ohgAdapterSlot.Resolve(binding, command.Generation, _bridge?.Health.Generation ?? -1);
         if (_disposed || adapter is null)
         {
             return;
@@ -656,6 +655,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         try
         {
             var refusal = await adapter.ApplyAsync(command).ConfigureAwait(true);
+            if (_disposed || _ohgAdapterSlot.Resolve(binding, command.Generation, _bridge?.Health.Generation ?? -1) is null) return;
             if (refusal is { Length: > 0 })
             {
                 // Operator-visible: a refused host command must never be silent.
@@ -680,16 +680,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         }
     }
 
-    /// <summary>Swap the OHG host adapter the queue applies commands through — the settings
-    /// window's Save path, after the operator edits the show config (Plan 7b Task 10).
-    ///
-    /// <para>UI-THREAD ONLY, and the queue is NOT drained first: a command already enqueued keeps
-    /// its place and applies through whichever adapter is current when it RUNS, which after this
-    /// call is <paramref name="adapter"/>. That is deliberate — the engine is restarted onto the
-    /// new config moments later, so the new presets are the correct ones for anything still in
-    /// flight.</para></summary>
-    public void ReplaceOhgAdapter(OhgHostAdapter? adapter) => _ohgAdapterSlot.Replace(adapter);
-
+    /// <summary>UI-thread settings swap: retire queued payloads and reject commands
+    /// from the old engine even between the swap and the subsequent restart.</summary>
+    public void ReplaceOhgAdapter(OhgHostAdapter? adapter)
+        => _ohgAdapterSlot.Replace(adapter, (long)(_bridge?.Health.Generation ?? 0) + 1);
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (_disposed || e.PropertyName is null || !FeedbackProps.Contains(e.PropertyName))

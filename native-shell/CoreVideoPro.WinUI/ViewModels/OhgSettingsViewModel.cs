@@ -232,24 +232,41 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveAsync()
     {
-        var problem = Validate();
-        if (problem is not null)
+        var saved = false;
+        SaveStatus = "";
+        NeedsAppRestart = false;
+        try
         {
-            ValidationMessage = problem;
-            return;
+            var problem = Validate();
+            if (problem is not null)
+            {
+                ValidationMessage = problem;
+                return;
+            }
+
+            ValidationMessage = "";
+
+            var config = Model.ToConfig();
+            _store.Save(config);
+            saved = true;
+
+            var error = await _apply(config);
+
+            SaveStatus = error ?? (_engineStartedAtLaunch
+                ? "Saved and applied"
+                : "Saved. Restart CoreVideo Pro to start the show engine.");
+            NeedsAppRestart = !_engineStartedAtLaunch;
         }
-
-        ValidationMessage = "";
-
-        var config = Model.ToConfig();
-        _store.Save(config);
-
-        var error = await _apply(config);
-
-        SaveStatus = error ?? (_engineStartedAtLaunch
-            ? "Saved and applied"
-            : "Saved. Restart CoreVideo Pro to start the show engine.");
-        NeedsAppRestart = !_engineStartedAtLaunch;
+        catch (Exception ex)
+        {
+            // Bound AsyncRelayCommand failures otherwise escape onto the UI thread.
+            // Keep the editor intact for retry and distinguish a durable save from
+            // a failed apply; never leave a previous success message visible.
+            SaveStatus = saved
+                ? $"Saved, but could not apply the show config: {ex.Message}"
+                : $"Could not save the show config: {ex.Message}";
+            NeedsAppRestart = saved && !_engineStartedAtLaunch;
+        }
     }
 
     /// <summary>Plan 7b Task 11 — runs the pure <see cref="IsadoraConfigImporter"/> over

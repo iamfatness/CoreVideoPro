@@ -1,37 +1,23 @@
 namespace CoreVideoPro.WinUI.Services;
 
 /// <summary>
-/// The mutable holder for the OHG host adapter the control surface applies host commands through
-/// (Plan 7b Task 10). It exists so <c>StudioControlSurface.ReplaceOhgAdapter</c> has a seam a unit
-/// test can drive without a <c>DispatcherQueue</c>.
-///
-/// <para><b>Read at APPLY time, never at enqueue time.</b> Host commands run through a
-/// <c>SequentialAsyncQueue</c> and a link can sit queued across an <c>await</c> — a take, say —
-/// while the operator saves a new show config in Settings. The controller ruling is that an
-/// in-flight link uses whichever adapter is current when it RUNS: the engine has by then been
-/// restarted onto the new config, so applying the OLD look→scene presets would cue a scene the
-/// engine no longer means. Capturing the adapter into a local at enqueue time reintroduces exactly
-/// that bug, which is why <c>ApplyHostCommandAsync</c> reads <see cref="Current"/> inside its own
-/// body.</para>
-///
-/// <para><b>Written on the UI thread, read from ANY thread.</b> Writes come from the constructor
-/// and <c>ApplyShowConfigAsync</c>, both on the dispatcher, and the apply queue reads it there too
-/// — but <c>StudioControlSurface.GetState()</c> also reads it, on an HTTP/OSC transport thread, for
-/// the state document's shadow-command field. Hence <see cref="System.Threading.Volatile"/> rather
-/// than a plain auto-property: the reference must not be torn or hoisted out of a loop. It is
-/// deliberately NOT locked. A reader racing a swap gets either the old or the new adapter, and a
-/// state document naming the previous shadowed command for one 150 ms feedback tick is acceptable;
-/// a lock here would park a transport thread behind the UI thread for a single reference read.</para>
+/// Publishes the adapter and its minimum engine generation as one immutable binding.
+/// Commands capture the binding before UI dispatch and may apply only while it is
+/// still current. A settings save retires queued commands instead of replaying old
+/// payloads through the new configuration. Readers never wait on the UI thread.
 /// </summary>
 public sealed class OhgAdapterSlot
 {
-    private OhgHostAdapter? _current;
+    public sealed record Binding(OhgHostAdapter? Adapter, long MinimumGeneration);
+    private Binding _binding = new(null, 0);
 
-    /// <summary>The adapter host commands apply to right now, or null when OHG is not configured
-    /// (the default: no show config on this machine).</summary>
-    public OhgHostAdapter? Current => Volatile.Read(ref _current);
+    public OhgHostAdapter? Current => Capture().Adapter;
+    public Binding Capture() => Volatile.Read(ref _binding);
 
-    /// <summary>Swap the adapter (UI thread). Commands already enqueued are NOT cancelled — they
-    /// run against whatever is current when they reach the head of the queue, which is this one.</summary>
-    public void Replace(OhgHostAdapter? adapter) => Volatile.Write(ref _current, adapter);
+    public void Replace(OhgHostAdapter? adapter, long minimumGeneration = 0)
+        => Volatile.Write(ref _binding, new Binding(adapter, minimumGeneration));
+
+    public OhgHostAdapter? Resolve(Binding captured, int commandGeneration, int currentGeneration)
+        => ReferenceEquals(captured, Capture()) && commandGeneration == currentGeneration &&
+           commandGeneration >= captured.MinimumGeneration ? captured.Adapter : null;
 }

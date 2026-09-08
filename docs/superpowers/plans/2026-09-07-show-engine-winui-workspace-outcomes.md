@@ -408,3 +408,20 @@ cannot list, with the reason (the snapshot does not carry the override table) wr
 will meet it. The alternative — deriving the override list in the shell by diffing effective roles
 against Mukana's — would have been a fabricated behavior dressed as a feature, and it is exactly
 what "never invent a source" forbids one level up.
+
+## Merge preparation corrections
+
+A settings save now catches persistence/apply exceptions, preserves the editable
+model, and reports whether the document was saved before apply failed. Two
+filesystem/apply regressions verify failure status and successful retry.
+
+Queued host commands capture an immutable adapter binding before UI dispatch.
+Execution rejects a retired binding or engine generation. A settings swap raises
+the minimum generation until restart, so an old engine callback cannot attach to
+the new configuration in that interval. Post-await UI feedback is discarded when
+its binding retired. A Take already issued is not undone. This supersedes the
+previous read-current-adapter-at-apply rule: old command payloads must not be
+reinterpreted against a new show config.
+
+Independent review passed; 40 focused settings/adapter/queue tests passed. Full
+CI is rerunning. The known native macOS recording-rate failure remains unchanged.

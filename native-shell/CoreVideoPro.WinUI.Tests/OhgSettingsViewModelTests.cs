@@ -76,6 +76,45 @@ public sealed class OhgSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Save_WriteFailureReportsErrorPreservesEditsAndCanRetry()
+    {
+        var store = new ShowConfigStore(_dir);
+        var vm = MakeViewModel(out var applied, store: store);
+        AssignAllPresetsAndLookScenes(vm);
+        await vm.SaveCommand.ExecuteAsync(null);
+        var savedDocument = File.ReadAllText(store.FilePath);
+        vm.Model.PresetSolo = "scene-b";
+        // A directory at the store's temporary-file path deterministically fails
+        // File.WriteAllText, independent of account permissions or OS ACLs.
+        Directory.CreateDirectory(store.FilePath + ".tmp");
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.StartsWith("Could not save", vm.SaveStatus);
+        Assert.False(vm.NeedsAppRestart);
+        Assert.Equal("scene-b", vm.Model.PresetSolo);
+        Assert.Equal(savedDocument, File.ReadAllText(store.FilePath));
+        Assert.Single(applied);
+        Directory.Delete(store.FilePath + ".tmp");
+        await vm.SaveCommand.ExecuteAsync(null);
+        Assert.Equal("Saved and applied", vm.SaveStatus);
+        Assert.Equal(2, applied.Count);
+    }
+
+    [Fact]
+    public async Task Save_ThrowingApplyReportsDurableSaveWithoutDiscardingEdits()
+    {
+        var store = new ShowConfigStore(_dir);
+        var vm = MakeViewModel(out _, store: store,
+            apply: _ => throw new IOException("Apply unavailable"));
+        AssignAllPresetsAndLookScenes(vm);
+        await vm.SaveCommand.ExecuteAsync(null);
+        Assert.StartsWith("Saved, but could not apply", vm.SaveStatus);
+        Assert.True(store.Exists);
+        Assert.Equal("scene-a", vm.Model.PresetSolo);
+    }
+
+    [Fact]
     public void Default_ValidatesOnlyWhenPresetsAreSetAndDriveHostFalse()
     {
         var vm = MakeViewModel(out _);
