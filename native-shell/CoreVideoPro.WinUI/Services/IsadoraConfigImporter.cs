@@ -46,7 +46,7 @@ public static class IsadoraConfigImporter
         var notFound = new List<string>();
 
         ImportMukana(mukanaJs, model, found, notFound);
-        ImportCapacity(infrastructureJs, found, notFound);
+        ImportCapacity(infrastructureJs, model, found, notFound);
         ImportTallyUrl(infrastructureJs, mukanaJs, model, found, notFound);
         ImportLooks(existing, model, found);
 
@@ -77,12 +77,12 @@ public static class IsadoraConfigImporter
         }
     }
 
-    private static void ImportCapacity(string? infrastructureJs, List<string> found, List<string> notFound)
+    private static void ImportCapacity(string? infrastructureJs, OhgConfigEditModel model, List<string> found, List<string> notFound)
     {
         var match = string.IsNullOrEmpty(infrastructureJs) ? null : VideoPinsPattern.Match(infrastructureJs);
         if (match is { Success: true })
         {
-            found.Add($"legacy videoPins = {match.Groups[1].Value}; capacity stays 10 (Show Inputs)");
+            found.Add($"legacy videoPins = {match.Groups[1].Value}; capacity stays {model.Capacity} (Show Inputs)");
         }
         else
         {
@@ -129,6 +129,10 @@ public static class IsadoraConfigImporter
         }
         else
         {
+            // existing is null OR existing.Looks is empty (e.g. every look was deleted and saved) -
+            // model.Looks was cloned from existing (possibly that same empty list), so it must be
+            // OVERWRITTEN here or the "wrote the 4 default looks" line below would be a lie.
+            model.Looks = OhgConfigEditModel.Default().Looks;
             found.Add("looks: wrote the 4 default looks (pick their scenes)");
         }
     }

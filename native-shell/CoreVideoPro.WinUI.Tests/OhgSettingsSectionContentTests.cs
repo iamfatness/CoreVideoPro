@@ -42,12 +42,18 @@ public sealed class OhgSettingsSectionContentTests
         var xaml = ReadView("ProductionSettingsWindow.xaml");
 
         Assert.Contains("OhgSettings.SaveCommand", xaml, StringComparison.Ordinal);
-        Assert.Contains("OhgSettings.ImportLegacyCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("OhgSettings.ValidationMessage", xaml, StringComparison.Ordinal);
         Assert.Contains("OhgSettings.SaveStatus", xaml, StringComparison.Ordinal);
         Assert.Contains("OhgSettings.NeedsAppRestart", xaml, StringComparison.Ordinal);
         Assert.Contains("OhgSettings.LoadedFromDefaultsBecauseOfError", xaml, StringComparison.Ordinal);
         Assert.Contains("OhgSettings.AddLookCommand", xaml, StringComparison.Ordinal);
+
+        // Import legacy show is a Click handler, not a Command binding - a Command binding can't
+        // collect two optional FileOpenPicker results before invoking the VM. Assert the EXACT
+        // handler name is wired (not a comment mentioning the command) and that the handler's own
+        // code actually reaches ImportLegacyCommand.
+        Assert.Contains("Click=\"OnOhgImportLegacyClicked\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("OhgSettings.ImportLegacyCommand", xaml, StringComparison.Ordinal);
 
         // Two commands are invoked from guarded Click handlers rather than bound: remove-look,
         // because inside an ItemsRepeater template there is no element to name for an ElementName
@@ -56,6 +62,10 @@ public sealed class OhgSettingsSectionContentTests
         var code = ReadView("ProductionSettingsWindow.xaml.cs");
         Assert.Contains("RemoveLookCommand", code, StringComparison.Ordinal);
         Assert.Contains("RefreshScenesCommand", code, StringComparison.Ordinal);
+
+        // The Click handler's own code (not a comment) must reach ImportLegacyCommand.
+        Assert.Contains("void OnOhgImportLegacyClicked(", code, StringComparison.Ordinal);
+        Assert.Contains("ImportLegacyCommand.ExecuteAsync(", code, StringComparison.Ordinal);
     }
 
     [Fact]

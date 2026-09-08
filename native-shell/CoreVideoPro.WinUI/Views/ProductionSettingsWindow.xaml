@@ -1128,7 +1128,7 @@
                                         AutomationProperties.Name="OHG settings save show config"
                                         Command="{x:Bind OhgSettings.SaveCommand}" />
                                 <!-- Two optional FileOpenPickers first (infrastructure, then mukana; cancel = null),
-                                     then the handler drives OhgSettings.ImportLegacyCommand with the read texts -
+                                     then the code-behind handler runs the import command with the read texts -
                                      a Command binding cannot collect picker input first, so this is Click, not x:Bind. -->
                                 <Button Content="Import legacy show"
                                         MinWidth="150"

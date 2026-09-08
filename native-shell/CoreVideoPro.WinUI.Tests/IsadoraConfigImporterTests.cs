@@ -121,6 +121,23 @@ public sealed class IsadoraConfigImporterTests
     }
 
     [Fact]
+    public void ExistingModelWithEmptyLooks_ActuallyGetsTheFourDefaultLooks()
+    {
+        // Fix round 1, Important #1: an existing (non-null) model whose Looks list is empty is
+        // reachable (delete every look and save) - the importer must actually WRITE the defaults
+        // onto the model, not just say it did.
+        var existing = OhgConfigEditModel.Default();
+        existing.Looks = [];
+
+        var result = IsadoraConfigImporter.Import(InfrastructureJsDoubleQuoted, MukanaJsDoubleQuoted, existing);
+
+        var expectedIds = OhgConfigEditModel.Default().Looks.Select(look => look.Id).ToList();
+        Assert.Equal(expectedIds, result.Model.Looks.Select(look => look.Id).ToList());
+        Assert.Equal(4, result.Model.Looks.Count);
+        Assert.Contains(result.Found, line => line.StartsWith("looks: wrote the 4 default looks", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void CallersExistingModel_IsNeverMutated()
     {
         var existing = OhgConfigEditModel.Default();
