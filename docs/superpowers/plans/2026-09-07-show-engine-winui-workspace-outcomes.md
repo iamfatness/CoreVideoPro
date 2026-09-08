@@ -216,8 +216,10 @@ wrong.
 7. **⚠ Role combo after container recycling.** Scroll the roster far enough to recycle rows: each
    visible row's dropdown must still show ITS role, and changing one must not fire a change for
    another. The `ohg: role …` lines in `launch.log` are the tell.
-8. **⚠ Guidance colour reads as guidance, not tally.** Refuse an action (tap a seat with no
-   panelist selected) and confirm the amber status line does not read as an on-air indication.
+8. **⚠ Guidance colour reads as guidance, not tally.** Trigger a LOCAL refusal (press "Add to
+   first empty" with no panelist selected, or a gallery cell with no seat selected — a bare seat
+   tap is now silent by design, see final-review I4) and confirm the amber status line does not
+   read as an on-air indication.
 9. **Program panel:** PGM/PVW labels, current speaker and queue readouts update; Cut / Auto /
    Preview / Direct cut work; the look picker cues and the box strip pages with Next/Prev guest.
 10. **Direct cut before the first snapshot** must be **disabled** until PVW is known.
