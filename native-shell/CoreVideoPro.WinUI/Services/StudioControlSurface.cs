@@ -76,7 +76,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _feedbackTimer;
     private readonly ShowEngineBridge? _bridge;
-    private readonly OhgHostAdapter? _ohgAdapter;
+    /// <summary>The OHG host adapter, held in a SLOT rather than a readonly field so a saved show
+    /// config can swap it live (<see cref="ReplaceOhgAdapter"/>). Read at APPLY time — see
+    /// <see cref="OhgAdapterSlot"/>.</summary>
+    private readonly OhgAdapterSlot _ohgAdapterSlot = new();
     private bool _disposed;
 
     /// <summary>The OHG show engine is OPTIONAL (both trailing arguments null = the app has no
@@ -91,7 +94,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         _vm = viewModel;
         _dispatcher = dispatcher;
         _bridge = bridge;
-        _ohgAdapter = ohgAdapter;
+        _ohgAdapterSlot.Replace(ohgAdapter);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _feedbackTimer = _dispatcher.CreateTimer();
         _feedbackTimer.IsRepeating = false;
@@ -552,7 +555,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             AudioSources = audioSources,
         }, _vm.NativeControlSnapshot);
 
-        return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapter?.ShadowLastCommand);
+        return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapterSlot.Current?.ShadowLastCommand);
     }
 
     private static readonly ShowEngineHealth StoppedHealth =
@@ -629,30 +632,46 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
     // await and rewrite the preview draft mid-take — putting the wrong guest on air. The queue
     // holds each command until its predecessor has fully finished, awaits included.
     private void OnBridgeHostCommand(object? sender, ShowEngineHostCommand command)
-        => UiDispatch.Run(
-            _dispatcher,
-            () => _ = _ohgCommands.Enqueue(() => ApplyHostCommandAsync(command)),
+    {
+        var binding = _ohgAdapterSlot.Capture();
+        UiDispatch.Run(_dispatcher,
+            () => _ = _ohgCommands.Enqueue(() => ApplyHostCommandAsync(command, binding)),
             "control-surface.ohg-host-command");
-
+    }
     /// <summary>Serializes <see cref="ApplyHostCommandAsync"/> across awaits. Enqueued from inside
     /// the UiDispatch callback above, so every link runs on the UI thread.</summary>
     private readonly SequentialAsyncQueue _ohgCommands = new(
         ex => LaunchLog.Write($"ohg: host command queue link failed :: {ex}"));
 
-    private async Task ApplyHostCommandAsync(ShowEngineHostCommand command)
+    private async Task ApplyHostCommandAsync(ShowEngineHostCommand command, OhgAdapterSlot.Binding binding)
     {
-        if (_disposed || _ohgAdapter is null)
+        // Reject commands queued before a settings swap or engine restart.
+        var adapter = _ohgAdapterSlot.Resolve(binding, command.Generation, _bridge?.Health.Generation ?? -1);
+        if (_disposed || adapter is null)
         {
             return;
         }
 
         try
         {
-            var refusal = await _ohgAdapter.ApplyAsync(command).ConfigureAwait(true);
+            var refusal = await adapter.ApplyAsync(command).ConfigureAwait(true);
+            if (_disposed || _ohgAdapterSlot.Resolve(binding, command.Generation, _bridge?.Health.Generation ?? -1) is null) return;
             if (refusal is { Length: > 0 })
             {
                 // Operator-visible: a refused host command must never be silent.
                 _vm.CommandStatus = refusal;
+
+                // ...and on the OHG tab's own status strip (spec §10). The operator producing the
+                // show is looking at that strip, not at the workspace-wide command status line.
+                _vm.OhgShow?.NoteAdapterRefusal(refusal);
+            }
+
+            // Shadow mode's whole product value is SEEING what the engine would have done, so the
+            // adapter's last shadowed line is pushed to the workspace after EVERY apply — a
+            // refusal included (the adapter records what it was asked to do either way).
+            if (adapter.ShadowLastCommand is { Length: > 0 } shadowed)
+            {
+                _vm.OhgShow?.SetShadowLastCommand(shadowed);
             }
         }
         catch (Exception ex)
@@ -661,6 +680,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         }
     }
 
+    /// <summary>UI-thread settings swap: retire queued payloads and reject commands
+    /// from the old engine even between the swap and the subsequent restart.</summary>
+    public void ReplaceOhgAdapter(OhgHostAdapter? adapter)
+        => _ohgAdapterSlot.Replace(adapter, (long)(_bridge?.Health.Generation ?? 0) + 1);
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (_disposed || e.PropertyName is null || !FeedbackProps.Contains(e.PropertyName))

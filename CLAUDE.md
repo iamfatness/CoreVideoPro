@@ -700,6 +700,71 @@ is opaque to the shell (validated engine-side); `shell` is ours:
   refusal, not a clamp. A config with **no `version`** is refused as unsupported (never assumed v1).
 - `tallyUrl` is parsed and reserved; nothing posts to it in 7a.
 
+**Edit it in the app (Plan 7b Task 10):** Settings -> **OHG show** edits the same
+`ShowConfigStore` document (integrations, Mukana polling, looks, the four preset scenes,
+`driveHost`, default transition, tally URL). **Save** validates against the app's CURRENT
+scene ids, writes the effective config, hot-swaps the `OhgHostAdapter`
+(`StudioControlSurface.ReplaceOhgAdapter` -> `OhgAdapterSlot`), rebuilds `StudioViewModel.OhgShow`,
+then restarts the engine — in that ORDER, which is pinned by the pure
+`OhgConfigApplySteps.Order(engineRunning)` (restarting before materializing boots the engine on
+the PREVIOUS config; swapping the adapter after the restart cues the wrong scene on air). With no
+engine this launch it validates + writes only and the page says to restart the app. **The adapter
+is read at APPLY time, never at enqueue time** — a host command queued behind an awaiting take
+must use the adapter that is current when it RUNS, because the engine has by then been restarted
+onto the new config. `OhgConfigEditModel` is deliberately NOT observable, so the section binds
+`[ObservableProperty]` mirrors on `OhgSettingsViewModel` that write through to it; the intervals
+and per-look box count are `double` because `NumberBox.Value` is a double and x:Bind will not
+narrow it back. Every ComboBox in the section is filled and selected in guarded code-behind (never
+x:Bind selection), and every interactive element is named `OHG settings ...`.
+
+**OHG Show tab (Plan 7b).** Open it from the Produce nav group — the **"OHG Show"** button
+(nav key `ohgshow`, `StudioTab.OhgShow`) — for the status strip, panelist board, program, gallery
+and GFX/data panels. Four rules govern anything you change there:
+
+- **The panels are THIN RENDERERS.** `OhgShowViewModel` ingests the engine snapshot on the UI
+  thread and projects it (`OhgSnapshotView`, pure); rows are **diff-updated in place** via
+  `ObservableCollectionSync` and scalars are `[ObservableProperty]`. So a `PropertyChanged` storm
+  while this tab is up is a **snapshot-rate bug** (the engine publishing too often, or a projection
+  that mints new values from equal input) — **not** a UI bug. Fix the rate or the projection; never
+  add a UI-side throttle on top.
+- **Every button is an `ohg.*` invoke through `IOhgActionInvoker`.** The page and its view models
+  reach the engine ONLY through that seam (typed `OhgActionArgs` builders) — no direct bridge or
+  supervisor calls, which is what makes every control testable without a running child process.
+- **0xc000027b discipline, deliberately:** diff-updated rows (never a bound collection replaced at
+  snapshot rate), every code-behind handler — **including DependencyProperty callbacks** — wrapped
+  in `Guarded(...)` so a throwing callback logs instead of fail-fasting the process, and ComboBox
+  selection applied in guarded code-behind rather than x:Bind. There is **no exception**: both
+  `OhgShowPageContentTests.Page_GuardsEveryUiCallback` and its settings-window twin now read each
+  handler's BODY and fail unless it routes through `Guarded(...)` (naming the handler was not
+  enough — `OnRoleComboLoaded` was hooked from the XAML and delegated to a method with its own
+  try/catch, which is a different guarantee and invisible at the handler).
+- **The page's `ViewModel` DependencyProperty is assigned AFTER construction, so `Mode=OneTime` is
+  forbidden on any `ViewModel.` path — commands included.** A OneTime binding evaluates against a
+  null root and never re-evaluates: the "Set up OHG" button was inert and the Gallery note empty.
+  Pinned by `Page_NeverBindsALateBoundViewModelPathOneTime`.
+- **A settings picker may only offer values the ENGINE accepts.** `optionalPlateTone` and its
+  siblings (`show-engine/src/config.ts`) THROW on anything outside their enum, and a rejected
+  config is exit 78 — terminal, no respawn. The plate-tone picker shipped `warm`/`cool`, which no
+  engine build has ever accepted. The one copy of the three enums is `OhgLookChoices`
+  (`Services/OhgConfigEditModel.cs`); the pickers and `OhgSettingsViewModel.Validate()` both read
+  it, and `OhgSettingsChoicesTests` pins it against `contracts.ts`. Validate also requires a
+  non-blank look `label` — `ToConfig()` would otherwise emit `label:""`, which `requireString`
+  refuses at parse time.
+- **The seat button is one gesture with two meanings.** It selects the seat AND runs the assign
+  command. A successful assign therefore CLEARS `SelectedParticipantId`, and a tap with nothing
+  selected only selects the seat (silently) — without that, tapping a second seat merely to look at
+  it fired `ohg.panelist.replace` on air with the previously selected guest.
+- **Saving the OHG config hot-restarts the engine and REBUILDS the page view model** (the order is
+  pinned by `OhgConfigApplySteps.Order`, above). The one exception is first-time setup with no
+  engine running this launch: that writes the config and asks for an **app restart**.
+- **The importer is HONEST by contract** (Settings -> OHG show -> import from the legacy Isadora
+  files): it reports `Found`/`NotFound` per probe in plain words, **never guesses** a value it
+  could not read, and **never changes capacity** (a legacy `videoPins` that disagrees is reported,
+  not applied).
+
+The **first-launch checklist** the owner runs on first open lives in
+`docs/superpowers/plans/2026-09-07-show-engine-winui-workspace-outcomes.md`.
+
 **Env vars:** `COREVIDEO_NODE_EXE` + `COREVIDEO_SHOW_ENGINE_DIR` (BOTH or neither — one alone is
 ignored) select a dev/override host; otherwise `<app>\node\node.exe` + `<app>\show-engine\` (packaged,
 staged by `scripts/sync-node-runtime-to-app.ps1`), then `node` on PATH + `<repo>\show-engine\` (dev).
@@ -707,9 +772,9 @@ staged by `scripts/sync-node-runtime-to-app.ps1`), then `node` on PATH + `<repo>
 
 **Exit codes** (the host owns them; the supervisor reads them): `64` usage (bad argv), `78` config
 rejected — **terminal, no backoff, no respawn**, because a bad config will be bad again — `70`
-anything else (restartable). Restarts escalate 1→2→4→8→16→30 s (`ShowEngineRestartPolicy.Delays`; the 30 s
-entry repeats) and **give up after 5 consecutive
-failures**; a 60 s healthy run resets the budget. `--conformance` runs the exported host conformance
+anything else (restartable). Restarts escalate 1→2→4→8→16 s, then Failed after the 5th consecutive
+failure (the 30 s rung in `ShowEngineRestartPolicy.Delays` is reachable only with a raised budget);
+a 60 s healthy run resets the budget. `--conformance` runs the exported host conformance
 suite in-process and exits 0 iff every case passed (this is what the xUnit integration test drives).
 
 **Logs:** `%LOCALAPPDATA%\CoreVideoPro\show-engine.log` (the engine's own `log` events, and the

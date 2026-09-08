@@ -29,7 +29,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distEntry = path.join(packageRoot, "dist", "index.js");
@@ -150,7 +150,10 @@ function reorderKeys(value) {
 }
 
 async function main() {
-  const barrel = await import(distEntry);
+  // A bare Windows path is not a legal ESM specifier ("Received protocol 'c:'"),
+  // so the dynamic import MUST go through a file:// URL or this script cannot run
+  // on Windows at all.
+  const barrel = await import(pathToFileURL(distEntry).href);
 
   // 1. Runtime names.
   const missing = RUNTIME_NAMES.filter((name) => barrel[name] === undefined);
