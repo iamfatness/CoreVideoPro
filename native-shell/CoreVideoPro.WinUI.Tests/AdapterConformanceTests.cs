@@ -208,9 +208,10 @@ public sealed partial class AdapterConformanceTests
     private static partial Regex TallyLine();
 
     /// <summary>
-    /// What the shell would have read out of <c>config.engine.looks[]</c> — the ONE look
+    /// What the shell would have read out of <c>config.engine.looks[]</c> — the TWO looks
     /// <c>CONFORMANCE_CONFIG</c> declares (<c>show-engine/src/conformance.ts</c>:
-    /// <c>CONFORMANCE_LOOK_ID</c> / <c>CONFORMANCE_SCENE_PRESET</c>).
+    /// <c>CONFORMANCE_LOOK_ID</c> / <c>CONFORMANCE_SOLO_LOOK_ID</c> /
+    /// <c>CONFORMANCE_SCENE_PRESET</c>), which deliberately share one preset scene.
     ///
     /// <para>It is written out here rather than parsed from the temp config because the
     /// <c>--conformance</c> mode builds its engines from <c>CONFORMANCE_CONFIG</c> internally and
@@ -220,7 +221,11 @@ public sealed partial class AdapterConformanceTests
     /// refusal, i.e. loudly, on the <c>Assert.Empty(run.Refusals)</c> above.</para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ConformanceLookPresets =
-        new Dictionary<string, string>(StringComparer.Ordinal) { ["conformance.panel"] = "conformance-scene" };
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["conformance.panel"] = "conformance-scene",
+            ["conformance.solo-host"] = "conformance-scene"
+        };
 
     /// <summary>All four presets set and <c>DriveHost = true</c>: shadow mode records instead of
     /// applying, so a conformance run in shadow mode would assert on the adapter's LOG rather than

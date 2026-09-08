@@ -724,9 +724,9 @@ staged by `scripts/sync-node-runtime-to-app.ps1`), then `node` on PATH + `<repo>
 
 **Exit codes** (the host owns them; the supervisor reads them): `64` usage (bad argv), `78` config
 rejected — **terminal, no backoff, no respawn**, because a bad config will be bad again — `70`
-anything else (restartable). Restarts escalate 1→2→4→8→16→30 s (`ShowEngineRestartPolicy.Delays`; the 30 s
-entry repeats) and **give up after 5 consecutive
-failures**; a 60 s healthy run resets the budget. `--conformance` runs the exported host conformance
+anything else (restartable). Restarts escalate 1→2→4→8→16 s, then Failed after the 5th consecutive
+failure (the 30 s rung in `ShowEngineRestartPolicy.Delays` is reachable only with a raised budget);
+a 60 s healthy run resets the budget. `--conformance` runs the exported host conformance
 suite in-process and exits 0 iff every case passed (this is what the xUnit integration test drives).
 
 **Logs:** `%LOCALAPPDATA%\CoreVideoPro\show-engine.log` (the engine's own `log` events, and the

@@ -541,6 +541,38 @@ public sealed partial class MainWindow : Window
     {
         var bridge = _showEngineBridge;
         _showEngineBridge = null;
+
+        // Claimed UP FRONT, disposed in the `finally`, so it is released on EVERY path out of
+        // this method — including the no-bridge early return below, which used to skip it. The
+        // two fields are nulled together today, so a null bridge means a null supervisor in
+        // practice; this is hardening against the day that stops being true, because a leaked
+        // supervisor still holds a kill-tree and a parked spawn intent nobody will ever cancel.
+        // The ORDER is unchanged and is the point: VM detach -> bridge stop -> bridge dispose ->
+        // supervisor dispose.
+        var supervisor = _showEngineSupervisor;
+        _showEngineSupervisor = null;
+
+        try
+        {
+            await StopShowEngineBridgeAsync(bridge).ConfigureAwait(true);
+        }
+        finally
+        {
+            // The supervisor LAST: it kill-trees anything StopAsync left alive and cancels the
+            // lifetime token every parked recovery is waiting on. Without it a supervisor that was
+            // mid-backoff at shutdown would still be holding a spawn intent.
+            if (supervisor is not null)
+            {
+                TryShutdownStep("ohg supervisor", supervisor.Dispose);
+            }
+        }
+    }
+
+    /// <summary>The bridge half of <see cref="StopShowEngineAsync"/>: everything that only makes
+    /// sense when a bridge was actually running. Split out so the supervisor's disposal can sit in
+    /// a `finally` around it rather than behind the null-bridge return.</summary>
+    private async Task StopShowEngineBridgeAsync(ShowEngineBridge? bridge)
+    {
         if (bridge is null)
         {
             return;
@@ -568,15 +600,6 @@ public sealed partial class MainWindow : Window
         }
 
         TryShutdownStep("ohg bridge", bridge.Dispose);
-
-        // The supervisor LAST: it kill-trees anything StopAsync left alive and cancels the
-        // lifetime token every parked recovery is waiting on. Without it a supervisor that was
-        // mid-backoff at shutdown would still be holding a spawn intent.
-        if (_showEngineSupervisor is { } supervisor)
-        {
-            _showEngineSupervisor = null;
-            TryShutdownStep("ohg supervisor", supervisor.Dispose);
-        }
     }
 
     private async Task StopControlServerAsync()
