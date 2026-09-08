@@ -8,7 +8,9 @@ param(
     [string]$NodeExe = ''
 )
 $ErrorActionPreference = 'Stop'
-if ($ReleaseId -notmatch '^alpha-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Use alpha-YYYY-MM-DD-build as ReleaseId.' }
+if ($ReleaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Use alpha-YYYY-MM-DD-build or beta-YYYY-MM-DD-build as ReleaseId.' }
+$channel = $Matches[1].ToLowerInvariant()
+$channelTitle = (Get-Culture).TextInfo.ToTitleCase($channel)
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $publish = (Resolve-Path -LiteralPath $PublishDirectory).Path
 $native = (Resolve-Path -LiteralPath $NativeBuildDirectory).Path
@@ -20,7 +22,7 @@ if ((Get-FileHash -LiteralPath $NodeExe -Algorithm SHA256).Hash -ne $nodePin.sha
 }
 $output = Join-Path $repoRoot "artifacts/releases/$ReleaseId"
 if (Test-Path -LiteralPath $output) { throw 'Release output already exists; choose a new immutable release ID.' }
-$app = Join-Path $output 'CoreVideoPro-Alpha'
+$app = Join-Path $output "CoreVideoPro-$channelTitle"
 New-Item -ItemType Directory -Path $app -Force | Out-Null
 foreach ($file in @('CoreVideoPro.WinUI.exe','CoreVideoPro.WinUI.dll','coreclr.dll','hostfxr.dll','Microsoft.UI.Xaml.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $publish $file) -PathType Leaf)) { throw "Self-contained publish missing $file" }
@@ -102,7 +104,8 @@ foreach ($required in @('msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.
 Get-ChildItem -LiteralPath $crtDirectory -File -Filter '*.dll' |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $app -Force }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'alpha/Install-MediaRuntime.ps1') -Destination $app
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/alpha-tester-guide.md') -Destination (Join-Path $app 'README.md')
+$testerGuide = if ($channel -eq 'beta') { 'docs/beta-tester-guide.md' } else { 'docs/alpha-tester-guide.md' }
+Copy-Item -LiteralPath (Join-Path $repoRoot $testerGuide) -Destination (Join-Path $app 'README.md')
 $notices = Join-Path $app 'notices'
 New-Item -ItemType Directory -Path $notices -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/alpha-third-party-inputs') -File |
@@ -149,12 +152,12 @@ foreach ($file in $files) {
     }
     if ($relative -in @('sdk.dll','corevideo-zoom-engine.exe')) { throw "Legacy root Zoom component is forbidden: $relative" }
     if ($relative -match '(?i)(^|/)(Recordings|Logs|CrashReports|SupportBundles)(/|$)|-fake\.exe$|-tests\.exe$|\.pdb$|\.dmp$|(^|/)(production-output-preferences|zoom-oauth)|(^|/)(ffmpeg|ffprobe|ffplay)\.exe$|(^|/)(av(codec|format|util|device|filter)|swscale|swresample|postproc)-[0-9]+\.dll$') {
-        throw "Disallowed public alpha content: $relative"
+        throw "Disallowed public prerelease content: $relative"
     }
 }
 $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $manifest = [ordered]@{
-    releaseId=$ReleaseId; sourceCommit=$commit; platform='Windows x64'; channel='alpha'; signed=$false
+    releaseId=$ReleaseId; sourceCommit=$commit; platform='Windows x64'; channel=$channel; signed=$false
     appRuntime='Bundled .NET, Windows App SDK and app-local Visual C++ CRT for shell/native core'; vcRuntimeVersion=$crtVersion; mediaRuntime='Verified upstream download on first launch'
     zoomRuntime='Isolated SDK/helper; requires installed Microsoft Visual C++ v14 x64 Redistributable'
     framePerformanceAccepted=$false
