@@ -127,6 +127,17 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
     /// <summary>Fed by the control surface when shadow mode swallows a host command.</summary>
     public void SetShadowLastCommand(string command) => _marshal(() => ShadowLastCommand = command ?? "");
 
+    /// <summary>Fed by the control surface when the host ADAPTER refuses a command the engine
+    /// asked for (spec §10: an adapter refusal belongs on this tab's status strip, not only on the
+    /// generic workspace status line the operator is not looking at while producing). May be called
+    /// from any thread — marshals, like every other ingest point.</summary>
+    public void NoteAdapterRefusal(string refusal)
+        => _marshal(() =>
+        {
+            if (string.IsNullOrWhiteSpace(refusal)) return;
+            PushRefusal(refusal);
+        });
+
     // ── bridge wiring (production only; tests drive the ingest methods directly) ──────
 
     /// <summary>Subscribes to the bridge's three event streams. Call from the UI thread;
@@ -145,6 +156,15 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
         bridge.SnapshotChanged += _snapshotHandler;
         bridge.HealthChanged += _healthHandler;
         bridge.Log += _logHandler;
+
+        // Re-read what the bridge already holds, AFTER subscribing. The engine publishes on its
+        // own schedule, so a snapshot (or a health flip) that landed between this view model's
+        // construction and this call would otherwise never reach the page — the tab would sit on
+        // "stopped" and an empty board until the engine's next publish. Subscribing first means the
+        // worst case is applying the same revision twice, which the envelope gate swallows; reading
+        // first would leave a real gap.
+        if (bridge.Latest is { } latest) OnSnapshot(latest);
+        OnHealth(bridge.Health);
     }
 
     public void Dispose() => Detach();
@@ -181,7 +201,12 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
 
             var view = OhgSnapshotProjection.Project(snapshot.Snapshot, out var warnings);
             NoteProjectionWarnings(warnings);
-            Apply(view);
+            // The ENVELOPE revision is what the gate above compares, so it is what the gate must
+            // remember. The projected view's revision comes from the snapshot BODY, and a body that
+            // omits (or malforms) `revision` projects 0 — which would make the gate compare 0
+            // against every future envelope and re-run the whole diff on every republish: exactly
+            // the bound-collection churn the 0xc000027b rules exist to prevent.
+            Apply(view, snapshot.Revision);
             _appliedGeneration = snapshot.Generation;
         });
     }
@@ -243,12 +268,12 @@ public sealed partial class OhgShowViewModel : ObservableObject, IDisposable
 
     /// <summary>Revision-gated: the engine republishes on a cadence, and re-running the diff for a
     /// revision already on screen is pure churn (which is the thing that fail-fasts WinUI).</summary>
-    private void Apply(OhgSnapshotView view)
+    private void Apply(OhgSnapshotView view, long envelopeRevision)
     {
         // The envelope gate in OnSnapshot already refused a genuine repeat before this runs;
         // Apply always does the work when called.
         _hasApplied = true;
-        _appliedRevision = view.Revision;
+        _appliedRevision = envelopeRevision;
 
         ObservableCollectionSync.Apply(
             Panelists, view.Panelists,

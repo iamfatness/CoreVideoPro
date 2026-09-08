@@ -357,7 +357,7 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
         var seenIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var look in Model.Looks)
         {
-            if (string.IsNullOrEmpty(look.Id))
+            if (string.IsNullOrWhiteSpace(look.Id))
             {
                 return "Every look needs an id";
             }
@@ -365,9 +365,31 @@ public sealed partial class OhgSettingsViewModel : ObservableObject
             {
                 return $"Duplicate look id '{look.Id}'";
             }
+            // AddLook() mints {Id="", Label=""}, and ToConfig() emits label:"" — which the engine's
+            // requireString refuses at parse time (exit 78, terminal). Caught here, at Save, where
+            // the operator can fix it, instead of at the next engine launch.
+            if (string.IsNullOrWhiteSpace(look.Label))
+            {
+                return $"Look '{look.Id}' needs a label";
+            }
             if (look.Boxes < 0 || look.Boxes > MaxLookBoxes)
             {
                 return $"look '{look.Id}': boxes must be 0..4";
+            }
+            // The three enumerations: config.ts's optionalPlateTone/optionalTallySource/
+            // optionalBoxFill THROW on anything outside these sets. The pickers only ever offer
+            // legal values now, but a hand-edited ohg-show-config.json must not slip through.
+            if (!OhgLookChoices.PlateTones.Contains(look.PlateTone, StringComparer.Ordinal))
+            {
+                return $"look '{look.Id}': plateTone must be one of {OhgLookChoices.List(OhgLookChoices.PlateTones)}";
+            }
+            if (!OhgLookChoices.TallySources.Contains(look.TallySource, StringComparer.Ordinal))
+            {
+                return $"look '{look.Id}': tallySource must be one of {OhgLookChoices.List(OhgLookChoices.TallySources)}";
+            }
+            if (!OhgLookChoices.BoxFills.Contains(look.BoxFill, StringComparer.Ordinal))
+            {
+                return $"look '{look.Id}': boxFill must be one of {OhgLookChoices.List(OhgLookChoices.BoxFills)}";
             }
         }
 

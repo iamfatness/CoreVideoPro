@@ -298,10 +298,10 @@ public sealed partial class OhgShowPage : UserControl
         show.SelectedSlot = row.Slot;
     });
 
-    private void OnRoleComboLoaded(object sender, RoutedEventArgs e)
+    private void OnRoleComboLoaded(object sender, RoutedEventArgs e) => Guarded("role combo load", () =>
     {
         if (sender is ComboBox combo) SyncRoleCombo(combo);
-    }
+    });
 
     private void OnPanelistElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
         => Guarded("role combo realize", () =>

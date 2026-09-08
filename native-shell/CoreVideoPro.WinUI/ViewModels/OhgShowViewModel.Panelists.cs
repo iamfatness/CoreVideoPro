@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.Input;
+using CoreVideoPro.Control;
 using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.ViewModels;
@@ -26,13 +27,22 @@ public sealed partial class OhgShowViewModel
     /// <summary>Assigns the currently selected panelist to <paramref name="slot"/>. Whether that
     /// lands as <c>ohg.panelist.add</c> or <c>ohg.panelist.replace</c> is read from the LAST
     /// PROJECTED snapshot (<see cref="Current"/>) — never guessed locally — because that is the
-    /// only place "is this slot occupied" is known to be true as of the engine's last word.</summary>
+    /// only place "is this slot occupied" is known to be true as of the engine's last word.
+    ///
+    /// <para><b>The seat tap is one gesture with two meanings, and the order matters.</b> The seat
+    /// button both selects the seat (its Click handler) and runs this command. With NO panelist
+    /// selected the tap is a pure SELECT — it must not write a status line, because the operator
+    /// asked for nothing. With a panelist selected it seats them AND CLEARS the selection: leaving
+    /// it set turned the next seat tap into an unasked-for <c>ohg.panelist.replace</c> on air (tap
+    /// seat 4, then tap seat 2 to look at it, and seat 2's guest was replaced by seat 4's).</para></summary>
     [RelayCommand]
     private async Task AssignSelectedToSlotAsync(int slot)
     {
         if (SelectedParticipantId is not string participantId)
         {
-            LastActionStatus = "Select a panelist first";
+            // Select-only. No refusal text: "Select a panelist first" is guidance for the EXPLICIT
+            // assign affordances, where the operator did ask to assign.
+            _marshal(() => SelectedSlot = slot);
             return;
         }
 
@@ -44,6 +54,16 @@ public sealed partial class OhgShowViewModel
 
         var result = await _invoker.InvokeAsync(id, args).ConfigureAwait(false);
         ReportResult(result);
+        ClearSelectedParticipantOn(result);
+    }
+
+    /// <summary>A successful seating CONSUMES the selection — see the remarks above. Marshaled: the
+    /// invoker's continuation may resume off the UI thread, exactly like
+    /// <see cref="ReportResult"/>.</summary>
+    private void ClearSelectedParticipantOn(ControlInvokeResult result)
+    {
+        if (!result.Ok) return;
+        _marshal(() => SelectedParticipantId = null);
     }
 
     /// <summary>Adds the currently selected panelist to whichever empty slot the engine picks
@@ -60,6 +80,7 @@ public sealed partial class OhgShowViewModel
         var (id, args) = OhgActionArgs.PanelistAdd(participantId);
         var result = await _invoker.InvokeAsync(id, args).ConfigureAwait(false);
         ReportResult(result);
+        ClearSelectedParticipantOn(result);
     }
 
     /// <summary>Removes whoever is seated in <paramref name="slot"/> (a no-op on the engine side

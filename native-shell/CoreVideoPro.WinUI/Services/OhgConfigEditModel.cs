@@ -21,6 +21,25 @@ public sealed class OhgLookEdit
     public string BoxFill = "queue";
 }
 
+/// <summary>The three look enumerations, copied from <c>show-engine/src/contracts.ts</c>
+/// (<c>PLATE_TONES</c> / <c>TALLY_SOURCES</c> / <c>BOX_FILLS</c>).
+///
+/// <para><b>Why this is one place.</b> <c>optionalPlateTone</c> and its siblings in
+/// <c>show-engine/src/config.ts</c> THROW on any value outside these sets, and a throwing config
+/// parse is exit 78 — terminal, no respawn. A settings picker offering a value the engine does not
+/// know (this shipped once, as <c>"warm"</c>/<c>"cool"</c> plate tones) therefore lets the operator
+/// save a config that kills the engine on its next launch. The picker choices and the Save-time
+/// validation both read these arrays, and <c>OhgSettingsChoicesTests</c> pins them against literal
+/// copies of the engine's arrays so drift fails a test instead of a show.</para></summary>
+internal static class OhgLookChoices
+{
+    internal static readonly string[] PlateTones = ["neutral", "accent", "guest", "breaking"];
+    internal static readonly string[] TallySources = ["boxes", "activeSpeaker"];
+    internal static readonly string[] BoxFills = ["queue", "manual"];
+
+    internal static string List(IReadOnlyList<string> choices) => string.Join(", ", choices);
+}
+
 /// <summary>Editable form of a <see cref="ShowConfig"/> (Plan 7b Task 9). Plain mutable class —
 /// no <see cref="System.ComponentModel.INotifyPropertyChanged"/> here; <c>OhgSettingsViewModel</c>
 /// wraps the parts that need binding.

@@ -733,7 +733,27 @@ and GFX/data panels. Four rules govern anything you change there:
 - **0xc000027b discipline, deliberately:** diff-updated rows (never a bound collection replaced at
   snapshot rate), every code-behind handler — **including DependencyProperty callbacks** — wrapped
   in `Guarded(...)` so a throwing callback logs instead of fail-fasting the process, and ComboBox
-  selection applied in guarded code-behind rather than x:Bind.
+  selection applied in guarded code-behind rather than x:Bind. There is **no exception**: both
+  `OhgShowPageContentTests.Page_GuardsEveryUiCallback` and its settings-window twin now read each
+  handler's BODY and fail unless it routes through `Guarded(...)` (naming the handler was not
+  enough — `OnRoleComboLoaded` was hooked from the XAML and delegated to a method with its own
+  try/catch, which is a different guarantee and invisible at the handler).
+- **The page's `ViewModel` DependencyProperty is assigned AFTER construction, so `Mode=OneTime` is
+  forbidden on any `ViewModel.` path — commands included.** A OneTime binding evaluates against a
+  null root and never re-evaluates: the "Set up OHG" button was inert and the Gallery note empty.
+  Pinned by `Page_NeverBindsALateBoundViewModelPathOneTime`.
+- **A settings picker may only offer values the ENGINE accepts.** `optionalPlateTone` and its
+  siblings (`show-engine/src/config.ts`) THROW on anything outside their enum, and a rejected
+  config is exit 78 — terminal, no respawn. The plate-tone picker shipped `warm`/`cool`, which no
+  engine build has ever accepted. The one copy of the three enums is `OhgLookChoices`
+  (`Services/OhgConfigEditModel.cs`); the pickers and `OhgSettingsViewModel.Validate()` both read
+  it, and `OhgSettingsChoicesTests` pins it against `contracts.ts`. Validate also requires a
+  non-blank look `label` — `ToConfig()` would otherwise emit `label:""`, which `requireString`
+  refuses at parse time.
+- **The seat button is one gesture with two meanings.** It selects the seat AND runs the assign
+  command. A successful assign therefore CLEARS `SelectedParticipantId`, and a tap with nothing
+  selected only selects the seat (silently) — without that, tapping a second seat merely to look at
+  it fired `ohg.panelist.replace` on air with the previously selected guest.
 - **Saving the OHG config hot-restarts the engine and REBUILDS the page view model** (the order is
   pinned by `OhgConfigApplySteps.Order`, above). The one exception is first-time setup with no
   engine running this launch: that writes the config and asks for an **app restart**.

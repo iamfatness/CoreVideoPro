@@ -660,6 +660,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             {
                 // Operator-visible: a refused host command must never be silent.
                 _vm.CommandStatus = refusal;
+
+                // ...and on the OHG tab's own status strip (spec §10). The operator producing the
+                // show is looking at that strip, not at the workspace-wide command status line.
+                _vm.OhgShow?.NoteAdapterRefusal(refusal);
             }
 
             // Shadow mode's whole product value is SEEING what the engine would have done, so the

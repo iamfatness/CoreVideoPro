@@ -385,6 +385,63 @@ public sealed partial class OhgShowViewModelTests
         Assert.Equal("cueLook wide", vm.ShadowLastCommand);
     }
 
+    // ── final review: adapter refusals, the envelope revision, and Attach's catch-up ──
+
+    /// <summary>Spec §10: a refused HOST command belongs on this tab's status strip. It used to
+    /// land only on the workspace-wide command status line, which the operator producing the show
+    /// is not looking at.</summary>
+    [Fact]
+    public void NoteAdapterRefusal_PushesOntoTheStripNewestFirst_AndCapsTheList()
+    {
+        var vm = NewVm();
+
+        vm.NoteAdapterRefusal("no scene configured for 'gallery'");
+        vm.NoteAdapterRefusal("look 'panel4' has no scene preset");
+
+        Assert.Equal("look 'panel4' has no scene preset", vm.RecentRefusals[0]);
+        Assert.Equal("no scene configured for 'gallery'", vm.RecentRefusals[1]);
+
+        for (var i = 0; i < 20; i++) vm.NoteAdapterRefusal($"refusal {i}");
+        Assert.Equal(10, vm.RecentRefusals.Count);
+        Assert.Equal("refusal 19", vm.RecentRefusals[0]);
+    }
+
+    [Fact]
+    public void NoteAdapterRefusal_IgnoresBlankText()
+    {
+        var vm = NewVm();
+
+        vm.NoteAdapterRefusal("");
+        vm.NoteAdapterRefusal("   ");
+
+        Assert.Empty(vm.RecentRefusals);
+    }
+
+    /// <summary>The envelope gate compares the ENVELOPE's revision, so that is what a successful
+    /// apply must record. Recording the projected view's revision instead (which comes from the
+    /// snapshot BODY, and is 0 when the body omits it) left the gate comparing 0 forever and
+    /// re-ran the whole diff on every republish — bound-collection churn at snapshot rate, which is
+    /// the 0xc000027b failure mode.</summary>
+    [Fact]
+    public void TheAppliedRevisionComesFromTheEnvelope_NotTheProjectedBody()
+    {
+        var vm = NewVm();
+        var bodyWithoutRevision = SnapshotA.Replace("\"revision\": 5,", "").Replace("\"revision\":5,", "");
+
+        // Envelope revision 7, body carrying none.
+        var element = Json(bodyWithoutRevision);
+        var first = new ShowEngineSnapshot(1, 7, element, new Dictionary<string, JsonElement>());
+        vm.OnSnapshot(first);
+        Assert.Equal(2, vm.Panelists.Count);
+
+        var log = new ActionLog().Watch(vm.Panelists).Watch(vm.Slots).Watch(vm.Gallery).Watch(vm.Unseated);
+
+        // The same envelope again: a repeat, and the gate must swallow it.
+        vm.OnSnapshot(new ShowEngineSnapshot(1, 7, Json(bodyWithoutRevision), new Dictionary<string, JsonElement>()));
+
+        Assert.Empty(log.Actions);
+    }
+
     [Fact]
     public void PagingRefusedIsEmptyWhenNull()
     {

@@ -172,6 +172,16 @@ public sealed partial class ProductionSettingsWindow : Window
             {
                 combo.Items.Add(choice);
             }
+
+            // A stored value the engine does not know (a hand-edited config, or one written by the
+            // build that offered "warm"/"cool" plate tones) is ADDED as an extra item rather than
+            // silently swapped for choices[0]: the picker must show what the model actually holds,
+            // and Save's enum rules are what refuse it — out loud, naming the look.
+            if (selected is { Length: > 0 } && !combo.Items.Contains(selected))
+            {
+                combo.Items.Add(selected);
+            }
+
             combo.SelectedItem = selected is not null && combo.Items.Contains(selected)
                 ? selected
                 : (choices.Count > 0 ? choices[0] : null);
@@ -362,10 +372,14 @@ public sealed partial class ProductionSettingsWindow : Window
     private static OhgLookEditorViewModel? LookFor(FrameworkElement element)
         => element.Tag as OhgLookEditorViewModel ?? element.DataContext as OhgLookEditorViewModel;
 
-    /// <summary>The enumerations <c>show-engine/src/contracts.ts</c> defines for a look.</summary>
-    private static readonly string[] PlateTones = ["neutral", "warm", "cool"];
-    private static readonly string[] TallySources = ["boxes", "activeSpeaker"];
-    private static readonly string[] BoxFills = ["queue", "manual"];
+    /// <summary>The enumerations <c>show-engine/src/contracts.ts</c> defines for a look — the ONE
+    /// copy lives in <see cref="OhgLookChoices"/>, pinned against the engine's arrays by
+    /// <c>OhgSettingsChoicesTests</c>. These pickers previously offered "warm"/"cool" plate tones,
+    /// which no engine build has ever accepted: saving one made <c>optionalPlateTone</c> throw at
+    /// the next config parse, i.e. exit 78 — terminal, no respawn.</summary>
+    internal static string[] PlateTones => OhgLookChoices.PlateTones;
+    internal static string[] TallySources => OhgLookChoices.TallySources;
+    internal static string[] BoxFills => OhgLookChoices.BoxFills;
 
     // Plan 7b Task 11 — one-shot import from the two legacy Isadora config files. The Click
     // handler itself stays SYNC and routed through Guarded (the house rule every OHG UI callback

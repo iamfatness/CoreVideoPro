@@ -98,13 +98,22 @@ public sealed class OhgShowPageContentTests
         foreach (var handler in handlers)
         {
             Assert.Contains(handler, code, StringComparison.Ordinal);
+
+            // Naming the handler is not enough - it must actually ROUTE through Guarded. Ported
+            // from OhgSettingsSectionContentTests, which had the per-handler assertion this test
+            // was missing: OnRoleComboLoaded was hooked from the XAML and was NOT guarded (it
+            // delegated to a method with its own try/catch, which is a different guarantee and one
+            // a reader cannot see from the handler). There is no documented exception now; if a
+            // handler ever needs one, wrap it rather than widening this test.
+            var body = MethodBody(code, handler);
+            Assert.True(
+                body.Contains("Guarded(", StringComparison.Ordinal),
+                $"XAML handler {handler} is not routed through Guarded(...): {Collapse(body)}");
         }
 
         Assert.Contains("LaunchLog.Write", code, StringComparison.Ordinal);
         Assert.Contains("catch (Exception ex)", code, StringComparison.Ordinal);
 
-        // Guarded(...) wraps the three handlers that are not already inside their own try/catch;
-        // OnRoleComboLoaded delegates to SyncRoleCombo, which is.
         Assert.Contains("private void Guarded(", code, StringComparison.Ordinal);
         Assert.Contains("Guarded(\"panelist select\"", code, StringComparison.Ordinal);
         Assert.Contains("Guarded(\"seat select\"", code, StringComparison.Ordinal);
@@ -289,14 +298,31 @@ public sealed class OhgShowPageContentTests
         var declaration = code.IndexOf($"void {methodName}(", StringComparison.Ordinal);
         Assert.True(declaration >= 0, $"Could not find a declaration for {methodName}.");
 
+        // Most handlers here are expression-bodied (`=> Guarded("...", () => { ... })`), so brace
+        // matching alone would return the LAMBDA body and miss the Guarded call that wraps it.
+        var arrow = code.IndexOf("=>", declaration, StringComparison.Ordinal);
         var open = code.IndexOf('{', declaration);
+        if (arrow >= 0 && (open < 0 || arrow < open))
+        {
+            var depth = 0;
+            for (var index = arrow; index < code.Length; index++)
+            {
+                var c = code[index];
+                if (c is '{' or '(') depth++;
+                else if (c is '}' or ')') depth--;
+                else if (c == ';' && depth == 0) return code[arrow..(index + 1)];
+            }
+
+            throw new Xunit.Sdk.XunitException($"Unterminated expression body for {methodName}.");
+        }
+
         Assert.True(open >= 0, $"Could not find a body for {methodName}.");
 
-        var depth = 0;
+        var braces = 0;
         for (var index = open; index < code.Length; index++)
         {
-            if (code[index] == '{') depth++;
-            else if (code[index] == '}' && --depth == 0) return code[open..(index + 1)];
+            if (code[index] == '{') braces++;
+            else if (code[index] == '}' && --braces == 0) return code[open..(index + 1)];
         }
 
         throw new Xunit.Sdk.XunitException($"Unbalanced braces reading the body of {methodName}.");
@@ -389,6 +415,31 @@ public sealed class OhgShowPageContentTests
     [InlineData("something-new", "StudioMutedBrush")]
     public void LampBrushKey_ColoursEveryCapabilityState(string? state, string expected)
         => Assert.Equal(expected, OhgShowPageLogic.LampBrushKey(state));
+
+    /// <summary>
+    /// This page's <c>ViewModel</c> DependencyProperty is assigned by the workspace AFTER the page
+    /// is constructed, so a <c>Mode=OneTime</c> binding on any <c>ViewModel.</c> path evaluates
+    /// against a null root and then never re-evaluates: the "Set up OHG" button was inert forever
+    /// and the Gallery honesty note rendered empty. Commands are included deliberately - a OneTime
+    /// COMMAND binding is exactly how the setup button died, and it looks harmless.
+    /// </summary>
+    [Fact]
+    public void Page_NeverBindsALateBoundViewModelPathOneTime()
+    {
+        var xaml = ReadView("OhgShowPage.xaml");
+
+        var offenders = Regex.Matches(xaml, @"\{x:Bind[^}]*\}")
+            .Select(match => Collapse(match.Value))
+            .Where(binding => binding.Contains("ViewModel.", StringComparison.Ordinal)
+                              && binding.Contains("OneTime", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.True(offenders.Count == 0, "OneTime bindings on a late-assigned ViewModel path: " + string.Join(" | ", offenders));
+
+        // The two that were wrong, pinned by name so a revert is loud.
+        Assert.Contains("ViewModel.OpenOhgSettingsCommand, Mode=OneWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.OhgShow.GalleryNote, Mode=OneWay", xaml, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void Page_NeverDrivesASelectorSelectionThroughXBind()

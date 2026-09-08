@@ -32,11 +32,14 @@
                 <TextBlock Text="OHG is not configured" Style="{StaticResource OperatorSectionTitle}" />
                 <TextBlock Style="{StaticResource OperatorSummary}"
                            Text="The OHG show engine is not running on this machine. Add an OHG show configuration to seat panelists, cue looks, and drive the gallery from this tab." />
+                <!-- Mode=OneWay, NOT OneTime, on the command too: this page's ViewModel
+                     DependencyProperty is assigned AFTER construction, so a OneTime binding
+                     evaluates against a null root and the button is inert forever. -->
                 <Button Content="Set up OHG"
                         Style="{StaticResource OperatorGhostButton}"
                         AutomationProperties.Name="OHG set up"
                         HorizontalAlignment="Left"
-                        Command="{x:Bind ViewModel.OpenOhgSettingsCommand, Mode=OneTime}" />
+                        Command="{x:Bind ViewModel.OpenOhgSettingsCommand, Mode=OneWay}" />
             </StackPanel>
         </Border>
 
@@ -152,7 +155,10 @@
                     <Grid ColumnSpacing="12">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
+                            <!-- The seat column is STARRED, not Auto. An Auto column offers a
+                                 UniformGridLayout infinite available width, so all ten seats lay
+                                 out in one row and run off the panel instead of wrapping. -->
+                            <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
                         <!-- ROSTER (master list). Selection is PAGE state applied in
@@ -557,7 +563,7 @@
                              not honour it yet. Said out loud rather than implied by a
                              control that appears to work. -->
                         <TextBlock Style="{StaticResource OperatorSummary}"
-                                   Text="{x:Bind ViewModel.OhgShow.GalleryNote, Mode=OneTime}" />
+                                   Text="{x:Bind ViewModel.OhgShow.GalleryNote, Mode=OneWay}" />
                     </StackPanel>
                 </Border>
 

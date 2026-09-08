@@ -171,6 +171,24 @@ Every ruling from the execution ledger, in the order it was made.
   means *applied, and the restart was issued*; the page's own status strip is the operator-facing
   health signal.
 
+## Final-review findings, fixed pre-merge
+
+A whole-branch review after the last task found ten defects. All are fixed in one commit
+(`fix(winui): final review fix wave …`), each with a test; the gates below were re-run green.
+
+| # | Finding | Fix |
+|---|---|---|
+| **C1** | **The plate-tone picker offered values no engine accepts.** `PlateTones = ["neutral","warm","cool"]`; the engine's enum (`contracts.ts` `PLATE_TONES`) is `neutral \| accent \| guest \| breaking`, and `optionalPlateTone` (`config.ts`) THROWS on anything else — so saving a look with "warm" wrote a config that made the host exit **78**: config rejected, TERMINAL, no respawn. A settings picker could kill the show engine. | One copy of the three enums in `OhgLookChoices`, read by both the pickers and `Validate()`; `OhgSettingsChoicesTests` pins them against literal copies of `PLATE_TONES`/`TALLY_SOURCES`/`BOX_FILLS` *and* against the `contracts.ts` text. `Validate()` now also refuses an out-of-enum `plateTone`/`tallySource`/`boxFill` by name, so a hand-edited config cannot slip through either. |
+| **I2** | **A look's `Label` was never validated and `Id` was checked with `IsNullOrEmpty`.** `AddLook()` mints `{Id="", Label=""}` and `ToConfig()` emits `label:""`, which the engine's `requireString` refuses — exit 78 again. | `IsNullOrWhiteSpace` for both; `"Look '<id>' needs a label"`. Tests assert each refusal writes nothing and applies nothing. |
+| **I3** | **A refused HOST command reached only `_vm.CommandStatus`.** Spec §10 puts adapter refusals on the OHG tab's status strip — the one the operator is actually looking at. | `OhgShowViewModel.NoteAdapterRefusal(...)` (marshaled, newest-first, capped at 10) called beside the existing `SetShadowLastCommand` push. |
+| **I4** | **The seat tap could replace a guest on air by accident.** The seat button both selects the seat and runs `AssignSelectedToSlotCommand`, and `SelectedParticipantId` was never cleared — so "tap seat 4 to seat someone, then tap seat 2 to look at it" fired `ohg.panelist.replace` on seat 2. | Controller ruling: keep the tap-tap gesture. A successful assign (seat or first-empty) CLEARS the selection; a seat tap with no selection only SELECTS the seat, silently ("Select a panelist first" is now guidance for the explicit assign affordances only). |
+| **I5** | **Two `Mode=OneTime` bindings on a late-assigned root.** The page's `ViewModel` DP is set after construction, so the "Set up OHG" button was inert and the Gallery honesty note rendered empty. | Both `Mode=OneWay`, plus a content test that fails on ANY `OneTime` binding over a `ViewModel.` path (commands included). |
+| **M6** | `_appliedRevision` was set from the PROJECTED view, not the envelope the gate compares — a body without `revision` projects 0, so the gate would re-run the whole diff on every republish (bound-collection churn at snapshot rate). | `Apply(view, snapshot.Revision)`. |
+| **M7** | `Attach(bridge)` only subscribed, so a snapshot published between construction and attach was lost until the engine's next publish. | Attach re-reads `Latest`/`Health` AFTER subscribing (worst case: one revision applied twice, which the gate swallows). Tested over a real supervisor + bridge with a scripted child. |
+| **M8** | `Page_GuardsEveryUiCallback` only checked that each handler EXISTS. `OnRoleComboLoaded` was not guarded (it delegated to a method with its own try/catch). | The per-handler `MethodBody(...).Contains("Guarded(")` assertion ported from the settings-window test; `OnRoleComboLoaded` wrapped, so there is **no documented exception**. |
+| **M9** | `FillChoiceCombo` silently substituted `choices[0]` for a stored value it did not know — the UI then showed something the model did not hold. | The stored value is ADDED as an extra item; the new enum rules refuse it, out loud, at Save. |
+| **M11** | The seat `ItemsRepeater`'s `UniformGridLayout` sat in an `Auto` column (infinite available width → ten seats in one row). | That column is `Width="*"`. |
+
 ### FIRST-LAUNCH CHECKLIST (owner, on first open of the OHG Show tab)
 
 Consolidated from the Task 7, 8 and 10 reports. Nothing on this page has ever been rendered — the
@@ -190,9 +208,11 @@ wrong.
    of wrapping. Fix by giving the column a `*` width or pinning the repeater's width.
 5. **The panelist board** lists panelists, seats and unseated guests; clicking a panelist then a
    seat assigns it.
-6. **⚠ Right-click flyout targets the seat under the cursor.** A `MenuFlyoutItem`
-   `CommandParameter="{x:Bind Slot}"` inside a `ContextFlyout` in a `DataTemplate` compiles but has
-   never been exercised — remove seat 3 and confirm **seat 3** empties.
+6. **Right-click flyout targets the seat under the cursor.** *(Final review: NOT a defect — the
+   house `ElementName` pattern.* The flyout's `Command` resolves through
+   `ElementName=OhgShowPageRoot` and its `CommandParameter` is the row's own `Slot`, which is the
+   same shape every other templated command on this page uses.) Still worth one confirming click:
+   remove seat 3 and confirm **seat 3** empties.
 7. **⚠ Role combo after container recycling.** Scroll the roster far enough to recycle rows: each
    visible row's dropdown must still show ITS role, and changing one must not fire a change for
    another. The `ohg: role …` lines in `launch.log` are the tell.
@@ -205,12 +225,11 @@ wrong.
     cue a look from Companion or OSC: the picker must show the engine's current look, never a stale
     or empty selection. (This is the `PropertyChanged` + DP-callback path that Task 10's review
     found broken once already.)
-12. **⚠ Toggle re-entrancy.** Flip AS-follow and Smart **from the engine side** and watch
-    `show-engine.log`: the switch must move without the page re-sending `asFollow.set` /
-    `gallery.smart.set`. A snapshot-driven echo shows as one command per snapshot. If it appears,
-    the fix is a latch of the last APPLIED value on the page rather than reading the view model at
-    handler time — the guard assumes the OneWay `IsOn` write and the property it compares against
-    are in step, and `Toggled` may fire first.
+12. **Toggle re-entrancy — CONFIRM ONLY (the latch is already implemented).** Flip AS-follow and
+    Smart **from the engine side** and watch `show-engine.log`: the switch must move without the
+    page re-sending `asFollow.set` / `gallery.smart.set`. The page applies the value under a
+    re-entrancy flag and compares against the last APPLIED value, so this is a confirmation, not an
+    open risk; a per-snapshot echo would mean the latch is not holding.
 13. **Gallery:** cells render; replace / remove / reset / empty work; Smart gallery toggles without
     echoing. **⚠** Confirm the wall stays **4 columns** at the panel's real width — a narrow window
     could reflow it to 3 and renumber the operator's mental grid mid-show.
@@ -242,6 +261,14 @@ wrong.
     message names the look, and nothing is written or restarted.
 23. **Shadow-mode round trip.** With `driveHost` off, drive the engine and confirm the page's "last
     shadowed command" line updates after each host command, and that nothing reaches program.
+24. **The seat tap consumes the selection (final-review fix I4).** Tap a panelist, tap a seat: the
+    guest is seated AND the panelist selection clears. Then tap a DIFFERENT, occupied seat — it must
+    only select that seat; nobody may be replaced.
+25. **The "Set up OHG" button opens Settings (final-review fix I5).** On a machine with no config,
+    the setup surface's button must actually navigate — it was an inert `OneTime` binding.
+26. **The Gallery honesty note is visible (final-review fix I5).** The line under the gallery wall
+    must render its text, not an empty block.
+
 
 ## Deferred minors
 
