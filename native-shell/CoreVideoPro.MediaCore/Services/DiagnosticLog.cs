@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Threading;
 
 namespace CoreVideoPro.MediaCore.Services;
 
@@ -10,6 +11,17 @@ public static class DiagnosticLog
         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
     private static readonly string Identity = $"pid={Environment.ProcessId} session={Session} build={Build}";
     private static readonly DiagnosticExceptionLimiter Exceptions = new();
+    private static int _verboseEnabled;
+
+    /// <summary>
+    /// Session-scoped diagnostic detail. It deliberately resets off at process
+    /// startup and is never persisted into production preferences.
+    /// </summary>
+    public static bool VerboseEnabled
+    {
+        get => Volatile.Read(ref _verboseEnabled) != 0;
+        set => Volatile.Write(ref _verboseEnabled, value ? 1 : 0);
+    }
 
     // Resolve once: do not enumerate assemblies on hot render/pipe log paths.
     public static bool IsTestHost { get; } = AppDomain.CurrentDomain.GetAssemblies().Any(assembly =>
@@ -34,6 +46,14 @@ public static class DiagnosticLog
                 $"[{DateTimeOffset.Now:O}] [{Identity} role={(test ? "test" : "app")}] {message}{Environment.NewLine}");
         }
         catch { /* Diagnostics must never disrupt the studio. */ }
+    }
+
+    public static void WriteVerbose(string fileName, string message)
+    {
+        if (VerboseEnabled)
+        {
+            Write(fileName, message);
+        }
     }
 
     public static void WriteException(string fileName, string context, Exception exception, string? requestId = null)

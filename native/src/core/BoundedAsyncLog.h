@@ -38,6 +38,12 @@ class BoundedAsyncLog {
 #endif
 
 void nativeLogf(const char* format, ...) noexcept;
+// High-frequency timing and frame diagnostics. Disabled by default so normal
+// production logging cannot compete with media work; the Health UI controls it
+// live for the current process.
+void nativeVerboseLogf(const char* format, ...) noexcept;
+void setNativeVerboseLoggingEnabled(bool enabled) noexcept;
+[[nodiscard]] bool nativeVerboseLoggingEnabled() noexcept;
 [[nodiscard]] BoundedAsyncLog::Stats nativeLogStats();
 
 }  // namespace corevideo::core

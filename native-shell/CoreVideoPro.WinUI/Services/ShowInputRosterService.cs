@@ -1,5 +1,6 @@
 using System.Collections;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.Services;
@@ -599,17 +600,20 @@ public static class ShowInputRosterService
             .ToDictionary(asset => asset.Id, asset => asset, StringComparer.Ordinal);
 
         // DIAGNOSTIC (change-gated): why do in-show slots resolve (or not) into multiview sources?
-        var inShowAssigned = slots.Where(s => s.InShow && s.IsAssigned).ToList();
-        var diagSig = string.Join("|", inShowAssigned.Select(s => $"{s.SlotNumber}:{s.Kind}:{s.CaptureDeviceId}:{s.ParticipantId}")) +
-            "#dev:" + string.Join(",", devicesById.Keys) + "#par:" + string.Join(",", participantsById.Keys);
-        if (diagSig != _lastMvResolveDiagSig)
+        if (DiagnosticLog.VerboseEnabled)
         {
-            _lastMvResolveDiagSig = diagSig;
-            foreach (var s in inShowAssigned)
+            var inShowAssigned = slots.Where(s => s.InShow && s.IsAssigned).ToList();
+            var diagSig = string.Join("|", inShowAssigned.Select(s => $"{s.SlotNumber}:{s.Kind}:{s.CaptureDeviceId}:{s.ParticipantId}")) +
+                "#dev:" + string.Join(",", devicesById.Keys) + "#par:" + string.Join(",", participantsById.Keys);
+            if (diagSig != _lastMvResolveDiagSig)
             {
-                LaunchLog.Write($"mv-resolve: slot{s.SlotNumber} kind={s.Kind} capId='{s.CaptureDeviceId}' pid='{s.ParticipantId}' resolved={HasResolvedSource(s, participantsById, devicesById, mediaAssetsById)}");
+                _lastMvResolveDiagSig = diagSig;
+                foreach (var s in inShowAssigned)
+                {
+                    LaunchLog.WriteVerbose($"mv-resolve: slot{s.SlotNumber} kind={s.Kind} capId='{s.CaptureDeviceId}' pid='{s.ParticipantId}' resolved={HasResolvedSource(s, participantsById, devicesById, mediaAssetsById)}");
+                }
+                LaunchLog.WriteVerbose($"mv-resolve: inShowAssigned={inShowAssigned.Count} captureDevices=[{string.Join(",", devicesById.Keys)}] participants=[{string.Join(",", participantsById.Keys.Take(8))}]");
             }
-            LaunchLog.Write($"mv-resolve: inShowAssigned={inShowAssigned.Count} captureDevices=[{string.Join(",", devicesById.Keys)}] participants=[{string.Join(",", participantsById.Keys.Take(8))}]");
         }
 
         return slots

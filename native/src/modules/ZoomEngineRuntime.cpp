@@ -590,13 +590,13 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
       const auto idx = static_cast<std::size_t>(q * (s_samples.size() - 1));
       return s_samples[idx];
     };
-    ::corevideo::core::nativeLogf("[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
+    ::corevideo::core::nativeVerboseLogf("[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
                  "(n=%zu, +<=2ms upstream poll)\n",
                  at(0.50), at(0.99), s_samples.back(), s_samples.size());
     // Where every decoded frame went. published = fresh + overwritten (+ one
     // in-flight per source); starved = render ticks that re-served a frame the
     // compositor already had. Overwritten is the only true motion loss.
-    ::corevideo::core::nativeLogf("[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
+    ::corevideo::core::nativeVerboseLogf("[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
                  "starved=%lld over %.2fs\n",
                  slotPublished_, slotFresh_, slotOverwritten_,
                  slotPublished_ > 0 ? 100.0 * slotOverwritten_ / slotPublished_ : 0.0,
@@ -1191,7 +1191,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
   const auto now = std::chrono::steady_clock::now();
   const double seconds = std::chrono::duration<double>(now - videoPublishLogStamp_).count();
   if (seconds >= 2.0) {
-    ::corevideo::core::nativeLogf("[zoom-ingest] %.0f frames/s accepted into core; stale_publications=%llu\n",
+    ::corevideo::core::nativeVerboseLogf("[zoom-ingest] %.0f frames/s accepted into core; stale_publications=%llu\n",
         videoPublishedSinceLog_ / seconds, static_cast<unsigned long long>(staleVideoPublications_));
     videoPublishedSinceLog_ = 0;
     videoPublishLogStamp_ = now;
@@ -1370,7 +1370,7 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
     if (appendZoomEnginePcmChunk(pending, chunk, kMaxPendingAudioSamplesPerChannel)) {
       ++pending.ingestedChunks;
       if (pending.ingestedChunks == 1 || pending.ingestedChunks % 3000 == 0) {
-        ::corevideo::core::nativeLogf("[zoom-audio] stream %s chunk #%lld rate=%d ch=%d pending=%zu\n",
+        ::corevideo::core::nativeVerboseLogf("[zoom-audio] stream %s chunk #%lld rate=%d ch=%d pending=%zu\n",
                      uuid.c_str(), static_cast<long long>(pending.ingestedChunks), chunk.sampleRate,
                      chunk.channels, pending.pcm.size());
       }

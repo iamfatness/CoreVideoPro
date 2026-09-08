@@ -813,7 +813,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
   // and the real-engine paths (the multiview lives in MediaCore, not the Zoom runtime).
   if (const rpc::Json* multiview = payload.get("multiview"); multiview && multiview->isObject()) {
     if (applyMultiviewLayout(*multiview)) {
-      ::corevideo::core::nativeLogf("[multiview] set-multiview-layout received: %zu sources (spine)\n",
+      ::corevideo::core::nativeVerboseLogf("[multiview] set-multiview-layout received: %zu sources (spine)\n",
                    multiviewSources_.size());
     }
   }
@@ -825,7 +825,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
   // both the stub and the real-engine paths (the preview bus lives in MediaCore).
   if (const rpc::Json* previewScene = payload.get("previewScene"); previewScene && previewScene->isObject()) {
     if (applyPreviewScene(*previewScene)) {
-      ::corevideo::core::nativeLogf("[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
+      ::corevideo::core::nativeVerboseLogf("[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
     }
   }
 
@@ -1112,14 +1112,16 @@ void MediaCore::enqueuePreviewSharedTextureEvent() {
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
   const auto frameNumberBefore = lastProgramFrame_.frameNumber;
   const auto tCmd0 = std::chrono::steady_clock::now();
+  const bool verboseDiagnostics = ::corevideo::core::nativeVerboseLoggingEnabled();
   for (const auto& command : commands) {
-    const auto ci0 = std::chrono::steady_clock::now();
+    const auto ci0 = verboseDiagnostics ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
     applyCommandMutation(command);
-    const auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::steady_clock::now() - ci0)
-                         .count();
-    if (cms >= 10) {
-      ::corevideo::core::nativeLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
+    const auto cms = verboseDiagnostics
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ci0).count()
+        : 0LL;
+    if (verboseDiagnostics && cms >= 10) {
+      ::corevideo::core::nativeVerboseLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
                    static_cast<long long>(cms));
     }
   }
@@ -1222,7 +1224,7 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setMediaPlayback(command);
   } else if (type == "set-multiview-layout") {
     setMultiviewLayout(command);
-    ::corevideo::core::nativeLogf("[multiview] set-multiview-layout received: %zu sources\n",
+    ::corevideo::core::nativeVerboseLogf("[multiview] set-multiview-layout received: %zu sources\n",
                  multiviewSources_.size());
   } else if (type == "configure-multiviewer") {
     configureMultiviewer(command);
@@ -1251,6 +1253,11 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
   } else if (type == "recommend-auto-production") {
     // Pure query: the recommendation is derived from current state and surfaced
     // in the snapshot (see autoProductionState()), so there is nothing to mutate.
+  } else if (type == "set-verbose-diagnostics") {
+    const bool enabled = command.get("enabled") && command.get("enabled")->asBool();
+    ::corevideo::core::setNativeVerboseLoggingEnabled(enabled);
+    ::corevideo::core::nativeLogf("[diagnostics] verbose logging %s by operator\n",
+                                 enabled ? "enabled" : "disabled");
   }
   publishProgramOutputConfiguration();
 }
@@ -5006,10 +5013,10 @@ void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnch
   renderSyntheticTick(/*videoOnly=*/true, mediaPresentationTime100ns);
   static int64_t s_displayTickCount = 0;
   static auto s_displayTickStamp = std::chrono::steady_clock::now();
-  if (++s_displayTickCount % 120 == 0) {
+  if (::corevideo::core::nativeVerboseLoggingEnabled() && ++s_displayTickCount % 120 == 0) {
     const auto now = std::chrono::steady_clock::now();
     const double sec = std::chrono::duration<double>(now - s_displayTickStamp).count();
-    ::corevideo::core::nativeLogf("[render] displayTick #%lld %.1f fps (content render rate)\n",
+    ::corevideo::core::nativeVerboseLogf("[render] displayTick #%lld %.1f fps (content render rate)\n",
                  static_cast<long long>(s_displayTickCount), sec > 0.0 ? 120.0 / sec : 0.0);
     s_displayTickStamp = now;
   }
@@ -5044,10 +5051,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   static int s_stageTicks = 0;
   // Preserve the stage breakdown of the slowest individual tick, not just
   // averages that hide a texture-allocation/readback spike among cheap frames.
+  const bool collectStageDiagnostics = videoOnly && ::corevideo::core::nativeVerboseLoggingEnabled();
   std::array<int64_t, 6> tickStages{}; // ingest, plan, program, multiview, preview, emit
-  auto stageMark = std::chrono::steady_clock::now();
-  const auto markStage = [&stageMark, &tickStages, videoOnly](int64_t& acc, size_t stage) {
-    if (!videoOnly) {
+  auto stageMark = collectStageDiagnostics ? std::chrono::steady_clock::now()
+                                           : std::chrono::steady_clock::time_point{};
+  const auto markStage = [&stageMark, &tickStages, collectStageDiagnostics](int64_t& acc, size_t stage) {
+    if (!collectStageDiagnostics) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -5499,10 +5508,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     previewStructureEmitted_ = false;
   }
   markStage(s_stagePreviewUs, 4);
-  if (videoOnly && ++s_stageTicks >= 120) {
+  if (collectStageDiagnostics && ++s_stageTicks >= 120) {
     const auto buffer = modules_.compositor->programBufferDiagnostics();
     if (buffer.activeFrames > 0 || buffer.status == "failed") {
-      ::corevideo::core::nativeLogf("[program-buffer] status=%s depth=%d occupancy=%d produced=%llu delivered=%llu underruns=%llu overflows=%llu gpuNotReady=%llu deadlineMisses=%llu displayUnconsumed=%llu displayBusy=%llu outputSequenceGaps=%llu presentationVerified=0 destinationCompletionVerified=0\n",
+      ::corevideo::core::nativeVerboseLogf("[program-buffer] status=%s depth=%d occupancy=%d produced=%llu delivered=%llu underruns=%llu overflows=%llu gpuNotReady=%llu deadlineMisses=%llu displayUnconsumed=%llu displayBusy=%llu outputSequenceGaps=%llu presentationVerified=0 destinationCompletionVerified=0\n",
           buffer.status.c_str(), buffer.activeFrames, buffer.occupancy,
           static_cast<unsigned long long>(buffer.produced), static_cast<unsigned long long>(buffer.delivered),
           static_cast<unsigned long long>(buffer.underruns), static_cast<unsigned long long>(buffer.overflows),
@@ -5519,7 +5528,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // stage total and break it out beside it.
     const int64_t ingestTotalUs =
         s_stageIngestUs + s_subFetchUs + s_subStoreUs + s_subTapUs + s_subPollUs + s_subMergeUs;
-    ::corevideo::core::nativeLogf("[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
+    ::corevideo::core::nativeVerboseLogf("[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
                  "plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
                  "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
                  ingestTotalUs / (s_stageTicks * 1000.0),
@@ -5564,7 +5573,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     }
     markStage(s_stageEmitUs, 5);
   }
-  if (videoOnly) {
+  if (collectStageDiagnostics) {
     static std::array<int64_t, 6> peakStages{};
     static int64_t peakUs = 0;
     static int windowTicks = 0;
@@ -5572,7 +5581,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     for (const auto stageUs : tickStages) totalUs += stageUs;
     if (totalUs > peakUs) { peakUs = totalUs; peakStages = tickStages; }
     if (++windowTicks >= 120) {
-      ::corevideo::core::nativeLogf("[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
+      ::corevideo::core::nativeVerboseLogf("[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
           peakUs / 1000.0, peakStages[0] / 1000.0, peakStages[1] / 1000.0,
           peakStages[2] / 1000.0, peakStages[3] / 1000.0, peakStages[4] / 1000.0, peakStages[5] / 1000.0);
       peakUs = 0;
@@ -5776,10 +5785,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     }
   }
 
-  const auto tMix0 = std::chrono::steady_clock::now();
+  const bool verboseDiagnostics = ::corevideo::core::nativeVerboseLoggingEnabled();
+  const auto tMix0 = verboseDiagnostics ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
   results.mixedFrameCount = modules_.mixer->mix(work.audioFrames);
-  const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
-  if (mixMs >= 30) ::corevideo::core::nativeLogf("[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
+  const auto mixMs = verboseDiagnostics
+      ? std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count()
+      : 0LL;
+  if (verboseDiagnostics && mixMs >= 30) ::corevideo::core::nativeVerboseLogf("[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
 
   // A3 (latency compensation, owner decision: COMPENSATE): the active
   // plugin's reported latency, valid only while the host is genuinely
@@ -5848,7 +5861,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           source.insertSettings = &channel.insertSettings;  // C5b params
           source.dspState = &channelDspStates_[frame.participantId];  // C7c continuity
           if (debugDir != nullptr) {
-            ::corevideo::core::nativeLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
+            ::corevideo::core::nativeVerboseLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
                          frame.participantId.c_str(), static_cast<void*>(source.dspState),
                          source.dspState->gateEnvelope, source.dspState->gateGain,
                          source.dspState->gateHoldRemaining);
@@ -5949,7 +5962,8 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
       return true;
     };
-    const auto tMrb0 = std::chrono::steady_clock::now();
+    const auto tMrb0 = verboseDiagnostics ? std::chrono::steady_clock::now()
+                                          : std::chrono::steady_clock::time_point{};
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
                                                    &results.compGainReductionDbBySource, &busLimiterGains_,
                                                    processExternalInsert);
@@ -6023,7 +6037,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         // this the chain was inaudible at the monitor - owner-reported).
         static int s_masteringLogTick = 0;
         if (++s_masteringLogTick % 250 == 1) {
-          ::corevideo::core::nativeLogf("[mastering] ride=%.2fdB avg=%.1fLUFS target=%.1f\n",
+          ::corevideo::core::nativeVerboseLogf("[mastering] ride=%.2fdB avg=%.1fLUFS target=%.1f\n",
                        results.masteringRideDb, masteringState_.loudnessAvgLufs,
                        work.masteringParams.targetLufs);
         }
@@ -6051,17 +6065,18 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     if (!postMasterSends.empty()) {
       relimitTouchedBuses(modules::applyBusSends(results.routedBusPcm, postMasterSends));
     }
-    const auto tBic0 = std::chrono::steady_clock::now();
+    const auto tBic0 = verboseDiagnostics ? std::chrono::steady_clock::now()
+                                          : std::chrono::steady_clock::time_point{};
     for (const auto& [busId, inserts] : busInserts) {
       if (busId != "master" && !inserts.empty()) {
         applyOrderedBusInserts(busId);
       }
     }
-    const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - tBic0)
-                           .count();
-    if (bicMs >= 20) {
-      ::corevideo::core::nativeLogf("[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
+    const auto bicMs = verboseDiagnostics
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tBic0).count()
+        : 0LL;
+    if (verboseDiagnostics && bicMs >= 20) {
+      ::corevideo::core::nativeVerboseLogf("[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
     }
     if (debugDir != nullptr) {
       const auto monTap = results.routedBusPcm.find("mon");
@@ -6078,8 +6093,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         }
       }
     }
-    const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
-    if (mrbMs >= 20) ::corevideo::core::nativeLogf("[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
+    const auto mrbMs = verboseDiagnostics
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count()
+        : 0LL;
+    if (verboseDiagnostics && mrbMs >= 20) ::corevideo::core::nativeVerboseLogf("[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
   }
 
   // LOCAL bus tap lookups over the freshly-mixed routedBusPcm (NOT the published member).
@@ -6310,7 +6327,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                              std::chrono::steady_clock::now() - tOut0)
                              .count();
       if (outMs >= 20) {
-        ::corevideo::core::nativeLogf("[outputSender] sync %lldms dests=%zu\n",
+        ::corevideo::core::nativeVerboseLogf("[outputSender] sync %lldms dests=%zu\n",
                      static_cast<long long>(outMs), outputDestinations.size());
       }
     } catch (const std::exception& ex) {

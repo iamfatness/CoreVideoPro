@@ -524,7 +524,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           std::chrono::steady_clock::now() - cadenceAnchor).count());
     };
     const auto reportCadence = [&](const char* phase) {
-      ::corevideo::core::nativeLogf("[render-deadlines] metricVersion=anchored-deadline-v1 stage=cpu-submission phase=%s elapsedNs=%lld completedSlots=%lld deadlineMisses=%lld skippedSlots=%lld maxLatenessNs=%lld gpuCompletionVerified=0 outputDeliveryVerified=0\n",
+      if (!::corevideo::core::nativeVerboseLoggingEnabled()) return;
+      ::corevideo::core::nativeVerboseLogf("[render-deadlines] metricVersion=anchored-deadline-v1 stage=cpu-submission phase=%s elapsedNs=%lld completedSlots=%lld deadlineMisses=%lld skippedSlots=%lld maxLatenessNs=%lld gpuCompletionVerified=0 outputDeliveryVerified=0\n",
           phase, static_cast<long long>(elapsedNs()), static_cast<long long>(cadence.completedSlots()),
           static_cast<long long>(cadence.deadlineMisses()), static_cast<long long>(cadence.skippedSlots()),
           static_cast<long long>(cadence.maximumCompletionLatenessNs()));
@@ -611,7 +612,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
         reportCadence("sample");
-        ::corevideo::core::nativeLogf("[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
+        ::corevideo::core::nativeVerboseLogf("[render] %.1ffps  lockWait=%.1fms  render=%.1fms  drain=%.1fms  "
                      "dropped=%lld  worst=%.1fms  (avg/frame over %lld)\n",
                      sec > 0 ? frames / sec : 0.0, lockWaitUs / (frames * 1000.0),
                      renderUs / (frames * 1000.0), drainUs / (frames * 1000.0),
@@ -746,15 +747,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     auto lastReanchorLog = std::chrono::steady_clock::now();
     auto deadline = std::chrono::steady_clock::now();
     while (!stopping.load()) {
-      const auto t0 = std::chrono::steady_clock::now();
+      const bool collectDiagnostics = ::corevideo::core::nativeVerboseLoggingEnabled();
+      if (!collectDiagnostics) { ticks = 0; workUs = 0; }
+      if (collectDiagnostics && ticks == 0) rateStamp = std::chrono::steady_clock::now();
+      const auto t0 = collectDiagnostics ? std::chrono::steady_clock::now()
+                                         : std::chrono::steady_clock::time_point{};
       mediaCore_.renderAudioOutputTick(coreMutex);
-      const long long iterUs =
-          std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
-      workUs += iterUs;
-      if (++ticks >= 120) {
+      if (collectDiagnostics) {
+        workUs += std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - t0).count();
+      }
+      if (collectDiagnostics && ++ticks >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
-        ::corevideo::core::nativeLogf("[audioOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+        ::corevideo::core::nativeVerboseLogf("[audioOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
                      sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
         ticks = 0;
         workUs = 0;
@@ -808,17 +814,22 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     long long workUs = 0;
     auto rateStamp = std::chrono::steady_clock::now();
     while (!stopping.load()) {
-      const auto t0 = std::chrono::steady_clock::now();
+      const bool collectDiagnostics = ::corevideo::core::nativeVerboseLoggingEnabled();
+      if (!collectDiagnostics) { ticks = 0; workUs = 0; }
+      if (collectDiagnostics && ticks == 0) rateStamp = std::chrono::steady_clock::now();
+      const auto t0 = collectDiagnostics ? std::chrono::steady_clock::now()
+                                         : std::chrono::steady_clock::time_point{};
       mediaCore_.renderVideoOutputTick(coreMutex);  // blocks until a new frame
-      workUs += std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - t0)
-                    .count();
-      if (++ticks >= 120) {
+      if (collectDiagnostics) {
+        workUs += std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - t0).count();
+      }
+      if (collectDiagnostics && ++ticks >= 120) {
         const auto now = std::chrono::steady_clock::now();
         const double sec = std::chrono::duration<double>(now - rateStamp).count();
         // `work` here INCLUDES the wait for the next frame, so it tracks the
         // frame interval rather than the cost of a submit.
-        ::corevideo::core::nativeLogf("[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+        ::corevideo::core::nativeVerboseLogf("[videoOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
                      sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
         ticks = 0;
         workUs = 0;

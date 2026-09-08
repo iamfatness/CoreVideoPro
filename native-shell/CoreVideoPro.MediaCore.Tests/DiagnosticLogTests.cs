@@ -5,6 +5,18 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class DiagnosticLogTests
 {
+    [Fact]
+    public void VerboseLoggingCanBeChangedLiveAndDefaultsToProductionMode()
+    {
+        DiagnosticLog.VerboseEnabled = false;
+        Assert.False(DiagnosticLog.VerboseEnabled);
+
+        DiagnosticLog.VerboseEnabled = true;
+        Assert.True(DiagnosticLog.VerboseEnabled);
+
+        DiagnosticLog.VerboseEnabled = false;
+    }
+
     [Theory]
     [InlineData("CoreVideoPro.WinUI.Tests", true)]
     [InlineData("CoreVideoPro.MediaCore.Tests", true)]
