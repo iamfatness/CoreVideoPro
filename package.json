@@ -65,7 +65,7 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "typescript": "^5.9.3",
-    "vite": "^8.0.16"
+    "vite": "^8.2.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
@@ -74,7 +74,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "jsdom": "^29.1.1",
-    "vitest": "^4.1.8"
+    "vitest": "^5.0.0"
   },
   "optionalDependencies": {
     "@emnapi/core": "1.11.1",
