@@ -717,6 +717,34 @@ and per-look box count are `double` because `NumberBox.Value` is a double and x:
 narrow it back. Every ComboBox in the section is filled and selected in guarded code-behind (never
 x:Bind selection), and every interactive element is named `OHG settings ...`.
 
+**OHG Show tab (Plan 7b).** Open it from the Produce nav group — the **"OHG Show"** button
+(nav key `ohgshow`, `StudioTab.OhgShow`) — for the status strip, panelist board, program, gallery
+and GFX/data panels. Four rules govern anything you change there:
+
+- **The panels are THIN RENDERERS.** `OhgShowViewModel` ingests the engine snapshot on the UI
+  thread and projects it (`OhgSnapshotView`, pure); rows are **diff-updated in place** via
+  `ObservableCollectionSync` and scalars are `[ObservableProperty]`. So a `PropertyChanged` storm
+  while this tab is up is a **snapshot-rate bug** (the engine publishing too often, or a projection
+  that mints new values from equal input) — **not** a UI bug. Fix the rate or the projection; never
+  add a UI-side throttle on top.
+- **Every button is an `ohg.*` invoke through `IOhgActionInvoker`.** The page and its view models
+  reach the engine ONLY through that seam (typed `OhgActionArgs` builders) — no direct bridge or
+  supervisor calls, which is what makes every control testable without a running child process.
+- **0xc000027b discipline, deliberately:** diff-updated rows (never a bound collection replaced at
+  snapshot rate), every code-behind handler — **including DependencyProperty callbacks** — wrapped
+  in `Guarded(...)` so a throwing callback logs instead of fail-fasting the process, and ComboBox
+  selection applied in guarded code-behind rather than x:Bind.
+- **Saving the OHG config hot-restarts the engine and REBUILDS the page view model** (the order is
+  pinned by `OhgConfigApplySteps.Order`, above). The one exception is first-time setup with no
+  engine running this launch: that writes the config and asks for an **app restart**.
+- **The importer is HONEST by contract** (Settings -> OHG show -> import from the legacy Isadora
+  files): it reports `Found`/`NotFound` per probe in plain words, **never guesses** a value it
+  could not read, and **never changes capacity** (a legacy `videoPins` that disagrees is reported,
+  not applied).
+
+The **first-launch checklist** the owner runs on first open lives in
+`docs/superpowers/plans/2026-09-07-show-engine-winui-workspace-outcomes.md`.
+
 **Env vars:** `COREVIDEO_NODE_EXE` + `COREVIDEO_SHOW_ENGINE_DIR` (BOTH or neither — one alone is
 ignored) select a dev/override host; otherwise `<app>\node\node.exe` + `<app>\show-engine\` (packaged,
 staged by `scripts/sync-node-runtime-to-app.ps1`), then `node` on PATH + `<repo>\show-engine\` (dev).
