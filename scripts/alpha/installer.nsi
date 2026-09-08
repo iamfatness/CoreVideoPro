@@ -13,16 +13,16 @@ SetCompressor /SOLID lzma
 Icon "${PAYLOAD}\Assets\AppIcon.ico"
 UninstallIcon "${PAYLOAD}\Assets\AppIcon.ico"
 VIProductVersion "0.1.0.0"
-VIAddVersionKey /LANG=1033 "ProductName" "CoreVideo Pro Alpha"
+VIAddVersionKey /LANG=1033 "ProductName" "CoreVideo Pro ${CHANNEL_TITLE}"
 VIAddVersionKey /LANG=1033 "FileDescription" "CoreVideo Pro ${RELEASE_ID} Setup"
 VIAddVersionKey /LANG=1033 "FileVersion" "${RELEASE_ID}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "CoreVideo Pro"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoreVideoPro-${RELEASE_ID}"
 !define SHORTCUT_NAME "CoreVideo Pro ${RELEASE_ID}"
-!define MUI_WELCOMEPAGE_TEXT "Install this experimental Windows alpha for your account.$\r$\n$\r$\nThe app is unsigned. Every-frame 60 fps and video-flashing fixes are still under investigation.$\r$\n$\r$\nSetup may request administrator approval for Microsoft's VC runtime. First app launch downloads its verified media runtime. Close this version before uninstalling."
+!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup may request administrator approval for Microsoft's VC runtime. First app launch downloads its verified media runtime. Close this version before uninstalling."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_TEXT "CoreVideo Pro is installed. Open its desktop or Start menu shortcut to begin.$\r$\n$\r$\nFirst launch requires internet access to download the verified media runtime. This alpha is for testing and feedback.$\r$\n$\r$\nUninstall removes delivered files and shortcuts, while preserving settings, recordings, and downloaded media."
+!define MUI_FINISHPAGE_TEXT "CoreVideo Pro is installed. Open its desktop or Start menu shortcut to begin.$\r$\n$\r$\nFirst launch requires internet access to download the verified media runtime. This ${CHANNEL} is for testing and feedback.$\r$\n$\r$\nUninstall removes delivered files and shortcuts, while preserving settings, recordings, and downloaded media."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -45,17 +45,17 @@ Function .onInit
     SetRegView 64
     ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
     ${If} $0 != ""
-        MessageBox MB_OK|MB_ICONSTOP "This alpha version is already registered. Uninstall it before installing again." /SD IDOK
+        MessageBox MB_OK|MB_ICONSTOP "This ${CHANNEL} version is already registered. Uninstall it before installing again." /SD IDOK
         SetErrorLevel 1638
         Quit
     ${EndIf}
     ${IfNot} ${RunningX64}
-        MessageBox MB_OK|MB_ICONSTOP "This alpha requires Windows x64." /SD IDOK
+        MessageBox MB_OK|MB_ICONSTOP "This ${CHANNEL} requires Windows x64." /SD IDOK
         SetErrorLevel 1633
         Quit
     ${EndIf}
     ${IfNot} ${AtLeastWin10}
-        MessageBox MB_OK|MB_ICONSTOP "This alpha requires Windows 10 or later." /SD IDOK
+        MessageBox MB_OK|MB_ICONSTOP "This ${CHANNEL} requires Windows 10 or later." /SD IDOK
         SetErrorLevel 1633
         Quit
     ${EndIf}
@@ -117,7 +117,7 @@ Section "CoreVideo Pro" SEC_APP
     SetOutPath "$INSTDIR"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     IfErrors install_failed
-    FileOpen $0 "$INSTDIR\.corevideo-alpha-install" w
+    FileOpen $0 "$INSTDIR\.corevideo-prerelease-install" w
     IfErrors install_failed
     FileWrite $0 "${RELEASE_ID}"
     FileClose $0
@@ -147,7 +147,7 @@ Section "CoreVideo Pro" SEC_APP
         RMDir "$SMPROGRAMS\${SHORTCUT_NAME}"
         Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
         DeleteRegKey HKCU "${UNINSTALL_KEY}"
-        Delete "$INSTDIR\.corevideo-alpha-install"
+        Delete "$INSTDIR\.corevideo-prerelease-install"
         Delete "$INSTDIR\Uninstall.exe"
         RMDir "$INSTDIR"
         MessageBox MB_OK|MB_ICONSTOP "Setup could not complete. Check free disk space and folder permissions before trying again. Any files that could not be removed remain in $INSTDIR." /SD IDOK
@@ -169,7 +169,7 @@ Function un.onInit
         Abort "Installation registration does not match this folder."
     ${EndIf}
     ClearErrors
-    FileOpen $0 "$INSTDIR\.corevideo-alpha-install" r
+    FileOpen $0 "$INSTDIR\.corevideo-prerelease-install" r
     IfErrors invalid_install
     FileRead $0 $1
     FileClose $0
@@ -194,7 +194,7 @@ Section "Uninstall"
     RMDir "$SMPROGRAMS\${SHORTCUT_NAME}"
     Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
-    Delete "$INSTDIR\.corevideo-alpha-install"
+    Delete "$INSTDIR\.corevideo-prerelease-install"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"
 SectionEnd

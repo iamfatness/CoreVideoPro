@@ -18,10 +18,15 @@ $work = Join-Path $repoRoot ('artifacts/installer-build/' + [Guid]::NewGuid().To
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $work)
-$payload = Join-Path $work 'CoreVideoPro-Alpha'
+$payload = @(Get-ChildItem -LiteralPath $work -Directory | Where-Object { $_.Name -match '^CoreVideoPro-(Alpha|Beta)$' })
+if ($payload.Count -ne 1) { throw 'Archive must contain exactly one CoreVideoPro Alpha or Beta payload root.' }
+$payload = $payload[0].FullName
 $manifest = Get-Content -LiteralPath (Join-Path $payload 'build-manifest.json') -Raw | ConvertFrom-Json
 $releaseId = $manifest.releaseId
-if ($releaseId -notmatch '^alpha-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Invalid release ID.' }
+if ($releaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Invalid release ID.' }
+$channel = $Matches[1].ToLowerInvariant()
+$channelTitle = (Get-Culture).TextInfo.ToTitleCase($channel)
+if ((Split-Path -Leaf $payload) -ne "CoreVideoPro-$channelTitle") { throw 'Payload root does not match the manifest channel.' }
 $redistVersion = [version]((Get-Item -LiteralPath $redistPath).VersionInfo.FileVersion -replace '[^0-9.].*$', '')
 if ($redistVersion -lt [version]$manifest.vcRuntimeVersion) { throw 'VC redistributable is older than the packaged native runtime.' }
 $output = Join-Path (Split-Path -Parent $archivePath) "CoreVideoPro-Setup-$releaseId.exe"
@@ -49,6 +54,8 @@ foreach ($directory in $directories) {
 [IO.File]::WriteAllLines((Join-Path $work 'uninstall-files.nsh'), $uninstall)
 $defines = @(
     '!define RELEASE_ID "' + $releaseId + '"'
+    '!define CHANNEL "' + $channel + '"'
+    '!define CHANNEL_TITLE "' + $channelTitle + '"'
     '!define PAYLOAD "' + (Escape-Nsis $payload) + '"'
     '!define OUTPUT "' + (Escape-Nsis $output) + '"'
     '!define VC_REDIST "' + (Escape-Nsis $redistPath) + '"'

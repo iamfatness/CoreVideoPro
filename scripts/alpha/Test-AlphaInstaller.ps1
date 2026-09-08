@@ -5,7 +5,7 @@ param([Parameter(Mandatory=$true)][string]$Installer)
 $ErrorActionPreference = 'Stop'
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
 $releaseId = [IO.Path]::GetFileNameWithoutExtension($installerPath).Replace('CoreVideoPro-Setup-', '')
-if ($releaseId -notmatch '^alpha-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Unexpected installer name.' }
+if ($releaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Unexpected installer name.' }
 $registryPath = "HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/CoreVideoPro-$releaseId"
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) "CoreVideo Pro $releaseId.lnk"
 $startFolder = Join-Path ([Environment]::GetFolderPath('Programs')) "CoreVideo Pro $releaseId"
@@ -48,7 +48,7 @@ $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
 if (-not $report.success -or $report.windowOpened) { throw 'Installed runtime is not self-contained or opened a window.' }
 $uninstaller = Join-Path $work 'test-uninstaller.exe'
 Copy-Item -LiteralPath (Join-Path $installRoot 'Uninstall.exe') -Destination $uninstaller
-$marker = Join-Path $installRoot '.corevideo-alpha-install'
+$marker = Join-Path $installRoot '.corevideo-prerelease-install'
 [IO.File]::WriteAllText($marker, 'incorrect-marker')
 if ((Invoke-OwnedProcess $uninstaller @('/S', "_?=$installRoot")) -eq 0) { throw 'Incorrect install marker was accepted.' }
 if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'CoreVideoPro.WinUI.exe'))) { throw 'Invalid-marker attempt deleted app files.' }

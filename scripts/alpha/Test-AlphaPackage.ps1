@@ -3,12 +3,19 @@ param([Parameter(Mandatory=$true)][string]$Archive)
 $ErrorActionPreference = 'Stop'
 $nodePin = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'node-runtime.json') -Raw | ConvertFrom-Json
 $path = (Resolve-Path -LiteralPath $Archive).Path
+$archiveName = [IO.Path]::GetFileNameWithoutExtension($path)
+if ($archiveName -notmatch '^CoreVideoPro-win-x64-((alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+)$') {
+    throw 'Unexpected prerelease archive name.'
+}
+$releaseId = $Matches[1]
+$channel = $Matches[2].ToLowerInvariant()
+$channelTitle = (Get-Culture).TextInfo.ToTitleCase($channel)
 $expected = ((Get-Content -LiteralPath ($path + '.sha256') -Raw).Trim() -split '\s+')[0]
 if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected) { throw 'Package checksum mismatch.' }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($path)
 try {
-    $prefix = 'CoreVideoPro-Alpha/'
+    $prefix = "CoreVideoPro-$channelTitle/"
     $entries = @{}
     foreach ($entry in $zip.Entries) {
         $name = $entry.FullName.Replace('\','/')
@@ -52,7 +59,7 @@ try {
     if (-not @($entries.Keys | Where-Object { $_ -like 'Assets/Fonts/*.ttf' }).Count) { throw 'Bundled fonts are missing.' }
     $reader = [IO.StreamReader]::new($entries['build-manifest.json'].Open())
     try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
-    if ($manifest.channel -ne 'alpha' -or $manifest.framePerformanceAccepted -ne $false) { throw 'Incorrect release/acceptance label.' }
+    if ($manifest.releaseId -ne $releaseId -or $manifest.channel -ne $channel -or $manifest.framePerformanceAccepted -ne $false) { throw 'Incorrect release/acceptance label.' }
     if ($entries.Count -ne $manifest.files.Count + 1) { throw 'Manifest coverage mismatch.' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $manifest.files) {
