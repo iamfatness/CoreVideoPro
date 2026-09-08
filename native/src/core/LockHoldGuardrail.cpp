@@ -13,6 +13,7 @@ namespace {
 struct SiteRecord {
   LockHoldGuardrail::SiteStats stats;
   std::chrono::steady_clock::time_point lastWarnAt{};
+  std::chrono::steady_clock::time_point lastDetailAt{};
   std::uint64_t suppressedSinceLastWarn = 0;
 };
 
@@ -36,13 +37,15 @@ bool strictModeEnabled() {
   return strict;
 }
 
-constexpr auto kWarnInterval = std::chrono::seconds(1);
+constexpr auto kProductionWarnInterval = std::chrono::minutes(1);
+constexpr auto kVerboseWarnInterval = std::chrono::seconds(1);
 
 }  // namespace
 
 bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long budgetUs) {
   const bool overBudget = heldUs > budgetUs;
   bool warn = false;
+  bool productionWarning = false;
   std::uint64_t suppressed = 0;
   SiteStats snapshot;
   {
@@ -55,12 +58,18 @@ bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long
     if (overBudget) {
       ++record.stats.overBudget;
       const auto now = std::chrono::steady_clock::now();
-      // Rate cap: first over-budget hold per site logs immediately, then at
-      // most one warning per second per site (carrying the suppressed count).
-      if (record.stats.warningsLogged == 0 || now - record.lastWarnAt >= kWarnInterval) {
+      // Production keeps the first warning and a one-minute aggregate. Health
+      // detailed diagnostics restores the one-second cadence for investigations.
+      const bool firstWarning = record.stats.warningsLogged == 0;
+      const bool productionDue = !firstWarning && now - record.lastWarnAt >= kProductionWarnInterval;
+      const bool verboseDue = !firstWarning && ::corevideo::core::nativeVerboseLoggingEnabled() &&
+                              now - record.lastDetailAt >= kVerboseWarnInterval;
+      if (firstWarning || productionDue || verboseDue) {
         warn = true;
+        productionWarning = firstWarning || productionDue;
         ++record.stats.warningsLogged;
-        record.lastWarnAt = now;
+        if (firstWarning || productionDue) record.lastWarnAt = now;
+        record.lastDetailAt = now;
         suppressed = record.suppressedSinceLastWarn;
         record.suppressedSinceLastWarn = 0;
       } else {
@@ -70,12 +79,21 @@ bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long
     snapshot = record.stats;
   }
   if (warn) {
-    ::corevideo::core::nativeLogf("[lock-guardrail] coreMutex hold %lldus at '%s' exceeds budget %lldus "
-                 "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)\n",
-                 heldUs, site, budgetUs,
-                 static_cast<unsigned long long>(snapshot.overBudget),
-                 static_cast<unsigned long long>(snapshot.holds), snapshot.worstHeldUs,
-                 static_cast<unsigned long long>(suppressed));
+    if (productionWarning) {
+      ::corevideo::core::nativeLogf("[lock-guardrail] coreMutex hold %lldus at '%s' exceeds budget %lldus "
+                                   "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)\n",
+                                   heldUs, site, budgetUs,
+                                   static_cast<unsigned long long>(snapshot.overBudget),
+                                   static_cast<unsigned long long>(snapshot.holds), snapshot.worstHeldUs,
+                                   static_cast<unsigned long long>(suppressed));
+    } else {
+      ::corevideo::core::nativeVerboseLogf("[lock-guardrail] coreMutex hold %lldus at '%s' exceeds budget %lldus "
+                                          "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)\n",
+                                          heldUs, site, budgetUs,
+                                          static_cast<unsigned long long>(snapshot.overBudget),
+                                          static_cast<unsigned long long>(snapshot.holds), snapshot.worstHeldUs,
+                                          static_cast<unsigned long long>(suppressed));
+    }
     if (strictModeEnabled()) {
       ::corevideo::core::nativeLogf("[lock-guardrail] STRICT mode enabled — aborting on over-budget hold.\n");
       std::abort();

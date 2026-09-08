@@ -141,9 +141,12 @@ class D3D11Compositor final : public ICompositor {
   }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
-    const auto timingStart = std::chrono::steady_clock::now();
+    const bool diagnosticTiming = ::corevideo::core::nativeVerboseLoggingEnabled();
+    const auto timingStart = diagnosticTiming ? std::chrono::steady_clock::now()
+                                              : std::chrono::steady_clock::time_point{};
     auto stageStart = timingStart;
-    auto stageUs = [&stageStart]() {
+    auto stageUs = [&stageStart, diagnosticTiming]() {
+      if (!diagnosticTiming) return 0LL;
       const auto now = std::chrono::steady_clock::now();
       const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - stageStart).count();
       stageStart = now;
@@ -244,16 +247,19 @@ class D3D11Compositor final : public ICompositor {
     }
     context_->Flush();
     const auto flushUs = stageUs();
-    const auto timingEnd = std::chrono::steady_clock::now();
-    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(timingEnd - timingStart).count();
+    const auto timingEnd = diagnosticTiming ? std::chrono::steady_clock::now()
+                                            : std::chrono::steady_clock::time_point{};
+    const auto totalUs = diagnosticTiming
+        ? std::chrono::duration_cast<std::chrono::microseconds>(timingEnd - timingStart).count()
+        : 0LL;
     // CPU wall time, including driver waits; this is not a GPU execution query.
     // No timers, queries, flushes or allocations are added to the GPU stream.
-    if (totalUs >= 8000) {
+    if (diagnosticTiming && totalUs >= 8000) {
       ++slowProgramFrames_;
       worstSlowProgramUs_ = (std::max)(worstSlowProgramUs_, static_cast<long long>(totalUs));
       if (lastSlowProgramLog_.time_since_epoch().count() == 0 ||
           timingEnd - lastSlowProgramLog_ >= std::chrono::seconds(1)) {
-        ::corevideo::core::nativeLogf("[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
+        ::corevideo::core::nativeVerboseLogf("[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
             static_cast<long long>(frameNumber_), static_cast<long long>(totalUs), setupUs, resolveUs,
             uploadUs, (std::max)(0LL, drawUs - uploadUs), readbackUs, vcamUs, sharedUs,
             participantUs, evictUs, flushUs, layers.size(), frames.size(), !renderPlan.skipCpuReadback,
@@ -275,7 +281,8 @@ class D3D11Compositor final : public ICompositor {
     if (!pipelineReady_ || !device_ || !context_) {
       return out;
     }
-    const auto profileStart = stageProfileEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const bool profileEnabled = stageProfileEnabled();
+    const auto profileStart = profileEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     const int width = deterministicPlan.width;
     const int height = deterministicPlan.height;
@@ -309,9 +316,9 @@ class D3D11Compositor final : public ICompositor {
     const bool bufferedProgram = programBufferFrames() > 0;
     auto* deliveredView = bufferedProgram ? retainedProgramForMultiview() : nullptr;
     bool programPlaced = false;
-    const auto drawStart = stageProfileEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const auto drawStart = profileEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto uploadBefore = stageProfileNs_[MvUpload];
-    profileMvActive_ = stageProfileEnabled_;
+    profileMvActive_ = profileEnabled;
     for (const auto& layer : layers) {
       if (bufferedProgram && layer.plan.layerId.rfind("multiview-pgm:", 0) == 0) {
         if (!programPlaced && deliveredView && layer.plan.hasClipRect) {
@@ -331,16 +338,16 @@ class D3D11Compositor final : public ICompositor {
       drawLayer(layer, deterministicPlan);
     }
     profileMvActive_ = false;
-    if (stageProfileEnabled_) {
+    if (profileEnabled) {
       const auto drawNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - drawStart).count();
       stageProfileNs_[MvDraw] += std::max(0LL, static_cast<long long>(drawNs) - (stageProfileNs_[MvUpload] - uploadBefore));
     }
-    { CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[MvShare]); exportMultiviewSharedTexture(out); }
+    { CpuStageScope timing(profileEnabled, stageProfileNs_[MvShare]); exportMultiviewSharedTexture(out); }
 
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
     context_->Flush();
-    if (stageProfileEnabled_) {
+    if (profileEnabled) {
       const auto total = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - profileStart).count();
       stageProfileNs_[MvTotal] += total;
       stageProfileMvMaxNs_ = std::max(stageProfileMvMaxNs_, static_cast<long long>(total));
@@ -1554,7 +1561,8 @@ class D3D11Compositor final : public ICompositor {
     if (!device_ || !context_) {
       return;
     }
-    const auto profileStart = stageProfileEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const bool profileEnabled = stageProfileEnabled();
+    const auto profileStart = profileEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     for (const auto& f : frames) {
       if (f.participantId.empty() || !frameHasContent(f)) {
         continue;
@@ -1623,31 +1631,31 @@ class D3D11Compositor final : public ICompositor {
         // the render thread never stalls.
         HRESULT acquire;
         {
-          CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantAcquire]);
+          CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantAcquire]);
           acquire = pt.mutex->AcquireSync(0, 0);
           if (acquire != S_OK) acquire = pt.mutex->AcquireSync(1, 0);
         }
-        if (stageProfileEnabled_ && acquire != S_OK) ++stageProfileAcquireBusy_;
+        if (profileEnabled && acquire != S_OK) ++stageProfileAcquireBusy_;
         if (acquire == S_OK) {
           bool uploaded = false;
           if (useI420) {
-            CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantConvert]);
+            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
             uploaded = renderI420ToParticipantTexture(f, pt, width, height, grade);
           } else if (gradeIsIdentity(grade)) {
-            CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantCopy]);
+            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantCopy]);
             // Fast path for the common ungraded source: a straight BGRA copy, no
             // shader pass (preserves the perf note above — no per-tick convert cost).
             context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
                                         static_cast<UINT>(f.pixelStride), 0);
             uploaded = true;
           } else {
-            CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantConvert]);
+            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
             // Graded BGRA source: render through the textured grade shader so the
             // export carries the same look the program applies to this source.
             uploaded = renderBgraToParticipantTexture(f, pt, width, height, grade);
           }
           pt.mutex->ReleaseSync(1);
-          if (stageProfileEnabled_ && !uploaded) ++stageProfileUploadFailures_;
+          if (profileEnabled && !uploaded) ++stageProfileUploadFailures_;
           if (uploaded) {
             pt.lastFrameId = f.frameId;
             pt.lastGrade = grade;
@@ -1673,7 +1681,7 @@ class D3D11Compositor final : public ICompositor {
       }
       it = present ? std::next(it) : participantTextures_.erase(it);
     }
-    if (stageProfileEnabled_) {
+    if (profileEnabled) {
       const auto total = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - profileStart).count();
       stageProfileNs_[ParticipantTotal] += total;
       stageProfileParticipantMaxNs_ = std::max(stageProfileParticipantMaxNs_, static_cast<long long>(total));
@@ -2600,10 +2608,9 @@ class D3D11Compositor final : public ICompositor {
   bool retainedProgramCopied_ = false;
   enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantTotal,
                       MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };
-  const bool stageProfileEnabled_ = [] {
-    const char* value = std::getenv("COREVIDEO_D3D_STAGE_PROFILE");
-    return value && std::strcmp(value, "1") == 0;
-  }();
+  // Read dynamically so Health can enable/disable the profiler without a core
+  // restart. This defaults false in BoundedAsyncLog.
+  bool stageProfileEnabled() const { return ::corevideo::core::nativeVerboseLoggingEnabled(); }
   bool profileMvActive_ = false;
   std::array<long long, ProfileStageCount> stageProfileNs_{};
   std::uint64_t stageProfileParticipantCalls_ = 0, stageProfileMvCalls_ = 0;
@@ -2618,7 +2625,7 @@ class D3D11Compositor final : public ICompositor {
     const auto avg = [&](ProfileStage stage, std::uint64_t calls) {
       return calls ? static_cast<double>(stageProfileNs_[stage]) / (1e6 * calls) : 0.0;
     };
-    ::corevideo::core::nativeLogf(
+    ::corevideo::core::nativeVerboseLogf(
         "[d3d-stage-cpu] window_s=%.3f participant_calls=%llu participant_avg_ms=%.3f participant_max_ms=%.3f "
         "participant_acquire_avg_ms=%.3f participant_upload_convert_avg_ms=%.3f participant_bgra_copy_avg_ms=%.3f "
         "participant_acquire_busy=%llu participant_upload_failures=%llu mv_calls=%llu mv_avg_ms=%.3f mv_max_ms=%.3f "

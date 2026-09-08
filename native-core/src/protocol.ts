@@ -670,6 +670,10 @@ export type MediaCoreCommand =
     }
   | {
       type: "recommend-auto-production";
+    }
+  | {
+      type: "set-verbose-diagnostics";
+      enabled: boolean;
     };
 
 /**

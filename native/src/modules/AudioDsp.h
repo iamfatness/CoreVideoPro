@@ -704,7 +704,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
         state.primed = true;
         ++state.primeEvents;
         if (state.primeEvents == 1 || state.primeEvents % 100 == 0) {
-          ::corevideo::core::nativeLogf("[audio] steady feed primed %s at %zu frames (%zu event%s)\n",
+          ::corevideo::core::nativeVerboseLogf("[audio] steady feed primed %s at %zu frames (%zu event%s)\n",
                        frame.participantId.c_str(),
                        state.fifo.size() / static_cast<size_t>(frame.channels),
                        state.primeEvents, state.primeEvents == 1 ? "" : "s");

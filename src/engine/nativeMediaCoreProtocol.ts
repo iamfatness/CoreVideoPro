@@ -202,6 +202,10 @@ export type NativeMediaCoreCommand =
     }
   | {
       type: "recommend-auto-production";
+    }
+  | {
+      type: "set-verbose-diagnostics";
+      enabled: boolean;
     };
 
 /**

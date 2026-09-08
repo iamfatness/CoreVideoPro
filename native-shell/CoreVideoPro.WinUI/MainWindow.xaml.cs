@@ -269,7 +269,19 @@ public sealed partial class MainWindow : Window
                 Task.Delay,
                 () => DateTimeOffset.UtcNow);
             var bridge = new ShowEngineBridge(supervisor, oscExposure);
-            bridge.Log += (_, line) => LaunchLog.Write($"ohg[{line.Level}]: {line.Message}");
+            bridge.Log += (_, line) =>
+            {
+                var message = $"ohg[{line.Level}]: {line.Message}";
+                if (line.Level.Equals("error", StringComparison.OrdinalIgnoreCase) ||
+                    line.Level.Equals("warn", StringComparison.OrdinalIgnoreCase))
+                {
+                    LaunchLog.Write(message);
+                }
+                else
+                {
+                    LaunchLog.WriteVerbose(message);
+                }
+            };
             _showEngineBridge = bridge;
             _showEngineSupervisor = supervisor;
 

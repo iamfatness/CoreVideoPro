@@ -1,4 +1,5 @@
 ﻿#include "compositor/CompositorLayout.h"
+#include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
@@ -488,6 +489,19 @@ class RecordingAudioCaptureSource final : public corevideo::modules::IAudioCaptu
 };
 
 }  // namespace
+
+TEST(MediaCoreCommand, VerboseDiagnosticsCommandChangesTheLiveProcessMode) {
+  corevideo::core::setNativeVerboseLoggingEnabled(false);
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-verbose-diagnostics"}, {"enabled", true}});
+  EXPECT_TRUE(corevideo::core::nativeVerboseLoggingEnabled());
+
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-verbose-diagnostics"}, {"enabled", false}});
+  EXPECT_FALSE(corevideo::core::nativeVerboseLoggingEnabled());
+}
 
 TEST(MediaCoreCommand, LiveBatchAppliesSceneWithoutRenderingCatchUp) {
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());

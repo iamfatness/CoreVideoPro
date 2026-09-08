@@ -380,7 +380,7 @@ class D3DProgramBuffer {
       maximumExportSubmitNs_ = (std::max)(maximumExportSubmitNs_, static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(exportEnd - exportBegin).count()));
       maximumExportSubmitLateNs_ = (std::max)(maximumExportSubmitLateNs_, static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(exportEnd - deadline).count()));
       if (lastTimingLog_.time_since_epoch().count() == 0 || exportEnd - lastTimingLog_ >= std::chrono::seconds(2)) {
-        ::corevideo::core::nativeLogf("[program-buffer-timing] depth=%d preparation=as-soon-as-ready max_copy_ns=%lld min_preparation_lead_ns=%lld max_completion_late_ns=%lld max_export_submit_ns=%lld max_export_submit_late_ns=%lld deadline_misses=%llu delivered=%llu retained_frame_gpu_ready_checked=1 export_gpu_completion_verified=0 display_presentation_verified=0\n",
+        ::corevideo::core::nativeVerboseLogf("[program-buffer-timing] depth=%d preparation=as-soon-as-ready max_copy_ns=%lld min_preparation_lead_ns=%lld max_completion_late_ns=%lld max_export_submit_ns=%lld max_export_submit_late_ns=%lld deadline_misses=%llu delivered=%llu retained_frame_gpu_ready_checked=1 export_gpu_completion_verified=0 display_presentation_verified=0\n",
             depth_, static_cast<long long>(maximumCopyNs_), static_cast<long long>(minimumPreparationLeadNs_),
             static_cast<long long>(maximumCompletionLateNs_), static_cast<long long>(maximumExportSubmitNs_),
             static_cast<long long>(maximumExportSubmitLateNs_), static_cast<unsigned long long>(diagnostics_.deadlineMisses),

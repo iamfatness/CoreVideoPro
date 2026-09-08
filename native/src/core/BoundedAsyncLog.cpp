@@ -117,6 +117,8 @@ bool writeDiagnosticDescriptor(int descriptor, std::string_view message) noexcep
 #endif
 
 namespace {
+std::atomic<bool> verboseLoggingEnabled{false};
+
 BoundedAsyncLog& processLog() {
   // Intentionally process lifetime: do not enter CRT teardown with a worker
   // writing through a FILE lock. OS stderr writes also avoid that shared lock.
@@ -131,20 +133,39 @@ BoundedAsyncLog& processLog() {
   });
   return *logger;
 }
-}
 
-void nativeLogf(const char* format, ...) noexcept {
+void writeFormatted(const char* format, va_list args) noexcept {
   char message[BoundedAsyncLog::kMessageBytes];
-  va_list args;
-  va_start(args, format);
   const int length = std::vsnprintf(message, sizeof(message), format, args);
-  va_end(args);
   if (length < 0) return;
   try {
-    // Preserve the truncation signal without constructing a larger buffer.
     const auto size = (std::min)(static_cast<std::size_t>(length), sizeof(message));
     processLog().write(std::string_view(message, size));
   } catch (...) { /* Logging must not unwind media code on allocation/startup failure. */ }
+}
+}
+
+void nativeLogf(const char* format, ...) noexcept {
+  va_list args;
+  va_start(args, format);
+  writeFormatted(format, args);
+  va_end(args);
+}
+
+void nativeVerboseLogf(const char* format, ...) noexcept {
+  if (!nativeVerboseLoggingEnabled()) return;
+  va_list args;
+  va_start(args, format);
+  writeFormatted(format, args);
+  va_end(args);
+}
+
+void setNativeVerboseLoggingEnabled(bool enabled) noexcept {
+  verboseLoggingEnabled.store(enabled, std::memory_order_release);
+}
+
+bool nativeVerboseLoggingEnabled() noexcept {
+  return verboseLoggingEnabled.load(std::memory_order_acquire);
 }
 
 BoundedAsyncLog::Stats nativeLogStats() { return processLog().stats(); }

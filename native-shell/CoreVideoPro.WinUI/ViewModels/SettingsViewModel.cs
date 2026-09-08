@@ -46,6 +46,9 @@ public sealed partial class SettingsViewModel : ObservableObject
     private bool _sdkDiagnosticsExpanded;
 
     [ObservableProperty]
+    private bool _verboseDiagnosticsEnabled;
+
+    [ObservableProperty]
     private string _activationKey = string.Empty;
 
     [ObservableProperty]
@@ -108,6 +111,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _zoomStatusChanged = zoomStatusChanged;
         _onMeetingJoined = onMeetingJoined;
         _recentMeetingStore = recentMeetingStore ?? new FileRecentZoomMeetingStore(FileRecentZoomMeetingStore.DefaultStorePath());
+        DiagnosticLog.VerboseEnabled = false;
 
         _telemetryConsentStore = new TelemetryConsentStore(TelemetryConsentStore.DefaultPath());
         _telemetry = new TelemetryEventService(() => _bridge.LastSnapshot, _telemetryConsentStore);
@@ -197,6 +201,10 @@ public sealed partial class SettingsViewModel : ObservableObject
     public void FlushTelemetrySessionEnd() => _telemetry.FireSessionEnd();
 
     public IReadOnlyList<ZoomEngineEvidenceItem> DiagnosticsReadout => _diagnosticsReadout;
+
+    public string VerboseDiagnosticsStatus => VerboseDiagnosticsEnabled
+        ? "Detailed frame, timing, and routing traces are being captured for this session. Turn this off during normal shows."
+        : "Production logging is active. Detailed frame and timing traces are off.";
 
     public bool ShowSupportBundleStatus => !string.IsNullOrWhiteSpace(SupportBundleStatus);
 
@@ -393,6 +401,91 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     partial void OnSdkDiagnosticsExpandedChanged(bool value) => NotifySdkUi();
 
+    partial void OnVerboseDiagnosticsEnabledChanged(bool value)
+    {
+        DiagnosticLog.VerboseEnabled = value;
+        OnPropertyChanged(nameof(VerboseDiagnosticsStatus));
+        EnsureVerboseDiagnosticsMode();
+    }
+
+    private int _verboseDiagnosticsSyncInFlight;
+    private volatile int _verboseDiagnosticsAppliedGeneration = -1;
+    private volatile bool _verboseDiagnosticsAppliedValue;
+
+    /// <summary>Reapplies the session switch after a native-core restart.</summary>
+    public void EnsureVerboseDiagnosticsMode()
+    {
+        if (!_bridge.Running)
+        {
+            _verboseDiagnosticsAppliedGeneration = -1;
+            _verboseDiagnosticsAppliedValue = false;
+            return;
+        }
+
+        var generation = _bridge.Health.RestartCount;
+        // Every new native process starts in production mode. Do not spend an
+        // RPC or create a log line merely to restate the default.
+        if (!VerboseDiagnosticsEnabled && _verboseDiagnosticsAppliedGeneration != generation)
+        {
+            _verboseDiagnosticsAppliedGeneration = generation;
+            _verboseDiagnosticsAppliedValue = false;
+            return;
+        }
+        if (_verboseDiagnosticsAppliedGeneration == generation &&
+            _verboseDiagnosticsAppliedValue == VerboseDiagnosticsEnabled)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _verboseDiagnosticsSyncInFlight, 1, 0) == 0)
+        {
+            _ = ApplyVerboseDiagnosticsModeAsync();
+        }
+    }
+
+    private async Task ApplyVerboseDiagnosticsModeAsync()
+    {
+        var enabled = VerboseDiagnosticsEnabled;
+        var generation = _bridge.Health.RestartCount;
+        var succeeded = false;
+        try
+        {
+            await _bridge.SyncAsync(
+            [
+                new NativeMediaCoreCommand
+                {
+                    Type = "set-verbose-diagnostics",
+                    ExtensionData = new Dictionary<string, System.Text.Json.JsonElement>
+                    {
+                        ["enabled"] = System.Text.Json.JsonSerializer.SerializeToElement(enabled)
+                    }
+                }
+            ]).ConfigureAwait(false);
+            _verboseDiagnosticsAppliedGeneration = generation;
+            _verboseDiagnosticsAppliedValue = enabled;
+            succeeded = true;
+            LaunchLog.Write($"diagnostics: verbose logging {(enabled ? "enabled" : "disabled")} by operator");
+        }
+        catch (Exception ex)
+        {
+            // Keep the shell side live even if the native core is between
+            // generations; normal exception limiting prevents retry chatter.
+            LaunchLog.WriteException("diagnostics: native verbose mode update failed", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _verboseDiagnosticsSyncInFlight, 0);
+            // Coalesce a toggle or core restart that occurred while the command
+            // was in flight into one follow-up update.
+            if (succeeded && _bridge.Running &&
+                (_verboseDiagnosticsAppliedGeneration != _bridge.Health.RestartCount ||
+                 _verboseDiagnosticsAppliedValue != VerboseDiagnosticsEnabled))
+            {
+                EnsureVerboseDiagnosticsMode();
+            }
+        }
+    }
+
     partial void OnActivationKeyChanged(string value) => OnPropertyChanged(nameof(CanActivateLicense));
 
     partial void OnLicenseActionStatusChanged(string value) => OnPropertyChanged(nameof(ShowLicenseActionStatus));
@@ -431,6 +524,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     }
 
     private DateTime _lastEvidenceRefreshUtc = DateTime.MinValue;
+    private DateTime _lastDiagnosticsRefreshUtc = DateTime.MinValue;
 
     public void RefreshZoomEngineEvidence(NativeMediaCoreStateSnapshot? snapshot = null, bool throttle = false)
     {
@@ -470,8 +564,14 @@ public sealed partial class SettingsViewModel : ObservableObject
     /// event log surfaced as an actionable readout. Sourced from the latest
     /// media-core snapshot warnings and supervisor health.
     /// </summary>
-    public void RefreshDiagnosticsReadout()
+    public void RefreshDiagnosticsReadout(bool throttle = false)
     {
+        EnsureVerboseDiagnosticsMode();
+        if (throttle && (DateTime.UtcNow - _lastDiagnosticsRefreshUtc) < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+        _lastDiagnosticsRefreshUtc = DateTime.UtcNow;
         RunOnUiThread(() =>
         {
             _diagnosticsReadout = BuildDiagnosticsReadout(_bridge.LastSnapshot, _bridge.Health);

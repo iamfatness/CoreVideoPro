@@ -201,6 +201,16 @@ def main():
     core = Core(args.core, env=load_env(args.load) if args.load else None)
     time.sleep(1.5)
 
+    # Production mode intentionally suppresses the frame/timing lines this
+    # performance harness evaluates. Opt in through the same live command as
+    # the Health switch so a green drill still proves the diagnostic path.
+    diagnostics = core.sync(
+        [{"type": "set-verbose-diagnostics", "enabled": True}], 0)
+    if diagnostics is None:
+        print("FAIL enabling verbose diagnostics timed out")
+        core.kill()
+        return 1
+
     if args.load:
         joined = core.request({"type": "zoom-join", "payload": {
             "meetingNumber": "1234567890", "displayName": "show-drill"}}, timeout=20.0)

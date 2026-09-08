@@ -3614,7 +3614,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        LaunchLog.Write($"scene-selection phase=begin scene={value} gallery={PreviewScene.DynamicGallery is not null} participants={RoomVideoParticipants.Count}");
+        LaunchLog.WriteVerbose($"scene-selection phase=begin scene={value} gallery={PreviewScene.DynamicGallery is not null} participants={RoomVideoParticipants.Count}");
         _lastValidPreviewSceneId = value;
         MagicScene.NotifyPreviewSceneChanged();
         // S2b: cueing a different scene abandons any uncommitted edits to the
@@ -3622,16 +3622,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         DiscardLivePreviewDraft();
         SceneBuilderName = PreviewScene.Name;
         NotifyDynamicGalleryPropertiesChanged();
-        LaunchLog.Write($"scene-selection phase=refresh-items scene={value}");
+        LaunchLog.WriteVerbose($"scene-selection phase=refresh-items scene={value}");
         RefreshSceneItems();
-        LaunchLog.Write($"scene-selection phase=refresh-background scene={value}");
+        LaunchLog.WriteVerbose($"scene-selection phase=refresh-background scene={value}");
         RefreshSceneBackgroundSelection();
         OnPropertyChanged(nameof(PreviewScene));
         OnPropertyChanged(nameof(PreviewSceneSummary));
         OnPropertyChanged(nameof(SceneRailDisplaySummary));
         OnPropertyChanged(nameof(CanTake));
         TakeCommand.NotifyCanExecuteChanged();
-        LaunchLog.Write($"scene-selection phase=schedule-routing scene={value}");
+        LaunchLog.WriteVerbose($"scene-selection phase=schedule-routing scene={value}");
         SchedulePreviewRoutingRefresh();
         // Push the newly-selected PREVIEW scene graph to the core so it composites the
         // multi-layer preview bus (mirrors how program scene changes sync). Discrete user
@@ -3639,10 +3639,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // reapplies), so swallow the in-flight signal.
         if (_bridge.Running && _bridge.Profile is not null && _takeMutationDepth == 0)
         {
-            LaunchLog.Write($"scene-selection phase=sync-start scene={value}");
+            LaunchLog.WriteVerbose($"scene-selection phase=sync-start scene={value}");
             _ = SyncPreviewSceneChangeAsync();
         }
-        LaunchLog.Write($"scene-selection phase=queued scene={value}");
+        LaunchLog.WriteVerbose($"scene-selection phase=queued scene={value}");
     }
 
     private void SchedulePreviewSceneSelectionRestore()
@@ -6185,7 +6185,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         if (_shutdownPrepared) return;
         var version = Interlocked.Increment(ref _productionSyncRetryVersion);
-        LaunchLog.Write($"media-core sync deferred reason={reason}; request={version}");
+        LaunchLog.WriteVerbose($"media-core sync deferred reason={reason}; request={version}");
         EnsureProductionSyncRetryWorker();
     }
 
@@ -6224,7 +6224,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 handledVersion = requestedVersion;
-                LaunchLog.Write($"media-core deferred sync completed request={handledVersion}");
+                LaunchLog.WriteVerbose($"media-core deferred sync completed request={handledVersion}");
             }
         }
         catch (OperationCanceledException) when (_shutdownPrepared) { }
@@ -7395,6 +7395,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void MaybeLogAudioTelemetry(NativeMediaCoreStateSnapshot snapshot)
     {
+        if (!DiagnosticLog.VerboseEnabled)
+        {
+            return;
+        }
+
         var audio = snapshot.AudioMixSession;
         var capture = snapshot.CaptureAudioSources;
         var matrix = snapshot.AudioRoutingMatrix;
@@ -8559,7 +8564,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var commands = MediaCoreCommandBuilder.BuildSyncCommands(context);
             var version = ++_productionSyncCaptureVersion;
             if (!string.IsNullOrWhiteSpace(reason))
-                LaunchLog.Write($"media-core sync batch reason={reason} request={version} recording={context.Recording} streaming={context.Streaming} commands={string.Join(",", commands.Select(command => command.Type))}");
+                LaunchLog.WriteVerbose($"media-core sync batch reason={reason} request={version} recording={context.Recording} streaming={context.Streaming} commands={string.Join(",", commands.Select(command => command.Type))}");
             return (Version: version, SceneId: scene.Id, SceneName: scene.Name, LowerThirdRevision: _lowerThirdFreshness.Revision, Response: _bridge.SyncAsync(commands));
         }).ConfigureAwait(false);
 
@@ -9991,20 +9996,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (_shutdownPrepared) return;
         // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
         // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
-        var _swTotal = System.Diagnostics.Stopwatch.StartNew();
-        var _swStep = System.Diagnostics.Stopwatch.StartNew();
-        var _timings = new System.Text.StringBuilder();
+        var verboseDiagnostics = DiagnosticLog.VerboseEnabled;
+        var _swTotal = verboseDiagnostics ? System.Diagnostics.Stopwatch.StartNew() : null;
+        var _swStep = verboseDiagnostics ? System.Diagnostics.Stopwatch.StartNew() : null;
+        var _timings = verboseDiagnostics ? new System.Text.StringBuilder() : null;
         void Tm(string name)
         {
-            _timings.Append(name).Append('=').Append(_swStep.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms ");
+            if (!verboseDiagnostics) return;
+            _timings!.Append(name).Append('=').Append(_swStep!.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms ");
             _swStep.Restart();
         }
         void LogIfSlow(string exit)
         {
-            _swTotal.Stop();
+            if (!verboseDiagnostics) return;
+            _swTotal!.Stop();
             if (_swTotal.Elapsed.TotalMilliseconds > 10)
             {
-                LaunchLog.Write($"perf: ApplySnapshot {_swTotal.Elapsed.TotalMilliseconds:F1}ms @{exit} :: {_timings}");
+                LaunchLog.WriteVerbose($"perf: ApplySnapshot {_swTotal.Elapsed.TotalMilliseconds:F1}ms @{exit} :: {_timings}");
             }
         }
 
@@ -10060,7 +10068,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
         MaybeLogAudioTelemetry(snapshot);
         Tm("audioTelemetry");
-        Settings.RefreshDiagnosticsReadout();
+        Settings.RefreshDiagnosticsReadout(throttle: true);
         Tm("diagnostics");
 
         if (!ZoomCaptureSubscribed)
@@ -10330,6 +10338,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyMeetingFieldsFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
+        var verboseDiagnostics = DiagnosticLog.VerboseEnabled;
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext());
         var meetingState = patch.MeetingStateLabel;
         if (string.IsNullOrWhiteSpace(meetingState))
@@ -10339,10 +10348,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (meetingState.Equals("in_meeting", StringComparison.OrdinalIgnoreCase))
         {
-            var _mf = System.Diagnostics.Stopwatch.StartNew();
-            var _mfTotal = System.Diagnostics.Stopwatch.StartNew();
-            var _mfb = new System.Text.StringBuilder();
-            void MfT(string n) { _mfb.Append(n).Append('=').Append(_mf.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms "); _mf.Restart(); }
+            var _mf = verboseDiagnostics ? System.Diagnostics.Stopwatch.StartNew() : null;
+            var _mfTotal = verboseDiagnostics ? System.Diagnostics.Stopwatch.StartNew() : null;
+            var _mfb = verboseDiagnostics ? new System.Text.StringBuilder() : null;
+            void MfT(string n)
+            {
+                if (!verboseDiagnostics) return;
+                _mfb!.Append(n).Append('=').Append(_mf!.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms ");
+                _mf.Restart();
+            }
             ZoomStatus = "Zoom Live";
             // WAITING STATES MUST BE LOUD. Zoom hands over raw video only after
             // the host grants recording permission; until then every tile is
@@ -10380,9 +10394,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SyncShowInputsFromMeeting(participants);
                 MfT("syncShowInputs");
             }
-            if (_mfTotal.Elapsed.TotalMilliseconds > 5)
+            if (verboseDiagnostics && _mfTotal!.Elapsed.TotalMilliseconds > 5)
             {
-                LaunchLog.Write($"perf: meetingFields {_mfTotal.Elapsed.TotalMilliseconds:F1}ms :: {_mfb}");
+                LaunchLog.WriteVerbose($"perf: meetingFields {_mfTotal.Elapsed.TotalMilliseconds:F1}ms :: {_mfb}");
             }
             return;
         }
@@ -11062,7 +11076,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var verboseDiagnostics = DiagnosticLog.VerboseEnabled;
+        var sw = verboseDiagnostics ? System.Diagnostics.Stopwatch.StartNew() : null;
         ProgramSurface = _surfaces.ProgramSurface;
         // The MULTIVIEW monitor is now ONE core-composited GPU shared texture (single swap chain),
         // mirrored from the coordinator on structural change only — NOT a per-frame rebuild of N
@@ -11083,7 +11098,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : ResolvePreviewPrimarySurface();
         RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
-        sw.Stop();
+        if (!verboseDiagnostics) return;
+        sw!.Stop();
         // DIAGNOSTIC: how much UI-thread time the per-frame binding rebuild consumes.
         // UIbusy% near 100 means the rebuild saturates the UI thread -> frames lag.
         _rsbTotalMs += sw.ElapsedMilliseconds;
@@ -11093,7 +11109,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (_rsbCount >= 60)
         {
             var span = now - _rsbWindowStartMs;
-            LaunchLog.Write($"perf: RefreshSurfaceBindings {_rsbCount} calls/{span}ms => {(double)_rsbTotalMs / _rsbCount:F1}ms/call, {(span > 0 ? _rsbCount * 1000.0 / span : 0):F0}/s, UIbusy={(span > 0 ? 100.0 * _rsbTotalMs / span : 0):F0}%");
+            LaunchLog.WriteVerbose($"perf: RefreshSurfaceBindings {_rsbCount} calls/{span}ms => {(double)_rsbTotalMs / _rsbCount:F1}ms/call, {(span > 0 ? _rsbCount * 1000.0 / span : 0):F0}/s, UIbusy={(span > 0 ? 100.0 * _rsbTotalMs / span : 0):F0}%");
             _rsbCount = 0;
             _rsbTotalMs = 0;
             _rsbWindowStartMs = now;
@@ -11154,7 +11170,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 if (sig != _lastPreviewResolveSig)
                 {
                     _lastPreviewResolveSig = sig;
-                    LaunchLog.Write($"preview-resolve: branch={branch} primary={primary.Participant.Id} handle=0x{hv:X} valid={(hv != 0)}");
+                    LaunchLog.WriteVerbose($"preview-resolve: branch={branch} primary={primary.Participant.Id} handle=0x{hv:X} valid={(hv != 0)}");
                 }
                 return resolved;
             }
@@ -11167,7 +11183,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (fsig != _lastPreviewResolveSig)
         {
             _lastPreviewResolveSig = fsig;
-            LaunchLog.Write($"preview-resolve: branch=fallback(_surfaces.PreviewSurface) primary={primary?.Participant.Id ?? "<none>"} handle=0x{fhv:X} valid={(fhv != 0)}");
+            LaunchLog.WriteVerbose($"preview-resolve: branch=fallback(_surfaces.PreviewSurface) primary={primary?.Participant.Id ?? "<none>"} handle=0x{fhv:X} valid={(fhv != 0)}");
         }
         return fallback;
     }
@@ -14047,11 +14063,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // Diagnostic: how fast the core actually delivers new program frames (the
         // content render rate). The vsync present re-copies the texture at 60fps
         // regardless, so this — not the present count — is the real frame rate.
-        if (++_sharedTextureReceiveCount % 120 == 0)
+        if (DiagnosticLog.VerboseEnabled && ++_sharedTextureReceiveCount % 120 == 0)
         {
             var nowMs = Environment.TickCount64;
             var dt = nowMs - _sharedTextureRateStampMs;
-            LaunchLog.Write($"sharedtex: received #{_sharedTextureReceiveCount} ~{(dt > 0 ? 120000.0 / dt : 0):F1}/s (core content rate)");
+            LaunchLog.WriteVerbose($"sharedtex: received #{_sharedTextureReceiveCount} ~{(dt > 0 ? 120000.0 / dt : 0):F1}/s (core content rate)");
             _sharedTextureRateStampMs = nowMs;
         }
         RunOnUiThread(() => _surfaces.OnProgramSharedTexture(texture));
@@ -14065,9 +14081,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private int _previewSharedTextureReceiveCount;
     private void OnPreviewSharedTextureReceived(ProgramSharedTexture texture)
     {
-        if (++_previewSharedTextureReceiveCount % 120 == 0)
+        if (DiagnosticLog.VerboseEnabled && ++_previewSharedTextureReceiveCount % 120 == 0)
         {
-            LaunchLog.Write($"preview-sharedtex: received #{_previewSharedTextureReceiveCount} (core preview composite)");
+            LaunchLog.WriteVerbose($"preview-sharedtex: received #{_previewSharedTextureReceiveCount} (core preview composite)");
         }
         RunOnUiThread(() =>
         {
@@ -14088,7 +14104,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // participant so we can confirm the core->bridge->coordinator path end-to-end.
         if (texture is not null && texture.IsValid && _loggedParticipantTextures.Add(texture.ParticipantId))
         {
-            LaunchLog.Write($"multiview: participant GPU texture '{texture.ParticipantId}' {texture.Width}x{texture.Height} handle={texture.SharedHandleHex}");
+            LaunchLog.WriteVerbose($"multiview: participant GPU texture '{texture.ParticipantId}' {texture.Width}x{texture.Height} handle={texture.SharedHandleHex}");
         }
         RunOnUiThread(() => _surfaces.OnParticipantSharedTexture(texture));
     }
@@ -14195,7 +14211,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (multiview is { } mv && mv.IsValid && !_loggedMultiviewTexture)
         {
             _loggedMultiviewTexture = true;
-            LaunchLog.Write($"multiview: GPU shared texture {mv.Texture.Width}x{mv.Texture.Height} handle={mv.Texture.SharedHandleHex} tiles={mv.Tiles.Count}");
+            LaunchLog.WriteVerbose($"multiview: GPU shared texture {mv.Texture.Width}x{mv.Texture.Height} handle={mv.Texture.SharedHandleHex} tiles={mv.Tiles.Count}");
         }
         RunOnUiThread(() => _surfaces.OnMultiviewSharedTexture(multiview));
     }

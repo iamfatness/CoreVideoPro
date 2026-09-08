@@ -93,6 +93,17 @@ TEST(BoundedAsyncLog, OversizedMessagesAreTruncatedAndSinkFailuresAreCounted) {
   EXPECT_EQ(logger.stats().sinkFailures, 1u);
 }
 
+TEST(BoundedAsyncLog, VerboseLoggingIsOffUntilExplicitlyEnabled) {
+  corevideo::core::setNativeVerboseLoggingEnabled(false);
+  EXPECT_FALSE(corevideo::core::nativeVerboseLoggingEnabled());
+
+  corevideo::core::setNativeVerboseLoggingEnabled(true);
+  EXPECT_TRUE(corevideo::core::nativeVerboseLoggingEnabled());
+
+  // Do not leak process-global diagnostic state into later tests.
+  corevideo::core::setNativeVerboseLoggingEnabled(false);
+}
+
 #if !defined(_WIN32)
 TEST(BoundedAsyncLog, ClosedPipeIsCountedWithoutTerminatingProcess) {
   int pipeEnds[2];

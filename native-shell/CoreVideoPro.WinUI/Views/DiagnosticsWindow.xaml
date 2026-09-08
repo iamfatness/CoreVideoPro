@@ -51,6 +51,24 @@
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="12">
+                <Border Style="{StaticResource OperatorSectionBorder}">
+                    <Grid ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Detailed diagnostics" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.Settings.VerboseDiagnosticsStatus, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}"
+                                       TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="1"
+                                      Header="Extra logs"
+                                      IsOn="{x:Bind ViewModel.Settings.VerboseDiagnosticsEnabled, Mode=TwoWay}" />
+                    </Grid>
+                </Border>
+
                 <Grid ColumnSpacing="10" RowSpacing="10">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
