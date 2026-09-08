@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Archive)
 $ErrorActionPreference = 'Stop'
+$nodePin = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'node-runtime.json') -Raw | ConvertFrom-Json
 $path = (Resolve-Path -LiteralPath $Archive).Path
 $expected = ((Get-Content -LiteralPath ($path + '.sha256') -Raw).Trim() -split '\s+')[0]
 if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected) { throw 'Package checksum mismatch.' }
@@ -14,6 +15,10 @@ try {
         if (-not $name.StartsWith($prefix) -or $name -match '(^|/)\.\.(/|$)') { throw 'Unexpected archive path.' }
         if ($name.EndsWith('/')) { continue }
         $relative = $name.Substring($prefix.Length)
+        if ($relative -match '^show-engine/dist/' -and
+            ($relative -notmatch '\.(js|d\.ts)$' -or $relative -match '(?i)(^|/)(tests?|fixtures?|__[^/]+__)(/|$)|\.(test|spec)\.|\.map$')) {
+            throw "Development or unexpected show-engine payload: $relative"
+        }
         if ($relative -in @('sdk.dll','corevideo-zoom-engine.exe')) { throw "Legacy root Zoom component is forbidden: $relative" }
         if ($relative -match '(?i)^zoom-runtime/windows/x64/bin/(?:.*/)?(?:msvcp[0-9].*|msvcr[0-9].*|vcruntime[0-9].*|concrt[0-9].*|vcomp[0-9].*|ucrtbase|api-ms-win-crt-.*)\.dll$') {
             throw "App-local CRT is forbidden inside the isolated Zoom SDK: $relative"
@@ -28,10 +33,22 @@ try {
         'zoom-runtime/windows/x64/h/meeting_service_interface.h','zoom-runtime/windows/x64/h/rawdata/zoom_rawdata_api.h',
         'zoom-runtime/windows/x64/h/rawdata/rawdata_renderer_interface.h','zoom-runtime/windows/x64/h/rawdata/rawdata_audio_helper_interface.h',
         'StartCoreVideo.cmd','Install-MediaRuntime.ps1','build-manifest.json',
-        'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll')) {
+        'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll',
+        'node/node.exe','show-engine/dist/host/main.js','show-engine/package.json',
+        'corevideo-show-engine-runtime.json',"notices/$($nodePin.license)")) {
         if (-not $entries.ContainsKey($required)) { throw "Missing package component: $required" }
     }
     if (-not @($entries.Keys | Where-Object { $_ -like '*.xbf' }).Count) { throw 'Compiled XAML is missing.' }
+    $nodeStream = $entries['node/node.exe'].Open(); $nodeSha = [Security.Cryptography.SHA256]::Create()
+    try { $nodeHash = [BitConverter]::ToString($nodeSha.ComputeHash($nodeStream)).Replace('-','').ToLowerInvariant() }
+    finally { $nodeSha.Dispose(); $nodeStream.Dispose() }
+    if ($nodeHash -ne $nodePin.sha256) { throw 'Node executable does not match the pinned upstream runtime.' }
+    $nodeReader = [IO.StreamReader]::new($entries['corevideo-show-engine-runtime.json'].Open())
+    try { $runtime = $nodeReader.ReadToEnd() | ConvertFrom-Json } finally { $nodeReader.Dispose() }
+    if ($runtime.nodeSource -ne $nodePin.url -or $runtime.nodeVersion -ne $nodePin.version -or
+        $runtime.nodeSha256 -ne $nodePin.sha256 -or $runtime.entry -ne 'show-engine/dist/host/main.js') {
+        throw 'Invalid or private Node runtime provenance.'
+    }
     if (-not @($entries.Keys | Where-Object { $_ -like 'Assets/Fonts/*.ttf' }).Count) { throw 'Bundled fonts are missing.' }
     $reader = [IO.StreamReader]::new($entries['build-manifest.json'].Open())
     try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }

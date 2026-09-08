@@ -26,10 +26,12 @@ public sealed class HttpControlRouter
     };
 
     private readonly IControlSurface _surface;
+    private readonly ControlCatalog _catalog;
 
-    public HttpControlRouter(IControlSurface surface)
+    public HttpControlRouter(IControlSurface surface, ControlCatalog? catalog = null)
     {
         _surface = surface;
+        _catalog = catalog ?? ControlCatalog.StaticOnly;
     }
 
     public async Task<HttpControlResponse> HandleAsync(string method, string path, string? body, CancellationToken cancellationToken = default)
@@ -38,7 +40,7 @@ public sealed class HttpControlRouter
 
         if (method == "GET" && route == "/manifest")
         {
-            return HttpControlResponse.Json(200, ControlManifest.Build().ToJson());
+            return HttpControlResponse.Json(200, ControlManifest.Build(catalog: _catalog).ToJson());
         }
 
         if (method == "GET" && route == "/state")
@@ -89,7 +91,7 @@ public sealed class HttpControlRouter
             return Fail(400, "Missing 'action'.");
         }
 
-        if (!ControlActionRegistry.TryBind(actionId!, args, out var bound, out var bindError))
+        if (!_catalog.TryBind(actionId!, args, out var bound, out var bindError))
         {
             return Fail(400, bindError!);
         }

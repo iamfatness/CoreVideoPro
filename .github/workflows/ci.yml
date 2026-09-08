@@ -130,6 +130,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:unit
+      - run: npm run test:scripts
 
   test-integration:
     runs-on: ubuntu-latest
@@ -171,7 +172,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: Typecheck (sources and tests)
@@ -180,6 +181,20 @@ jobs:
         run: npm run test:show-engine
       - name: Build
         run: npm run build:show-engine
+      - name: Host smoke
+        run: npm run smoke:show-engine-host
+      # The ONLY guard on the `dist` surface Plans 7-9 actually consume, and
+      # until now the only one nothing ran automatically. `npm test` cannot
+      # make these checks: it does not build, so it can prove an export line
+      # exists in `src/index.ts` but not that the name survives compilation
+      # into `dist/index.js` / `dist/index.d.ts`. This step resolves every
+      # runtime name from the built barrel, compiles every type-only name
+      # against the emitted `.d.ts`, and EXECUTES the host conformance suite
+      # from `dist` against three host shapes with no test framework loaded.
+      # (It builds first itself; the Build step above stays as the earlier,
+      # narrower failure signal.)
+      - name: Dist barrel + conformance from dist
+        run: npm run verify:barrel:show-engine
 
   native-stub:
     runs-on: ubuntu-latest

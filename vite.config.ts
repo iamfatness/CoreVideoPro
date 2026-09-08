@@ -31,11 +31,7 @@ export default defineConfig({
       "**/.claude/**",
       "native-core/**",
       // Infrastructure tests use node:test and run in their own CI command.
-      "scripts/tests/release-evidence.test.mjs",
-      "scripts/tests/av-content-analysis.test.mjs",
-      "scripts/tests/av-content-decode.test.mjs",
-      "scripts/tests/frame-performance.test.mjs",
-      "scripts/tests/program-buffer-smoke.test.mjs",
+      "scripts/**/*.test.mjs",
       "tests/e2e/**",
       "src/App.test.tsx"
     ],

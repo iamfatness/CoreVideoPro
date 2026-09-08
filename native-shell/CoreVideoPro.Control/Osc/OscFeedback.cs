@@ -45,6 +45,41 @@ public static class OscFeedback
             messages.Add(new OscMessage(addressMap.StateAddress($"input/{input.Slot}/name"), input.Name ?? string.Empty));
         }
 
+        messages.Add(Str("ohg/health/engine", state.OhgEngineHealth));
+        messages.Add(Str("ohg/shadow/lastCommand", state.OhgShadowLastCommand));
+
+        foreach (var (field, value) in state.OhgFields ?? EmptyOhgFields)
+        {
+            switch (value.ValueKind)
+            {
+                case System.Text.Json.JsonValueKind.True:
+                    messages.Add(new OscMessage(addressMap.StateAddress(field), 1));
+                    break;
+                case System.Text.Json.JsonValueKind.False:
+                    messages.Add(new OscMessage(addressMap.StateAddress(field), 0));
+                    break;
+                case System.Text.Json.JsonValueKind.Number:
+                    if (value.TryGetInt32(out var intValue))
+                    {
+                        messages.Add(new OscMessage(addressMap.StateAddress(field), intValue));
+                    }
+                    else
+                    {
+                        messages.Add(new OscMessage(addressMap.StateAddress(field), (float)value.GetDouble()));
+                    }
+                    break;
+                case System.Text.Json.JsonValueKind.String:
+                    messages.Add(new OscMessage(addressMap.StateAddress(field), value.GetString() ?? string.Empty));
+                    break;
+                default:
+                    // Null/other kinds are omitted (spec §7).
+                    break;
+            }
+        }
+
         return messages;
     }
+
+    private static readonly IReadOnlyDictionary<string, System.Text.Json.JsonElement> EmptyOhgFields =
+        new Dictionary<string, System.Text.Json.JsonElement>();
 }

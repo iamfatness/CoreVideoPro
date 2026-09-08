@@ -4,13 +4,20 @@
 param(
     [Parameter(Mandatory=$true)][string]$ReleaseId,
     [Parameter(Mandatory=$true)][string]$PublishDirectory,
-    [Parameter(Mandatory=$true)][string]$NativeBuildDirectory
+    [Parameter(Mandatory=$true)][string]$NativeBuildDirectory,
+    [string]$NodeExe = ''
 )
 $ErrorActionPreference = 'Stop'
 if ($ReleaseId -notmatch '^alpha-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Use alpha-YYYY-MM-DD-build as ReleaseId.' }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $publish = (Resolve-Path -LiteralPath $PublishDirectory).Path
 $native = (Resolve-Path -LiteralPath $NativeBuildDirectory).Path
+$nodePin = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'alpha/node-runtime.json') -Raw | ConvertFrom-Json
+if (-not $NodeExe) { $NodeExe = (Get-Command node -ErrorAction Stop).Source }
+$NodeExe = (Resolve-Path -LiteralPath $NodeExe).Path
+if ((Get-FileHash -LiteralPath $NodeExe -Algorithm SHA256).Hash -ne $nodePin.sha256) {
+    throw "Alpha requires the pinned official Node $($nodePin.version) Windows x64 executable. Pass -NodeExe with that binary."
+}
 $output = Join-Path $repoRoot "artifacts/releases/$ReleaseId"
 if (Test-Path -LiteralPath $output) { throw 'Release output already exists; choose a new immutable release ID.' }
 $app = Join-Path $output 'CoreVideoPro-Alpha'
@@ -18,7 +25,7 @@ New-Item -ItemType Directory -Path $app -Force | Out-Null
 foreach ($file in @('CoreVideoPro.WinUI.exe','CoreVideoPro.WinUI.dll','coreclr.dll','hostfxr.dll','Microsoft.UI.Xaml.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $publish $file) -PathType Leaf)) { throw "Self-contained publish missing $file" }
 }
-foreach ($dir in @('Recordings','Logs','CrashReports','SupportBundles','publish')) {
+foreach ($dir in @('Recordings','Logs','CrashReports','SupportBundles','publish','node','show-engine')) {
     if (Test-Path -LiteralPath (Join-Path $publish $dir)) { throw "Unexpected runtime/build data in publish: $dir" }
 }
 foreach ($file in @('sdk.dll','corevideo-zoom-engine.exe')) {
@@ -28,6 +35,15 @@ Get-ChildItem -LiteralPath $publish | Where-Object { $_.Name -notlike 'runtime-p
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $app -Recurse -Force }
 Get-ChildItem -LiteralPath $app -Recurse -File -Filter '*.pdb' | ForEach-Object { Remove-Item -LiteralPath $_.FullName }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'native-shell/CoreVideoPro.WinUI/Assets') -Destination $app -Recurse -Force
+# Reuse the normal host staging path, but pin its input and replace its private
+# build-machine provenance with public upstream identity before ZIP creation.
+& (Join-Path $PSScriptRoot 'sync-node-runtime-to-app.ps1') -AppDir $app -NodeExe $NodeExe
+if (-not $?) { throw 'Node/show-engine staging failed.' }
+$nodeManifest = [ordered]@{
+    nodeVersion=$nodePin.version; nodeSha256=$nodePin.sha256
+    nodeSource=$nodePin.url; entry='show-engine/dist/host/main.js'
+}
+$nodeManifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $app 'corevideo-show-engine-runtime.json') -Encoding UTF8
 $nativeFiles = @('corevideo-native.exe','corevideo-browser-host.exe','corevideo-plugin-host.exe','corevideo-virtualcam.dll')
 foreach ($file in $nativeFiles) {
     $source = Join-Path $native $file
@@ -124,6 +140,10 @@ cd /d "%~dp0"
 $files = @(Get-ChildItem -LiteralPath $app -Recurse -File)
 foreach ($file in $files) {
     $relative = $file.FullName.Substring($app.Length + 1).Replace('\','/')
+    if ($relative -match '^show-engine/dist/' -and
+        ($relative -notmatch '\.(js|d\.ts)$' -or $relative -match '(?i)(^|/)(tests?|fixtures?|__[^/]+__)(/|$)|\.(test|spec)\.|\.map$')) {
+        throw "Development or unexpected show-engine payload: $relative. Rebuild show-engine from a clean dist directory."
+    }
     if ($relative -match '^zoom-runtime/windows/x64/bin/' -and $file.Name -match $crtFilePattern) {
         throw "App-local CRT is forbidden inside the isolated Zoom SDK: $relative"
     }

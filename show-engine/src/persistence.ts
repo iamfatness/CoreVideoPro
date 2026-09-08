@@ -8,10 +8,11 @@
  * Loads are forgiving by design — a missing, unreadable, or malformed state
  * file yields null so the engine starts clean, rather than refusing to boot
  * before a show. `load()` only validates that the document is shaped like a
- * `ShowState` (an object with a numeric `slots.capacity`, an array
- * `slots.seats`, an object `overrides`, and a `gallery` object carrying a
- * numeric `cells` and an array `assignments`); it does not look inside
- * individual seat, panelist, or gallery-cell records. Deeper coherence is
+ * `PersistedShowState` (an object with a numeric `slots.capacity`, an array
+ * `slots.seats`, an object `overrides`, a `gallery` object carrying a
+ * numeric `cells` and an array `assignments`, an object `manualBoxes`, and a
+ * `lookId` that is a string or null); it does not look inside individual
+ * seat, panelist, or gallery-cell records. Deeper coherence is
  * `LiveSlots.fromJSON`'s and `GalleryDirector.fromJSON`'s job — see their
  * doc comments and their named restore errors.
  *
@@ -30,20 +31,28 @@
  * (`"1383"`) that `buildPanelistDb` never looks up (`"pin:1383"`), silently
  * dropping every operator-assigned role at the first restart of a show.
  * Bumping the version turns that silent loss into the same clean start the
- * pre-gallery files get. Any future change to what lives inside `overrides`
- * or `slots.seats` must bump it again for the same reason.
+ * pre-gallery files get. Version 3 adds `manualBoxes` (the operator's box →
+ * roster-slot fallback assignments) paired with `lookId` (which look those
+ * assignments belong to) — without the pairing, restarting into a different
+ * look would silently inherit a previous look's manual boxes, seating the
+ * wrong person in a box that means something else under the new look. Any
+ * future change to what lives inside `overrides` or `slots.seats` must bump
+ * it again for the same reason.
  */
 
 import type { GalleryState } from "./galleryDirector.js";
 import type { LiveSlotsState } from "./liveSlots.js";
+import type { ManualBoxAssignments } from "./lookDirector.js";
 import type { OverrideRecord } from "./overrideDb.js";
 import type { PersonKey } from "./personKey.js";
 
-export type ShowState = {
-  version: 2;
+export type PersistedShowState = {
+  version: 3;
   slots: LiveSlotsState;
   overrides: Record<PersonKey, OverrideRecord>;
   gallery: GalleryState;
+  manualBoxes: ManualBoxAssignments;
+  lookId: string | null;
 };
 
 export type StateFs = {
@@ -53,7 +62,7 @@ export type StateFs = {
   mkdir: (path: string) => Promise<void>;
 };
 
-const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 function parentDirectory(path: string): string {
   const slashIndex = path.lastIndexOf("/");
@@ -74,7 +83,7 @@ export class StateStore {
     this.fs = deps.fs;
   }
 
-  async save(state: ShowState): Promise<void> {
+  async save(state: PersistedShowState): Promise<void> {
     const tempPath = `${this.path}.tmp`;
     await this.fs.mkdir(parentDirectory(this.path));
     await this.fs.writeFile(tempPath, JSON.stringify(state, null, 2));
@@ -83,21 +92,23 @@ export class StateStore {
 
   /**
    * Read persisted state, or null when it is absent, corrupt, a foreign
-   * version, or not shaped like a `ShowState`. This is a shallow structural
-   * check only — `slots` must be an object with a numeric `capacity` and an
-   * array `seats`, `overrides` must be an object, and `gallery` must be an
-   * object with a numeric `cells` and an array `assignments`. A state file
-   * with no `gallery` key at all (written before the gallery landed) fails
-   * this check and returns null rather than being migrated, and a file
-   * carrying any `version` but the current one is rejected before the shape
-   * is even looked at — that is what catches a change inside the override
-   * records, which this check cannot see. It deliberately does
-   * not look inside individual seat, panelist, or gallery-cell records;
-   * that coherence check belongs to `LiveSlots.fromJSON` and
-   * `GalleryDirector.fromJSON`, which throw their own catchable named
-   * errors on a broken roster or gallery rather than returning null.
+   * version, or not shaped like a `PersistedShowState`. This is a shallow
+   * structural check only — `slots` must be an object with a numeric
+   * `capacity` and an array `seats`, `overrides` must be an object,
+   * `gallery` must be an object with a numeric `cells` and an array
+   * `assignments`, `manualBoxes` must be an object, and `lookId` must be a
+   * string or null. A state file with no `gallery` key at all (written
+   * before the gallery landed) fails this check and returns null rather
+   * than being migrated, and a file carrying any `version` but the current
+   * one is rejected before the shape is even looked at — that is what
+   * catches a change inside the override records, which this check cannot
+   * see. It deliberately does not look inside individual seat, panelist, or
+   * gallery-cell records; that coherence check belongs to
+   * `LiveSlots.fromJSON` and `GalleryDirector.fromJSON`, which throw their
+   * own catchable named errors on a broken roster or gallery rather than
+   * returning null.
    */
-  async load(): Promise<ShowState | null> {
+  async load(): Promise<PersistedShowState | null> {
     let content: string;
     try {
       content = await this.fs.readFile(this.path);
@@ -113,7 +124,7 @@ export class StateStore {
     }
 
     if (typeof parsed !== "object" || parsed === null) return null;
-    const candidate = parsed as Partial<ShowState>;
+    const candidate = parsed as Partial<PersistedShowState>;
     if (candidate.version !== STATE_VERSION) return null;
 
     if (typeof candidate.slots !== "object" || candidate.slots === null) return null;
@@ -128,6 +139,16 @@ export class StateStore {
     if (typeof gallery.cells !== "number") return null;
     if (!Array.isArray(gallery.assignments)) return null;
 
-    return candidate as ShowState;
+    if (
+      typeof candidate.manualBoxes !== "object" ||
+      candidate.manualBoxes === null ||
+      Array.isArray(candidate.manualBoxes)
+    ) {
+      return null;
+    }
+
+    if (typeof candidate.lookId !== "string" && candidate.lookId !== null) return null;
+
+    return candidate as PersistedShowState;
   }
 }

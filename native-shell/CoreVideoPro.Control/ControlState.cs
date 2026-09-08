@@ -79,6 +79,19 @@ public sealed record ControlState
     public IReadOnlyList<ControlInputState> Inputs { get; init; } = System.Array.Empty<ControlInputState>();
     public IReadOnlyList<ControlAudioSourceState> AudioSources { get; init; } = System.Array.Empty<ControlAudioSourceState>();
 
+    /// <summary>The OHG show engine's own snapshot, passed through verbatim (spec §7). Serializes
+    /// under JSON name "ohg"; opaque to this project — the host bridge (Task 6+) owns its shape.</summary>
+    public System.Text.Json.JsonElement? Ohg { get; init; }
+
+    /// <summary>The flattened `ohg/...` feedback fields projected by the host bridge (spec §7's
+    /// twin of show-engine/src/controlState.ts's `projectControlFields`), keyed by the field name
+    /// (matching an `OHG_FIELD_TEMPLATES` entry after `{slot}` substitution). Serializes under
+    /// JSON name "ohgFields".</summary>
+    public IReadOnlyDictionary<string, System.Text.Json.JsonElement>? OhgFields { get; init; }
+
+    public string OhgEngineHealth { get; init; } = "stopped";
+    public string OhgShadowLastCommand { get; init; } = string.Empty;
+
     public static ControlState Empty { get; } = new();
 }
 

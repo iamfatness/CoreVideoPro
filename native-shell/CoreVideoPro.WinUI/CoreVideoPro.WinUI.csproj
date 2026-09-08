@@ -40,6 +40,8 @@
   <ItemGroup>
     <ProjectReference Include="..\CoreVideoPro.MediaCore\CoreVideoPro.MediaCore.csproj" />
     <ProjectReference Include="..\CoreVideoPro.Control\CoreVideoPro.Control.csproj" />
+    <!-- The show-engine host adapter uses the shared OHG command/config models. -->
+    <ProjectReference Include="..\CoreVideoPro.ShowEngine\CoreVideoPro.ShowEngine.csproj" />
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.6" />
     <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.4.0" />
     <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.6" />

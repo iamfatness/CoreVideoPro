@@ -119,7 +119,9 @@ describe("degradation equivalence", () => {
       director.update({
         look: resolveLook(teatime, { ...context, handsQueue }),
         question: null,
-        questionVisible: false
+        questionVisible: false,
+        headline: null,
+        headlineVisible: false
       });
       return director.state();
     };

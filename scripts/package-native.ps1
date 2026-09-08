@@ -166,6 +166,12 @@ if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
+Write-Host "[pack:native] syncing Node runtime + show-engine host..." -ForegroundColor Cyan
+& (Join-Path $repoRoot "scripts\sync-node-runtime-to-app.ps1") -AppDir $outDir
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
+
 # Zoom SDK drops a partial Microsoft.UI.Xaml tree that shadows WinUI theme resources.
 $shadowedWinUi = Join-Path $outDir "Microsoft.UI.Xaml"
 if (Test-Path $shadowedWinUi) {

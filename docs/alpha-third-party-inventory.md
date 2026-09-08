@@ -95,3 +95,16 @@ and local staging diagnostics. Never copy `%LOCALAPPDATA%\CoreVideoPro` into it.
 The earlier offline candidate contained recordings and a fake Zoom engine and
 must not be used as an unrestricted directory-copy source. Include the tester
 guide, notices, version, SHA-256 inventory, and known limitations in the clean ZIP.
+
+## Bundled OHG Node runtime
+
+Alpha packaging includes the dependency-free built show-engine host and official
+Node.js v24.13.0 Windows x64 executable. `scripts/alpha/node-runtime.json` pins the
+upstream binary SHA-256 from https://nodejs.org/dist/v24.13.0/SHASUMS256.txt.
+The bundled `notices/node-v24.13.0-LICENSE.txt` comes from
+https://github.com/nodejs/node/blob/v24.13.0/LICENSE and includes Node's third-party
+notices. The runtime manifest records the public upstream URL, version, and hash;
+it does not disclose the build machine's executable path. No npm dependencies,
+test fixtures, source maps, recordings, or local FFmpeg binaries are added by this
+staging step. Build show-engine before packaging; stale development output fails
+archive validation.

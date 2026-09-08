@@ -161,6 +161,14 @@ function Stage-FfmpegRuntimePayload {
   }
 }
 
+function Stage-NodeRuntimePayload {
+  Write-Host "[pack:native:msix] syncing Node runtime + show-engine host into MSIX payload..." -ForegroundColor Cyan
+  & (Join-Path $repoRoot "scripts\sync-node-runtime-to-app.ps1") -AppDir $payloadDir
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+}
+
 function Assert-MsixPayloadReady {
   param([bool]$StagedNative)
 
@@ -341,6 +349,7 @@ Ensure-MsixAssets
 $stagedNative = Stage-MsixPayload
 Stage-ZoomRuntimePayload
 Stage-FfmpegRuntimePayload
+Stage-NodeRuntimePayload
 Assert-MsixPayloadReady -StagedNative $stagedNative
 
 $publishArgs = @(

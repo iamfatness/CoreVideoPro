@@ -152,7 +152,7 @@ export class LiveSlots {
   /**
    * Restore a roster from a persisted `LiveSlotsState`. This is the
    * "is this a coherent roster" check — `StateStore.load` only confirms the
-   * document is shaped like a `ShowState`; it never inspects individual seat
+   * document is shaped like a `PersistedShowState`; it never inspects individual seat
    * or panelist records. Throws `LiveSlotsRestoreError` (never a bare
    * `Error`) when the document fails that deeper check: a foreign version,
    * a capacity or seats-length mismatch, a seat whose `slot` disagrees with
