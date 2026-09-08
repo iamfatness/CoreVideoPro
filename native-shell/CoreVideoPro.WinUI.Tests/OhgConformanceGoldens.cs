@@ -54,7 +54,7 @@ internal static class OhgConformanceGoldens
 {
     /// <summary>The eight <c>AssignZoomParticipant</c> calls every case's first tick produces —
     /// three seated, five empty — plus the once-per-adapter gallery note that rides the same tick's
-    /// <c>setGallery</c>. Shared because it is the SAME evidence in all six cases (the cases all
+    /// <c>setGallery</c>. Shared because it is the SAME evidence in all seven cases (the cases all
     /// seat the same cast first), and a reader comparing two goldens should be comparing what
     /// differs, not re-reading nine identical lines.</summary>
     private static readonly string[] SeatingPreamble =
@@ -107,6 +107,18 @@ internal static class OhgConformanceGoldens
         "SetCaption()"
     };
 
+    /// <summary>The solo-host look resolving: ONE guest box (this look declares one), the host
+    /// chair on slot 1, and the reader chair carried as <b>null</b> — the look does not seat it,
+    /// even though a panelist still holds the reader role. Only the host chair gets a plate.</summary>
+    private static readonly string[] SoloHostLook =
+    {
+        "SceneExists(conformance-scene)",
+        "CueSceneWithRoutes(conformance-scene, ohg-box-1=null, ohg-host=1, ohg-reader=null)",
+        "SetInputDisplayName(1, Cara Ames)",
+        "SetInputLowerThirdTitle(1, Oslo)",
+        "SetCaption()"
+    };
+
     private static string[] Sequence(params string[][] parts) => parts.SelectMany(part => part).ToArray();
 
     /// <summary>case name → the facade calls that case must produce, in order.</summary>
@@ -131,6 +143,19 @@ internal static class OhgConformanceGoldens
             // second placement.
             ["selecting a look applies its preset and both chairs"] =
                 Sequence(SeatingPreamble, LookPreviewCue, FullLook),
+
+            // INTENT: "An unseated chair is CLEARED, not left alone. `CONFORMANCE_SOLO_LOOK_ID`
+            // seats the host chair and no reader chair, while the roster still holds a panelist in
+            // the reader role." Read out against the intent BEFORE pinning: the panel look goes on
+            // first and puts the reader on air (`ohg-reader=2`); the solo look that follows cues the
+            // same scene with `ohg-reader=null` — the key is PRESENT and null, which is
+            // `OhgRouteSlotWriter`'s "clear it", not absent, which would be "leave it alone" and
+            // would leave the previous look's reader on air. `ohg-box-2` is correctly ABSENT (this
+            // look declares one box, so it addresses one box route), and the plates name the host
+            // chair alone. A sequence where `ohg-reader` were missing here, or still `=2`, would be
+            // an adapter bug to FIX rather than pin — that is the whole point of reading first.
+            ["a look with no reader chair clears ohg-reader"] =
+                Sequence(SeatingPreamble, LookPreviewCue, EmptyBoxLook, LookPreviewCue, SoloHostLook),
 
             // INTENT: "a host that declares `hasPreviewBus: false` must never receive
             // `setPreview`/`cut`/`auto` … and a cut must still put the staged source on program."

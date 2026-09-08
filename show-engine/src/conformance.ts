@@ -123,12 +123,24 @@ export type ConformanceCase = {
 /**
  * The show every conformance case assumes. A runner MUST construct its
  * engine with this exact config (or one that differs only in `statePath`):
- * the cases name `CONFORMANCE_LOOK_ID`, expect capacity 8, and expect a
- * look with both chairs and two boxes.
+ * the cases name `CONFORMANCE_LOOK_ID` and `CONFORMANCE_SOLO_LOOK_ID`,
+ * expect capacity 8, and expect a look with both chairs and two boxes plus
+ * a second look that seats the host chair ALONE.
  */
 export const CONFORMANCE_LOOK_ID = "conformance.panel";
 
-/** The scene preset `CONFORMANCE_LOOK_ID` renders through — asserted verbatim on `applyLook`. */
+/**
+ * A look that seats the host chair and NO reader chair. It exists so a case
+ * can prove the thing a single-look suite structurally cannot: what a host
+ * is told about a chair the incoming look does not seat. Both looks render
+ * through the same scene preset on purpose — the difference under test is
+ * the PLACEMENT, not the scene, and sharing the preset keeps a host that
+ * mis-maps `lookId -> scenePreset` failing in the look case rather than
+ * here.
+ */
+export const CONFORMANCE_SOLO_LOOK_ID = "conformance.solo-host";
+
+/** The scene preset both conformance looks render through — asserted verbatim on `applyLook`. */
 export const CONFORMANCE_SCENE_PRESET = "conformance-scene";
 
 export const CONFORMANCE_CONFIG: ShowEngineConfig = parseShowEngineConfig({
@@ -149,6 +161,18 @@ export const CONFORMANCE_CONFIG: ShowEngineConfig = parseShowEngineConfig({
       // "queue" look would fill manually ANYWAY (`effectiveBoxFill`), and a
       // case that relied on that degradation would be asserting the
       // degradation rather than the placement.
+      boxFill: "manual"
+    },
+    {
+      id: CONFORMANCE_SOLO_LOOK_ID,
+      label: "Conformance solo host",
+      scenePreset: CONFORMANCE_SCENE_PRESET,
+      boxes: 1,
+      includesHost: true,
+      // The point of this look: it does NOT seat the reader chair, so
+      // `resolveLook` reports `readerSlot: null` even while a panelist still
+      // holds the reader role.
+      includesReader: false,
       boxFill: "manual"
     }
   ]
@@ -413,6 +437,49 @@ export const HOST_CONFORMANCE_CASES: readonly ConformanceCase[] = [
     ctx.host.clear();
     await ctx.tick();
     ctx.assertEqual(ctx.host.callsOfKind("applyLook").length, 0, "an unchanged placement is not re-applied");
+  }),
+
+  /**
+   * An unseated chair is CLEARED, not left alone. `CONFORMANCE_SOLO_LOOK_ID`
+   * seats the host chair and no reader chair, while the roster still holds a
+   * panelist in the reader role — so `readerSlot` is `null` because the LOOK
+   * does not seat that chair, not because nobody holds it.
+   *
+   * The case switches INTO the solo look from the panel look, which seated
+   * the reader in slot 2, because that is the only ordering where the defect
+   * is visible: a host that treats a null chair as "no instruction" leaves
+   * the previous look's reader on air through a look that does not seat
+   * them (the Plan 7a final-review C2 fix, `OhgHostAdapter.RoutesForLook` —
+   * a present-but-null chair means UNSEAT it). Asserting `readerSlot: null`
+   * on a cold engine would pass with that defect fully in place.
+   */
+  conformanceCase("a look with no reader chair clears ohg-reader", async (ctx) => {
+    await seatCast(ctx);
+    assignChairs(ctx);
+    await ctx.tick();
+
+    // Put the reader on air first: this is the state the solo look must undo.
+    ctx.act("ohg.look.set", [CONFORMANCE_LOOK_ID]);
+    await ctx.tick();
+
+    ctx.host.clear();
+    ctx.act("ohg.look.set", [CONFORMANCE_SOLO_LOOK_ID]);
+    await ctx.tick();
+
+    const applied = ctx.host.callsOfKind("applyLook");
+    ctx.assertEqual(applied.length, 1, "switching looks applies the incoming look exactly once");
+    ctx.assertEqual(
+      applied[0],
+      {
+        kind: "applyLook",
+        lookId: CONFORMANCE_SOLO_LOOK_ID,
+        scenePreset: CONFORMANCE_SCENE_PRESET,
+        hostSlot: 1,
+        readerSlot: null,
+        boxes: [[1, null]]
+      },
+      "a look that does not seat the reader carries readerSlot null while still seating the host chair"
+    );
   }),
 
   /**

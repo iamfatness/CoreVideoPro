@@ -1,0 +1,713 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Views.OhgShowPage"
+    x:Name="OhgShowPageRoot"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:views="using:CoreVideoPro.WinUI.Views"
+    xmlns:vm="using:CoreVideoPro.WinUI.ViewModels"
+    Loaded="OnPageLoaded"
+    Unloaded="OnPageUnloaded">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+
+        <!-- ============================================================================
+             (b) SETUP SURFACE. OHG is optional: with no config on this machine the tab is
+             still reachable and says so, rather than rendering an empty workspace that
+             looks broken. Visibility is an x:Bind FUNCTION binding on the view model
+             itself - no converter instance, and the decision is a pure static a unit test
+             can call.
+             ============================================================================ -->
+        <Border Style="{StaticResource OperatorSectionBorder}"
+                VerticalAlignment="Top"
+                Visibility="{x:Bind views:OhgShowPage.VisibleWhenNull(ViewModel.OhgShow), Mode=OneWay}">
+            <StackPanel Spacing="10">
+                <TextBlock Text="OHG is not configured" Style="{StaticResource OperatorSectionTitle}" />
+                <TextBlock Style="{StaticResource OperatorSummary}"
+                           Text="The OHG show engine is not running on this machine. Add an OHG show configuration to seat panelists, cue looks, and drive the gallery from this tab." />
+                <!-- Mode=OneWay, NOT OneTime, on the command too: this page's ViewModel
+                     DependencyProperty is assigned AFTER construction, so a OneTime binding
+                     evaluates against a null root and the button is inert forever. -->
+                <Button Content="Set up OHG"
+                        Style="{StaticResource OperatorGhostButton}"
+                        AutomationProperties.Name="OHG set up"
+                        HorizontalAlignment="Left"
+                        Command="{x:Bind ViewModel.OpenOhgSettingsCommand, Mode=OneWay}" />
+            </StackPanel>
+        </Border>
+
+        <!-- ============================================================================
+             THE WORKSPACE. Everything below binds through ViewModel.OhgShow, which is
+             non-null exactly when the show engine is configured.
+             ============================================================================ -->
+        <Grid RowSpacing="12"
+              Visibility="{x:Bind views:OhgShowPage.VisibleWhenNotNull(ViewModel.OhgShow), Mode=OneWay}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- ── (a) STATUS STRIP ────────────────────────────────────────────────────
+                 Always visible while OHG is configured. It carries the four things an
+                 operator cannot afford to discover late: is the engine up, is it in
+                 shadow mode (commands logged, never applied), was a page refused, and
+                 what did the engine refuse most recently. -->
+            <Border Grid.Row="0" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="8">
+
+                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <Border CornerRadius="6" Padding="9,4"
+                                Background="{StaticResource StudioSurfaceRaisedBrush}"
+                                BorderThickness="1"
+                                BorderBrush="{x:Bind views:OhgShowPage.EngineStateBrush(ViewModel.OhgShow.EngineState), Mode=OneWay}">
+                            <TextBlock Style="{StaticResource StudioMonoValue}"
+                                       Foreground="{x:Bind views:OhgShowPage.EngineStateBrush(ViewModel.OhgShow.EngineState), Mode=OneWay}"
+                                       Text="{x:Bind views:OhgShowPage.EngineStateLabel(ViewModel.OhgShow.EngineState), Mode=OneWay}" />
+                        </Border>
+
+                        <TextBlock VerticalAlignment="Center"
+                                   Style="{StaticResource OperatorSummary}"
+                                   Text="{x:Bind ViewModel.OhgShow.EngineDetail, Mode=OneWay}" />
+
+                        <Button Content="Restart engine"
+                                Style="{StaticResource OperatorGhostButton}"
+                                AutomationProperties.Name="OHG restart engine"
+                                Command="{x:Bind ViewModel.OhgShow.RestartEngineCommand, Mode=OneWay}" />
+
+                        <!-- Shadow mode is a badge, not a footnote: a show run in shadow
+                             looks identical to a live one except that nothing happens. -->
+                        <Border CornerRadius="6" Padding="9,4"
+                                Background="{StaticResource StudioSurfaceRaisedBrush}"
+                                BorderThickness="1"
+                                BorderBrush="{StaticResource StudioProgramBrush}"
+                                Visibility="{x:Bind views:OhgShowPage.VisibleWhenTrue(ViewModel.OhgShow.IsShadowMode), Mode=OneWay}">
+                            <TextBlock Style="{StaticResource StudioMonoValue}"
+                                       Foreground="{StaticResource StudioProgramBrush}"
+                                       Text="{x:Bind views:OhgShowPage.ShadowLabel(ViewModel.OhgShow.IsShadowMode), Mode=OneWay}" />
+                        </Border>
+                    </StackPanel>
+
+                    <TextBlock Style="{StaticResource OperatorSummary}"
+                               TextWrapping="WrapWholeWords"
+                               Visibility="{x:Bind views:OhgShowPage.VisibleWhenText(ViewModel.OhgShow.ShadowLastCommand), Mode=OneWay}"
+                               Text="{x:Bind ViewModel.OhgShow.ShadowLastCommand, Mode=OneWay}" />
+
+                    <TextBlock Foreground="{StaticResource StudioProgramBrush}"
+                               FontSize="11" TextWrapping="WrapWholeWords"
+                               Visibility="{x:Bind views:OhgShowPage.VisibleWhenText(ViewModel.OhgShow.PagingRefused), Mode=OneWay}"
+                               Text="{x:Bind ViewModel.OhgShow.PagingRefused, Mode=OneWay}" />
+
+                    <!-- Guidance/refusal text is AMBER. Air red is reserved for on-air tally;
+                         a refused action is something to read, not something on program. -->
+                    <TextBlock Foreground="{StaticResource StudioProgramBrush}"
+                               FontSize="11" TextWrapping="WrapWholeWords"
+                               Visibility="{x:Bind views:OhgShowPage.VisibleWhenText(ViewModel.OhgShow.LastActionStatus), Mode=OneWay}"
+                               Text="{x:Bind ViewModel.OhgShow.LastActionStatus, Mode=OneWay}" />
+
+                    <!-- A state restore that could not be fully honoured is operator-visible,
+                         never silent. -->
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.OhgShow.RestoreWarnings, Mode=OneWay}">
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <TextBlock Text="{x:Bind}" FontSize="11" TextWrapping="WrapWholeWords"
+                                           Foreground="{StaticResource StudioProgramBrush}" Margin="0,1" />
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+
+                    <TextBlock Text="RECENT REFUSALS" Style="{StaticResource StudioMonoLabelDim}" Margin="0,4,0,0" />
+                    <ScrollViewer MaxHeight="88" VerticalScrollBarVisibility="Auto">
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.OhgShow.RecentRefusals, Mode=OneWay}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <TextBlock Text="{x:Bind}" FontSize="11" TextWrapping="WrapWholeWords"
+                                               Foreground="{StaticResource StudioMutedBrush}" Margin="0,1" />
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </ScrollViewer>
+                </StackPanel>
+            </Border>
+
+            <!-- ── (c) THE 2x2 PANEL GRID ─────────────────────────────────────────────
+                 Panelist board (row 0, col 0), Program (row 0, col 1), Gallery
+                 (row 1, col 0), GFX & data (row 1, col 1). The board and Program carry
+                 the show's live state so they take the growing row; Gallery and GFX are
+                 fixed-size editors and sit in the Auto row beneath them. -->
+            <Grid Grid.Row="1" ColumnSpacing="12" RowSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <!-- The seat column is STARRED, not Auto. An Auto column offers a
+                                 UniformGridLayout infinite available width, so all ten seats lay
+                                 out in one row and run off the panel instead of wrapping. -->
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- ROSTER (master list). Selection is PAGE state applied in
+                             code-behind; the rows carry IsSelected so the highlight
+                             survives snapshot ingestion (rows are diff-updated in place,
+                             never replaced - see OhgShowViewModel). -->
+                        <StackPanel Grid.Column="0" Spacing="8">
+                            <TextBlock Text="Panelists" Style="{StaticResource OperatorSectionTitle}" />
+
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="Add to first empty"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG add to first empty"
+                                        Command="{x:Bind ViewModel.OhgShow.AddSelectedToFirstEmptyCommand, Mode=OneWay}" />
+                                <Button Content="Sync all"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG sync all"
+                                        Command="{x:Bind ViewModel.OhgShow.SyncAllCommand, Mode=OneWay}" />
+                            </StackPanel>
+
+                            <ScrollViewer MaxHeight="320" VerticalScrollBarVisibility="Auto">
+                                <ItemsRepeater x:Name="PanelistRepeater"
+                                               ItemsSource="{x:Bind ViewModel.OhgShow.Panelists, Mode=OneWay}"
+                                               ElementPrepared="OnPanelistElementPrepared">
+                                    <ItemsRepeater.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:OhgPanelistRowViewModel">
+                                            <Border Margin="0,2" CornerRadius="6" Padding="0"
+                                                    BorderThickness="1"
+                                                    Background="{StaticResource StudioSurfaceRaisedBrush}"
+                                                    BorderBrush="{x:Bind views:OhgShowPage.SelectionBrush(IsSelected), Mode=OneWay}">
+                                                <Grid ColumnSpacing="8" Padding="8,6">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <!-- Tag (x:Bind), NOT DataContext: DataContext is
+                                                         null for elements realized inside an
+                                                         ItemsRepeater. -->
+                                                    <Button Grid.Column="0"
+                                                            Style="{StaticResource OperatorGhostButton}"
+                                                            HorizontalAlignment="Stretch"
+                                                            HorizontalContentAlignment="Left"
+                                                            BorderThickness="0"
+                                                            Background="Transparent"
+                                                            Tag="{x:Bind}"
+                                                            Click="OnPanelistClick"
+                                                            AutomationProperties.Name="{x:Bind views:OhgShowPage.PanelistAutomationName(DisplayName), Mode=OneWay}">
+                                                        <StackPanel Spacing="2">
+                                                            <TextBlock Text="{x:Bind DisplayName, Mode=OneWay}"
+                                                                       FontSize="12"
+                                                                       Foreground="{StaticResource StudioTextBrush}" />
+                                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                                <TextBlock Text="{x:Bind Location, Mode=OneWay}"
+                                                                           Style="{StaticResource StudioMonoLabelDim}" />
+                                                                <TextBlock Text="{x:Bind views:OhgShowPage.PinLabel(Pin), Mode=OneWay}"
+                                                                           Style="{StaticResource StudioMonoTag}" />
+                                                                <TextBlock Text="MUKANA"
+                                                                           Style="{StaticResource StudioMonoTag}"
+                                                                           Visibility="{x:Bind views:OhgShowPage.VisibleWhenTrue(HasMukana), Mode=OneWay}" />
+                                                                <TextBlock Style="{StaticResource StudioMonoLabelDim}"
+                                                                           Text="{x:Bind views:OhgShowPage.GlyphLabel(VideoOn, AudioOn, HandRaised, Online), Mode=OneWay}" />
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- The role chip. SelectedItem is applied in
+                                                         code-behind (OnRoleComboLoaded /
+                                                         ElementPrepared), NEVER by x:Bind: a
+                                                         recycled ItemsRepeater container re-bound
+                                                         mid-resolution threw COMException
+                                                         0x80004005 out of Selector and killed the
+                                                         app. ItemsSource is deliberately absent
+                                                         here too: code-behind is the ONLY writer,
+                                                         so an ElementName binding cannot resolve
+                                                         after the selection has been applied and
+                                                         wipe it. -->
+                                                    <ComboBox Grid.Column="1"
+                                                              x:Name="OhgRoleCombo"
+                                                              Tag="{x:Bind}"
+                                                              Loaded="OnRoleComboLoaded"
+                                                              SelectionChanged="OnRoleSelectionChanged"
+                                                              FontSize="10" MinWidth="118" Padding="6,2,6,2"
+                                                              VerticalAlignment="Center"
+                                                              AutomationProperties.Name="{x:Bind views:OhgShowPage.RoleAutomationName(DisplayName), Mode=OneWay}" />
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsRepeater.ItemTemplate>
+                                </ItemsRepeater>
+                            </ScrollViewer>
+
+                            <TextBlock Text="UNSEATED" Style="{StaticResource StudioMonoLabelDim}" Margin="0,4,0,0" />
+                            <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto">
+                                <ItemsRepeater ItemsSource="{x:Bind ViewModel.OhgShow.Unseated, Mode=OneWay}">
+                                    <ItemsRepeater.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:OhgPanelistRowViewModel">
+                                            <Button Margin="0,2"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    HorizontalAlignment="Stretch"
+                                                    HorizontalContentAlignment="Left"
+                                                    Content="{x:Bind DisplayName, Mode=OneWay}"
+                                                    BorderBrush="{x:Bind views:OhgShowPage.SelectionBrush(IsSelected), Mode=OneWay}"
+                                                    Tag="{x:Bind}"
+                                                    Click="OnPanelistClick"
+                                                    AutomationProperties.Name="{x:Bind views:OhgShowPage.PanelistAutomationName(DisplayName), Mode=OneWay}" />
+                                        </DataTemplate>
+                                    </ItemsRepeater.ItemTemplate>
+                                </ItemsRepeater>
+                            </ScrollViewer>
+                        </StackPanel>
+
+                        <!-- SEAT GRID. Tapping a seat assigns the selected panelist to it
+                             (add or replace is the view model's call, read from the last
+                             snapshot); right-click offers Remove. The border is TALLY -
+                             air red when that seat is on program. -->
+                        <StackPanel Grid.Column="1" Spacing="8" MinWidth="220">
+                            <TextBlock Text="Seats" Style="{StaticResource OperatorSectionTitle}" />
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.OhgShow.Slots, Mode=OneWay}">
+                                <ItemsRepeater.Layout>
+                                    <UniformGridLayout MinItemWidth="104" MinItemHeight="52"
+                                                       MinColumnSpacing="6" MinRowSpacing="6" />
+                                </ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:OhgSlotRowViewModel">
+                                        <Button Padding="0"
+                                                HorizontalAlignment="Stretch"
+                                                HorizontalContentAlignment="Left"
+                                                Style="{StaticResource OperatorGhostButton}"
+                                                BorderThickness="2"
+                                                BorderBrush="{x:Bind views:OhgShowPage.OnAirBrush(OnAir), Mode=OneWay}"
+                                                Tag="{x:Bind}"
+                                                Click="OnSeatClick"
+                                                Command="{Binding ViewModel.OhgShow.AssignSelectedToSlotCommand, ElementName=OhgShowPageRoot}"
+                                                CommandParameter="{x:Bind Slot, Mode=OneWay}"
+                                                AutomationProperties.Name="{x:Bind views:OhgShowPage.SlotAutomationName(Slot), Mode=OneWay}">
+                                            <Button.ContextFlyout>
+                                                <MenuFlyout>
+                                                    <MenuFlyoutItem Text="Remove from seat"
+                                                                    Command="{Binding ViewModel.OhgShow.RemoveSlotCommand, ElementName=OhgShowPageRoot}"
+                                                                    CommandParameter="{x:Bind Slot, Mode=OneWay}"
+                                                                    AutomationProperties.Name="{x:Bind views:OhgShowPage.RemoveSlotAutomationName(Slot), Mode=OneWay}" />
+                                                </MenuFlyout>
+                                            </Button.ContextFlyout>
+                                            <StackPanel Spacing="2" Padding="8,6">
+                                                <TextBlock Text="{x:Bind views:OhgShowPage.SeatNumberLabel(Slot), Mode=OneWay}"
+                                                           Style="{StaticResource StudioMonoLabelDim}" />
+                                                <TextBlock Text="{x:Bind views:OhgShowPage.SeatLabel(IsOccupied, DisplayName), Mode=OneWay}"
+                                                           FontSize="12" TextTrimming="CharacterEllipsis"
+                                                           Foreground="{StaticResource StudioTextBrush}" />
+                                            </StackPanel>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- ── PROGRAM (row 0, column 1) ───────────────────────────────────
+                     The take surface. PGM reads in AIR RED and PVW in accent, the same
+                     colour language as the rest of the console, so a glance separates
+                     "on air" from "about to be". Every button here is a one-shot engine
+                     action; nothing on this panel edits local state. -->
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Program" Style="{StaticResource OperatorSectionTitle}" />
+
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <Border Grid.Column="0" Style="{StaticResource OperatorReadoutBorder}">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="PGM" Style="{StaticResource StudioMonoLabelDim}" />
+                                        <TextBlock Style="{StaticResource StudioMonoValue}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Foreground="{StaticResource StudioAirBrush}"
+                                                   Text="{x:Bind ViewModel.OhgShow.ProgramLabel, Mode=OneWay}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="PVW" Style="{StaticResource StudioMonoLabelDim}" />
+                                        <TextBlock Style="{StaticResource StudioMonoValue}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Foreground="{StaticResource StudioAccentBrush}"
+                                                   Text="{x:Bind ViewModel.OhgShow.PreviewLabel, Mode=OneWay}" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
+                            <!-- Take. Direct cut carries the RAW PVW source string
+                                 (PreviewSource), never the formatted PreviewLabel — the
+                                 label is operator text the engine would refuse. -->
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="Cut"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG cut"
+                                        Command="{x:Bind ViewModel.OhgShow.CutCommand, Mode=OneWay}" />
+                                <Button Content="Auto"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG auto"
+                                        Command="{x:Bind ViewModel.OhgShow.AutoCommand, Mode=OneWay}" />
+                                <Button Content="Direct cut PVW"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG direct cut preview"
+                                        IsEnabled="{x:Bind views:OhgShowPage.EnabledWhenText(ViewModel.OhgShow.PreviewSource), Mode=OneWay}"
+                                        Command="{x:Bind ViewModel.OhgShow.DirectCutCommand, Mode=OneWay}"
+                                        CommandParameter="{x:Bind ViewModel.OhgShow.PreviewSource, Mode=OneWay}" />
+                            </StackPanel>
+
+                            <!-- The three sources that are always cueable regardless of
+                                 seating. Slot/look previews come from the seat grid and
+                                 the box tiles. -->
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="PVW black"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG preview black"
+                                        Command="{x:Bind ViewModel.OhgShow.PreviewCommand, Mode=OneWay}"
+                                        CommandParameter="black" />
+                                <Button Content="PVW gallery"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG preview gallery"
+                                        Command="{x:Bind ViewModel.OhgShow.PreviewCommand, Mode=OneWay}"
+                                        CommandParameter="gallery" />
+                                <Button Content="PVW speaker"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG preview active speaker"
+                                        Command="{x:Bind ViewModel.OhgShow.PreviewCommand, Mode=OneWay}"
+                                        CommandParameter="activeSpeaker" />
+                            </StackPanel>
+
+                            <!-- AS-follow is OneWay in, code-behind out: a TwoWay IsOn
+                                 would fire SetAsFollow while the snapshot is writing the
+                                 switch. See OnAsFollowToggled. -->
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <ToggleSwitch Tag="asFollow"
+                                              OnContent="AS follow" OffContent="AS follow"
+                                              AutomationProperties.Name="OHG active speaker follow"
+                                              IsOn="{x:Bind ViewModel.OhgShow.AsFollow, Mode=OneWay}"
+                                              Loaded="OnToggleLoaded"
+                                              Toggled="OnAsFollowToggled" />
+
+                                <Border Style="{StaticResource OperatorReadoutBorder}" VerticalAlignment="Center">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="SPEAKING" Style="{StaticResource StudioMonoLabelDim}" />
+                                        <TextBlock Style="{StaticResource StudioMonoValue}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Text="{x:Bind ViewModel.OhgShow.CurrentSpeakerLabel, Mode=OneWay}" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- The look picker. ItemsSource AND selection are applied in
+                                 code-behind (OnLookComboLoaded / the SelectedLookId
+                                 subscription) — never x:Bind, same house rule as the role
+                                 chip on the board. -->
+                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <ComboBox x:Name="OhgLookCombo"
+                                          MinWidth="180" FontSize="12"
+                                          AutomationProperties.Name="OHG look"
+                                          Loaded="OnLookComboLoaded"
+                                          SelectionChanged="OnLookSelectionChanged" />
+                                <Button Content="Prev guest"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG previous guest"
+                                        Command="{x:Bind ViewModel.OhgShow.PrevGuestCommand, Mode=OneWay}" />
+                                <Button Content="Next guest"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG next guest"
+                                        Command="{x:Bind ViewModel.OhgShow.NextGuestCommand, Mode=OneWay}" />
+                            </StackPanel>
+
+                            <TextBlock Style="{StaticResource StudioMonoLabelDim}"
+                                       TextWrapping="WrapWholeWords"
+                                       Text="{x:Bind ViewModel.OhgShow.QueueLabel, Mode=OneWay}" />
+
+                            <!-- The refusal repeats here, next to the paging buttons that
+                                 caused it: the status strip is at the top of a tall page
+                                 and an operator paging guests is not looking at it. -->
+                            <TextBlock Foreground="{StaticResource StudioProgramBrush}"
+                                       FontSize="11" TextWrapping="WrapWholeWords"
+                                       Visibility="{x:Bind views:OhgShowPage.VisibleWhenText(ViewModel.OhgShow.PagingRefused), Mode=OneWay}"
+                                       Text="{x:Bind ViewModel.OhgShow.PagingRefused, Mode=OneWay}" />
+
+                            <TextBlock Text="BOXES" Style="{StaticResource StudioMonoLabelDim}" Margin="0,4,0,0" />
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.OhgShow.Boxes, Mode=OneWay}">
+                                <ItemsRepeater.Layout>
+                                    <UniformGridLayout MinItemWidth="120" MinItemHeight="52"
+                                                       MinColumnSpacing="6" MinRowSpacing="6" />
+                                </ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:OhgBoxViewModel">
+                                        <!-- Tapping a box puts the SELECTED SEAT in it. The
+                                             tuple-taking AssignBoxCommand is deliberately not
+                                             bound: a ValueTuple cannot be written as a
+                                             CommandParameter, and AssignSelectedSlotToBox is
+                                             the operator gesture anyway (it refuses locally,
+                                             out loud, when nothing is selected). -->
+                                        <Button Padding="0"
+                                                HorizontalAlignment="Stretch"
+                                                HorizontalContentAlignment="Left"
+                                                Style="{StaticResource OperatorGhostButton}"
+                                                Tag="{x:Bind}"
+                                                Command="{Binding ViewModel.OhgShow.AssignSelectedSlotToBoxCommand, ElementName=OhgShowPageRoot}"
+                                                CommandParameter="{x:Bind Box, Mode=OneWay}"
+                                                AutomationProperties.Name="{x:Bind views:OhgShowPage.BoxAutomationName(Box), Mode=OneWay}">
+                                            <Button.ContextFlyout>
+                                                <MenuFlyout>
+                                                    <MenuFlyoutItem Text="Preview this box"
+                                                                    Tag="{x:Bind}"
+                                                                    Click="OnPreviewBoxSlotClick"
+                                                                    AutomationProperties.Name="{x:Bind views:OhgShowPage.PreviewBoxAutomationName(Box), Mode=OneWay}" />
+                                                    <MenuFlyoutItem Text="Clear box"
+                                                                    Command="{Binding ViewModel.OhgShow.ClearBoxCommand, ElementName=OhgShowPageRoot}"
+                                                                    CommandParameter="{x:Bind Box, Mode=OneWay}"
+                                                                    AutomationProperties.Name="{x:Bind views:OhgShowPage.ClearBoxAutomationName(Box), Mode=OneWay}" />
+                                                </MenuFlyout>
+                                            </Button.ContextFlyout>
+                                            <StackPanel Spacing="2" Padding="8,6">
+                                                <TextBlock Text="{x:Bind views:OhgShowPage.BoxNumberLabel(Box), Mode=OneWay}"
+                                                           Style="{StaticResource StudioMonoLabelDim}" />
+                                                <TextBlock Text="{x:Bind views:OhgShowPage.BoxLabel(Slot, DisplayName), Mode=OneWay}"
+                                                           FontSize="12" TextTrimming="CharacterEllipsis"
+                                                           Foreground="{StaticResource StudioTextBrush}" />
+                                            </StackPanel>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+
+                <!-- ── GALLERY (row 1, column 0) ───────────────────────────────────
+                     The fixed 4x4 wall. Cells are never added or removed — a blank cell
+                     is a live row reading BLANK — so the grid cannot restructure under
+                     the operator (and the repeater cannot churn at snapshot rate). -->
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Gallery" Style="{StaticResource OperatorSectionTitle}" />
+
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <ToggleSwitch Tag="smartGallery"
+                                          OnContent="Smart" OffContent="Smart"
+                                          AutomationProperties.Name="OHG smart gallery"
+                                          IsOn="{x:Bind ViewModel.OhgShow.SmartGallery, Mode=OneWay}"
+                                          Loaded="OnToggleLoaded"
+                                          Toggled="OnSmartGalleryToggled" />
+                            <Button Content="Reset from seats"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG reset gallery from seats"
+                                    Command="{x:Bind ViewModel.OhgShow.ResetGalleryFromSlotsCommand, Mode=OneWay}" />
+                            <Button Content="Empty"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG empty gallery"
+                                    Command="{x:Bind ViewModel.OhgShow.EmptyGalleryCommand, Mode=OneWay}" />
+                        </StackPanel>
+
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.OhgShow.Gallery, Mode=OneWay}">
+                            <ItemsRepeater.Layout>
+                                <UniformGridLayout MinItemWidth="104" MinItemHeight="48"
+                                                   MaximumRowsOrColumns="4"
+                                                   MinColumnSpacing="6" MinRowSpacing="6" />
+                            </ItemsRepeater.Layout>
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="vm:OhgGalleryCellViewModel">
+                                    <Button Padding="0"
+                                            HorizontalAlignment="Stretch"
+                                            HorizontalContentAlignment="Left"
+                                            Style="{StaticResource OperatorGhostButton}"
+                                            Tag="{x:Bind}"
+                                            Command="{Binding ViewModel.OhgShow.ReplaceCellWithSelectedSlotCommand, ElementName=OhgShowPageRoot}"
+                                            CommandParameter="{x:Bind Cell, Mode=OneWay}"
+                                            AutomationProperties.Name="{x:Bind views:OhgShowPage.GalleryCellAutomationName(Cell), Mode=OneWay}">
+                                        <Button.ContextFlyout>
+                                            <MenuFlyout>
+                                                <MenuFlyoutItem Text="Remove from gallery"
+                                                                Command="{Binding ViewModel.OhgShow.RemoveCellCommand, ElementName=OhgShowPageRoot}"
+                                                                CommandParameter="{x:Bind Cell, Mode=OneWay}"
+                                                                AutomationProperties.Name="{x:Bind views:OhgShowPage.RemoveCellAutomationName(Cell), Mode=OneWay}" />
+                                            </MenuFlyout>
+                                        </Button.ContextFlyout>
+                                        <StackPanel Spacing="2" Padding="8,6">
+                                            <TextBlock Text="{x:Bind views:OhgShowPage.GalleryCellNumberLabel(Cell), Mode=OneWay}"
+                                                       Style="{StaticResource StudioMonoLabelDim}" />
+                                            <TextBlock Text="{x:Bind views:OhgShowPage.GalleryCellLabel(IsBlank, DisplayName), Mode=OneWay}"
+                                                       FontSize="12" TextTrimming="CharacterEllipsis"
+                                                       Foreground="{StaticResource StudioTextBrush}" />
+                                        </StackPanel>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+
+                        <!-- Honesty line: the engine tracks cell order, the compositor does
+                             not honour it yet. Said out loud rather than implied by a
+                             control that appears to work. -->
+                        <TextBlock Style="{StaticResource OperatorSummary}"
+                                   Text="{x:Bind ViewModel.OhgShow.GalleryNote, Mode=OneWay}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ── GFX & DATA (row 1, column 1) ────────────────────────────────
+                     The overlay editors plus the Mukana data plane. The three lamps are
+                     the honest answer to "can I use this feature right now" — they are
+                     coloured by capability state, and a capability we cannot vouch for
+                     reads muted rather than healthy. -->
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="GFX &amp; data" Style="{StaticResource OperatorSectionTitle}" />
+
+                        <!-- QUESTION card -->
+                        <Border Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="QUESTION" Style="{StaticResource StudioMonoLabelDim}" />
+                                <TextBlock FontSize="12" TextWrapping="WrapWholeWords"
+                                           Foreground="{StaticResource StudioTextBrush}"
+                                           Text="{x:Bind views:OhgShowPage.QuestionTextLabel(ViewModel.OhgShow.QuestionText), Mode=OneWay}" />
+                                <TextBlock Style="{StaticResource StudioMonoTag}"
+                                           Visibility="{x:Bind views:OhgShowPage.VisibleWhenText(ViewModel.OhgShow.QuestionAsker), Mode=OneWay}"
+                                           Text="{x:Bind ViewModel.OhgShow.QuestionAsker, Mode=OneWay}" />
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Content="Question in"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG question in"
+                                    Command="{x:Bind ViewModel.OhgShow.QuestionInCommand, Mode=OneWay}" />
+                            <Button Content="Question out"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG question out"
+                                    Command="{x:Bind ViewModel.OhgShow.QuestionOutCommand, Mode=OneWay}" />
+                        </StackPanel>
+
+                        <!-- HEADLINE editor. The two fields are TwoWay (the ONLY TwoWay
+                             bindings on this page — a TextBox is not a Selector and carries
+                             none of the recycling hazard); the commands read them. -->
+                        <TextBlock Text="HEADLINE" Style="{StaticResource StudioMonoLabelDim}" Margin="0,4,0,0" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox PlaceholderText="Name" MinWidth="150" FontSize="12"
+                                     AutomationProperties.Name="OHG headline name"
+                                     Text="{x:Bind ViewModel.OhgShow.HeadlineName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox PlaceholderText="Location" MinWidth="150" FontSize="12"
+                                     AutomationProperties.Name="OHG headline location"
+                                     Text="{x:Bind ViewModel.OhgShow.HeadlineLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <Button Content="Headline in"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG headline in"
+                                    Command="{x:Bind ViewModel.OhgShow.HeadlineInCommand, Mode=OneWay}" />
+                            <Button Content="Headline out"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG headline out"
+                                    Command="{x:Bind ViewModel.OhgShow.HeadlineOutCommand, Mode=OneWay}" />
+                            <Button Content="Change"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG headline change"
+                                    Command="{x:Bind ViewModel.OhgShow.HeadlineChangeCommand, Mode=OneWay}" />
+                            <TextBlock Style="{StaticResource StudioMonoTag}"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource StudioAirBrush}"
+                                       Text="ON AIR"
+                                       Visibility="{x:Bind views:OhgShowPage.VisibleWhenTrue(ViewModel.OhgShow.HeadlineVisible), Mode=OneWay}" />
+                        </StackPanel>
+
+                        <!-- MUKANA data plane: one sync button, three capability lamps, and
+                             the worst-of health label. -->
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,4,0,0">
+                            <Button Content="Mukana sync"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG mukana sync"
+                                    Command="{x:Bind ViewModel.OhgShow.MukanaSyncCommand, Mode=OneWay}" />
+                            <TextBlock Style="{StaticResource StudioMonoValue}"
+                                       VerticalAlignment="Center"
+                                       Foreground="{x:Bind views:OhgShowPage.HealthBrush(ViewModel.OhgShow.MukanaHealthLabel), Mode=OneWay}"
+                                       Text="{x:Bind views:OhgShowPage.HealthLabel(ViewModel.OhgShow.MukanaHealthLabel), Mode=OneWay}" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Border CornerRadius="6" Padding="8,4"
+                                    Background="{StaticResource StudioSurfaceRaisedBrush}"
+                                    BorderThickness="1"
+                                    BorderBrush="{x:Bind views:OhgShowPage.LampBrush(ViewModel.OhgShow.RegistryLamp), Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.OhgShow.RegistryLampDetail, Mode=OneWay}">
+                                <TextBlock Style="{StaticResource StudioMonoTag}"
+                                           Foreground="{x:Bind views:OhgShowPage.LampBrush(ViewModel.OhgShow.RegistryLamp), Mode=OneWay}"
+                                           Text="{x:Bind views:OhgShowPage.LampLabel('REGISTRY', ViewModel.OhgShow.RegistryLamp), Mode=OneWay}" />
+                            </Border>
+                            <Border CornerRadius="6" Padding="8,4"
+                                    Background="{StaticResource StudioSurfaceRaisedBrush}"
+                                    BorderThickness="1"
+                                    BorderBrush="{x:Bind views:OhgShowPage.LampBrush(ViewModel.OhgShow.HandsLamp), Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.OhgShow.HandsLampDetail, Mode=OneWay}">
+                                <TextBlock Style="{StaticResource StudioMonoTag}"
+                                           Foreground="{x:Bind views:OhgShowPage.LampBrush(ViewModel.OhgShow.HandsLamp), Mode=OneWay}"
+                                           Text="{x:Bind views:OhgShowPage.LampLabel('HANDS', ViewModel.OhgShow.HandsLamp), Mode=OneWay}" />
+                            </Border>
+                            <Border CornerRadius="6" Padding="8,4"
+                                    Background="{StaticResource StudioSurfaceRaisedBrush}"
+                                    BorderThickness="1"
+                                    BorderBrush="{x:Bind views:OhgShowPage.LampBrush(ViewModel.OhgShow.QuestionLamp), Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.OhgShow.QuestionLampDetail, Mode=OneWay}">
+                                <TextBlock Style="{StaticResource StudioMonoTag}"
+                                           Foreground="{x:Bind views:OhgShowPage.LampBrush(ViewModel.OhgShow.QuestionLamp), Mode=OneWay}"
+                                           Text="{x:Bind views:OhgShowPage.LampLabel('QUESTIONS', ViewModel.OhgShow.QuestionLamp), Mode=OneWay}" />
+                            </Border>
+                        </StackPanel>
+
+                        <!-- REGISTRY OVERRIDE. The role picker is a ComboBox, so — like every
+                             other Selector on this page — its ItemsSource and selection are
+                             written in code-behind and it reports back on SelectionChanged. -->
+                        <TextBlock Text="REGISTRY OVERRIDE" Style="{StaticResource StudioMonoLabelDim}" Margin="0,4,0,0" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox PlaceholderText="PIN" MinWidth="80" FontSize="12"
+                                     AutomationProperties.Name="OHG override PIN"
+                                     Text="{x:Bind ViewModel.OhgShow.OverridePin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox PlaceholderText="Name" MinWidth="130" FontSize="12"
+                                     AutomationProperties.Name="OHG override name"
+                                     Text="{x:Bind ViewModel.OhgShow.OverrideName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox PlaceholderText="Location" MinWidth="130" FontSize="12"
+                                     AutomationProperties.Name="OHG override location"
+                                     Text="{x:Bind ViewModel.OhgShow.OverrideLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <ComboBox x:Name="OhgOverrideRoleCombo"
+                                      MinWidth="140" FontSize="12"
+                                      AutomationProperties.Name="OHG override role"
+                                      Loaded="OnOverrideRoleComboLoaded"
+                                      SelectionChanged="OnOverrideRoleSelectionChanged" />
+                            <Button Content="Set override"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG override set"
+                                    Command="{x:Bind ViewModel.OhgShow.OverrideSetCommand, Mode=OneWay}" />
+                            <Button Content="Delete override"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG override delete"
+                                    Command="{x:Bind ViewModel.OhgShow.OverrideDeleteCommand, Mode=OneWay}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </Grid>
+</UserControl>

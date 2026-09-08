@@ -229,6 +229,12 @@
                             BorderBrush="{x:Bind ViewModel.AutomationTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.AutomationTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="automation" />
+                    <Button Content="OHG Show" Style="{StaticResource GhostButton}"
+                            Background="{x:Bind ViewModel.OhgShowTabChrome.Background, Mode=OneWay}"
+                            BorderBrush="{x:Bind ViewModel.OhgShowTabChrome.BorderBrush, Mode=OneWay}"
+                            Foreground="{x:Bind ViewModel.OhgShowTabChrome.Foreground, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="ohgshow"
+                            ToolTipService.ToolTip="OHG show direction — seating, looks, hands queue, gallery" />
                     <TextBlock Text="Diagnose" FontSize="10" FontWeight="Bold"
                                Foreground="{StaticResource StudioMutedBrush}"
                                VerticalAlignment="Center" Margin="10,0,2,0" />
@@ -810,6 +816,11 @@
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
                 Visibility="{x:Bind ViewModel.IsAutomationTab, Mode=OneWay}">
             <views:AutomationPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
+        </Border>
+
+        <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
+                Visibility="{x:Bind ViewModel.IsOhgShowTab, Mode=OneWay}">
+            <views:OhgShowPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
         <Border Grid.Row="3" Padding="10,8" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0"

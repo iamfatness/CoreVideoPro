@@ -1862,6 +1862,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool IsAutomationTab => ActiveTab == StudioTab.Automation;
 
+    public bool IsOhgShowTab => ActiveTab == StudioTab.OhgShow;
+
     public string ActiveTabKey => ActiveTab.ToString();
 
     private static readonly TabChrome SelectedTabChrome = new()
@@ -1878,23 +1880,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 184, 200, 192))
     };
 
-    public TabChrome StudioTabChrome => ActiveTab == StudioTab.Studio ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome StudioTabChrome => ChromeFor(ActiveTab, StudioTab.Studio);
 
-    public TabChrome SettingsTabChrome => ActiveTab == StudioTab.Settings ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome SettingsTabChrome => ChromeFor(ActiveTab, StudioTab.Settings);
 
-    public TabChrome SourcesTabChrome => ActiveTab == StudioTab.Sources ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome SourcesTabChrome => ChromeFor(ActiveTab, StudioTab.Sources);
 
-    public TabChrome InputsTabChrome => ActiveTab == StudioTab.Inputs ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome InputsTabChrome => ChromeFor(ActiveTab, StudioTab.Inputs);
 
-    public TabChrome RoutingTabChrome => ActiveTab == StudioTab.Routing ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome RoutingTabChrome => ChromeFor(ActiveTab, StudioTab.Routing);
 
-    public TabChrome OverlaysTabChrome => ActiveTab == StudioTab.Overlays ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome OverlaysTabChrome => ChromeFor(ActiveTab, StudioTab.Overlays);
 
-    public TabChrome AudioTabChrome => ActiveTab == StudioTab.Audio ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome AudioTabChrome => ChromeFor(ActiveTab, StudioTab.Audio);
 
-    public TabChrome MediaTabChrome => ActiveTab == StudioTab.Media ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome MediaTabChrome => ChromeFor(ActiveTab, StudioTab.Media);
 
-    public TabChrome AutomationTabChrome => ActiveTab == StudioTab.Automation ? SelectedTabChrome : DefaultTabChrome;
+    public TabChrome AutomationTabChrome => ChromeFor(ActiveTab, StudioTab.Automation);
+
+    public TabChrome OhgShowTabChrome => ChromeFor(ActiveTab, StudioTab.OhgShow);
+
+    /// <summary>The chrome selector, extracted so the "selected tab is highlighted" rule is one
+    /// place rather than one ternary per tab. Pure apart from the two shared static brushes.</summary>
+    internal static TabChrome ChromeFor(StudioTab active, StudioTab tab)
+        => active == tab ? SelectedTabChrome : DefaultTabChrome;
 
     public Participant? SelectedParticipant =>
         SelectedParticipantId is not null
@@ -3554,25 +3563,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnActiveTabChanged(StudioTab value)
     {
-        OnPropertyChanged(nameof(IsStudioTab));
-        OnPropertyChanged(nameof(IsSettingsTab));
-        OnPropertyChanged(nameof(IsSourcesTab));
-        OnPropertyChanged(nameof(IsInputsTab));
-        OnPropertyChanged(nameof(IsRoutingTab));
-        OnPropertyChanged(nameof(IsOverlaysTab));
-        OnPropertyChanged(nameof(IsAudioTab));
-        OnPropertyChanged(nameof(IsMediaTab));
-        OnPropertyChanged(nameof(IsAutomationTab));
-        OnPropertyChanged(nameof(ActiveTabKey));
-        OnPropertyChanged(nameof(StudioTabChrome));
-        OnPropertyChanged(nameof(SettingsTabChrome));
-        OnPropertyChanged(nameof(SourcesTabChrome));
-        OnPropertyChanged(nameof(InputsTabChrome));
-        OnPropertyChanged(nameof(RoutingTabChrome));
-        OnPropertyChanged(nameof(OverlaysTabChrome));
-        OnPropertyChanged(nameof(AudioTabChrome));
-        OnPropertyChanged(nameof(MediaTabChrome));
-        OnPropertyChanged(nameof(AutomationTabChrome));
+        foreach (var name in StudioTabPlumbing.ActiveTabDependentProperties)
+        {
+            OnPropertyChanged(name);
+        }
 
         if (value == StudioTab.Inputs)
         {
@@ -4169,21 +4163,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
-    private void SelectTab(string tab)
-    {
-        ActiveTab = tab switch
-        {
-            "settings" => StudioTab.Settings,
-            "sources" or "scenes" => StudioTab.Sources,
-            "inputs" => StudioTab.Inputs,
-            "routing" => StudioTab.Routing,
-            "overlays" => StudioTab.Overlays,
-            "audio" => StudioTab.Audio,
-            "media" => StudioTab.Media,
-            "automation" => StudioTab.Automation,
-            _ => StudioTab.Studio
-        };
-    }
+    private void SelectTab(string tab) => ActiveTab = ParseTab(tab);
+
+    /// <summary>The nav key -> tab mapping. Lives in <see cref="StudioTabPlumbing"/> (pure, and
+    /// reachable from a test without tripping this class's brush-building static init).</summary>
+    internal static StudioTab ParseTab(string? tab) => StudioTabPlumbing.ParseTab(tab);
 
     private List<RoutingSource> BuildAssignedInputSources()
     {

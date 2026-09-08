@@ -1,4 +1,7 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.ShowEngine;
 using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.ViewModels;
@@ -28,6 +31,51 @@ public sealed partial class StudioViewModel
     /// publisher to the same snapshot stream the ViewModel consumes. Read-only handle; nothing
     /// outside the ViewModel may command the core through it.</summary>
     internal IMediaCoreBridge MediaCoreBridge => _bridge;
+
+    /// <summary>The OHG show workspace view model, or <c>null</c> when OHG is not configured on
+    /// this machine. Assigned by <c>MainWindow</c> at startup (Task 10) — the ViewModel never
+    /// constructs it, because whether the show engine runs at all is an app-composition decision
+    /// (config present + host resolvable), not a workspace one. The page binds this directly and
+    /// renders its setup surface while it is null.</summary>
+    [ObservableProperty] private OhgShowViewModel? _ohgShow;
+
+    /// <summary>Opens the production settings window on the OHG section (registered in Task 10).</summary>
+    [RelayCommand]
+    private void OpenOhgSettings() => OpenProductionSettingsSection("ohg");
+
+    /// <summary>Applies a saved show config: validate, write the effective document, hot-swap the
+    /// host adapter, rebuild <see cref="OhgShow"/>, restart the engine. Returns null on success or
+    /// the operator-facing error text. Set by <c>MainWindow</c> at startup — it is app composition
+    /// (the bridge, the control surface, the config paths), none of which the ViewModel owns.
+    /// Null until then, and the settings VM simply reports that the config was saved but not
+    /// applied.</summary>
+    internal Func<ShowConfig, Task<string?>>? OhgApplyConfig;
+
+    /// <summary>Did the show engine actually start this launch? Drives the settings page's
+    /// "Saved and applied" vs "Restart CoreVideo Pro to start the show engine." — the first-time
+    /// setup case, where there is no engine to apply a config TO. Set by <c>MainWindow</c>.</summary>
+    internal bool OhgEngineStartedAtLaunch;
+
+    /// <summary>Builds the settings-page view model for the OHG section. Lives here (rather than in
+    /// the settings window) because the two things it needs — the app's scene list and the apply
+    /// delegate — are the ViewModel's, and because the window is constructed fresh every time the
+    /// operator opens Settings: a VM built here is built from CURRENT scenes each time, so a scene
+    /// added since launch shows up in the pickers without an app restart.</summary>
+    public OhgSettingsViewModel CreateOhgSettingsViewModel()
+    {
+        var folder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CoreVideoPro");
+
+        return new OhgSettingsViewModel(
+            new ShowConfigStore(folder),
+            () => new HashSet<string>(Scenes.Select(scene => scene.Id), StringComparer.Ordinal),
+            () => Scenes.Select(scene => (scene.Id, scene.Name)).ToList(),
+            config => OhgApplyConfig is { } apply
+                ? apply(config)
+                : Task.FromResult<string?>("Saved, but the show engine could not be reached in this session."),
+            OhgEngineStartedAtLaunch);
+    }
 
     /// <summary>
     /// Point the named PREVIEW routes at Show Input slots. Semantics (the Task 10 adapter

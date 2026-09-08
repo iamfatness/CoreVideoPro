@@ -3,6 +3,8 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:cvcontrols="using:CoreVideoPro.WinUI.Controls"
+    xmlns:views="using:CoreVideoPro.WinUI.Views"
+    xmlns:vm="using:CoreVideoPro.WinUI.ViewModels"
     Title="Settings">
     <Grid Background="{StaticResource StudioBackgroundBrush}">
         <Grid.Resources>
@@ -88,6 +90,11 @@
                             Content="FFmpeg"
                             Style="{StaticResource SettingsMenuButton}"
                             Click="OnFfmpegClicked" />
+                    <Button x:Name="OhgMenuButton"
+                            Content="OHG show"
+                            AutomationProperties.Name="OHG settings menu"
+                            Style="{StaticResource SettingsMenuButton}"
+                            Click="OnOhgClicked" />
                 </StackPanel>
 
                 <StackPanel Grid.Row="2" Spacing="8">
@@ -875,6 +882,272 @@
                         </StackPanel>
                     </Border>
 
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="OhgPanel"
+                          Visibility="Collapsed"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="OHG show" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="The show engine reads this config at launch. Save applies it to the running engine; with no engine running it is saved for the next launch."
+                               Style="{StaticResource OperatorSummary}" />
+
+                    <!-- Loud, never silent: an existing config that could not be parsed is named
+                         here, because Save would otherwise overwrite a recoverable file. -->
+                    <TextBlock Text="The saved show config could not be read. These are DEFAULTS - saving will overwrite the existing file."
+                               Style="{StaticResource OperatorSummary}"
+                               TextWrapping="WrapWholeWords"
+                               Foreground="{StaticResource StudioWarningBrush}"
+                               Visibility="{x:Bind views:ProductionSettingsWindow.VisibleWhen(OhgSettings.LoadedFromDefaultsBecauseOfError), Mode=OneWay}" />
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Drive" Style="{StaticResource SettingsLabel}" />
+                            <ToggleSwitch Header="Drive the show (off = shadow mode)"
+                                          OnContent="Driving"
+                                          OffContent="Shadow"
+                                          AutomationProperties.Name="OHG settings drive the show"
+                                          IsOn="{x:Bind OhgSettings.DriveHost, Mode=OneWay}"
+                                          Toggled="OnOhgDriveHostToggled" />
+                            <TextBlock Text="Shadow mode logs every host command the engine issues and applies none of them. Ship a new show config in shadow first."
+                                       Style="{StaticResource OperatorSummary}" />
+                            <ComboBox Header="Default transition"
+                                      MinWidth="160"
+                                      AutomationProperties.Name="OHG settings default transition"
+                                      Loaded="OnOhgTransitionLoaded"
+                                      SelectionChanged="OnOhgTransitionChanged" />
+                            <TextBox Header="Tally URL"
+                                     PlaceholderText="http://tally.local/state (optional)"
+                                     AutomationProperties.Name="OHG settings tally URL"
+                                     Text="{x:Bind OhgSettings.TallyUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Preset scenes" Style="{StaticResource SettingsLabel}" />
+                            <TextBlock Text="The four scenes the engine cues by name. Left unset, the shell refuses that cue out loud at use time."
+                                       Style="{StaticResource OperatorSummary}" />
+                            <ComboBox Header="Solo"
+                                      MinWidth="240"
+                                      x:Name="OhgPresetSoloCombo"
+                                      AutomationProperties.Name="OHG settings solo preset scene"
+                                      Loaded="OnOhgPresetSoloLoaded"
+                                      SelectionChanged="OnOhgPresetSoloChanged" />
+                            <ComboBox Header="Active speaker"
+                                      MinWidth="240"
+                                      x:Name="OhgPresetActiveSpeakerCombo"
+                                      AutomationProperties.Name="OHG settings active speaker preset scene"
+                                      Loaded="OnOhgPresetActiveSpeakerLoaded"
+                                      SelectionChanged="OnOhgPresetActiveSpeakerChanged" />
+                            <ComboBox Header="Black"
+                                      MinWidth="240"
+                                      x:Name="OhgPresetBlackCombo"
+                                      AutomationProperties.Name="OHG settings black preset scene"
+                                      Loaded="OnOhgPresetBlackLoaded"
+                                      SelectionChanged="OnOhgPresetBlackChanged" />
+                            <ComboBox Header="Gallery"
+                                      MinWidth="240"
+                                      x:Name="OhgPresetGalleryCombo"
+                                      AutomationProperties.Name="OHG settings gallery preset scene"
+                                      Loaded="OnOhgPresetGalleryLoaded"
+                                      SelectionChanged="OnOhgPresetGalleryChanged" />
+                            <Button Content="Refresh scene list"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG settings refresh scene list"
+                                    Click="OnOhgRefreshScenesClicked" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Mukana integrations" Style="{StaticResource SettingsLabel}" />
+                            <ToggleSwitch Header="Panelist registry"
+                                          OnContent="On" OffContent="Off"
+                                          AutomationProperties.Name="OHG settings panelist registry"
+                                          IsOn="{x:Bind OhgSettings.RegistryEnabled, Mode=OneWay}"
+                                          Toggled="OnOhgRegistryToggled" />
+                            <ToggleSwitch Header="Hands queue"
+                                          OnContent="On" OffContent="Off"
+                                          AutomationProperties.Name="OHG settings hands queue"
+                                          IsOn="{x:Bind OhgSettings.HandsQueueEnabled, Mode=OneWay}"
+                                          Toggled="OnOhgHandsQueueToggled" />
+                            <ToggleSwitch Header="Question feed"
+                                          OnContent="On" OffContent="Off"
+                                          AutomationProperties.Name="OHG settings question feed"
+                                          IsOn="{x:Bind OhgSettings.QuestionFeedEnabled, Mode=OneWay}"
+                                          Toggled="OnOhgQuestionFeedToggled" />
+                            <TextBox Header="Mukana base URL"
+                                     PlaceholderText="https://mukana.example.com"
+                                     AutomationProperties.Name="OHG settings Mukana base URL"
+                                     Text="{x:Bind OhgSettings.MukanaBaseUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox Header="Mukana event"
+                                     PlaceholderText="event slug"
+                                     AutomationProperties.Name="OHG settings Mukana event"
+                                     Text="{x:Bind OhgSettings.MukanaEvent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <Grid ColumnSpacing="10" RowSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <NumberBox Header="Panelists (ms)"
+                                           Minimum="100" Maximum="600000" SpinButtonPlacementMode="Compact"
+                                           AutomationProperties.Name="OHG settings panelists poll interval"
+                                           Value="{x:Bind OhgSettings.PanelistsIntervalMs, Mode=TwoWay}" />
+                                <NumberBox Grid.Column="1"
+                                           Header="Hands (ms)"
+                                           Minimum="100" Maximum="600000" SpinButtonPlacementMode="Compact"
+                                           AutomationProperties.Name="OHG settings hands poll interval"
+                                           Value="{x:Bind OhgSettings.HandsIntervalMs, Mode=TwoWay}" />
+                                <NumberBox Grid.Column="2"
+                                           Header="Questions (ms)"
+                                           Minimum="100" Maximum="600000" SpinButtonPlacementMode="Compact"
+                                           AutomationProperties.Name="OHG settings questions poll interval"
+                                           Value="{x:Bind OhgSettings.QuestionIntervalMs, Mode=TwoWay}" />
+                                <NumberBox Grid.Column="3"
+                                           Header="Max backoff (ms)"
+                                           Minimum="100" Maximum="600000" SpinButtonPlacementMode="Compact"
+                                           AutomationProperties.Name="OHG settings maximum backoff"
+                                           Value="{x:Bind OhgSettings.MaxBackoffMs, Mode=TwoWay}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Looks" Style="{StaticResource SettingsLabel}" />
+                            <TextBlock Text="Each look names the scene it cues and how many guest boxes it has. Every ComboBox below is applied in code-behind - never through a binding inside the repeater."
+                                       Style="{StaticResource OperatorSummary}" />
+                            <ItemsRepeater ItemsSource="{x:Bind OhgSettings.Looks, Mode=OneWay}">
+                                <ItemsRepeater.Layout>
+                                    <StackLayout Spacing="10" />
+                                </ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:OhgLookEditorViewModel">
+                                        <Border Style="{StaticResource OperatorReadoutBorder}">
+                                            <StackPanel Spacing="8">
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="120" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBox Header="Id"
+                                                             AutomationProperties.Name="OHG settings look id"
+                                                             Text="{x:Bind Id, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                    <TextBox Grid.Column="1"
+                                                             Header="Label"
+                                                             AutomationProperties.Name="OHG settings look label"
+                                                             Text="{x:Bind Label, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                    <NumberBox Grid.Column="2"
+                                                               Header="Boxes"
+                                                               Minimum="0" Maximum="4" SpinButtonPlacementMode="Compact"
+                                                               AutomationProperties.Name="OHG settings look box count"
+                                                               Value="{x:Bind BoxesValue, Mode=TwoWay}" />
+                                                    <Button Grid.Column="3"
+                                                            Content="Remove"
+                                                            VerticalAlignment="Bottom"
+                                                            Style="{StaticResource OperatorGhostButton}"
+                                                            AutomationProperties.Name="OHG settings remove look"
+                                                            Tag="{x:Bind}"
+                                                            Click="OnOhgRemoveLookClicked" />
+                                                </Grid>
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <ComboBox Header="Scene"
+                                                              MinWidth="140"
+                                                              AutomationProperties.Name="OHG settings look scene"
+                                                              Tag="{x:Bind}"
+                                                              Loaded="OnOhgLookSceneLoaded"
+                                                              SelectionChanged="OnOhgLookSceneChanged" />
+                                                    <ComboBox Grid.Column="1"
+                                                              Header="Plate tone"
+                                                              MinWidth="120"
+                                                              AutomationProperties.Name="OHG settings look plate tone"
+                                                              Tag="{x:Bind}"
+                                                              Loaded="OnOhgLookPlateToneLoaded"
+                                                              SelectionChanged="OnOhgLookPlateToneChanged" />
+                                                    <ComboBox Grid.Column="2"
+                                                              Header="Tally source"
+                                                              MinWidth="120"
+                                                              AutomationProperties.Name="OHG settings look tally source"
+                                                              Tag="{x:Bind}"
+                                                              Loaded="OnOhgLookTallySourceLoaded"
+                                                              SelectionChanged="OnOhgLookTallySourceChanged" />
+                                                    <ComboBox Grid.Column="3"
+                                                              Header="Box fill"
+                                                              MinWidth="120"
+                                                              AutomationProperties.Name="OHG settings look box fill"
+                                                              Tag="{x:Bind}"
+                                                              Loaded="OnOhgLookBoxFillLoaded"
+                                                              SelectionChanged="OnOhgLookBoxFillChanged" />
+                                                </Grid>
+                                                <StackPanel Orientation="Horizontal" Spacing="18">
+                                                    <ToggleSwitch Header="Includes host"
+                                                                  OnContent="Yes" OffContent="No"
+                                                                  AutomationProperties.Name="OHG settings look includes host"
+                                                                  Tag="{x:Bind}"
+                                                                  IsOn="{x:Bind IncludesHost, Mode=OneWay}"
+                                                                  Toggled="OnOhgLookHostToggled" />
+                                                    <ToggleSwitch Header="Includes reader"
+                                                                  OnContent="Yes" OffContent="No"
+                                                                  AutomationProperties.Name="OHG settings look includes reader"
+                                                                  Tag="{x:Bind}"
+                                                                  IsOn="{x:Bind IncludesReader, Mode=OneWay}"
+                                                                  Toggled="OnOhgLookReaderToggled" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                            <Button Content="Add look"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="OHG settings add look"
+                                    Command="{x:Bind OhgSettings.AddLookCommand}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Save" Style="{StaticResource SettingsLabel}" />
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Button Content="Save show config"
+                                        MinWidth="150"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG settings save show config"
+                                        Command="{x:Bind OhgSettings.SaveCommand}" />
+                                <!-- Two optional FileOpenPickers first (infrastructure, then mukana; cancel = null),
+                                     then the code-behind handler runs the import command with the read texts -
+                                     a Command binding cannot collect picker input first, so this is Click, not x:Bind. -->
+                                <Button Content="Import legacy show"
+                                        MinWidth="150"
+                                        Style="{StaticResource OperatorGhostButton}"
+                                        AutomationProperties.Name="OHG settings import legacy show"
+                                        Click="OnOhgImportLegacyClicked" />
+                            </StackPanel>
+                            <TextBlock Text="{x:Bind OhgSettings.ValidationMessage, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}"
+                                       TextWrapping="WrapWholeWords"
+                                       Foreground="{StaticResource StudioWarningBrush}" />
+                            <TextBlock Text="{x:Bind OhgSettings.SaveStatus, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="Restart CoreVideo Pro to start the show engine with this config."
+                                       Style="{StaticResource OperatorSummary}"
+                                       Visibility="{x:Bind views:ProductionSettingsWindow.VisibleWhen(OhgSettings.NeedsAppRestart), Mode=OneWay}" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </ScrollViewer>
         </Grid>

@@ -38,6 +38,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Plan 7b Task 3: the OHG workspace VM's ingest methods (OnSnapshot/OnHealth/OnLog) and the
+         ObservableCollectionSync helper are internal — the tests drive them directly rather than
+         standing up a real ShowEngineBridge. -->
+    <InternalsVisibleTo Include="CoreVideoPro.WinUI.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CoreVideoPro.MediaCore\CoreVideoPro.MediaCore.csproj" />
     <ProjectReference Include="..\CoreVideoPro.Control\CoreVideoPro.Control.csproj" />
     <!-- The show-engine host adapter uses the shared OHG command/config models. -->
