@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/AsyncEncoderSink.h"
 
 #include <algorithm>
@@ -46,8 +47,7 @@ AsyncEncoderSink::~AsyncEncoderSink() {
       writer_.join();
     }
   } else {
-    std::fprintf(stderr,
-                 "[asyncEncoder] writer still finalizing after %lldms grace; detaching for shutdown\n",
+    ::corevideo::core::nativeLogf("[asyncEncoder] writer still finalizing after %lldms grace; detaching for shutdown\n",
                  static_cast<long long>(options_.finalizeGrace.count()));
     if (writer_.joinable()) {
       writer_.detach();

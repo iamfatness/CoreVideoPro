@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
 
 #include "config/ZoomMeetingSdkConfig.h"
@@ -76,7 +77,7 @@ ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::
 ZoomEngineRuntime::~ZoomEngineRuntime() {
   // Stop the video-ingest thread FIRST: it takes mutex_ briefly and touches
   // SHM regions that teardown below releases.
-  videoIngestRun_.store(false, std::memory_order_release);
+  beginShutdown();
   if (videoIngestThread_.joinable()) {
     videoIngestThread_.join();
   }
@@ -90,6 +91,15 @@ ZoomEngineRuntime::~ZoomEngineRuntime() {
   if (sender_.joinable()) {
     sender_.join();
   }
+}
+
+void ZoomEngineRuntime::beginShutdown() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  // The reader can still finish an in-flight event until stopReader joins it.
+  // Publish terminal state before clearing the run flag, so that event cannot
+  // replace the still-joinable ingest thread. All joins remain outside mutex_.
+  shuttingDown_ = true;
+  videoIngestRun_.store(false, std::memory_order_release);
 }
 
 ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
@@ -153,10 +163,9 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   {
     std::lock_guard<std::mutex> lock(mutex_);
     restart = restartBeforeJoin_;
-    restartBeforeJoin_ = false;
     if (restart) {
       ++processGeneration_;
-      purgeQueuedEngineSendsLocked("join after leave");
+      purgeQueuedEngineSendsLocked("join after retired helper");
     }
   }
   if (restart) {
@@ -166,6 +175,8 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     std::lock_guard<std::mutex> lock(mutex_);
     process_.reset();
     initialized_ = false;
+    state_.reset();
+    restartBeforeJoin_ = false;
   }
   if (cancelled && cancelled()) return nullptr;
   applyJoinCredentialsFromPayload(payload);
@@ -233,7 +244,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     if (!authReady) {
       std::lock_guard<std::mutex> lock(mutex_);
       if (cancelled && cancelled()) return nullptr;
-      state_.apply({ZoomEngineEventKind::Error, "error", "", "auth", "Timed out waiting for Zoom SDK authentication."});
+      retireTimedOutJoinLocked("auth", "Timed out waiting for Zoom SDK authentication.");
       return rawCaptureSnapshotLocked();
     }
   }
@@ -269,8 +280,18 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (cancelled && cancelled()) return nullptr;
-  state_.apply({ZoomEngineEventKind::Error, "error", "", "join", "Timed out waiting for Zoom meeting join result."});
+  retireTimedOutJoinLocked("join", "Timed out waiting for Zoom meeting join result.");
   return rawCaptureSnapshotLocked();
+}
+
+void ZoomEngineRuntime::retireTimedOutJoinLocked(const char* stage, const char* message) {
+  // SDK callbacks carry no join identity. Quarantine this helper immediately;
+  // the next explicit join terminates it outside the runtime lock before restart.
+  acceptJoinEvents_ = false;
+  restartBeforeJoin_ = true;
+  ++processGeneration_;
+  purgeQueuedEngineSendsLocked("join timeout");
+  state_.apply({ZoomEngineEventKind::Error, "error", "", stage, message});
 }
 
 rpc::Json ZoomEngineRuntime::leave() {
@@ -569,15 +590,13 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
       const auto idx = static_cast<std::size_t>(q * (s_samples.size() - 1));
       return s_samples[idx];
     };
-    std::fprintf(stderr,
-                 "[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
+    ::corevideo::core::nativeLogf("[zoom-latency] ingest->render p50=%.1fms p99=%.1fms max=%.1fms "
                  "(n=%zu, +<=2ms upstream poll)\n",
                  at(0.50), at(0.99), s_samples.back(), s_samples.size());
     // Where every decoded frame went. published = fresh + overwritten (+ one
     // in-flight per source); starved = render ticks that re-served a frame the
     // compositor already had. Overwritten is the only true motion loss.
-    std::fprintf(stderr,
-                 "[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
+    ::corevideo::core::nativeLogf("[zoom-slot] published=%lld fresh=%lld overwritten=%lld (%.1f%%) "
                  "starved=%lld over %.2fs\n",
                  slotPublished_, slotFresh_, slotOverwritten_,
                  slotPublished_ > 0 ? 100.0 * slotOverwritten_ / slotPublished_ : 0.0,
@@ -663,7 +682,7 @@ void ZoomEngineRuntime::readerLoop() {
     std::uint64_t generation;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (!readerRunning_ || !process_ || !process_->running()) {
+      if (!readerRunning_ || restartBeforeJoin_ || !process_ || !process_->running()) {
         return;
       }
       process = process_;
@@ -684,7 +703,7 @@ void ZoomEngineRuntime::readerLoop() {
 
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (generation && *generation != processGeneration_) return;
+  if (shuttingDown_ || restartBeforeJoin_ || (generation && *generation != processGeneration_)) return;
   if (event.kind == ZoomEngineEventKind::Joined && !acceptJoinEvents_) {
     // An SDK callback may arrive after Leave was accepted. Keep the current
     // snapshot left and reassert leave rather than reviving capture.
@@ -845,7 +864,7 @@ void ZoomEngineRuntime::purgeQueuedEngineSendsLocked(const char* reason) {
 
 void ZoomEngineRuntime::noteDroppedEngineSends(std::size_t count, const char* reason) {
   const auto total = droppedEngineSends_.fetch_add(count) + count;
-  std::fprintf(stderr, "[zoom-engine] dropped %zu queued engine send(s): %s (total dropped %llu)\n",
+  ::corevideo::core::nativeLogf("[zoom-engine] dropped %zu queued engine send(s): %s (total dropped %llu)\n",
                count, reason, static_cast<unsigned long long>(total));
 }
 
@@ -1003,7 +1022,7 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
 }
 
 void ZoomEngineRuntime::ensureVideoIngestThreadLocked() {
-  if (videoIngestRun_.load(std::memory_order_acquire)) {
+  if (shuttingDown_ || videoIngestThread_.joinable()) {
     return;
   }
   videoIngestRun_.store(true, std::memory_order_release);
@@ -1025,7 +1044,8 @@ void ZoomEngineRuntime::videoIngestLoop() {
   }
 }
 
-void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
+void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>& afterCapture,
+                                                  const std::function<void()>& beforePublish) {
   // Phase 1 (locked, cheap): open missing regions, peek sequences, collect
   // the streams that have a NEW complete frame. shared_ptr region holders let
   // phase 2 read safely even if a leave/reset drops the stream meanwhile.
@@ -1039,6 +1059,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     std::uint32_t sequence = 0;
     bool buildThumbnail = false;
     bool probeLumaRange = false;
+    std::uint64_t generation = 0;
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -1060,8 +1081,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
           // stream that has announced dimensions but stays unmappable is a
           // frozen source, and this used to retry in complete silence.
           if (++ref.regionOpenFailures == 120 || ref.regionOpenFailures % 600 == 0) {
-            std::fprintf(stderr,
-                         "[zoom-ingest] %s: video shm STILL unmappable after %d polls "
+            ::corevideo::core::nativeLogf("[zoom-ingest] %s: video shm STILL unmappable after %d polls "
                          "(%ux%u announced) — source is frozen, engine region missing or undersized\n",
                          uuid.c_str(), ref.regionOpenFailures, ref.width, ref.height);
           }
@@ -1083,10 +1103,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
       const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
                                   nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail, !ref.lumaRangeProbed});
+                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_});
     }
   }
 
+  if (afterCapture) afterCapture();
   // Phase 2 (UNLOCKED, heavy): full I420 copy + thumbnail conversion per new
   // frame. The seqlock inside the snapshot re-validates against tearing.
   struct SnapshotResult {
@@ -1122,43 +1143,40 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     }
   }
 
-  // Achieved ingest rate: how many decoded frames per second actually reach the
-  // core. The compositor's upload counters are throttled (multiview composites
-  // every 3rd tick), so they CANNOT be used as an ingest proxy — this is the
-  // real number, and it is what proves whether a 1080p60 wall is being consumed.
-  {
-    static auto s_stamp = std::chrono::steady_clock::now();
-    static long long s_published = 0;
-    for (const auto& r : results) {
-      if (r.frame) ++s_published;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    const double sec = std::chrono::duration<double>(now - s_stamp).count();
-    if (sec >= 2.0) {
-      std::fprintf(stderr, "[zoom-ingest] %.0f frames/s decoded into the core (%.1f MB/s)\n",
-                   s_published / sec, s_published / sec * 3.11);
-      s_published = 0;
-      s_stamp = now;
-    }
-  }
-
-  // Phase 3 (locked, cheap): publish.
+  if (beforePublish) beforePublish();
+  // Phase 3 (locked, cheap): publish only into the captured stream generation.
   std::lock_guard<std::mutex> lock(mutex_);
+  const auto rejectStale = [&] {
+    ++staleVideoPublications_;
+    if (staleVideoPublications_ == 1 || staleVideoPublications_ % 100 == 0)
+      ::corevideo::core::nativeLogf("[zoom-ingest] stale publication rejected count=%llu; obsolete copy discarded\n",
+          static_cast<unsigned long long>(staleVideoPublications_));
+  };
   for (auto& result : results) {
     auto stream = videoStreams_.find(result.job.uuid);
-    if (stream == videoStreams_.end()) {
-      continue;  // stream left while we were reading
+    if (shuttingDown_ || restartBeforeJoin_ || result.job.generation != processGeneration_ ||
+        stream == videoStreams_.end() || stream->second.regionOpaque != result.job.holder ||
+        stream->second.participantId != result.job.participantId ||
+        stream->second.width != result.job.width || stream->second.height != result.job.height) {
+      rejectStale();
+      continue;  // leave, resize, remap, or helper retirement while copying
     }
     if (!result.frame) {
       state_.recordFrameIngestFailure(result.job.uuid, result.job.participantId,
                                       "shared memory snapshot was incomplete, stale, or malformed");
       continue;
     }
-    stream->second.lastSequence = result.job.sequence;
+    if (result.frame->i420Width != result.job.width || result.frame->i420Height != result.job.height ||
+        result.frame->participantId != participantIdString(result.job.participantId)) {
+      rejectStale();
+      continue; // A resized SHM header arrived before its matching stream beacon.
+    }
+    // The writer may advance between the cheap peek and the validated copy.
+    // Consume the sequence we actually copied, never the earlier peek.
+    stream->second.lastSequence = static_cast<std::uint32_t>(result.frame->frameId);
     if (result.job.probeLumaRange && result.lumaRange.sampled > 0) {
       stream->second.lumaRangeProbed = true;
-      std::fprintf(stderr,
-                   "[zoom-color] source=%s participant=%u requested=bt709-full "
+      ::corevideo::core::nativeLogf("[zoom-color] source=%s participant=%u requested=bt709-full "
                    "luma_min=%u luma_max=%u below16=%u above235=%u sampled=%u\n",
                    result.job.uuid.c_str(), result.job.participantId,
                    static_cast<unsigned>(result.lumaRange.minimum),
@@ -1168,6 +1186,15 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
                             std::move(result.i420Shared), result.observedAt);
+    ++videoPublishedSinceLog_;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const double seconds = std::chrono::duration<double>(now - videoPublishLogStamp_).count();
+  if (seconds >= 2.0) {
+    ::corevideo::core::nativeLogf("[zoom-ingest] %.0f frames/s accepted into core; stale_publications=%llu\n",
+        videoPublishedSinceLog_ / seconds, static_cast<unsigned long long>(staleVideoPublications_));
+    videoPublishedSinceLog_ = 0;
+    videoPublishLogStamp_ = now;
   }
 }
 
@@ -1316,7 +1343,7 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
     const auto before = pending.lostPackets;
     pending.lostPackets += static_cast<std::int64_t>(lost);
     if (before == 0 || (before / 100) != (pending.lostPackets / 100)) {
-      std::fprintf(stderr, "[zoom-audio] stream %s lost %zu packet(s) (total %lld)\n",
+      ::corevideo::core::nativeLogf("[zoom-audio] stream %s lost %zu packet(s) (total %lld)\n",
                    uuid.c_str(), lost, static_cast<long long>(pending.lostPackets));
     }
   }
@@ -1343,7 +1370,7 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
     if (appendZoomEnginePcmChunk(pending, chunk, kMaxPendingAudioSamplesPerChannel)) {
       ++pending.ingestedChunks;
       if (pending.ingestedChunks == 1 || pending.ingestedChunks % 3000 == 0) {
-        std::fprintf(stderr, "[zoom-audio] stream %s chunk #%lld rate=%d ch=%d pending=%zu\n",
+        ::corevideo::core::nativeLogf("[zoom-audio] stream %s chunk #%lld rate=%d ch=%d pending=%zu\n",
                      uuid.c_str(), static_cast<long long>(pending.ingestedChunks), chunk.sampleRate,
                      chunk.channels, pending.pcm.size());
       }

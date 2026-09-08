@@ -65,11 +65,50 @@ public sealed class MediaCorePathsTests : IDisposable
 
         var candidates = MediaCorePaths.BuildZoomEngineExecutableCandidates(_repoRoot, appBase);
 
-        Assert.Equal(Path.Combine(appBase, "corevideo-zoom-engine.exe"), candidates[0]);
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "corevideo-zoom-engine.exe"), candidates[1]);
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "Release", "corevideo-zoom-engine.exe"), candidates[2]);
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build", "corevideo-zoom-engine.exe"), candidates[3]);
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build", "Release", "corevideo-zoom-engine.exe"), candidates[4]);
+        Assert.Equal(Path.Combine(appBase, "zoom-runtime", "windows", "x64", "bin", "corevideo-zoom-engine.exe"), candidates[0]);
+        Assert.Equal(Path.Combine(appBase, "corevideo-zoom-engine.exe"), candidates[1]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "corevideo-zoom-engine.exe"), candidates[2]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "Release", "corevideo-zoom-engine.exe"), candidates[3]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build", "corevideo-zoom-engine.exe"), candidates[4]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build", "Release", "corevideo-zoom-engine.exe"), candidates[5]);
+    }
+
+    [Fact]
+    public void ZoomEngineExplicitOverrideWinsWithoutProbingPackagedFallback()
+    {
+        var selected = Path.Combine(_repoRoot, "chosen SDK", "corevideo-zoom-engine.exe");
+        var probes = new List<string>();
+        var result = MediaCorePaths.ResolveZoomEngineExecutable(selected, ["legacy-engine.exe"], path =>
+        { probes.Add(path); return true; });
+        Assert.Equal(Path.GetFullPath(selected), result);
+        Assert.Equal(new[] { Path.GetFullPath(selected) }, probes);
+    }
+
+    [Fact]
+    public void MissingExplicitZoomEngineFailsInsteadOfUsingAvailableFallback()
+    {
+        var selected = Path.Combine(_repoRoot, "missing.exe");
+        var error = Assert.Throws<FileNotFoundException>(() => MediaCorePaths.ResolveZoomEngineExecutable(
+            selected, ["available.exe"], path => path == "available.exe"));
+        Assert.Contains(MediaCorePaths.ZoomEnginePathEnvVar, error.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("bad\0path")]
+    public void InvalidExplicitZoomEngineFailsWithoutFallback(string selected) =>
+        Assert.Throws<InvalidOperationException>(() => MediaCorePaths.ResolveZoomEngineExecutable(selected,
+            ["available.exe"], _ => throw new Exception("Must not probe fallback")));
+
+    [Fact]
+    public void UnsetZoomEngineOverrideUsesFirstExistingCandidateOrRemainsAbsent()
+    {
+        Assert.Equal("isolated.exe", MediaCorePaths.ResolveZoomEngineExecutable(null,
+            ["isolated.exe", "legacy.exe"], _ => true));
+        Assert.Equal("legacy.exe", MediaCorePaths.ResolveZoomEngineExecutable(null,
+            ["isolated.exe", "legacy.exe"], path => path == "legacy.exe"));
+        Assert.Null(MediaCorePaths.ResolveZoomEngineExecutable(null, ["missing.exe"], _ => false));
     }
 
     [Fact]

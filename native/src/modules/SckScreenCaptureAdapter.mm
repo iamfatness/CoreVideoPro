@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 // ScreenCaptureKit screen/window capture — the macOS twin of the WGC adapter.
 // Same source shapes ("screen:<n>" / "window:<id>" ids via MacCaptureSupport,
 // BGRA frames keyed `capture:<id>`, publish-latest-SHARED so a source never
@@ -184,7 +185,7 @@ class SckScreenCaptureDevice final : public ICaptureDevice {
     } else {
       failedConnects_[deviceId] =
           "Screen capture could not start (screen-recording permission?).";
-      std::fprintf(stderr, "[sck-capture] start failed for %s\n", deviceId.c_str());
+      ::corevideo::core::nativeLogf("[sck-capture] start failed for %s\n", deviceId.c_str());
     }
     return infosLocked();
   }
@@ -253,8 +254,7 @@ class SckScreenCaptureDevice final : public ICaptureDevice {
         static bool warned = false;
         if (!warned) {
           warned = true;
-          std::fprintf(stderr,
-                       "[sck-capture] shareable content unavailable: %s (screen-recording "
+          ::corevideo::core::nativeLogf("[sck-capture] shareable content unavailable: %s (screen-recording "
                        "permission?)\n",
                        error ? error.localizedDescription.UTF8String : "unknown");
         }

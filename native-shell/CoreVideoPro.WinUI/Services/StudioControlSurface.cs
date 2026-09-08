@@ -65,6 +65,8 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "automation.lowerThirds.set", "automation.captions.set",
         "browser.add", "browser.remove", "browser.reload",
         "settings.programBuffer.set",
+        "scene.tiles.autofill.set", "scene.tiles.slot.assign", "scene.tiles.exclusion.set",
+        "scene.tiles.background.set", "scene.tiles.override.set", "scene.tiles.override.clear",
         // Shell-owned OHG action (spec §6.3): restarting the show engine is a SHELL concern, not
         // an engine action — a dead engine could not answer one. Every `ohg.*` id comes from the
         // engine's own manifest at handshake and is deliberately NOT listed here; the 1:1
@@ -241,6 +243,23 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
             case "scene.dynamicGallery.create":
                 _vm.NewDynamicGalleryCommand.Execute(null);
+                return ControlInvokeResult.Success;
+            case "scene.tiles.autofill.set":
+                _vm.SetTilesAutoFill(Bool(args, 0));
+                return ControlInvokeResult.Success;
+            case "scene.tiles.slot.assign":
+                return ApplyTilesSlotRequest(Double(args, 0), Str(args, 1), _vm.AssignTilesSlot);
+            case "scene.tiles.exclusion.set":
+                _vm.SetTilesExclusion(Str(args, 0), Bool(args, 1));
+                return ControlInvokeResult.Success;
+            case "scene.tiles.background.set":
+                _vm.SetTilesBackground(Str(args, 0), Str(args, 1));
+                return ControlInvokeResult.Success;
+            case "scene.tiles.override.set":
+                _vm.SetTilesOverride(Str(args, 0), Double(args, 1), Double(args, 2), Double(args, 3), Double(args, 4), Double(args, 5), Double(args, 6), Double(args, 7));
+                return ControlInvokeResult.Success;
+            case "scene.tiles.override.clear":
+                _vm.ClearTilesOverride(Str(args, 0));
                 return ControlInvokeResult.Success;
             case "view.setMode":
                 _vm.SetViewModeCommand.Execute(Str(args, 0));
@@ -801,6 +820,14 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             return ControlInvokeResult.Success;
         }
         catch (Exception ex) { return ControlInvokeResult.Fail("Program buffer setting was not saved: " + ex.Message); }
+    }
+
+    public static ControlInvokeResult ApplyTilesSlotRequest(double slot, string sourceId, Action<int, string> assign)
+    {
+        if (!double.IsFinite(slot) || slot != Math.Truncate(slot) || slot is < 1 or > 64)
+            return ControlInvokeResult.Fail("Tiles slot must be an integer from 1 to 64.");
+        try { assign((int)slot, sourceId); return ControlInvokeResult.Success; }
+        catch (Exception ex) { return ControlInvokeResult.Fail(ex.Message); }
     }
 
     private static int Int(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is int i ? i : 0;

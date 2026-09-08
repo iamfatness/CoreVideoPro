@@ -52,6 +52,7 @@
     "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
     "validate:record-stream": "node ./scripts/validate-record-stream.mjs",
     "validate:tiles": "node scripts/validate-tiles.mjs",
+    "test:qa-harness": "node --test scripts/tests/av-content-analysis.test.mjs scripts/tests/av-content-decode.test.mjs scripts/tests/frame-performance.test.mjs scripts/tests/program-buffer-smoke.test.mjs",
     "test:scripts": "node --test scripts/tests/release-evidence.test.mjs scripts/tests/av-content-analysis.test.mjs scripts/tests/av-content-decode.test.mjs scripts/tests/frame-performance.test.mjs scripts/tests/program-buffer-smoke.test.mjs scripts/validate-show-engine-judge.test.mjs",
     "test:release-evidence": "node --test scripts/tests/release-evidence.test.mjs",
     "test:show-engine-drill-judge": "node --test scripts/validate-show-engine-judge.test.mjs",

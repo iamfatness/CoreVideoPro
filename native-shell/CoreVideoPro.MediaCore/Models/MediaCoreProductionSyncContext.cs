@@ -72,7 +72,14 @@ public sealed record MediaCoreTilesLayerWire(
     double CustomAspectRatio,
     double GutterPercent,
     double MarginPercent,
-    string BackgroundColor);
+    string BackgroundColor,
+    string BorderShape = "square", string BorderColor = "#000000", double BorderThickness = 0,
+    double CornerRadius = 16, string GlowColor = "#FFFFFF", double GlowSize = 0,
+    double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto",
+    string BackgroundSourceId = "", IReadOnlyDictionary<string, MediaCoreTilesOverrideWire>? Overrides = null);
+
+public sealed record MediaCoreTilesRectWire(double X, double Y, double Width, double Height);
+public sealed record MediaCoreTilesOverrideWire(MediaCoreTilesRectWire? Rect, double CropLeftPercent, double CropRightPercent, int? Z);
 
 public sealed record MediaCoreSceneBackgroundWire(
     string MediaAssetId,

@@ -1,0 +1,7 @@
+{
+  "version": "v24.13.0",
+  "url": "https://nodejs.org/dist/v24.13.0/win-x64/node.exe",
+  "sha256": "d14ba95cdce1ef7dc9ad3ac74949ca5db38b27378ee30f30a23cf26f9e875a11",
+  "checksumsUrl": "https://nodejs.org/dist/v24.13.0/SHASUMS256.txt",
+  "license": "node-v24.13.0-LICENSE.txt"
+}

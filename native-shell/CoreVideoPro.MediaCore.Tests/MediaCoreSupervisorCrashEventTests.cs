@@ -8,6 +8,31 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class MediaCoreSupervisorCrashEventTests
 {
     [Fact]
+    public async Task RunningUnderBridgeGateUsesLifecycleStateWithoutProbingProcessWaitHandle()
+    {
+        await using var supervisor = new MediaCoreSupervisor();
+        var bridge = new MediaCoreBridgeService(supervisor);
+        using var process = new System.Diagnostics.Process();
+        // Any attempt to query this process's OS state throws. The liveness
+        // getter must use the already-published lifecycle state, including when
+        // called under the bridge monitor as the periodic spine callback does.
+        Assert.Throws<InvalidOperationException>(() => process.HasExited);
+        void Set(string field, object? value) => typeof(MediaCoreSupervisor).GetField(field,
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(supervisor, value);
+        var bridgeGate = typeof(MediaCoreBridgeService).GetField("_gate",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(bridge)!;
+        Set("_process", process); Set("_processAlive", true); Set("_stopped", false);
+        try
+        {
+            lock (bridgeGate) { Assert.True(bridge.Running); Assert.Null(bridge.LastSnapshot); }
+            Set("_processAlive", false);
+            Assert.False(bridge.Running);
+            Set("_processAlive", true); Set("_stopped", true);
+            Assert.False(bridge.Running);
+        }
+        finally { Set("_process", null); Set("_processAlive", false); Set("_stopped", true); }
+    }
+    [Fact]
     public void ChildProcessEncoding_DoesNotEmitUtf8Bom()
     {
         Assert.Empty(MediaCoreSupervisor.ChildProcessEncoding.GetPreamble());

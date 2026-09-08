@@ -95,7 +95,12 @@ public sealed class Scene
 /// </summary>
 public sealed class DynamicGallerySettings
 {
+    public string BackgroundColor { get; set; } = "#000000";
+    public string BackgroundSourceId { get; set; } = string.Empty;
+    public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
     public bool AutoFill { get; set; } = true;
+    public List<string?> ManualSlots { get; set; } = [];
+    public List<string> ExcludedSourceIds { get; set; } = [];
     public int MaxTiles { get; set; } = 16;
     public string TileAspect { get; set; } = "16:9";
     public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
@@ -115,6 +120,11 @@ public sealed class DynamicGallerySettings
     public DynamicGallerySettings Clone() => new()
     {
         AutoFill = AutoFill,
+        BackgroundColor = BackgroundColor,
+        BackgroundSourceId = BackgroundSourceId,
+        Overrides = Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
+        ManualSlots = [.. ManualSlots],
+        ExcludedSourceIds = [.. ExcludedSourceIds],
         MaxTiles = MaxTiles,
         TileAspect = TileAspect,
         CustomAspectRatio = CustomAspectRatio,
@@ -131,6 +141,17 @@ public sealed class DynamicGallerySettings
         AnimateLayout = AnimateLayout,
         AnimationDurationMs = AnimationDurationMs
     };
+}
+
+public sealed class TilesMemberOverride
+{
+    public NormalizedCanvasRect? Rect { get; set; }
+    public double CropLeftPercent { get; set; }
+    public double CropRightPercent { get; set; }
+    public int? Z { get; set; }
+    public TilesMemberOverride Clone() => new() { Rect = Rect is null ? null : new NormalizedCanvasRect
+        { X = Rect.X, Y = Rect.Y, Width = Rect.Width, Height = Rect.Height },
+        CropLeftPercent = CropLeftPercent, CropRightPercent = CropRightPercent, Z = Z };
 }
 
 public enum StudioViewMode

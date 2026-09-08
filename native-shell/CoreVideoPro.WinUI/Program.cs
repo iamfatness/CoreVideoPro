@@ -13,14 +13,23 @@ public static class Program
         {
             LaunchLog.Write($"base={AppContext.BaseDirectory}");
 
-            var options = Bootstrap.InitializeOptions.OnNoMatch_ShowUI;
-            if (!Bootstrap.TryInitialize(0x00020002, null, new PackageVersion(), options, out var bootstrapHr))
+            var runtimeProbe = args.Length == 2 && args[0] == "--verify-runtime";
+#if !COREVIDEO_SELF_CONTAINED
+            var options = runtimeProbe ? Bootstrap.InitializeOptions.None : Bootstrap.InitializeOptions.OnNoMatch_ShowUI;
+            if (!Bootstrap.TryInitialize(0x00020004, null, new PackageVersion(), options, out var bootstrapHr))
             {
                 LaunchLog.Write($"Bootstrap.TryInitialize failed hr=0x{bootstrapHr:X8}");
                 Environment.Exit(bootstrapHr);
             }
+#endif
 
             WinRT.ComWrappersSupport.InitializeComWrappers();
+
+            if (runtimeProbe)
+            {
+                Services.AlphaRuntimeProbe.Run(args[1]);
+                return;
+            }
 
             Application.Start(_ =>
             {

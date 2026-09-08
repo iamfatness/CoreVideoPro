@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/VirtualCameraPublisher.h"
 
 #include "modules/ImageResize.h"
@@ -80,7 +81,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
         MFVirtualCameraAccess_CurrentUser, name16.c_str(), kMediaSourceClsid, nullptr, 0,
         camera_.GetAddressOf());
     if (FAILED(hr) || camera_ == nullptr) {
-      std::fprintf(stderr, "[virtualcam] MFCreateVirtualCamera failed hr=0x%08lx "
+      ::corevideo::core::nativeLogf("[virtualcam] MFCreateVirtualCamera failed hr=0x%08lx "
                            "(needs Win11 22000+ and the registered DLL)\n",
                    static_cast<unsigned long>(hr));
       fail("Windows rejected the virtual camera (needs Win11 22000+ and the registered DLL).");
@@ -89,7 +90,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     }
     const HRESULT startHr = camera_->Start(nullptr);
     if (FAILED(startHr)) {
-      std::fprintf(stderr, "[virtualcam] IMFVirtualCamera::Start failed hr=0x%08lx\n",
+      ::corevideo::core::nativeLogf("[virtualcam] IMFVirtualCamera::Start failed hr=0x%08lx\n",
                    static_cast<unsigned long>(startHr));
       fail("The virtual camera was created but could not be started.");
       camera_->Remove();
@@ -108,7 +109,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     }
     acceptNv12_.store(true, std::memory_order_release);
     publishThread_ = std::thread([this] { publishLoop(); });
-    std::fprintf(stderr, "[virtualcam] started %dx%d@%d '%s' (create+start ok)\n", width, height,
+    ::corevideo::core::nativeLogf("[virtualcam] started %dx%d@%d '%s' (create+start ok)\n", width, height,
                   fps, status_.deviceName.c_str());
     return true;
   }
@@ -300,7 +301,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   void fail(const std::string& message) {
     status_.state = "failed";
     status_.warning = message;
-    std::fprintf(stderr, "[virtualcam] %s\n", message.c_str());
+    ::corevideo::core::nativeLogf("[virtualcam] %s\n", message.c_str());
   }
 
   mutable std::mutex mutex_;

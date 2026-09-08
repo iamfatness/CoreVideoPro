@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 
 // The GPU compositor is intentionally a dev-machine adapter. COREVIDEO_STUB
@@ -23,6 +24,7 @@
 #include "compositor/ComPtrLite.h"
 #include "compositor/CompositorLayout.h"
 #include "compositor/CompositorOverlayRaster.h"  // extracted DirectWrite/WIC/D2D overlay raster
+#include "compositor/TilesDecorationParams.h"
 #include "compositor/CompositorShaders.h"  // extracted HLSL shader sources + pure shader/format helpers
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
@@ -89,6 +91,20 @@ std::string handleToHex(HANDLE handle) {
   stream << "0x" << std::hex << std::uppercase << reinterpret_cast<uintptr_t>(handle);
   return stream.str();
 }
+
+// CPU wall time around API calls only: this does not measure GPU completion or
+// presentation deadlines. Disabled scopes never read the clock.
+struct CpuStageScope {
+  using Clock = std::chrono::steady_clock;
+  long long* sum;
+  Clock::time_point start{};
+  CpuStageScope(bool enabled, long long& target) : sum(enabled ? &target : nullptr) {
+    if (sum) start = Clock::now();
+  }
+  ~CpuStageScope() {
+    if (sum) *sum += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
+  }
+};
 
 class D3D11Compositor final : public ICompositor {
  public:
@@ -237,8 +253,7 @@ class D3D11Compositor final : public ICompositor {
       worstSlowProgramUs_ = (std::max)(worstSlowProgramUs_, static_cast<long long>(totalUs));
       if (lastSlowProgramLog_.time_since_epoch().count() == 0 ||
           timingEnd - lastSlowProgramLog_ >= std::chrono::seconds(1)) {
-        std::fprintf(stderr,
-            "[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
+        ::corevideo::core::nativeLogf("[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
             static_cast<long long>(frameNumber_), static_cast<long long>(totalUs), setupUs, resolveUs,
             uploadUs, (std::max)(0LL, drawUs - uploadUs), readbackUs, vcamUs, sharedUs,
             participantUs, evictUs, flushUs, layers.size(), frames.size(), !renderPlan.skipCpuReadback,
@@ -260,6 +275,7 @@ class D3D11Compositor final : public ICompositor {
     if (!pipelineReady_ || !device_ || !context_) {
       return out;
     }
+    const auto profileStart = stageProfileEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     const int width = deterministicPlan.width;
     const int height = deterministicPlan.height;
@@ -293,6 +309,9 @@ class D3D11Compositor final : public ICompositor {
     const bool bufferedProgram = programBufferFrames() > 0;
     auto* deliveredView = bufferedProgram ? retainedProgramForMultiview() : nullptr;
     bool programPlaced = false;
+    const auto drawStart = stageProfileEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const auto uploadBefore = stageProfileNs_[MvUpload];
+    profileMvActive_ = stageProfileEnabled_;
     for (const auto& layer : layers) {
       if (bufferedProgram && layer.plan.layerId.rfind("multiview-pgm:", 0) == 0) {
         if (!programPlaced && deliveredView && layer.plan.hasClipRect) {
@@ -311,11 +330,23 @@ class D3D11Compositor final : public ICompositor {
       }
       drawLayer(layer, deterministicPlan);
     }
-    exportMultiviewSharedTexture(out);
+    profileMvActive_ = false;
+    if (stageProfileEnabled_) {
+      const auto drawNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - drawStart).count();
+      stageProfileNs_[MvDraw] += std::max(0LL, static_cast<long long>(drawNs) - (stageProfileNs_[MvUpload] - uploadBefore));
+    }
+    { CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[MvShare]); exportMultiviewSharedTexture(out); }
 
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
     context_->Flush();
+    if (stageProfileEnabled_) {
+      const auto total = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - profileStart).count();
+      stageProfileNs_[MvTotal] += total;
+      stageProfileMvMaxNs_ = std::max(stageProfileMvMaxNs_, static_cast<long long>(total));
+      ++stageProfileMvCalls_;
+      logStageProfile();
+    }
     return out;
   }
 
@@ -466,7 +497,7 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "vertex shader: " + error;
       return;
     }
-    const auto pixelBlob = compileShader(kCompositorPixelShader, "main", "ps_5_0", error);
+    const auto pixelBlob = compileTilesShader(kCompositorPixelShader, tilesEffectsAvailable_, error);
     if (!pixelBlob) {
       initError_ = "pixel shader: " + error;
       return;
@@ -480,7 +511,7 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "CreatePixelShader failed.";
       return;
     }
-    const auto texturedPixelBlob = compileShader(kCompositorTexturedPixelShader, "main", "ps_5_0", error);
+    const auto texturedPixelBlob = compileTilesShader(kCompositorTexturedPixelShader, tilesEffectsAvailable_, error);
     if (!texturedPixelBlob) {
       initError_ = "textured pixel shader: " + error;
       return;
@@ -489,7 +520,7 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "CreatePixelShader (textured) failed.";
       return;
     }
-    const auto yuvPixelBlob = compileShader(kCompositorYuvPixelShader, "main", "ps_5_0", error);
+    const auto yuvPixelBlob = compileTilesShader(kCompositorYuvPixelShader, tilesEffectsAvailable_, error);
     if (!yuvPixelBlob) {
       initError_ = "yuv pixel shader: " + error;
       return;
@@ -508,6 +539,8 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
 
+    if (!tilesEffectsAvailable_)
+      ::corevideo::core::nativeLogf("[tiles] shader effect unavailable; rendering clean tiles without border/radius/glow.\n");
     D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -723,8 +756,7 @@ class D3D11Compositor final : public ICompositor {
         available += "(empty)";
       }
     }
-    std::fprintf(stderr,
-                 "[compositor] %s layer '%s' has NO matching frame (placeholder tile) - "
+    ::corevideo::core::nativeLogf("[compositor] %s layer '%s' has NO matching frame (placeholder tile) - "
                  "available %s frames: [%s]\n",
                  isCapture ? "capture" : "media", sourceKey.c_str(), prefix,
                  available.empty() ? "none" : available.c_str());
@@ -791,6 +823,7 @@ class D3D11Compositor final : public ICompositor {
       return false;
     }
     auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
+    *constants = {};
     constants->color[0] = static_cast<float>((colorArgb >> 16) & 0xff) / 255.f;
     constants->color[1] = static_cast<float>((colorArgb >> 8) & 0xff) / 255.f;
     constants->color[2] = static_cast<float>(colorArgb & 0xff) / 255.f;
@@ -805,6 +838,7 @@ class D3D11Compositor final : public ICompositor {
     constants->uvOffset[0] = uvOffsetX;
     constants->uvOffset[1] = uvOffsetY;
     applyYuvParams(constants, yuvShaderParamsForFrame(layer.frame));
+    if (tilesEffectsAvailable_) applyTilesDecoration(*constants, layer.plan, targetWidth_, targetHeight_);
     context_->Unmap(constantBuffer_.get(), 0);
     ID3D11Buffer* buffers[] = {constantBuffer_.get()};
     context_->PSSetConstantBuffers(0, 1, buffers);
@@ -884,7 +918,6 @@ class D3D11Compositor final : public ICompositor {
         static_cast<double>(strokeX) * targetWidth_,
         static_cast<double>(strokeY) * targetHeight_,
         border.colorRgba);
-    std::fflush(stderr);
   }
 
   // Strokes a border around `rect` by drawing its four edge quads.
@@ -919,6 +952,18 @@ class D3D11Compositor final : public ICompositor {
     const compositor::LayerRect rect{
         layer.plan.rect.x, layer.plan.rect.y, layer.plan.rect.width, layer.plan.rect.height};
     const float layerAlpha = compositorLayerOpacity(layer.plan);
+
+    if (layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass) {
+      if (!tilesEffectsAvailable_) return;
+      const auto expanded = tilesGlowRect(layer.plan, targetWidth_, targetHeight_);
+      if (layer.plan.hasClipRect) {
+        context_->RSSetState(scissorRasterizerState_.get());
+        setScissorFromRect({layer.plan.clipRect.x, layer.plan.clipRect.y, layer.plan.clipRect.width, layer.plan.clipRect.height});
+      }
+      drawSolidQuad(layer, renderPlan, expanded, 0xffffffffu, layerAlpha);
+      context_->RSSetState(rasterizerState_.get());
+      return;
+    }
 
     // Overlay/lower-third/caption layers go through the raster stage.
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
@@ -956,7 +1001,7 @@ class D3D11Compositor final : public ICompositor {
         layer.plan.fitMode,
         layer.plan.sourceScale,
         layer.plan.sourceOffsetX,
-        layer.plan.sourceOffsetY);
+        layer.plan.sourceOffsetY, layer.plan.sourceCropLeftPercent, layer.plan.sourceCropRightPercent);
 
     // Letterbox bars: paint the full layer rect dark first when the content is
     // inset, so fit/contain shows bars (matching the CPU preview).
@@ -974,11 +1019,12 @@ class D3D11Compositor final : public ICompositor {
         imageFracW * rect.width,
         imageFracH * rect.height};
 
+    const auto crop = compositor::sourceCropInterval(layer.plan.sourceCropLeftPercent, layer.plan.sourceCropRightPercent);
     // Main content pass: viewport = full rendered source layer; scissor = slot.
     // This keeps source X/Y relative to the original layer, then clips the
     // result to the source box, matching a layer-based SuperSource model.
     setViewportFromRect(imageRect);
-    if (!writeLayerConstants(layer, renderPlan, layer.color, layerAlpha, 1.f, 1.f, 0.f, 0.f)) {
+    if (!writeLayerConstants(layer, renderPlan, layer.color, layerAlpha, crop.width, 1.f, crop.left, 0.f)) {
       return;
     }
 
@@ -1121,6 +1167,7 @@ class D3D11Compositor final : public ICompositor {
   // overlayRaster_.rasterOverlayTexture(). Move-only, behavior unchanged.
 
   bool uploadLayerTexture(const VideoFrame& frame) {
+    CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
     if (!frame.hasPixels()) {
       return false;
     }
@@ -1230,6 +1277,7 @@ class D3D11Compositor final : public ICompositor {
   // Uploads a frame's I420 planes into the shared Y/U/V GPU textures (recreating
   // them when the dimensions change). The YUV pixel shader then converts to RGB.
   bool uploadLayerI420Texture(const VideoFrame& frame) {
+    CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
     if (!frame.hasI420()) {
       return false;
     }
@@ -1277,6 +1325,7 @@ class D3D11Compositor final : public ICompositor {
   // the frame has no stable source identity (or the GPU resources fail) — the
   // caller then falls back to the shared scratch upload path.
   SourceTex* acquireSourceTex(const VideoFrame& frame) {
+    CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
     const bool isI420 = frame.hasI420();
     if (frame.participantId.empty() || (!isI420 && !frame.hasPixels())) {
       return nullptr;
@@ -1348,6 +1397,7 @@ class D3D11Compositor final : public ICompositor {
       return false;
     }
     auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
+    *constants = {};
     constants->color[0] = constants->color[1] = constants->color[2] = constants->color[3] = 1.f;
     constants->exposure = grade.exposure * 0.1f;
     constants->contrast = grade.contrast * 0.1f;
@@ -1504,6 +1554,7 @@ class D3D11Compositor final : public ICompositor {
     if (!device_ || !context_) {
       return;
     }
+    const auto profileStart = stageProfileEnabled_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     for (const auto& f : frames) {
       if (f.participantId.empty() || !frameHasContent(f)) {
         continue;
@@ -1570,26 +1621,33 @@ class D3D11Compositor final : public ICompositor {
         // mutual exclusion (a consumer mid-copy holds the mutex, so the reclaim just fails that
         // tick and we skip the upload), so there is no tearing. Non-blocking (0ms) throughout, so
         // the render thread never stalls.
-        HRESULT acquire = pt.mutex->AcquireSync(0, 0);
-        if (acquire != S_OK) {
-          acquire = pt.mutex->AcquireSync(1, 0);
+        HRESULT acquire;
+        {
+          CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantAcquire]);
+          acquire = pt.mutex->AcquireSync(0, 0);
+          if (acquire != S_OK) acquire = pt.mutex->AcquireSync(1, 0);
         }
+        if (stageProfileEnabled_ && acquire != S_OK) ++stageProfileAcquireBusy_;
         if (acquire == S_OK) {
           bool uploaded = false;
           if (useI420) {
+            CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantConvert]);
             uploaded = renderI420ToParticipantTexture(f, pt, width, height, grade);
           } else if (gradeIsIdentity(grade)) {
+            CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantCopy]);
             // Fast path for the common ungraded source: a straight BGRA copy, no
             // shader pass (preserves the perf note above — no per-tick convert cost).
             context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
                                         static_cast<UINT>(f.pixelStride), 0);
             uploaded = true;
           } else {
+            CpuStageScope timing(stageProfileEnabled_, stageProfileNs_[ParticipantConvert]);
             // Graded BGRA source: render through the textured grade shader so the
             // export carries the same look the program applies to this source.
             uploaded = renderBgraToParticipantTexture(f, pt, width, height, grade);
           }
           pt.mutex->ReleaseSync(1);
+          if (stageProfileEnabled_ && !uploaded) ++stageProfileUploadFailures_;
           if (uploaded) {
             pt.lastFrameId = f.frameId;
             pt.lastGrade = grade;
@@ -1614,6 +1672,13 @@ class D3D11Compositor final : public ICompositor {
         }
       }
       it = present ? std::next(it) : participantTextures_.erase(it);
+    }
+    if (stageProfileEnabled_) {
+      const auto total = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - profileStart).count();
+      stageProfileNs_[ParticipantTotal] += total;
+      stageProfileParticipantMaxNs_ = std::max(stageProfileParticipantMaxNs_, static_cast<long long>(total));
+      ++stageProfileParticipantCalls_;
+      logStageProfile();
     }
   }
 
@@ -2043,6 +2108,7 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
     auto* c = static_cast<LayerShaderConstants*>(mapped.pData);
+    *c = {};
     c->color[0] = c->color[1] = c->color[2] = c->color[3] = 1.f;
     c->exposure = c->contrast = c->saturation = c->temperature = 0.f;
     c->uvScale[0] = c->uvScale[1] = 1.f;
@@ -2141,7 +2207,7 @@ class D3D11Compositor final : public ICompositor {
                                                nullptr, vcamPsY2_.put())) ||
         FAILED(vcamDevice2_->CreatePixelShader(psUvBlob->GetBufferPointer(), psUvBlob->GetBufferSize(),
                                                nullptr, vcamPsUV2_.put()))) {
-      std::fprintf(stderr, "[vcam-tap] NV12 shader build failed: %s\n", shaderError.c_str());
+      ::corevideo::core::nativeLogf("[vcam-tap] NV12 shader build failed: %s\n", shaderError.c_str());
       stopVcamTap();
       return false;
     }
@@ -2185,8 +2251,7 @@ class D3D11Compositor final : public ICompositor {
     }
     vcamTapStop_.store(false, std::memory_order_release);
     vcamThread_ = std::thread([this] { vcamTapLoop(); });
-    std::fprintf(stderr,
-                 "[vcam-tap] rig built OK %dx%d (device2 + shared%s + GPU NV12 targets + stagings + thread)\n",
+    ::corevideo::core::nativeLogf("[vcam-tap] rig built OK %dx%d (device2 + shared%s + GPU NV12 targets + stagings + thread)\n",
                  width, height, vcamUseLocalCopy2_ ? " via local copy" : " direct SRV");
     return true;
   }
@@ -2314,7 +2379,7 @@ class D3D11Compositor final : public ICompositor {
       } else if (!vcamTapErrorLogged_) {
         // Device removed / driver reset / TDR: skip frames (never crash, never
         // spin - the CV wait above still paces the loop); log ONCE per rig.
-        std::fprintf(stderr, "[vcam-tap] GPU NV12 staging Map failed; skipping frames\n");
+        ::corevideo::core::nativeLogf("[vcam-tap] GPU NV12 staging Map failed; skipping frames\n");
         vcamTapErrorLogged_ = true;
       }
     }
@@ -2395,6 +2460,7 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Device> device_;
   ComPtrLite<ID3D11DeviceContext> context_;
   ComPtrLite<ID3D11VertexShader> vertexShader_;
+  bool tilesEffectsAvailable_ = true;
   ComPtrLite<ID3D11PixelShader> pixelShader_;
   ComPtrLite<ID3D11PixelShader> texturedPixelShader_;
   ComPtrLite<ID3D11PixelShader> yuvPixelShader_;
@@ -2532,6 +2598,44 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<IDXGIKeyedMutex> retainedProgramKey_;
   ComPtrLite<ID3D11ShaderResourceView> retainedProgramView_;
   bool retainedProgramCopied_ = false;
+  enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantTotal,
+                      MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };
+  const bool stageProfileEnabled_ = [] {
+    const char* value = std::getenv("COREVIDEO_D3D_STAGE_PROFILE");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  bool profileMvActive_ = false;
+  std::array<long long, ProfileStageCount> stageProfileNs_{};
+  std::uint64_t stageProfileParticipantCalls_ = 0, stageProfileMvCalls_ = 0;
+  std::uint64_t stageProfileAcquireBusy_ = 0, stageProfileUploadFailures_ = 0;
+  long long stageProfileParticipantMaxNs_ = 0, stageProfileMvMaxNs_ = 0;
+  std::chrono::steady_clock::time_point stageProfileLastLog_{};
+  void logStageProfile() {
+    const auto now = std::chrono::steady_clock::now();
+    if (stageProfileLastLog_.time_since_epoch().count() == 0) { stageProfileLastLog_ = now; return; }
+    if (now - stageProfileLastLog_ < std::chrono::seconds(2)) return;
+    const double seconds = std::chrono::duration<double>(now - stageProfileLastLog_).count();
+    const auto avg = [&](ProfileStage stage, std::uint64_t calls) {
+      return calls ? static_cast<double>(stageProfileNs_[stage]) / (1e6 * calls) : 0.0;
+    };
+    ::corevideo::core::nativeLogf(
+        "[d3d-stage-cpu] window_s=%.3f participant_calls=%llu participant_avg_ms=%.3f participant_max_ms=%.3f "
+        "participant_acquire_avg_ms=%.3f participant_upload_convert_avg_ms=%.3f participant_bgra_copy_avg_ms=%.3f "
+        "participant_acquire_busy=%llu participant_upload_failures=%llu mv_calls=%llu mv_avg_ms=%.3f mv_max_ms=%.3f "
+        "mv_upload_avg_ms=%.3f mv_draw_excluding_upload_avg_ms=%.3f mv_share_avg_ms=%.3f gpu_completion_measured=0\n",
+        seconds, static_cast<unsigned long long>(stageProfileParticipantCalls_),
+        avg(ParticipantTotal, stageProfileParticipantCalls_), stageProfileParticipantMaxNs_ / 1e6,
+        avg(ParticipantAcquire, stageProfileParticipantCalls_), avg(ParticipantConvert, stageProfileParticipantCalls_),
+        avg(ParticipantCopy, stageProfileParticipantCalls_), static_cast<unsigned long long>(stageProfileAcquireBusy_),
+        static_cast<unsigned long long>(stageProfileUploadFailures_), static_cast<unsigned long long>(stageProfileMvCalls_),
+        avg(MvTotal, stageProfileMvCalls_), stageProfileMvMaxNs_ / 1e6,
+        avg(MvUpload, stageProfileMvCalls_), avg(MvDraw, stageProfileMvCalls_), avg(MvShare, stageProfileMvCalls_));
+    stageProfileNs_.fill(0);
+    stageProfileParticipantCalls_ = stageProfileMvCalls_ = 0;
+    stageProfileAcquireBusy_ = stageProfileUploadFailures_ = 0;
+    stageProfileParticipantMaxNs_ = stageProfileMvMaxNs_ = 0;
+    stageProfileLastLog_ = now;
+  }
   std::chrono::steady_clock::time_point lastSlowProgramLog_{};
   uint64_t slowProgramFrames_ = 0;
   long long worstSlowProgramUs_ = 0;

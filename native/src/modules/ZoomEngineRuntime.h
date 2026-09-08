@@ -65,6 +65,11 @@ class ZoomEngineRuntime {
   void applyEngineEventForTest(const ZoomEngineEvent& event);
 
  private:
+  friend struct ZoomEngineRuntimeTestAccess;
+  // Terminal lifecycle transition, serialized with incoming events and worker creation.
+  void beginShutdown();
+  bool shuttingDown_ = false;  // guarded by mutex_
+
   struct Config {
     std::string executablePath;
     std::string sdkJwt;
@@ -116,6 +121,8 @@ class ZoomEngineRuntime {
   void ingestAudioEventLocked(const ZoomEngineEvent& event);
   bool ensureMediaStartedLocked();
   void applyJoinCredentialsFromPayload(const rpc::Json& payload);
+  // Requires mutex_. Reject all late events until a fresh helper is installed.
+  void retireTimedOutJoinLocked(const char* stage, const char* message);
   [[nodiscard]] double runtimeElapsedMs() const;
 
   Config config_;
@@ -281,11 +288,17 @@ class ZoomEngineRuntime {
     bool lumaRangeProbed = false;
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
+  std::uint64_t staleVideoPublications_ = 0;
+  std::uint64_t videoPublishedSinceLog_ = 0;
+  std::chrono::steady_clock::time_point videoPublishLogStamp_ = std::chrono::steady_clock::now();
   // Three-phase video drain (audio-starvation fix: frame copies + thumbnail
   // conversion must NEVER run under mutex_ - they blocked the audio poll and
   // halved the worker tick rate). Peek/publish lock briefly; snapshot runs
   // unlocked on seqlock-protected regions.
-  void drainVideoStreamsThreePhase();
+  // Private hooks let tests deterministically interleave stream replacement at
+  // either unlocked boundary; production callers supply neither hook.
+  void drainVideoStreamsThreePhase(const std::function<void()>& afterCapture = {},
+                                  const std::function<void()>& beforePublish = {});
   // Dedicated ingest thread: runs the three phases on its OWN ~120Hz cadence
   // so neither the render tick nor the audio worker ever carries pixel work
   // (run-15: phase 2 inside the render tick collapsed the audio worker to

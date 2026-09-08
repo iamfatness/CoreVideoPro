@@ -288,6 +288,18 @@ uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
     mixHash(hash, layer.borderStyle);
     mixHash(hash, layer.borderColor);
     mixHash(hash, layer.borderThickness);
+    const auto& decoration = layer.tilesDecoration;
+    mixHash(hash, decoration.enabled ? 1 : 0);
+    mixHash(hash, decoration.glowPass ? 1 : 0);
+    mixHash(hash, decoration.borderWidth);
+    mixHash(hash, decoration.radius);
+    mixHash(hash, decoration.borderColor);
+    mixHash(hash, decoration.glowSize);
+    mixHash(hash, decoration.glowIntensity);
+    mixHash(hash, decoration.glowSoftness);
+    mixHash(hash, decoration.glowColor);
+    mixHash(hash, layer.sourceCropLeftPercent);
+    mixHash(hash, layer.sourceCropRightPercent);
     mixHash(hash, layer.sourceScale);
     mixHash(hash, layer.sourceOffsetX);
     mixHash(hash, layer.sourceOffsetY);
@@ -440,7 +452,7 @@ void fillSyntheticProgramFramePreview(
           layer.fitMode,
           layer.sourceScale,
           layer.sourceOffsetX,
-          layer.sourceOffsetY);
+          layer.sourceOffsetY, layer.sourceCropLeftPercent, layer.sourceCropRightPercent);
 
       // Map the framing (computed in aspectRect units) back into the layer's
       // normalized dest rect. contentX/Y/W/H are fractions of aspectRect, which
@@ -475,7 +487,8 @@ void fillSyntheticProgramFramePreview(
         // layer instead of an intermediate crop.
         const CompositorLayerRect imageRect{imageX, imageY, imageW, imageH};
         const CompositorLayerRect clipRect{rect.x, rect.y, rect.width, rect.height};
-        blitVideoFrameLayerClipped(preview, *frameForLayer, imageRect, clipRect, layerOpacity);
+        const auto crop = compositor::sourceCropInterval(layer.sourceCropLeftPercent, layer.sourceCropRightPercent);
+        blitVideoFrameLayerClipped(preview, *frameForLayer, imageRect, clipRect, layerOpacity, crop.left, crop.width);
       } else {
         // The synthetic fill has no texture detail to pan, so draw the resolved
         // visible source rectangle directly. This still shows scale-out
@@ -694,7 +707,7 @@ bool blitVideoFrameLayerClipped(
     const VideoFrame& frame,
     const CompositorLayerRect& imageRect,
     const CompositorLayerRect& clipRect,
-    float opacity) {
+    float opacity, float cropLeft, float cropWidth) {
   if (!frame.hasPixels() || preview.width <= 0 || preview.height <= 0 || preview.bgra.empty() || opacity <= 0.f) {
     return false;
   }
@@ -729,7 +742,7 @@ bool blitVideoFrameLayerClipped(
     const auto* sourceRow = source + static_cast<size_t>(sampleY) * static_cast<size_t>(sourceStride);
     for (int px = left; px < right; ++px) {
       const float ut = std::clamp((static_cast<float>(px) + 0.5f - imageLeft) / imageWidth, 0.f, 1.f);
-      const int sampleX = std::min(sourceWidth - 1, static_cast<int>(ut * static_cast<float>(sourceWidth)));
+      const int sampleX = std::min(sourceWidth - 1, static_cast<int>((cropLeft + ut * cropWidth) * static_cast<float>(sourceWidth)));
       const auto* pixel = sourceRow + static_cast<size_t>(sampleX) * 4u;
       const uint32_t bgra = (static_cast<uint32_t>(pixel[3]) << 24) |
                             (static_cast<uint32_t>(pixel[2]) << 16) |

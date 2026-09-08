@@ -1,7 +1,9 @@
+#include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
 #include "compositor/TilesLayout.h"
+#include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
@@ -454,7 +456,7 @@ rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId,
 }
 
 rpc::Json MediaCore::disconnectCaptureDevice(const std::string& deviceId) {
-  std::fprintf(stderr, "[lifecycle] disconnect capture %s\n", deviceId.c_str());
+  ::corevideo::core::nativeLogf("[lifecycle] disconnect capture %s\n", deviceId.c_str());
   return captureDeviceArray(modules_.captureDevice->disconnect(deviceId));
 }
 
@@ -698,6 +700,12 @@ rpc::Json MediaCore::sessionState() const {
       {"displayBusy", static_cast<double>(buffer.displayBusy)},
       {"outputSequenceGaps", static_cast<double>(bufferedOutputSequenceGaps_.load())},
       {"displayPresentationVerified", false}, {"destinationCompletionVerified", false}});
+  const auto logStats = nativeLogStats();
+  state.emplace("nativeDiagnostics", rpc::Json::Object{
+      {"logDropped", static_cast<double>(logStats.dropped)},
+      {"logTruncated", static_cast<double>(logStats.truncated)},
+      {"logSinkFailures", static_cast<double>(logStats.sinkFailures)},
+      {"logQueued", static_cast<double>(logStats.queued)}});
   const auto zoomCapture = zoomSnapshot();
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
@@ -805,7 +813,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
   // and the real-engine paths (the multiview lives in MediaCore, not the Zoom runtime).
   if (const rpc::Json* multiview = payload.get("multiview"); multiview && multiview->isObject()) {
     if (applyMultiviewLayout(*multiview)) {
-      std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources (spine)\n",
+      ::corevideo::core::nativeLogf("[multiview] set-multiview-layout received: %zu sources (spine)\n",
                    multiviewSources_.size());
     }
   }
@@ -817,7 +825,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
   // both the stub and the real-engine paths (the preview bus lives in MediaCore).
   if (const rpc::Json* previewScene = payload.get("previewScene"); previewScene && previewScene->isObject()) {
     if (applyPreviewScene(*previewScene)) {
-      std::fprintf(stderr, "[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
+      ::corevideo::core::nativeLogf("[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
     }
   }
 
@@ -1111,7 +1119,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
                          std::chrono::steady_clock::now() - ci0)
                          .count();
     if (cms >= 10) {
-      std::fprintf(stderr, "[cmd] '%s' %lldms\n", command.getString("type").c_str(),
+      ::corevideo::core::nativeLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
                    static_cast<long long>(cms));
     }
   }
@@ -1138,7 +1146,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   const auto renderMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRender - tCmd1).count();
   const auto stateMs = std::chrono::duration_cast<std::chrono::milliseconds>(tState - tRender).count();
   if (cmdMs + renderMs + stateMs >= 80) {
-    std::fprintf(stderr, "[applyCommands] %zu cmds=%lldms render(%dticks)=%lldms snapshot=%lldms\n",
+    ::corevideo::core::nativeLogf("[applyCommands] %zu cmds=%lldms render(%dticks)=%lldms snapshot=%lldms\n",
                  commands.size(), static_cast<long long>(cmdMs), additionalTicks,
                  static_cast<long long>(renderMs), static_cast<long long>(stateMs));
   }
@@ -1214,7 +1222,7 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setMediaPlayback(command);
   } else if (type == "set-multiview-layout") {
     setMultiviewLayout(command);
-    std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources\n",
+    ::corevideo::core::nativeLogf("[multiview] set-multiview-layout received: %zu sources\n",
                  multiviewSources_.size());
   } else if (type == "configure-multiviewer") {
     configureMultiviewer(command);
@@ -1224,19 +1232,19 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     std::string error;
     (void)addBrowserSource(command, error);
     if (!error.empty()) {
-      std::fprintf(stderr, "[browser] browser-add REJECTED: %s\n", error.c_str());
+      ::corevideo::core::nativeLogf("[browser] browser-add REJECTED: %s\n", error.c_str());
     }
   } else if (type == "browser-remove") {
     std::string error;
     (void)removeBrowserSource(command.getString("browserId"), error);
     if (!error.empty()) {
-      std::fprintf(stderr, "[browser] browser-remove REJECTED: %s\n", error.c_str());
+      ::corevideo::core::nativeLogf("[browser] browser-remove REJECTED: %s\n", error.c_str());
     }
   } else if (type == "browser-reload") {
     std::string error;
     (void)reloadBrowserSource(command.getString("browserId"), error);
     if (!error.empty()) {
-      std::fprintf(stderr, "[browser] browser-reload REJECTED: %s\n", error.c_str());
+      ::corevideo::core::nativeLogf("[browser] browser-reload REJECTED: %s\n", error.c_str());
     }
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
@@ -1506,6 +1514,13 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
   tiles.present = true;
   tiles.layerId = node.getString("layerId");
   tiles.order = static_cast<int>(node.getNumber("order", 0.0));
+  if (const auto* style = node.get("style"); style && style->isObject()) {
+    tiles.style.manualFill = style->getString("fillMode", "auto") == "manual";
+    tiles.style.backgroundSourceId = style->getString("backgroundSourceId");
+    tiles.style.animateLayout = style->get("animateLayout") && style->get("animateLayout")->asBool();
+    const double duration = style->getNumber("animationDurationMs", 350.0);
+    tiles.style.animationDurationMs = static_cast<int>(std::isfinite(duration) ? std::clamp(duration, 100.0, 2000.0) : 350.0);
+  }
   if (const rpc::Json* rect = node.get("rect"); rect && rect->isObject()) {
     tiles.rect = {static_cast<float>(rect->getNumber("x", 0.0)),
                   static_cast<float>(rect->getNumber("y", 0.0)),
@@ -1515,8 +1530,9 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
   if (const rpc::Json* members = node.get("members"); members && members->isArray()) {
     int memberIndex = 0;
     for (const auto& member : members->asArray()) {
+      if (tiles.members.size() >= 64) break;
       const std::string id = member.asString();
-      if (!id.empty()) {
+      if (!id.empty() || (tiles.style.manualFill && member.isString())) {
         tiles.members.push_back(id);
       } else if (!member.isString()) {
         warnings->push_back("Tiles layer member " + std::to_string(memberIndex) +
@@ -1530,6 +1546,20 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
   }
   if (const rpc::Json* style = node.get("style"); style && style->isObject()) {
     bool aspectFellBack = false;
+    auto& decoration = tiles.style.decoration;
+    decoration.enabled = true;
+    const auto bounded = [&](const char* key, double fallback, double maximum) {
+      const double value = style->getNumber(key, fallback);
+      return static_cast<float>(std::isfinite(value) ? std::clamp(value, 0.0, maximum) : fallback);
+    };
+    decoration.borderWidth = bounded("borderThickness", 0.0, 64.0);
+    decoration.radius = style->getString("borderShape", "square") == "rounded"
+        ? bounded("cornerRadius", 16.0, 128.0) : 0.f;
+    decoration.borderColor = style->getString("borderColor", "#000000");
+    decoration.glowColor = style->getString("glowColor", "#FFFFFF");
+    decoration.glowSize = bounded("glowSize", 0.0, 128.0);
+    decoration.glowIntensity = bounded("glowIntensity", 100.0, 100.0) / 100.f;
+    decoration.glowSoftness = bounded("glowSoftness", 0.0, 100.0) / 100.f;
     tiles.style.tileAspect = normalizeTileAspect(style->getString("tileAspect"), &aspectFellBack);
     if (aspectFellBack) {
       warnings->push_back("Tiles layer requested an unknown tile aspect; using 16:9.");
@@ -1540,6 +1570,35 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
     const std::string background = style->getString("backgroundColor");
     if (!background.empty()) {
       tiles.style.backgroundColor = background;
+    }
+  }
+  if (const auto* overrides = node.get("overrides"); overrides && overrides->isObject()) {
+    for (const auto& [id, value] : overrides->asObject()) {
+      if (tiles.overrides.size() >= 64) break;
+      if (id.empty() || !value.isObject()) continue;
+      TilesMemberOverride item;
+      if (const auto* rect = value.get("rect"); rect && rect->isObject()) {
+        const double x = rect->getNumber("x"), y = rect->getNumber("y");
+        const double w = rect->getNumber("w"), h = rect->getNumber("h");
+        if (std::isfinite(x) && std::isfinite(y) && std::isfinite(w) && std::isfinite(h) &&
+            x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= 1.000001 && y + h <= 1.000001) {
+          item.hasRect = true;
+          item.rect = {static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h)};
+        }
+      }
+      const double left = value.getNumber("cropLeftPercent"), right = value.getNumber("cropRightPercent");
+      const double safeLeft = std::isfinite(left) ? std::max(0.0, left) : 0.0;
+      const double safeRight = std::isfinite(right) ? std::max(0.0, right) : 0.0;
+      const double largest = std::max(safeLeft, safeRight);
+      const double ratioSum = largest > 0 ? safeLeft / largest + safeRight / largest : 0;
+      const double scale = largest > 0 && largest > 90.0 / ratioSum ? (90.0 / largest) / ratioSum : 1.0;
+      item.cropLeftPercent = static_cast<float>(safeLeft * scale);
+      item.cropRightPercent = static_cast<float>(safeRight * scale);
+      if (const auto* z = value.get("z"); z && z->isNumber() && std::isfinite(z->asNumber())) {
+        item.hasZ = true;
+        item.z = static_cast<int>(std::clamp(z->asNumber(), 0.0, 63.0));
+      }
+      tiles.overrides.emplace(id, item);
     }
   }
   return tiles;
@@ -1888,8 +1947,7 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
       incomingSessionId == recordingSessionId_) {
     static std::map<std::string, std::int64_t> s_dedupLogCount;
     if (s_dedupLogCount[incomingSessionId]++ == 0) {
-      std::fprintf(stderr,
-                   "[recording] start-recording-session '%s' repeated while already "
+      ::corevideo::core::nativeLogf("[recording] start-recording-session '%s' repeated while already "
                    "recording — deduped (the writer keeps its session)\n",
                    incomingSessionId.c_str());
     }
@@ -2131,7 +2189,7 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     if (const auto* v = mastering->get("glueBandMidDb")) params.glueBandMidDb = v->asNumber();
     if (const auto* v = mastering->get("glueBandHighDb")) params.glueBandHighDb = v->asNumber();
     if (params.enabled != masteringParams_.enabled || params.targetLufs != masteringParams_.targetLufs) {
-      std::fprintf(stderr, "[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
+      ::corevideo::core::nativeLogf("[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
                    params.enabled ? 1 : 0, params.targetLufs, params.ceilingDbfs, params.glueAmount,
                    params.maxRideDb);
     }
@@ -2249,12 +2307,12 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   if (on && !virtualCameraEnabled_) {
     virtualCamera_->start(width, height, fps);
     virtualCameraEnabled_ = true;
-    std::fprintf(stderr, "[virtualcam] enable requested %dx%d@%d mirror=%d\n", width, height, fps,
+    ::corevideo::core::nativeLogf("[virtualcam] enable requested %dx%d@%d mirror=%d\n", width, height, fps,
                  mirror ? 1 : 0);
   } else if (!on && virtualCameraEnabled_) {
     virtualCamera_->stop();
     virtualCameraEnabled_ = false;
-    std::fprintf(stderr, "[virtualcam] disable requested\n");
+    ::corevideo::core::nativeLogf("[virtualcam] disable requested\n");
   }
 }
 
@@ -2283,7 +2341,7 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   audioMonitorWarning_.clear();
   // Click-hunt: the operator toggle state was not reaching the adapter -
   // log exactly what each sync carries so UI-vs-core disagreements are visible.
-  std::fprintf(stderr, "[monitor] sync: enabled=%d device=%s volume=%.2f\n",
+  ::corevideo::core::nativeLogf("[monitor] sync: enabled=%d device=%s volume=%.2f\n",
                audioMonitorEnabled_ ? 1 : 0, audioMonitorDeviceName_.c_str(), audioMonitorVolume_);
 
   if (!audioMonitorEnabled_) {
@@ -2862,6 +2920,20 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
                std::to_string(tiles.rect.height) + ":" + tiles.style.tileAspect + ":" +
                std::to_string(tiles.style.gutterPercent) + "," + std::to_string(tiles.style.marginPercent) +
                "," + std::to_string(tiles.style.customAspectRatio) + ":" + tiles.style.backgroundColor + ":";
+  const auto& decoration = tiles.style.decoration;
+  signature += std::string(tiles.style.manualFill ? "manual:" : "auto:") +
+      (tiles.style.animateLayout ? "animate:" : "static:") + std::to_string(tiles.style.animationDurationMs) + ":";
+  signature += tiles.style.backgroundSourceId + ":";
+  for (const auto& [id, item] : tiles.overrides) {
+    signature += id + ":" + std::to_string(item.hasRect) + ":" + std::to_string(item.rect.x) + ":" +
+        std::to_string(item.rect.y) + ":" + std::to_string(item.rect.width) + ":" + std::to_string(item.rect.height) + ":" +
+        std::to_string(item.cropLeftPercent) + ":" + std::to_string(item.cropRightPercent) + ":" +
+        std::to_string(item.hasZ) + ":" + std::to_string(item.z) + ";";
+  }
+  signature += "decoration:" + std::to_string(decoration.borderWidth) + ":" +
+      std::to_string(decoration.radius) + ":" + decoration.borderColor + ":" +
+      std::to_string(decoration.glowSize) + ":" + std::to_string(decoration.glowIntensity) + ":" +
+      std::to_string(decoration.glowSoftness) + ":" + decoration.glowColor + ":";
   for (const auto& member : tiles.members) {
     signature += member + ",";
   }
@@ -2974,8 +3046,11 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       marker.borderStyle = "none";
       renderPlan.layers.push_back(std::move(marker));
     } else {
-    const auto programPlan = buildCompositorRenderPlan(videoFrames);
+    auto programPlan = buildCompositorRenderPlan(videoFrames);
+    programTilesAnimation_.applyLatest(programPlan, sceneId_ + ":" + tilesLayer_.layerId);
     renderPlan.layers.reserve(programPlan.layers.size() + static_cast<size_t>(sourceCount) + 1);
+    std::stable_sort(programPlan.layers.begin(), programPlan.layers.end(),
+        [](const auto& a, const auto& b) { return a.order < b.order; });
     for (const auto& src : programPlan.layers) {
       modules::CompositorRenderPlanLayer layer = src;
       layer.layerId = "multiview-pgm:" + src.layerId;
@@ -2986,6 +3061,11 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
           src.rect.height * pgmRect.height};
       layer.hasClipRect = true;
       layer.clipRect = {pgmRect.x, pgmRect.y, pgmRect.width, pgmRect.height};
+      const float decorationScale = std::min(pgmRect.width * mvCanvasW / std::max(1, outputWidth_),
+                                              pgmRect.height * mvCanvasH / std::max(1, outputHeight_));
+      layer.tilesDecoration.borderWidth *= decorationScale;
+      layer.tilesDecoration.radius *= decorationScale;
+      layer.tilesDecoration.glowSize *= decorationScale;
       layer.order = order++;
       layer.borderStyle = "none";
       layer.borderThickness = 0.f;
@@ -3002,7 +3082,10 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     // fallback drew multiviewSources_.front(), a fixed first-source feed that
     // never reflected the preview and never swapped on Take.)
     if (hasPreviewScene()) {
-      const auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
+      std::stable_sort(previewPlan.layers.begin(), previewPlan.layers.end(),
+          [](const auto& a, const auto& b) { return a.order < b.order; });
       for (const auto& src : previewPlan.layers) {
         modules::CompositorRenderPlanLayer layer = src;
         layer.layerId = "multiview-pvw:" + src.layerId;
@@ -3013,6 +3096,11 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
             src.rect.height * pvwRect.height};
         layer.hasClipRect = true;
         layer.clipRect = {pvwRect.x, pvwRect.y, pvwRect.width, pvwRect.height};
+        const float decorationScale = std::min(pvwRect.width * mvCanvasW / std::max(1, outputWidth_),
+                                                pvwRect.height * mvCanvasH / std::max(1, outputHeight_));
+        layer.tilesDecoration.borderWidth *= decorationScale;
+        layer.tilesDecoration.radius *= decorationScale;
+        layer.tilesDecoration.glowSize *= decorationScale;
         layer.order = order++;
         layer.borderStyle = "none";
         layer.borderThickness = 0.f;
@@ -4678,7 +4766,23 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     renderPlan.layers.push_back(std::move(background));
     }
 
+    // A live background feed is drawn under tiles. An unavailable source leaves
+    // the solid/scene background intact; it must never trigger fallback guests.
+    if (!wall.style.backgroundSourceId.empty() && wall.style.backgroundSourceId != wall.layerId &&
+        !compositor::admitTilesMembers({wall.style.backgroundSourceId}, tilesMemberFrameAges_).empty()) {
+      modules::CompositorRenderPlanLayer background;
+      background.layerId = "tiles-source-bg:" + wall.layerId;
+      background.kind = "participant-video";
+      background.sourceId = wall.style.backgroundSourceId;
+      background.participantId = background.sourceId.rfind("zoom:", 0) == 0 ? background.sourceId.substr(5) : background.sourceId;
+      background.rect = wall.rect;
+      background.order = tilesBaseOrder;
+      background.fitMode = "fill";
+      renderPlan.layers.push_back(std::move(background));
+    }
     const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
+    const auto& slots = wall.style.manualFill ? wall.members : admitted;
+    std::unordered_set<std::string> drawn;
     if (!admitted.empty()) {
       const double canvasAspect = outputHeight_ > 0
           ? static_cast<double>(outputWidth_) / static_cast<double>(outputHeight_)
@@ -4692,33 +4796,78 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       const double wallAspect = wall.rect.height > 0.f
           ? canvasAspect * static_cast<double>(wall.rect.width) / static_cast<double>(wall.rect.height)
           : canvasAspect;
-      const auto rects = compositor::solveTilesLayout(
-          static_cast<int>(admitted.size()), wallAspect, wall.style.tileAspect,
+      std::vector<compositor::LayerRect> pinned;
+      size_t gridCount = slots.size();
+      for (const auto& id : slots) {
+        if (const auto found = wall.overrides.find(id); found != wall.overrides.end() && found->second.hasRect) {
+          const auto& r = found->second.rect;
+          pinned.push_back({r.x, r.y, r.width, r.height});
+          --gridCount;
+        }
+      }
+      const auto freeRect = compositor::tilesLargestFreeRect(pinned);
+      const double freeAspect = freeRect.height > 0.f ? wallAspect * freeRect.width / freeRect.height : wallAspect;
+      const auto gridRects = compositor::solveTilesLayout(
+          static_cast<int>(gridCount), freeAspect, wall.style.tileAspect,
           wall.style.customAspectRatio, wall.style.gutterPercent,
           wall.style.marginPercent);
-
-      for (size_t index = 0; index < admitted.size() && index < rects.size(); ++index) {
+      size_t gridIndex = 0;
+      for (size_t index = 0; index < slots.size(); ++index) {
+        const auto item = wall.overrides.find(slots[index]);
+        const bool isPinned = item != wall.overrides.end() && item->second.hasRect;
+        compositor::LayerRect tileRect;
+        if (isPinned) {
+          const auto& r = item->second.rect;
+          tileRect = {r.x, r.y, r.width, r.height};
+        } else {
+          if (gridIndex >= gridRects.size()) continue;
+          const auto& r = gridRects[gridIndex++];
+          tileRect = {freeRect.x + r.x * freeRect.width, freeRect.y + r.y * freeRect.height,
+                      r.width * freeRect.width, r.height * freeRect.height};
+          if (tileRect.width <= 0.f || tileRect.height <= 0.f) continue;
+        }
+        if (slots[index].empty() || std::find(admitted.begin(), admitted.end(), slots[index]) == admitted.end() ||
+            !drawn.insert(slots[index]).second) continue;
         modules::CompositorRenderPlanLayer layer;
-        layer.layerId = "tile:" + admitted[index];
+        layer.layerId = "tile:" + slots[index];
         layer.kind = "participant-video";
-        layer.sourceId = admitted[index];
+        layer.sourceId = slots[index];
         // Tile rects are solved in the WALL's own normalized space; map them
         // into canvas space so a wall can occupy part of the canvas beside
         // other layers (wall.rect defaults to the full canvas).
-        layer.rect = {wall.rect.x + rects[index].x * wall.rect.width,
-                      wall.rect.y + rects[index].y * wall.rect.height,
-                      rects[index].width * wall.rect.width,
-                      rects[index].height * wall.rect.height};
+        layer.rect = {wall.rect.x + tileRect.x * wall.rect.width,
+                      wall.rect.y + tileRect.y * wall.rect.height,
+                      tileRect.width * wall.rect.width,
+                      tileRect.height * wall.rect.height};
         layer.order = tilesBaseOrder + 1 + static_cast<int>(index);
         // Fill, never letterbox — keeps a wall of mixed-aspect cameras even;
         // a tile narrower than its camera crops the sides instead of adding bars.
         layer.fitMode = "fill";
-        // Tiles carry NO border in this task. Scene borders composite into
-        // PROGRAM, and PROGRAM is inherited by the virtual camera, every
-        // recording, and every stream — a border here puts chrome on air.
-        // Styling arrives in a later task deliberately.
+        // Generic scene-border strokes stay disabled: Tiles uses its dedicated
+        // canvas-pixel decoration for inset border, rounded mask, and glow.
         layer.borderStyle = "none";
         layer.borderThickness = 0.f;
+        int tileOrder = static_cast<int>(index);
+        if (const auto found = wall.overrides.find(slots[index]); found != wall.overrides.end()) {
+          const auto& item = found->second;
+          if (item.hasRect) layer.rect = {wall.rect.x + item.rect.x * wall.rect.width,
+              wall.rect.y + item.rect.y * wall.rect.height, item.rect.width * wall.rect.width, item.rect.height * wall.rect.height};
+          layer.sourceCropLeftPercent = item.cropLeftPercent;
+          layer.sourceCropRightPercent = item.cropRightPercent;
+          if (item.hasZ) tileOrder = item.z;
+        }
+        layer.order = tilesBaseOrder + 1 + tileOrder;
+        layer.tilesDecoration = wall.style.decoration;
+        if (layer.tilesDecoration.glowSize > 0.f && layer.tilesDecoration.glowIntensity > 0.f) {
+          auto glow = layer;
+          glow.layerId = "tiles-glow:" + slots[index];
+          glow.kind = "tiles-glow";
+          glow.sourceId.clear();
+          glow.tilesDecoration.glowPass = true;
+          glow.order = tilesBaseOrder + 1 + tileOrder;
+          layer.order = tilesBaseOrder + 65 + tileOrder;
+          renderPlan.layers.push_back(std::move(glow));
+        }
         // Task 4 review fix (C1): strip ONLY a leading "zoom:" — capture:/
         // browser: members keep their FULL scheme-qualified id as
         // participantId, matching how the route path builds it
@@ -4732,10 +4881,10 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         // drawing a permanent solid placeholder — and silently, because
         // warnUnmatchedCaptureLayer only fires for keys starting "capture:"/
         // "media:", and "dev-1" starts with neither.
-        if (admitted[index].rfind("zoom:", 0) == 0) {
-          layer.participantId = admitted[index].substr(5);
+        if (slots[index].rfind("zoom:", 0) == 0) {
+          layer.participantId = slots[index].substr(5);
         } else {
-          layer.participantId = admitted[index];
+          layer.participantId = slots[index];
         }
         renderPlan.layers.push_back(std::move(layer));
       }
@@ -4860,7 +5009,7 @@ void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnch
   if (++s_displayTickCount % 120 == 0) {
     const auto now = std::chrono::steady_clock::now();
     const double sec = std::chrono::duration<double>(now - s_displayTickStamp).count();
-    std::fprintf(stderr, "[render] displayTick #%lld %.1f fps (content render rate)\n",
+    ::corevideo::core::nativeLogf("[render] displayTick #%lld %.1f fps (content render rate)\n",
                  static_cast<long long>(s_displayTickCount), sec > 0.0 ? 120.0 / sec : 0.0);
     s_displayTickStamp = now;
   }
@@ -5049,8 +5198,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // rest of this tick — no pixel work. Covers members of EITHER bus's wall
   // (sourceIds are globally unique, so one combined pass is cheaper and
   // simpler than computing it twice).
-  const bool anyWallActive = (tilesLayer_.present && !tilesLayer_.members.empty()) ||
-                             (previewTilesLayer_.present && !previewTilesLayer_.members.empty());
+  const bool anyWallActive = tilesLayer_.present || previewTilesLayer_.present;
   if (anyWallActive) {
     std::vector<std::string> combinedMembers;
     std::unordered_set<std::string> seenMembers;
@@ -5064,6 +5212,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       if (seenMembers.insert(member).second) {
         combinedMembers.push_back(member);
       }
+    }
+    for (const auto* wall : {&tilesLayer_, &previewTilesLayer_}) {
+      if (wall->present && !wall->style.backgroundSourceId.empty() && seenMembers.insert(wall->style.backgroundSourceId).second)
+        combinedMembers.push_back(wall->style.backgroundSourceId);
     }
     tilesMemberFrameAges_.clear();
     tilesMemberFrameAges_.reserve(combinedMembers.size());
@@ -5128,6 +5280,19 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
 
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  const double animationNowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+  programTilesAnimation_.advance(renderPlan, sceneId_ + ":" + tilesLayer_.layerId,
+      tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
+  // Advance Preview on this same render clock even when its wall is empty.
+  // Snapshot/prefetch builds must not change entry/departure animation state.
+  if (previewTilesLayer_.present && previewTilesLayer_.style.animateLayout && hasPreviewScene()) {
+    auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
+    previewTilesAnimation_.advance(previewAnimationPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId,
+        true, previewTilesLayer_.style.animateLayout, previewTilesLayer_.style.animationDurationMs, animationNowMs);
+  } else {
+    previewTilesAnimation_.reset();
+  }
   // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
   // and the sessionState() `tiles` node both read THIS, so a consumer can never
   // observe a wall the compositor did not also receive (see modules_.compositor->
@@ -5276,7 +5441,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     static bool loggedMultiview = false;
     if (!loggedMultiview) {
       loggedMultiview = true;
-      std::fprintf(stderr, "[multiview] composite: sources=%zu layers=%zu handle='%s' %dx%d\n",
+      ::corevideo::core::nativeLogf("[multiview] composite: sources=%zu layers=%zu handle='%s' %dx%d\n",
                    multiviewSources_.size(), multiviewPlan.layers.size(),
                    lastProgramFrame_.multiviewSharedTexture.sharedHandleHex.c_str(),
                    multiviewPlan.width, multiviewPlan.height);
@@ -5312,6 +5477,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // readback), and never touches the audio/output lock.
   if (hasPreviewScene()) {
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+    previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
     previewPlan.skipCpuReadback = true;
     lastProgramFrame_.previewSharedTexture = modules_.compositor->renderPreview(previewPlan, videoFrames);
     lastProgramFrame_.previewWidth = previewPlan.width;
@@ -5319,7 +5485,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     static bool loggedPreview = false;
     if (!loggedPreview) {
       loggedPreview = true;
-      std::fprintf(stderr, "[preview] composite: routes=%d layers=%zu handle='%s' %dx%d\n",
+      ::corevideo::core::nativeLogf("[preview] composite: routes=%d layers=%zu handle='%s' %dx%d\n",
                    previewRouteCount_, previewPlan.layers.size(),
                    lastProgramFrame_.previewSharedTexture.sharedHandleHex.c_str(),
                    previewPlan.width, previewPlan.height);
@@ -5336,8 +5502,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (videoOnly && ++s_stageTicks >= 120) {
     const auto buffer = modules_.compositor->programBufferDiagnostics();
     if (buffer.activeFrames > 0 || buffer.status == "failed") {
-      std::fprintf(stderr,
-          "[program-buffer] status=%s depth=%d occupancy=%d produced=%llu delivered=%llu underruns=%llu overflows=%llu gpuNotReady=%llu deadlineMisses=%llu displayUnconsumed=%llu displayBusy=%llu outputSequenceGaps=%llu presentationVerified=0 destinationCompletionVerified=0\n",
+      ::corevideo::core::nativeLogf("[program-buffer] status=%s depth=%d occupancy=%d produced=%llu delivered=%llu underruns=%llu overflows=%llu gpuNotReady=%llu deadlineMisses=%llu displayUnconsumed=%llu displayBusy=%llu outputSequenceGaps=%llu presentationVerified=0 destinationCompletionVerified=0\n",
           buffer.status.c_str(), buffer.activeFrames, buffer.occupancy,
           static_cast<unsigned long long>(buffer.produced), static_cast<unsigned long long>(buffer.delivered),
           static_cast<unsigned long long>(buffer.underruns), static_cast<unsigned long long>(buffer.overflows),
@@ -5354,8 +5519,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // stage total and break it out beside it.
     const int64_t ingestTotalUs =
         s_stageIngestUs + s_subFetchUs + s_subStoreUs + s_subTapUs + s_subPollUs + s_subMergeUs;
-    std::fprintf(stderr,
-                 "[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
+    ::corevideo::core::nativeLogf("[render] stages avg-ms ingest=%.2f (fetch=%.2f store=%.2f rel=%.2f poll=%.2f merge=%.2f) "
                  "plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f"
                  "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
                  ingestTotalUs / (s_stageTicks * 1000.0),
@@ -5408,8 +5572,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     for (const auto stageUs : tickStages) totalUs += stageUs;
     if (totalUs > peakUs) { peakUs = totalUs; peakStages = tickStages; }
     if (++windowTicks >= 120) {
-      std::fprintf(stderr,
-          "[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
+      ::corevideo::core::nativeLogf("[render] slowest-tick total=%.2fms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f emit=%.2f (120 ticks; excludes lock wait)\n",
           peakUs / 1000.0, peakStages[0] / 1000.0, peakStages[1] / 1000.0,
           peakStages[2] / 1000.0, peakStages[3] / 1000.0, peakStages[4] / 1000.0, peakStages[5] / 1000.0);
       peakUs = 0;
@@ -5616,7 +5779,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   const auto tMix0 = std::chrono::steady_clock::now();
   results.mixedFrameCount = modules_.mixer->mix(work.audioFrames);
   const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
-  if (mixMs >= 30) std::fprintf(stderr, "[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
+  if (mixMs >= 30) ::corevideo::core::nativeLogf("[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
 
   // A3 (latency compensation, owner decision: COMPENSATE): the active
   // plugin's reported latency, valid only while the host is genuinely
@@ -5685,7 +5848,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           source.insertSettings = &channel.insertSettings;  // C5b params
           source.dspState = &channelDspStates_[frame.participantId];  // C7c continuity
           if (debugDir != nullptr) {
-            std::fprintf(stderr, "[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
+            ::corevideo::core::nativeLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
                          frame.participantId.c_str(), static_cast<void*>(source.dspState),
                          source.dspState->gateEnvelope, source.dspState->gateGain,
                          source.dspState->gateHoldRemaining);
@@ -5718,8 +5881,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         static std::map<std::string, std::int64_t> s_lastWarn;
         auto& warned = s_lastWarn[frame.participantId];
         if (warned++ % 250 == 0) {  // ~every 5s at 50Hz, first occurrence immediately
-          std::fprintf(stderr,
-                       "[audio] FADER LAW: routed source '%s' has NO channel strip — "
+          ::corevideo::core::nativeLogf("[audio] FADER LAW: routed source '%s' has NO channel strip — "
                        "dropped from the bus mix (add a fader to make it audible)\n",
                        frame.participantId.c_str());
         }
@@ -5861,7 +6023,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         // this the chain was inaudible at the monitor - owner-reported).
         static int s_masteringLogTick = 0;
         if (++s_masteringLogTick % 250 == 1) {
-          std::fprintf(stderr, "[mastering] ride=%.2fdB avg=%.1fLUFS target=%.1f\n",
+          ::corevideo::core::nativeLogf("[mastering] ride=%.2fdB avg=%.1fLUFS target=%.1f\n",
                        results.masteringRideDb, masteringState_.loudnessAvgLufs,
                        work.masteringParams.targetLufs);
         }
@@ -5899,7 +6061,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                            std::chrono::steady_clock::now() - tBic0)
                            .count();
     if (bicMs >= 20) {
-      std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
+      ::corevideo::core::nativeLogf("[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
     }
     if (debugDir != nullptr) {
       const auto monTap = results.routedBusPcm.find("mon");
@@ -5917,7 +6079,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
     }
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
-    if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
+    if (mrbMs >= 20) ::corevideo::core::nativeLogf("[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
   }
 
   // LOCAL bus tap lookups over the freshly-mixed routedBusPcm (NOT the published member).
@@ -6148,7 +6310,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                              std::chrono::steady_clock::now() - tOut0)
                              .count();
       if (outMs >= 20) {
-        std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
+        ::corevideo::core::nativeLogf("[outputSender] sync %lldms dests=%zu\n",
                      static_cast<long long>(outMs), outputDestinations.size());
       }
     } catch (const std::exception& ex) {
@@ -6270,7 +6432,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
       // recording warning. Log once per distinct warning — this is the loud
       // half of the guarantee that a video-only recording cannot look healthy.
       recordingWarning_ = results.recordingWarning;
-      std::fprintf(stderr, "[recording] warning: %s\n", recordingWarning_.c_str());
+      ::corevideo::core::nativeLogf("[recording] warning: %s\n", recordingWarning_.c_str());
     }
   }
 }
@@ -6583,8 +6745,7 @@ void MediaCore::ensurePluginHostServeStarted() {
     allowed = pluginHostRespawnPolicy_.requestStart(pluginHostSteadyNowMs());
     if (!allowed && pluginHostRespawnPolicy_.gaveUp() && !pluginHostGaveUpAnnounced_) {
       pluginHostGaveUpAnnounced_ = true;
-      std::fprintf(stderr,
-                   "[plugin-host] serve respawn GAVE UP after %d consecutive failures; VST inserts "
+      ::corevideo::core::nativeLogf("[plugin-host] serve respawn GAVE UP after %d consecutive failures; VST inserts "
                    "stay BYPASSED (audio unprocessed) until the plug-in is re-selected\n",
                    pluginHostRespawnPolicy_.consecutiveFailures());
     }
@@ -6607,7 +6768,7 @@ void MediaCore::ensurePluginHostServeStarted() {
       pluginHostRespawnPolicy_.onLaunchResult(pluginHostSteadyNowMs(), launched);
     }
     if (!launched) {
-      std::fprintf(stderr, "[plugin-host] serve launch FAILED (%s)\n",
+      ::corevideo::core::nativeLogf("[plugin-host] serve launch FAILED (%s)\n",
                    exePath.empty() ? "corevideo-plugin-host.exe not found" : exePath.c_str());
     } else {
       // A2: every fresh host generation (first launch AND respawns) gets the
@@ -6722,7 +6883,7 @@ void MediaCore::setVstInsertState(const rpc::Json& command) {
   if (blob.empty() && !stateBase64.empty()) {
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
     pluginHostInsertError_ = "saved state for '" + query + "' is not valid base64; restore skipped";
-    std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+    ::corevideo::core::nativeLogf("[plugin-host] %s\n", pluginHostInsertError_.c_str());
     return;
   }
   {
@@ -6772,7 +6933,7 @@ void MediaCore::injectPendingVstStates() {
       // silent default state.
       std::lock_guard<std::mutex> lock(pluginHostMutex_);
       pluginHostInsertError_ = "saved state restore for '" + entry.query + "' failed: " + error;
-      std::fprintf(stderr, "[plugin-host] %s\n", pluginHostInsertError_.c_str());
+      ::corevideo::core::nativeLogf("[plugin-host] %s\n", pluginHostInsertError_.c_str());
     }
   }
 }
@@ -6808,7 +6969,7 @@ VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query
     // Rate-capped (~5s at the 50Hz worker): loud, not spammy.
     static std::atomic<int> s_resolveLogTick{0};
     if (s_resolveLogTick.fetch_add(1, std::memory_order_relaxed) % 250 == 0) {
-      std::fprintf(stderr, "[plugin-host] vst insert BYPASSED: %s\n", selection.error.c_str());
+      ::corevideo::core::nativeLogf("[plugin-host] vst insert BYPASSED: %s\n", selection.error.c_str());
     }
   }
   return selection;

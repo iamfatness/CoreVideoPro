@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 // Windows WASAPI monitor (MON bus) output adapter.
 //
 // Dev-gated real implementation of IAudioMonitorOutput: it opens a shared-mode
@@ -508,7 +509,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
           ringDryFrames_ += static_cast<int64_t>(chunk - real);
           const auto events = ringDryEvents_.fetch_add(1, std::memory_order_relaxed) + 1;
           if (events == 1 || events % 200 == 0) {
-            std::fprintf(stderr, "[monitor] ring dry #%lld (%u frames silence; device '%s')\n",
+            ::corevideo::core::nativeLogf("[monitor] ring dry #%lld (%u frames silence; device '%s')\n",
                          static_cast<long long>(events), chunk - static_cast<UINT32>(real), deviceName_.c_str());
           }
           // Restore the standing cushion after a genuine starvation instead of

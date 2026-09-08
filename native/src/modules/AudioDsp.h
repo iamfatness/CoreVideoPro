@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/BoundedAsyncLog.h"
+
 #include "modules/Interfaces.h"
 
 #include <algorithm>
@@ -702,8 +704,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
         state.primed = true;
         ++state.primeEvents;
         if (state.primeEvents == 1 || state.primeEvents % 100 == 0) {
-          std::fprintf(stderr,
-                       "[audio] steady feed primed %s at %zu frames (%zu event%s)\n",
+          ::corevideo::core::nativeLogf("[audio] steady feed primed %s at %zu frames (%zu event%s)\n",
                        frame.participantId.c_str(),
                        state.fifo.size() / static_cast<size_t>(frame.channels),
                        state.primeEvents, state.primeEvents == 1 ? "" : "s");
@@ -771,7 +772,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       // stream, monitor). Persistent sheds mean the worker is under-ticking.
       state.shedSamples += drop;
       if (state.shedEvents++ % 100 == 0) {
-        std::fprintf(stderr, "[audio] feed FIFO shed %zu samples for %s (total %zu over %zu events)\n",
+        ::corevideo::core::nativeLogf("[audio] feed FIFO shed %zu samples for %s (total %zu over %zu events)\n",
                      drop, frame.participantId.c_str(), state.shedSamples, state.shedEvents);
       }
     }

@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineClient.h"
 
 #include "rpc/Json.h"
@@ -216,8 +217,7 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   // core's stderr (captured to media-core.log). Exclude high-rate frame/audio
   // events so the log stays readable while debugging join/auth failures.
   if (event.kind != ZoomEngineEventKind::Frame && event.kind != ZoomEngineEventKind::Audio) {
-    std::fprintf(stderr, "[zoom-engine] %s\n", line.c_str());
-    std::fflush(stderr);
+    ::corevideo::core::nativeLogf("[zoom-engine] %s\n", line.c_str());
   }
 
   return event;

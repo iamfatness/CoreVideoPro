@@ -23,6 +23,11 @@ public static class ScenePersistenceService
         new()
         {
             AutoFill = settings.AutoFill,
+            BackgroundColor = settings.BackgroundColor,
+            BackgroundSourceId = settings.BackgroundSourceId,
+            Overrides = settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
+            ManualSlots = [.. settings.ManualSlots],
+            ExcludedSourceIds = [.. settings.ExcludedSourceIds],
             MaxTiles = settings.MaxTiles,
             TileAspect = settings.TileAspect,
             CustomAspectRatio = settings.CustomAspectRatio,
@@ -65,20 +70,33 @@ public static class ScenePersistenceService
             ZIndex = route.ZIndex
         };
 
-    public static Scene SceneFromPersisted(PersistedScene persisted) =>
-        new()
+    public static Scene SceneFromPersisted(PersistedScene persisted)
+    {
+        // Older saved Tiles scenes can retain the layout discriminator while
+        // omitting their settings. Restore the discriminator's default behavior;
+        // explicit settings and ordinary custom canvases keep their existing path.
+        var gallery = persisted.DynamicGallery is { } settings ? FromPersisted(settings)
+            : string.Equals(persisted.Layout, "dynamic-gallery", StringComparison.Ordinal)
+                ? new DynamicGallerySettings() : null;
+        return new()
         {
             Id = persisted.Id,
             Name = persisted.Name,
             Layout = string.IsNullOrWhiteSpace(persisted.Layout) ? "host-focus" : persisted.Layout,
-            Automation = persisted.DynamicGallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
-            DynamicGallery = persisted.DynamicGallery is null ? null : FromPersisted(persisted.DynamicGallery)
+            Automation = gallery is null ? "Custom canvas" : "Auto-reflow Zoom gallery",
+            DynamicGallery = gallery
         };
+    }
 
     public static DynamicGallerySettings FromPersisted(PersistedDynamicGallerySettings persisted) =>
         new()
         {
             AutoFill = persisted.AutoFill,
+            BackgroundColor = persisted.BackgroundColor,
+            BackgroundSourceId = persisted.BackgroundSourceId,
+            Overrides = (persisted.Overrides ?? []).Where(p => p.Value is not null).Take(64).ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
+            ManualSlots = (persisted.ManualSlots ?? []).Take(64).ToList(),
+            ExcludedSourceIds = (persisted.ExcludedSourceIds ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).Take(1024).ToList(),
             MaxTiles = Math.Clamp(persisted.MaxTiles, 1, 64),
             TileAspect = DynamicGalleryLayoutService.NormalizeAspectPreset(persisted.TileAspect),
             CustomAspectRatio = Math.Clamp(persisted.CustomAspectRatio, 0.25, 4),

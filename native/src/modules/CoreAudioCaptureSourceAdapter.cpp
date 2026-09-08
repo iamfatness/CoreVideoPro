@@ -1,3 +1,4 @@
+#include "core/BoundedAsyncLog.h"
 // CoreAudio capture-audio adapter — the macOS twin of
 // WasapiAudioCaptureSourceAdapter: paired capture-device audio (microphones,
 // interface inputs, virtual devices) into AudioFrames keyed
@@ -341,7 +342,7 @@ class CoreAudioCaptureSource final : public IAudioCaptureSource {
       AudioComponentInstanceDispose(state.unit);
       state.unit = nullptr;
     }
-    std::fprintf(stderr, "[coreaudio-capture] %s (%s)\n", why.c_str(),
+    ::corevideo::core::nativeLogf("[coreaudio-capture] %s (%s)\n", why.c_str(),
                  state.config.captureDeviceId.c_str());
   }
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/BoundedAsyncLog.h"
+
 // Core-side plugin-host audio transport client (VST spec P2b).
 //
 // Owns the kernel objects (SHM block + req/done events), spawns the resident
@@ -92,13 +94,13 @@ class PluginHostClient {
     stateDone_ = ::CreateEventA(nullptr, FALSE, FALSE, hostStateDoneEventName(instance).c_str());
     if (shm_ == nullptr || req_ == nullptr || done_ == nullptr || editor_ == nullptr ||
         param_ == nullptr || stateReq_ == nullptr || stateDone_ == nullptr) {
-      std::fprintf(stderr, "[plugin-host-client] kernel object creation failed (err=%lu)\n", ::GetLastError());
+      ::corevideo::core::nativeLogf("[plugin-host-client] kernel object creation failed (err=%lu)\n", ::GetLastError());
       stop();
       return false;
     }
     block_ = static_cast<HostAudioBlock*>(::MapViewOfFile(shm_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(HostAudioBlock)));
     if (block_ == nullptr) {
-      std::fprintf(stderr, "[plugin-host-client] MapViewOfFile failed (err=%lu)\n", ::GetLastError());
+      ::corevideo::core::nativeLogf("[plugin-host-client] MapViewOfFile failed (err=%lu)\n", ::GetLastError());
       stop();
       return false;
     }
@@ -125,7 +127,7 @@ class PluginHostClient {
     PROCESS_INFORMATION process{};
     if (!::CreateProcessA(exePath.c_str(), mutableCommandLine.data(), nullptr, nullptr, FALSE,
                           CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
-      std::fprintf(stderr, "[plugin-host-client] CreateProcess('%s') failed (err=%lu)\n",
+      ::corevideo::core::nativeLogf("[plugin-host-client] CreateProcess('%s') failed (err=%lu)\n",
                    exePath.c_str(), ::GetLastError());
       stop();
       return false;

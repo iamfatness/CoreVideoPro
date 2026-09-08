@@ -176,22 +176,15 @@ TEST(StubCompositor, SourcePanUsesNaturalSourceDimensionsBeforePreviewPixels) {
   renderPlan.renderPlanId = "natural-framing";
   renderPlan.width = 640;
   renderPlan.height = 640;
-  renderPlan.layers.push_back({
-      "camera",
-      "participant-video",
-      "zoom:camera",
-      "camera",
-      0,
-      {0.f, 0.f, 1.f, 1.f},
-      1.f,
-      "fill",
-      "none",
-      "#44C1A1",
-      0.f,
-      1.f,
-      1.f,
-      0.f,
-  });
+  corevideo::modules::CompositorRenderPlanLayer camera;
+  camera.layerId = "camera";
+  camera.kind = "participant-video";
+  camera.sourceId = "zoom:camera";
+  camera.participantId = "camera";
+  camera.borderThickness = 0.f;
+  camera.sourceScale = 1.f;
+  camera.sourceOffsetX = 1.f;
+  renderPlan.layers.push_back(camera);
 
   const uint32_t leftRed = 0xffff0000u;
   const uint32_t rightBlue = 0xff0000ffu;

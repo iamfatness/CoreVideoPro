@@ -1,4 +1,6 @@
 #pragma once
+
+#include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/MediaPlaybackTimeline.h"
 #include "modules/MediaVideoPresentation.h"
@@ -64,7 +66,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
       const auto target = *due;
       if (clock->second.skipped() != skippedBefore &&
           (skippedBefore == 0 || clock->second.skipped() / 100 != skippedBefore / 100))
-        std::fprintf(stderr, "[media-playback] audio_windows_expired=%llu source=%s\n",
+        ::corevideo::core::nativeLogf("[media-playback] audio_windows_expired=%llu source=%s\n",
             static_cast<unsigned long long>(clock->second.skipped()), layer.mediaAssetId.c_str());
       const auto found = entries_.find(id); if (found == entries_.end()) continue;
       std::lock_guard<std::mutex> entryLock(found->second->mutex);
