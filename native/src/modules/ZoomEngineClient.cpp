@@ -213,10 +213,13 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
     }
   }
 
-  // Diagnostic: surface every control/status/error event from the engine on the
-  // core's stderr (captured to media-core.log). Exclude high-rate frame/audio
-  // events so the log stays readable while debugging join/auth failures.
-  if (event.kind != ZoomEngineEventKind::Frame && event.kind != ZoomEngineEventKind::Audio) {
+  // Preserve lifecycle and error events in the production log. The helper's
+  // debug telemetry and heartbeat are high-rate evidence for a diagnostic
+  // session and must not compete with show work by default.
+  if (event.kind == ZoomEngineEventKind::Debug || event.kind == ZoomEngineEventKind::Ping ||
+      event.kind == ZoomEngineEventKind::Participants || event.kind == ZoomEngineEventKind::ActiveSpeaker) {
+    ::corevideo::core::nativeVerboseLogf("[zoom-engine] %s\n", line.c_str());
+  } else if (event.kind != ZoomEngineEventKind::Frame && event.kind != ZoomEngineEventKind::Audio) {
     ::corevideo::core::nativeLogf("[zoom-engine] %s\n", line.c_str());
   }
 

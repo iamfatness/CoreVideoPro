@@ -275,7 +275,7 @@ public sealed class Direct3D11InteropService : IDisposable
             // launch log shows BOTH hosts' present # advancing when they share a handle.
             if (++_presentCount % 120 == 0)
             {
-                LaunchLog.Write($"d3d: present #{_presentCount} [{Label}] 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
+                LaunchLog.WriteVerbose($"d3d: present #{_presentCount} [{Label}] 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
             }
             return true;
         }

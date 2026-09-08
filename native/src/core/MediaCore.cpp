@@ -2346,10 +2346,11 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   audioMonitorDeviceName_ = command.getString("deviceName");
   audioMonitorVolume_ = std::max(0.0, std::min(1.0, command.getNumber("volume", audioMonitorVolume_)));
   audioMonitorWarning_.clear();
-  // Click-hunt: the operator toggle state was not reaching the adapter -
-  // log exactly what each sync carries so UI-vs-core disagreements are visible.
-  ::corevideo::core::nativeLogf("[monitor] sync: enabled=%d device=%s volume=%.2f\n",
-               audioMonitorEnabled_ ? 1 : 0, audioMonitorDeviceName_.c_str(), audioMonitorVolume_);
+  // Useful while diagnosing UI-vs-core monitor disagreements, but this command
+  // rides the repeating state sync and must stay off during a production show.
+  ::corevideo::core::nativeVerboseLogf("[monitor] sync: enabled=%d device=%s volume=%.2f\n",
+                                      audioMonitorEnabled_ ? 1 : 0,
+                                      audioMonitorDeviceName_.c_str(), audioMonitorVolume_);
 
   if (!audioMonitorEnabled_) {
     if (modules_.monitorOutput) {
@@ -5893,10 +5894,15 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       if (!hasStrip && !work.channels.empty()) {
         static std::map<std::string, std::int64_t> s_lastWarn;
         auto& warned = s_lastWarn[frame.participantId];
-        if (warned++ % 250 == 0) {  // ~every 5s at 50Hz, first occurrence immediately
+        const auto warningCount = warned++;
+        if (warningCount == 0) {
           ::corevideo::core::nativeLogf("[audio] FADER LAW: routed source '%s' has NO channel strip — "
                        "dropped from the bus mix (add a fader to make it audible)\n",
                        frame.participantId.c_str());
+        } else if (warningCount % 250 == 0) {  // ~every 5s at 50Hz when detailed diagnostics are enabled
+          ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: routed source '%s' has NO channel strip — "
+                                              "dropped from the bus mix\n",
+                                              frame.participantId.c_str());
         }
         continue;
       }

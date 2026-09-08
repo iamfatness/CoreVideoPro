@@ -6185,7 +6185,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         if (_shutdownPrepared) return;
         var version = Interlocked.Increment(ref _productionSyncRetryVersion);
-        LaunchLog.Write($"media-core sync deferred reason={reason}; request={version}");
+        LaunchLog.WriteVerbose($"media-core sync deferred reason={reason}; request={version}");
         EnsureProductionSyncRetryWorker();
     }
 
@@ -6224,7 +6224,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 handledVersion = requestedVersion;
-                LaunchLog.Write($"media-core deferred sync completed request={handledVersion}");
+                LaunchLog.WriteVerbose($"media-core deferred sync completed request={handledVersion}");
             }
         }
         catch (OperationCanceledException) when (_shutdownPrepared) { }

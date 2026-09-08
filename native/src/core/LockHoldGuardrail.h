@@ -16,9 +16,9 @@ namespace corevideo::core {
 //
 // Semantics (all builds, debug and release):
 //   - Telemetry counters per site: total holds, over-budget holds, worst hold.
-//   - Over-budget holds emit a rate-capped `[lock-guardrail]` stderr warning
-//     (first occurrence, then at most one per second per site, with the
-//     suppressed count) so a regression is visible without flooding the log.
+//   - Over-budget holds emit a rate-capped `[lock-guardrail]` stderr warning:
+//     first occurrence and a one-minute production aggregate; detailed
+//     diagnostics restores one-second observations for an investigation.
 //   - Opt-in strict mode: set COREVIDEO_LOCK_GUARDRAIL_STRICT=1 to turn any
 //     over-budget hold into an abort (debugging tool — never on by default;
 //     timing asserts are too flaky for CI, especially under TSan's 5-20x
