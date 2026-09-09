@@ -29,7 +29,7 @@ SourceRegistry::Result SourceRegistry::upsertPerson(Person person) {
     if (existing->second.displayName == person.displayName &&
         existing->second.generation == person.generation) return Result::Unchanged;
   }
-  if (persons_.size() >= maxPersons_) return Result::Exhausted;
+  if (existing == persons_.end() && persons_.size() >= maxPersons_) return Result::Exhausted;
   if (revision_ == kMaxRevision) return Result::Exhausted;
   const auto key = person.id.value;
   persons_[key] = std::move(person);
@@ -91,6 +91,22 @@ SourceRegistry::Mutation SourceRegistry::replace(const Token& expected, Registra
   return install(std::move(r), expected.generation + 1);
 }
 
+SourceRegistry::Result SourceRegistry::setDisplayName(const Token& token, const std::string& name) {
+  // Empty labels are valid metadata; names are never identifiers.
+  if (name.size() > 4096) return Result::Invalid;
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto found = sources_.find(token.sourceId.value);
+  if (found == sources_.end()) return Result::NotFound;
+  auto& source = found->second;
+  if (!sameToken(source.token, token) || source.availability == Availability::Departed)
+    return Result::Stale;
+  if (source.displayName == name) return Result::Unchanged;
+  if (revision_ == kMaxRevision) return Result::Exhausted;
+  source.displayName = name;
+  ++revision_;
+  return Result::Applied;
+}
+
 SourceRegistry::Result SourceRegistry::setAvailability(const Token& token, Availability availability) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto found = sources_.find(token.sourceId.value);
@@ -102,7 +118,12 @@ SourceRegistry::Result SourceRegistry::setAvailability(const Token& token, Avail
   if (source.availability == availability) return Result::Unchanged;
   if (revision_ == kMaxRevision) return Result::Exhausted;
   source.availability = availability;
-  if (availability != Availability::Available) source.subscriptionObserved = false;
+  if (availability != Availability::Available) {
+    source.subscriptionObserved = false;
+    source.format.reset();
+    source.hasPublication = false;
+    // Keep the incarnation's publication watermark across camera off/on.
+  }
   ++revision_;
   return Result::Applied;
 }
@@ -138,6 +159,9 @@ SourceRegistry::Result SourceRegistry::retireProcessEpoch(const std::string& pro
     source.availability = Availability::Departed;
     source.subscriptionRequested = false;
     source.subscriptionObserved = false;
+    source.format.reset();
+    source.hasPublication = false;
+    // Retired tokens retain their publication watermark for diagnostics.
   }
   ++revision_;
   return Result::Applied;
@@ -151,11 +175,12 @@ SourceRegistry::Result SourceRegistry::publish(const Token& token, uint64_t sequ
   if (!sameToken(source.token, token) || source.availability != Availability::Available) return Result::Stale;
   if (sequence > kMaxRevision || observedNs < 0 || format.width <= 0 || format.height <= 0 ||
       format.fpsNumerator <= 0 || format.fpsDenominator <= 0 || format.pixelFormat.empty()) return Result::Invalid;
-  if (source.hasPublication &&
+  if (source.hasPublicationWatermark &&
       (sequence <= source.publicationSequence || observedNs < source.lastPublicationNs)) return Result::Stale;
   if (revision_ == kMaxRevision) return Result::Exhausted;
   source.format = std::move(format);
   source.hasPublication = true;
+  source.hasPublicationWatermark = true;
   source.publicationSequence = sequence;
   source.lastPublicationNs = observedNs;
   ++revision_;

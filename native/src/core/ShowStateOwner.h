@@ -22,10 +22,17 @@ struct ShowEntityRef {
   auto operator<=>(const ShowEntityRef&) const = default;
 };
 
+// Exact transient source identity, deliberately distinct from show/person refs.
+struct ShowSourceRef {
+  std::string sourceId, instanceId, processEpoch;
+  std::uint64_t generation{1};
+  auto operator<=>(const ShowSourceRef&) const = default;
+};
+
 enum class ShowRouteKind { Blank, FixedSource, FollowPerson, ActiveSpeaker, Spotlight, ScreenShare };
 struct ShowRouteTarget {
   ShowRouteKind kind{ShowRouteKind::Blank};
-  std::optional<ShowEntityRef> source;
+  std::optional<ShowSourceRef> source;
   // Durable person identity is distinct from a source incarnation.
   std::optional<ShowEntityRef> person;
   bool operator==(const ShowRouteTarget&) const = default;
@@ -33,7 +40,7 @@ struct ShowRouteTarget {
 enum class ShowRouteResolution { Blank, Available, Missing, RequiresSelection };
 // Fixed-source loss is Missing, never an automatic selector or another source.
 ShowRouteResolution classifyShowRoute(const ShowRouteTarget& target,
-                                     const std::set<ShowEntityRef>& available);
+                                     const std::set<ShowSourceRef>& available);
 
 struct ShowInputIntent {
   std::uint64_t generation{1};
@@ -59,7 +66,7 @@ struct ShowSceneIntent {
 };
 struct ShowOverlayIntent {
   std::uint64_t generation{1};
-  std::optional<ShowEntityRef> source;
+  std::optional<ShowSourceRef> source;
   std::string content;
   bool requestedVisible{false};
   bool operator==(const ShowOverlayIntent&) const = default;

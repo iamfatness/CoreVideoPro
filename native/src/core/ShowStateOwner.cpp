@@ -8,6 +8,10 @@ constexpr std::uint64_t maxSafe = 9'007'199'254'740'991ULL;
 bool validRef(const ShowEntityRef& ref) {
   return !ref.id.empty() && ref.generation > 0 && ref.generation <= maxSafe;
 }
+bool validRef(const ShowSourceRef& ref) {
+  return !ref.sourceId.empty() && !ref.instanceId.empty() && !ref.processEpoch.empty() &&
+      ref.generation > 0 && ref.generation <= maxSafe;
+}
 bool validTarget(const ShowRouteTarget& target) {
   switch (target.kind) {
     case ShowRouteKind::FixedSource: return target.source && validRef(*target.source) && !target.person;
@@ -86,7 +90,7 @@ bool validData(const ShowStateData& data) {
 }  // namespace
 
 ShowRouteResolution classifyShowRoute(const ShowRouteTarget& target,
-                                     const std::set<ShowEntityRef>& available) {
+                                     const std::set<ShowSourceRef>& available) {
   if (!validTarget(target)) return ShowRouteResolution::Missing;
   if (target.kind == ShowRouteKind::Blank) return ShowRouteResolution::Blank;
   if (target.kind == ShowRouteKind::FixedSource)

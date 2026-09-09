@@ -121,6 +121,8 @@ TEST(SourceRegistry, OutOfOrderPublicationCannotRefreshOrChangeFormat) {
   EXPECT_EQ(registry.snapshot()->sources[0].format->width, 1920);
   EXPECT_EQ(registry.snapshot()->sources[0].lastPublicationNs, 100);
   registry.setAvailability(*added.token, Registry::Availability::Unavailable);
+  EXPECT_FALSE(registry.snapshot()->sources[0].hasPublication);
+  EXPECT_FALSE(registry.snapshot()->sources[0].format.has_value());
   EXPECT_EQ(registry.publish(*added.token, 12, 200, changed), Registry::Result::Stale);
   EXPECT_EQ(registry.setSubscription(*added.token, true, true), Registry::Result::Invalid);
 }
@@ -256,4 +258,95 @@ TEST(SourceRegistry, IdentityAndEpochTombstoneAdmissionIsBounded) {
   EXPECT_EQ(registry.retireProcessEpoch("meeting-1"), Registry::Result::Applied);
   EXPECT_EQ(registry.retireProcessEpoch("meeting-2"), Registry::Result::Exhausted);
   EXPECT_EQ(registry.snapshot()->sources[0].availability, Registry::Availability::Departed);
+}
+
+TEST(SourceRegistry, CameraReturnClearsReadinessButPreservesPublicationWatermarks) {
+  Registry registry("authority");
+  const auto added = registry.add(participant("camera"));
+  ASSERT_TRUE(added.token.has_value());
+  const auto token = *added.token;
+  EXPECT_EQ(registry.publish(token, 10, 100, format()), Registry::Result::Applied);
+  EXPECT_EQ(registry.setSubscription(token, true, true), Registry::Result::Applied);
+  EXPECT_EQ(registry.setAvailability(token, Registry::Availability::Unavailable), Registry::Result::Applied);
+  const auto unavailable = registry.snapshot();
+  EXPECT_FALSE(unavailable->sources[0].hasPublication);
+  EXPECT_FALSE(unavailable->sources[0].format.has_value());
+  EXPECT_FALSE(unavailable->sources[0].subscriptionObserved);
+  EXPECT_EQ(unavailable->sources[0].publicationSequence, 10ULL);
+  EXPECT_EQ(unavailable->sources[0].lastPublicationNs, 100);
+  EXPECT_EQ(registry.setAvailability(token, Registry::Availability::Available), Registry::Result::Applied);
+  const auto revision = registry.snapshot()->revision;
+  EXPECT_EQ(registry.publish(token, 9, 101, format()), Registry::Result::Stale);
+  EXPECT_EQ(registry.publish(token, 10, 101, format()), Registry::Result::Stale);
+  EXPECT_EQ(registry.publish(token, 11, 99, format()), Registry::Result::Stale);
+  EXPECT_EQ(registry.snapshot()->revision, revision);
+  EXPECT_FALSE(registry.snapshot()->sources[0].hasPublication);
+  EXPECT_EQ(registry.publish(token, 11, 100, format()), Registry::Result::Applied);
+  EXPECT_TRUE(registry.snapshot()->sources[0].hasPublication);
+  EXPECT_EQ(registry.setAvailability(token, Registry::Availability::Departed), Registry::Result::Applied);
+  EXPECT_EQ(registry.snapshot()->sources[0].publicationSequence, 11ULL);
+  EXPECT_FALSE(registry.snapshot()->sources[0].hasPublication);
+}
+
+TEST(SourceRegistry, ZeroPublicationIsAcceptedOnceEvenAcrossCameraAvailabilityChanges) {
+  Registry registry("authority");
+  const auto added = registry.add(participant("camera"));
+  ASSERT_TRUE(added.token.has_value());
+  const auto token = *added.token;
+  registry.setAvailability(token, Registry::Availability::Unavailable);
+  registry.setAvailability(token, Registry::Availability::Available);
+  EXPECT_EQ(registry.publish(token, 0, 0, format()), Registry::Result::Applied);
+  registry.setAvailability(token, Registry::Availability::Unavailable);
+  registry.setAvailability(token, Registry::Availability::Available);
+  EXPECT_EQ(registry.publish(token, 0, 0, format()), Registry::Result::Stale);
+  EXPECT_EQ(registry.publish(token, 1, 0, format()), Registry::Result::Applied);
+  const auto replacement = registry.replace(token, participant("camera"));
+  ASSERT_TRUE(replacement.token.has_value());
+  EXPECT_EQ(registry.publish(*replacement.token, 0, 0, format()), Registry::Result::Applied);
+}
+
+TEST(SourceRegistry, ExistingPersonUpdatesRemainAdmissibleAtCapacity) {
+  Registry registry("authority", 1, 1, 1);
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "A", 1}), Registry::Result::Applied);
+  const auto initial = registry.snapshot();
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "Renamed", 1}), Registry::Result::Applied);
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "Renamed", 2}), Registry::Result::Applied);
+  const auto updated = registry.snapshot();
+  EXPECT_EQ(updated->revision, initial->revision + 2);
+  ASSERT_EQ(updated->persons.size(), 1u);
+  EXPECT_EQ(updated->persons[0].displayName, "Renamed");
+  EXPECT_EQ(updated->persons[0].generation, 2ULL);
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "Renamed", 2}), Registry::Result::Unchanged);
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "Old", 1}), Registry::Result::Stale);
+  EXPECT_EQ(registry.upsertPerson({{"person-b"}, "B", 1}), Registry::Result::Exhausted);
+  EXPECT_EQ(registry.snapshot()->revision, updated->revision);
+}
+
+TEST(SourceRegistry, DisplayNameMetadataPreservesIncarnationAndFencesOldTokens) {
+  Registry registry("authority");
+  const auto added = registry.add(participant("camera"));
+  ASSERT_TRUE(added.token.has_value());
+  registry.setSubscription(*added.token, true, true);
+  registry.publish(*added.token, 5, 100, format());
+  const auto before = registry.snapshot();
+  EXPECT_EQ(registry.setDisplayName(*added.token, "New name"), Registry::Result::Applied);
+  const auto renamed = registry.snapshot();
+  EXPECT_EQ(renamed->revision, before->revision + 1);
+  EXPECT_EQ(renamed->sources[0].token.instanceId.value, before->sources[0].token.instanceId.value);
+  EXPECT_EQ(renamed->sources[0].token.generation, before->sources[0].token.generation);
+  EXPECT_EQ(renamed->sources[0].publicationSequence, 5ULL);
+  EXPECT_TRUE(renamed->sources[0].subscriptionObserved);
+  EXPECT_EQ(before->sources[0].displayName, "Alex");
+  EXPECT_EQ(registry.setDisplayName(*added.token, "New name"), Registry::Result::Unchanged);
+  EXPECT_EQ(registry.snapshot()->revision, renamed->revision);
+  EXPECT_EQ(registry.setDisplayName(*added.token, std::string(4097, 'x')), Registry::Result::Invalid);
+  EXPECT_EQ(registry.setDisplayName(*added.token, ""), Registry::Result::Applied);
+  const auto replacement = registry.replace(*added.token, participant("camera"));
+  ASSERT_TRUE(replacement.token.has_value());
+  const auto replacedRevision = registry.snapshot()->revision;
+  EXPECT_EQ(registry.setDisplayName(*added.token, "Stale name"), Registry::Result::Stale);
+  EXPECT_EQ(registry.snapshot()->revision, replacedRevision);
+  EXPECT_EQ(registry.snapshot()->sources[0].displayName, "Alex");
+  registry.retireProcessEpoch("meeting-1");
+  EXPECT_EQ(registry.setDisplayName(*replacement.token, "Late name"), Registry::Result::Stale);
 }

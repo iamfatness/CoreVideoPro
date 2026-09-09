@@ -8,7 +8,7 @@ using namespace corevideo::core;
 namespace {
 ShowStateData exampleShow() {
   ShowStateData data;
-  data.inputs["input-a"] = {1, "Camera", {ShowRouteKind::FixedSource, ShowEntityRef{"source-a", 3}}};
+  data.inputs["input-a"] = {1, "Camera", {ShowRouteKind::FixedSource, ShowSourceRef{"source-a", "instance-a", "process-a", 3}}};
   data.inputOrder = {"input-a"};
   data.isoSelections["iso-a"] = {1, data.inputs.at("input-a").target};
   data.isoOrder = {"iso-a"};
@@ -19,7 +19,7 @@ ShowStateData exampleShow() {
   data.preview = ShowEntityRef{"scene-a", 1};
   data.outputs["program-output"] = {};
   data.audioRoutes["audio-a"] = {1, data.inputs.at("input-a").target, {"program-output", 1}, 0, false};
-  data.overlays["overlay-a"] = {1, ShowEntityRef{"source-a", 3}, "Title", false};
+  data.overlays["overlay-a"] = {1, ShowSourceRef{"source-a", "instance-a", "process-a", 3}, "Title", false};
   return data;
 }
 }
@@ -58,16 +58,27 @@ TEST(ShowStateOwner, ReadersAndCallerCopiesCannotMutatePublishedSnapshot) {
   EXPECT_EQ(next->revision, 2ULL);
 }
 TEST(ShowStateOwner, MissingFixedSourceNeverFallsBackAndBlankIsDistinct) {
-  const std::set<ShowEntityRef> available{{"source-a", 4}, {"other", 3}};
+  const std::set<ShowSourceRef> available{{"source-a", "instance-a", "process-a", 4}, {"other", "instance-b", "process-a", 3}};
   EXPECT_EQ(classifyShowRoute({}, available), ShowRouteResolution::Blank);
-  const ShowRouteTarget fixed{ShowRouteKind::FixedSource, ShowEntityRef{"source-a", 3}};
+  const ShowRouteTarget fixed{ShowRouteKind::FixedSource, ShowSourceRef{"source-a", "instance-a", "process-a", 3}};
   EXPECT_EQ(classifyShowRoute(fixed, available), ShowRouteResolution::Missing);
-  EXPECT_EQ(classifyShowRoute(fixed, {{"source-a", 3}}), ShowRouteResolution::Available);
+  EXPECT_EQ(classifyShowRoute(fixed, {{"source-a", "instance-a", "process-a", 3}}), ShowRouteResolution::Available);
   EXPECT_EQ(classifyShowRoute({ShowRouteKind::ActiveSpeaker, std::nullopt}, available), ShowRouteResolution::RequiresSelection);
   ShowStateOwner owner("authority-a");
   EXPECT_EQ(owner.replace("authority-a", 0, exampleShow()).status, ShowStateUpdateStatus::Changed);
   // Desired missing source bindings survive independently of roster availability.
   EXPECT_EQ(owner.snapshot()->data.inputs.at("input-a").target.source->generation, 3ULL);
+}
+
+TEST(ShowStateOwner, FixedSourceAndOverlayRejectIncompleteConcreteIdentity) {
+  ShowStateOwner owner("authority-a");
+  auto data = exampleShow();
+  data.inputs.at("input-a").target.source->instanceId.clear();
+  EXPECT_EQ(owner.replace("authority-a", 0, data).status, ShowStateUpdateStatus::Invalid);
+  data = exampleShow();
+  data.overlays.at("overlay-a").source->processEpoch.clear();
+  EXPECT_EQ(owner.replace("authority-a", 0, data).status, ShowStateUpdateStatus::Invalid);
+  EXPECT_EQ(owner.snapshot()->revision, 0u);
 }
 TEST(ShowStateOwner, RejectsDanglingSceneAndAmbiguousRouteWithoutPublication) {
   ShowStateOwner owner("authority-a");
