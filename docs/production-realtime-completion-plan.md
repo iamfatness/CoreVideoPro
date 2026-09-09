@@ -238,7 +238,61 @@ ordering, black and bars and fade-to-black, and the dropped nameplate location.
 
 ---
 
-## 7. On sizing honestly
+## 7. The beta slice (owner ruling, 2026-09-09)
+
+`beta-plan.md` defines beta as **5-20 external operators running real shows on their own
+machines, with us able to diagnose failures we did not witness.** That is a sharper filter
+than "full programme or Lane C", and it cuts this plan cleanly. An item earns a place in
+the beta slice only if it does one of three things:
+
+1. stops a show breaking on a machine we cannot see,
+2. lets us diagnose a failure nobody watched, or
+3. removes a papercut an operator hits during a real show.
+
+Architecture that makes the system better but does none of those is post-beta, however
+much it is worth doing later.
+
+### In, and why
+
+| Item | Beta clause it serves | Size |
+|---|---|---|
+| **Truthful destination lifecycle** (C1) | Stop currently returns success before the finalize barrier drains, so an operator is told a recording completed while it is still writing. On a tester's machine that is an unrecoverable trust failure and an undiagnosable bug report. | S-M |
+| **Real device-loss recovery** (part of B7) | Today a lost D3D device leaves the shared device non-null forever, so `EnsureDevice` keeps returning true and **every host is stuck on CPU fallback until the app restarts**. A driver update or a TDR on a tester's box silently degrades the whole show with no error. Nothing in the tree calls `GetDeviceRemovedReason`. | M |
+| **Encoder and storage admission probes** (C2, probe half only) | Capacity today is the hard-coded literal `8/1/true/true`, and an over-subscribed encoder spills hardware to software **silently**. Beta testers have GPUs we have never seen. Rejecting before Start, or at minimum reporting the spill honestly, is the difference between a diagnosable refusal and a mysteriously soft recording. | M for the probes |
+| **Output supervisor** (C3) | One destination's failure must not take the show down on someone else's machine. Four existing supervisors already agree on a restart ladder; this is mostly adopting it. | M |
+| **Fault-injection seams** (B1) | Not shippable itself, but nothing above can be *proved* without it, and `beta-plan.md` B6 already asks for a churn soak that has never been run. | M |
+
+Already landed today and squarely in this slice: the qualification collector (evidence
+from runs nobody watched), the audio-loss counter (the same), the job object on egress
+encoders (a crash no longer leaves a tester publishing to a live destination), the SRT
+descriptor race, and ISO video off the audio grid.
+
+### Out, for beta
+
+All of Lane A. The control-plane migration makes the product coherent and is the right
+long-term direction, but no beta tester will fail a show because Take is a client-side
+scene-id swap. It changes no failure mode they can hit. Likewise the monitor compositor,
+the render-worker ownership move, the cross-process transport and the recorder process
+split: each is real work with real value, and none of it changes whether twenty operators
+can run shows on their own machines next month.
+
+The one Lane A item worth doing on its own merits, whenever there is room, is the shadow
+comparison. Not because beta needs it, but because it is the only instrument that would
+tell us how far apart the two authorities actually are, and that number should exist
+before anyone commits a quarter to the migration.
+
+### Carryovers from the alpha gates that belong here
+
+`beta-plan.md` §2 still lists three open stability items that this plan should absorb
+rather than leave stranded in an older document: the engine-off teardown audit against the
+five ZoomISO deadlock rules, a resize-and-churn soak for the `0xc000027b` class (the resize
+mitigation is by construction and has never been soak-verified), and scripting the
+record-plus-stream-plus-virtual-camera drill so it is one command instead of a manual
+afternoon.
+
+---
+
+## 8. On sizing honestly
 
 The strategy sizes PRs 05, 07, 08, 10 and 11 at M. The audit puts 07, 08, 10 and 05 at L,
 and 06 at two L's. Wave 2's 16 and 17 are both larger than L as listed, for reasons the
