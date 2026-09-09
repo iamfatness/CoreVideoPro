@@ -3,6 +3,7 @@
 #include "modules/Interfaces.h"
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -106,6 +107,32 @@ class AsyncEncoderSink final : public IEncoderSink {
   // deterministic post-drain session() without sleeping on wall-clock guesses.
   bool drainForTest(std::chrono::milliseconds timeout);
 
+  // Process-lifetime counters, explicitly distinct from media written. Array
+  // order: configure, start, program-video, iso-video, program-audio, iso-audio,
+  // stop. Completed calls include exceptions and may be no-ops; only writer
+  // counters prove progress. Times are steady-clock milliseconds (not UTC),
+  // zero means unobserved. Written counts are the inner sink's reported Program
+  // counts, not durable bytes or ISO progress. No per-frame history is retained.
+  struct Evidence {
+    std::array<uint64_t, 7> enqueued{}, completedCalls{}, queuedByKind{};
+    uint64_t generation = 0, operationGeneration = 0, operationSequence = 0;
+    std::string operation = "idle";
+    std::string lifecycleState = "unavailable";
+    int64_t operationStartedMs = 0, operationAgeMs = 0;
+    uint64_t queueDepth = 0;
+    uint64_t droppedVideo = 0, droppedAudio = 0;
+    int64_t oldestQueuedAgeMs = 0, lastWriterProgressMs = 0;
+    int64_t programVideoWritten = 0, programAudioPacketsWritten = 0;
+    uint64_t writtenGeneration = 0;
+    uint64_t stopGeneration = 0;
+    int64_t stopRequestedMs = 0, finalizeStartedMs = 0, finalizeFinishedMs = 0;
+    std::string finalizeResult = "not-requested";
+    std::string firstFailure;
+    uint64_t firstFailureGeneration = 0;
+    int64_t firstFailureMs = 0;
+  };
+  [[nodiscard]] Evidence evidence() const;
+
  private:
   enum class Kind { Configure, Start, Video, IsoVideo, Audio, IsoAudio, StopRecording };
 
@@ -113,6 +140,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     Kind kind;
     uint64_t seq = 0;
     uint64_t generation = 0;
+    int64_t enqueuedMs = 0;
     // Configure
     RecordingSessionRequest request;
     // Start
@@ -144,6 +172,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     uint64_t nextSeq = 1;
     uint64_t appliedSeq = 0;
     uint64_t generation = 0;
+    Evidence evidence;
     std::string configuredSessionId = "recording";
     // Separate from active: a failed writer still needs one cleanup/finalize.
     bool stopRequested = true;

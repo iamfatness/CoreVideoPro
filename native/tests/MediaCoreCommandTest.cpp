@@ -4416,6 +4416,42 @@ TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {
   EXPECT_TRUE(preview->get("composite")->asBool());
 }
 
+TEST(MediaCoreCommand, PublishesAlwaysOnRealtimeWorkerEvidenceWithoutVerboseLogging) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.reportRenderDeadlineMisses(5);  // legacy aggregate also includes skipped slots
+  mediaCore.reportRenderWorkerStarted();
+  mediaCore.reportRenderWorkerProgress(7, 2, 3, 1'500'000, 20'000, 40'000, 5'000);
+  mediaCore.reportAudioWorkerStarted();
+  mediaCore.reportAudioWorkerProgress(900'000);
+  mediaCore.reportAudioWorkerReanchor(510'000'000);
+  mediaCore.reportVideoOutputWorkerStarted();
+  mediaCore.reportVideoOutputWorkerProgress(2'000'000);
+
+  const auto state = mediaCore.sessionState();
+  const auto* evidence = state.get("realtimeEvidence");
+  ASSERT_NE(evidence, nullptr);
+  EXPECT_EQ(evidence->getString("metricVersion"), "realtime-worker-evidence-v1");
+  const auto* render = evidence->get("render");
+  ASSERT_NE(render, nullptr);
+  EXPECT_TRUE(render->get("observed")->asBool());
+  EXPECT_EQ(render->getNumber("completedSlots"), 7);
+  EXPECT_EQ(render->getNumber("skippedSlots"), 2);
+  EXPECT_EQ(render->getNumber("deadlineMisses"), 3);
+  EXPECT_EQ(render->getNumber("workMaximumNs"), 40'000);
+  EXPECT_FALSE(render->get("gpuCompletionVerified")->asBool());
+  EXPECT_FALSE(render->get("deliveryVerified")->asBool());
+  const auto* audio = evidence->get("audio");
+  ASSERT_NE(audio, nullptr);
+  EXPECT_EQ(audio->getNumber("completedTicks"), 1);
+  EXPECT_EQ(audio->getNumber("pacerReanchors"), 1);
+  EXPECT_EQ(audio->getNumber("discardedTimelineNs"), 510'000'000);
+  const auto* videoOutput = evidence->get("videoOutput");
+  ASSERT_NE(videoOutput, nullptr);
+  EXPECT_EQ(videoOutput->getNumber("completedTicks"), 1);
+  EXPECT_GE(render->getNumber("progressAgeMs"), 0);
+  EXPECT_EQ(state.get("health")->getNumber("renderDeadlineMisses"), 5);
+}
+
 TEST(MediaCoreCommand, TakeTransitionTracksOneEdgeTriggeredOperationToCompletion) {
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{

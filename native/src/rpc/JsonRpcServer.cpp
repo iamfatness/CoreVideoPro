@@ -496,6 +496,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
+    mediaCore_.reportRenderWorkerStarted();
     long long frames = 0;
     long long lockWaitUs = 0;
     long long renderUs = 0;
@@ -539,6 +540,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 #endif
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
+      int64_t tickLockWaitNs = 0;
+      int64_t tickWorkNs = 0;
+      int64_t tickDrainNs = 0;
       {
         // Explicit long long: microseconds::rep is `long` on Linux/GCC and
         // `long long` on MSVC, so an `auto` here makes the std::max below a
@@ -587,6 +591,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           enqueueFrame(event.stringify());
         }
         const auto t2 = std::chrono::steady_clock::now();
+        tickLockWaitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        tickWorkNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
+        tickDrainNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - tDrain).count();
         lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
         drainUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - tDrain).count();
@@ -680,6 +687,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // Bounded catch-up preserves the original clock and accounts every slot
       // it abandons, rather than silently resetting the clock after a stall.
       mediaCore_.reportRenderDeadlineMisses(cadence.advance(elapsedNs(), kMaxCatchUpFrames));
+      // Publish after advance so skipped-slot evidence includes this exact
+      // iteration, including the final partial log window during shutdown.
+      mediaCore_.reportRenderWorkerProgress(
+          cadence.completedSlots(), cadence.skippedSlots(), cadence.deadlineMisses(),
+          cadence.maximumCompletionLatenessNs(), tickLockWaitNs, tickWorkNs, tickDrainNs);
     }
     reportCadence("end"); // includes the final partial 120-frame window
   });
@@ -707,6 +719,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // takes coreMutex only briefly (gather/publish) and audioOutputMutex_ for the long
   // DSP/IO span, NEVER both at once, so the render thread is never blocked by it.
   std::thread audioOutputThread([&] {
+    mediaCore_.reportAudioWorkerStarted();
 #ifdef _WIN32
     // The worker is the program audio clock, not background application work.
     // MMCSS protects its 20 ms deadline from render/UI/build pressure without
@@ -750,12 +763,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       const bool collectDiagnostics = ::corevideo::core::nativeVerboseLoggingEnabled();
       if (!collectDiagnostics) { ticks = 0; workUs = 0; }
       if (collectDiagnostics && ticks == 0) rateStamp = std::chrono::steady_clock::now();
-      const auto t0 = collectDiagnostics ? std::chrono::steady_clock::now()
-                                         : std::chrono::steady_clock::time_point{};
+      const auto t0 = std::chrono::steady_clock::now();
       mediaCore_.renderAudioOutputTick(coreMutex);
+      const auto audioWorkNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - t0).count();
+      mediaCore_.reportAudioWorkerProgress(audioWorkNs);
       if (collectDiagnostics) {
-        workUs += std::chrono::duration_cast<std::chrono::microseconds>(
-                      std::chrono::steady_clock::now() - t0).count();
+        workUs += audioWorkNs / 1000;
       }
       if (collectDiagnostics && ++ticks >= 120) {
         const auto now = std::chrono::steady_clock::now();
@@ -770,6 +784,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       const auto now = std::chrono::steady_clock::now();
       if (deadline <= now) {
         if (now - deadline > std::chrono::microseconds(kMaxCatchupBehindUs)) {
+          mediaCore_.reportAudioWorkerReanchor(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(now - deadline).count());
           deadline = now;  // hopelessly behind: re-anchor (audio WILL be shed)
           ++reanchors;
           if (now - lastReanchorLog > std::chrono::seconds(5)) {
@@ -804,6 +820,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // no buffered samples to shed — so a blown deadline just re-anchors.
   mediaCore_.setVideoOutputTickRunning(true);
   std::thread videoOutputThread([&] {
+    mediaCore_.reportVideoOutputWorkerStarted();
     // NO PACER. renderVideoOutputTick BLOCKS until the compositor publishes a new
     // program frame (bounded ~20ms so it can still re-evaluate output state when
     // the program is idle), so the wait IS the pacing. Two paced designs were
@@ -817,12 +834,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       const bool collectDiagnostics = ::corevideo::core::nativeVerboseLoggingEnabled();
       if (!collectDiagnostics) { ticks = 0; workUs = 0; }
       if (collectDiagnostics && ticks == 0) rateStamp = std::chrono::steady_clock::now();
-      const auto t0 = collectDiagnostics ? std::chrono::steady_clock::now()
-                                         : std::chrono::steady_clock::time_point{};
+      const auto t0 = std::chrono::steady_clock::now();
       mediaCore_.renderVideoOutputTick(coreMutex);  // blocks until a new frame
+      const auto videoOutputWorkNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - t0).count();
+      mediaCore_.reportVideoOutputWorkerProgress(videoOutputWorkNs);
       if (collectDiagnostics) {
-        workUs += std::chrono::duration_cast<std::chrono::microseconds>(
-                      std::chrono::steady_clock::now() - t0).count();
+        workUs += videoOutputWorkNs / 1000;
       }
       if (collectDiagnostics && ++ticks >= 120) {
         const auto now = std::chrono::steady_clock::now();

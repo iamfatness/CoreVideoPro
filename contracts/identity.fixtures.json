@@ -1,0 +1,1052 @@
+[
+  {
+    "id": "EntityIdentity-valid",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-additive",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "EntityIdentity-array",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "EntityIdentity-missing-kind",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "{\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-null-kind",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "{\"kind\":null,\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-empty-kind",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "{\"kind\":\"\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-unknown-kind",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "{\"kind\":\"futureKind\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-person",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-participant",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"participant\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-source",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"source\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-scene",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"scene\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-route",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"route\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-audioRoute",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"audioRoute\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-showInput",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"showInput\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-output",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"output\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-kind-recorder",
+    "contract": "EntityIdentity",
+    "accepted": true,
+    "json": "{\"kind\":\"recorder\",\"id\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityIdentity-missing-id",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "{\"kind\":\"person\"}"
+  },
+  {
+    "id": "EntityIdentity-null-id",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":null}"
+  },
+  {
+    "id": "EntityIdentity-empty-id",
+    "contract": "EntityIdentity",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"\"}"
+  },
+  {
+    "id": "EntityRevision-valid",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-additive",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0,\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "EntityRevision-array",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "EntityRevision-missing-kind",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-null-kind",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":null,\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-empty-kind",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-unknown-kind",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"futureKind\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-person",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-participant",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"participant\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-source",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"source\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-scene",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"scene\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-route",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"route\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-audioRoute",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"audioRoute\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-showInput",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"showInput\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-output",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"output\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-kind-recorder",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"recorder\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-missing-id",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-null-id",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":null,\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-empty-id",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"\",\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-missing-authorityEpoch",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-null-authorityEpoch",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":null,\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-empty-authorityEpoch",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"\",\"revision\":0}"
+  },
+  {
+    "id": "EntityRevision-missing-revision",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\"}"
+  },
+  {
+    "id": "EntityRevision-null-revision",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":null}"
+  },
+  {
+    "id": "EntityRevision-revision-above-int32",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":2147483648}"
+  },
+  {
+    "id": "EntityRevision-revision-max",
+    "contract": "EntityRevision",
+    "accepted": true,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":9007199254740991}"
+  },
+  {
+    "id": "EntityRevision-revision-overflow",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":9007199254740992}"
+  },
+  {
+    "id": "EntityRevision-revision-fraction",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":1.5}"
+  },
+  {
+    "id": "EntityRevision-revision-boolean",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":true}"
+  },
+  {
+    "id": "EntityRevision-revision-negative",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":-1}"
+  },
+  {
+    "id": "EntityRevision-revision-string",
+    "contract": "EntityRevision",
+    "accepted": false,
+    "json": "{\"kind\":\"person\",\"id\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"revision\":\"1\"}"
+  },
+  {
+    "id": "SourceInstanceIdentity-valid",
+    "contract": "SourceInstanceIdentity",
+    "accepted": true,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-additive",
+    "contract": "SourceInstanceIdentity",
+    "accepted": true,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1,\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "SourceInstanceIdentity-array",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "SourceInstanceIdentity-missing-sourceId",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-null-sourceId",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":null,\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-empty-sourceId",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-missing-instanceId",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-null-instanceId",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":null,\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-empty-instanceId",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-missing-processEpoch",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-null-processEpoch",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":null,\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-empty-processEpoch",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"\",\"generation\":1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-missing-generation",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\"}"
+  },
+  {
+    "id": "SourceInstanceIdentity-null-generation",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":null}"
+  },
+  {
+    "id": "SourceInstanceIdentity-generation-above-int32",
+    "contract": "SourceInstanceIdentity",
+    "accepted": true,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":2147483648}"
+  },
+  {
+    "id": "SourceInstanceIdentity-generation-max",
+    "contract": "SourceInstanceIdentity",
+    "accepted": true,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":9007199254740991}"
+  },
+  {
+    "id": "SourceInstanceIdentity-generation-overflow",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":9007199254740992}"
+  },
+  {
+    "id": "SourceInstanceIdentity-generation-fraction",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1.5}"
+  },
+  {
+    "id": "SourceInstanceIdentity-generation-boolean",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":true}"
+  },
+  {
+    "id": "SourceInstanceIdentity-generation-negative",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":-1}"
+  },
+  {
+    "id": "SourceInstanceIdentity-generation-string",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":\"1\"}"
+  },
+  {
+    "id": "SourceInstanceIdentity-zero-generation",
+    "contract": "SourceInstanceIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":0}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-valid",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": true,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-additive",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": true,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1,\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-array",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "ParticipantBindingIdentity-missing-participantId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-null-participantId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":null,\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-empty-participantId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-missing-sourceId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-null-sourceId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":null,\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-empty-sourceId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-missing-instanceId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-null-instanceId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":null,\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-empty-instanceId",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"\",\"processEpoch\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-missing-processEpoch",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-null-processEpoch",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":null,\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-empty-processEpoch",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"\",\"generation\":1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-missing-generation",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\"}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-null-generation",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":null}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-generation-above-int32",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": true,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":2147483648}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-generation-max",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": true,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":9007199254740991}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-generation-overflow",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":9007199254740992}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-generation-fraction",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":1.5}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-generation-boolean",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":true}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-generation-negative",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":-1}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-generation-string",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":\"1\"}"
+  },
+  {
+    "id": "ParticipantBindingIdentity-zero-generation",
+    "contract": "ParticipantBindingIdentity",
+    "accepted": false,
+    "json": "{\"participantId\":\"opaque-1\",\"sourceId\":\"opaque-1\",\"instanceId\":\"opaque-1\",\"processEpoch\":\"opaque-1\",\"generation\":0}"
+  },
+  {
+    "id": "ControlRevision-valid",
+    "contract": "ControlRevision",
+    "accepted": true,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":0}"
+  },
+  {
+    "id": "ControlRevision-additive",
+    "contract": "ControlRevision",
+    "accepted": true,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":0,\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "ControlRevision-array",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "ControlRevision-missing-authorityEpoch",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"revision\":0}"
+  },
+  {
+    "id": "ControlRevision-null-authorityEpoch",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":null,\"revision\":0}"
+  },
+  {
+    "id": "ControlRevision-empty-authorityEpoch",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"\",\"revision\":0}"
+  },
+  {
+    "id": "ControlRevision-missing-revision",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\"}"
+  },
+  {
+    "id": "ControlRevision-null-revision",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":null}"
+  },
+  {
+    "id": "ControlRevision-revision-above-int32",
+    "contract": "ControlRevision",
+    "accepted": true,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":2147483648}"
+  },
+  {
+    "id": "ControlRevision-revision-max",
+    "contract": "ControlRevision",
+    "accepted": true,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":9007199254740991}"
+  },
+  {
+    "id": "ControlRevision-revision-overflow",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":9007199254740992}"
+  },
+  {
+    "id": "ControlRevision-revision-fraction",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":1.5}"
+  },
+  {
+    "id": "ControlRevision-revision-boolean",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":true}"
+  },
+  {
+    "id": "ControlRevision-revision-negative",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":-1}"
+  },
+  {
+    "id": "ControlRevision-revision-string",
+    "contract": "ControlRevision",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"revision\":\"1\"}"
+  },
+  {
+    "id": "PlanGeneration-valid",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-additive",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1,\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "PlanGeneration-array",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "PlanGeneration-missing-kind",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-null-kind",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":null,\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-empty-kind",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-unknown-kind",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"futureKind\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-kind-render",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-kind-audio",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"audio\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-kind-output",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"output\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-missing-planId",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-null-planId",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":null,\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-empty-planId",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-missing-authorityEpoch",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-null-authorityEpoch",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":null,\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-empty-authorityEpoch",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-missing-controlRevision",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-null-controlRevision",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":null,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-controlRevision-above-int32",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":2147483648,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-controlRevision-max",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":9007199254740991,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-controlRevision-overflow",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":9007199254740992,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-controlRevision-fraction",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":1.5,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-controlRevision-boolean",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":true,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-controlRevision-negative",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":-1,\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-controlRevision-string",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":\"1\",\"generation\":1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-missing-generation",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-null-generation",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":null,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-generation-above-int32",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":2147483648,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-generation-max",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":9007199254740991,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-generation-overflow",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":9007199254740992,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-generation-fraction",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1.5,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-generation-boolean",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":true,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-generation-negative",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":-1,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-generation-string",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":\"1\",\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-zero-generation",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":0,\"clockGeneration\":1}"
+  },
+  {
+    "id": "PlanGeneration-missing-clockGeneration",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1}"
+  },
+  {
+    "id": "PlanGeneration-null-clockGeneration",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":null}"
+  },
+  {
+    "id": "PlanGeneration-clockGeneration-above-int32",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":2147483648}"
+  },
+  {
+    "id": "PlanGeneration-clockGeneration-max",
+    "contract": "PlanGeneration",
+    "accepted": true,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":9007199254740991}"
+  },
+  {
+    "id": "PlanGeneration-clockGeneration-overflow",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":9007199254740992}"
+  },
+  {
+    "id": "PlanGeneration-clockGeneration-fraction",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":1.5}"
+  },
+  {
+    "id": "PlanGeneration-clockGeneration-boolean",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":true}"
+  },
+  {
+    "id": "PlanGeneration-clockGeneration-negative",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":-1}"
+  },
+  {
+    "id": "PlanGeneration-clockGeneration-string",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":\"1\"}"
+  },
+  {
+    "id": "PlanGeneration-zero-clockGeneration",
+    "contract": "PlanGeneration",
+    "accepted": false,
+    "json": "{\"kind\":\"render\",\"planId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"controlRevision\":0,\"generation\":1,\"clockGeneration\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-valid",
+    "contract": "ControlOperationIdentity",
+    "accepted": true,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-additive",
+    "contract": "ControlOperationIdentity",
+    "accepted": true,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":0,\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "ControlOperationIdentity-array",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "ControlOperationIdentity-missing-operationId",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-null-operationId",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":null,\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-empty-operationId",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-missing-authorityEpoch",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"expectedRevision\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-null-authorityEpoch",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":null,\"expectedRevision\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-empty-authorityEpoch",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"\",\"expectedRevision\":0}"
+  },
+  {
+    "id": "ControlOperationIdentity-missing-expectedRevision",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\"}"
+  },
+  {
+    "id": "ControlOperationIdentity-null-expectedRevision",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":null}"
+  },
+  {
+    "id": "ControlOperationIdentity-expectedRevision-above-int32",
+    "contract": "ControlOperationIdentity",
+    "accepted": true,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":2147483648}"
+  },
+  {
+    "id": "ControlOperationIdentity-expectedRevision-max",
+    "contract": "ControlOperationIdentity",
+    "accepted": true,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":9007199254740991}"
+  },
+  {
+    "id": "ControlOperationIdentity-expectedRevision-overflow",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":9007199254740992}"
+  },
+  {
+    "id": "ControlOperationIdentity-expectedRevision-fraction",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":1.5}"
+  },
+  {
+    "id": "ControlOperationIdentity-expectedRevision-boolean",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":true}"
+  },
+  {
+    "id": "ControlOperationIdentity-expectedRevision-negative",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":-1}"
+  },
+  {
+    "id": "ControlOperationIdentity-expectedRevision-string",
+    "contract": "ControlOperationIdentity",
+    "accepted": false,
+    "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":\"1\"}"
+  }
+]

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import fixtures from '../../../contracts/lifecycle.fixtures.json';
+import lifecycleFixtures from '../../../contracts/lifecycle.fixtures.json';
+import identityFixtures from '../../../contracts/identity.fixtures.json';
+import evidenceFixtures from '../../../contracts/evidence.fixtures.json';
+const fixtures = [...lifecycleFixtures, ...identityFixtures, ...evidenceFixtures];
 import * as browser from './lifecycle';
 import * as node from '../../../native-core/src/generated/lifecycle';
 

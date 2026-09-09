@@ -8,6 +8,14 @@
 #include <utility>
 
 namespace corevideo::modules {
+namespace {
+int64_t evidenceNowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+constexpr const char* operationNames[] = {
+    "configure", "start", "program-video", "iso-video", "program-audio", "iso-audio", "stop"};
+}  // namespace
 
 AsyncEncoderSink::AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner)
     : AsyncEncoderSink(std::move(inner), Options{}) {}
@@ -180,6 +188,8 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       const auto& source = item.isoSources.front();
       state_->lastIsoFrameIdBySource[source.sourceId] = source.frame.frameId;
     }
+    item.enqueuedMs = evidenceNowMs();
+    ++state_->evidence.enqueued[static_cast<size_t>(item.kind)];
     state_->queue.push_back(std::move(item));
   }
   state_->queueCv.notify_one();
@@ -308,6 +318,13 @@ void AsyncEncoderSink::stopRecording() {
     state_->active.store(false, std::memory_order_release);
     item.seq = state_->nextSeq++;
     item.generation = state_->generation;
+    item.enqueuedMs = evidenceNowMs();
+    ++state_->evidence.enqueued[static_cast<size_t>(item.kind)];
+    state_->evidence.stopGeneration = item.generation;
+    state_->evidence.stopRequestedMs = item.enqueuedMs;
+    state_->evidence.finalizeStartedMs = 0;
+    state_->evidence.finalizeFinishedMs = 0;
+    state_->evidence.finalizeResult = "pending";
     state_->queue.push_back(std::move(item));
     std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
     state_->snapshot.active = false;
@@ -333,6 +350,26 @@ OutputSession AsyncEncoderSink::session() const {
 uint64_t AsyncEncoderSink::droppedVideoFrames() const { return state_->droppedVideo.load(); }
 uint64_t AsyncEncoderSink::droppedAudioPackets() const { return state_->droppedAudio.load(); }
 
+AsyncEncoderSink::Evidence AsyncEncoderSink::evidence() const {
+  std::lock_guard<std::mutex> lock(state_->queueMutex);
+  auto result = state_->evidence;
+  const auto now = evidenceNowMs();
+  result.generation = state_->generation;
+  result.queueDepth = state_->queue.size();
+  result.droppedVideo = state_->droppedVideo.load(std::memory_order_relaxed);
+  result.droppedAudio = state_->droppedAudio.load(std::memory_order_relaxed);
+  for (const auto& item : state_->queue) {
+    ++result.queuedByKind[static_cast<size_t>(item.kind)];
+    result.oldestQueuedAgeMs = std::max(result.oldestQueuedAgeMs, now - item.enqueuedMs);
+  }
+  if (state_->applying) result.operationAgeMs = now - result.operationStartedMs;
+  {
+    std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
+    if (state_->snapshot.lifecycle) result.lifecycleState = state_->snapshot.lifecycle->state;
+  }
+  return result;
+}
+
 bool AsyncEncoderSink::drainForTest(std::chrono::milliseconds timeout) {
   uint64_t target = 0;
   {
@@ -355,6 +392,7 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       if (state->queue.empty()) {
         // stop requested and nothing left to write — finalize done.
         state->writerDone = true;
+        state->evidence.operation = "stopped";
         state->appliedCv.notify_all();
         return;
       }
@@ -399,6 +437,15 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       item = std::move(*selected);
       state->queue.erase(selected);
       state->applying = true;
+      auto& evidence = state->evidence;
+      evidence.operation = operationNames[static_cast<size_t>(item.kind)];
+      evidence.operationGeneration = item.generation;
+      evidence.operationSequence = item.seq;
+      evidence.operationStartedMs = evidenceNowMs();
+      if (item.kind == Kind::StopRecording && evidence.stopGeneration == item.generation) {
+        evidence.finalizeStartedMs = evidence.operationStartedMs;
+        evidence.finalizeResult = "running";
+      }
     }
 
     // Finalization remains pending until the actual writer returns. Only this
@@ -412,9 +459,12 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
     }
     OutputSession fresh;
     std::string failure;
+    bool invoked = false;
+    bool observed = false;
     try {
       if (!state->inner) throw std::runtime_error("Recording writer is unavailable");
       if (item.generation != failedGeneration || item.kind == Kind::StopRecording) {
+      invoked = true;
       switch (item.kind) {
         case Kind::Configure:
           state->inner->configureRecording(item.request);
@@ -441,6 +491,7 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       }
       }
       fresh = state->inner->session();
+      observed = true;
       if (item.kind == Kind::Start) {
         startVideoCount = fresh.recordingVideoFrameCount;
         madeProgress = false;
@@ -464,6 +515,30 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
     {
       // Same lock order as producer-side Start/Stop publication.
       std::lock_guard<std::mutex> queueLock(state->queueMutex);
+      auto& evidence = state->evidence;
+      const auto now = evidenceNowMs();
+      if (invoked) ++evidence.completedCalls[static_cast<size_t>(item.kind)];
+      if (observed && item.kind != Kind::Configure) {
+        const bool sameGeneration = evidence.writtenGeneration == item.generation;
+        if (!sameGeneration) evidence.lastWriterProgressMs = 0;
+        if (item.kind != Kind::Start &&
+            (fresh.recordingVideoFrameCount > (sameGeneration ? evidence.programVideoWritten : 0) ||
+             fresh.recordingAudioPacketCount > (sameGeneration ? evidence.programAudioPacketsWritten : 0)))
+          evidence.lastWriterProgressMs = now;
+        evidence.writtenGeneration = item.generation;
+        evidence.programVideoWritten = fresh.recordingVideoFrameCount;
+        evidence.programAudioPacketsWritten = fresh.recordingAudioPacketCount;
+      }
+      if (!failure.empty() && evidence.firstFailure.empty()) {
+        evidence.firstFailure = failure.substr(0, 512);
+        evidence.firstFailureGeneration = item.generation;
+        evidence.firstFailureMs = now;
+      }
+      if (item.kind == Kind::StopRecording && evidence.stopGeneration == item.generation) {
+        evidence.finalizeFinishedMs = now;
+        // Returned is deliberately not an artifact-validity claim.
+        evidence.finalizeResult = failure.empty() ? "returned" : "failed";
+      }
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
       if (item.generation == state->generation && state->snapshot.lifecycle &&
           (item.kind != Kind::Configure || !failure.empty())) {
@@ -478,7 +553,14 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
             lifecycle.finalized = madeProgress;
             lifecycle.state = madeProgress ? "completed" : "failed";
             lifecycle.health = madeProgress ? "healthy" : "failed";
-            if (!madeProgress) lifecycle.error = "Recording stopped before any media was written";
+            if (!madeProgress) {
+              lifecycle.error = "Recording stopped before any media was written";
+              if (evidence.firstFailure.empty()) {
+                evidence.firstFailure = lifecycle.error->substr(0, 512);
+                evidence.firstFailureGeneration = item.generation;
+                evidence.firstFailureMs = now;
+              }
+            }
           } else if (lifecycle.desiredActive) {
             lifecycle.state = madeProgress ? "live" : "starting";
             lifecycle.health = madeProgress ? "healthy" : "unknown";
@@ -501,6 +583,8 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       // within a control-barrier run, so drainForTest uses queue+applying state.
       state->appliedSeq = item.seq;
       state->applying = false;
+      state->evidence.operation = "idle";
+      state->evidence.operationStartedMs = 0;
     }
     state->appliedCv.notify_all();
   }

@@ -9,6 +9,7 @@
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
 #include "modules/AudioDsp.h"
+#include "modules/AsyncEncoderSink.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
@@ -716,6 +717,86 @@ rpc::Json MediaCore::sessionState() const {
       {"logTruncated", static_cast<double>(logStats.truncated)},
       {"logSinkFailures", static_cast<double>(logStats.sinkFailures)},
       {"logQueued", static_cast<double>(logStats.queued)}});
+  if (const auto* asyncEncoder = dynamic_cast<const modules::AsyncEncoderSink*>(modules_.encoder.get())) {
+    const auto encoderEvidence = asyncEncoder->evidence();
+    static constexpr std::array<const char*, 7> evidenceKinds{
+        "configure", "start", "programVideo", "isoVideo", "programAudio", "isoAudio", "stop"};
+    rpc::Json::Object enqueued, completed, queued;
+    for (size_t i = 0; i < evidenceKinds.size(); ++i) {
+      enqueued.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.enqueued[i]));
+      completed.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.completedCalls[i]));
+      queued.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.queuedByKind[i]));
+    }
+    state.emplace("encoderEvidence", rpc::Json::Object{
+        {"metricVersion", "async-encoder-evidence-v1"},
+        {"generation", static_cast<double>(encoderEvidence.generation)},
+        {"lifecycleState", encoderEvidence.lifecycleState},
+        {"operation", encoderEvidence.operation},
+        {"operationGeneration", static_cast<double>(encoderEvidence.operationGeneration)},
+        {"operationSequence", static_cast<double>(encoderEvidence.operationSequence)},
+        {"operationAgeMs", static_cast<double>(encoderEvidence.operationAgeMs)},
+        {"queueDepth", static_cast<double>(encoderEvidence.queueDepth)},
+        {"oldestQueuedAgeMs", static_cast<double>(encoderEvidence.oldestQueuedAgeMs)},
+        {"enqueued", std::move(enqueued)}, {"completedCalls", std::move(completed)},
+        {"queuedByKind", std::move(queued)},
+        {"droppedVideo", static_cast<double>(encoderEvidence.droppedVideo)},
+        {"droppedAudio", static_cast<double>(encoderEvidence.droppedAudio)},
+        {"lastWriterProgressMs", static_cast<double>(encoderEvidence.lastWriterProgressMs)},
+        {"programVideoWritten", static_cast<double>(encoderEvidence.programVideoWritten)},
+        {"programAudioPacketsWritten", static_cast<double>(encoderEvidence.programAudioPacketsWritten)},
+        {"writtenGeneration", static_cast<double>(encoderEvidence.writtenGeneration)},
+        {"stopGeneration", static_cast<double>(encoderEvidence.stopGeneration)},
+        {"stopRequestedMs", static_cast<double>(encoderEvidence.stopRequestedMs)},
+        {"finalizeStartedMs", static_cast<double>(encoderEvidence.finalizeStartedMs)},
+        {"finalizeFinishedMs", static_cast<double>(encoderEvidence.finalizeFinishedMs)},
+        {"finalizeResult", encoderEvidence.finalizeResult},
+        {"firstFailure", encoderEvidence.firstFailure},
+        {"firstFailureGeneration", static_cast<double>(encoderEvidence.firstFailureGeneration)},
+        {"firstFailureMs", static_cast<double>(encoderEvidence.firstFailureMs)}});
+  }
+  const auto evidenceNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  const auto progressAgeMs = [evidenceNowNs](int64_t lastProgressNs) -> double {
+    return lastProgressNs > 0
+        ? static_cast<double>((std::max)(int64_t{0}, evidenceNowNs - lastProgressNs)) / 1'000'000.0
+        : -1.0;
+  };
+  const auto renderLastProgressNs = renderWorkerLastProgressNs_.load(std::memory_order_relaxed);
+  const auto audioLastProgressNs = audioWorkerLastProgressNs_.load(std::memory_order_relaxed);
+  const auto videoOutputLastProgressNs = videoOutputWorkerLastProgressNs_.load(std::memory_order_relaxed);
+  state.emplace("realtimeEvidence", rpc::Json::Object{
+      {"metricVersion", "realtime-worker-evidence-v1"},
+      {"render", rpc::Json::Object{
+          {"generation", static_cast<double>(renderWorkerGeneration_.load(std::memory_order_relaxed))},
+          {"observed", renderLastProgressNs > 0},
+          {"progressAgeMs", progressAgeMs(renderLastProgressNs)},
+          {"completedSlots", static_cast<double>(renderWorkerCompletedSlots_.load(std::memory_order_relaxed))},
+          {"skippedSlots", static_cast<double>(renderWorkerSkippedSlots_.load(std::memory_order_relaxed))},
+          {"deadlineMisses", static_cast<double>(renderWorkerDeadlineMisses_.load(std::memory_order_relaxed))},
+          {"maximumLatenessNs", static_cast<double>(renderWorkerMaximumLatenessNs_.load(std::memory_order_relaxed))},
+          {"lockWaitTotalNs", static_cast<double>(renderWorkerLockWaitTotalNs_.load(std::memory_order_relaxed))},
+          {"lockWaitMaximumNs", static_cast<double>(renderWorkerLockWaitMaximumNs_.load(std::memory_order_relaxed))},
+          {"workTotalNs", static_cast<double>(renderWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
+          {"workMaximumNs", static_cast<double>(renderWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
+          {"eventDrainTotalNs", static_cast<double>(renderWorkerDrainTotalNs_.load(std::memory_order_relaxed))},
+          {"eventDrainMaximumNs", static_cast<double>(renderWorkerDrainMaximumNs_.load(std::memory_order_relaxed))},
+          {"gpuCompletionVerified", false}, {"deliveryVerified", false}}},
+      {"audio", rpc::Json::Object{
+          {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
+          {"observed", audioLastProgressNs > 0},
+          {"progressAgeMs", progressAgeMs(audioLastProgressNs)},
+          {"completedTicks", static_cast<double>(audioWorkerCompletedTicks_.load(std::memory_order_relaxed))},
+          {"workTotalNs", static_cast<double>(audioWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
+          {"workMaximumNs", static_cast<double>(audioWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
+          {"pacerReanchors", static_cast<double>(audioWorkerReanchors_.load(std::memory_order_relaxed))},
+          {"discardedTimelineNs", static_cast<double>(audioWorkerDiscardedTimelineNs_.load(std::memory_order_relaxed))}}},
+      {"videoOutput", rpc::Json::Object{
+          {"generation", static_cast<double>(videoOutputWorkerGeneration_.load(std::memory_order_relaxed))},
+          {"observed", videoOutputLastProgressNs > 0},
+          {"progressAgeMs", progressAgeMs(videoOutputLastProgressNs)},
+          {"completedTicks", static_cast<double>(videoOutputWorkerCompletedTicks_.load(std::memory_order_relaxed))},
+          {"workTotalNs", static_cast<double>(videoOutputWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
+          {"workMaximumNs", static_cast<double>(videoOutputWorkerWorkMaximumNs_.load(std::memory_order_relaxed))}}}});
   const auto zoomCapture = zoomSnapshot();
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
@@ -1272,6 +1353,73 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
                                  enabled ? "enabled" : "disabled");
   }
   publishProgramOutputConfiguration();
+}
+
+namespace {
+int64_t steadyNowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void updateAtomicMaximum(std::atomic<int64_t>& destination, int64_t value) {
+  auto current = destination.load(std::memory_order_relaxed);
+  while (current < value &&
+         !destination.compare_exchange_weak(current, value, std::memory_order_relaxed)) {}
+}
+}  // namespace
+
+void MediaCore::reportRenderWorkerStarted() {
+  renderWorkerGeneration_.fetch_add(1, std::memory_order_relaxed);
+  renderWorkerLastProgressNs_.store(0, std::memory_order_relaxed);
+}
+
+void MediaCore::reportRenderWorkerProgress(int64_t completedSlots, int64_t skippedSlots,
+                                           int64_t deadlineMisses, int64_t maximumLatenessNs,
+                                           int64_t lockWaitNs, int64_t workNs, int64_t drainNs) {
+  renderWorkerCompletedSlots_.store(completedSlots, std::memory_order_relaxed);
+  renderWorkerSkippedSlots_.store(skippedSlots, std::memory_order_relaxed);
+  // Keep the worker's CPU-completion misses distinct from the legacy aggregate,
+  // which also includes explicitly skipped slots reported after cadence advance.
+  // Overwriting the aggregate here would make a cumulative loss counter go down.
+  renderWorkerDeadlineMisses_.store(deadlineMisses, std::memory_order_relaxed);
+  updateAtomicMaximum(renderWorkerMaximumLatenessNs_, maximumLatenessNs);
+  renderWorkerLockWaitTotalNs_.fetch_add((std::max)(int64_t{0}, lockWaitNs), std::memory_order_relaxed);
+  renderWorkerWorkTotalNs_.fetch_add((std::max)(int64_t{0}, workNs), std::memory_order_relaxed);
+  renderWorkerDrainTotalNs_.fetch_add((std::max)(int64_t{0}, drainNs), std::memory_order_relaxed);
+  updateAtomicMaximum(renderWorkerLockWaitMaximumNs_, lockWaitNs);
+  updateAtomicMaximum(renderWorkerWorkMaximumNs_, workNs);
+  updateAtomicMaximum(renderWorkerDrainMaximumNs_, drainNs);
+  renderWorkerLastProgressNs_.store(steadyNowNs(), std::memory_order_release);
+}
+
+void MediaCore::reportAudioWorkerStarted() {
+  audioWorkerGeneration_.fetch_add(1, std::memory_order_relaxed);
+  audioWorkerLastProgressNs_.store(0, std::memory_order_relaxed);
+}
+
+void MediaCore::reportAudioWorkerProgress(int64_t workNs) {
+  audioWorkerCompletedTicks_.fetch_add(1, std::memory_order_relaxed);
+  audioWorkerWorkTotalNs_.fetch_add((std::max)(int64_t{0}, workNs), std::memory_order_relaxed);
+  updateAtomicMaximum(audioWorkerWorkMaximumNs_, workNs);
+  audioWorkerLastProgressNs_.store(steadyNowNs(), std::memory_order_release);
+}
+
+void MediaCore::reportAudioWorkerReanchor(int64_t discardedTimelineNs) {
+  audioWorkerReanchors_.fetch_add(1, std::memory_order_relaxed);
+  audioWorkerDiscardedTimelineNs_.fetch_add(
+      (std::max)(int64_t{0}, discardedTimelineNs), std::memory_order_relaxed);
+}
+
+void MediaCore::reportVideoOutputWorkerStarted() {
+  videoOutputWorkerGeneration_.fetch_add(1, std::memory_order_relaxed);
+  videoOutputWorkerLastProgressNs_.store(0, std::memory_order_relaxed);
+}
+
+void MediaCore::reportVideoOutputWorkerProgress(int64_t workNs) {
+  videoOutputWorkerCompletedTicks_.fetch_add(1, std::memory_order_relaxed);
+  videoOutputWorkerWorkTotalNs_.fetch_add((std::max)(int64_t{0}, workNs), std::memory_order_relaxed);
+  updateAtomicMaximum(videoOutputWorkerWorkMaximumNs_, workNs);
+  videoOutputWorkerLastProgressNs_.store(steadyNowNs(), std::memory_order_release);
 }
 
 void MediaCore::beginTakeTransition(const rpc::Json& command) {

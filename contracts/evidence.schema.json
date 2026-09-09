@@ -1,0 +1,1316 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corevideo.pro/contracts/evidence.schema.json",
+  "title": "Stage-specific media and output evidence contracts",
+  "$defs": {
+    "AcceptedOperationObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "operationId",
+        "expectedRevision"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "accepted"
+          ]
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "AppliedOperationObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "operationId",
+        "appliedRevision"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "applied"
+          ]
+        },
+        "operationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appliedRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "RenderedMediaObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "planId",
+        "planGeneration",
+        "streamId",
+        "streamGeneration",
+        "mediaKind",
+        "sequenceStart",
+        "sequenceCount",
+        "contentStartNs",
+        "contentDurationNs",
+        "resourceId",
+        "leaseId",
+        "leaseGeneration",
+        "completionToken"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "rendered"
+          ]
+        },
+        "planId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mediaKind": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "video"
+          ]
+        },
+        "sequenceStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sequenceCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "contentStartNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "contentDurationNs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "resourceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leaseGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "completionToken": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "DeliveredMediaObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "planId",
+        "planGeneration",
+        "streamId",
+        "streamGeneration",
+        "mediaKind",
+        "sequenceStart",
+        "sequenceCount",
+        "contentStartNs",
+        "contentDurationNs",
+        "destinationId",
+        "destinationGeneration",
+        "sessionId",
+        "deliveryId",
+        "scheduledAtNs",
+        "consumedAtNs"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "delivered"
+          ]
+        },
+        "planId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mediaKind": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "video"
+          ]
+        },
+        "sequenceStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sequenceCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "contentStartNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "contentDurationNs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destinationGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deliveryId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scheduledAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "consumedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "PresentedMediaObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "planId",
+        "planGeneration",
+        "streamId",
+        "streamGeneration",
+        "mediaKind",
+        "sequenceStart",
+        "sequenceCount",
+        "contentStartNs",
+        "contentDurationNs",
+        "destinationId",
+        "destinationGeneration",
+        "sessionId",
+        "presentationId",
+        "presentedAtNs"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "presented"
+          ]
+        },
+        "planId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mediaKind": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "video"
+          ]
+        },
+        "sequenceStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sequenceCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "contentStartNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "contentDurationNs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destinationGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "presentationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "presentedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "MuxedMediaObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "planId",
+        "planGeneration",
+        "streamId",
+        "streamGeneration",
+        "mediaKind",
+        "sequenceStart",
+        "sequenceCount",
+        "contentStartNs",
+        "contentDurationNs",
+        "destinationId",
+        "destinationGeneration",
+        "sessionId",
+        "artifactId",
+        "packetStart",
+        "packetCount"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "muxed"
+          ]
+        },
+        "planId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mediaKind": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "video"
+          ]
+        },
+        "sequenceStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sequenceCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "contentStartNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "contentDurationNs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destinationGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "packetStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "packetCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "CommittedMediaObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "planId",
+        "planGeneration",
+        "streamId",
+        "streamGeneration",
+        "mediaKind",
+        "sequenceStart",
+        "sequenceCount",
+        "contentStartNs",
+        "contentDurationNs",
+        "destinationId",
+        "destinationGeneration",
+        "sessionId",
+        "artifactId",
+        "commitId",
+        "byteOffset",
+        "byteCount"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "committed"
+          ]
+        },
+        "planId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mediaKind": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "video"
+          ]
+        },
+        "sequenceStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sequenceCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "contentStartNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "contentDurationNs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destinationGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "commitId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "byteOffset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "byteCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "CompletedOutputObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "stage",
+        "destinationId",
+        "destinationGeneration",
+        "sessionId",
+        "completionId",
+        "finalPlanId",
+        "finalPlanGeneration",
+        "finalStreamId",
+        "finalStreamGeneration",
+        "mediaKind",
+        "deliveredUnits",
+        "muxedPackets",
+        "committedBytes"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "completed"
+          ]
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destinationGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "completionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finalPlanId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finalPlanGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "finalStreamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finalStreamGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mediaKind": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "video"
+          ]
+        },
+        "deliveredUnits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "muxedPackets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "committedBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ResourceLeaseDescriptor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "resourceId",
+        "leaseId",
+        "leaseGeneration",
+        "resourceKind",
+        "ownerDomain",
+        "state",
+        "byteLength"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "resourceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leaseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leaseGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "resourceKind": {
+          "type": "string",
+          "enum": [
+            "cpuBuffer",
+            "gpuTexture",
+            "sharedMemory",
+            "encoder",
+            "sdkSubscription"
+          ]
+        },
+        "ownerDomain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "retiring",
+            "released"
+          ]
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "DestinationProgress": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "destinationId",
+        "destinationGeneration",
+        "sessionId",
+        "planId",
+        "planGeneration",
+        "streamId",
+        "streamGeneration",
+        "mediaKind",
+        "state",
+        "producedUnits",
+        "deliveredUnits",
+        "presentedUnits",
+        "muxedPackets",
+        "committedBytes",
+        "deadlineMisses",
+        "droppedUnits",
+        "counterEpoch"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destinationGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mediaKind": {
+          "type": "string",
+          "enum": [
+            "audio",
+            "video"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "preparing",
+            "ready",
+            "running",
+            "finalizing",
+            "completed",
+            "failed",
+            "interrupted"
+          ]
+        },
+        "producedUnits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deliveredUnits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "presentedUnits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "muxedPackets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "committedBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deadlineMisses": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "droppedUnits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "counterEpoch": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ArtifactValidationResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "observationId",
+        "processEpoch",
+        "authorityEpoch",
+        "controlRevision",
+        "clockId",
+        "clockGeneration",
+        "observedAtNs",
+        "destinationId",
+        "destinationGeneration",
+        "sessionId",
+        "artifactId",
+        "artifactRevision",
+        "validatorId",
+        "validatorVersion",
+        "status",
+        "checkedAtNs",
+        "byteLength",
+        "packetCount",
+        "decodedUnits",
+        "checkSetId",
+        "resultId"
+      ],
+      "properties": {
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "processEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorityEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clockGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destinationGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "validatorId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validatorVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "incomplete"
+          ]
+        },
+        "checkedAtNs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "packetCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "decodedUnits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "checkSetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resultId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
