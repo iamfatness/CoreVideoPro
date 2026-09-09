@@ -45,6 +45,15 @@ struct Renderer final : Worker::Renderer {
   std::shared_ptr<Fixture> f;
 };
 Worker::Factory factory(std::shared_ptr<Fixture> f) { return [f](const auto&, const auto&) {return std::make_unique<Renderer>(f);}; }
+// submit() returns Contended rather than waiting when the worker holds its own
+// lock. That is deliberate -- rule 3, no real-time worker waits -- so Contended
+// is a legitimate outcome the CALLER must handle, never a failure. A renderer
+// that returns immediately makes the worker cycle its lock tightly, and under a
+// sanitizer that window is wide enough to hit routinely: a test that ignored the
+// return silently never queued its work and then timed out waiting to render.
+// Retry only on Contended; every other admission is returned as-is so tests that
+// assert Stale or Disabled still assert exactly that.
+Worker::Admission submitRetry(Worker& worker, std::shared_ptr<const Worker::Work> work);
 bool waitRendered(Worker& worker, uint64_t count) {
   const auto until = std::chrono::steady_clock::now() + kWait;
   while (std::chrono::steady_clock::now() < until) {
@@ -52,6 +61,15 @@ bool waitRendered(Worker& worker, uint64_t count) {
     waitTick();
   }
   return false;
+}
+Worker::Admission submitRetry(Worker& worker, std::shared_ptr<const Worker::Work> work) {
+  const auto until = std::chrono::steady_clock::now() + kWait;
+  for (;;) {
+    const auto admission = worker.submit(work);
+    if (admission != Worker::Admission::Contended) return admission;
+    if (std::chrono::steady_clock::now() >= until) return admission;
+    waitTick();
+  }
 }
 }
 TEST(ProgramRenderWorker, DisabledCreatesNoContextAndDoesNotSubmit) {
@@ -63,7 +81,7 @@ TEST(ProgramRenderWorker, DisabledCreatesNoContextAndDoesNotSubmit) {
 }
 TEST(ProgramRenderWorker, BlockedRendererCannotBlockSubmitAndQueueRemainsBounded) {
   auto f = std::make_shared<Fixture>(); Worker worker(config(), factory(f));
-  ASSERT_EQ(worker.submit(work(0)), Worker::Admission::Accepted); ASSERT_TRUE(f->waitEntered());
+  ASSERT_EQ(submitRetry(worker, work(0)), Worker::Admission::Accepted); ASSERT_TRUE(f->waitEntered());
   auto one = work(1), two = work(2), three = work(3);
   auto producer = std::async(std::launch::async, [&] {
     return std::vector<Worker::Admission>{worker.submit(one), worker.submit(two), worker.submit(three)};
@@ -84,17 +102,17 @@ TEST(ProgramRenderWorker, BlockedRendererCannotBlockSubmitAndQueueRemainsBounded
 }
 TEST(ProgramRenderWorker, ContextLifecycleBelongsToSingleWorkerThread) {
   auto f = std::make_shared<Fixture>(); f->release = true;
-  Worker worker(config(), factory(f)); worker.submit(work(0)); ASSERT_TRUE(waitRendered(worker, 1));
+  Worker worker(config(), factory(f)); submitRetry(worker, work(0)); ASSERT_TRUE(waitRendered(worker, 1));
   ASSERT_TRUE(worker.shutdown()); ASSERT_TRUE(f->waitDestroyed());
   EXPECT_EQ(f->createdThread, f->renderedThread); EXPECT_EQ(f->createdThread, f->destroyedThread);
   EXPECT_FALSE(f->createdThread == std::this_thread::get_id());
 }
 TEST(ProgramRenderWorker, GenerationResetFencesQueuedAndInflightCompletions) {
   auto f = std::make_shared<Fixture>(); Worker worker(config(), factory(f));
-  worker.submit(work(0)); ASSERT_TRUE(f->waitEntered()); worker.submit(work(1));
+  submitRetry(worker, work(0)); ASSERT_TRUE(f->waitEntered()); submitRetry(worker, work(1));
   EXPECT_EQ(worker.reset(generation(), generation(2)), Worker::Admission::Accepted);
-  EXPECT_EQ(worker.submit(work(2)), Worker::Admission::Stale);
-  EXPECT_EQ(worker.submit(work(0, 2)), Worker::Admission::Accepted);
+  EXPECT_EQ(submitRetry(worker, work(2)), Worker::Admission::Stale);
+  EXPECT_EQ(submitRetry(worker, work(0, 2)), Worker::Admission::Accepted);
   EXPECT_FALSE(worker.lastRendered()); f->unblock(); ASSERT_TRUE(waitRendered(worker, 1));
   EXPECT_EQ(worker.lastRendered()->generation.renderer, 2ULL);
   EXPECT_EQ(worker.diagnostics().staleCompletions, 1ULL); EXPECT_EQ(worker.diagnostics().skipped, 2ULL);
@@ -105,7 +123,7 @@ TEST(ProgramRenderWorker, NoncooperativeRenderShutdownIsBoundedAndOwnerSurvivesU
   auto c = config(); c.shutdownBudget = std::chrono::milliseconds(5);
   bool completed; std::chrono::steady_clock::duration elapsed;
   {
-    Worker worker(c, factory(f)); worker.submit(work(0)); ASSERT_TRUE(f->waitEntered());
+    Worker worker(c, factory(f)); submitRetry(worker, work(0)); ASSERT_TRUE(f->waitEntered());
     const auto start = std::chrono::steady_clock::now(); completed = worker.shutdown(); elapsed = std::chrono::steady_clock::now() - start;
   }
   f->unblock(); ASSERT_TRUE(f->waitDestroyed());
@@ -117,15 +135,15 @@ TEST(ProgramRenderWorker, ImmutableWorkAndStaleRevisionCannotOverwriteRenderedPl
   auto frozen = std::make_shared<const Worker::Work>(generation(), 4, 0, 0, plans);
   plans.render.stamp.eligibilityIdentity = "mutated"; EXPECT_EQ(frozen->plans.render.stamp.eligibilityIdentity, "original");
   auto f = std::make_shared<Fixture>(); f->release = true; Worker worker(config(), factory(f));
-  worker.submit(frozen); ASSERT_TRUE(waitRendered(worker, 1));
-  EXPECT_EQ(worker.submit(work(1, 1, 3)), Worker::Admission::Stale);
-  EXPECT_EQ(worker.submit(work(0, 1, 4)), Worker::Admission::Stale);
+  submitRetry(worker, frozen); ASSERT_TRUE(waitRendered(worker, 1));
+  EXPECT_EQ(submitRetry(worker, work(1, 1, 3)), Worker::Admission::Stale);
+  EXPECT_EQ(submitRetry(worker, work(0, 1, 4)), Worker::Admission::Stale);
   EXPECT_EQ(worker.diagnostics().deadlineMisses, 1ULL);
   EXPECT_TRUE(worker.shutdown());
 }
 TEST(ProgramRenderWorker, FactoryFailureIsContainedAndWorkMetadataIsBounded) {
   Worker worker(config(), [](const auto&, const auto&) -> std::unique_ptr<Worker::Renderer> {throw std::runtime_error("factory");});
-  worker.submit(work(0));
+  submitRetry(worker, work(0));
   const auto until = std::chrono::steady_clock::now() + kWait;
   while (!worker.diagnostics().failed && std::chrono::steady_clock::now() < until) waitTick();
   EXPECT_EQ(worker.diagnostics().failed, 1ULL); EXPECT_TRUE(worker.shutdown());
@@ -138,13 +156,13 @@ TEST(ProgramRenderWorker, ShutdownReleasesQueuedAndLatestOwnersEvenWhenRenderIsS
   auto c = config(); c.shutdownBudget = std::chrono::milliseconds(5);
   Worker worker(c, factory(f));
   auto first = work(0); std::weak_ptr<const Worker::Work> latest = first;
-  worker.submit(first); first.reset(); ASSERT_TRUE(waitRendered(worker, 1));
+  submitRetry(worker, first); first.reset(); ASSERT_TRUE(waitRendered(worker, 1));
   EXPECT_FALSE(latest.expired());
   {std::lock_guard lock(f->mutex); f->release = false; f->entered = false;}
   auto second = work(1); std::weak_ptr<const Worker::Work> inflight = second;
-  worker.submit(second); second.reset(); ASSERT_TRUE(f->waitEntered());
+  submitRetry(worker, second); second.reset(); ASSERT_TRUE(f->waitEntered());
   auto third = work(2); std::weak_ptr<const Worker::Work> queued = third;
-  worker.submit(third); third.reset();
+  submitRetry(worker, third); third.reset();
   const bool done = worker.shutdown();
   const bool latestReleased = latest.expired(), queuedReleased = queued.expired(), inflightRetained = !inflight.expired();
   f->unblock(); ASSERT_TRUE(f->waitDestroyed());
