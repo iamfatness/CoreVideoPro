@@ -29,6 +29,7 @@ TEST(SourceRegistry, DuplicateNamesDoNotBindOrMergePeopleAndSources) {
   EXPECT_EQ(registry.add(participant("source-a")).result, Registry::Result::Applied);
   auto bound = participant("source-b", "43");
   bound.personId = corevideo::core::PersonId{"person-b"};
+  bound.personGeneration = 1;
   EXPECT_EQ(registry.add(bound).result, Registry::Result::Applied);
   const auto snapshot = registry.snapshot();
   ASSERT_EQ(snapshot->sources.size(), 2u);
@@ -38,6 +39,7 @@ TEST(SourceRegistry, DuplicateNamesDoNotBindOrMergePeopleAndSources) {
   bound.sourceId = {"source-c"};
   bound.externalId = "44";
   bound.personId = corevideo::core::PersonId{"unknown-person"};
+  bound.personGeneration = 1;
   EXPECT_EQ(registry.add(bound).result, Registry::Result::Invalid);
 }
 
@@ -46,6 +48,7 @@ TEST(SourceRegistry, ReconnectResetsTransientStateAndRejectsEveryOldMutation) {
   registry.upsertPerson({{"durable-person"}, "Alex"});
   auto registration = participant("camera");
   registration.personId = corevideo::core::PersonId{"durable-person"};
+  registration.personGeneration = 1;
   const auto original = registry.add(registration);
   ASSERT_TRUE(original.token.has_value());
   registry.setSubscription(*original.token, true, true);
@@ -66,6 +69,7 @@ TEST(SourceRegistry, ReconnectResetsTransientStateAndRejectsEveryOldMutation) {
   EXPECT_FALSE(after->sources[0].format.has_value());
   EXPECT_FALSE(after->sources[0].subscriptionObserved);
   EXPECT_EQ(after->sources[0].personId->value, "durable-person");
+  EXPECT_EQ(after->sources[0].personGeneration, 1ULL);
   EXPECT_EQ(registry.publish(*replacement.token, 0, 1, format()), Registry::Result::Applied);
 }
 
@@ -193,6 +197,15 @@ TEST(SourceRegistry, SemanticNoOpsDoNotAdvanceRegistryRevision) {
   EXPECT_EQ(registry.snapshot()->revision, revision);
 }
 
+TEST(SourceRegistry, PersonGenerationIsExplicitAndCannotMoveBackward) {
+  Registry registry("authority");
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "Alex", 2}), Registry::Result::Applied);
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "Renamed", 1}), Registry::Result::Stale);
+  EXPECT_EQ(registry.snapshot()->persons[0].displayName, "Alex");
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "Renamed", 2}), Registry::Result::Applied);
+  EXPECT_EQ(registry.snapshot()->persons[0].generation, 2ULL);
+}
+
 TEST(SourceRegistry, PublicationTimestampSupportsLongRunningMonotonicClocks) {
   Registry registry("authority");
   const auto added = registry.add(participant("camera"));
@@ -230,4 +243,17 @@ TEST(SourceRegistry, ProcessRetirementSerializesAgainstAddAndReplace) {
     ASSERT_EQ(replaced->sources.size(), 1u);
     EXPECT_EQ(replaced->sources[0].availability, Registry::Availability::Departed);
   }
+}
+
+TEST(SourceRegistry, IdentityAndEpochTombstoneAdmissionIsBounded) {
+  Registry registry("authority", 1, 1, 1);
+  EXPECT_EQ(registry.upsertPerson({{"person-a"}, "A"}), Registry::Result::Applied);
+  EXPECT_EQ(registry.upsertPerson({{"person-b"}, "B"}), Registry::Result::Exhausted);
+  EXPECT_EQ(registry.add(participant("camera-a", "1")).result, Registry::Result::Applied);
+  auto second = participant("camera-b", "2");
+  second.processEpoch = "meeting-2";
+  EXPECT_EQ(registry.add(second).result, Registry::Result::Exhausted);
+  EXPECT_EQ(registry.retireProcessEpoch("meeting-1"), Registry::Result::Applied);
+  EXPECT_EQ(registry.retireProcessEpoch("meeting-2"), Registry::Result::Exhausted);
+  EXPECT_EQ(registry.snapshot()->sources[0].availability, Registry::Availability::Departed);
 }
