@@ -189,3 +189,159 @@ TEST(ProgramBufferIntegration, RecordingCaptureEpochSurvivesSettingsAndRepeatedS
   (void)core.applyCommand(start);
   EXPECT_TRUE(recorded->requests.back().captureEpoch100ns > epoch);
 }
+
+namespace {
+// A Zoom source that hands the render gather one decoded I420 frame per selected
+// ISO participant, advancing frameId every poll so nothing downstream can dedup
+// the difference away.
+class IsoZoomSource final : public corevideo::modules::IZoomCaptureSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+    ++frameId;
+    std::vector<corevideo::modules::VideoFrame> frames;
+    for (const auto& participantId : participants) {
+      corevideo::modules::VideoFrame frame;
+      frame.participantId = participantId;
+      frame.width = frame.height = 2;
+      frame.i420Width = frame.i420Height = 2;
+      frame.i420 = std::make_shared<const std::vector<uint8_t>>(6, 128);
+      frame.frameId = frameId;
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
+  std::vector<std::string> participants{"host", "guest"};
+  int64_t frameId = 0;
+};
+
+// Counts which submit boundary each kind of media crossed. The point of the ISO
+// cadence test is WHERE the submit happened, so nothing here inspects pixels.
+class IsoCountingEncoder final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest&) override {}
+  corevideo::modules::OutputSession start(
+      const std::vector<std::string>& destinations, const std::vector<std::string>&) override {
+    if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
+      session_.recordingStatus = "recording";
+    }
+    session_.active = true;
+    session_.destinations = destinations;
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override { ++programSubmits; }
+  void submitIsoVideo(const std::vector<corevideo::modules::IsoSourceVideoFrame>& sources) override {
+    ++isoSubmits;
+    isoFramesSubmitted += sources.size();
+    for (const auto& source : sources) {
+      lastTimestamps100ns.push_back(source.timelineTimestamp100ns);
+    }
+  }
+  corevideo::modules::OutputSession session() const override { return session_; }
+  // The arming commands run synchronously on the direct/test path (applyCommands
+  // ticks), so the counters must start from the first tick under test, not from
+  // whatever setup already pushed through.
+  void reset() {
+    programSubmits = 0;
+    isoSubmits = 0;
+    isoFramesSubmitted = 0;
+    lastTimestamps100ns.clear();
+  }
+  int programSubmits = 0;
+  int isoSubmits = 0;
+  size_t isoFramesSubmitted = 0;
+  std::vector<int64_t> lastTimestamps100ns;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
+
+struct IsoCadenceRig {
+  std::unique_ptr<corevideo::core::MediaCore> core;
+  IsoCountingEncoder* encoder = nullptr;
+};
+
+IsoCadenceRig makeRecordingIsoRig() {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<IsoZoomSource>();
+  auto encoder = std::make_unique<IsoCountingEncoder>();
+  IsoCadenceRig rig;
+  rig.encoder = encoder.get();
+  modules.encoder = std::move(encoder);
+  rig.core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  const corevideo::rpc::Json isoIds =
+      corevideo::rpc::Json::Array{std::string("zoom:host"), std::string("zoom:guest")};
+  (void)rig.core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"},
+      {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+      {"filenamePrefix", "iso-cadence"},
+      {"format", "mp4"},
+      {"isoSourceIds", isoIds}});
+  (void)rig.core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-recording-session"}, {"sessionId", "iso-cadence"}, {"isoSourceIds", isoIds}});
+  (void)rig.core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{std::string("recording")}},
+      {"isoSourceIds", isoIds}});
+  return rig;
+}
+}  // namespace
+
+// S1: ISO video used to be submitted from runAudioOutputWork, which paces on the
+// ~50Hz AUDIO grid (960 samples at 48k). Every ISO stem was therefore sampled at
+// 50Hz and a 60fps source could not write more than ~50 distinct frames per
+// second into its own MP4. Program was moved to the signalled video tick for
+// exactly this reason; ISO now rides the same tick. This asserts WHERE the
+// submit happens, not how it is implemented: with a video tick running, the
+// audio worker must submit no ISO video at all, and the video tick must.
+TEST(ProgramBufferIntegration, IsoVideoIsSubmittedByTheVideoTickNotTheAudioWorker) {
+  auto rig = makeRecordingIsoRig();
+  auto& core = *rig.core;
+  core.setVideoOutputTickRunning(true);
+  std::mutex coreMutex;
+  rig.encoder->reset();
+
+  core.renderDisplayTick();
+  const int programBefore = rig.encoder->programSubmits;
+  core.renderAudioOutputTick(coreMutex);
+  EXPECT_EQ(rig.encoder->isoSubmits, 0)
+      << "the 20ms audio grid must not sample ISO video while a video tick owns it";
+  EXPECT_EQ(rig.encoder->programSubmits, programBefore)
+      << "Program is already owned by the video tick; the audio worker must not submit it either";
+
+  core.renderVideoOutputTick(coreMutex);
+  EXPECT_EQ(rig.encoder->isoSubmits, 1) << "the video tick must carry ISO video";
+  EXPECT_EQ(rig.encoder->isoFramesSubmitted, 2u) << "both selected ISO sources ride the same submit";
+  EXPECT_EQ(rig.encoder->programSubmits, programBefore + 1)
+      << "Program keeps reserved priority on the same tick";
+  for (const auto stamp : rig.encoder->lastTimestamps100ns) {
+    EXPECT_GT(stamp, 0) << "every ISO frame must carry the tick's timeline stamp";
+  }
+
+  // One submit per RENDERED frame: a video tick with no new program frame must
+  // not resubmit, or the sink's (sourceId, frameId) dedup would be papering over
+  // a second producer rather than a genuine repeat.
+  core.renderVideoOutputTick(coreMutex);
+  EXPECT_EQ(rig.encoder->isoSubmits, 1) << "no new program frame means no new ISO submit";
+
+  core.renderDisplayTick();
+  core.renderVideoOutputTick(coreMutex);
+  EXPECT_EQ(rig.encoder->isoSubmits, 2) << "a newly rendered frame carries the next ISO submit";
+  EXPECT_EQ(rig.encoder->isoFramesSubmitted, 4u);
+}
+
+// The direct/test path (no video tick) must keep working exactly as before:
+// videoOutputTickRunning_ is set true unconditionally in any real run, but the
+// guard exists so single-threaded callers still get Program AND ISO out.
+TEST(ProgramBufferIntegration, IsoVideoStillRidesTheAudioWorkerWithNoVideoTick) {
+  auto rig = makeRecordingIsoRig();
+  auto& core = *rig.core;
+  std::mutex coreMutex;
+  rig.encoder->reset();
+  core.renderDisplayTick();
+  core.renderAudioOutputTick(coreMutex);
+  EXPECT_EQ(rig.encoder->isoSubmits, 1)
+      << "with no video tick running the audio worker owns both Program and ISO";
+  EXPECT_EQ(rig.encoder->isoFramesSubmitted, 2u);
+  EXPECT_GT(rig.encoder->programSubmits, 0);
+}

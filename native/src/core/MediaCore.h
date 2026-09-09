@@ -722,6 +722,12 @@ class MediaCore {
   std::atomic<int64_t> audioWorkerWorkMaximumNs_{0};
   std::atomic<int64_t> audioWorkerReanchors_{0};
   std::atomic<int64_t> audioWorkerDiscardedTimelineNs_{0};
+  // Cumulative, monotonic count of interleaved PCM samples PERMANENTLY lost at
+  // the per-source feed FIFO cap (AudioFeedState::shedSamples), summed over
+  // every source for the life of the process. Never decreases and is never
+  // reset: the qualification harness treats any reset as a failure, and a shed
+  // is real audio no consumer will ever receive (rule 4 - no hidden repair).
+  std::atomic<int64_t> audioWorkerLostSamples_{0};
   std::atomic<int64_t> videoOutputWorkerGeneration_{0};
   std::atomic<int64_t> videoOutputWorkerCompletedTicks_{0};
   std::atomic<int64_t> videoOutputWorkerLastProgressNs_{0};
@@ -751,6 +757,15 @@ class MediaCore {
   // access to this pointer must use those functions.
   std::shared_ptr<const ProgramOutputConfiguration> programOutputConfiguration_;
   void publishProgramOutputConfiguration();
+  // ISO-1: the selected ISO sources' frames for the most recently RENDERED
+  // frame, published by the render gather (which already holds coreMutex and
+  // already snapshots latestIsoSourceFrames_) and consumed lock-free by the
+  // 60Hz video tick. Publishing rather than re-gathering keeps ISO off
+  // coreMutex entirely on the video path, so an ISO stem can never delay
+  // Program (rule 6). Null/empty means "nothing to submit this frame".
+  // Use the shared_ptr atomic free functions for every concurrent access, as
+  // with programOutputConfiguration_ above.
+  std::shared_ptr<const std::vector<modules::IsoSourceVideoFrame>> pendingIsoVideoSources_;
   std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
   int64_t lastBufferedDeliverySequence_ = 0;
   // Program-frame publish signal. The render thread bumps the counter and

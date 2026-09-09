@@ -237,7 +237,14 @@ try {
   }
 
   if (finalStreams.length < 2) failures.push(`expected 2 ISO streams, got ${finalStreams.length}`);
-  const rawTickRate = recordSeconds * 50;  // ~50 submit ticks/s upper bound
+  // Upper bound on RAW submits, which is what the frameId dedup has to sit below.
+  // ISO video is submitted by the 60Hz video tick (renderVideoOutputTick), beside
+  // Program — NOT by the ~50Hz audio worker it used to ride, whose 20ms period is
+  // an audio constant (960 samples at 48k) and structurally capped every ISO stem
+  // at ~50 distinct frames/s. Leaving 50 here after that move turns the fix itself
+  // into a failure: a healthy 60fps ISO writes ~52-60 frames/s, which is above the
+  // old bound and below this one.
+  const rawTickRate = recordSeconds * 60;
   const clapAlignmentsMs = [];
   for (const s of finalStreams) {
     if (Number(s.framesWritten) <= 0) failures.push(`ISO ${s.sourceId} muxed 0 frames`);

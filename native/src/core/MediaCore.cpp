@@ -789,7 +789,11 @@ rpc::Json MediaCore::sessionState() const {
           {"workTotalNs", static_cast<double>(audioWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
           {"workMaximumNs", static_cast<double>(audioWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
           {"pacerReanchors", static_cast<double>(audioWorkerReanchors_.load(std::memory_order_relaxed))},
-          {"discardedTimelineNs", static_cast<double>(audioWorkerDiscardedTimelineNs_.load(std::memory_order_relaxed))}}},
+          {"discardedTimelineNs", static_cast<double>(audioWorkerDiscardedTimelineNs_.load(std::memory_order_relaxed))},
+          // Cumulative interleaved PCM samples permanently shed at the feed
+          // FIFO cap, summed over every source. Monotonic for the life of the
+          // process; the qualification harness fails on any reset.
+          {"audioLostSamples", static_cast<double>(audioWorkerLostSamples_.load(std::memory_order_relaxed))}}},
       {"videoOutput", rpc::Json::Object{
           {"generation", static_cast<double>(videoOutputWorkerGeneration_.load(std::memory_order_relaxed))},
           {"observed", videoOutputLastProgressNs > 0},
@@ -5496,8 +5500,35 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       const std::string key = pid.find(':') != std::string::npos ? pid : "zoom:" + pid;
       latestIsoSourceFrames_[key] = frame;
     }
+    // ISO-1 (cadence): publish THIS rendered frame's ISO set for the 60Hz video
+    // tick. The tick submits it lock-free next to the Program submit, so ISO
+    // stems are sampled at render cadence instead of the 20ms audio grid (a
+    // 60fps source could never exceed ~50 distinct frames in its file). Built
+    // here because the render gather already holds coreMutex and already owns
+    // the frame snapshot above; the video tick therefore takes NO coreMutex for
+    // ISO and cannot delay Program (rule 6). Cost is one vector of shared_ptr
+    // refs — the same work this replaces in gatherAudioOutputWork, and strictly
+    // less than the map build directly above it. No pixel work under the lock.
+    auto isoForVideoTick = std::make_shared<std::vector<modules::IsoSourceVideoFrame>>();
+    isoForVideoTick->reserve(recordingIsoParticipantIds_.size());
+    for (const auto& rawId : recordingIsoParticipantIds_) {
+      const auto it = latestIsoSourceFrames_.find(normalizeIsoSourceId(rawId));
+      if (it != latestIsoSourceFrames_.end()) {
+        // displayName left empty: the sink maps by sourceId to a writer whose
+        // name/path were resolved at recording start (no roster lookup here).
+        isoForVideoTick->push_back({it->first, std::string(), it->second});
+      }
+    }
+    std::atomic_store_explicit(
+        &pendingIsoVideoSources_,
+        std::shared_ptr<const std::vector<modules::IsoSourceVideoFrame>>(std::move(isoForVideoTick)),
+        std::memory_order_release);
   } else if (!latestIsoSourceFrames_.empty()) {
     latestIsoSourceFrames_.clear();
+    std::atomic_store_explicit(
+        &pendingIsoVideoSources_,
+        std::shared_ptr<const std::vector<modules::IsoSourceVideoFrame>>(),
+        std::memory_order_release);
   }
   markStage(s_stageIngestUs, 0);
 
@@ -6019,7 +6050,14 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
   // ISO-1: pick the selected sources' latest frames (snapshotted under coreMutex
   // above in the render gather) into the work item — zero-copy shared_ptr refs.
-  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && !latestIsoSourceFrames_.empty()) {
+  // ONLY for the direct/test path. When a video tick is running it owns the ISO
+  // submit (renderVideoOutputTick, beside Program) from pendingIsoVideoSources_,
+  // and gathering here as well would both waste coreMutex hold time and risk a
+  // double submission that the sink's (sourceId, frameId) dedup would silently
+  // absorb. The two producers are mutually exclusive on this one flag, exactly
+  // as the Program submit is.
+  if (!videoOutputTickRunning_.load(std::memory_order_acquire) && work.recordingActive &&
+      !recordingIsoParticipantIds_.empty() && !latestIsoSourceFrames_.empty()) {
     for (const auto& rawId : recordingIsoParticipantIds_) {
       const std::string sourceId = normalizeIsoSourceId(rawId);
       const auto it = latestIsoSourceFrames_.find(sourceId);
@@ -6054,6 +6092,27 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // (buses, monitor, encoder) is exactly one tick of samples per source -
   // variable 480/960 blocks were audible as raw-path distortion.
   modules::steadyAudioFrameFeed(work.audioFrames, audioFeedStates_);
+
+  // AUDIO LOSS IS EVIDENCE, NOT A LOG LINE (rule 4). steadyAudioFrameFeed sheds
+  // at the per-source FIFO cap when this worker under-ticks; those interleaved
+  // samples are permanently gone from the recording mux, the stream and the
+  // monitor. Fold the per-source deltas into one cumulative session counter so
+  // `sessionState().realtimeEvidence.audio.audioLostSamples` can be differenced across a
+  // qualification interval. Delta-based, so the total is monotonic even if a
+  // source state is ever pruned and recreated; it counts PERMANENT loss only,
+  // never transient FIFO occupancy. audioFeedStates_ is audioOutputMutex_-owned,
+  // so this runs on the worker that owns it and publishes through an atomic.
+  int64_t shedDelta = 0;
+  for (auto& [sourceId, state] : audioFeedStates_) {
+    (void)sourceId;
+    if (state.shedSamples > state.shedSamplesPublished) {
+      shedDelta += static_cast<int64_t>(state.shedSamples - state.shedSamplesPublished);
+      state.shedSamplesPublished = state.shedSamples;
+    }
+  }
+  if (shedDelta > 0) {
+    audioWorkerLostSamples_.fetch_add(shedDelta, std::memory_order_relaxed);
+  }
 
   // Canonical bus rate for every source BEFORE any mixing (Zoom-source buzz:
   // 32k PCM summed raw into the 48k bus = wrong speed + per-tick shortfall).
@@ -6552,19 +6611,28 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // separate, faster tick cannot drift the A/V relationship; it just stops
   // dropping ~10 frameNumbers a second. Audio still leaves from this worker.
   const int64_t videoTimelineTimestamp100ns = monotonic100ns();
+  // ISO VIDEO IS SUBMITTED BY THE VIDEO TICK TOO, and for the same reason: on
+  // this 20ms grid every ISO stem was sampled at 50Hz, so a 60fps source could
+  // never write more than ~50 distinct frames per second into its own MP4 —
+  // about 17% of its motion, gone. AsyncEncoderSink dedups by
+  // (sourceId, frameId), which stops resubmit spam but cannot recover a frame
+  // this grid never sampled. ISO PTS is wall-clock and deduped by frame id
+  // exactly like Program, so a faster tick cannot drift A/V; it only stops
+  // dropping frames. Both submits are gated on the SAME flag, so exactly one
+  // producer is ever live.
   if (!videoOutputTickRunning_.load(std::memory_order_acquire)) {
     work.programFrame.timelineTimestamp100ns = videoTimelineTimestamp100ns;
     modules_.encoder->submit(work.programFrame);
-  }
-  // ISO-1: each selected source's OWN video into its own MP4 (rides the same
-  // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
-  // drop-to-latest under back-pressure, never program A/V). Program above is
-  // priority-1 and unaffected by ISO.
-  if (!work.isoSources.empty()) {
-    for (auto& source : work.isoSources) {
-      source.timelineTimestamp100ns = videoTimelineTimestamp100ns;
+    // ISO-1: each selected source's OWN video into its own MP4 (rides the same
+    // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
+    // drop-to-latest under back-pressure, never program A/V). Program above is
+    // priority-1, submitted first, and unaffected by ISO.
+    if (!work.isoSources.empty()) {
+      for (auto& source : work.isoSources) {
+        source.timelineTimestamp100ns = videoTimelineTimestamp100ns;
+      }
+      modules_.encoder->submitIsoVideo(work.isoSources);
     }
-    modules_.encoder->submitIsoVideo(work.isoSources);
   }
   auto outputDestinations = work.outputDestinations;
   outputDestinations.erase(
@@ -6890,7 +6958,41 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     frame.programNv12Shared = latestProgramNv12;
   }
   if (!buffered) frame.timelineTimestamp100ns = monotonic100ns();
-  if (!buffered || bufferedFrameAvailable) modules_.encoder->submit(frame);
+  const bool programSubmitted = !buffered || bufferedFrameAvailable;
+  if (programSubmitted) modules_.encoder->submit(frame);
+
+  // ISO-1 (cadence): each selected source's own video, on THIS tick rather than
+  // the 20ms audio grid — a 60fps source could not exceed ~50 distinct frames
+  // per second in its file while the audio worker owned the submit. Program is
+  // submitted FIRST and unconditionally above (rule 6: ISO cannot gain priority
+  // over Program), and this only runs on a tick that carried a real Program
+  // frame, so ISO stays exactly one submit per rendered frame.
+  //
+  // No coreMutex: the set was published by the render gather that produced this
+  // frame (pendingIsoVideoSources_).
+  //
+  // The stamp follows the SAME rule Program follows: a frame is stamped with
+  // the time its pixels belong to. Program in the unbuffered path is stamped
+  // `monotonic100ns()` at submit and ISO matches it exactly; in the buffered
+  // path Program carries the playout packet's own (deliberately older) stamp
+  // because those pixels are that old, while these ISO frames are the newest
+  // render gather and are not delayed by the Program buffer, so they keep the
+  // submit-time clock. That is also byte-for-byte what the audio worker did
+  // before this moved, so no ISO PTS relationship changes here — only the rate
+  // at which distinct frames reach the writers.
+  if (programSubmitted) {
+    const auto isoSources = std::atomic_load_explicit(
+        &pendingIsoVideoSources_, std::memory_order_acquire);
+    if (isoSources && !isoSources->empty()) {
+      const int64_t isoTimelineTimestamp100ns =
+          buffered ? monotonic100ns() : frame.timelineTimestamp100ns;
+      auto submission = *isoSources;
+      for (auto& source : submission) {
+        source.timelineTimestamp100ns = isoTimelineTimestamp100ns;
+      }
+      modules_.encoder->submitIsoVideo(submission);
+    }
+  }
 
   // Network senders: VIDEO on this cadence. Audio is pushed separately by the
   // audio worker (outputSender->submitAudio) because FFmpeg takes the two
