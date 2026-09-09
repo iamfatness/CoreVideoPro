@@ -25,7 +25,9 @@ public sealed record MediaCoreSceneRouteWire(
     string? MediaAssetKind = null,
     string? MediaAssetPath = null,
     string? MediaPlaybackKey = null,
-    bool MediaAssetPlaying = false);
+    bool MediaAssetPlaying = false,
+    [property: System.Text.Json.Serialization.JsonPropertyName("exactSourceRef")]
+    ExactSourceReference? ExactSourceRef = null);
 
 /// <summary>
 /// One ordered multiview tile source for <c>set-multiview-layout</c>. <paramref name="Kind"/> is

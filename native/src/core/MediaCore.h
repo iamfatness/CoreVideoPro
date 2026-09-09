@@ -3,6 +3,7 @@
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/Director.h"
+#include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
@@ -383,6 +384,7 @@ class MediaCore {
     std::string routeId;
     std::string mode;
     std::string participantId;
+    std::optional<ExactRouteSourceIntent> exactSource;
     std::string captureDeviceId;
     std::string audioRole;
     std::string mediaAssetId;

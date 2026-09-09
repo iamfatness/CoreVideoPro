@@ -51,6 +51,24 @@ public sealed class ProductionPreferencesDurabilityTests : IDisposable
     }
 
     [Fact]
+    public void MalformedExactSourceIdentityRecoversBackupAsCorruptPrimary()
+    {
+        Store().Save(Prefs("backup"));
+        Store().Save(Prefs("current"));
+        File.WriteAllText(Primary,
+            """
+            {"Version":12,"RecordingFilenamePrefix":"invalid","CustomScenes":[{"Id":"scene","Routes":[{"Id":"route","ExactSource":{"sourceId":"source","instanceId":"instance","processEpoch":"epoch","generation":0,"kind":"camera"}}]}]}
+            """);
+
+        var result = Store().LoadWithResult();
+
+        Assert.Equal(ProductionPreferencesLoadStatus.Recovered, result.Status);
+        Assert.Equal(ProductionPreferencesLoadStatus.Corrupt, result.PrimaryFailure);
+        Assert.Equal("backup", result.Preferences?.RecordingFilenamePrefix);
+        Assert.Equal(ProductionPreferencesLoadStatus.Loaded, Store().LoadWithResult().Status);
+    }
+
+    [Fact]
     public void UnreadablePrimaryIsNotTreatedAsMissingOrOverwritten()
     {
         Store().Save(Prefs("first"));

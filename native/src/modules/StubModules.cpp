@@ -78,7 +78,7 @@ bool isFiniteRect(const CompositorLayerRect& rect) {
 }
 
 bool isKnownLayerKind(const std::string& kind) {
-  return kind.empty() || kind == "tiles-glow" || kind == "tiles-background" || kind == "participant-video" || kind == "screen-share" || kind == "media-video" || kind == "media-background" ||
+  return kind.empty() || kind == "tiles-glow" || kind == "tiles-background" || kind == "participant-video" || kind == "screen-share" || kind == "media-video" || kind == "media-background" || kind == "missing-source" ||
          kind == "overlay" || kind == "chroma-key";
 }
 

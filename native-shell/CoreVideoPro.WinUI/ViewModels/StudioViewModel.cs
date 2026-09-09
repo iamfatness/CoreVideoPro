@@ -8937,7 +8937,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MediaAssetKind: mediaAsset?.Kind,
             MediaAssetPath: mediaAsset?.FilePath,
             MediaPlaybackKey: mediaPlayback?.MediaPlaybackKey,
-            MediaAssetPlaying: mediaPlayback?.Playing == true);
+            MediaAssetPlaying: mediaPlayback?.Playing == true,
+            ExactSourceRef: route.ExactSource);
     }
 
     private MediaCoreCaptureAudioSourceWire BuildCaptureAudioSourceWire(CaptureDevice captureDevice)

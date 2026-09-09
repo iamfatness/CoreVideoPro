@@ -50,6 +50,7 @@ public static class ScenePersistenceService
         new()
         {
             Id = route.Id,
+            ExactSource = route.ExactSource,
             Mode = SceneRoutingService.ModeToWire(route.Mode),
             AudioRole = SceneRoutingService.AudioRoleToWire(route.AudioRole),
             ParticipantId = route.ParticipantId,
@@ -122,6 +123,7 @@ public static class ScenePersistenceService
         var route = new SourceRoute
         {
             Id = persisted.Id,
+            ExactSource = persisted.ExactSource,
             Mode = SceneRoutingService.ModeFromWire(persisted.Mode),
             AudioRole = SceneRoutingService.AudioRoleFromWire(persisted.AudioRole),
             ParticipantId = string.IsNullOrWhiteSpace(persisted.ParticipantId) ? null : persisted.ParticipantId,

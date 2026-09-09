@@ -203,6 +203,16 @@ public static class MediaCoreCommandBuilder
 
     private static Dictionary<string, object?> SerializeSceneRoute(MediaCoreSceneRouteWire route)
     {
+        // Exact identities are durable already, but the producer does not yet attach the
+        // same identity lease to every frame. Never weaken an exact pin to participantId:
+        // a participant slot can be reused after somebody leaves. Refuse the whole command
+        // until producer capability negotiation makes this route safe to publish.
+        if (route.ExactSourceRef is not null)
+        {
+            throw new InvalidOperationException(
+                $"Route '{route.RouteId}' is pinned to an exact source identity, but exact-source frame routing is not available.");
+        }
+
         var payload = new Dictionary<string, object?>
         {
             ["routeId"] = route.RouteId,
