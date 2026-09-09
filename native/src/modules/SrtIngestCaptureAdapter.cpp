@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -138,6 +139,30 @@ struct ReaderChannel {
   std::atomic<int> audioFd{-1};
   std::string audioFifoPath;
 #endif
+  // DESCRIPTOR OWNERSHIP (production-realtime rule 2: one owner per mutable
+  // execution resource, with an explicit retirement generation).
+  //
+  // A descriptor NUMBER is a reusable resource. `close(4)` hands fd 4 back to the
+  // process, and the very next `open`/`pipe`/`socket`/`accept` on ANY thread can
+  // be handed fd 4 — at which point a reader still calling `::read(4, ...)` starts
+  // eating an unrelated descriptor's bytes and feeding them into `appendAudio` as
+  // if they were 48 kHz stereo float PCM, while stealing them from that
+  // descriptor's rightful owner. EBADF and a clean loop exit is the LUCKY outcome,
+  // not the guaranteed one. Windows HANDLEs are recycled the same way.
+  //
+  // So: the thread that READS a pipe is the ONLY thread that CLOSES it, and it
+  // closes it after its read loop has exited.
+  //   * video pipe (readFd / readPipe)   -> owned by `thread`      (readerLoop)
+  //   * audio pipe (audioFd / audioPipe) -> owned by `audioThread` (audioLoop)
+  //   * decoder process handle           -> owned by whichever thread wins the
+  //                                         atomic exchange in killProcess
+  // Anything else that needs a reader to stop either kills the decoder (whose
+  // death is EOF on both pipes) or cancels the pending I/O (Windows). Neither
+  // invalidates the descriptor under the reader.
+  std::mutex ioMutex;  // serialises retirement against cancellation
+  std::atomic_bool audioLoopExited{true};
+  std::atomic_bool readerLoopExited{true};
+
   std::thread thread;
   std::thread audioThread;
 
@@ -147,6 +172,146 @@ struct ReaderChannel {
     warning = note;
   }
 };
+
+// RETIREMENT. Called ONLY by the descriptor's owning thread, and only after its
+// read loop has exited. The lock is held for the close alone — never across a
+// read — so it costs nothing on the streaming path; its entire job is to make
+// "close" and "cancel" mutually exclusive, so a canceller on another thread can
+// never touch a handle that has already been freed.
+void retireVideoPipe(ReaderChannel& channel) {
+  std::lock_guard lock(channel.ioMutex);
+#ifdef _WIN32
+  if (HANDLE pipe = channel.readPipe.exchange(nullptr); pipe != nullptr) {
+    ::CloseHandle(pipe);
+  }
+#else
+  if (const int fd = channel.readFd.exchange(-1); fd >= 0) {
+    ::close(fd);
+  }
+#endif
+}
+
+void retireAudioPipe(ReaderChannel& channel) {
+  std::lock_guard lock(channel.ioMutex);
+#ifdef _WIN32
+  if (HANDLE pipe = channel.audioPipe.exchange(nullptr); pipe != nullptr) {
+    ::CloseHandle(pipe);
+  }
+#else
+  if (const int fd = channel.audioFd.exchange(-1); fd >= 0) {
+    ::close(fd);
+  }
+#endif
+}
+
+#ifdef _WIN32
+// Unblock a reader WITHOUT invalidating its handle — the Windows half of the
+// ownership rule. CancelIoEx aborts another thread's pending ReadFile;
+// DisconnectNamedPipe additionally frees an audio thread parked in
+// ConnectNamedPipe waiting for an ffmpeg that died before it ever connected
+// (killing the process does NOT unblock that, which is why these calls exist).
+// Both are no-ops once the owner has retired the handle: retirement takes this
+// same lock and nulls the slot before closing, so we never hand a dangling
+// handle to the kernel.
+void cancelVideoPipeIo(ReaderChannel& channel) {
+  std::lock_guard lock(channel.ioMutex);
+  if (HANDLE pipe = channel.readPipe.load(); pipe != nullptr) {
+    ::CancelIoEx(pipe, nullptr);
+  }
+}
+
+void cancelAudioPipeIo(ReaderChannel& channel) {
+  std::lock_guard lock(channel.ioMutex);
+  if (HANDLE pipe = channel.audioPipe.load(); pipe != nullptr) {
+    ::CancelIoEx(pipe, nullptr);
+    ::DisconnectNamedPipe(pipe);
+  }
+}
+#endif
+
+// Join a reader thread that owns a descriptor we are forbidden to close.
+//
+// POSIX needs no help: killProcess has already reaped the decoder, and the parent
+// closed BOTH write ends immediately after fork, so the decoder was their only
+// remaining holder and its death is EOF on both reads.
+//
+// Windows does need help, and needs it MORE THAN ONCE. A cancel that lands
+// between the thread's `running` check and its blocking call cancels nothing —
+// there is no pending I/O yet — so a single CancelIoEx can be lost and the thread
+// parks anyway. Re-issuing on a short interval bounds the wait at one interval
+// past the moment the thread actually enters the call, which is why this is a
+// loop rather than a one-shot.
+#ifdef _WIN32
+constexpr int kIoCancelRetryMs = 25;
+#endif
+
+void joinAudioReader(ReaderChannel& channel) {
+  if (!channel.audioThread.joinable()) {
+    return;
+  }
+#ifdef _WIN32
+  while (!channel.audioLoopExited.load()) {
+    cancelAudioPipeIo(channel);
+    std::this_thread::sleep_for(std::chrono::milliseconds(kIoCancelRetryMs));
+  }
+#endif
+  channel.audioThread.join();
+}
+
+void joinVideoReader(ReaderChannel& channel) {
+  if (!channel.thread.joinable()) {
+    return;
+  }
+#ifdef _WIN32
+  while (!channel.readerLoopExited.load()) {
+    cancelVideoPipeIo(channel);
+    std::this_thread::sleep_for(std::chrono::milliseconds(kIoCancelRetryMs));
+  }
+#endif
+  channel.thread.join();
+}
+
+// Backoff that a stop can interrupt. Shutdown must be BOUNDED, and the reconnect
+// ladder climbs to 10s — a stop landing on a sleeping reader used to wait out the
+// whole rung before the thread could notice `running` had gone false.
+void sleepUnlessStopped(const ReaderChannel& channel, int totalMs) {
+  constexpr int kSliceMs = 50;
+  for (int slept = 0; slept < totalMs && channel.running.load(); slept += kSliceMs) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::min(kSliceMs, totalMs - slept)));
+  }
+}
+
+#ifndef _WIN32
+// Create a pipe whose descriptors are CLOSE-ON-EXEC.
+//
+// This is not hygiene, it is what makes the EOF contract above TRUE. Plain
+// `pipe()` descriptors are inherited by every fork+exec in the process, so a
+// second SRT channel (or any other spawn) racing between our `pipe()` and our
+// child's `exec()` would end up holding a COPY of our write end. Killing OUR
+// decoder would then never produce EOF and shutdown would block forever — a
+// worse failure than the race being fixed here. `dup2` clears FD_CLOEXEC on the
+// descriptors the child is meant to keep (see the explicit re-clear in the child,
+// which covers the dup2(x, x) no-op case).
+bool makeCloexecPipe(int fds[2]) {
+#if (defined(__linux__) && defined(_GNU_SOURCE)) || defined(__FreeBSD__)
+  // Atomic: no window at all between creating the descriptors and marking them
+  // close-on-exec.
+  if (::pipe2(fds, O_CLOEXEC) == 0) {
+    return true;
+  }
+  if (errno != ENOSYS) {
+    return false;
+  }
+#endif
+  if (::pipe(fds) != 0) {
+    return false;
+  }
+  // macOS has no pipe2: a narrower window, not a closed one.
+  ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+  ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+  return true;
+}
+#endif
 
 #ifdef _WIN32
 // CreateProcess does NOT use a shell, so Windows was never exposed to command
@@ -382,16 +547,24 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       return;  // already running
     }
     channel->running.store(true);
+    channel->readerLoopExited.store(false);
     channel->thread = std::thread([channel] { readerLoop(channel); });
   }
 
   static void stopChannel(const std::shared_ptr<ReaderChannel>& channel) {
     channel->running.store(false);
-    // Killing the decoder is what unblocks the reader's pending read.
+    // Killing the decoder is what unblocks the reader's pending read: the parent
+    // closed BOTH write ends the moment the child was spawned, so the decoder is
+    // their only holder and its death is EOF.
+    //
+    // What this must NOT do is close the pipes. This thread does not own them --
+    // closing fd 4 here while the audio thread is inside `::read(4, ...)` is the
+    // use-after-close TSan caught, and once fd 4 is closed it can be handed to any
+    // other thread's open(). The reading threads retire their own descriptors on
+    // the way out; joinVideoReader waits for that (and, on Windows, keeps
+    // re-issuing the cancel that unblocks them).
     killProcess(*channel);
-    if (channel->thread.joinable()) {
-      channel->thread.join();
-    }
+    joinVideoReader(*channel);
   }
 
   void stopAll() {
@@ -408,39 +581,40 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     }
   }
 
+  // Kill the decoder -- and ONLY the decoder. This is callable from a thread that
+  // owns neither pipe, so it must not close either of them; the process handle is
+  // the one resource it does own (via the atomic exchange, so exactly one caller
+  // terminates and closes it). Killing the child closes the child's copies of both
+  // write ends, which is what turns a blocked read into EOF.
   static void killProcess(ReaderChannel& channel) {
 #ifdef _WIN32
     if (HANDLE process = channel.process.exchange(nullptr); process != nullptr) {
       ::TerminateProcess(process, 0);
+      // TerminateProcess is asynchronous; wait (bounded) so the child's handles
+      // are actually gone before anything relies on EOF.
+      ::WaitForSingleObject(process, 2000);
       ::CloseHandle(process);
-    }
-    if (HANDLE pipe = channel.readPipe.exchange(nullptr); pipe != nullptr) {
-      ::CloseHandle(pipe);
-    }
-    if (HANDLE pipe = channel.audioPipe.exchange(nullptr); pipe != nullptr) {
-      // CancelIoEx first: the audio thread may be parked in ConnectNamedPipe or
-      // ReadFile, and closing the handle under it is not enough to unblock.
-      ::CancelIoEx(pipe, nullptr);
-      ::DisconnectNamedPipe(pipe);
-      ::CloseHandle(pipe);
     }
 #else
     if (const int pid = channel.pid.exchange(-1); pid > 0) {
       ::kill(pid, SIGKILL);
       int status = 0;
-      ::waitpid(pid, &status, 0);
-    }
-    if (const int fd = channel.readFd.exchange(-1); fd >= 0) {
-      ::close(fd);
-    }
-    if (const int fd = channel.audioFd.exchange(-1); fd >= 0) {
-      ::close(fd);
+      while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+      }
     }
 #endif
   }
 
   // Spawn the decoder and stream whole BGRA frames until it dies or we stop.
   static void readerLoop(const std::shared_ptr<ReaderChannel> channel) {
+    // This thread owns the VIDEO descriptor of every decoder generation it spawns,
+    // and it is the thread that retires each generation (its own descriptor, and
+    // the audio thread it started) before the next spawn allocates new ones.
+    struct ExitSignal {
+      ReaderChannel& channel;
+      ~ExitSignal() { channel.readerLoopExited.store(true); }
+    } exitSignal{*channel};
+
     const std::string executable = resolveFfmpegExecutable();
     int backoffMs = 500;
     while (channel->running.load()) {
@@ -455,7 +629,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       if (!url.valid) {
         // A configuration error will not fix itself by retrying in a tight loop.
         channel->setStatus("failed", url.error);
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        sleepUnlessStopped(*channel, 2000);
         continue;
       }
 
@@ -464,7 +638,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
                              std::to_string(endpoint.port) + ".");
       if (!spawnDecoder(*channel, executable, url.url)) {
         channel->setStatus("failed", "Could not start the FFmpeg decoder for this SRT source.");
-        std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+        sleepUnlessStopped(*channel, backoffMs);
         backoffMs = std::min(backoffMs * 2, 10000);
         continue;
       }
@@ -472,9 +646,8 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       // Embedded audio rides its own blocking reader: the video loop below must
       // never stall waiting on audio (or vice versa), and the two arrive at
       // completely different rates.
-      if (channel->audioThread.joinable()) {
-        channel->audioThread.join();  // previous generation, already unblocked
-      }
+      joinAudioReader(*channel);  // previous generation, already retired
+      channel->audioLoopExited.store(false);
       channel->audioThread = std::thread([channel] { audioLoop(channel); });
 
       const std::size_t frameBytes = static_cast<std::size_t>(channel->width) *
@@ -497,22 +670,30 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
         backoffMs = 500;  // a healthy connection resets the backoff
       }
 
-      killProcess(*channel);  // also cancels/closes the audio pipe, unblocking it
-      if (channel->audioThread.joinable()) {
-        channel->audioThread.join();
-      }
+      // RETIREMENT OF THIS DECODER GENERATION, in this order:
+      //  1. kill the decoder -- the write ends it holds are the last ones, so both
+      //     blocking reads see EOF;
+      //  2. join the audio thread, which closes the audio descriptor it owns (on
+      //     Windows joinAudioReader also keeps re-issuing the CancelIoEx /
+      //     DisconnectNamedPipe that frees a thread parked in ConnectNamedPipe
+      //     for an ffmpeg that died before ever connecting);
+      //  3. close the video descriptor, which is ours.
+      // All of it happens before the loop can spawn the next generation, so no
+      // descriptor leaks across a reconnect and no live slot is overwritten.
+      killProcess(*channel);
+      joinAudioReader(*channel);
+      retireVideoPipe(*channel);
       if (!channel->running.load()) {
         break;
       }
       channel->setStatus(sawFrame ? "connecting" : "connecting",
                          sawFrame ? "SRT publisher disconnected; waiting for it to return."
                                   : "No SRT publisher yet.");
-      std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+      sleepUnlessStopped(*channel, backoffMs);
       backoffMs = std::min(backoffMs * 2, 10000);
     }
-    if (channel->audioThread.joinable()) {
-      channel->audioThread.join();
-    }
+    joinAudioReader(*channel);
+    retireVideoPipe(*channel);
     channel->setStatus("detected", "");
   }
 
@@ -520,6 +701,18 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
   // 48k stereo float. Blocking by design and on its own thread, so a silent or
   // audio-less contributor never holds up video.
   static void audioLoop(const std::shared_ptr<ReaderChannel> channel) {
+    // This thread OWNS the audio descriptor for this decoder generation: it is the
+    // only thread that closes it, and it closes it on EVERY exit path below (hence
+    // the guard rather than a close at the bottom). Whoever wants this loop to end
+    // kills the decoder or cancels the I/O; nobody else touches the descriptor.
+    struct Retire {
+      ReaderChannel& channel;
+      ~Retire() {
+        retireAudioPipe(channel);
+        channel.audioLoopExited.store(true);  // after the close; the joiner waits on this
+      }
+    } retire{*channel};
+
 #ifdef _WIN32
     HANDLE pipe = channel->audioPipe.load();
     if (pipe == nullptr) {
@@ -540,6 +733,10 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       appendAudio(*channel, buffer.data(), read / sizeof(float));
     }
 #else
+    // Loaded ONCE, deliberately: re-loading the atomic every iteration would not
+    // help anyway (there is always a window between the load and the read). What
+    // makes the cached number safe is that this thread is its only closer, so the
+    // number cannot be recycled underneath the read.
     const int fd = channel->audioFd.load();
     if (fd < 0) {
       return;
@@ -630,7 +827,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     // here — the Windows path is the rig-proven one.
     constexpr int kAudioChildFd = 3;
     int audioFds[2] = {-1, -1};
-    const bool audioReady = ::pipe(audioFds) == 0;
+    const bool audioReady = makeCloexecPipe(audioFds);
     const std::vector<std::string> args =
         buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate,
                            audioReady ? std::string("pipe:") + std::to_string(kAudioChildFd)
@@ -688,7 +885,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     return true;
 #else
     int fds[2] = {-1, -1};
-    if (::pipe(fds) != 0) {
+    if (!makeCloexecPipe(fds)) {
       if (audioReady) {
         ::close(audioFds[0]);
         ::close(audioFds[1]);
@@ -717,6 +914,13 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       }
       ::close(fds[0]);
       ::close(fds[1]);
+      // dup2 clears FD_CLOEXEC on its TARGET -- except when oldfd == newfd, where
+      // POSIX makes it a no-op and the flag survives. Clear it explicitly so the
+      // pipes we deliberately made close-on-exec still reach ffmpeg.
+      ::fcntl(STDOUT_FILENO, F_SETFD, 0);
+      if (audioReady) {
+        ::fcntl(kAudioChildFd, F_SETFD, 0);
+      }
       // NO SHELL. argv elements are passed verbatim, so a url containing
       // quotes, semicolons or $(...) is just a (useless) filename to ffmpeg.
       std::vector<char*> argv;
