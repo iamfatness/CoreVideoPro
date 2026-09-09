@@ -1,4 +1,5 @@
 #include "core/ShowPreparationTransaction.h"
+#include "core/SceneVersionShadow.h"
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -19,6 +20,9 @@ bool validPlan(const ShowPreparationPlan& p, std::size_t limit) {
   if (!validAuthority(p.base) || !validText(p.id) || p.base.revision == maxSafe ||
       p.revision != p.base.revision + 1 || !validStamp(p.stamp, p.base) || p.requirements.size() > limit) return false;
   std::set<std::pair<int, std::string>> ids;
+  if (p.sceneVersions && (!p.sceneVersions->plans ||
+      p.sceneVersions->plans->render.stamp != p.stamp ||
+      p.sceneVersions->plans->audio.stamp != p.stamp || p.sceneVersions->plans->output.stamp != p.stamp)) return false;
   for (const auto& r : p.requirements) {
     if (r.kind != ShowPreparationRequirement::Kind::SourceSubscription &&
         r.kind != ShowPreparationRequirement::Kind::GpuResource &&
@@ -28,6 +32,12 @@ bool validPlan(const ShowPreparationPlan& p, std::size_t limit) {
   }
   return true;
 }
+}
+bool ShowPreparationPlan::operator==(const ShowPreparationPlan& other) const {
+  if (base != other.base || id != other.id || revision != other.revision ||
+      requirements != other.requirements || stamp != other.stamp) return false;
+  if (!sceneVersions || !other.sceneVersions) return sceneVersions == other.sceneVersions;
+  return *sceneVersions->plans == *other.sceneVersions->plans;
 }
 bool validShowPreparationToken(const ShowPreparationToken& t) {
   return validAuthority(t.base) && validText(t.planId) && t.base.revision < maxSafe &&

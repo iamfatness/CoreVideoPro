@@ -1,6 +1,7 @@
 #pragma once
 
 #include "modules/Interfaces.h"
+#include "core/ShadowExactSourceFrames.h"
 #include "modules/ZoomEngineClient.h"
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
@@ -59,6 +60,7 @@ class ZoomEngineRuntime {
     bool available{false}, subscriptionRequested{false};
     std::optional<bool> subscriptionObserved; // no subscription acknowledgement
     std::optional<AuthorityPublication> publication;
+    uint64_t publicationFence{0};
     bool operator==(const AuthoritySource&) const = default;
   };
   struct AuthorityObservation {
@@ -69,6 +71,8 @@ class ZoomEngineRuntime {
     bool operator==(const AuthorityObservation&) const = default;
   };
   [[nodiscard]] AuthorityObservation authorityObservation();
+  [[nodiscard]] core::ShadowExactSourceFrames::Result shadowExactSourceFrame(
+      const core::ExactRouteSourceRef& reference, int64_t freshAfterNs);
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
   // Returns the latest decoded BGRA frame per participant, carrying real pixels,
@@ -110,6 +114,9 @@ class ZoomEngineRuntime {
     std::string appPrivilegeToken;
     int connectTimeoutMs = 30000;
     int joinWaitMs = 7000;
+    // Startup-only migration gate. Reloading join credentials cannot turn this
+    // on in a running process.
+    bool exactSourceShadowEnabled = false;
   };
 
   // One JSON line bound for the engine subprocess stdin, queued for the dedicated
@@ -179,6 +186,7 @@ class ZoomEngineRuntime {
   uint64_t nextAuthorityInstance_{0};
   uint64_t nextAuthorityPublication_{0};
   uint64_t authorityRosterProcessGeneration_{0};
+  core::ShadowExactSourceFrames shadowExactFrames_;
   // Per-instance IPC token of the current engine process (read back from the
   // process client after start). Used to derive SHM region names that match what
   // the engine creates. Guarded by mutex_.

@@ -1,6 +1,7 @@
 #pragma once
 #include "core/ShowStateOwner.h"
 #include "core/SourceRegistry.h"
+#include "core/SceneVersionStore.h"
 
 namespace corevideo::core {
 struct ShowPlanStamp {
@@ -46,6 +47,8 @@ struct PlannedScene {
   std::optional<ShowEntityRef> scene;
   PlannedBindingStatus status{PlannedBindingStatus::Blank};
   std::vector<PlannedLayer> layers;
+  std::optional<SceneVersionRef> version;
+  SceneVersionStore::Lease versionLease;
   bool operator==(const PlannedScene&) const = default;
 };
 struct PlannedTileSlot {
@@ -123,4 +126,14 @@ struct ShowPlanGenerationContext {
 std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
                                                  const SourceRegistry::Snapshot& registry,
                                                  ShowPlanGenerationContext context);
+// Explicit null is blank; no fallback to the mutable scene map. A non-null
+// reference requires its exact immutable lease and the same authority epoch.
+struct VersionedSceneBinding {
+  std::optional<SceneVersionRef> reference;
+  SceneVersionStore::Lease lease;
+};
+struct VersionedSceneBindings { VersionedSceneBinding program, preview; };
+std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
+    const SourceRegistry::Snapshot& registry, ShowPlanGenerationContext context,
+    const VersionedSceneBindings& scenes);
 } // namespace corevideo::core

@@ -26,6 +26,9 @@ class SceneVersionStore final {
   // Exact existing ref+payload replay is read-only and does not move the head.
   Result publish(SceneVersionRef ref, ShowSceneIntent scene, std::optional<SceneVersionRef> expectedHead = {});
   Result resolve(const SceneVersionRef&) const;
+  // One admission point for both buses, fenced against concurrent erase/restart.
+  std::pair<Result, Result> resolveBuses(const std::optional<SceneVersionRef>& program,
+      const std::optional<SceneVersionRef>& preview) const;
   Result head(const std::string& sceneId) const;
   Status erase(const SceneVersionRef& expectedHead);
   // Explicit eviction only; heads and externally leased versions cannot be evicted.

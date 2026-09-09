@@ -78,6 +78,21 @@ SceneVersionStore::Result SceneVersionStore::head(const std::string& id) const {
   const auto scene=scenes_.find(id);if(scene==scenes_.end()||!scene->second.active)return {Status::NotFound,{}};
   return {Status::Unchanged,versions_.at(scene->second.ref).lease};
 }
+std::pair<SceneVersionStore::Result, SceneVersionStore::Result> SceneVersionStore::resolveBuses(
+    const std::optional<SceneVersionRef>& program, const std::optional<SceneVersionRef>& preview) const {
+  std::lock_guard lock(mutex_);
+  const auto get = [&](const std::optional<SceneVersionRef>& value) -> Result {
+    if (!value) return {Status::Unchanged, {}};
+    const auto& ref = *value;
+    if (!validRef(ref)) return {Status::Invalid, {}};
+    const auto scene = scenes_.find(ref.sceneId);
+    if (ref.authorityEpoch != epoch_ || scene == scenes_.end() || !scene->second.active ||
+        scene->second.generation != ref.sceneGeneration) return {Status::Stale, {}};
+    const auto found = versions_.find(ref);
+    return found == versions_.end() ? Result{Status::NotFound, {}} : Result{Status::Unchanged, found->second.lease};
+  };
+  return {get(program), get(preview)};
+}
 SceneVersionStore::Status SceneVersionStore::erase(const SceneVersionRef& expected) {
   std::lock_guard lock(mutex_);const auto found=scenes_.find(expected.sceneId);
   if(!validRef(expected))return Status::Invalid;

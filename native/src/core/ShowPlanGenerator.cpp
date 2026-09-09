@@ -73,6 +73,12 @@ void appendBinding(std::string& out, const PlannedBinding& binding) {
 }
 std::string eligibilityIdentity(const ShowPlans& plans) {
   std::string out = "eligibility-v1";
+  for (const auto* scene : {&plans.render.program, &plans.render.preview}) {
+    if (!scene->version) continue;
+    out += "|scene-version:";
+    appendText(out, scene->version->authorityEpoch); appendText(out, scene->version->sceneId);
+    out += std::to_string(scene->version->sceneGeneration) + ":" + std::to_string(scene->version->version) + ";";
+  }
   for (const auto& input : plans.render.inputs) appendBinding(out,input.binding);
   out += "|preview:" + std::to_string(static_cast<int>(plans.render.preview.status));
   for (const auto& layer : plans.render.preview.layers) appendBinding(out,layer.binding);
@@ -207,5 +213,36 @@ std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show
   stamp.eligibilityIdentity = eligibilityIdentity(*plans);
   plans->render.stamp = plans->audio.stamp = plans->output.stamp = std::move(stamp);
   return plans;
+}
+std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
+    const Registry::Snapshot& registry, ShowPlanGenerationContext context,
+    const VersionedSceneBindings& scenes) {
+  auto result = std::make_shared<ShowPlans>(*generateShowPlans(show, registry, context));
+  const auto project = [&](const VersionedSceneBinding& binding) {
+    PlannedScene scene;
+    if (!binding.reference) {
+      if (binding.lease) scene.status = PlannedBindingStatus::Missing;
+      return scene;
+    }
+    scene.version = binding.reference;
+    scene.status = PlannedBindingStatus::Missing;
+    const auto& ref = *binding.reference;
+    if (ref.authorityEpoch != show.authorityEpoch || !binding.lease || binding.lease->ref != ref) return scene;
+    scene.scene = ShowEntityRef{ref.sceneId, binding.lease->scene.generation};
+    scene.versionLease = binding.lease;
+    scene.status = PlannedBindingStatus::Resolved;
+    for (const auto& id : binding.lease->scene.layerOrder) {
+      const auto& layer = binding.lease->scene.routes.at(id);
+      scene.layers.push_back({{id, layer.generation}, layer,
+          resolve(layer.target, registry, ResolutionPurpose::Video, context.videoFreshAfterNs)});
+    }
+    return scene;
+  };
+  result->render.program = project(scenes.program);
+  result->render.preview = project(scenes.preview);
+  auto stamp = result->render.stamp;
+  stamp.eligibilityIdentity = eligibilityIdentity(*result);
+  result->render.stamp = result->audio.stamp = result->output.stamp = std::move(stamp);
+  return result;
 }
 } // namespace corevideo::core

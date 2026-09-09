@@ -74,6 +74,12 @@ void unsetEnv(const char* name) {
 #endif
 }
 
+struct ScopedEnvironment final {
+  ScopedEnvironment(const char* key, const char* value) : key_(key) { setEnv(key, value); }
+  ~ScopedEnvironment() { unsetEnv(key_.c_str()); }
+  std::string key_;
+};
+
 // Fake engine process client for the phase 2 increment 3 sender-thread tests:
 // records every line handed to sendLine (in order), can block sends on a latch
 // (simulating a wedged engine pipe), and can report the process as dead.
@@ -680,6 +686,9 @@ TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined)
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {
+  static void reloadCredentials(ZoomEngineRuntime& runtime) {
+    runtime.applyJoinCredentialsFromPayload(rpc::Json::Object{});
+  }
   static rpc::Json capture(ZoomEngineRuntime& runtime, bool invalidate = false) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     if (invalidate) runtime.authorityObservation_.valid = false;
@@ -1042,8 +1051,33 @@ TEST(ZoomEngineRuntime, CaptureEnvelopePreservesExactAuthorityAndEmptyInvalidDis
   EXPECT_TRUE(invalid.get("sourceAuthority")->get("sources")->asArray().empty());
 }
 
+TEST(ZoomEngineRuntime, ExactSourceShadowIsDisabledAtStartupAndRetainsNoFrames) {
+  using namespace corevideo::modules;
+  ScopedEnvironment exactSourceShadow("COREVIDEO_EXACT_SOURCE_SHADOW", "0");
+  ZoomEngineRuntime runtime;
+  setEnv("COREVIDEO_EXACT_SOURCE_SHADOW", "1");
+  ZoomEngineRuntimeTestAccess::reloadCredentials(runtime);
+  ZoomEngineEvent roster; roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{42, "", true, false, false, true}};
+  runtime.applyEngineEventForTest(roster);
+  auto camera = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(camera));
+  ZoomEngineRuntimeTestAccess::useCanonicalCameraKey(runtime);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  const auto frames = runtime.latestDecodedVideoFrames(10);
+  ASSERT_EQ(frames.size(), 1U); ASSERT_TRUE(frames[0].exactSourceEvidence);
+  const auto& evidence = *frames[0].exactSourceEvidence;
+  const corevideo::core::ExactRouteSourceRef reference{evidence.identity.sourceId,
+      evidence.identity.instanceId, evidence.identity.processEpoch, "camera",
+      static_cast<uint64_t>(evidence.identity.generation)};
+  EXPECT_EQ(runtime.shadowExactSourceFrame(reference, 0).status,
+      corevideo::core::ShadowExactSourceFrames::Status::Missing);
+  EXPECT_FALSE(runtime.shadowExactSourceFrame(reference, 0).frame);
+}
+
 TEST(ZoomEngineRuntime, ProducerCameraAndShareEvidenceRemainDistinctForTheSameParticipant) {
   using namespace corevideo::modules;
+  ScopedEnvironment exactSourceShadow("COREVIDEO_EXACT_SOURCE_SHADOW", "1");
   ZoomEngineRuntime runtime;
   ZoomEngineEvent roster; roster.kind = ZoomEngineEventKind::Participants;
   roster.participants = {{42, "", true, false, false, true}};
@@ -1064,4 +1098,23 @@ TEST(ZoomEngineRuntime, ProducerCameraAndShareEvidenceRemainDistinctForTheSamePa
   EXPECT_EQ(current[0].exactSourceEvidence->kind, SourceFrameEvidence::Kind::Share);
   EXPECT_TRUE(held[0].exactSourceEvidence->identity.instanceId != current[0].exactSourceEvidence->identity.instanceId);
   EXPECT_TRUE(held[0].exactSourceEvidence->payload.get() != current[0].exactSourceEvidence->payload.get());
+  const auto exactRef = [](const auto& evidence, const char* kind) {
+    return corevideo::core::ExactRouteSourceRef{evidence.identity.sourceId, evidence.identity.instanceId,
+        evidence.identity.processEpoch, kind, static_cast<uint64_t>(evidence.identity.generation)};
+  };
+  const auto cameraRef = exactRef(*held[0].exactSourceEvidence, "camera");
+  const auto shareRef = exactRef(*current[0].exactSourceEvidence, "share");
+  const auto retainedCamera = runtime.shadowExactSourceFrame(cameraRef, 0);
+  const auto retainedShare = runtime.shadowExactSourceFrame(shareRef, 0);
+  ASSERT_TRUE(retainedCamera.frame); ASSERT_TRUE(retainedShare.frame);
+  EXPECT_EQ(retainedCamera.frame->i420, held[0].i420);
+  EXPECT_EQ(retainedShare.frame->i420, current[0].i420);
+  roster.participants[0].hasVideo = false;
+  runtime.applyEngineEventForTest(roster);
+  roster.participants[0].hasVideo = true;
+  runtime.applyEngineEventForTest(roster);
+  EXPECT_FALSE(runtime.shadowExactSourceFrame(cameraRef, 0).frame);
+  EXPECT_TRUE(runtime.shadowExactSourceFrame(shareRef, 0).frame);
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  EXPECT_FALSE(runtime.shadowExactSourceFrame(shareRef, 0).frame);
 }

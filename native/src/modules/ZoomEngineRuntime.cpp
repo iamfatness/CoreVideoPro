@@ -120,6 +120,7 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
   config.appPrivilegeToken = envString("COREVIDEO_ZOOM_APP_PRIVILEGE_TOKEN");
   config.connectTimeoutMs = envInt("COREVIDEO_ZOOM_ENGINE_CONNECT_TIMEOUT_MS", config.connectTimeoutMs);
   config.joinWaitMs = envInt("COREVIDEO_ZOOM_JOIN_WAIT_MS", config.joinWaitMs);
+  config.exactSourceShadowEnabled = envInt("COREVIDEO_EXACT_SOURCE_SHADOW", 0) == 1;
   return config;
 }
 
@@ -130,7 +131,9 @@ bool ZoomEngineRuntime::configured() const {
 
 void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload) {
   std::lock_guard<std::mutex> lock(mutex_);
+  const bool exactSourceShadowEnabled = config_.exactSourceShadowEnabled;
   config_ = loadConfig();
+  config_.exactSourceShadowEnabled = exactSourceShadowEnabled;
   const auto payloadJwt = payload.getString("sdkJwt");
   const auto payloadZak = payload.getString("userZak");
   if (!payloadJwt.empty()) {
@@ -784,6 +787,16 @@ ZoomEngineRuntime::AuthorityObservation ZoomEngineRuntime::authorityObservation(
   return authorityObservation_;
 }
 
+core::ShadowExactSourceFrames::Result ZoomEngineRuntime::shadowExactSourceFrame(
+    const core::ExactRouteSourceRef& reference, int64_t freshAfterNs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!config_.exactSourceShadowEnabled)
+    return {core::ShadowExactSourceFrames::Status::Missing, {}};
+  refreshAuthorityObservationLocked();
+  if (!authorityObservation_.valid) shadowExactFrames_.reconcile("", 0, {});
+  return shadowExactFrames_.resolve(reference, freshAfterNs);
+}
+
 void ZoomEngineRuntime::refreshAuthorityObservationLocked() {
   constexpr uint64_t limit = 9007199254740991ULL;
   if (!authorityObservation_.valid) return; // Terminal, never reuse identities.
@@ -832,12 +845,24 @@ void ZoomEngineRuntime::refreshAuthorityObservationLocked() {
           source.instanceId = old->instanceId;
         }
         source.subscriptionRequested = captureRequested_ && sentSubscriptions_.contains(source.sourceId);
+        source.publicationFence = old && sameEpoch ? old->publicationFence : 0;
         auto stream = videoStreams_.find(source.sourceId);
-        if (stream != videoStreams_.end()) {
-          if (replacement || availabilityChanged) {
-            stream->second.authorityPublication.reset();
-            ++stream->second.authorityPublicationFence;
+        const bool streamChanged = stream != videoStreams_.end()
+            ? stream->second.authorityIncarnation != source.generation
+            : old && old->publication.has_value();
+        if (replacement || availabilityChanged || streamChanged) {
+          if (source.publicationFence == limit) {
+            authorityObservation_.valid = false;
+            authorityObservation_.sources.clear();
+            return;
           }
+          ++source.publicationFence;
+        }
+        if (stream != videoStreams_.end()) {
+          if (replacement || availabilityChanged || streamChanged) {
+            stream->second.authorityPublication.reset();
+          }
+          stream->second.authorityPublicationFence = source.publicationFence;
           if (!source.available) stream->second.authorityPublication.reset();
           stream->second.authorityIncarnation = source.generation;
           if (source.available) source.publication = stream->second.authorityPublication;
@@ -854,6 +879,16 @@ void ZoomEngineRuntime::refreshAuthorityObservationLocked() {
   }
   ++next.sequence;
   authorityObservation_ = std::move(next);
+  if (config_.exactSourceShadowEnabled) {
+    std::vector<core::ShadowExactSourceFrames::CurrentSource> current;
+    current.reserve(authorityObservation_.sources.size());
+    for (const auto& source : authorityObservation_.sources) {
+      current.push_back({{source.sourceId, source.instanceId, authorityObservation_.processEpoch,
+          source.kind == AuthoritySource::Kind::Camera ? "camera" : "share", source.generation},
+          source.publicationFence, source.available});
+    }
+    shadowExactFrames_.reconcile(authorityObservation_.processEpoch, authorityObservation_.sequence, std::move(current));
+  }
 }
 
 void ZoomEngineRuntime::stopReader() {
@@ -1165,12 +1200,15 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   auto& ref = videoStreams_[event.sourceUuid];
   if (ref.width != event.width || ref.height != event.height) {
     ref.authorityPublication.reset();
+    // Invalidate old format leases without changing the durable source incarnation.
+    ref.authorityIncarnation = 0;
     ref.regionOpaque.reset();  // shared_ptr deleter closes the mapping
     ref.lastSequence = 0;
   }
   ref.participantId = event.participantId;
   ref.width = event.width;
   ref.height = event.height;
+  refreshAuthorityObservationLocked();
   ensureVideoIngestThreadLocked();
 }
 
@@ -1409,6 +1447,16 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
     incoming.width = static_cast<int>(frame.i420Width);
     incoming.height = static_cast<int>(frame.i420Height);
     incoming.frameId = static_cast<std::int64_t>(frame.frameId);
+    if (config_.exactSourceShadowEnabled && incoming.exactSourceEvidence) {
+      VideoFrame retained;
+      retained.participantId = frame.participantId;
+      retained.width = retained.i420Width = incoming.width;
+      retained.height = retained.i420Height = incoming.height;
+      retained.i420 = incoming.i420;
+      retained.frameId = incoming.frameId;
+      retained.exactSourceEvidence = incoming.exactSourceEvidence;
+      shadowExactFrames_.publish(retained);
+    }
 
     if (frameSyncEnabled_) {
       // Queue behind whatever is already waiting — never jump the line, or a
