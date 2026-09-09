@@ -97,4 +97,31 @@ public sealed class NativeTakeContractTests
         Assert.Throws<ArgumentException>(() => new NativeTakeOutcome("show", "id", "applyFailed", false, true, true, false, false, 10, "failed"));
         Assert.Throws<ArgumentException>(() => new NativeTakeOutcome("show", "id", "none", true, true, true, false, false, 11, ""));
     }
+
+    [Theory]
+    [InlineData("none", false, false)]
+    [InlineData("none", false, true)]
+    [InlineData("busy", true, true)]
+    [InlineData("applyFailed", true, true)]
+    public void ImpossibleSuccessAndErroredPendingAreRejectedAtContractBoundary(string error, bool pending, bool accepted)
+    {
+        Assert.Throws<ArgumentException>(() => new NativeTakeOutcome("show", "id", error,
+            pending, accepted, false, false, false, 11, ""));
+        var json = JsonSerializer.Serialize(new { authorityEpoch = "show", operationId = "id", error,
+            pending, accepted, applied = false, rendered = false, delivered = false, resultRevision = 11, failure = "" });
+        Assert.Throws<ArgumentException>(() => JsonSerializer.Deserialize<NativeTakeOutcome>(json));
+    }
+
+    [Theory]
+    [InlineData("none", true, true, false)]
+    [InlineData("none", false, true, true)]
+    [InlineData("applyFailed", false, true, false)]
+    [InlineData("stalePreview", false, false, false)]
+    public void LegitimateOutcomeStagesStillRoundTrip(string error, bool pending, bool accepted, bool applied)
+    {
+        var value = new NativeTakeOutcome("show", "id", error, pending, accepted, applied, false, false, 11, "");
+        var decoded = JsonSerializer.Deserialize<NativeTakeOutcome>(JsonSerializer.Serialize(value))!;
+        Assert.Equal(error, decoded.Error); Assert.Equal(pending, decoded.Pending);
+        Assert.Equal(accepted, decoded.Accepted); Assert.Equal(applied, decoded.Applied);
+    }
 }

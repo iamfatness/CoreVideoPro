@@ -165,7 +165,8 @@ public sealed class NativeTakeOutcome
         OperationId = NativeTakeValidation.Text(operationId, nameof(operationId));
         Error = NativeTakeValidation.Text(error, nameof(error), 64);
         ArgumentNullException.ThrowIfNull(failure);
-        if (Encoding.UTF8.GetByteCount(failure) > 512 || (pending && (!accepted || applied || rendered || delivered)) ||
+        if (Encoding.UTF8.GetByteCount(failure) > 512 || (pending && (!accepted || applied || rendered || delivered || error != "none")) ||
+            (error == "none" && (!accepted || (!pending && !applied))) ||
             (applied && !accepted) || (rendered && !applied) || (delivered && !rendered) || (error != "none" && (applied || rendered || delivered)))
             throw new ArgumentException("Inconsistent Take outcome evidence.");
         Pending=pending; Accepted=accepted; Applied=applied; Rendered=rendered; Delivered=delivered; Failure=failure;
