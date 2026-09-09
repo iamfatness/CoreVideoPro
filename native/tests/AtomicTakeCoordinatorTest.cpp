@@ -190,11 +190,15 @@ TEST(AtomicTakeCoordinator, ExhaustionRejectsFreshWorkButReplaysLastAcceptedRevi
 TEST(AtomicTakeCoordinator, FailedCallbackIsNeverRetriedAndConsumedPreparationCannotReturn) {
   int calls = 0;
   Take owner("show-1", 10, 7, 4, [&](const auto&, auto) -> Take::ApplyResult {
-    ++calls; throw std::runtime_error(std::string(1000, 'x'));
+    ++calls;
+    std::string failure;
+    for (int i = 0; i < 171; ++i) failure += "\xE2\x82\xAC";
+    throw std::runtime_error(failure);
   });
   const auto r = request(); owner.prepare("show-1", r.fingerprint, certificate(r.fingerprint));
-  EXPECT_EQ(owner.take(r).outcome.error, Take::Error::ApplyFailed);
-  EXPECT_EQ(owner.take(r).outcome.failure.size(), 512u);
+  const auto failed = owner.take(r).outcome;
+  EXPECT_EQ(failed.error, Take::Error::ApplyFailed);
+  EXPECT_EQ(failed.failure.size(), 510u); // Never split the 513-byte UTF-8 input.
   EXPECT_TRUE(owner.take(r).replayed);
   EXPECT_EQ(calls, 1);
   EXPECT_EQ(owner.snapshot().revision, 10u);

@@ -838,6 +838,7 @@ public sealed record NativeMediaCoreStateSnapshot
     /// <summary>Live Zoom roster from media-core sync when the engine is connected.</summary>
     public string? ActiveSpeakerId { get; init; }
     public IReadOnlyList<RawParticipantEvent> Participants { get; init; } = [];
+    public NativeSourceAuthority? SourceAuthority { get; init; }
     /// <summary>Latest per-source Zoom SDK subscription evidence, retained for
     /// operator-facing source diagnostics instead of being collapsed into only
     /// aggregate frame counters.</summary>

@@ -798,6 +798,9 @@ rpc::Json MediaCore::sessionState() const {
           {"workTotalNs", static_cast<double>(videoOutputWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
           {"workMaximumNs", static_cast<double>(videoOutputWorkerWorkMaximumNs_.load(std::memory_order_relaxed))}}}});
   const auto zoomCapture = zoomSnapshot();
+  if (const auto* authority = zoomCapture.get("sourceAuthority")) {
+    state.emplace("sourceAuthority", *authority);
+  }
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
   }

@@ -41,6 +41,7 @@ public sealed class ZoomMediaSpineSubscription
 
 public sealed class ZoomMediaSpineNativeSnapshot
 {
+    public NativeSourceAuthority? SourceAuthority { get; init; }
     public string MeetingState { get; init; } = "idle";
     public string SdkVersion { get; init; } = string.Empty;
     public int ParticipantCount { get; init; }

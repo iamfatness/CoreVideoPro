@@ -145,6 +145,7 @@ class ZoomEngineRuntime {
   // generation (engine restart / test process swap).
   void purgeQueuedEngineSendsLocked(const char* reason);
   void noteDroppedEngineSends(std::size_t count, const char* reason);
+  [[nodiscard]] rpc::Json sourceAuthorityJsonLocked() const;
   [[nodiscard]] rpc::Json rawCaptureSnapshotLocked();
   [[nodiscard]] rpc::Json spineSnapshotLocked(const rpc::Json& payload, double elapsedMs);
   void enqueueFrameEventLocked(const ZoomEngineEvent& event);
