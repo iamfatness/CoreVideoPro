@@ -24,7 +24,23 @@ Controlling architecture: `production-realtime-architecture.md`
 - Strict native Take JSON, exact source identity catalogs on full/capture/spine
   snapshots, process/epoch/sequence admission, restart invalidation, and ordered
   bounded shell publication: `0c0c90d`. Stale or malformed authority now fails
-  closed before it can restore roster, routing, or meeting UI state.
+  closed before it can restore roster, routing, or meeting UI state. Execution
+  record: `4c342fd` (documentation of `0c0c90d`, not an additional runtime cutover).
+  Catalogs distinguish absent legacy evidence, valid empty sources, and invalid
+  authority; camera/share identities carry provider source, instance, epoch, and
+  generation without inferring durable person identity. Source picker adoption,
+  frame-bound exact routing, and native Take execution remain pending.
+- Validated immutable managed exact-source references, clone/persistence
+  preservation, and the optional scene-route wire contract: `723eb0d`.
+  Existing exact pins reach command validation, which rejects them before send
+  until exact-source frame routing is supported; ordinary legacy commands remain
+  unchanged and no picker creates exact pins yet. Native explicit
+  `exactSourceRef` input fails closed to an empty slot, including malformed
+  references, rather than substituting participant, capture, media, or positional
+  sources. The bounded `SceneVersionStore` retains immutable scene versions with
+  expected-head edits, generation/epoch fencing, tombstones, and pinned leases;
+  it has no runtime MediaCore integration. These are pre-cutover contracts and
+  safety boundaries, not completed G1 authority or real-time qualification.
 
 ## Outcome
 
