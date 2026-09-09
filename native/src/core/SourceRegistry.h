@@ -58,6 +58,7 @@ class SourceRegistry final {
     bool subscriptionObserved = false;
     std::optional<Format> format;
     bool hasPublication = false;
+    bool hasPublicationWatermark = false; // Survives unavailable/departed until token replacement.
     uint64_t publicationSequence = 0;
     int64_t lastPublicationNs = 0; // Caller monotonic clock; never UTC.
   };
@@ -76,6 +77,7 @@ class SourceRegistry final {
   Mutation add(Registration registration);
   // Compare-and-replace: old callbacks can neither replace nor retire a new instance.
   Mutation replace(const Token& expected, Registration registration);
+  Result setDisplayName(const Token& token, const std::string& name);
   Result setAvailability(const Token& token, Availability availability);
   Result setSubscription(const Token& token, bool requested, bool observed);
   // Retire every source owned by a replaced helper process as one registry

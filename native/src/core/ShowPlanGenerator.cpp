@@ -5,7 +5,9 @@
 namespace corevideo::core {
 namespace {
 using Registry = SourceRegistry;
-PlannedBinding resolve(const ShowRouteTarget& target, const Registry::Snapshot& registry) {
+enum class ResolutionPurpose { Identity, Video };
+PlannedBinding resolve(const ShowRouteTarget& target, const Registry::Snapshot& registry,
+                       ResolutionPurpose purpose, std::int64_t videoFreshAfterNs) {
   PlannedBinding result; result.intent = target;
   if (target.kind == ShowRouteKind::Blank) {
     if (target.source || target.person) result.status = PlannedBindingStatus::Missing;
@@ -15,8 +17,11 @@ PlannedBinding resolve(const ShowRouteTarget& target, const Registry::Snapshot& 
   if (target.kind == ShowRouteKind::FixedSource) {
     if (!target.source || target.person) { result.status = PlannedBindingStatus::Missing; return result; }
     for (const auto& source : registry.sources)
-      if (source.token.sourceId.value == target.source->id && source.token.generation == target.source->generation &&
-          source.availability == Registry::Availability::Available) matches.push_back(&source);
+      if (source.token.sourceId.value == target.source->sourceId &&
+          source.token.instanceId.value == target.source->instanceId &&
+          source.token.processEpoch == target.source->processEpoch &&
+          source.token.generation == target.source->generation &&
+          source.availability != Registry::Availability::Departed) matches.push_back(&source);
   } else if (target.kind == ShowRouteKind::FollowPerson) {
     if (!target.person || target.source || target.person->generation == 0 ||
         std::count_if(registry.persons.begin(), registry.persons.end(), [&](const auto& p) {
@@ -24,7 +29,8 @@ PlannedBinding resolve(const ShowRouteTarget& target, const Registry::Snapshot& 
         }) != 1) { result.status = PlannedBindingStatus::Missing; return result; }
     for (const auto& source : registry.sources)
       if (source.kind == Registry::Kind::ParticipantVideo && source.personId &&
-          source.personId->value == target.person->id && source.personGeneration == target.person->generation && source.availability == Registry::Availability::Available)
+          source.personId->value == target.person->id && source.personGeneration == target.person->generation &&
+          source.availability != Registry::Availability::Departed)
         matches.push_back(&source);
   } else {
     result.status = PlannedBindingStatus::RequiresSelection;
@@ -34,11 +40,16 @@ PlannedBinding resolve(const ShowRouteTarget& target, const Registry::Snapshot& 
   else if (matches.size() > 1) result.status = PlannedBindingStatus::Ambiguous;
   else {
     const auto& source = *matches.front();
-    result.status = PlannedBindingStatus::Resolved;
     result.source = PlannedSourceToken{source.token.sourceId.value, source.token.instanceId.value,
                                       source.token.processEpoch, source.token.generation};
     result.sourceKind = source.kind;
     result.hasPublication = source.hasPublication;
+    if (purpose == ResolutionPurpose::Video && source.availability != Registry::Availability::Available)
+      result.status = PlannedBindingStatus::Unavailable;
+    else if (purpose == ResolutionPurpose::Video &&
+             (!source.hasPublication || source.lastPublicationNs < videoFreshAfterNs))
+      result.status = PlannedBindingStatus::Stale;
+    else result.status = PlannedBindingStatus::Resolved;
   }
   return result;
 }
@@ -48,7 +59,7 @@ PlannedAudioEligibility audioEligibility(const PlannedBinding& binding) {
       ? PlannedAudioEligibility::UnknownCapability : PlannedAudioEligibility::UnresolvedIdentity;
 }
 PlannedScene scenePlan(const std::optional<ShowEntityRef>& ref, const ShowStateData& data,
-                       const Registry::Snapshot& registry) {
+                       const Registry::Snapshot& registry, std::int64_t videoFreshAfterNs) {
   PlannedScene result; result.scene = ref;
   if (!ref) return result;
   const auto found = data.scenes.find(ref->id);
@@ -59,23 +70,27 @@ PlannedScene scenePlan(const std::optional<ShowEntityRef>& ref, const ShowStateD
   for (const auto& id : found->second.layerOrder) {
     const auto route = found->second.routes.find(id);
     if (route == found->second.routes.end()) { result.status = PlannedBindingStatus::Missing; continue; }
-    result.layers.push_back({{id, route->second.generation}, route->second, resolve(route->second.target, registry)});
+    result.layers.push_back({{id, route->second.generation}, route->second,
+      resolve(route->second.target, registry, ResolutionPurpose::Video, videoFreshAfterNs)});
   }
   return result;
 }
 }
 std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
-                                                 const Registry::Snapshot& registry) {
+                                                 const Registry::Snapshot& registry,
+                                                 ShowPlanGenerationContext context) {
   auto plans = std::make_shared<ShowPlans>();
-  const ShowPlanStamp stamp{show.authorityEpoch, registry.registryEpoch, show.revision, registry.revision};
+  const ShowPlanStamp stamp{show.authorityEpoch, registry.registryEpoch, show.revision,
+                            registry.revision, context.videoFreshAfterNs};
   plans->render.stamp = plans->audio.stamp = plans->output.stamp = stamp;
   const auto& data = show.data;
   for (const auto& id : data.inputOrder) {
     const auto found = data.inputs.find(id);
-    if (found != data.inputs.end()) plans->render.inputs.push_back({{id, found->second.generation}, resolve(found->second.target, registry)});
+    if (found != data.inputs.end()) plans->render.inputs.push_back({{id, found->second.generation},
+      resolve(found->second.target, registry, ResolutionPurpose::Video, context.videoFreshAfterNs)});
   }
-  plans->render.preview = scenePlan(data.preview, data, registry);
-  plans->render.program = scenePlan(data.program, data, registry);
+  plans->render.preview = scenePlan(data.preview, data, registry, context.videoFreshAfterNs);
+  plans->render.program = scenePlan(data.program, data, registry, context.videoFreshAfterNs);
   for (const auto& [id, tiles] : data.tiles) {
     PlannedTiles result; result.tiles = {id, tiles.generation};
     std::map<std::uint32_t, PlannedTileSlot> slots;
@@ -83,12 +98,14 @@ std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show
     std::set<std::string> usedSources;
     const auto inputBinding = [&](const ShowEntityRef& ref) {
       const auto input = data.inputs.find(ref.id);
-      if (input != data.inputs.end() && input->second.generation == ref.generation) return resolve(input->second.target, registry);
+      if (input != data.inputs.end() && input->second.generation == ref.generation)
+        return resolve(input->second.target, registry, ResolutionPurpose::Video, context.videoFreshAfterNs);
       PlannedBinding missing; missing.status = PlannedBindingStatus::Missing; return missing;
     };
     for (const auto& [slot, ref] : tiles.reservedSlots) {
       // Exclusion wins over a reservation's pixels, but never removes its slot.
       auto binding = ref && !tiles.excludedInputs.contains(*ref) ? inputBinding(*ref) : PlannedBinding{};
+      if (ref && tiles.excludedInputs.contains(*ref)) binding.status = PlannedBindingStatus::Excluded;
       if (ref) used.insert(*ref);
       if (binding.source) usedSources.insert(binding.source->sourceId);
       slots.emplace(slot, PlannedTileSlot{slot, true, ref, std::move(binding)});
@@ -105,6 +122,7 @@ std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show
     for (const auto& input : plans->render.inputs) {
       if (used.contains(input.input) || tiles.excludedInputs.contains(input.input)) continue;
       if (!tiles.autoFill && !tiles.includedInputs.contains(input.input)) continue;
+      if (input.binding.status != PlannedBindingStatus::Resolved) continue;
       append(input.input, input.binding);
     }
     if (tiles.autoFill && tiles.allowRosterAdditions) {
@@ -118,7 +136,10 @@ std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show
       for (const auto& source : sources) {
         if (source.kind != Registry::Kind::ParticipantVideo || source.availability != Registry::Availability::Available ||
             usedSources.contains(source.token.sourceId.value)) continue;
-        append(std::nullopt, resolve({ShowRouteKind::FixedSource, ShowEntityRef{source.token.sourceId.value, source.token.generation}, std::nullopt}, registry));
+        auto binding = resolve({ShowRouteKind::FixedSource,
+          ShowSourceRef{source.token.sourceId.value, source.token.instanceId.value, source.token.processEpoch, source.token.generation}, std::nullopt},
+          registry, ResolutionPurpose::Video, context.videoFreshAfterNs);
+        if (binding.status == PlannedBindingStatus::Resolved) append(std::nullopt, std::move(binding));
       }
     }
     for (auto& [slot, value] : slots) result.slots.push_back(std::move(value));
@@ -126,11 +147,12 @@ std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show
   }
   for (const auto& [id, overlay] : data.overlays) {
     const ShowRouteTarget target = overlay.source ? ShowRouteTarget{ShowRouteKind::FixedSource, overlay.source, std::nullopt} : ShowRouteTarget{};
-    plans->render.overlays.push_back({{id, overlay.generation}, overlay, resolve(target, registry)});
+    plans->render.overlays.push_back({{id, overlay.generation}, overlay,
+      resolve(target, registry, ResolutionPurpose::Video, context.videoFreshAfterNs)});
   }
   for (const auto& [id, audio] : data.audioRoutes) {
     const auto destination = data.outputs.find(audio.destination.id);
-    const auto binding = resolve(audio.source, registry);
+    const auto binding = resolve(audio.source, registry, ResolutionPurpose::Identity, 0);
     // Registry Kind describes video/media identity, not audio capability. Even a
     // published participant/device frame cannot establish audio availability.
     plans->audio.routes.push_back({{id, audio.generation}, audio, binding,
@@ -140,7 +162,13 @@ std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show
   for (const auto& [id, output] : data.outputs) plans->output.outputs.push_back({{id, output.generation}, output});
   for (const auto& id : data.isoOrder) {
     const auto iso = data.isoSelections.find(id);
-    if (iso != data.isoSelections.end()) plans->output.isoSelections.push_back({{id, iso->second.generation}, resolve(iso->second.target, registry)});
+    if (iso != data.isoSelections.end()) {
+      const auto video = resolve(iso->second.target, registry, ResolutionPurpose::Video,
+                                 context.videoFreshAfterNs);
+      const auto audio = resolve(iso->second.target, registry, ResolutionPurpose::Identity, 0);
+      plans->output.isoSelections.push_back(
+          {{id, iso->second.generation}, video, audio, audioEligibility(audio)});
+    }
   }
   return plans;
 }

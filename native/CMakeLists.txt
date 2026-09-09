@@ -70,6 +70,8 @@ add_library(corevideo_native
   src/core/ShowPreparationTransaction.cpp
   src/core/AtomicTakeCoordinator.cpp
   src/core/SourceRegistry.cpp
+  src/core/ZoomSourceAuthorityAdapter.cpp
+  src/core/LegacyShowCommandProjector.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
   src/modules/BrowserSourceHostAdapter.cpp
@@ -640,6 +642,8 @@ if(BUILD_TESTING)
     tests/ShowPreparationTransactionTest.cpp
     tests/AtomicTakeCoordinatorTest.cpp
     tests/SourceRegistryTest.cpp
+    tests/ZoomSourceAuthorityAdapterTest.cpp
+    tests/LegacyShowCommandProjectorTest.cpp
     tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
     tests/MediaCoreCommandTest.cpp

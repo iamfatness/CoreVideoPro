@@ -20,7 +20,7 @@ SourceRegistry::Snapshot roster() {
   return r;
 }
 ShowRouteTarget fixed(const char* id, std::uint64_t generation = 3) {
-  return {ShowRouteKind::FixedSource, ShowEntityRef{id, generation}, std::nullopt};
+  return {ShowRouteKind::FixedSource, ShowSourceRef{id, std::string("instance-") + id, "process-1", generation}, std::nullopt};
 }
 ShowRouteTarget person(const char* id, std::uint64_t generation = 1) {
   return {ShowRouteKind::FollowPerson, std::nullopt, ShowEntityRef{id, generation}};
@@ -60,18 +60,41 @@ TEST(ShowPlanGenerator, DeterministicProjectionPreservesIntentOrderAndStamps) {
   EXPECT_EQ(first->output.isoSelections.at(0).selection.id, "iso-follow");
   EXPECT_EQ(first->render.preview.status, PlannedBindingStatus::Blank);
 }
+
+TEST(ShowPlanGenerator, RegistryRestartCannotRebindExactPinAtReusedGeneration) {
+  auto s = show(); auto r = roster();
+  s.data.overlays["name"] = {1, fixed("a").source, "Title", true};
+  const auto original = generateShowPlans(s, r);
+  EXPECT_EQ(original->render.overlays[0].binding.status, PlannedBindingStatus::Resolved);
+  for (bool changeProcess : {false, true}) {
+    auto restarted = r;
+    restarted.registryEpoch = "replacement-registry";
+    // Keep stable ID and numeric generation identical: either changed concrete
+    // identity field alone must fence the old pin across every media projection.
+    if (changeProcess) restarted.sources[0].token.processEpoch = "process-2";
+    else restarted.sources[0].token.instanceId.value = "instance-replaced";
+    const auto plans = generateShowPlans(s, restarted);
+    EXPECT_EQ(plans->render.program.layers[1].binding.status, PlannedBindingStatus::Missing);
+    EXPECT_EQ(plans->render.overlays[0].binding.status, PlannedBindingStatus::Missing);
+    EXPECT_EQ(plans->audio.routes[0].binding.status, PlannedBindingStatus::Missing);
+    EXPECT_EQ(plans->output.isoSelections[1].videoBinding.status, PlannedBindingStatus::Missing);
+    EXPECT_EQ(plans->output.isoSelections[1].audioBinding.status, PlannedBindingStatus::Missing);
+    // Explicit durable person-following keeps its distinct reconnect semantics.
+    EXPECT_EQ(plans->output.isoSelections[0].videoBinding.status, PlannedBindingStatus::Resolved);
+  }
+}
 TEST(ShowPlanGenerator, ReconnectFollowsPersonButDoesNotSubstituteFixedIncarnation) {
   auto s = show(); auto r = roster();
   const auto old = generateShowPlans(s, r);
   r.sources[0].token = {{"a"}, {"replacement"}, "process-2", 4}; ++r.revision;
   const auto next = generateShowPlans(s, r);
-  EXPECT_EQ(next->output.isoSelections.at(1).binding.status, PlannedBindingStatus::Missing);
-  ASSERT_TRUE(next->output.isoSelections.at(0).binding.source.has_value());
-  EXPECT_EQ(next->output.isoSelections.at(0).binding.source->generation, 4ULL);
-  EXPECT_EQ(next->output.isoSelections.at(0).binding.source->processEpoch, "process-2");
-  EXPECT_EQ(old->output.isoSelections.at(0).binding.source->instanceId, "instance-a");
+  EXPECT_EQ(next->output.isoSelections.at(1).videoBinding.status, PlannedBindingStatus::Missing);
+  ASSERT_TRUE(next->output.isoSelections.at(0).videoBinding.source.has_value());
+  EXPECT_EQ(next->output.isoSelections.at(0).videoBinding.source->generation, 4ULL);
+  EXPECT_EQ(next->output.isoSelections.at(0).videoBinding.source->processEpoch, "process-2");
+  EXPECT_EQ(old->output.isoSelections.at(0).videoBinding.source->instanceId, "instance-a");
   r.sources[0].availability = SourceRegistry::Availability::Departed;
-  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(0).binding.status, PlannedBindingStatus::Missing);
+  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Missing);
 }
 TEST(ShowPlanGenerator, DuplicateNamesNeverSelectAndDuplicatePersonSourcesAreAmbiguous) {
   auto s = show(); auto r = roster();
@@ -123,9 +146,9 @@ TEST(ShowPlanGenerator, BlankVideoDoesNotMuteIndependentAudioAndSelectorsRemainU
 TEST(ShowPlanGenerator, OldPersonBindingCannotAliasNewPersonGeneration) {
   auto s = show(); auto r = roster();
   r.sources[0].personGeneration = 1;
-  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(0).binding.status, PlannedBindingStatus::Missing);
+  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Missing);
   // Fixed identity remains independent of durable-person rebinding.
-  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(1).binding.status, PlannedBindingStatus::Resolved);
+  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(1).videoBinding.status, PlannedBindingStatus::Resolved);
 }
 TEST(ShowPlanGenerator, ExcludedReservedInputRemainsAnExplicitHole) {
   auto s = show(); const auto r = roster();
@@ -140,8 +163,29 @@ TEST(ShowPlanGenerator, ExcludedReservedInputRemainsAnExplicitHole) {
   EXPECT_TRUE(planned.slots.at(0).reserved);
   ASSERT_TRUE(planned.slots.at(0).input.has_value());
   EXPECT_EQ(planned.slots.at(0).input->id, "first");
-  EXPECT_EQ(planned.slots.at(0).binding.status, PlannedBindingStatus::Blank);
+  EXPECT_EQ(planned.slots.at(0).binding.status, PlannedBindingStatus::Excluded);
   EXPECT_FALSE(planned.slots.at(0).binding.source.has_value());
   for (const auto& slot : planned.slots)
     if (slot.binding.source) EXPECT_NE(slot.binding.source->sourceId, "a");
+}
+
+TEST(ShowPlanGenerator, VideoFreshnessAndCameraAvailabilityDoNotEraseAudioIntent) {
+  auto s = show();
+  auto r = roster();
+  r.sources[0].lastPublicationNs = 100;
+  const auto stale = generateShowPlans(s, r, {101});
+  EXPECT_EQ(stale->render.stamp.videoFreshAfterNs, 101);
+  EXPECT_NE(stale->render.stamp, generateShowPlans(s, r, {100})->render.stamp);
+  EXPECT_EQ(stale->render.inputs.at(1).binding.status, PlannedBindingStatus::Stale);
+  EXPECT_EQ(stale->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Stale);
+  EXPECT_EQ(stale->output.isoSelections.at(0).audioBinding.status, PlannedBindingStatus::Resolved);
+
+  r.sources[0].availability = SourceRegistry::Availability::Unavailable;
+  const auto cameraOff = generateShowPlans(s, r, {0});
+  EXPECT_EQ(cameraOff->render.inputs.at(1).binding.status, PlannedBindingStatus::Unavailable);
+  EXPECT_EQ(cameraOff->output.isoSelections.at(0).videoBinding.status,
+            PlannedBindingStatus::Unavailable);
+  EXPECT_EQ(cameraOff->output.isoSelections.at(0).audioBinding.status,
+            PlannedBindingStatus::Resolved);
+  EXPECT_EQ(cameraOff->audio.routes.at(0).binding.status, PlannedBindingStatus::Resolved);
 }

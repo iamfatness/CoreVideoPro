@@ -6,6 +6,9 @@ namespace corevideo::core {
 struct ShowPlanStamp {
   std::string authorityEpoch, registryEpoch;
   std::uint64_t controlRevision{0}, registryRevision{0};
+  // Part of plan identity because it can change video eligibility without a
+  // show or registry mutation. Uses the same caller-owned monotonic clock.
+  std::int64_t videoFreshAfterNs{0};
   bool operator==(const ShowPlanStamp&) const = default;
 };
 struct PlannedSourceToken {
@@ -13,7 +16,9 @@ struct PlannedSourceToken {
   std::uint64_t generation{0};
   bool operator==(const PlannedSourceToken&) const = default;
 };
-enum class PlannedBindingStatus { Blank, Resolved, Missing, Ambiguous, RequiresSelection };
+enum class PlannedBindingStatus {
+  Blank, Resolved, Missing, Unavailable, Stale, Excluded, Ambiguous, RequiresSelection
+};
 struct PlannedBinding {
   ShowRouteTarget intent;
   PlannedBindingStatus status{PlannedBindingStatus::Blank};
@@ -83,7 +88,9 @@ struct AudioPlan {
 };
 struct PlannedIso {
   ShowEntityRef selection;
-  PlannedBinding binding;
+  PlannedBinding videoBinding;
+  PlannedBinding audioBinding;
+  PlannedAudioEligibility audioEligibility{PlannedAudioEligibility::UnresolvedIdentity};
   bool operator==(const PlannedIso&) const = default;
 };
 struct PlannedOutput {
@@ -103,10 +110,15 @@ struct ShowPlans {
   OutputPlan output;
   bool operator==(const ShowPlans&) const = default;
 };
+struct ShowPlanGenerationContext {
+  // Supplied by the control-plane freshness authority; the generator reads no clock.
+  std::int64_t videoFreshAfterNs{0};
+};
 // Pure control-plane projection. Inputs must be immutable snapshots. No clock,
 // rendering, source reads, callbacks, global state, or mutation occurs here.
-// The pair of authority/registry revisions is the deterministic plan identity;
+// Authority/registry revisions plus the freshness cutoff form plan identity;
 // a runtime publisher assigns its own plan generation when adopting this result.
 std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
-                                                 const SourceRegistry::Snapshot& registry);
+                                                 const SourceRegistry::Snapshot& registry,
+                                                 ShowPlanGenerationContext context = {});
 } // namespace corevideo::core
