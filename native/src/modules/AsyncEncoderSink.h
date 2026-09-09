@@ -99,9 +99,22 @@ class AsyncEncoderSink final : public IEncoderSink {
   OutputSession session() const override;
 
   // Test/diagnostic accessors (not part of IEncoderSink).
-  // Number of video / audio items dropped by the backlog policy so far.
+  // Number of video / audio items dropped by the backlog policy in STEADY
+  // STATE. Startup shedding is counted separately (see below) so a clean run
+  // does not report steady-state loss it did not have.
   [[nodiscard]] uint64_t droppedVideoFrames() const;
   [[nodiscard]] uint64_t droppedAudioPackets() const;
+  // Video items shed while the writer was still applying Start. The Media
+  // Foundation open is synchronous and runs as a FIFO item on the writer thread
+  // (measured 95-250ms), while the producer keeps submitting at 60Hz because
+  // `recording.status` already reads "recording". Those 7-9 frames are a
+  // CLIPPED HEAD, not steady-state loss: no frame is missing from the file
+  // (muxed count equals submitted count, preroll zero), the first 95-250ms of
+  // the show simply is not in it. Audio has had this distinction since
+  // recordingStartupDroppedAudioPackets; video did not, so every startup drop
+  // landed in droppedVideo and made a fail-closed judge report a false red.
+  // Reported, never hidden.
+  [[nodiscard]] uint64_t startupDroppedVideoFrames() const;
   // Block until every item enqueued so far has been applied by the writer, or
   // `timeout` elapses. Returns true if fully drained. Lets tests observe the
   // deterministic post-drain session() without sleeping on wall-clock guesses.
@@ -113,6 +126,18 @@ class AsyncEncoderSink final : public IEncoderSink {
   // counters prove progress. Times are steady-clock milliseconds (not UTC),
   // zero means unobserved. Written counts are the inner sink's reported Program
   // counts, not durable bytes or ISO progress. No per-frame history is retained.
+  // ISO-3 (fidelity): per-source ISO VIDEO accounting. `framesWritten` on an
+  // ISO stream is an APPEND count and says nothing about how many DISTINCT
+  // source pictures reached the file, which made any change to the ISO cadence
+  // unverifiable. These are counted at the two places that can tell the
+  // difference: the producer-side (sourceId, frameId) dedup, and the writer.
+  struct IsoVideoSourceEvidence {
+    uint64_t submitted = 0;          // distinct (sourceId, frameId) accepted into the queue
+    uint64_t duplicateRejected = 0;  // re-submissions of a frame id already accepted
+    uint64_t dropped = 0;            // shed by the backlog policy before the writer saw them
+    uint64_t written = 0;            // items the writer applied for this source
+  };
+
   struct Evidence {
     std::array<uint64_t, 7> enqueued{}, completedCalls{}, queuedByKind{};
     uint64_t generation = 0, operationGeneration = 0, operationSequence = 0;
@@ -121,6 +146,9 @@ class AsyncEncoderSink final : public IEncoderSink {
     int64_t operationStartedMs = 0, operationAgeMs = 0;
     uint64_t queueDepth = 0;
     uint64_t droppedVideo = 0, droppedAudio = 0;
+    // Startup shedding, kept OUT of droppedVideo (see startupDroppedVideoFrames).
+    uint64_t startupDroppedVideo = 0;
+    std::map<std::string, IsoVideoSourceEvidence> isoVideoBySource;
     int64_t oldestQueuedAgeMs = 0, lastWriterProgressMs = 0;
     int64_t programVideoWritten = 0, programAudioPacketsWritten = 0;
     uint64_t writtenGeneration = 0;
@@ -188,15 +216,24 @@ class AsyncEncoderSink final : public IEncoderSink {
     bool hasLastProgramFrameNumber = false;
     int64_t lastProgramFrameNumber = 0;
     std::map<std::string, int64_t> lastIsoFrameIdBySource;
+    // ISO-3 fidelity counters, guarded by queueMutex.
+    std::map<std::string, IsoVideoSourceEvidence> isoVideoBySource;
 
     // Weighted fairness for the single writer. Strict Program priority starved
     // every ISO whenever Program audio/video arrived continuously (the live
     // eight-source failure wrote one ISO frame, then never serviced ISO again).
     size_t consecutiveProgramItems = 0;
 
+    // True from the moment a Start is enqueued until the writer has APPLIED it
+    // (the synchronous Media Foundation open). Video shed inside that window is
+    // a clipped head, not steady-state loss — see startupDroppedVideoFrames.
+    // Guarded by queueMutex, like the rest of the queue bookkeeping.
+    bool videoStartupPhase = false;
+
     std::atomic<bool> active{false};
     std::atomic<uint64_t> droppedVideo{0};
     std::atomic<uint64_t> droppedAudio{0};
+    std::atomic<uint64_t> startupDroppedVideo{0};
 
     std::mutex snapshotMutex;
     OutputSession snapshot;

@@ -67,6 +67,12 @@ export function assessRuntimeSnapshots(capture) {
     if (enc.metricVersion !== 'async-encoder-evidence-v1') missing.push(`${index}:encoderEvidence version`);
     generation(index, 'encoder', enc.generation);
     for (const field of ['droppedVideo', 'droppedAudio']) counter(index, 'encoder', field, enc[field]);
+    // startupDroppedVideo is video shed behind the recording writer's SYNCHRONOUS open,
+    // which clips the head of the show but loses nothing from the file. It is tracked as
+    // a non-loss counter (reset/monotonicity still checked, an increase is not an issue)
+    // so it stays visible without re-creating the false red it was split out of. It may be
+    // absent on a core that predates the split, so only judge it when the field is present.
+    if (enc.startupDroppedVideo !== undefined) counter(index, 'encoder', 'startupDroppedVideo', enc.startupDroppedVideo, false);
     for (const field of ['programVideoWritten', 'programAudioPacketsWritten']) counter(index, 'encoder', field, enc[field], false);
     if (enc.lifecycleState === 'failed' || enc.finalizeResult === 'failed' || enc.firstFailure) add(index, 'encoder', 'writer failure reported'); // Do not copy possibly private failure strings.
     if (!count(enc.queueDepth) || !age(enc.oldestQueuedAgeMs)) missing.push(`${index}:encoder queue coverage`);
@@ -84,6 +90,10 @@ export function assessRuntimeSnapshots(capture) {
     observations.push({ sample: index, component: 'encoder', generation: enc.generation, operation: enc.operation,
       operationAgeMs: enc.operationAgeMs, queueDepth: enc.queueDepth, oldestQueuedAgeMs: enc.oldestQueuedAgeMs,
       programVideoWritten: enc.programVideoWritten, programAudioPacketsWritten: enc.programAudioPacketsWritten,
+      startupDroppedVideo: enc.startupDroppedVideo ?? null,
+      // ISO-3: per-source distinct-frame accounting. An ISO stem's framesWritten is an
+      // append count; this is the only place the repeat-freeness of a stem is visible.
+      isoVideoBySource: enc.isoVideoBySource ?? null,
       finalizeResult: enc.finalizeResult });
   }
   missing.push('Snapshots do not prove whole-interval per-slot GPU completion', 'Snapshots do not prove display completion',

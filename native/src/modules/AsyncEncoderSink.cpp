@@ -90,6 +90,7 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       const auto& source = item.isoSources.front();
       const auto last = state_->lastIsoFrameIdBySource.find(source.sourceId);
       if (last != state_->lastIsoFrameIdBySource.end() && last->second == source.frame.frameId) {
+        ++state_->isoVideoBySource[source.sourceId].duplicateRejected;
         return 0;
       }
     } else if (item.kind == Kind::Start) {
@@ -97,7 +98,12 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       // recording generations, so no dedup identity crosses a Start barrier.
       state_->hasLastProgramFrameNumber = false;
       state_->lastIsoFrameIdBySource.clear();
+      state_->isoVideoBySource.clear();
       state_->consecutiveProgramItems = 0;
+      // The wrapped writer's open is SYNCHRONOUS and applies as a FIFO item on
+      // the writer thread (95-250ms on Windows). Everything the producer submits
+      // meanwhile is head-of-show, not steady-state loss.
+      state_->videoStartupPhase = true;
     }
 
     if (item.kind == Kind::Configure) {
@@ -131,14 +137,34 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       // ISO video items carry exactly one source (submitIsoVideo splits the
       // batch). Replace that source's older pending frame before applying the
       // global cap, so a fast participant cannot evict every slower guest.
+      const size_t isoVideoCap = state_->maxIsoVideoQueue;
       if (kind == Kind::IsoVideo && item.isoSources.size() == 1) {
+        // ONLY when the ISO budget is actually full. This used to fire
+        // unconditionally, which was a silent fidelity ceiling: a producer that
+        // legitimately hands the sink two DISTINCT frames for one source in
+        // quick succession (which is exactly what an arrival-driven ISO drain
+        // does when it catches up) had the first erased by the second, counted
+        // as a drop. The stated purpose of this erase is to stop a fast
+        // participant evicting every slower guest when the global cap bites, so
+        // gate it on the cap and it keeps that purpose and loses the ceiling.
         const std::string& sourceId = item.isoSources.front().sourceId;
-        for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
-          if (it->generation == item.generation && it->kind == Kind::IsoVideo && it->isoSources.size() == 1 &&
-              it->isoSources.front().sourceId == sourceId) {
-            state_->queue.erase(it);
-            state_->droppedVideo.fetch_add(1);
-            break;
+        size_t pendingIso = 0;
+        for (const auto& queued : state_->queue) {
+          if (queued.kind == Kind::IsoVideo) ++pendingIso;
+        }
+        if (pendingIso >= isoVideoCap) {
+          for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
+            if (it->generation == item.generation && it->kind == Kind::IsoVideo && it->isoSources.size() == 1 &&
+                it->isoSources.front().sourceId == sourceId) {
+              ++state_->isoVideoBySource[sourceId].dropped;
+              state_->queue.erase(it);
+              if (state_->videoStartupPhase) {
+                state_->startupDroppedVideo.fetch_add(1);
+              } else {
+                state_->droppedVideo.fetch_add(1);
+              }
+              break;
+            }
           }
         }
       }
@@ -164,8 +190,16 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         // when older generations occupy the entire budget.
         if (kind == Kind::Audio || kind == Kind::IsoAudio) {
           state_->droppedAudio.fetch_add(1);
+        } else if (state_->videoStartupPhase) {
+          // Head-of-show shedding behind the writer's synchronous open. Visible
+          // and attributable, but NOT folded into the steady-state counter the
+          // fail-closed judges watch.
+          state_->startupDroppedVideo.fetch_add(1);
         } else {
           state_->droppedVideo.fetch_add(1);
+        }
+        if (kind == Kind::IsoVideo && item.isoSources.size() == 1) {
+          ++state_->isoVideoBySource[item.isoSources.front().sourceId].dropped;
         }
         bool replaced = false;
         for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
@@ -187,6 +221,7 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
     } else if (item.kind == Kind::IsoVideo && item.isoSources.size() == 1) {
       const auto& source = item.isoSources.front();
       state_->lastIsoFrameIdBySource[source.sourceId] = source.frame.frameId;
+      ++state_->isoVideoBySource[source.sourceId].submitted;
     }
     item.enqueuedMs = evidenceNowMs();
     ++state_->evidence.enqueued[static_cast<size_t>(item.kind)];
@@ -344,11 +379,16 @@ OutputSession AsyncEncoderSink::session() const {
       static_cast<int64_t>(state_->droppedVideo.load(std::memory_order_relaxed));
   snapshot.encoderQueueDroppedAudioPackets =
       static_cast<int64_t>(state_->droppedAudio.load(std::memory_order_relaxed));
+  snapshot.recordingStartupDroppedVideoFrames =
+      static_cast<int64_t>(state_->startupDroppedVideo.load(std::memory_order_relaxed));
   return snapshot;
 }
 
 uint64_t AsyncEncoderSink::droppedVideoFrames() const { return state_->droppedVideo.load(); }
 uint64_t AsyncEncoderSink::droppedAudioPackets() const { return state_->droppedAudio.load(); }
+uint64_t AsyncEncoderSink::startupDroppedVideoFrames() const {
+  return state_->startupDroppedVideo.load();
+}
 
 AsyncEncoderSink::Evidence AsyncEncoderSink::evidence() const {
   std::lock_guard<std::mutex> lock(state_->queueMutex);
@@ -358,6 +398,8 @@ AsyncEncoderSink::Evidence AsyncEncoderSink::evidence() const {
   result.queueDepth = state_->queue.size();
   result.droppedVideo = state_->droppedVideo.load(std::memory_order_relaxed);
   result.droppedAudio = state_->droppedAudio.load(std::memory_order_relaxed);
+  result.startupDroppedVideo = state_->startupDroppedVideo.load(std::memory_order_relaxed);
+  result.isoVideoBySource = state_->isoVideoBySource;
   for (const auto& item : state_->queue) {
     ++result.queuedByKind[static_cast<size_t>(item.kind)];
     result.oldestQueuedAgeMs = std::max(result.oldestQueuedAgeMs, now - item.enqueuedMs);
@@ -517,6 +559,22 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       std::lock_guard<std::mutex> queueLock(state->queueMutex);
       auto& evidence = state->evidence;
       const auto now = evidenceNowMs();
+      if (state->videoStartupPhase && (madeProgress || !failure.empty())) {
+        // The head of the show is over the moment the writer commits its first
+        // real video frame (which is also when the lifecycle turns "live"), or
+        // gives up. Deliberately NOT "when Start was applied": the synchronous
+        // open runs inside Start, but the first WriteSample calls into a freshly
+        // opened Media Foundation sink are slow too, and frames shed there are
+        // part of the same clipped head. A failed writer ends the window as well,
+        // so a wedged take cannot park real steady-state loss in this bucket
+        // forever (its lifecycle already reads "failed" to the judges).
+        state->videoStartupPhase = false;
+      }
+      if (item.kind == Kind::IsoVideo && invoked) {
+        for (const auto& source : item.isoSources) {
+          ++state->isoVideoBySource[source.sourceId].written;
+        }
+      }
       if (invoked) ++evidence.completedCalls[static_cast<size_t>(item.kind)];
       if (observed && item.kind != Kind::Configure) {
         const bool sameGeneration = evidence.writtenGeneration == item.generation;

@@ -24,6 +24,11 @@ using corevideo::modules::RecordingSessionRequest;
 // that its finalize/teardown are grace-bounded.
 class ControllableEncoder final : public IEncoderSink {
  public:
+  // Mimics the SYNCHRONOUS Media Foundation open (95-250ms measured on Windows),
+  // which applies as a FIFO item on the writer thread while the producer keeps
+  // submitting at 60Hz.
+  std::shared_ptr<std::atomic<bool>> blockStart = std::make_shared<std::atomic<bool>>(false);
+  std::atomic<bool> startEntered{false};
   std::shared_ptr<std::atomic<bool>> blockSubmit = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<bool>> blockStop = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<bool>> blockIsoSubmit = std::make_shared<std::atomic<bool>>(false);
@@ -57,6 +62,10 @@ class ControllableEncoder final : public IEncoderSink {
   OutputSession start(const std::vector<std::string>& destinations,
                       const std::vector<std::string>& /*isoParticipantIds*/) override {
     if (throwOnStart.load()) throw std::runtime_error("writer open failed");
+    startEntered.store(true);
+    while (blockStart->load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     session_.active = true;
     session_.recordingError.clear();
@@ -307,9 +316,17 @@ TEST(AsyncEncoderSink, SubmitIsNonBlockingAndDropsToLatestUnderBacklog) {
   options.maxVideoQueue = 4;
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
-  raw->blockSubmit->store(true);  // wedge the wrapped writer like a disk stall
   AsyncEncoderSink sink(std::move(inner), options);
   sink.start({"recording"}, {});
+  // Reach STEADY STATE before stalling: get one frame committed so the writer's
+  // (synchronous) open is behind us and the recording is live. Drops taken
+  // before that first commit are head-of-show shedding and are counted apart
+  // (startupDroppedVideoFrames) — this test is about the disk stalling on a
+  // running show.
+  sink.submit(videoFrame(0));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  ASSERT_EQ(sink.startupDroppedVideoFrames(), 0u);
+  raw->blockSubmit->store(true);  // wedge the wrapped writer like a disk stall
 
   // Fire far more frames than the queue can hold. Each submit must return fast
   // even though the wrapped encoder is blocked — that is the whole point.
@@ -329,7 +346,9 @@ TEST(AsyncEncoderSink, SubmitIsNonBlockingAndDropsToLatestUnderBacklog) {
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
   EXPECT_EQ(raw->lastFrameNumber.load(), total);
-  EXPECT_LT(raw->submitCount.load(), total) << "no frames were dropped despite the backlog";
+  EXPECT_LT(raw->submitCount.load(), total + 1) << "no frames were dropped despite the backlog";
+  EXPECT_EQ(sink.startupDroppedVideoFrames(), 0u)
+      << "a mid-show disk stall is steady-state loss, never startup shedding";
   EXPECT_EQ(sink.session().encoderQueueDroppedVideoFrames,
             static_cast<int64_t>(sink.droppedVideoFrames()));
   EXPECT_GT(sink.session().encoderQueueDroppedVideoFrames, 0);
@@ -370,7 +389,11 @@ TEST(AsyncEncoderSink, RepeatedGenerationsShareMediaBudgetAndPreserveStoppedTail
   // Each newer generation loses its incoming media, not the first take's
   // accepted tail. A per-generation cap would report no drops here and retain
   // all 800 queued media items while the writer remains blocked.
-  EXPECT_EQ(sink.droppedVideoFrames(), 396u);
+  // Video drops are now SPLIT: this rig wedges the writer so no generation past
+  // the first ever applies its Start, and every video item shed while a Start is
+  // outstanding is head-of-show shedding, not steady-state loss. The BUDGET
+  // behaviour under test is unchanged, so assert the total.
+  EXPECT_EQ(sink.droppedVideoFrames() + sink.startupDroppedVideoFrames(), 396u);
   EXPECT_EQ(sink.droppedAudioPackets(), 396u);
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
@@ -415,7 +438,7 @@ TEST(AsyncEncoderSink, HeldProgramAndIsoFramesRetryAfterOlderGenerationBudgetDra
   sink.submit(videoFrame(2));
   iso.frame.frameId = 2;
   sink.submitIsoVideo({iso});
-  EXPECT_EQ(sink.droppedVideoFrames(), 2u);
+  EXPECT_EQ(sink.droppedVideoFrames() + sink.startupDroppedVideoFrames(), 2u);
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
   EXPECT_EQ(raw->submitCount.load(), 2);
@@ -431,7 +454,86 @@ TEST(AsyncEncoderSink, HeldProgramAndIsoFramesRetryAfterOlderGenerationBudgetDra
   EXPECT_EQ(raw->lastFrameNumber.load(), 2);
   EXPECT_EQ(raw->isoVideoCount.load(), 2);
   EXPECT_EQ(sink.session().lifecycle->state, "live");
-  EXPECT_EQ(sink.droppedVideoFrames(), 2u);
+  EXPECT_EQ(sink.droppedVideoFrames() + sink.startupDroppedVideoFrames(), 2u);
+}
+
+// Video needed the concept audio already had (recordingStartupDroppedAudioPackets):
+// the writer's open is SYNCHRONOUS, so 7-9 frames are shed at every record start
+// while `recording.status` already reads "recording". No frame is missing from the
+// file — the head is clipped — but those drops landed in the same counter as
+// steady-state loss, and a judge that is fail-closed on any loss-counter increase
+// therefore reported a clean run as failed.
+TEST(AsyncEncoderSink, StartupSheddingIsCountedApartFromSteadyStateLoss) {
+  AsyncEncoderSink::Options options;
+  options.maxVideoQueue = 2;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockStart->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->startEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(raw->startEntered.load());
+
+  // The producer keeps submitting at frame rate behind the open, exactly as
+  // renderVideoOutputTick does.
+  for (int frame = 1; frame <= 10; ++frame) sink.submit(videoFrame(frame));
+  EXPECT_GT(sink.startupDroppedVideoFrames(), 0u) << "startup shedding must be visible";
+  EXPECT_EQ(sink.droppedVideoFrames(), 0u)
+      << "and must NOT poison the steady-state counter the judges watch";
+  EXPECT_EQ(sink.session().recordingStartupDroppedVideoFrames,
+            static_cast<int64_t>(sink.startupDroppedVideoFrames()))
+      << "the recording proof must carry it too";
+
+  raw->blockStart->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
+  const auto startupAfterOpen = sink.startupDroppedVideoFrames();
+
+  // Past the open, shedding is real steady-state loss again.
+  raw->blockSubmit->store(true);
+  sink.submit(videoFrame(100));
+  const auto submitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < submitDeadline) {
+    std::this_thread::yield();
+  }
+  for (int frame = 101; frame <= 110; ++frame) sink.submit(videoFrame(frame));
+  EXPECT_GT(sink.droppedVideoFrames(), 0u) << "post-open shedding is steady-state loss";
+  EXPECT_EQ(sink.startupDroppedVideoFrames(), startupAfterOpen)
+      << "and must not be attributed to startup";
+  raw->blockSubmit->store(false);
+}
+
+// ISO-3 (fidelity): framesWritten on an ISO stream is an APPEND count, so nothing
+// could tell a stem full of distinct pictures from a stem full of repeats — which
+// made any change to the ISO cadence unverifiable.
+TEST(AsyncEncoderSink, IsoVideoFidelityIsCountedPerSource) {
+  AsyncEncoderSink sink(std::make_unique<ControllableEncoder>());
+  sink.start({"recording"}, {});
+  const auto submitIso = [&](const char* sourceId, int64_t frameId) {
+    IsoSourceVideoFrame iso;
+    iso.sourceId = sourceId;
+    iso.frame.frameId = frameId;
+    sink.submitIsoVideo({iso});
+  };
+  submitIso("zoom:host", 1);
+  submitIso("zoom:host", 2);
+  submitIso("zoom:host", 2);  // held frame re-served
+  submitIso("zoom:guest", 7);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+
+  const auto evidence = sink.evidence();
+  const auto host = evidence.isoVideoBySource.find("zoom:host");
+  ASSERT_NE(host, evidence.isoVideoBySource.end());
+  EXPECT_EQ(host->second.submitted, 2u);
+  EXPECT_EQ(host->second.duplicateRejected, 1u);
+  EXPECT_EQ(host->second.written, 2u);
+  const auto guest = evidence.isoVideoBySource.find("zoom:guest");
+  ASSERT_NE(guest, evidence.isoVideoBySource.end());
+  EXPECT_EQ(guest->second.submitted, 1u);
+  EXPECT_EQ(guest->second.duplicateRejected, 0u);
+  EXPECT_EQ(guest->second.written, 1u);
 }
 
 TEST(AsyncEncoderSink, StopRecordingIsNonBlockingEvenWhenWriterIsStuck) {
