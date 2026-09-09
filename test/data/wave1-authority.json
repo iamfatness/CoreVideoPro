@@ -1,0 +1,1736 @@
+{
+  "version": "authority-goldens-v2",
+  "ledgerPolicy": "retain-rejection-tombstone-until-authority-epoch-ends",
+  "scenarios": [
+    {
+      "id": "duplicate-names-are-not-identity",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "people": [
+          {
+            "personId": "alice",
+            "name": "Sam"
+          },
+          {
+            "personId": "bob",
+            "name": "Sam"
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "name",
+          "name": "Sam"
+        },
+        "audio": {
+          "kind": "name",
+          "name": "Sam"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": null,
+        "videoReason": "ambiguous",
+        "audioReason": "ambiguous"
+      }
+    },
+    {
+      "id": "person-following-rejoin-adopts-current-token",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "retiredSources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-1",
+            "processEpoch": "zoom-process-1",
+            "generation": 1
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "audio": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "videoReason": "resolved",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "pinned-rejoin-remains-missing",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "retiredSources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-1",
+            "processEpoch": "zoom-process-1",
+            "generation": 1
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "pinned",
+          "token": {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-1",
+            "processEpoch": "zoom-process-1",
+            "generation": 1
+          }
+        },
+        "audio": {
+          "kind": "pinned",
+          "token": {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-1",
+            "processEpoch": "zoom-process-1",
+            "generation": 1
+          }
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": null,
+        "videoReason": "missing",
+        "audioReason": "missing"
+      }
+    },
+    {
+      "id": "leave-never-promotes-another-person",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": null,
+        "videoReason": "missing",
+        "audioReason": "missing"
+      }
+    },
+    {
+      "id": "slot-replacement-is-authoritative",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "inputs": [
+          {
+            "id": "guest",
+            "personId": "bob"
+          }
+        ],
+        "previousInputs": [
+          {
+            "id": "guest",
+            "personId": "alice"
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "input",
+          "inputId": "guest"
+        },
+        "audio": {
+          "kind": "input",
+          "inputId": "guest"
+        }
+      },
+      "expected": {
+        "video": {
+          "sourceId": "camera-bob",
+          "instanceId": "bob-session-1",
+          "processEpoch": "zoom-process-2",
+          "generation": 1
+        },
+        "audio": {
+          "sourceId": "camera-bob",
+          "instanceId": "bob-session-1",
+          "processEpoch": "zoom-process-2",
+          "generation": 1
+        },
+        "videoReason": "resolved",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "camera-off-keeps-fresh-audio",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": false,
+            "videoFresh": false,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "videoReason": "unavailable",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "camera-on-before-new-video-is-not-ready",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": false,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "videoReason": "stale",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "camera-on-fresh-video-restores-same-token",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "audio": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "videoReason": "resolved",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "muted-audio-does-not-blank-video",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": true
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "audio": null,
+        "videoReason": "resolved",
+        "audioReason": "muted"
+      }
+    },
+    {
+      "id": "stale-audio-does-not-blank-fresh-video",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": false,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "audio": null,
+        "videoReason": "resolved",
+        "audioReason": "stale"
+      }
+    },
+    {
+      "id": "video-blank-retains-explicit-audio",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "blank"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "videoReason": "blank",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "both-explicitly-blank",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "blank"
+        },
+        "audio": {
+          "kind": "blank"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": null,
+        "videoReason": "blank",
+        "audioReason": "blank"
+      }
+    },
+    {
+      "id": "video-blank-audio-explicitly-muted",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "blank"
+        },
+        "audio": {
+          "kind": "muted"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": null,
+        "videoReason": "blank",
+        "audioReason": "muted"
+      }
+    },
+    {
+      "id": "av-routes-may-intentionally-differ",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "person",
+          "personId": "alice"
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "bob"
+        }
+      },
+      "expected": {
+        "video": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "audio": {
+          "sourceId": "camera-bob",
+          "instanceId": "bob-session-1",
+          "processEpoch": "zoom-process-2",
+          "generation": 1
+        },
+        "videoReason": "resolved",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "retired-helper-epoch-cannot-resolve-pinned-source",
+      "kind": "route",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "video": {
+          "kind": "pinned",
+          "token": {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-1",
+            "generation": 2
+          }
+        },
+        "audio": {
+          "kind": "person",
+          "personId": "alice"
+        }
+      },
+      "expected": {
+        "video": null,
+        "audio": {
+          "sourceId": "camera-alice",
+          "instanceId": "alice-session-2",
+          "processEpoch": "zoom-process-2",
+          "generation": 2
+        },
+        "videoReason": "missing",
+        "audioReason": "resolved"
+      }
+    },
+    {
+      "id": "tiles-editorial-order-not-map-order",
+      "kind": "tiles",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-carol",
+            "instanceId": "carol-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "carol",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-dave",
+            "instanceId": "dave-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "dave",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "inputs": [
+          {
+            "id": "guest-b",
+            "personId": "bob"
+          },
+          {
+            "id": "guest-a",
+            "personId": "alice"
+          }
+        ],
+        "roster": [
+          "alice",
+          "carol",
+          "bob",
+          "dave"
+        ]
+      },
+      "request": {
+        "mode": "automatic",
+        "allowRosterAdditions": false,
+        "excluded": []
+      },
+      "expected": {
+        "members": [
+          "bob",
+          "alice"
+        ]
+      }
+    },
+    {
+      "id": "tiles-roster-additions-explicit-and-excluded",
+      "kind": "tiles",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-carol",
+            "instanceId": "carol-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "carol",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-dave",
+            "instanceId": "dave-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "dave",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "inputs": [
+          {
+            "id": "guest-b",
+            "personId": "bob"
+          },
+          {
+            "id": "guest-a",
+            "personId": "alice"
+          }
+        ],
+        "roster": [
+          "alice",
+          "carol",
+          "bob",
+          "dave"
+        ]
+      },
+      "request": {
+        "mode": "automatic",
+        "allowRosterAdditions": true,
+        "excluded": [
+          "bob",
+          "dave"
+        ]
+      },
+      "expected": {
+        "members": [
+          "alice",
+          "carol"
+        ]
+      }
+    },
+    {
+      "id": "tiles-automatic-omits-camera-off-or-departed",
+      "kind": "tiles",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": false,
+            "videoFresh": false,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "inputs": [
+          {
+            "id": "guest-b",
+            "personId": "bob"
+          },
+          {
+            "id": "guest-a",
+            "personId": "alice"
+          }
+        ],
+        "roster": [
+          "alice",
+          "carol",
+          "bob",
+          "dave"
+        ]
+      },
+      "request": {
+        "mode": "automatic",
+        "allowRosterAdditions": false,
+        "excluded": []
+      },
+      "expected": {
+        "members": []
+      }
+    },
+    {
+      "id": "tiles-manual-holes-never-promote",
+      "kind": "tiles",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-carol",
+            "instanceId": "carol-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "carol",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-dave",
+            "instanceId": "dave-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "dave",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ],
+        "inputs": [
+          {
+            "id": "guest-b",
+            "personId": "bob"
+          },
+          {
+            "id": "guest-a",
+            "personId": "alice"
+          }
+        ],
+        "roster": [
+          "alice",
+          "carol",
+          "bob",
+          "dave"
+        ]
+      },
+      "request": {
+        "mode": "manual",
+        "excluded": [
+          "bob"
+        ],
+        "slots": [
+          {
+            "id": "first",
+            "selector": {
+              "kind": "person",
+              "personId": "alice"
+            }
+          },
+          {
+            "id": "empty",
+            "selector": {
+              "kind": "blank"
+            }
+          },
+          {
+            "id": "excluded",
+            "selector": {
+              "kind": "person",
+              "personId": "bob"
+            }
+          },
+          {
+            "id": "departed",
+            "selector": {
+              "kind": "person",
+              "personId": "nobody"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "slots": [
+          {
+            "id": "first",
+            "source": {
+              "sourceId": "camera-alice",
+              "instanceId": "alice-session-2",
+              "processEpoch": "zoom-process-2",
+              "generation": 2
+            },
+            "reason": "resolved"
+          },
+          {
+            "id": "empty",
+            "source": null,
+            "reason": "blank"
+          },
+          {
+            "id": "excluded",
+            "source": null,
+            "reason": "excluded"
+          },
+          {
+            "id": "departed",
+            "source": null,
+            "reason": "missing"
+          }
+        ]
+      }
+    },
+    {
+      "id": "iso-arming-not-roster-or-current-eligibility",
+      "kind": "iso",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          },
+          {
+            "sourceId": "camera-bob",
+            "instanceId": "bob-session-1",
+            "processEpoch": "zoom-process-2",
+            "generation": 1,
+            "personId": "bob",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "selections": [
+          {
+            "id": "alice-iso",
+            "selector": {
+              "kind": "person",
+              "personId": "alice"
+            }
+          },
+          {
+            "id": "carol-iso",
+            "selector": {
+              "kind": "person",
+              "personId": "carol"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "armed": [
+          "alice-iso",
+          "carol-iso"
+        ],
+        "writers": [
+          {
+            "id": "alice-iso",
+            "video": {
+              "sourceId": "camera-alice",
+              "instanceId": "alice-session-2",
+              "processEpoch": "zoom-process-2",
+              "generation": 2
+            },
+            "audio": {
+              "sourceId": "camera-alice",
+              "instanceId": "alice-session-2",
+              "processEpoch": "zoom-process-2",
+              "generation": 2
+            }
+          }
+        ],
+        "waiting": [
+          "carol-iso"
+        ]
+      }
+    },
+    {
+      "id": "iso-camera-off-remains-armed-with-audio",
+      "kind": "iso",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": false,
+            "videoFresh": false,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "selections": [
+          {
+            "id": "alice-iso",
+            "selector": {
+              "kind": "person",
+              "personId": "alice"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "armed": [
+          "alice-iso"
+        ],
+        "writers": [
+          {
+            "id": "alice-iso",
+            "video": null,
+            "audio": {
+              "sourceId": "camera-alice",
+              "instanceId": "alice-session-2",
+              "processEpoch": "zoom-process-2",
+              "generation": 2
+            }
+          }
+        ],
+        "waiting": []
+      }
+    },
+    {
+      "id": "iso-person-follows-rejoin-but-pin-does-not",
+      "kind": "iso",
+      "state": {
+        "sources": [
+          {
+            "sourceId": "camera-alice",
+            "instanceId": "alice-session-2",
+            "processEpoch": "zoom-process-2",
+            "generation": 2,
+            "personId": "alice",
+            "videoAvailable": true,
+            "videoFresh": true,
+            "audioAvailable": true,
+            "audioFresh": true,
+            "audioMuted": false
+          }
+        ]
+      },
+      "request": {
+        "selections": [
+          {
+            "id": "follow",
+            "selector": {
+              "kind": "person",
+              "personId": "alice"
+            }
+          },
+          {
+            "id": "pin",
+            "selector": {
+              "kind": "pinned",
+              "token": {
+                "sourceId": "camera-alice",
+                "instanceId": "alice-session-1",
+                "processEpoch": "zoom-process-1",
+                "generation": 1
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "armed": [
+          "follow",
+          "pin"
+        ],
+        "writers": [
+          {
+            "id": "follow",
+            "video": {
+              "sourceId": "camera-alice",
+              "instanceId": "alice-session-2",
+              "processEpoch": "zoom-process-2",
+              "generation": 2
+            },
+            "audio": {
+              "sourceId": "camera-alice",
+              "instanceId": "alice-session-2",
+              "processEpoch": "zoom-process-2",
+              "generation": 2
+            }
+          }
+        ],
+        "waiting": [
+          "pin"
+        ]
+      }
+    },
+    {
+      "id": "stale-client-revision",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 12,
+        "previewRevision": 9,
+        "ledger": [],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 11,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": false,
+            "error": "stale-revision",
+            "resultRevision": 12,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "stale-preview",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 12,
+        "previewRevision": 9,
+        "ledger": [],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 8
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": false,
+            "error": "stale-preview",
+            "resultRevision": 12,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "fresh-take-once",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 12,
+        "previewRevision": 9,
+        "ledger": [],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": true,
+            "error": null,
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9,
+            "additionalPromotions": 1
+          }
+        ],
+        "totalPromotions": 1
+      }
+    },
+    {
+      "id": "duplicate-take-replays-original",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 13,
+        "previewRevision": 10,
+        "ledger": [
+          {
+            "operation": {
+              "id": "take-1",
+              "authorityEpoch": "show-1",
+              "expectedRevision": 12,
+              "previewRevision": 9
+            },
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9
+          }
+        ],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": true,
+            "error": null,
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "lost-ack-does-not-promote-current-preview",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 14,
+        "previewRevision": 11,
+        "ledger": [
+          {
+            "operation": {
+              "id": "take-1",
+              "authorityEpoch": "show-1",
+              "expectedRevision": 12,
+              "previewRevision": 9
+            },
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9
+          }
+        ],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": true,
+            "error": null,
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      },
+      "ackLost": true
+    },
+    {
+      "id": "authority-restart-rejects-old-operation",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-2",
+        "revision": 0,
+        "previewRevision": 0,
+        "ledger": [],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": false,
+            "error": "authority-epoch",
+            "resultRevision": 0,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "changed-payload-id-conflict",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 13,
+        "previewRevision": 10,
+        "ledger": [
+          {
+            "operation": {
+              "id": "take-1",
+              "authorityEpoch": "show-1",
+              "expectedRevision": 12,
+              "previewRevision": 9
+            },
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9
+          }
+        ],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 10
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": false,
+            "error": "operation-id-conflict",
+            "resultRevision": 13,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "evicted-ledger-retains-rejection-tombstone",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 14,
+        "previewRevision": 11,
+        "ledger": [],
+        "expiredOperationIds": [
+          "take-1"
+        ],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": false,
+            "error": "operation-expired",
+            "resultRevision": 14,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "concurrent-duplicate-first-submissions-serialize",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 12,
+        "previewRevision": 9,
+        "ledger": [],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        },
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": true,
+            "error": null,
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9,
+            "additionalPromotions": 1
+          },
+          {
+            "accepted": true,
+            "error": null,
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 1
+      },
+      "concurrent": true
+    },
+    {
+      "id": "concurrent-distinct-takes-conflict-after-first",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 12,
+        "previewRevision": 9,
+        "ledger": [],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        },
+        {
+          "id": "take-2",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": true,
+            "error": null,
+            "resultRevision": 13,
+            "promotedPreviewRevision": 9,
+            "additionalPromotions": 1
+          },
+          {
+            "accepted": false,
+            "error": "stale-revision",
+            "resultRevision": 13,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 1
+      },
+      "concurrent": true
+    },
+    {
+      "id": "bounded-operation-ledger-rejects-new-work-at-capacity",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 12,
+        "previewRevision": 9,
+        "ledger": [],
+        "expiredOperationIds": [
+          "old-take"
+        ],
+        "operationCapacity": 1
+      },
+      "operations": [
+        {
+          "id": "take-1",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 12,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": false,
+            "error": "operation-capacity",
+            "resultRevision": 12,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "revision-exhaustion-rejects-new-take",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 9007199254740991,
+        "previewRevision": 9,
+        "ledger": [],
+        "expiredOperationIds": [],
+        "operationCapacity": 32
+      },
+      "operations": [
+        {
+          "id": "new-take",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 9007199254740991,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": false,
+            "error": "revision-exhausted",
+            "resultRevision": 9007199254740991,
+            "promotedPreviewRevision": null,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    },
+    {
+      "id": "revision-exhaustion-preserves-known-replay",
+      "kind": "take",
+      "state": {
+        "authorityEpoch": "show-1",
+        "revision": 9007199254740991,
+        "previewRevision": 9,
+        "ledger": [
+          {
+            "operation": {
+              "id": "last-take",
+              "authorityEpoch": "show-1",
+              "expectedRevision": 9007199254740990,
+              "previewRevision": 9
+            },
+            "resultRevision": 9007199254740991,
+            "promotedPreviewRevision": 9
+          }
+        ],
+        "expiredOperationIds": [],
+        "operationCapacity": 1
+      },
+      "operations": [
+        {
+          "id": "last-take",
+          "authorityEpoch": "show-1",
+          "expectedRevision": 9007199254740990,
+          "previewRevision": 9
+        }
+      ],
+      "expected": {
+        "results": [
+          {
+            "accepted": true,
+            "error": null,
+            "resultRevision": 9007199254740991,
+            "promotedPreviewRevision": 9,
+            "additionalPromotions": 0
+          }
+        ],
+        "totalPromotions": 0
+      }
+    }
+  ]
+}
