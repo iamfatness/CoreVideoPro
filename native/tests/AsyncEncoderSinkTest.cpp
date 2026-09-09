@@ -151,6 +151,78 @@ ProgramFrame videoFrame(int64_t number) {
 
 }  // namespace
 
+TEST(AsyncEncoderSink, EvidenceRemainsReadableDuringBlockedWriteAndFinalize) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(1)));
+  raw->blockSubmit->store(true);
+  raw->blockStop->store(true);
+  sink.submit(videoFrame(1));
+  const auto waitFlag = [](const std::atomic<bool>& flag) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!flag.load() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return flag.load();
+  };
+  const bool entered = waitFlag(raw->submitEntered);
+  sink.submit(videoFrame(2));
+  sink.stopRecording();
+  const auto blocked = sink.evidence();
+  // Release all worker gates even if an assertion below fails.
+  raw->blockSubmit->store(false);
+  const bool finalizing = waitFlag(raw->stopEntered);
+  const auto finishing = sink.evidence();
+  raw->blockStop->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(1)));
+  EXPECT_TRUE(entered);
+  EXPECT_TRUE(finalizing);
+  EXPECT_EQ(blocked.operation, "program-video");
+  EXPECT_EQ(blocked.enqueued[2], 2u);
+  EXPECT_EQ(blocked.completedCalls[2], 0u);
+  EXPECT_EQ(blocked.programVideoWritten, 0);
+  EXPECT_EQ(blocked.lastWriterProgressMs, 0);
+  EXPECT_EQ(blocked.queueDepth, 2u);
+  EXPECT_EQ(blocked.queuedByKind[2], 1u);
+  EXPECT_EQ(blocked.finalizeResult, "pending");
+  EXPECT_EQ(finishing.operation, "stop");
+  EXPECT_EQ(finishing.programVideoWritten, 2);
+  EXPECT_EQ(finishing.finalizeResult, "running");
+  EXPECT_TRUE(finishing.lastWriterProgressMs > 0);
+  EXPECT_TRUE(finishing.finalizeStartedMs >= finishing.stopRequestedMs);
+  const auto done = sink.evidence();
+  EXPECT_EQ(done.operation, "idle");
+  EXPECT_EQ(done.completedCalls[2], 2u);
+  EXPECT_EQ(done.completedCalls[6], 1u);
+  EXPECT_EQ(done.queueDepth, 0u);
+  EXPECT_EQ(done.finalizeResult, "returned");
+  EXPECT_TRUE(done.finalizeFinishedMs >= done.finalizeStartedMs);
+}
+
+TEST(AsyncEncoderSink, EvidenceRetainsFirstFailureAcrossCleanupAndNextGeneration) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  raw->throwOnStart.store(true);
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(1)));
+  raw->throwOnStop.store(true);
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(1)));
+  EXPECT_EQ(sink.evidence().finalizeResult, "failed");
+  raw->throwOnStart.store(false);
+  raw->throwOnStop.store(false);
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(1)));
+  const auto evidence = sink.evidence();
+  EXPECT_EQ(evidence.firstFailure, "writer open failed");
+  EXPECT_EQ(evidence.firstFailureGeneration, 1u);
+  EXPECT_EQ(evidence.generation, 2u);
+  EXPECT_EQ(evidence.writtenGeneration, 2u);
+  EXPECT_EQ(evidence.programVideoWritten, 0);
+}
+
 TEST(AsyncEncoderSink, IdleSubmitBeforeStartIsDroppedWithoutTouchingInner) {
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
@@ -605,6 +677,20 @@ TEST(AsyncEncoderSink, StopWithoutWrittenMediaNeverClaimsCompletedRecording) {
   EXPECT_EQ(sink.session().lifecycle->state, "failed");
   EXPECT_FALSE(sink.session().lifecycle->finalized);
   EXPECT_FALSE(sink.session().active);
+  const auto first = sink.evidence();
+  ASSERT_TRUE(sink.session().lifecycle->error.has_value());
+  EXPECT_EQ(first.firstFailure, *sink.session().lifecycle->error);
+  EXPECT_EQ(first.firstFailureGeneration, 1u);
+  EXPECT_TRUE(first.firstFailureMs > 0);
+  // A later successful writer call does not erase the first terminal failure.
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "completed");
+  EXPECT_EQ(sink.evidence().firstFailure, first.firstFailure);
+  EXPECT_EQ(sink.evidence().firstFailureGeneration, first.firstFailureGeneration);
+  EXPECT_EQ(sink.evidence().firstFailureMs, first.firstFailureMs);
 }
 
 

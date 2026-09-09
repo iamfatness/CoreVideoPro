@@ -157,6 +157,18 @@ class MediaCore {
       renderDeadlineMisses_.fetch_add(count, std::memory_order_relaxed);
     }
   }
+  // Always-on, allocation-free worker evidence. These observations are updated
+  // after a worker completes an iteration, so a blocking GPU/DSP/output call
+  // leaves an increasing progress age instead of a stale "live" boolean.
+  void reportRenderWorkerStarted();
+  void reportRenderWorkerProgress(int64_t completedSlots, int64_t skippedSlots,
+                                  int64_t deadlineMisses, int64_t maximumLatenessNs,
+                                  int64_t lockWaitNs, int64_t workNs, int64_t drainNs);
+  void reportAudioWorkerStarted();
+  void reportAudioWorkerProgress(int64_t workNs);
+  void reportAudioWorkerReanchor(int64_t discardedTimelineNs);
+  void reportVideoOutputWorkerStarted();
+  void reportVideoOutputWorkerProgress(int64_t workNs);
   void setVideoOutputTickRunning(bool running) {
     videoOutputTickRunning_.store(running, std::memory_order_release);
   }
@@ -689,6 +701,30 @@ class MediaCore {
   // time after outputs clear, so the stop-carrying sync() is actually delivered.
   std::atomic<bool> senderSyncActive_{false};
   std::atomic<int64_t> renderDeadlineMisses_{0};
+  std::atomic<int64_t> renderWorkerGeneration_{0};
+  std::atomic<int64_t> renderWorkerCompletedSlots_{0};
+  std::atomic<int64_t> renderWorkerSkippedSlots_{0};
+  std::atomic<int64_t> renderWorkerDeadlineMisses_{0};
+  std::atomic<int64_t> renderWorkerMaximumLatenessNs_{0};
+  std::atomic<int64_t> renderWorkerLastProgressNs_{0};
+  std::atomic<int64_t> renderWorkerLockWaitTotalNs_{0};
+  std::atomic<int64_t> renderWorkerLockWaitMaximumNs_{0};
+  std::atomic<int64_t> renderWorkerWorkTotalNs_{0};
+  std::atomic<int64_t> renderWorkerWorkMaximumNs_{0};
+  std::atomic<int64_t> renderWorkerDrainTotalNs_{0};
+  std::atomic<int64_t> renderWorkerDrainMaximumNs_{0};
+  std::atomic<int64_t> audioWorkerGeneration_{0};
+  std::atomic<int64_t> audioWorkerCompletedTicks_{0};
+  std::atomic<int64_t> audioWorkerLastProgressNs_{0};
+  std::atomic<int64_t> audioWorkerWorkTotalNs_{0};
+  std::atomic<int64_t> audioWorkerWorkMaximumNs_{0};
+  std::atomic<int64_t> audioWorkerReanchors_{0};
+  std::atomic<int64_t> audioWorkerDiscardedTimelineNs_{0};
+  std::atomic<int64_t> videoOutputWorkerGeneration_{0};
+  std::atomic<int64_t> videoOutputWorkerCompletedTicks_{0};
+  std::atomic<int64_t> videoOutputWorkerLastProgressNs_{0};
+  std::atomic<int64_t> videoOutputWorkerWorkTotalNs_{0};
+  std::atomic<int64_t> videoOutputWorkerWorkMaximumNs_{0};
   // The newest program NV12 tap. Video owns output submission independently of
   // audio; this small mutex protects only the shared immutable tap reference and
   // dimensions, never DSP, encoder or sender work.

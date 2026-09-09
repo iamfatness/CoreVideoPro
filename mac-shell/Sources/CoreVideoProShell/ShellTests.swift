@@ -161,7 +161,13 @@ enum ShellTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         do {
-            let data = try Data(contentsOf: root.appendingPathComponent("contracts/lifecycle.fixtures.json"))
+            let lifecycleData = try Data(contentsOf: root.appendingPathComponent("contracts/lifecycle.fixtures.json"))
+            let identityData = try Data(contentsOf: root.appendingPathComponent("contracts/identity.fixtures.json"))
+            let lifecycleRows = try JSONSerialization.jsonObject(with: lifecycleData) as! [[String: Any]]
+            let evidenceData = try Data(contentsOf: root.appendingPathComponent("contracts/evidence.fixtures.json"))
+            let evidenceRows = try JSONSerialization.jsonObject(with: evidenceData) as! [[String: Any]]
+            let identityRows = try JSONSerialization.jsonObject(with: identityData) as! [[String: Any]]
+            let data = try JSONSerialization.data(withJSONObject: lifecycleRows + identityRows + evidenceRows)
             guard let fixtures = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
                 expect(false, "lifecycle fixtures must be an array"); return
             }
@@ -179,6 +185,24 @@ enum ShellTests {
                 case "OutputLifecycle": validate = validateOutputLifecycle
                 case "OperationStatus": validate = validateOperationStatus
                 case "ProtocolFailure": validate = validateProtocolFailure
+                case "EntityIdentity": validate = validateEntityIdentity
+                case "EntityRevision": validate = validateEntityRevision
+                case "SourceInstanceIdentity": validate = validateSourceInstanceIdentity
+                case "ParticipantBindingIdentity": validate = validateParticipantBindingIdentity
+                case "ControlRevision": validate = validateControlRevision
+                case "PlanGeneration": validate = validatePlanGeneration
+                case "ControlOperationIdentity": validate = validateControlOperationIdentity
+                case "AcceptedOperationObservation": validate = validateAcceptedOperationObservation
+                case "AppliedOperationObservation": validate = validateAppliedOperationObservation
+                case "RenderedMediaObservation": validate = validateRenderedMediaObservation
+                case "DeliveredMediaObservation": validate = validateDeliveredMediaObservation
+                case "PresentedMediaObservation": validate = validatePresentedMediaObservation
+                case "MuxedMediaObservation": validate = validateMuxedMediaObservation
+                case "CommittedMediaObservation": validate = validateCommittedMediaObservation
+                case "CompletedOutputObservation": validate = validateCompletedOutputObservation
+                case "ResourceLeaseDescriptor": validate = validateResourceLeaseDescriptor
+                case "DestinationProgress": validate = validateDestinationProgress
+                case "ArtifactValidationResult": validate = validateArtifactValidationResult
                 default: expect(false, "unknown contract \(contract)"); continue
                 }
                 expectEqual((value as? [String: Any]).map(validate) ?? false, accepted, id)
@@ -188,7 +212,26 @@ enum ShellTests {
                     case "ProtocolVersion": encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolVersion.self, from: payloadData))
                     case "OutputLifecycle": encoded = try JSONEncoder().encode(JSONDecoder().decode(OutputLifecycle.self, from: payloadData))
                     case "OperationStatus": encoded = try JSONEncoder().encode(JSONDecoder().decode(OperationStatus.self, from: payloadData))
-                    default: encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolFailure.self, from: payloadData))
+                    case "ProtocolFailure": encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolFailure.self, from: payloadData))
+                    case "EntityIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(EntityIdentity.self, from: payloadData))
+                    case "EntityRevision": encoded = try JSONEncoder().encode(JSONDecoder().decode(EntityRevision.self, from: payloadData))
+                    case "SourceInstanceIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(SourceInstanceIdentity.self, from: payloadData))
+                    case "ParticipantBindingIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(ParticipantBindingIdentity.self, from: payloadData))
+                    case "ControlRevision": encoded = try JSONEncoder().encode(JSONDecoder().decode(ControlRevision.self, from: payloadData))
+                    case "PlanGeneration": encoded = try JSONEncoder().encode(JSONDecoder().decode(PlanGeneration.self, from: payloadData))
+                    case "ControlOperationIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(ControlOperationIdentity.self, from: payloadData))
+                    case "AcceptedOperationObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(AcceptedOperationObservation.self, from: payloadData))
+                    case "AppliedOperationObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(AppliedOperationObservation.self, from: payloadData))
+                    case "RenderedMediaObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(RenderedMediaObservation.self, from: payloadData))
+                    case "DeliveredMediaObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(DeliveredMediaObservation.self, from: payloadData))
+                    case "PresentedMediaObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(PresentedMediaObservation.self, from: payloadData))
+                    case "MuxedMediaObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(MuxedMediaObservation.self, from: payloadData))
+                    case "CommittedMediaObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(CommittedMediaObservation.self, from: payloadData))
+                    case "CompletedOutputObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(CompletedOutputObservation.self, from: payloadData))
+                    case "ResourceLeaseDescriptor": encoded = try JSONEncoder().encode(JSONDecoder().decode(ResourceLeaseDescriptor.self, from: payloadData))
+                    case "DestinationProgress": encoded = try JSONEncoder().encode(JSONDecoder().decode(DestinationProgress.self, from: payloadData))
+                    case "ArtifactValidationResult": encoded = try JSONEncoder().encode(JSONDecoder().decode(ArtifactValidationResult.self, from: payloadData))
+                    default: expect(false, "unknown fixture type"); continue
                     }
                     let roundTrip = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
                     expect(roundTrip.map(validate) ?? false, "\(id) round trip")
