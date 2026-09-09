@@ -17,7 +17,7 @@
  *   - **Demo E head-clap alignment**: each ISO audio start vs the PROGRAM audio
  *     start is within 50 ms (inherited from the ONE shared recording epoch).
  *
- * Usage: node ./scripts/validate-iso-record.mjs [--seconds 20] [--keep-artifacts]
+ * Usage: node ./scripts/validate-iso-record.mjs [--seconds 20] [--source-fps 60] [--keep-artifacts]
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, statSync, rmSync } from "node:fs";
@@ -38,6 +38,12 @@ const argValue = (name, fallback) => {
 };
 const recordSeconds = Number(argValue("seconds", 20));
 const keepArtifacts = args.includes("--keep-artifacts");
+// PIN the fake engine's source frame rate. Left unset it silently ran at the
+// engine's default 30, so an ISO fps number from this rig could not be compared
+// against a source rate — the denominator was never stated. mac-show-drill.py and
+// qa/collect-runtime-snapshots.mjs both set it explicitly; so does this now.
+// Zoom delivers up to 1080p60 and the product targets it, so drive 60.
+const sourceFps = String(argValue("source-fps", process.env.COREVIDEO_FAKE_ENGINE_FPS ?? "60"));
 const targetFolder = "Recordings/CoreVideoPro/validate-iso-record";
 
 if (!existsSync(nativeCore) || !existsSync(fakeEngine)) {
@@ -47,7 +53,12 @@ if (!existsSync(nativeCore) || !existsSync(fakeEngine)) {
 
 const child = spawn(nativeCore, [], {
   cwd: buildDir,
-  env: { ...process.env, COREVIDEO_ZOOM_ENGINE_PATH: fakeEngine, COREVIDEO_FAKE_NO_CHURN: "1" },
+  env: {
+    ...process.env,
+    COREVIDEO_ZOOM_ENGINE_PATH: fakeEngine,
+    COREVIDEO_FAKE_NO_CHURN: "1",
+    COREVIDEO_FAKE_ENGINE_FPS: sourceFps,
+  },
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -154,6 +165,7 @@ try {
   console.log(`Handshake     : ${handshake.profile?.name ?? "unknown"}`);
 
   await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "iso-record-proof" } });
+  console.log(`Source rate   : COREVIDEO_FAKE_ENGINE_FPS=${sourceFps} (one video stream per participant)`);
   console.log("Joined        : fake engine (multi-participant animated I420)");
   await sleep(3000);
 
@@ -283,6 +295,7 @@ try {
     const worst = Math.max(...clapAlignmentsMs);
     console.log(`Demo E clap   : worst ISO-vs-program audio-start skew ${worst.toFixed(1)}ms (budget 50ms)`);
   }
+  console.log(`Measured at   : source ${sourceFps} fps/participant, ${recordSeconds}s -> ${finalStreams.map((s) => `${s.displayName ?? s.sourceId}:${(Number(s.framesWritten) / recordSeconds).toFixed(1)}fps`).join(", ")}`);
   console.log(`Result        : ${finalStreams.length} ISO streams -> [${finalStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}f/${s.audioSamples ?? 0}a`).join(", ")}]`);
   if (failures.length === 0) {
     console.log("ISO-RECORD VALIDATION PASS");

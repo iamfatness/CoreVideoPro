@@ -63,6 +63,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -276,6 +277,38 @@ static bool roster_has(uint32_t id) {
     return false;
 }
 
+// ── ONE video stream per participant ─────────────────────────────────────────
+// The rig auto-subscribes "participant-video-<id>-auto" so a headless validator
+// that never subscribes still sees frames; the app then explicitly subscribes
+// "participant-video-<id>-camera" for the SAME participant. Both are targets, so
+// both produced a frame every tick — and the core keys decoded frames by
+// participant (latestDecodedFrames_[frame.participantId]), so two independent
+// frameId sequences interleaved into one participant slot. Per-participant
+// delivery was therefore 2 x COREVIDEO_FAKE_ENGINE_FPS plus interleave phase
+// noise, which makes every fps number taken with this rig uninterpretable.
+// The real engine delivers one stream per subscribed participant; so does this
+// now — the explicit subscribe RETIRES the auto stand-in.
+static bool has_explicit_target_locked(uint32_t pid) {
+    for (const auto& entry : g_targets)
+        if (!entry.second.is_auto && entry.second.participant_id == pid) return true;
+    return false;
+}
+
+// Drop every AUTO target for `pid`. Only touches is_auto targets, so a
+// participant that never got an explicit subscribe keeps its auto stream.
+static void retire_auto_targets_locked(uint32_t pid) {
+    for (auto it = g_targets.begin(); it != g_targets.end();) {
+        if (it->second.is_auto && it->second.participant_id == pid) {
+            shm_region_destroy(it->second.shm);
+            diag("auto-retire " + it->first + " (explicit subscribe owns participant " +
+                 std::to_string(pid) + ")");
+            it = g_targets.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 // Build + send the {"cmd":"participants",...} event — byte-identical shape to
 // the real engine's EngineParticipants::send_roster().
 static void send_participants_locked() {
@@ -302,6 +335,8 @@ static void sync_auto_targets_locked() {
     // Add missing.
     for (const auto& p : g_roster) {
         if (!p.has_video) continue;
+        // An explicit subscribe already owns this participant's one stream.
+        if (has_explicit_target_locked(p.id)) continue;
         const std::string uuid = "participant-video-" + std::to_string(p.id) + "-auto";
         if (g_targets.find(uuid) == g_targets.end()) {
             Target t;
@@ -313,9 +348,12 @@ static void sync_auto_targets_locked() {
             diag("auto-subscribe " + uuid + " res=" + std::to_string(g_auto_res));
         }
     }
-    // Prune auto targets for departed participants.
+    // Prune auto targets for departed participants — and for any participant an
+    // explicit subscribe has since taken over (belt and braces with the retire
+    // on subscribe: whichever runs first, exactly one stream survives).
     for (auto it = g_targets.begin(); it != g_targets.end();) {
-        if (it->second.is_auto && !roster_has(it->second.participant_id)) {
+        if (it->second.is_auto && (!roster_has(it->second.participant_id) ||
+                                   has_explicit_target_locked(it->second.participant_id))) {
             shm_region_destroy(it->second.shm);
             diag("auto-unsubscribe " + it->first);
             it = g_targets.erase(it);
@@ -562,6 +600,8 @@ static void producer_loop() {
              " every_ticks=" + std::to_string(clapEveryTicks));
     auto next = clock::now();
     uint64_t tick = 0;
+    size_t targetCount = 0;       // live video targets, sampled under the lock
+    size_t participantCount = 0;  // DISTINCT participants those targets cover
     while (g_running.load(std::memory_order_acquire)) {
         next += frameInterval;
         {
@@ -601,6 +641,16 @@ static void producer_loop() {
                     if (atarget.fixedFreq > 0.0 || roster_has(atarget.participant_id))
                         produce_audio_locked(auuid, atarget);
                 }
+                // Sampled here (under g_mtx) for the achieved-rate diagnostic
+                // below, which must never read g_targets unlocked.
+                std::set<uint32_t> pids;
+                targetCount = 0;
+                for (const auto& entry : g_targets) {
+                    if (!roster_has(entry.second.participant_id)) continue;
+                    ++targetCount;
+                    pids.insert(entry.second.participant_id);
+                }
+                participantCount = pids.size();
             }
         }
         std::this_thread::sleep_until(next);
@@ -610,8 +660,26 @@ static void producer_loop() {
         static uint64_t s_rateTick = 0;
         if (++s_rateTick >= 120) {
             const double sec = std::chrono::duration<double>(clock::now() - s_rateStamp).count();
-            diag("producer achieved " + std::to_string(sec > 0 ? 120.0 / sec : 0.0) +
-                 " ticks/s across " + std::to_string(g_targets.size()) + " targets");
+            const double ticksPerSec = sec > 0 ? 120.0 / sec : 0.0;
+            // A "ticks/s across N targets" line is technically true and actively
+            // misleading: it was read as a per-participant rate while N targets
+            // covered fewer participants, so the real per-participant delivery
+            // was a multiple of it. State the participant count and the
+            // per-participant rate so the number cannot be misread again.
+            const double streamsPerParticipant =
+                participantCount > 0 ? static_cast<double>(targetCount) /
+                                           static_cast<double>(participantCount)
+                                     : 0.0;
+            diag("producer achieved " + std::to_string(ticksPerSec) +
+                 " ticks/s per target across " + std::to_string(targetCount) +
+                 " video targets covering " + std::to_string(participantCount) +
+                 " participants (" + std::to_string(streamsPerParticipant) +
+                 " stream/participant) => per-participant delivery " +
+                 std::to_string(ticksPerSec * streamsPerParticipant) +
+                 " fps (configured source fps=" + std::to_string(fps) + ")" +
+                 (streamsPerParticipant > 1.0001
+                      ? "  WARNING: >1 stream per participant, per-participant fps is NOT the source rate"
+                      : ""));
             s_rateStamp = clock::now();
             s_rateTick = 0;
         }
@@ -846,6 +914,10 @@ int main(int argc, char** argv) {
                     if (res > it->second.resolution) it->second.resolution = res;
                     it->second.is_auto = false;
                 }
+                // This participant now has an explicitly-subscribed stream, so
+                // the auto stand-in must go: two live targets for one
+                // participant is two frameId sequences in one core slot.
+                retire_auto_targets_locked(pid);
             }
             EngineIpc::write(
                 R"({"cmd":"debug","stage":"video_source_bound","source_uuid":")" +
@@ -866,6 +938,10 @@ int main(int argc, char** argv) {
                 shm_region_destroy(audioIt->second.shm);
                 g_audioTargets.erase(audioIt);
             }
+            // Dropping the explicit stream hands the participant back to
+            // auto-subscribe, so a headless validator that unsubscribes does not
+            // go dark. Still exactly one stream per participant.
+            sync_auto_targets_locked();
         }
     }
 
