@@ -41,6 +41,13 @@ Controlling architecture: `production-realtime-architecture.md`
   expected-head edits, generation/epoch fencing, tombstones, and pinned leases;
   it has no runtime MediaCore integration. These are pre-cutover contracts and
   safety boundaries, not completed G1 authority or real-time qualification.
+- Immutable Zoom producer-frame identity evidence bound to the exact shared
+  pixel allocation and preserved through Runtime, MediaCore, and the real Zoom
+  capture source: `f578670`. Helper replacement, camera off/on availability
+  fences, source incarnation changes, and detached payloads remove the evidence
+  rather than relabeling held pixels. Legacy participant rendering remains the
+  active path; exact-source retention, route resolution, capability advertising,
+  and client emission remain disabled pending their own cutover gates.
 
 ## Outcome
 
