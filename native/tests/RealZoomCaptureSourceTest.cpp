@@ -195,3 +195,33 @@ TEST(RealZoomCaptureSource, IsThreadSafeUnderConcurrentIngestAndPoll) {
   const auto frames = source.pollVideoFrames();
   EXPECT_EQ(frames.size(), 2u);
 }
+
+TEST(RealZoomCaptureSource, TypedTransportPreservesEvidencePayloadAndLegacyWritesClearIt) {
+  using namespace corevideo::modules;
+  RealZoomCaptureSource source;
+  VideoFrame frame; frame.participantId = "42"; frame.width = frame.i420Width = 4; frame.height = frame.i420Height = 4;
+  frame.i420 = std::make_shared<const std::vector<uint8_t>>(24, 128); frame.frameId = 9;
+  SourceFrameEvidence evidence;
+  evidence.identity = {"camera", "camera-instance", "helper", 7};
+  evidence.publicationSequence = 10; evidence.publicationFence = 3; evidence.observedNs = 100;
+  evidence.payload = frame.i420;
+  frame.exactSourceEvidence = std::make_shared<const SourceFrameEvidence>(evidence);
+  source.ingestVideoFrame(frame);
+  auto returned = source.pollVideoFrames(); ASSERT_EQ(returned.size(), 1U);
+  EXPECT_EQ(returned[0].exactSourceEvidence.get(), frame.exactSourceEvidence.get());
+  EXPECT_EQ(returned[0].i420.get(), evidence.payload.get());
+  auto share = frame;
+  evidence.identity = {"share", "share-instance", "helper", 8}; evidence.kind = SourceFrameEvidence::Kind::Share;
+  share.exactSourceEvidence = std::make_shared<const SourceFrameEvidence>(evidence);
+  source.ingestVideoFrame(share);
+  EXPECT_EQ(source.pollVideoFrames()[0].exactSourceEvidence->kind, SourceFrameEvidence::Kind::Share);
+  EXPECT_EQ(returned[0].exactSourceEvidence->kind, SourceFrameEvidence::Kind::Camera);
+  // Legacy participant-keyed latest-wins remains unchanged, never relabels the held lease.
+  EXPECT_EQ(source.participantCount(), 1U);
+  source.ingestI420Frame("42", frame.i420, 4, 4, 11, 102);
+  EXPECT_FALSE(source.pollVideoFrames()[0].exactSourceEvidence);
+  auto detached = frame; detached.i420 = std::make_shared<const std::vector<uint8_t>>(24, 0);
+  source.ingestVideoFrame(detached);
+  EXPECT_FALSE(source.pollVideoFrames()[0].exactSourceEvidence);
+  EXPECT_EQ(source.pollVideoFrames()[0].i420.get(), detached.i420.get());
+}

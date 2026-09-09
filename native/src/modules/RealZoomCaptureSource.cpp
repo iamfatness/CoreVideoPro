@@ -9,6 +9,19 @@ namespace corevideo::modules {
 RealZoomCaptureSource::RealZoomCaptureSource(std::unique_ptr<IZoomCaptureSource> fallback)
     : fallback_(std::move(fallback)) {}
 
+void RealZoomCaptureSource::ingestVideoFrame(const VideoFrame& frame) {
+  if (frame.participantId.empty() || (!frame.hasI420() && !frame.hasPixels())) return;
+  VideoFrame retained = frame;
+  // A detached evidence/payload pair is not producer proof. Keep legacy pixels,
+  // but never attribute them to evidence for a different allocation.
+  if (retained.exactSourceEvidence && retained.exactSourceEvidence->payload !=
+      (retained.hasI420() ? retained.i420 : retained.pixels)) retained.exactSourceEvidence.reset();
+  std::lock_guard lock(mutex_);
+  auto& stored = frames_[frame.participantId];
+  stored = {};
+  stored.transported = std::move(retained);
+}
+
 void RealZoomCaptureSource::ingestFrame(const std::string& participantId,
                                         const uint8_t* bgra,
                                         int width,
@@ -24,6 +37,7 @@ void RealZoomCaptureSource::ingestFrame(const std::string& participantId,
 
   std::lock_guard<std::mutex> lock(mutex_);
   StoredFrame& stored = frames_[participantId];
+  stored.transported.reset();
   stored.pixels = std::move(buffer);
   stored.i420 = nullptr;  // latest representation wins
   stored.width = width;
@@ -51,6 +65,7 @@ void RealZoomCaptureSource::ingestI420Frame(const std::string& participantId,
 
   std::lock_guard<std::mutex> lock(mutex_);
   StoredFrame& stored = frames_[participantId];
+  stored.transported.reset();
   stored.i420 = std::move(buffer);
   stored.pixels = nullptr;  // latest representation wins
   stored.width = width;
@@ -76,6 +91,7 @@ void RealZoomCaptureSource::ingestI420Frame(const std::string& participantId,
   // copying ~3MB/1080p per participant on the render thread every tick.
   std::lock_guard<std::mutex> lock(mutex_);
   StoredFrame& stored = frames_[participantId];
+  stored.transported.reset();
   stored.i420 = std::move(i420);
   stored.pixels = nullptr;  // latest representation wins
   stored.width = width;
@@ -117,6 +133,7 @@ std::vector<VideoFrame> RealZoomCaptureSource::pollVideoFrames() {
     std::lock_guard<std::mutex> lock(mutex_);
     result.reserve(frames_.size());
     for (const auto& [participantId, stored] : frames_) {
+      if (stored.transported) { result.push_back(*stored.transported); continue; }
       VideoFrame frame;
       frame.participantId = participantId;
       frame.width = stored.width;
