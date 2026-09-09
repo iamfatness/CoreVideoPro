@@ -65,6 +65,8 @@ add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/core/ShowStateOwner.cpp
+  src/core/SourceRegistry.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
   src/modules/OutputDestinationSupervisor.cpp
@@ -639,6 +641,8 @@ if(BUILD_TESTING)
     tests/AnchoredFrameDeadlineTrackerTest.cpp
     tests/ProgramAudioDelayTest.cpp
     tests/ProgramPlayoutTimelineTest.cpp
+    tests/ShowStateOwnerTest.cpp
+    tests/SourceRegistryTest.cpp
     tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
     tests/MediaCoreCommandTest.cpp
