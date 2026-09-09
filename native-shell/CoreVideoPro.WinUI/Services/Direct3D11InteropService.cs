@@ -59,6 +59,89 @@ public sealed class Direct3D11InteropService : IDisposable
     private static IDirect3DDevice? s_sharedWinrtDevice;
     private static nint s_sharedDevicePointer;
 
+    // ---- Device-loss retirement (beta slice, 2026-09-09) --------------------------------
+    // The shared device can DIE under us: a TDR, a driver upgrade mid-show, a hardware
+    // fault. Before this, nothing cleared s_sharedDevice, so EnsureDevice kept returning
+    // true for a dead device and every host stayed on CPU fallback until the app restarted,
+    // with nothing in the log naming the cause.
+    //
+    // Retirement is by GENERATION, not by clearing fields ad hoc. Every host records the
+    // generation it built its swap chain against; a host whose generation is stale rebuilds
+    // from scratch on its next present. A late callback carrying an OLD generation cannot
+    // resurrect a retired device (RetireDevice is a no-op for a generation that is already
+    // retired) and cannot make a stale host believe it is current.
+    //
+    // THREADING: every present runs on the UI thread (VideoSurfaceHost hooks
+    // CompositionTarget.Rendering), and retirement only ever runs from a present or an
+    // attach — so retirement is serialized against presents by the UI thread itself, and
+    // against creation by CreationGate. Recreation is NOT done inline at loss time: the
+    // failing frame drops to CPU fallback immediately and the next composition tick past the
+    // backoff deadline creates the device. That keeps the UI thread free of a device-create
+    // stall on the same frame that already failed.
+    private static long s_deviceGeneration;
+    private static readonly DeviceLossPolicy.DeviceRecoveryPolicy s_recoveryPolicy = new();
+    private static long s_deviceRetryAfterMs;
+    private static bool s_recoveryAbandoned;
+
+    // Observability: what a tester's support bundle must be able to answer — did device loss
+    // happen, how many times, what was the removed reason, did recovery work. Mirrored into
+    // launch.log (which SupportBundleArchiveBuilder already collects) on every transition.
+    private static int s_deviceLossCount;
+    private static int s_deviceRecreateCount;
+    private static int s_lastRemovedReason;
+    private static string? s_lastLossUtc;
+    private static string? s_lastRecoveryUtc;
+
+    /// <summary>Process-wide device-loss history, for logs/telemetry/support escalation.</summary>
+    internal readonly record struct DeviceLossReport(
+        long Generation,
+        int LossCount,
+        int RecreateCount,
+        int LastRemovedReason,
+        string? LastLossUtc,
+        string? LastRecoveryUtc,
+        int ConsecutiveFailures,
+        bool Abandoned);
+
+    internal static DeviceLossReport SnapshotDeviceLoss()
+    {
+        lock (CreationGate)
+        {
+            return new DeviceLossReport(
+                s_deviceGeneration,
+                s_deviceLossCount,
+                s_deviceRecreateCount,
+                s_lastRemovedReason,
+                s_lastLossUtc,
+                s_lastRecoveryUtc,
+                s_recoveryPolicy.ConsecutiveFailures,
+                s_recoveryAbandoned);
+        }
+    }
+
+    /// <summary>True while the device is retired but the ladder has not given up — i.e. GPU
+    /// presentation is expected to come back on its own.</summary>
+    internal static bool IsAwaitingDeviceRecovery()
+    {
+        lock (CreationGate)
+        {
+            return s_sharedDevice is null && s_deviceLossCount > 0 && !s_recoveryAbandoned;
+        }
+    }
+
+    /// <summary>Operator-initiated retry after the ladder gave up (and the test seam that
+    /// restores process-wide state between cases).</summary>
+    internal static void ResetDeviceRecoveryBudget()
+    {
+        lock (CreationGate)
+        {
+            s_recoveryPolicy.Reset();
+            s_recoveryAbandoned = false;
+            s_deviceRetryAfterMs = 0;
+            LaunchLog.Write("d3d: device recovery budget reset by operator");
+        }
+    }
+
     // Per-handle keyed-mutex ingest broker (see class remarks). Keyed by NtHandle and shared
     // across all interop instances. Structural changes are guarded by CreationGate.
     private sealed class HandleIngest
@@ -81,7 +164,20 @@ public sealed class Direct3D11InteropService : IDisposable
     private const long SwapChainRetryCooldownMs = 750;
     private long _swapChainRetryAfterMs;
 
+    // Throttle for the per-vsync "no device" line while recovery is backing off / abandoned.
+    private const long DeviceFailLogIntervalMs = 5_000;
+    private long _nextDeviceFailLogMs;
+
+    // Handles blacklisted after a failed open/present. NOTE: this is deliberately per-INSTANCE
+    // and per-DEVICE-GENERATION. A handle that could not be opened against the dead device says
+    // nothing about the new one (the usual cause of an open failure IS the dying device), so
+    // AdoptDeviceGeneration clears it — otherwise recovery would "succeed" onto an empty
+    // blacklist-frozen surface and the operator would still see nothing.
     private readonly HashSet<ulong> _invalidHandles = [];
+
+    // The device generation this instance's swap chain / ingest ref were built against.
+    // -1 = never attached to any generation.
+    private long _deviceGeneration = -1;
     private IDXGISwapChain1? _swapChain;
     private ID3D11Texture2D? _backBuffer;
     private SwapChainPanel? _panel;
@@ -153,6 +249,17 @@ public sealed class Direct3D11InteropService : IDisposable
         _panel.SizeChanged += OnPanelSizeChanged;
         if (!EnsureDevice())
         {
+            // A host that attaches DURING a device-loss backoff must still hook its present
+            // loop, or it is stranded on CPU forever even after the device comes back — the
+            // per-vsync present is what drives recovery. Report success so the caller hooks
+            // CompositionTarget.Rendering; IsReady stays false and presents fall to CPU until
+            // EnsureDevice succeeds on a later tick.
+            if (IsAwaitingDeviceRecovery())
+            {
+                LaunchLog.Write($"d3d: attach deferred — awaiting device recovery [{Label}] {SnapshotDeviceLoss()}");
+                return true;
+            }
+
             LaunchLog.Write("d3d: device init failed");
             return false;
         }
@@ -193,7 +300,15 @@ public sealed class Direct3D11InteropService : IDisposable
         _stageWatchdog?.Mark("ensure-device");
         if (!EnsureDevice())
         {
-            LaunchLog.Write("d3d: present skip — EnsureDevice failed");
+            // Throttled: after a loss this is a DURABLE state (waiting out the backoff, or the
+            // ladder gave up), and this runs every vsync — an unthrottled line would be 60
+            // log entries a second and would roll the loss diagnosis out of the bundle.
+            var now = Environment.TickCount64;
+            if (now >= _nextDeviceFailLogMs)
+            {
+                _nextDeviceFailLogMs = now + DeviceFailLogIntervalMs;
+                LaunchLog.Write($"d3d: present skip — EnsureDevice failed [{Label}] {SnapshotDeviceLoss()}");
+            }
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
@@ -276,18 +391,46 @@ public sealed class Direct3D11InteropService : IDisposable
             if (++_presentCount % 120 == 0)
             {
                 LaunchLog.WriteVerbose($"d3d: present #{_presentCount} [{Label}] 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
+                // Forgive the recovery budget once the CURRENT device has presented healthily
+                // for long enough. Checked on the heartbeat (~2s at 60fps), never per-vsync —
+                // the policy takes a lock and this path is the hot one.
+                s_recoveryPolicy.RecordHealthy(DateTimeOffset.UtcNow);
             }
             return true;
         }
         catch (Exception ex)
         {
-            LaunchLog.Write($"d3d: present FAILED 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}: {ex.GetType().Name}: {ex.Message}");
+            // Distinguish "the DEVICE is gone" from "this present did not commit". Two
+            // independent signals, because a wrapped/marshalled exception may not carry a
+            // recognizable HRESULT: the thrown HRESULT itself, and GetDeviceRemovedReason —
+            // which is also the only thing that names the cause in a tester's log.
+            var observedGeneration = _deviceGeneration;
+            var removedReason = QueryRemovedReason();
+            var deviceLost = DeviceLossPolicy.IsDeviceLoss(ex.HResult) ||
+                             DeviceLossPolicy.IsRemovedReasonFatal(removedReason);
+
+            LaunchLog.Write(
+                $"d3d: present FAILED 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}: {ex.GetType().Name}: " +
+                $"{ex.Message} hr=0x{ex.HResult:X8} deviceLoss={deviceLost}");
+
             ReleaseIngestRef(_ingestHandle);
             _ingestHandle = 0;
             _lastPresentedGeneration = -1;
-            DisposeIngest(handle.NtHandle);
-            InvalidateSharedHandle(handle.NtHandle);
-            ResetSwapChain();
+
+            if (deviceLost)
+            {
+                // Do NOT blacklist the handle: it is valid, the device under it is not.
+                // Retirement disposes the ingest map wholesale, so no per-handle dispose here.
+                RetireDevice(observedGeneration, removedReason, $"present[{Label}]");
+                ResetSwapChain();
+            }
+            else
+            {
+                DisposeIngest(handle.NtHandle);
+                InvalidateSharedHandle(handle.NtHandle);
+                ResetSwapChain();
+            }
+
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
@@ -355,9 +498,17 @@ public sealed class Direct3D11InteropService : IDisposable
         }
 
         // hr != S_OK => the producer hasn't released a new frame (or another host already
-        // ingested it this vsync): keep the current private copy.
-        if (ingest.Acquire(ingest.Mutex.NativePointer, 1, 0) != 0)
+        // ingested it this vsync): keep the current private copy. The ONE exception is a
+        // device-loss HRESULT — a dead device makes AcquireSync fail forever, which would
+        // otherwise look exactly like "no new frame" and freeze the surface silently. Throw
+        // so it lands in the present catch and is handled as the device loss it is.
+        var acquired = ingest.Acquire(ingest.Mutex.NativePointer, 1, 0);
+        if (acquired != 0)
         {
+            if (DeviceLossPolicy.IsDeviceLoss(acquired))
+            {
+                Marshal.ThrowExceptionForHR(acquired);
+            }
             return;
         }
 
@@ -461,6 +612,7 @@ public sealed class Direct3D11InteropService : IDisposable
         _invalidHandles.Clear();
         _lastPresentedHandle = 0;
         _lastPresentedGeneration = -1;
+        _deviceGeneration = -1;
         SetPresentationPath(PresentationPath.Uninitialized);
     }
 
@@ -547,27 +699,46 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private bool EnsureDevice()
     {
-        if (s_sharedDevice is not null && s_sharedContext is not null)
+        // Fast path: a live device AND this instance is already bound to the current
+        // generation. A stale generation falls through so the instance rebuilds against
+        // the new device before it touches a swap chain or an ingest.
+        if (s_sharedDevice is not null && s_sharedContext is not null &&
+            _deviceGeneration == System.Threading.Interlocked.Read(ref s_deviceGeneration))
         {
             return true;
         }
 
-        try
+        // Serialize device creation across instances (see CreationGate) so a
+        // multi-host attach burst doesn't race to create the shared device — and so a
+        // recreation after a loss cannot race presents from the other hosts.
+        lock (CreationGate)
         {
-            // Serialize device creation across instances (see CreationGate) so a
-            // multi-host attach burst doesn't race to create the shared device.
-            lock (CreationGate)
+            if (_disposed)
             {
-                if (_disposed)
-                {
-                    return false;
-                }
+                return false;
+            }
 
-                if (s_sharedDevice is not null && s_sharedContext is not null)
-                {
-                    return true;
-                }
+            if (s_sharedDevice is not null && s_sharedContext is not null)
+            {
+                AdoptDeviceGeneration();
+                return true;
+            }
 
+            // The device is gone (retired after a loss, or never created). Recreation is
+            // BOUNDED by the recovery ladder: a wedged GPU must not become a per-vsync
+            // recreate loop — that churn is itself a 0xc000027b vector (CLAUDE.md).
+            if (s_recoveryAbandoned)
+            {
+                return false;
+            }
+
+            if (s_deviceRetryAfterMs != 0 && Environment.TickCount64 < s_deviceRetryAfterMs)
+            {
+                return false;
+            }
+
+            try
+            {
                 var device = D3D11.D3D11CreateDevice(
                     DriverType.Hardware,
                     DeviceCreationFlags.BgraSupport);
@@ -584,20 +755,164 @@ public sealed class Direct3D11InteropService : IDisposable
 
                 s_sharedDevice = device;
                 s_sharedContext = context;
+                s_deviceRetryAfterMs = 0;
+                s_recoveryPolicy.RecordRunning(DateTimeOffset.UtcNow);
+
+                if (s_deviceLossCount > 0)
+                {
+                    s_deviceRecreateCount++;
+                    s_lastRecoveryUtc = DateTimeOffset.UtcNow.ToString("O");
+                    LaunchLog.Write(
+                        $"d3d: DEVICE RECOVERED generation={s_deviceGeneration} recreates={s_deviceRecreateCount} " +
+                        $"losses={s_deviceLossCount} lastRemovedReason=0x{s_lastRemovedReason:X8} — GPU presentation resuming");
+                }
+
+                AdoptDeviceGeneration();
                 SetPresentationPath(PresentationPath.DeviceReady);
                 return true;
             }
+            catch (Exception ex)
+            {
+                // A failed CREATE spends recovery budget exactly like a loss does, so a GPU
+                // that can no longer produce a device gives up after a small, bounded number
+                // of attempts instead of retrying forever.
+                LaunchLog.Write($"d3d: device create FAILED: {ex.GetType().Name}: {ex.Message} hr=0x{ex.HResult:X8}");
+                ScheduleRecoveryAttempt("device-create-failed");
+                SetPresentationPath(PresentationPath.CpuFallback);
+                return false;
+            }
+        }
+    }
+
+    // Bind this instance to the current device generation, discarding everything derived from
+    // the previous one. MUST be called under CreationGate.
+    private void AdoptDeviceGeneration()
+    {
+        var current = s_deviceGeneration;
+        if (_deviceGeneration == current)
+        {
+            return;
+        }
+
+        if (_deviceGeneration >= 0)
+        {
+            LaunchLog.Write($"d3d: host={_diagnosticId} [{Label}] adopting device generation {_deviceGeneration} -> {current}");
+        }
+
+        _deviceGeneration = current;
+
+        // Swap chain + back buffer belonged to the dead device: drop them so the next
+        // EnsureSwapChain builds fresh ones on the new device. This is a CREATE, never a
+        // ResizeBuffers — the resize-vs-present race stays impossible by construction.
+        ResetSwapChain();
+
+        // The ingest map was disposed wholesale at retirement, so this instance's ref is
+        // already gone; just forget it (ReleaseIngestRef would be a no-op anyway).
+        _ingestHandle = 0;
+        _lastPresentedHandle = 0;
+        _lastPresentedGeneration = -1;
+
+        // A handle blacklisted against the dead device is very likely fine against the new
+        // one — the dying device is usually WHY the open failed. Start clean.
+        _invalidHandles.Clear();
+
+        // Don't inherit the previous device's swap-chain cooldown either.
+        _swapChainRetryAfterMs = 0;
+    }
+
+    // Retire the shared device as a generation. Returns true if THIS call performed the
+    // retirement (a second host observing the same loss is a no-op, not a second budget hit).
+    private static bool RetireDevice(long observedGeneration, int removedReason, string context)
+    {
+        lock (CreationGate)
+        {
+            if (observedGeneration != s_deviceGeneration)
+            {
+                // Another host already retired this generation — or this is a late callback
+                // from a device that is already gone. Never resurrect anything.
+                return false;
+            }
+
+            s_deviceGeneration++;
+            s_deviceLossCount++;
+            s_lastRemovedReason = removedReason;
+            s_lastLossUtc = DateTimeOffset.UtcNow.ToString("O");
+
+            // Every cached texture on the dead device is invalid. The ingest map is the only
+            // state owned solely here, so it is the only thing disposed outright.
+            foreach (var ingest in s_ingests.Values)
+            {
+                DisposeIngestInstance(ingest);
+            }
+            s_ingests.Clear();
+
+            // The device/context RCWs are DROPPED, not disposed: other hosts' swap chains and
+            // back buffers still hold native references to this device, and disposing an RCW
+            // out from under live children is precisely the teardown-order hazard this file
+            // already warns about. Each host releases its own swap chain when it adopts the
+            // new generation, and the orphaned RCWs finalize after that.
+            s_sharedDevice = null;
+            s_sharedContext = null;
+            s_sharedWinrtDevice = null;
+            s_sharedDevicePointer = 0;
+
+            LaunchLog.Write(
+                $"d3d: DEVICE LOST context={context} generation={s_deviceGeneration - 1}->{s_deviceGeneration} " +
+                $"removedReason=0x{removedReason:X8} ({DeviceLossPolicy.DescribeRemovedReason(removedReason)}) " +
+                $"totalLosses={s_deviceLossCount}");
+
+            ScheduleRecoveryAttempt(context);
+            return true;
+        }
+    }
+
+    // Consult the bounded ladder and set (or abandon) the next recreation deadline.
+    // MUST be called under CreationGate.
+    private static void ScheduleRecoveryAttempt(string context)
+    {
+        var delay = s_recoveryPolicy.NextDelay(DateTimeOffset.UtcNow);
+        if (delay is null)
+        {
+            s_recoveryAbandoned = true;
+            LaunchLog.Write(
+                $"d3d: DEVICE RECOVERY ABANDONED after {s_recoveryPolicy.ConsecutiveFailures - 1} consecutive failures " +
+                $"context={context} lastRemovedReason=0x{s_lastRemovedReason:X8} " +
+                $"({DeviceLossPolicy.DescribeRemovedReason(s_lastRemovedReason)}) — every surface stays on CPU " +
+                "fallback until the app is restarted. This is a GPU/driver fault, not a rendering bug.");
+            return;
+        }
+
+        s_deviceRetryAfterMs = Environment.TickCount64 + (long)delay.Value.TotalMilliseconds;
+        LaunchLog.Write(
+            $"d3d: device recovery attempt {s_recoveryPolicy.ConsecutiveFailures} scheduled in {delay.Value.TotalMilliseconds:F0}ms context={context}");
+    }
+
+    // GetDeviceRemovedReason — the one call that says WHY afterwards. Never throws: a device
+    // so far gone that even this fails still has to produce a log line.
+    private static int QueryRemovedReason()
+    {
+        try
+        {
+            var device = s_sharedDevice;
+            return device is null ? DeviceLossPolicy.DeviceRemoved : device.DeviceRemovedReason.Code;
         }
         catch
         {
-            SetPresentationPath(PresentationPath.CpuFallback);
-            return false;
+            return DeviceLossPolicy.DeviceRemoved;
         }
     }
 
     private bool EnsureSwapChain(int width = 0, int height = 0)
     {
         if (_disposed || _panel is null || s_sharedDevice is null)
+        {
+            return false;
+        }
+
+        // Never build a swap chain against a device this instance has not adopted (e.g. a
+        // panel SizeChanged arriving between a retirement and the next present). EnsureDevice
+        // adopts the new generation and the next present builds it then.
+        if (_deviceGeneration != s_deviceGeneration)
         {
             return false;
         }

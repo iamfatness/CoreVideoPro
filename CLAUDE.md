@@ -183,6 +183,46 @@ keep one stable swap chain per surface (program, preview, one multiview);
 present with **skip-present** (only on a new keyed-mutex frame) — smooth-present crashes
 ~31s in.
 
+## D3D device loss is RECOVERED, by generation (beta slice, 2026-09-09)
+
+The shared device (`Direct3D11InteropService.s_sharedDevice`) can die mid-show — a TDR, a
+driver upgrade, a hardware fault. It used to die **permanently**: the present threw,
+one host dropped to CPU fallback, and nothing ever cleared `s_sharedDevice`, so
+`EnsureDevice` kept returning true for a dead device and EVERY surface stayed on CPU
+until the app restarted. Nothing in the tree called `GetDeviceRemovedReason`, so the log
+never named the cause. On a tester's machine that is a silently degraded show we cannot
+diagnose. Now:
+
+- **Classification is pure and tested** (`Services/DeviceLossPolicy.cs`,
+  `DeviceLossPolicyTests`): only `DXGI_ERROR_DEVICE_REMOVED`/`DEVICE_RESET` — or a
+  negative `GetDeviceRemovedReason` — retire the device. Everything else
+  (`WAS_STILL_DRAWING`, occlusion, a resource-pressure create failure, a stale shared
+  handle) keeps the existing per-handle invalidation path. `PresentationAttempt` is
+  unchanged.
+- **Retirement is a GENERATION bump, never ad-hoc field clearing.** `RetireDevice` is a
+  no-op for an already-retired generation, so a late callback from the dead device cannot
+  resurrect anything. It disposes the whole `HandleIngest` map and drops the device/context
+  RCWs — it does NOT dispose them, because other hosts' swap chains still hold native refs.
+  Each host rebuilds its swap chain when it adopts the new generation (a CREATE — **still
+  never `ResizeBuffers`**), and clears `_invalidHandles`, since a handle blacklisted against
+  the dead device is usually fine against the new one.
+- **Recovery is automatic and BOUNDED.** No restart needed: the next
+  `CompositionTarget.Rendering` tick past the backoff deadline recreates the device and GPU
+  presentation resumes. `DeviceLossPolicy.DeviceRecoveryPolicy` is the same shape as
+  `ShowEngineRestartPolicy`/`MediaCoreSupervisor`/`BrowserHostRestartPolicy`/
+  `PluginHostRespawnPolicy` — 250ms→1s→2s→5s→10s→30s, **give up after 5 consecutive
+  failures**, 60s of healthy presenting resets the budget. Recreation never runs inline on
+  the failing frame (that frame just drops to CPU), so the UI thread never eats a
+  device-create stall on the same tick it already lost.
+- **What a tester's log shows** (launch.log, which the support bundle already collects):
+  `d3d: DEVICE LOST context=… generation=N->N+1 removedReason=0x887A0006 (DEVICE_HUNG …)
+  totalLosses=K`, then `d3d: device recovery attempt K scheduled in Nms`, then either
+  `d3d: DEVICE RECOVERED generation=… recreates=… losses=…` or
+  `d3d: DEVICE RECOVERY ABANDONED after 5 consecutive failures …`. The per-vsync "no device"
+  line is throttled to 5s so it can't roll the diagnosis out of the bundle.
+- **Unproven, honestly:** no real TDR was provoked (deliberately). The GPU-side ordering is
+  reasoned + reviewed, not executed; only the classify-and-decide half is test-covered.
+
 ## Live-meeting QA day (2026-08-09) — eight defects found in ONE real session
 
 An afternoon of the owner operating a real 7-guest meeting surfaced more product
@@ -428,6 +468,17 @@ comment at the code site; this is the index.
   engine actually delivered the rate you asked for (`COREVIDEO_FAKE_ENGINE_LOG`), and
   run `git status` before any measurement build — a stale tree answers a different
   question than the one you asked.
+  **The fake engine delivers ONE video stream per participant** (2026-09-09): it used
+  to keep its `participant-video-<id>-auto` stand-in alive alongside the app's explicit
+  `participant-video-<id>-camera` subscribe, so 3 participants ran 6 targets and every
+  participant got 2 x `COREVIDEO_FAKE_ENGINE_FPS` interleaved into one core slot
+  (`latestDecodedFrames_[participantId]`) — every fps number from the rig was
+  uninterpretable. An explicit subscribe now retires the auto target, and the
+  achieved-rate line states target count, participant count and per-participant fps
+  next to the configured source rate, so a 6-target log can never again be read as a
+  3-participant rate. Every fake-engine harness must PIN `COREVIDEO_FAKE_ENGINE_FPS`
+  (`mac-show-drill.py`, `qa/collect-runtime-snapshots.mjs`, `validate-iso-record.mjs`)
+  and print it — an unpinned run silently measures at the default 30.
   **The drill now enforces that "did the harness source the load" check itself**
   (2026-08-07): delivery is (frames the compositor saw)/(frames we ASKED for), so a
   harness that under-produces reads as the CORE losing frames. It said "only 51% of
