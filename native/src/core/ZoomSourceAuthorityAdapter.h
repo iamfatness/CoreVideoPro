@@ -44,9 +44,11 @@ class ZoomSourceAuthorityAdapter final {
   };
   explicit ZoomSourceAuthorityAdapter(std::string authorityEpoch, size_t maxPeople = 4096,
                                      size_t maxSources = 16384, size_t maxEpochs = 4096);
+  ZoomSourceAuthorityAdapter(const ZoomSourceAuthorityAdapter&);
   SyncResult sync(Observation observation);
   std::shared_ptr<const SourceRegistry::Snapshot> snapshot() const;
  private:
+  ZoomSourceAuthorityAdapter(const ZoomSourceAuthorityAdapter&, std::unique_lock<std::mutex>);
   struct Binding { Source observation; SourceRegistry::Token token; bool present{true}; };
   mutable std::mutex mutex_;
   SourceRegistry registry_; // Sole writer; callers receive immutable snapshots only.

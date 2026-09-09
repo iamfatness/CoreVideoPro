@@ -77,6 +77,7 @@ class SourceRegistry final {
   explicit SourceRegistry(std::string registryEpoch, std::size_t maxPersons = 4'096,
                           std::size_t maxSources = 16'384,
                           std::size_t maxRetiredProcessEpochs = 4'096);
+  SourceRegistry(const SourceRegistry&); // Bounded independent staging copy, including tombstones.
   Result upsertPerson(Person person);
   Mutation add(Registration registration);
   // Compare-and-replace: old callbacks can neither replace nor retire a new instance.

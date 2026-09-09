@@ -71,6 +71,11 @@ class ZoomEngineRuntime {
     bool operator==(const AuthorityObservation&) const = default;
   };
   [[nodiscard]] AuthorityObservation authorityObservation();
+  struct ShadowAuthorityCheckpoint {
+    AuthorityObservation authority;
+    std::shared_ptr<const core::ShadowExactSourceFrames::Checkpoint> frames;
+  };
+  [[nodiscard]] ShadowAuthorityCheckpoint shadowAuthorityCheckpoint();
   [[nodiscard]] core::ShadowExactSourceFrames::Result shadowExactSourceFrame(
       const core::ExactRouteSourceRef& reference, int64_t freshAfterNs);
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);

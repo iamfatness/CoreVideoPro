@@ -3,6 +3,17 @@
 #include <tuple>
 
 namespace corevideo::core {
+ZoomSourceAuthorityAdapter::ZoomSourceAuthorityAdapter(const ZoomSourceAuthorityAdapter& other)
+    : ZoomSourceAuthorityAdapter(other, std::unique_lock<std::mutex>(other.mutex_)) {}
+ZoomSourceAuthorityAdapter::ZoomSourceAuthorityAdapter(const ZoomSourceAuthorityAdapter& other,
+    std::unique_lock<std::mutex> lock)
+    : registry_(other.registry_), maxPeople_(other.maxPeople_), maxSources_(other.maxSources_),
+      maxEpochs_(other.maxEpochs_), peopleIds_(other.peopleIds_), sourceIds_(other.sourceIds_),
+      retiredEpochs_(other.retiredEpochs_), bindings_(other.bindings_), last_(other.last_) {
+  // Parameter keeps the adapter lock held while its registry takes its own lock:
+  // the same adapter -> registry ordering used by sync/snapshot.
+  (void)lock;
+}
 namespace {
 constexpr uint64_t maxSafe = 9007199254740991ULL;
 bool text(const std::string& s) { return !s.empty() && s.size() <= 512; }

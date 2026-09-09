@@ -20,11 +20,22 @@ class SceneVersionStore final {
   struct Result { Status status; Lease lease; };
   struct Limits { size_t versions{128}, scenes{4096}, retiredEpochs{128}, payloadBytes{16*1024*1024}; };
   explicit SceneVersionStore(std::string authorityEpoch);
+  SceneVersionStore(const SceneVersionStore&); // Copies bounded indices; shares only const payloads.
   SceneVersionStore(std::string authorityEpoch, Limits limits);
   // New scene/recreation: expectedHead=null; edits: exact current head required.
   // Caller assigns positive safe versions; forward gaps are allowed, reuse is not.
   // Exact existing ref+payload replay is read-only and does not move the head.
   Result publish(SceneVersionRef ref, ShowSceneIntent scene, std::optional<SceneVersionRef> expectedHead = {});
+  struct Publication {
+    SceneVersionRef reference;
+    ShowSceneIntent scene;
+    std::optional<SceneVersionRef> expectedHead;
+  };
+  struct BatchResult { Status status; std::vector<Lease> leases; };
+  // At most two unique bus definitions, in caller order. Expected heads are
+  // checked against the staged state (including preceding items). Exact replay
+  // does not move a head. Failure returns no leases and changes no store state.
+  BatchResult publishBatch(std::vector<Publication> publications);
   Result resolve(const SceneVersionRef&) const;
   // One admission point for both buses, fenced against concurrent erase/restart.
   std::pair<Result, Result> resolveBuses(const std::optional<SceneVersionRef>& program,

@@ -1,7 +1,9 @@
 #pragma once
 #include "core/LegacyShowCommandProjector.h"
 #include "core/ShowPlanGenerator.h"
+#include "core/ShadowExactSourceFrames.h"
 #include "core/ZoomSourceAuthorityAdapter.h"
+#include "core/SceneVersionShadow.h"
 #include <atomic>
 #include <condition_variable>
 #include <thread>
@@ -17,6 +19,10 @@ class AuthorityShadow final {
     size_t maxRecords{64}, maxBytes{2 * 1024 * 1024}, maxEntities{4096};
     // Deterministic offline mode; production keeps the dedicated worker enabled.
     bool workerThread{true};
+    bool versionedScenes{false}; // Startup-fixed; no legacy fallback once enabled.
+    SceneVersionStore::Limits sceneVersionLimits;
+    // Startup-fixed opt-in; never affects plans, subscriptions or live rendering.
+    bool exactFrameComparison{false};
   };
   struct Basis {
     std::string nativeProcessEpoch, legacyAuthorityEpoch;
@@ -28,8 +34,17 @@ class AuthorityShadow final {
     bool completeCheckpoint{false};
     LegacyShowCommandDto desired;
     ZoomSourceAuthorityAdapter::Observation sources;
+    struct SceneVersions {
+      struct Definition { SceneVersionRef reference; ShowSceneIntent scene; };
+      std::optional<SceneVersionRef> program, preview;
+      // Complete payloads for the referenced buses, unique by exact reference.
+      // At most two definitions; both buses may share one.
+      std::vector<Definition> definitions;
+    };
+    std::optional<SceneVersions> sceneVersions;
+    std::shared_ptr<const ShadowExactSourceFrames::Checkpoint> exactFrames;
   };
-  enum class Admission { Accepted, Disabled, Stopped, Contended, Full, Oversized, PrivateMetadata };
+  enum class Admission { Accepted, Disabled, Stopped, Contended, Full, Oversized, PrivateMetadata, ModeMismatch };
   enum class Status { Disabled, AwaitingCheckpoint, Ready, BasisGap, AdapterInvalid, DisabledError, Stopped };
   struct Diagnostics {
     bool enabled{false}, continuous{false};
@@ -41,9 +56,17 @@ class AuthorityShadow final {
     // Plans are intent/identity projections only; no legacy comparison implemented.
     uint64_t compared{0}, matched{0};
   };
+  struct ExactFrameComparison {
+    enum class State { Disabled, Unavailable, Complete };
+    State state{State::Disabled};
+    // Historical eligibility at the captured basis, NOT rendering/delivery proof.
+    uint64_t evaluated{0}, eligible{0}, missing{0}, expired{0};
+  };
   struct Evidence {
     Basis basis;
     std::shared_ptr<const ShowPlans> plans;
+    std::shared_ptr<const SceneVersionShadowEvidence> sceneVersions;
+    ExactFrameComparison exactFrames;
   };
   explicit AuthorityShadow(Config config);
   ~AuthorityShadow();
@@ -67,6 +90,7 @@ class AuthorityShadow final {
   Config config_;
   std::unique_ptr<ZoomSourceAuthorityAdapter> sources_;
   std::unique_ptr<ShowStateOwner> show_;
+  std::unique_ptr<SceneVersionStore> sceneVersions_;
   mutable std::mutex queueMutex_;
   std::mutex processingMutex_, stopMutex_;
   std::atomic<size_t> queueDepthGauge_{0}, queueBytesGauge_{0}, maxDepthGauge_{0};

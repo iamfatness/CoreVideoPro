@@ -134,6 +134,7 @@ struct ShowStateUpdateResult {
 };
 class ShowStateOwner final {
  public:
+  ShowStateOwner(const ShowStateOwner&); // Immutable snapshots/marks may be shared safely.
   explicit ShowStateOwner(std::string authorityEpoch,
                           std::size_t maxGenerationMarks = 65'536);
   std::shared_ptr<const ShowStateSnapshot> snapshot() const;

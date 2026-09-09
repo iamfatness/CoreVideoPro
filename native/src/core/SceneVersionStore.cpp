@@ -2,6 +2,11 @@
 #include <stdexcept>
 
 namespace corevideo::core {
+SceneVersionStore::SceneVersionStore(const SceneVersionStore& other) {
+  std::lock_guard lock(other.mutex_);
+  epoch_ = other.epoch_; limits_ = other.limits_; bytes_ = other.bytes_;
+  versions_ = other.versions_; scenes_ = other.scenes_; retiredEpochs_ = other.retiredEpochs_;
+}
 namespace {
 constexpr uint64_t maxSafe=9007199254740991ULL;
 bool text(const std::string& s){return !s.empty()&&s.size()<=512;}
@@ -77,6 +82,34 @@ SceneVersionStore::Result SceneVersionStore::head(const std::string& id) const {
   std::lock_guard lock(mutex_);
   const auto scene=scenes_.find(id);if(scene==scenes_.end()||!scene->second.active)return {Status::NotFound,{}};
   return {Status::Unchanged,versions_.at(scene->second.ref).lease};
+}
+SceneVersionStore::BatchResult SceneVersionStore::publishBatch(std::vector<Publication> publications) {
+  if (publications.size() > 2) return {Status::Capacity, {}};
+  std::set<SceneVersionRef> unique;
+  for (const auto& publication : publications)
+    if (!unique.insert(publication.reference).second) return {Status::Conflict, {}};
+  // Only index nodes are copied; previously frozen payloads stay shared. All
+  // allocations/validation finish before noexcept map swaps publish the batch.
+  // Retired indices and rejected staged payloads are destroyed after unlocking.
+  std::unique_ptr<SceneVersionStore> staged;
+  BatchResult result{Status::Unchanged, {}};
+  result.leases.reserve(publications.size());
+  std::lock_guard lock(mutex_);
+  staged = std::make_unique<SceneVersionStore>(epoch_, limits_);
+  staged->versions_ = versions_;
+  staged->scenes_ = scenes_;
+  staged->bytes_ = bytes_;
+  for (auto& publication : publications) {
+    auto item = staged->publish(std::move(publication.reference), std::move(publication.scene),
+        std::move(publication.expectedHead));
+    if (item.status != Status::Applied && item.status != Status::Unchanged) return {item.status, {}};
+    if (item.status == Status::Applied) result.status = Status::Applied;
+    result.leases.push_back(std::move(item.lease));
+  }
+  versions_.swap(staged->versions_);
+  scenes_.swap(staged->scenes_);
+  std::swap(bytes_, staged->bytes_);
+  return result;
 }
 std::pair<SceneVersionStore::Result, SceneVersionStore::Result> SceneVersionStore::resolveBuses(
     const std::optional<SceneVersionRef>& program, const std::optional<SceneVersionRef>& preview) const {
