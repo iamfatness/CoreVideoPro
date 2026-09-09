@@ -55,6 +55,66 @@ struct RuntimeProbe {
   std::vector<RuntimeCandidate> candidates;
 };
 
+#if defined(_WIN32)
+// NO ORPHANS. Same rule the SRT ingest decoder already follows (see
+// ingestJobObject() in SrtIngestCaptureAdapter.cpp): an FFmpeg spawned by the
+// core must not outlive it. For OUTPUT the stakes are higher than for ingest --
+// an orphaned egress FFmpeg keeps PUBLISHING to a live destination after the
+// app is gone, so the audience keeps seeing a stream nobody is driving.
+// KILL_ON_JOB_CLOSE makes the OS do the cleanup when the last handle to the job
+// closes, which happens when the core process dies for any reason, including a
+// kill that runs no destructors.
+//
+// SEPARATE JOB FROM INGEST, deliberately. Ingest's job is a file-local static in
+// another translation unit's anonymous namespace, so sharing it would mean
+// exporting a new cross-module handle for no gain. Keeping outputs in their own
+// job also means egress children can later be terminated as a group without
+// tearing down ingest decoders, which have an unrelated lifetime.
+//
+// RESTART IS UNAFFECTED. The job handle is a leaked process-lifetime static, so
+// it never closes while we are alive; nothing here kills a child. An intentional
+// restart still works the way it always did -- stopFfmpegProcess() terminates
+// the old child, and the replacement is simply assigned to the same job.
+HANDLE outputJobObject() {
+  static HANDLE job = [] {
+    HANDLE created = ::CreateJobObjectW(nullptr, nullptr);
+    if (created == nullptr) {
+      ::corevideo::core::nativeLogf(
+          "[rtmp] WARNING: CreateJobObject failed (win32 %lu); output FFmpeg children will NOT be "
+          "killed automatically if the core dies\n",
+          static_cast<unsigned long>(::GetLastError()));
+      return created;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!::SetInformationJobObject(created, JobObjectExtendedLimitInformation, &limits,
+                                   sizeof(limits))) {
+      ::corevideo::core::nativeLogf(
+          "[rtmp] WARNING: SetInformationJobObject(KILL_ON_JOB_CLOSE) failed (win32 %lu); output "
+          "FFmpeg children may be orphaned if the core dies\n",
+          static_cast<unsigned long>(::GetLastError()));
+    }
+    return created;
+  }();
+  return job;
+}
+
+// Best effort by design: a stream must never fail to start because the OS would
+// not hand us a job object. Degrade loudly, keep publishing.
+void adoptOutputChild(HANDLE process, const char* protocolTag) {
+  HANDLE job = outputJobObject();
+  if (job == nullptr) {
+    return;  // already logged once at creation
+  }
+  if (!::AssignProcessToJobObject(job, process)) {
+    ::corevideo::core::nativeLogf(
+        "[%s] WARNING: AssignProcessToJobObject failed (win32 %lu); this FFmpeg child will survive "
+        "an abnormal core exit and keep publishing\n",
+        protocolTag, static_cast<unsigned long>(::GetLastError()));
+  }
+}
+#endif
+
 std::string jsonEscape(const std::string& value) {
   std::string escaped;
   escaped.reserve(value.size() + 8);
@@ -494,6 +554,9 @@ bool ffmpegEncoderIsAvailable(const std::string& executable, const std::string& 
           CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo, &processInfo)) {
     return false;
   }
+  // The probe is short-lived and always reaped below, but a core killed inside
+  // that 5s window would still leave it behind. Same job, same rule.
+  adoptOutputChild(processInfo.hProcess, "rtmp-probe");
   CloseHandle(processInfo.hThread);
   const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, 5000);
   DWORD exitCode = 1;
@@ -1236,6 +1299,10 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.lastError = sender_.warning;
       return false;
     }
+
+    // Adopt before anything else can go wrong: from here on the OS owns the
+    // cleanup even if we are killed without running a single destructor.
+    adoptOutputChild(processInfo.hProcess, protocol_.destination.c_str());
 
     ffmpegStdin_ = childStdinWrite;
     {
