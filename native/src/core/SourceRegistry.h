@@ -46,6 +46,8 @@ class SourceRegistry final {
     std::string displayName;
     std::string processEpoch;
     std::string externalId; // SDK participant/device ID, scoped by processEpoch.
+    std::optional<SourceInstanceId> instanceId; // Provider-owned exact identity, if available.
+    std::optional<uint64_t> requestedGeneration; // Provider fence; gaps are valid.
   };
   struct Source {
     Token token;
@@ -65,6 +67,7 @@ class SourceRegistry final {
   struct Snapshot {
     std::string registryEpoch;
     uint64_t revision = 0;
+    uint64_t decisionRevision = 0; // Binding/readiness changes, independent of frame traffic.
     std::vector<Person> persons;
     std::vector<Source> sources; // Stable SourceId order, includes departure tombstones.
   };
@@ -97,6 +100,7 @@ class SourceRegistry final {
   mutable std::mutex mutex_;
   std::string epoch_;
   uint64_t revision_ = 0;
+  uint64_t decisionRevision_ = 0;
   std::map<std::string, Person> persons_;
   std::map<std::string, Source> sources_;
   std::set<std::string> retiredProcessEpochs_;

@@ -1,4 +1,5 @@
 #pragma once
+#include "core/ShowPreparationTransaction.h"
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -25,8 +26,12 @@ class AtomicTakeCoordinator final {
     std::string mediaProcessEpoch;
     uint64_t mediaGeneration = 0;
     Transition transition;
-    std::string preparationToken;
-    uint64_t preparationRevision = 0;
+    // Prepared input basis remains at expectedRevision; the certificate's
+    // planRevision is the prospective result (expectedRevision + 1). These are
+    // different phases, not two increments of the authoritative revision.
+    ShowPlanStamp expectedPlanStamp;
+    std::string expectedPlanId;
+    ShowPreparationToken preparation;
     bool operator==(const Fingerprint&) const = default;
   };
   struct Request {
@@ -62,8 +67,11 @@ class AtomicTakeCoordinator final {
   AtomicTakeCoordinator(std::string authorityEpoch, uint64_t revision,
                         uint64_t previewRevision, size_t operationCapacity, Apply apply);
   // Preparation is an explicit certificate for this entire immutable fingerprint.
-  // Producing the certificate/resources is the caller's responsibility.
-  Error prepare(const std::string& authorityEpoch, const Fingerprint& fingerprint);
+  // Only a completed ShowPreparationTransaction can issue the certificate.
+  // The operation retains its leases through replay-ledger eviction.
+  // One preparation transaction owner/monotonic transaction sequence per epoch.
+  Error prepare(const std::string& authorityEpoch, const Fingerprint& fingerprint,
+                std::shared_ptr<const PreparedShowCertificate> certificate);
   Error updatePreview(const std::string& authorityEpoch, uint64_t expectedRevision,
                       uint64_t previewRevision);
   // Busy is retryable and does not retain the new ID. Pending duplicates return
@@ -79,6 +87,7 @@ class AtomicTakeCoordinator final {
   struct Record {
     Fingerprint fingerprint;
     Outcome outcome;
+    std::shared_ptr<const PreparedShowCertificate> certificate;
     bool pending = false, pendingRendered = false, pendingDelivered = false;
   };
   static bool valid(const Fingerprint& fingerprint);
@@ -89,6 +98,7 @@ class AtomicTakeCoordinator final {
   const size_t capacity_;
   const Apply apply_;
   std::optional<Fingerprint> prepared_;
+  std::shared_ptr<const PreparedShowCertificate> preparedCertificate_;
   std::optional<Fingerprint> lastPreparation_;
   std::map<std::string, Record> records_;
   std::set<std::string> tombstones_;

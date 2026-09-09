@@ -1,6 +1,7 @@
 #include "core/ShowPlanGenerator.h"
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 namespace corevideo::core {
 namespace {
@@ -58,6 +59,38 @@ PlannedAudioEligibility audioEligibility(const PlannedBinding& binding) {
   return binding.status == PlannedBindingStatus::Resolved
       ? PlannedAudioEligibility::UnknownCapability : PlannedAudioEligibility::UnresolvedIdentity;
 }
+void appendText(std::string& out, const std::string& value) {
+  out += std::to_string(value.size()); out.push_back(':'); out += value;
+}
+void appendBinding(std::string& out, const PlannedBinding& binding) {
+  out.push_back('|'); out += std::to_string(static_cast<int>(binding.status));
+  out.push_back(','); out += binding.hasPublication ? '1' : '0';
+  out.push_back(','); out += binding.sourceKind ? std::to_string(static_cast<int>(*binding.sourceKind)) : "-";
+  if (!binding.source) { out += ",-"; return; }
+  out.push_back(','); appendText(out,binding.source->sourceId);
+  appendText(out,binding.source->instanceId); appendText(out,binding.source->processEpoch);
+  out += std::to_string(binding.source->generation); out.push_back(';');
+}
+std::string eligibilityIdentity(const ShowPlans& plans) {
+  std::string out = "eligibility-v1";
+  for (const auto& input : plans.render.inputs) appendBinding(out,input.binding);
+  out += "|preview:" + std::to_string(static_cast<int>(plans.render.preview.status));
+  for (const auto& layer : plans.render.preview.layers) appendBinding(out,layer.binding);
+  out += "|program:" + std::to_string(static_cast<int>(plans.render.program.status));
+  for (const auto& layer : plans.render.program.layers) appendBinding(out,layer.binding);
+  for (const auto& tiles : plans.render.tiles)
+    for (const auto& slot : tiles.slots) appendBinding(out,slot.binding);
+  for (const auto& overlay : plans.render.overlays) appendBinding(out,overlay.binding);
+  for (const auto& audio : plans.audio.routes) {
+    appendBinding(out,audio.binding); out += audio.destinationValid ? "D1" : "D0";
+    out += std::to_string(static_cast<int>(audio.eligibility));
+  }
+  for (const auto& iso : plans.output.isoSelections) {
+    appendBinding(out,iso.videoBinding); appendBinding(out,iso.audioBinding);
+    out += std::to_string(static_cast<int>(iso.audioEligibility));
+  }
+  return out;
+}
 PlannedScene scenePlan(const std::optional<ShowEntityRef>& ref, const ShowStateData& data,
                        const Registry::Snapshot& registry, std::int64_t videoFreshAfterNs) {
   PlannedScene result; result.scene = ref;
@@ -79,10 +112,11 @@ PlannedScene scenePlan(const std::optional<ShowEntityRef>& ref, const ShowStateD
 std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
                                                  const Registry::Snapshot& registry,
                                                  ShowPlanGenerationContext context) {
+  if (context.videoFreshAfterNs < 0)
+    throw std::invalid_argument("Show plan freshness cutoff must use a nonnegative monotonic timestamp");
   auto plans = std::make_shared<ShowPlans>();
-  const ShowPlanStamp stamp{show.authorityEpoch, registry.registryEpoch, show.revision,
-                            registry.revision, context.videoFreshAfterNs};
-  plans->render.stamp = plans->audio.stamp = plans->output.stamp = stamp;
+  ShowPlanStamp stamp{show.authorityEpoch, registry.registryEpoch, show.revision,
+                      registry.decisionRevision, {}};
   const auto& data = show.data;
   for (const auto& id : data.inputOrder) {
     const auto found = data.inputs.find(id);
@@ -170,6 +204,8 @@ std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show
           {{id, iso->second.generation}, video, audio, audioEligibility(audio)});
     }
   }
+  stamp.eligibilityIdentity = eligibilityIdentity(*plans);
+  plans->render.stamp = plans->audio.stamp = plans->output.stamp = std::move(stamp);
   return plans;
 }
 } // namespace corevideo::core

@@ -39,6 +39,36 @@ class ZoomEngineRuntime {
   // Non-blocking: pipe I/O rides the dedicated sender thread.
   [[nodiscard]] rpc::Json stopCapture();
   [[nodiscard]] rpc::Json snapshot();
+  // Metadata only: no JSON projection, pixels, handles, or inferred durable people.
+  struct AuthorityPublication {
+    uint64_t sequence{0};
+    int64_t observedNs{0};
+    uint32_t width{0}, height{0};
+    std::string pixelFormat{"I420"};
+    // The helper does not report an authoritative frame rate.
+    std::optional<uint32_t> fpsNumerator;
+    bool operator==(const AuthorityPublication&) const = default;
+  };
+  struct AuthoritySource {
+    enum class Kind { Camera, Share };
+    uint32_t participantId{0}; // Meeting-local SDK identity, never a PersonId.
+    std::optional<std::string> durablePersonId; // unavailable in current protocol
+    Kind kind{Kind::Camera};
+    std::string sourceId, instanceId;
+    uint64_t generation{0};
+    bool available{false}, subscriptionRequested{false};
+    std::optional<bool> subscriptionObserved; // no subscription acknowledgement
+    std::optional<AuthorityPublication> publication;
+    bool operator==(const AuthoritySource&) const = default;
+  };
+  struct AuthorityObservation {
+    std::string processEpoch;
+    uint64_t processGeneration{0}, sequence{0};
+    bool valid{true}; // false on bounded identity/sequence exhaustion
+    std::vector<AuthoritySource> sources;
+    bool operator==(const AuthorityObservation&) const = default;
+  };
+  [[nodiscard]] AuthorityObservation authorityObservation();
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
   // Returns the latest decoded BGRA frame per participant, carrying real pixels,
@@ -142,6 +172,12 @@ class ZoomEngineRuntime {
   // time a new process client is installed; queued sends carry the generation
   // they were built for and are dropped if the process has been replaced.
   std::uint64_t processGeneration_ = 0;
+  void refreshAuthorityObservationLocked();
+  std::string authorityRuntimeEpoch_;
+  AuthorityObservation authorityObservation_;
+  uint64_t nextAuthorityInstance_{0};
+  uint64_t nextAuthorityPublication_{0};
+  uint64_t authorityRosterProcessGeneration_{0};
   // Per-instance IPC token of the current engine process (read back from the
   // process client after start). Used to derive SHM region names that match what
   // the engine creates. Guarded by mutex_.
@@ -286,6 +322,11 @@ class ZoomEngineRuntime {
     // First successfully decoded frame is sampled off-lock so live meetings
     // tell us whether Zoom honored the requested BT.709 full-range mode.
     bool lumaRangeProbed = false;
+    std::optional<AuthorityPublication> authorityPublication;
+    uint64_t authorityIncarnation{0};
+    // Availability changes fence a copy already in flight without changing the
+    // provider identity used by fixed scene and ISO pins.
+    uint64_t authorityPublicationFence{0};
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
   std::uint64_t staleVideoPublications_ = 0;
