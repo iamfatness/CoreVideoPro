@@ -18,6 +18,7 @@ class ZoomSourceAuthorityAdapter final {
   };
   struct Source {
     std::string id, externalId, personId, name;
+    std::string instanceId;
     uint64_t personGeneration{0}, incarnation{1};
     SourceRegistry::Kind kind{SourceRegistry::Kind::ParticipantVideo};
     bool videoAvailable{true}, subscriptionRequested{false}, subscriptionObserved{false};

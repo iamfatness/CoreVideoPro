@@ -1,10 +1,12 @@
 # Wave 1 shadow integration design
 
-This is an implementation plan, not an enabled runtime feature. The existing
-MediaCore remains the only production authority and side-effect owner. Shadow
-ShowStateOwner, SourceRegistry and ShowPlanGenerator produce comparison evidence
-only. They must never subscribe to a source, start a writer, prepare GPU resources,
-apply a Take, or publish a render/audio/output plan to production consumers.
+The bounded `AuthorityShadow` worker and offline adapters are implemented, but no
+runtime hook enables them yet. The existing MediaCore remains the only production
+authority and side-effect owner. Shadow ShowStateOwner, SourceRegistry and
+ShowPlanGenerator produce diagnostic plan evidence only. They never subscribe to a
+source, start a writer, prepare GPU resources, apply a Take, or publish a
+render/audio/output plan to production consumers. Legacy comparison counters remain
+zero until a separately reviewed observation adapter is connected.
 
 ## Startup and ownership
 

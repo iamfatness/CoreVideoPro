@@ -350,3 +350,111 @@ TEST(SourceRegistry, DisplayNameMetadataPreservesIncarnationAndFencesOldTokens) 
   registry.retireProcessEpoch("meeting-1");
   EXPECT_EQ(registry.setDisplayName(*replacement.token, "Late name"), Registry::Result::Stale);
 }
+
+TEST(SourceRegistry, ProviderInstanceIdsAreExactBoundedAndUniqueWhileLive) {
+  Registry registry("authority");
+  auto a = participant("a", "1");
+  a.instanceId = corevideo::core::SourceInstanceId{"provider-instance"};
+  const auto first = registry.add(a);
+  ASSERT_TRUE(first.token.has_value());
+  EXPECT_EQ(first.token->instanceId.value, "provider-instance");
+  auto b = participant("b", "2"); b.instanceId = a.instanceId;
+  const auto revision = registry.snapshot()->revision;
+  EXPECT_EQ(registry.add(b).result, Registry::Result::Conflict);
+  b.instanceId = corevideo::core::SourceInstanceId{""};
+  EXPECT_EQ(registry.add(b).result, Registry::Result::Invalid);
+  b.instanceId = corevideo::core::SourceInstanceId{std::string(513, 'x')};
+  EXPECT_EQ(registry.add(b).result, Registry::Result::Invalid);
+  EXPECT_EQ(registry.snapshot()->revision, revision);
+  b.instanceId = corevideo::core::SourceInstanceId{std::string(512, 'x')};
+  const auto second = registry.add(b);
+  ASSERT_TRUE(second.token.has_value());
+  b.instanceId = a.instanceId;
+  EXPECT_EQ(registry.replace(*second.token, b).result, Registry::Result::Conflict);
+  registry.setAvailability(*first.token, Registry::Availability::Unavailable);
+  EXPECT_EQ(registry.replace(*second.token, b).result, Registry::Result::Conflict);
+  registry.setAvailability(*first.token, Registry::Availability::Departed);
+  EXPECT_EQ(registry.replace(*second.token, b).result, Registry::Result::Applied);
+}
+
+TEST(SourceRegistry, RegistryAllocatedInstanceCannotCollideWithProviderInstance) {
+  Registry registry("authority");
+  auto a = participant("a", "1");
+  a.instanceId = corevideo::core::SourceInstanceId{"authority:2"};
+  ASSERT_EQ(registry.add(a).result, Registry::Result::Applied);
+  EXPECT_EQ(registry.add(participant("b", "2")).result, Registry::Result::Conflict);
+}
+
+TEST(SourceRegistry, ProviderGenerationAcceptsInitialAndForwardGapsButNeverRollsBack) {
+  Registry registry("authority"); auto registration = participant("camera");
+  registration.requestedGeneration = 7;
+  const auto first = registry.add(registration);
+  ASSERT_TRUE(first.token.has_value());
+  EXPECT_EQ(first.token->generation, 7ULL);
+  registration.requestedGeneration = 7;
+  EXPECT_EQ(registry.replace(*first.token, registration).result, Registry::Result::Stale);
+  registration.requestedGeneration = 6;
+  EXPECT_EQ(registry.replace(*first.token, registration).result, Registry::Result::Stale);
+  registration.requestedGeneration = 0;
+  EXPECT_EQ(registry.replace(*first.token, registration).result, Registry::Result::Invalid);
+  registration.requestedGeneration = 9007199254740992ULL;
+  EXPECT_EQ(registry.replace(*first.token, registration).result, Registry::Result::Invalid);
+  registration.requestedGeneration = 10;
+  const auto next = registry.replace(*first.token, registration);
+  ASSERT_TRUE(next.token.has_value());
+  EXPECT_EQ(next.token->generation, 10ULL);
+  registration.requestedGeneration.reset();
+  const auto allocated = registry.replace(*next.token, registration);
+  ASSERT_TRUE(allocated.token.has_value());
+  EXPECT_EQ(allocated.token->generation, 11ULL);
+  auto invalid = participant("other", "99"); invalid.requestedGeneration = 0;
+  EXPECT_EQ(registry.add(invalid).result, Registry::Result::Invalid);
+}
+
+TEST(SourceRegistry, DecisionRevisionIgnoresFrameTrafficAndMetadataButTracksEligibility) {
+  Registry registry("authority");
+  registry.upsertPerson({{"person"}, "Name", 1});
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 1ULL);
+  registry.upsertPerson({{"person"}, "Renamed", 1});
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 1ULL);
+  registry.upsertPerson({{"person"}, "Renamed", 2});
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 2ULL);
+  const auto added = registry.add(participant("camera"));
+  ASSERT_TRUE(added.token.has_value());
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 3ULL);
+  registry.setSubscription(*added.token, true, true);
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 3ULL);
+  registry.publish(*added.token, 0, 0, format());
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 4ULL);
+  const auto auditBefore = registry.snapshot()->revision;
+  for (uint64_t frame = 1; frame <= 60; ++frame)
+    EXPECT_EQ(registry.publish(*added.token, frame, static_cast<int64_t>(frame), format()), Registry::Result::Applied);
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 4ULL);
+  EXPECT_EQ(registry.snapshot()->revision, auditBefore + 60);
+  registry.setAvailability(*added.token, Registry::Availability::Unavailable);
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 5ULL);
+  registry.setAvailability(*added.token, Registry::Availability::Available);
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 6ULL);
+  registry.publish(*added.token, 61, 61, format());
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 7ULL);
+  const auto replaced = registry.replace(*added.token, participant("camera"));
+  ASSERT_TRUE(replaced.token.has_value());
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 8ULL);
+  registry.retireProcessEpoch("meeting-1");
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 9ULL);
+  registry.retireProcessEpoch("meeting-1");
+  EXPECT_EQ(registry.snapshot()->decisionRevision, 9ULL);
+}
+TEST(SourceRegistry, IdentityAndFormatTextAreBoundedBeforeRetention) {
+  Registry registry("authority");
+  EXPECT_EQ(registry.upsertPerson({{std::string(513,'p')},"",1}),Registry::Result::Invalid);
+  EXPECT_EQ(registry.upsertPerson({{"person"},std::string(4097,'n'),1}),Registry::Result::Invalid);
+  auto registration = participant(std::string(513,'s'));
+  EXPECT_EQ(registry.add(registration).result,Registry::Result::Invalid);
+  registration = participant("camera"); registration.externalId = std::string(513,'e');
+  EXPECT_EQ(registry.add(registration).result,Registry::Result::Invalid);
+  registration = participant("camera"); const auto added = registry.add(registration);
+  ASSERT_TRUE(added.token.has_value());
+  auto oversizedFormat = format(); oversizedFormat.pixelFormat = std::string(129,'f');
+  EXPECT_EQ(registry.publish(*added.token,1,1,oversizedFormat),Registry::Result::Invalid);
+}

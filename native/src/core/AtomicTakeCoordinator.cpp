@@ -38,31 +38,42 @@ bool AtomicTakeCoordinator::valid(const Fingerprint& f) {
   return f.expectedRevision <= kMaxRevision && f.previewRevision <= kMaxRevision &&
       !f.mediaProcessEpoch.empty() && f.mediaProcessEpoch.size() <= 512 &&
       f.mediaGeneration > 0 && f.mediaGeneration <= kMaxRevision && transition &&
-      !f.preparationToken.empty() && f.preparationToken.size() <= 512 && f.preparationRevision <= kMaxRevision;
+      validShowPreparationToken(f.preparation) &&
+      f.preparation.stamp == f.expectedPlanStamp &&
+      f.preparation.planId == f.expectedPlanId;
 }
 
-AtomicTakeCoordinator::Error AtomicTakeCoordinator::prepare(const std::string& epoch, const Fingerprint& f) {
+AtomicTakeCoordinator::Error AtomicTakeCoordinator::prepare(const std::string& epoch, const Fingerprint& f, std::shared_ptr<const PreparedShowCertificate> certificate) {
+  std::shared_ptr<const PreparedShowCertificate> retired;
   std::lock_guard lock(mutex_);
   if (epoch != epoch_) return Error::AuthorityEpoch;
-  if (!valid(f)) return Error::Invalid;
+  if (!valid(f) || f.preparation.base.epoch != epoch || f.preparation.base.revision != f.expectedRevision) return Error::Invalid;
+  if (!certificate || certificate->token != f.preparation || !certificate->plan ||
+      certificate->plan->id != f.expectedPlanId || certificate->plan->stamp != f.expectedPlanStamp ||
+      certificate->plan->base != f.preparation.base || certificate->plan->revision != f.preparation.planRevision)
+    return Error::NotPrepared;
   if (applying_) return Error::Busy;
   if (f.expectedRevision != revision_) return Error::StaleRevision;
   if (f.previewRevision != previewRevision_) return Error::StalePreview;
   if (lastPreparation_) {
-    if (f.preparationRevision < lastPreparation_->preparationRevision) return Error::NotPrepared;
-    if (f.preparationRevision == lastPreparation_->preparationRevision) {
+    if (f.preparation.transactionGeneration < lastPreparation_->preparation.transactionGeneration) return Error::NotPrepared;
+    if (f.preparation.transactionGeneration == lastPreparation_->preparation.transactionGeneration) {
       if (!(f == *lastPreparation_)) return Error::OperationConflict;
-      return prepared_ ? Error::None : Error::NotPrepared;
+      return prepared_ && preparedCertificate_ == certificate && certificate->state() == PreparedShowCertificate::State::Claimed ? Error::None : Error::NotPrepared;
     }
-    if (f.preparationToken == lastPreparation_->preparationToken) return Error::OperationConflict;
   }
+  if (!certificate->claim()) return Error::NotPrepared;
+  if (preparedCertificate_) preparedCertificate_->revoke();
   lastPreparation_ = f;
   prepared_ = f;
+  retired = std::move(preparedCertificate_);
+  preparedCertificate_ = std::move(certificate);
   return Error::None;
 }
 
 AtomicTakeCoordinator::Error AtomicTakeCoordinator::updatePreview(const std::string& epoch,
     uint64_t expectedRevision, uint64_t previewRevision) {
+  std::shared_ptr<const PreparedShowCertificate> retired;
   std::lock_guard lock(mutex_);
   if (epoch != epoch_) return Error::AuthorityEpoch;
   if (previewRevision > kMaxRevision) return Error::Invalid;
@@ -73,13 +84,16 @@ AtomicTakeCoordinator::Error AtomicTakeCoordinator::updatePreview(const std::str
   if (revision_ == kMaxRevision) return Error::RevisionExhausted;
   previewRevision_ = previewRevision;
   ++revision_;
+  if (preparedCertificate_) preparedCertificate_->revoke();
   prepared_.reset();
+  retired = std::move(preparedCertificate_);
   return Error::None;
 }
 
 AtomicTakeCoordinator::Reply AtomicTakeCoordinator::take(const Request& request) {
   const Request frozen = request;
   uint64_t reservedRevision = 0;
+  std::shared_ptr<const PreparedShowCertificate> certificate;
   {
     std::lock_guard lock(mutex_);
     const auto reject = [&](Error error) {
@@ -88,7 +102,7 @@ AtomicTakeCoordinator::Reply AtomicTakeCoordinator::take(const Request& request)
       return Reply{out, false, error == Error::Busy};
     };
     if (frozen.authorityEpoch != epoch_) return reject(Error::AuthorityEpoch);
-    if (frozen.operationId.empty() || frozen.operationId.size() > 512 || !valid(frozen.fingerprint)) return reject(Error::Invalid);
+    if (frozen.operationId.empty() || frozen.operationId.size() > 512 || !valid(frozen.fingerprint) || frozen.fingerprint.preparation.base.epoch != epoch_) return reject(Error::Invalid);
     if (tombstones_.contains(frozen.operationId)) return reject(Error::OperationExpired);
     const auto old = records_.find(frozen.operationId);
     if (old != records_.end()) {
@@ -100,7 +114,8 @@ AtomicTakeCoordinator::Reply AtomicTakeCoordinator::take(const Request& request)
     if (frozen.fingerprint.expectedRevision != revision_) return reject(Error::StaleRevision);
     if (frozen.fingerprint.previewRevision != previewRevision_) return reject(Error::StalePreview);
     if (revision_ == kMaxRevision) return reject(Error::RevisionExhausted);
-    if (!prepared_ || !(*prepared_ == frozen.fingerprint)) return reject(Error::NotPrepared);
+    if (frozen.fingerprint.preparation.base.revision != frozen.fingerprint.expectedRevision ||
+        !prepared_ || !(*prepared_ == frozen.fingerprint)) return reject(Error::NotPrepared);
     reservedRevision = revision_ + 1;
     Outcome accepted;
     accepted.authorityEpoch = epoch_;
@@ -108,9 +123,14 @@ AtomicTakeCoordinator::Reply AtomicTakeCoordinator::take(const Request& request)
     accepted.pending = true;
     accepted.accepted = true;
     accepted.resultRevision = reservedRevision;
-    records_.emplace(frozen.operationId, Record{frozen.fingerprint, accepted, true});
+    records_.emplace(frozen.operationId, Record{frozen.fingerprint, accepted, preparedCertificate_, true});
+    if (!preparedCertificate_ || !preparedCertificate_->apply()) {
+      records_.erase(frozen.operationId);
+      return reject(Error::NotPrepared);
+    }
     applying_ = true;
     prepared_.reset();
+    certificate = std::move(preparedCertificate_);
   }
   ApplyResult applied;
   // No owner lock across foreign code. Concurrent/reentrant duplicate calls see
@@ -118,6 +138,7 @@ AtomicTakeCoordinator::Reply AtomicTakeCoordinator::take(const Request& request)
   try { applied = apply_(frozen, reservedRevision); }
   catch (const std::exception& error) { applied.failure = error.what(); }
   catch (...) { applied.failure = "Unknown Take apply failure"; }
+  certificate->complete(applied.applied);
   std::lock_guard lock(mutex_);
   auto& record = records_.at(frozen.operationId);
   record.pending = false;
@@ -162,6 +183,7 @@ AtomicTakeCoordinator::Error AtomicTakeCoordinator::observe(const Request& reque
 }
 
 AtomicTakeCoordinator::Error AtomicTakeCoordinator::evict(const std::string& epoch, const std::string& id) {
+  std::shared_ptr<const PreparedShowCertificate> retired;
   std::lock_guard lock(mutex_);
   if (epoch != epoch_) return Error::AuthorityEpoch;
   if (tombstones_.contains(id)) return Error::None;
@@ -169,6 +191,7 @@ AtomicTakeCoordinator::Error AtomicTakeCoordinator::evict(const std::string& epo
   if (found == records_.end()) return Error::StaleObservation;
   if (found->second.pending) return Error::Busy;
   tombstones_.insert(id); // Allocate before removal: failure cannot lose protection.
+  retired = std::move(found->second.certificate);
   records_.erase(found);
   return Error::None;
 }

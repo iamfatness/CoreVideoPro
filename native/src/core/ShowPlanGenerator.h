@@ -5,10 +5,12 @@
 namespace corevideo::core {
 struct ShowPlanStamp {
   std::string authorityEpoch, registryEpoch;
+  // registryRevision is the registry's decisionRevision, so steady frame
+  // publications do not continuously invalidate prepared plans.
   std::uint64_t controlRevision{0}, registryRevision{0};
-  // Part of plan identity because it can change video eligibility without a
-  // show or registry mutation. Uses the same caller-owned monotonic clock.
-  std::int64_t videoFreshAfterNs{0};
+  // Collision-free canonical encoding of resolved eligibility and exact source
+  // tokens. It changes only when a generated decision changes, not per frame.
+  std::string eligibilityIdentity;
   bool operator==(const ShowPlanStamp&) const = default;
 };
 struct PlannedSourceToken {
@@ -116,9 +118,9 @@ struct ShowPlanGenerationContext {
 };
 // Pure control-plane projection. Inputs must be immutable snapshots. No clock,
 // rendering, source reads, callbacks, global state, or mutation occurs here.
-// Authority/registry revisions plus the freshness cutoff form plan identity;
+// Authority/registry revisions plus exact eligibility decisions form plan identity;
 // a runtime publisher assigns its own plan generation when adopting this result.
 std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
                                                  const SourceRegistry::Snapshot& registry,
-                                                 ShowPlanGenerationContext context = {});
+                                                 ShowPlanGenerationContext context);
 } // namespace corevideo::core

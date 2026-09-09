@@ -7,7 +7,7 @@ namespace {
 constexpr uint64_t maxSafe = 9007199254740991ULL;
 bool text(const std::string& s) { return !s.empty() && s.size() <= 512; }
 bool identityChanged(const ZoomSourceAuthorityAdapter::Source& a, const ZoomSourceAuthorityAdapter::Source& b) {
-  return a.externalId != b.externalId || a.personId != b.personId ||
+  return a.instanceId != b.instanceId || a.externalId != b.externalId || a.personId != b.personId ||
       a.personGeneration != b.personGeneration || a.kind != b.kind;
 }
 }
@@ -45,9 +45,11 @@ ZoomSourceAuthorityAdapter::SyncResult ZoomSourceAuthorityAdapter::sync(Observat
   for (const auto& person : current->persons)
     if (people.contains(person.id.value) && people.at(person.id.value) < person.generation) return result(Status::Stale);
   std::set<std::string> sourceIds;
+  std::set<std::string> instanceIds;
   std::set<std::pair<int, std::string>> externalIds;
   for (const auto& source : observation.sources) {
-    if (!text(source.id) || !text(source.externalId) || source.name.size() > 4096 ||
+    if (!text(source.id) || !text(source.instanceId) || !instanceIds.insert(source.instanceId).second ||
+        !text(source.externalId) || source.name.size() > 4096 ||
         !source.incarnation || source.incarnation > maxSafe ||
         (source.kind != SourceRegistry::Kind::ParticipantVideo && source.kind != SourceRegistry::Kind::ParticipantShare) ||
         !sourceIds.insert(source.id).second || !externalIds.emplace(static_cast<int>(source.kind), source.externalId).second ||
@@ -63,6 +65,7 @@ ZoomSourceAuthorityAdapter::SyncResult ZoomSourceAuthorityAdapter::sync(Observat
     if (old != bindings_.end()) {
       if (source.kind != old->second.observation.kind) return result(Status::Invalid);
       const bool sameProcess = old->second.token.processEpoch == observation.processEpoch;
+      if (!sameProcess && source.incarnation <= old->second.token.generation) return result(Status::Stale);
       if (sameProcess && (source.incarnation < old->second.observation.incarnation ||
           ((!old->second.present || identityChanged(source, old->second.observation)) &&
            source.incarnation <= old->second.observation.incarnation))) return result(Status::Stale);
@@ -106,6 +109,8 @@ ZoomSourceAuthorityAdapter::SyncResult ZoomSourceAuthorityAdapter::sync(Observat
     auto old = bindings_.find(source.id);
     SourceRegistry::Registration registration;
     registration.sourceId = {source.id}; registration.kind = source.kind;
+    registration.instanceId = SourceInstanceId{source.instanceId};
+    registration.requestedGeneration = source.incarnation;
     if (!source.personId.empty()) registration.personId = PersonId{source.personId};
     registration.personGeneration = source.personGeneration;
     registration.displayName = source.name; registration.processEpoch = observation.processEpoch; registration.externalId = source.externalId;

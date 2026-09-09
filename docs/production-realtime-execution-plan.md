@@ -4,6 +4,19 @@ Status: approved; execution in progress
 
 Controlling architecture: `production-realtime-architecture.md`
 
+## Execution record
+
+- Wave 0 contracts, evidence, and qualification fail-closed foundation: `85dd7d8`.
+- Authoritative ShowState and SourceRegistry foundation: `257ff26`.
+- Deterministic plan preparation and Take coordinator: `9bfd2d9`.
+- Exact source/command adapters, camera-off stale-frame fencing, and shadow design:
+  `678c024`.
+- Current working branch adds the bounded disabled shadow worker, exact provider
+  source instances/generations, non-churning eligibility identity, revocable
+  preparation certificates, and the rational ShowClock. These remain pre-cutover:
+  the legacy MediaCore is still production authority until truthful runtime
+  checkpoints, client adoption, and parity gates pass.
+
 ## Outcome
 
 Deliver a production media system that:

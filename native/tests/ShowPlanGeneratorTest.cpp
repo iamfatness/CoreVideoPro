@@ -1,13 +1,14 @@
 #include "core/ShowPlanGenerator.h"
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <stdexcept>
 #include <type_traits>
 
 using namespace corevideo::core;
 namespace {
 SourceRegistry::Snapshot roster() {
   SourceRegistry::Snapshot r;
-  r.registryEpoch = "registry"; r.revision = 12;
+  r.registryEpoch = "registry"; r.revision = 12; r.decisionRevision = 12;
   r.persons = {{{"person-a"}, "Same name", 2}, {{"person-b"}, "Same name", 1}};
   for (const auto& id : {"a", "b", "c"}) {
     SourceRegistry::Source s;
@@ -46,10 +47,10 @@ ShowStateSnapshot show() {
 }
 TEST(ShowPlanGenerator, DeterministicProjectionPreservesIntentOrderAndStamps) {
   const auto s = show(); auto r = roster();
-  const auto first = generateShowPlans(s, r);
+  const auto first = generateShowPlans(s, r, {0});
   std::reverse(r.sources.begin(), r.sources.end());
   std::reverse(r.persons.begin(), r.persons.end());
-  EXPECT_TRUE(*first == *generateShowPlans(s, r));
+  EXPECT_TRUE(*first == *generateShowPlans(s, r, {0}));
   static_assert(std::is_const_v<std::remove_reference_t<decltype(*first)>>);
   EXPECT_EQ(first->render.stamp.controlRevision, 7ULL);
   EXPECT_EQ(first->audio.stamp.registryRevision, 12ULL);
@@ -61,10 +62,22 @@ TEST(ShowPlanGenerator, DeterministicProjectionPreservesIntentOrderAndStamps) {
   EXPECT_EQ(first->render.preview.status, PlannedBindingStatus::Blank);
 }
 
+TEST(ShowPlanGenerator, SteadyFrameObservationsDoNotInvalidatePlanIdentity) {
+  const auto s = show(); auto r = roster();
+  const auto initial = generateShowPlans(s,r,{0});
+  r.revision += 60;
+  r.sources[0].publicationSequence += 60;
+  r.sources[0].lastPublicationNs += 1'000'000'000;
+  const auto steady = generateShowPlans(s,r,{0});
+  EXPECT_EQ(initial->render.stamp,steady->render.stamp);
+  ++r.decisionRevision;
+  EXPECT_NE(initial->render.stamp,generateShowPlans(s,r,{0})->render.stamp);
+}
+
 TEST(ShowPlanGenerator, RegistryRestartCannotRebindExactPinAtReusedGeneration) {
   auto s = show(); auto r = roster();
   s.data.overlays["name"] = {1, fixed("a").source, "Title", true};
-  const auto original = generateShowPlans(s, r);
+  const auto original = generateShowPlans(s, r, {0});
   EXPECT_EQ(original->render.overlays[0].binding.status, PlannedBindingStatus::Resolved);
   for (bool changeProcess : {false, true}) {
     auto restarted = r;
@@ -73,7 +86,7 @@ TEST(ShowPlanGenerator, RegistryRestartCannotRebindExactPinAtReusedGeneration) {
     // identity field alone must fence the old pin across every media projection.
     if (changeProcess) restarted.sources[0].token.processEpoch = "process-2";
     else restarted.sources[0].token.instanceId.value = "instance-replaced";
-    const auto plans = generateShowPlans(s, restarted);
+    const auto plans = generateShowPlans(s, restarted, {0});
     EXPECT_EQ(plans->render.program.layers[1].binding.status, PlannedBindingStatus::Missing);
     EXPECT_EQ(plans->render.overlays[0].binding.status, PlannedBindingStatus::Missing);
     EXPECT_EQ(plans->audio.routes[0].binding.status, PlannedBindingStatus::Missing);
@@ -85,27 +98,28 @@ TEST(ShowPlanGenerator, RegistryRestartCannotRebindExactPinAtReusedGeneration) {
 }
 TEST(ShowPlanGenerator, ReconnectFollowsPersonButDoesNotSubstituteFixedIncarnation) {
   auto s = show(); auto r = roster();
-  const auto old = generateShowPlans(s, r);
-  r.sources[0].token = {{"a"}, {"replacement"}, "process-2", 4}; ++r.revision;
-  const auto next = generateShowPlans(s, r);
+  const auto old = generateShowPlans(s, r, {0});
+  r.sources[0].token = {{"a"}, {"replacement"}, "process-2", 4};
+  ++r.revision; ++r.decisionRevision;
+  const auto next = generateShowPlans(s, r, {0});
   EXPECT_EQ(next->output.isoSelections.at(1).videoBinding.status, PlannedBindingStatus::Missing);
   ASSERT_TRUE(next->output.isoSelections.at(0).videoBinding.source.has_value());
   EXPECT_EQ(next->output.isoSelections.at(0).videoBinding.source->generation, 4ULL);
   EXPECT_EQ(next->output.isoSelections.at(0).videoBinding.source->processEpoch, "process-2");
   EXPECT_EQ(old->output.isoSelections.at(0).videoBinding.source->instanceId, "instance-a");
   r.sources[0].availability = SourceRegistry::Availability::Departed;
-  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Missing);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Missing);
 }
 TEST(ShowPlanGenerator, DuplicateNamesNeverSelectAndDuplicatePersonSourcesAreAmbiguous) {
   auto s = show(); auto r = roster();
   s.data.inputs.at("first").target = person("person-b");
-  EXPECT_EQ(generateShowPlans(s, r)->render.inputs.at(1).binding.status, PlannedBindingStatus::Ambiguous);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->render.inputs.at(1).binding.status, PlannedBindingStatus::Ambiguous);
   s.data.inputs.at("first").target = person("person-a", 2);
-  EXPECT_EQ(generateShowPlans(s, r)->render.inputs.at(1).binding.source->sourceId, "a");
+  EXPECT_EQ(generateShowPlans(s, r, {0})->render.inputs.at(1).binding.source->sourceId, "a");
   s.data.inputs.at("first").target = person("person-a", 1);
-  EXPECT_EQ(generateShowPlans(s, r)->render.inputs.at(1).binding.status, PlannedBindingStatus::Missing);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->render.inputs.at(1).binding.status, PlannedBindingStatus::Missing);
   s.data.inputs.at("first").target = person("Same name");
-  EXPECT_EQ(generateShowPlans(s, r)->render.inputs.at(1).binding.status, PlannedBindingStatus::Missing);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->render.inputs.at(1).binding.status, PlannedBindingStatus::Missing);
 }
 TEST(ShowPlanGenerator, TilesRequireRosterOptInAndKeepReservedBlankAndExcludedSources) {
   auto s = show(); auto r = roster();
@@ -114,24 +128,24 @@ TEST(ShowPlanGenerator, TilesRequireRosterOptInAndKeepReservedBlankAndExcludedSo
   tiles.reservedSlots[2] = ShowEntityRef{"first", 1};
   tiles.excludedInputs.insert({"second", 1});
   s.data.tiles["tiles"] = tiles;
-  const auto initial = generateShowPlans(s, r);
+  const auto initial = generateShowPlans(s, r, {0});
   ASSERT_EQ(initial->render.tiles.at(0).slots.size(), 2U);
   EXPECT_EQ(initial->render.tiles.at(0).slots.at(0).binding.status, PlannedBindingStatus::Blank);
   EXPECT_TRUE(initial->render.tiles.at(0).slots.at(0).reserved);
   s.data.tiles.at("tiles").allowRosterAdditions = true;
-  const auto expanded = generateShowPlans(s, r);
+  const auto expanded = generateShowPlans(s, r, {0});
   ASSERT_EQ(expanded->render.tiles.at(0).slots.size(), 3U);
   EXPECT_EQ(expanded->render.tiles.at(0).slots.at(1).slot, 1U);
   EXPECT_EQ(expanded->render.tiles.at(0).slots.at(1).binding.source->sourceId, "c");
   EXPECT_EQ(expanded->render.tiles.at(0).slots.at(2).slot, 2U);
   s.data.tiles.at("tiles").autoFill = false;
-  EXPECT_EQ(generateShowPlans(s, r)->render.tiles.at(0).slots.size(), 2U);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->render.tiles.at(0).slots.size(), 2U);
 }
 TEST(ShowPlanGenerator, BlankVideoDoesNotMuteIndependentAudioAndSelectorsRemainUnresolved) {
   auto s = show(); const auto r = roster();
   s.data.scenes.at("scene").routes.at("back").target = {};
   s.data.inputs.at("first").target = {ShowRouteKind::ActiveSpeaker, std::nullopt, std::nullopt};
-  const auto plans = generateShowPlans(s, r);
+  const auto plans = generateShowPlans(s, r, {0});
   EXPECT_EQ(plans->render.program.layers.at(1).binding.status, PlannedBindingStatus::Blank);
   EXPECT_EQ(plans->audio.routes.at(0).binding.status, PlannedBindingStatus::Resolved);
   EXPECT_FALSE(plans->audio.routes.at(0).intent.muted);
@@ -140,15 +154,15 @@ TEST(ShowPlanGenerator, BlankVideoDoesNotMuteIndependentAudioAndSelectorsRemainU
   EXPECT_EQ(plans->audio.routes.at(0).intent.gainMilliDb, -6000);
   EXPECT_EQ(plans->render.inputs.at(1).binding.status, PlannedBindingStatus::RequiresSelection);
   s.data.program->generation = 2;
-  EXPECT_EQ(generateShowPlans(s, r)->render.program.status, PlannedBindingStatus::Missing);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->render.program.status, PlannedBindingStatus::Missing);
 }
 
 TEST(ShowPlanGenerator, OldPersonBindingCannotAliasNewPersonGeneration) {
   auto s = show(); auto r = roster();
   r.sources[0].personGeneration = 1;
-  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Missing);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Missing);
   // Fixed identity remains independent of durable-person rebinding.
-  EXPECT_EQ(generateShowPlans(s, r)->output.isoSelections.at(1).videoBinding.status, PlannedBindingStatus::Resolved);
+  EXPECT_EQ(generateShowPlans(s, r, {0})->output.isoSelections.at(1).videoBinding.status, PlannedBindingStatus::Resolved);
 }
 TEST(ShowPlanGenerator, ExcludedReservedInputRemainsAnExplicitHole) {
   auto s = show(); const auto r = roster();
@@ -157,7 +171,7 @@ TEST(ShowPlanGenerator, ExcludedReservedInputRemainsAnExplicitHole) {
   tiles.excludedInputs.insert({"first", 1});
   tiles.allowRosterAdditions = true;
   s.data.tiles["tiles"] = tiles;
-  const auto planned = generateShowPlans(s, r)->render.tiles.at(0);
+  const auto planned = generateShowPlans(s, r, {0})->render.tiles.at(0);
   ASSERT_FALSE(planned.slots.empty());
   EXPECT_EQ(planned.slots.at(0).slot, 0U);
   EXPECT_TRUE(planned.slots.at(0).reserved);
@@ -174,7 +188,7 @@ TEST(ShowPlanGenerator, VideoFreshnessAndCameraAvailabilityDoNotEraseAudioIntent
   auto r = roster();
   r.sources[0].lastPublicationNs = 100;
   const auto stale = generateShowPlans(s, r, {101});
-  EXPECT_EQ(stale->render.stamp.videoFreshAfterNs, 101);
+  EXPECT_FALSE(stale->render.stamp.eligibilityIdentity.empty());
   EXPECT_NE(stale->render.stamp, generateShowPlans(s, r, {100})->render.stamp);
   EXPECT_EQ(stale->render.inputs.at(1).binding.status, PlannedBindingStatus::Stale);
   EXPECT_EQ(stale->output.isoSelections.at(0).videoBinding.status, PlannedBindingStatus::Stale);
@@ -188,4 +202,23 @@ TEST(ShowPlanGenerator, VideoFreshnessAndCameraAvailabilityDoNotEraseAudioIntent
   EXPECT_EQ(cameraOff->output.isoSelections.at(0).audioBinding.status,
             PlannedBindingStatus::Resolved);
   EXPECT_EQ(cameraOff->audio.routes.at(0).binding.status, PlannedBindingStatus::Resolved);
+}
+TEST(ShowPlanGenerator, NegativeFreshnessPolicyFailsClosed) {
+  bool rejected = false;
+  try { (void)generateShowPlans(show(),roster(),{-1}); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  EXPECT_TRUE(rejected);
+}
+TEST(ShowPlanGenerator, EligibilityIdentityChangesOnlyWhenFreshnessDecisionChanges) {
+  const auto s = show(); auto r = roster();
+  r.sources[0].lastPublicationNs = 50;
+  const auto stale = generateShowPlans(s,r,{100});
+  EXPECT_EQ(stale->render.inputs.at(1).binding.status,PlannedBindingStatus::Stale);
+  r.sources[0].lastPublicationNs = 150; ++r.revision; // steady publication, same decision revision
+  const auto recovered = generateShowPlans(s,r,{100});
+  EXPECT_EQ(recovered->render.inputs.at(1).binding.status,PlannedBindingStatus::Resolved);
+  EXPECT_NE(stale->render.stamp.eligibilityIdentity,recovered->render.stamp.eligibilityIdentity);
+  const auto stillFresh = generateShowPlans(s,r,{120});
+  EXPECT_EQ(stillFresh->render.inputs.at(1).binding.status,PlannedBindingStatus::Resolved);
+  EXPECT_EQ(recovered->render.stamp.eligibilityIdentity,stillFresh->render.stamp.eligibilityIdentity);
 }
