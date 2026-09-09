@@ -11,9 +11,10 @@ Controlling architecture: `production-realtime-architecture.md`
 - Deterministic plan preparation and Take coordinator: `9bfd2d9`.
 - Exact source/command adapters, camera-off stale-frame fencing, and shadow design:
   `678c024`.
-- Current working branch adds the bounded disabled shadow worker, exact provider
-  source instances/generations, non-churning eligibility identity, revocable
-  preparation certificates, and the rational ShowClock. These remain pre-cutover:
+- Bounded disabled authority shadow, truthful legacy checkpoint projection,
+  typed Zoom source observations, exact provider source instances/generations,
+  non-churning eligibility identity, revocable preparation certificates, and
+  the rational ShowClock: `f6089d3`. These remain pre-cutover:
   the legacy MediaCore is still production authority until truthful runtime
   checkpoints, client adoption, and parity gates pass.
 

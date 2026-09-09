@@ -146,13 +146,13 @@ SourceRegistry::Result SourceRegistry::setAvailability(const Token& token, Avail
   return Result::Applied;
 }
 
-SourceRegistry::Result SourceRegistry::setSubscription(const Token& token, bool requested, bool observed) {
+SourceRegistry::Result SourceRegistry::setSubscription(const Token& token, bool requested, std::optional<bool> observed) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto found = sources_.find(token.sourceId.value);
   if (found == sources_.end()) return Result::NotFound;
   auto& source = found->second;
   if (!sameToken(source.token, token) || source.availability == Availability::Departed) return Result::Stale;
-  if (observed && source.availability != Availability::Available) return Result::Invalid;
+  if (observed.value_or(false) && source.availability != Availability::Available) return Result::Invalid;
   if (source.subscriptionRequested == requested && source.subscriptionObserved == observed)
     return Result::Unchanged;
   if (revision_ == kMaxRevision) return Result::Exhausted;
@@ -193,12 +193,15 @@ SourceRegistry::Result SourceRegistry::publish(const Token& token, uint64_t sequ
   auto& source = found->second;
   if (!sameToken(source.token, token) || source.availability != Availability::Available) return Result::Stale;
   if (sequence > kMaxRevision || observedNs < 0 || format.width <= 0 || format.height <= 0 ||
-      format.fpsNumerator <= 0 || format.fpsDenominator <= 0 || format.pixelFormat.empty() ||
+      format.fpsNumerator.has_value() != format.fpsDenominator.has_value() ||
+      (format.fpsNumerator && (*format.fpsNumerator <= 0 || *format.fpsDenominator <= 0)) || format.pixelFormat.empty() ||
       format.pixelFormat.size() > 128) return Result::Invalid;
   if (source.hasPublicationWatermark &&
       (sequence <= source.publicationSequence || observedNs < source.lastPublicationNs)) return Result::Stale;
   if (revision_ == kMaxRevision) return Result::Exhausted;
-  if (!source.hasPublication) ++decisionRevision_;
+  // A format change invalidates prepared GPU resources even when the exact
+  // source incarnation remains current. Steady publications do not churn plans.
+  if (!source.hasPublication || !source.format || *source.format != format) ++decisionRevision_;
   source.format = std::move(format);
   source.hasPublication = true;
   source.hasPublicationWatermark = true;

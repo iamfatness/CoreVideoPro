@@ -12,7 +12,8 @@ class ZoomSourceAuthorityAdapter final {
   struct Publication {
     uint64_t sequence{0};
     int64_t observedNs{0};
-    int width{0}, height{0}, fpsNumerator{0}, fpsDenominator{1};
+    int width{0}, height{0};
+    std::optional<int> fpsNumerator, fpsDenominator;
     std::string pixelFormat;
     bool operator==(const Publication&) const = default;
   };
@@ -21,7 +22,8 @@ class ZoomSourceAuthorityAdapter final {
     std::string instanceId;
     uint64_t personGeneration{0}, incarnation{1};
     SourceRegistry::Kind kind{SourceRegistry::Kind::ParticipantVideo};
-    bool videoAvailable{true}, subscriptionRequested{false}, subscriptionObserved{false};
+    bool videoAvailable{true}, subscriptionRequested{false};
+    std::optional<bool> subscriptionObserved{false};
     std::optional<Publication> publication;
     bool operator==(const Source&) const = default;
   };

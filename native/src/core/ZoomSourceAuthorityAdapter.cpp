@@ -55,11 +55,12 @@ ZoomSourceAuthorityAdapter::SyncResult ZoomSourceAuthorityAdapter::sync(Observat
         !sourceIds.insert(source.id).second || !externalIds.emplace(static_cast<int>(source.kind), source.externalId).second ||
         (source.personId.empty() ? source.personGeneration != 0 :
          !people.contains(source.personId) || people.at(source.personId) != source.personGeneration) ||
-        (source.subscriptionObserved && !source.videoAvailable)) return result(Status::Invalid);
+        (source.subscriptionObserved.value_or(false) && !source.videoAvailable)) return result(Status::Invalid);
     if (source.publication) {
       const auto& p = *source.publication;
       if (!source.videoAvailable || p.sequence > maxSafe || p.observedNs < 0 || p.width <= 0 || p.height <= 0 ||
-          p.fpsNumerator <= 0 || p.fpsDenominator <= 0 || !text(p.pixelFormat)) return result(Status::Invalid);
+          p.fpsNumerator.has_value() != p.fpsDenominator.has_value() ||
+          (p.fpsNumerator && (*p.fpsNumerator <= 0 || *p.fpsDenominator <= 0)) || !text(p.pixelFormat)) return result(Status::Invalid);
     }
     const auto old = bindings_.find(source.id);
     if (old != bindings_.end()) {

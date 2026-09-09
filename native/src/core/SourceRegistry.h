@@ -24,8 +24,9 @@ class SourceRegistry final {
   enum class Result { Applied, Unchanged, Invalid, NotFound, Conflict, Stale, Exhausted };
   struct Format {
     int width = 0, height = 0;
-    int fpsNumerator = 0, fpsDenominator = 1;
+    std::optional<int> fpsNumerator, fpsDenominator; // Both absent means unknown rate.
     std::string pixelFormat;
+    bool operator==(const Format&) const = default;
   };
   struct Token {
     SourceId sourceId;
@@ -57,7 +58,7 @@ class SourceRegistry final {
     std::string displayName, externalId;
     Availability availability = Availability::Available;
     bool subscriptionRequested = false;
-    bool subscriptionObserved = false;
+    std::optional<bool> subscriptionObserved{false}; // nullopt means unacknowledged/unknown.
     std::optional<Format> format;
     bool hasPublication = false;
     bool hasPublicationWatermark = false; // Survives unavailable/departed until token replacement.
@@ -82,7 +83,7 @@ class SourceRegistry final {
   Mutation replace(const Token& expected, Registration registration);
   Result setDisplayName(const Token& token, const std::string& name);
   Result setAvailability(const Token& token, Availability availability);
-  Result setSubscription(const Token& token, bool requested, bool observed);
+  Result setSubscription(const Token& token, bool requested, std::optional<bool> observed);
   // Retire every source owned by a replaced helper process as one registry
   // transaction. This fences callbacks even when a provider changes its source IDs.
   Result retireProcessEpoch(const std::string& processEpoch);

@@ -71,9 +71,11 @@ add_library(corevideo_native
   src/core/AtomicTakeCoordinator.cpp
   src/core/SourceRegistry.cpp
   src/core/ZoomSourceAuthorityAdapter.cpp
+  src/core/ZoomRuntimeAuthorityBridge.cpp
   src/core/AuthorityShadow.cpp
   src/core/LegacyShowCommandProjector.cpp
   src/core/DesiredShowCheckpoint.cpp
+  src/core/LegacyCaptureLedger.cpp
   src/core/ShowClock.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
@@ -655,9 +657,11 @@ if(BUILD_TESTING)
     tests/AtomicTakeCoordinatorTest.cpp
     tests/SourceRegistryTest.cpp
     tests/ZoomSourceAuthorityAdapterTest.cpp
+    tests/ZoomRuntimeAuthorityBridgeTest.cpp
     tests/AuthorityShadowTest.cpp
     tests/LegacyShowCommandProjectorTest.cpp
     tests/DesiredShowCheckpointTest.cpp
+    tests/LegacyCaptureLedgerTest.cpp
     tests/ShowClockTest.cpp
     tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
