@@ -259,9 +259,12 @@
                                 <StackPanel Spacing="8">
                                     <TextBlock Text="CoreVideo Tiles" FontWeight="Bold" FontSize="13"
                                                Foreground="{StaticResource StudioAccentBrush}" />
-                                    <TextBlock Text="Choose manual slots or fill remaining slots from the roster. Excluded sources never join this wall."
+                                    <TextBlock Text="Choose routed show sources, all eligible meeting participants, or manual slots. Excluded sources never join this wall."
                                                FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
-                                    <ToggleSwitch Header="Fill remaining slots automatically" IsOn="{x:Bind ViewModel.GalleryAutoFill, Mode=TwoWay}" />
+                                    <ComboBox Header="Membership"
+                                              ItemsSource="{x:Bind ViewModel.GalleryMembershipModeOptions}"
+                                              SelectedValue="{x:Bind ViewModel.GalleryMembershipMode, Mode=TwoWay}"
+                                              SelectedValuePath="Value" DisplayMemberPath="Label" />
                                     <ComboBox Header="Source" ItemsSource="{x:Bind ViewModel.GalleryMemberChoices, Mode=OneWay}"
                                               SelectedValue="{x:Bind ViewModel.GallerySelectedMemberId, Mode=TwoWay}" SelectedValuePath="Id" DisplayMemberPath="Name" />
                                     <NumberBox Header="Manual slot" Value="{x:Bind ViewModel.GalleryManualSlot, Mode=TwoWay}" Minimum="1" Maximum="64" SpinButtonPlacementMode="Compact" />

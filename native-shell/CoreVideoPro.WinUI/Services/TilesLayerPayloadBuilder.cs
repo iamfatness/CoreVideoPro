@@ -23,7 +23,8 @@ public static class TilesLayerPayloadBuilder
 {
     public static TilesLayerPayload? Build(
         Scene scene,
-        IReadOnlyList<Participant> roomVideoParticipants)
+        IReadOnlyList<Participant> roomVideoParticipants,
+        IReadOnlyCollection<string>? routedSourceIds = null)
     {
         if (scene.DynamicGallery is not { } settings)
         {
@@ -38,7 +39,7 @@ public static class TilesLayerPayloadBuilder
             .Select(participant => QualifySourceId(participant.Id))
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        var members = TilesMembershipPolicy.Resolve(settings, eligible);
+        var members = TilesMembershipPolicy.Resolve(settings, eligible, routedSourceIds);
 
         return new TilesLayerPayload(
             LayerId: $"tiles:{scene.Id}",
@@ -59,7 +60,7 @@ public static class TilesLayerPayloadBuilder
                 GlowIntensity: FiniteClamp(settings.GlowIntensity, 0, 100, 100),
                 GlowSoftness: FiniteClamp(settings.GlowSoftness, 0, 100),
                 AnimateLayout: settings.AnimateLayout,
-                AnimationDurationMs: Math.Clamp(settings.AnimationDurationMs, 100, 2000), FillMode: settings.AutoFill ? "auto" : "manual",
+                AnimationDurationMs: Math.Clamp(settings.AnimationDurationMs, 100, 2000), FillMode: TilesMembershipPolicy.NormalizeMode(settings.MembershipMode),
                 BackgroundSourceId: settings.BackgroundSourceId),
             Overrides: settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal));
     }

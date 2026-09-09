@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <set>
 #include <thread>
 
 namespace corevideo::modules {
@@ -433,12 +434,37 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
 
     // Unsubscribe sources that were active but are no longer requested (participant
     // left / dropped from the show), then forget them.
+    std::set<std::string> retiredVideoParticipants;
     for (auto it = sentSubscriptions_.begin(); it != sentSubscriptions_.end();) {
       if (desired.find(it->first) == desired.end()) {
+        const auto stream = videoStreams_.find(it->first);
+        if (stream != videoStreams_.end()) {
+          retiredVideoParticipants.insert(std::to_string(stream->second.participantId));
+          videoStreams_.erase(stream);
+        }
         enqueueEngineSendLocked("unsubscribe", buildZoomEngineUnsubscribeCommand(it->first));
         it = sentSubscriptions_.erase(it);
       } else {
         ++it;
+      }
+    }
+
+    // A decoded frame is intentionally retained between render ticks, but it must
+    // not outlive its Zoom subscription. Otherwise a departed participant, or a
+    // show slot that was reassigned, keeps painting that participant's final frame
+    // indefinitely. Retire the participant-level caches only after all removals so
+    // a second still-active video stream for the same participant can keep them.
+    for (const auto& participantId : retiredVideoParticipants) {
+      const auto numericParticipantId = static_cast<std::uint32_t>(std::stoul(participantId));
+      const bool hasActiveVideoStream = std::any_of(
+          videoStreams_.begin(), videoStreams_.end(),
+          [&](const auto& entry) {
+            return entry.second.participantId == numericParticipantId &&
+                   desired.find(entry.first) != desired.end();
+          });
+      if (!hasActiveVideoStream) {
+        latestDecodedFrames_.erase(participantId);
+        frameSync_.erase(participantId);
       }
     }
   }

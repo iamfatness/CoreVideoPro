@@ -8561,8 +8561,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var scene = Scenes.FirstOrDefault(s => s.Id == ActiveSceneId)
                 ?? throw new InvalidOperationException("Program scene is unavailable. Select a valid scene before taking.");
             var context = BuildProductionSyncContext();
-            var commands = MediaCoreCommandBuilder.BuildSyncCommands(context);
             var version = ++_productionSyncCaptureVersion;
+            if (string.Equals(reason, "take", StringComparison.OrdinalIgnoreCase))
+            {
+                context = context with
+                {
+                    TakeTransition = new MediaCoreTakeTransitionWire(
+                        Guid.NewGuid().ToString("N"),
+                        version,
+                        NormalizeTakeTransitionMode(TakeTransitionMode),
+                        DurationMs: 300)
+                };
+            }
+            var commands = MediaCoreCommandBuilder.BuildSyncCommands(context);
             if (!string.IsNullOrWhiteSpace(reason))
                 LaunchLog.WriteVerbose($"media-core sync batch reason={reason} request={version} recording={context.Recording} streaming={context.Streaming} commands={string.Join(",", commands.Select(command => command.Type))}");
             return (Version: version, SceneId: scene.Id, SceneName: scene.Name, LowerThirdRevision: _lowerThirdFreshness.Revision, Response: _bridge.SyncAsync(commands));
@@ -11782,15 +11793,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         SaveShowInputRoster();
-        // HONEST WALL MATH (owner, 2026-08-09): the pgmPvwTop multiviewer has 8
-        // source cells — PGM and PVW occupy two of the 10 boxes — while Sources
-        // allows 10 inputs in-show. The 9th and 10th silently never displayed.
-        // Until a >8 layout exists (owner leans "8 is the practical wall"), say
-        // exactly what is shown instead of letting two sources vanish.
         var inShowCount = ShowInputs.Count(slot => slot.InShow);
-        CommandStatus = inShowCount > 8
-            ? $"Show input roster updated — multiviewer shows the first 8 of {inShowCount} in-show sources (PGM + PVW use two cells)"
-            : "Show input roster updated";
+        CommandStatus = $"Show input roster updated — {inShowCount} of {ShowInputRosterService.MaxShowInputs} sources on the multiviewer";
     }
 
     private void QueueSelectedCaptureDevicesOnline()
@@ -12684,7 +12688,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// </summary>
     private MediaCoreTilesLayerWire? BuildTilesLayerWire(Scene scene)
     {
-        var payload = TilesLayerPayloadBuilder.Build(scene, RoomVideoParticipants);
+        var routedSourceIds = ShowInputs
+            .Where(slot => slot.InShow)
+            .Select(ShowInputRosterService.SlotSourceId)
+            .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
+            .Select(sourceId => sourceId!)
+            .ToHashSet(StringComparer.Ordinal);
+        var payload = TilesLayerPayloadBuilder.Build(scene, RoomVideoParticipants, routedSourceIds);
         if (payload is null)
         {
             return null;
@@ -12757,7 +12767,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _galleryEditGuard.Notify(() =>
         {
             OnPropertyChanged(nameof(IsPreviewDynamicGallery));
-            OnPropertyChanged(nameof(GalleryAutoFill));
+            OnPropertyChanged(nameof(GalleryMembershipMode));
             OnPropertyChanged(nameof(GalleryMembershipSummary));
             OnPropertyChanged(nameof(GalleryMemberChoices));
             OnPropertyChanged(nameof(GalleryMaxTiles));

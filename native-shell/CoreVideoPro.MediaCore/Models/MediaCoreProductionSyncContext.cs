@@ -245,11 +245,25 @@ public sealed record MediaCoreOutputProfileWire(
     int AudioBitrateKbps = 160);
 
 /// <summary>
+/// A render-clock transition requested by a Take. This is intentionally present only on
+/// the one production sync that performs the Take; ordinary state reconciliation must not
+/// restart an effect.
+/// </summary>
+public sealed record MediaCoreTakeTransitionWire(
+    string OperationId,
+    long Revision,
+    string Mode,
+    int DurationMs = 300,
+    string Direction = "left-to-right",
+    string DipColor = "#000000");
+
+/// <summary>
 /// Production inputs for building a media-core-sync command batch.
 /// Mirrors the React <c>buildNativeMediaCoreCommands</c> production state slice.
 /// </summary>
 public sealed record MediaCoreProductionSyncContext
 {
+    public MediaCoreTakeTransitionWire? TakeTransition { get; init; }
     public required string ActiveSceneId { get; init; }
     public IReadOnlyList<MediaCoreSceneRouteWire> SceneRoutes { get; init; } = [];
     public MediaCoreSceneBackgroundWire? SceneBackground { get; init; }

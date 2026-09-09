@@ -7,6 +7,23 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class ZoomMediaSpinePayloadBuilderTests
 {
     [Fact]
+    public void DefaultCapacityRequestsAllTenShowVideoSources()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            Participants = Enumerable.Range(1, 10)
+                .Select(index => new MediaCoreParticipantWire(
+                    index.ToString(), $"Guest {index}", "guest", "main", "Main",
+                    false, false, false, 0, "live"))
+                .ToList()
+        });
+
+        var subscriptions = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["subscriptions"]);
+        Assert.Equal(10, subscriptions.Count(item => item["kind"]?.ToString() == "participant-video"));
+    }
+
+    [Fact]
     public void BuildRequestsVideoAndAudioSubscriptionsForParticipants()
     {
         var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput

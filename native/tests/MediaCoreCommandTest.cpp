@@ -4416,6 +4416,41 @@ TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {
   EXPECT_TRUE(preview->get("composite")->asBool());
 }
 
+TEST(MediaCoreCommand, TakeTransitionTracksOneEdgeTriggeredOperationToCompletion) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"},
+      {"sceneId", "outgoing"},
+      {"routes", corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"routeId", "old"}, {"mode", "fixed"}, {"participantId", "p1"}}
+      }}
+  });
+
+  const auto active = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "begin-take-transition"}, {"operationId", "take-7"},
+          {"revision", 7}, {"mode", "fade"}, {"durationMs", 300}},
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "incoming"},
+          {"routes", corevideo::rpc::Json::Array{
+              corevideo::rpc::Json::Object{{"routeId", "new"}, {"mode", "fixed"}, {"participantId", "p2"}}
+          }}
+  }});
+  const auto* activeTransition = active.get("takeTransition");
+  ASSERT_NE(activeTransition, nullptr);
+  EXPECT_EQ(activeTransition->getString("operationId"), "take-7");
+  EXPECT_EQ(activeTransition->getString("mode"), "fade");
+  EXPECT_EQ(activeTransition->getString("status"), "active");
+  EXPECT_EQ(active.getString("sceneId"), "incoming");
+
+  const auto complete = mediaCore.applyCommands({}, 1000.0);
+  const auto* completedTransition = complete.get("takeTransition");
+  ASSERT_NE(completedTransition, nullptr);
+  EXPECT_EQ(completedTransition->getString("status"), "completed");
+  EXPECT_EQ(completedTransition->get("progress")->asNumber(), 1.0);
+}
+
 TEST(MediaCoreCommand, PreviewSceneSingleSourceStillCompositesAndDedups) {
   corevideo::core::MediaCore mediaCore;
 

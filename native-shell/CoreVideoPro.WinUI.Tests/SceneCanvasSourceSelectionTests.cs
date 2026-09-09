@@ -32,6 +32,17 @@ public sealed class SceneCanvasSourceSelectionTests
         Assert.True(string.IsNullOrEmpty(route.ParticipantId));
         Assert.NotEqual("jamal", layer.ParticipantId);
     }
+
+    [Fact]
+    public void FixedRouteNormalizationNeverSubstitutesFirstRosterParticipant()
+    {
+        var route = new SourceRoute { Id = "layer", Mode = SourceRouteMode.Fixed };
+
+        var normalized = CoreVideoPro.WinUI.Services.SceneRoutingService.NormalizeRouteUpdate(route, Participants);
+
+        Assert.Null(normalized.ParticipantId);
+        Assert.NotEqual("jamal", normalized.ParticipantId);
+    }
     [Fact]
     public void ExplicitAutomaticModeClearsOldPinButExplicitPersonStillPins()
     {

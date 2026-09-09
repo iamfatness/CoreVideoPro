@@ -50,7 +50,9 @@ public sealed class ProductionOutputPreferences
     // reach MASTER + Program L/R through their own faders. The operator can
     // still explicitly select Zoom program mix after migration.
     // v11: startup-only Program buffer depth, default three frames.
-    public const int CurrentVersion = 11;
+    // v12: Multiview defaults to all ten Show Inputs. Older profiles carried the
+    // obsolete eight-source wall default and are migrated once.
+    public const int CurrentVersion = 12;
 
     private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
     public int ProgramBufferFrames
@@ -120,7 +122,7 @@ public sealed class ProductionOutputPreferences
     public bool VirtualCameraMirror { get; set; }
     public string? VirtualCameraName { get; set; }
     public string? MultiviewLayoutMode { get; set; }
-    public int MultiviewTileCount { get; set; } = 8;
+    public int MultiviewTileCount { get; set; } = 10;
     public bool MultiviewShowLabels { get; set; } = true;
     public bool MultiviewShowTally { get; set; } = true;
     public bool MultiviewShowMeters { get; set; } = true;
@@ -229,6 +231,7 @@ public sealed class PersistedDynamicGallerySettings
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
     public bool AutoFill { get; set; } = true;
+    public string? MembershipMode { get; set; }
     public int MaxTiles { get; set; } = 16;
     public string TileAspect { get; set; } = "16:9";
     public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
@@ -357,6 +360,11 @@ public static class ProductionOutputPreferencesSerializer
                 // to independently routed ISO stems; a later explicit switch back
                 // to programMix persists at v10 and is not touched again.
                 preferences.ZoomAudioMode = ZoomAudioModePreference.PerGuestIsoValue;
+            }
+
+            if (preferences.Version < 12 && preferences.MultiviewTileCount == 8)
+            {
+                preferences.MultiviewTileCount = 10;
             }
 
             if (preferences.Version < ProductionOutputPreferences.CurrentVersion)

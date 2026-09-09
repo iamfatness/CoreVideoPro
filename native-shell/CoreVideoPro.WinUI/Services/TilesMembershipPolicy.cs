@@ -4,15 +4,31 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class TilesMembershipPolicy
 {
-    public static IReadOnlyList<string> Resolve(DynamicGallerySettings settings, IReadOnlyList<string> eligible)
+    public static string NormalizeMode(string? mode) => mode?.Trim().ToLowerInvariant() switch
     {
+        "manual" => "manual",
+        "routed" => "routed",
+        _ => "eligible"
+    };
+
+    public static IReadOnlyList<string> Resolve(
+        DynamicGallerySettings settings,
+        IReadOnlyList<string> eligible,
+        IReadOnlyCollection<string>? routed = null)
+    {
+        var mode = NormalizeMode(settings.MembershipMode);
         var excluded = new HashSet<string>(settings.ExcludedSourceIds ?? [], StringComparer.Ordinal);
         var available = eligible.Where(id => !string.IsNullOrWhiteSpace(id) && !excluded.Contains(id)).Distinct(StringComparer.Ordinal).ToList();
+        if (mode == "routed")
+        {
+            var routedSet = new HashSet<string>(routed ?? [], StringComparer.Ordinal);
+            available = available.Where(routedSet.Contains).ToList();
+        }
         var present = new HashSet<string>(available, StringComparer.Ordinal);
         var slots = new string?[Math.Clamp(settings.MaxTiles, 1, 64)];
         var used = new HashSet<string>(StringComparer.Ordinal);
         var manual = settings.ManualSlots ?? [];
-        if (!settings.AutoFill)
+        if (mode == "manual")
         {
             // Keep slot positions even when a source is absent. Native manual
             // layout reserves these cells and only draws fresh admitted sources.
@@ -21,7 +37,7 @@ public static class TilesMembershipPolicy
         }
         for (var index = 0; index < Math.Min(slots.Length, manual.Count); index++)
             if (manual[index] is { } id && present.Contains(id) && used.Add(id)) slots[index] = id;
-        if (settings.AutoFill)
+        if (mode != "manual")
         {
             var next = 0;
             foreach (var id in available)

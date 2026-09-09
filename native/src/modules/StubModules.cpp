@@ -132,7 +132,8 @@ CompositorRenderPlan validateRenderPlan(CompositorRenderPlan renderPlan) {
       layer.rect.width = 0.f;
       layer.rect.height = 0.f;
     }
-    if (!compositorLayerIsOverlay(layer) && layer.participantId.empty() && layer.sourceId.empty()) {
+    if (!compositorLayerIsOverlay(layer) && !layer.hasFillColor &&
+        layer.participantId.empty() && layer.sourceId.empty()) {
       addWarning(warnings, "Scene layer " + layerLabel + " has no source binding.");
     }
   }

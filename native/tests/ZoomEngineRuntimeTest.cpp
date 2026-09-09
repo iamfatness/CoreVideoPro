@@ -671,6 +671,27 @@ struct ZoomEngineRuntimeTestAccess {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     return runtime.latestDecodedFrames_.size();
   }
+  static void seedSubscribedVideoCaches(ZoomEngineRuntime& runtime,
+                                        const std::string& sourceUuid,
+                                        std::uint32_t participantId) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    runtime.sentSubscriptions_[sourceUuid] = 1;
+    auto& stream = runtime.videoStreams_[sourceUuid];
+    stream.participantId = participantId;
+    auto& decoded = runtime.latestDecodedFrames_[std::to_string(participantId)];
+    decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(24, 128);
+    auto& sync = runtime.frameSync_[std::to_string(participantId)];
+    sync.frames.push_back(decoded);
+    sync.primed = true;
+  }
+  static bool hasVideoCaches(ZoomEngineRuntime& runtime,
+                             const std::string& sourceUuid,
+                             std::uint32_t participantId) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    const auto id = std::to_string(participantId);
+    return runtime.videoStreams_.contains(sourceUuid) ||
+           runtime.latestDecodedFrames_.contains(id) || runtime.frameSync_.contains(id);
+  }
   static std::uint64_t staleVideoCount(ZoomEngineRuntime& runtime) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     return runtime.staleVideoPublications_;
@@ -726,6 +747,25 @@ struct InMemoryVideoRegion {
     return std::shared_ptr<void>(owner, &owner->region);
   }
 };
+}
+
+TEST(ZoomEngineRuntime, UnsubscribeRetiresHeldFrameAndFrameSyncQueue) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const std::string sourceUuid = "participant-video-42-camera";
+    ZoomEngineRuntimeTestAccess::seedSubscribedVideoCaches(runtime, sourceUuid, 42);
+    ASSERT_TRUE(ZoomEngineRuntimeTestAccess::hasVideoCaches(runtime, sourceUuid, 42));
+
+    EXPECT_FALSE(runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{}), 0.0).isNull());
+    ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
+    EXPECT_NE(fake->sentLines().front().find("unsubscribe"), std::string::npos);
+    EXPECT_FALSE(ZoomEngineRuntimeTestAccess::hasVideoCaches(runtime, sourceUuid, 42));
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
 TEST(ZoomEngineRuntime, VideoPublicationRejectsReplacedMappingIdentityAndRetiredGenerations) {

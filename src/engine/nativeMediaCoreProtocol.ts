@@ -34,6 +34,15 @@ export type NativeMediaCoreProfile = {
 
 export type NativeMediaCoreCommand =
   | {
+      type: "begin-take-transition";
+      operationId: string;
+      revision: number;
+      mode: "cut" | "fade" | "dip" | "wipe";
+      durationMs: number;
+      direction?: "left-to-right" | "right-to-left" | "top-to-bottom" | "bottom-to-top";
+      dipColor?: string;
+    }
+  | {
       type: "load-scene-graph";
       sceneId: string;
       routes: Array<{
