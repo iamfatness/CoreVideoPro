@@ -610,6 +610,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // inside the scope above woke a thread that immediately blocked on the lock
       // we still held, and cost operator command p99 51ms -> 107ms.
       mediaCore_.notifyProgramFramePublished();
+      // Same rule, same reason: the ISO submit worker is signalled by ISO frame
+      // ARRIVAL (this render), never by Program submission, and the wake goes
+      // out with coreMutex released.
+      mediaCore_.notifyIsoVideoPublished();
       const auto previousMisses = cadence.deadlineMisses();
       cadence.recordCompletion(elapsedNs());
       mediaCore_.reportRenderDeadlineMisses(cadence.deadlineMisses() - previousMisses);
@@ -856,6 +860,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   });
 
+  // Dedicated ISO VIDEO submit worker. ISO used to ride the Program video tick
+  // above, gated on a Program submit — so a second free-running 60Hz clock
+  // sampled the render thread's 60Hz ISO publication and beat against it (ISO
+  // measured 45-53fps for sources at 60-240fps, and NON-MONOTONICALLY: a faster
+  // source wrote fewer stem frames). Its own thread means ISO is driven by ISO
+  // frame arrival and can never delay Program production, audio or playout
+  // (rule 6). NO PACER: renderIsoVideoTick blocks on the arrival signal with a
+  // 20ms liveness floor, and drains everything pending rather than sampling.
+  std::thread isoVideoThread([&] {
+    while (!stopping.load()) {
+      mediaCore_.renderIsoVideoTick();
+    }
+  });
+
   // One lifecycle worker owns potentially blocking join/auth. The command loop
   // keeps servicing Take/Stop/Leave; pending work is bounded to one join.
   std::mutex joinMx;
@@ -1070,6 +1088,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     videoOutputThread.join();
   }
   mediaCore_.setVideoOutputTickRunning(false);
+  if (isoVideoThread.joinable()) {
+    // Bounded by the tick's own 20ms wait — it takes no lock the shutdown path holds.
+    mediaCore_.notifyIsoVideoPublished();
+    isoVideoThread.join();
+  }
   if (audioOutputThread.joinable()) {
     audioOutputThread.join();
   }

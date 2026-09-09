@@ -1,4 +1,5 @@
 #include "core/MediaCore.h"
+#include <set>
 #include <gtest/gtest.h>
 #include <deque>
 #include <future>
@@ -287,47 +288,76 @@ IsoCadenceRig makeRecordingIsoRig() {
 }
 }  // namespace
 
-// S1: ISO video used to be submitted from runAudioOutputWork, which paces on the
-// ~50Hz AUDIO grid (960 samples at 48k). Every ISO stem was therefore sampled at
-// 50Hz and a 60fps source could not write more than ~50 distinct frames per
-// second into its own MP4. Program was moved to the signalled video tick for
-// exactly this reason; ISO now rides the same tick. This asserts WHERE the
-// submit happens, not how it is implemented: with a video tick running, the
-// audio worker must submit no ISO video at all, and the video tick must.
-TEST(ProgramBufferIntegration, IsoVideoIsSubmittedByTheVideoTickNotTheAudioWorker) {
+// S1/ISO-1 (cadence): ISO video is submitted by its OWN signalled worker, driven
+// by ISO frame ARRIVAL — not by the Program video tick and not by the 20ms audio
+// grid. It rode the Program tick before this, gated on `programSubmitted`, which
+// made a second free-running 60Hz clock sample a 60Hz producer: measured 50.1-52.9
+// fps of ISO for a ~60fps source, 45.2 for a ~240fps one (NON-MONOTONIC), with
+// 15-22% of submissions rejected as duplicates. This asserts WHERE the submit
+// happens and that it is arrival-driven, not how it is implemented.
+TEST(ProgramBufferIntegration, IsoVideoIsSubmittedByItsOwnArrivalDrivenWorker) {
   auto rig = makeRecordingIsoRig();
   auto& core = *rig.core;
   core.setVideoOutputTickRunning(true);
   std::mutex coreMutex;
+  // The arming commands tick the render path synchronously on the direct/test
+  // path, so drain whatever they already queued before counting.
+  core.renderIsoVideoTick();
   rig.encoder->reset();
 
   core.renderDisplayTick();
   const int programBefore = rig.encoder->programSubmits;
   core.renderAudioOutputTick(coreMutex);
   EXPECT_EQ(rig.encoder->isoSubmits, 0)
-      << "the 20ms audio grid must not sample ISO video while a video tick owns it";
+      << "the 20ms audio grid must not sample ISO video while the ISO worker owns it";
   EXPECT_EQ(rig.encoder->programSubmits, programBefore)
       << "Program is already owned by the video tick; the audio worker must not submit it either";
 
   core.renderVideoOutputTick(coreMutex);
-  EXPECT_EQ(rig.encoder->isoSubmits, 1) << "the video tick must carry ISO video";
-  EXPECT_EQ(rig.encoder->isoFramesSubmitted, 2u) << "both selected ISO sources ride the same submit";
+  EXPECT_EQ(rig.encoder->isoSubmits, 0)
+      << "the PROGRAM video tick must not carry ISO: that coupling is the sampling bug";
   EXPECT_EQ(rig.encoder->programSubmits, programBefore + 1)
-      << "Program keeps reserved priority on the same tick";
+      << "Program keeps reserved priority and is unaffected";
+
+  core.renderIsoVideoTick();
+  EXPECT_EQ(rig.encoder->isoSubmits, 1) << "the ISO worker carries ISO video";
+  EXPECT_EQ(rig.encoder->isoFramesSubmitted, 2u) << "both selected ISO sources ride the same drain";
   for (const auto stamp : rig.encoder->lastTimestamps100ns) {
-    EXPECT_GT(stamp, 0) << "every ISO frame must carry the tick's timeline stamp";
+    EXPECT_GT(stamp, 0) << "every ISO frame must carry the arrival timeline stamp";
   }
 
-  // One submit per RENDERED frame: a video tick with no new program frame must
-  // not resubmit, or the sink's (sourceId, frameId) dedup would be papering over
-  // a second producer rather than a genuine repeat.
-  core.renderVideoOutputTick(coreMutex);
-  EXPECT_EQ(rig.encoder->isoSubmits, 1) << "no new program frame means no new ISO submit";
+  // Nothing new rendered: the drain has nothing to do, and must not resubmit a
+  // held frame (that would put the sink's dedup in charge of correctness again).
+  core.renderIsoVideoTick();
+  EXPECT_EQ(rig.encoder->isoSubmits, 1) << "no new ISO frame means no new ISO submit";
+}
 
-  core.renderDisplayTick();
-  core.renderVideoOutputTick(coreMutex);
-  EXPECT_EQ(rig.encoder->isoSubmits, 2) << "a newly rendered frame carries the next ISO submit";
-  EXPECT_EQ(rig.encoder->isoFramesSubmitted, 4u);
+// THE POINT OF THE WHOLE FIX: ISO does not SAMPLE, it DRAINS. Renders that happen
+// between two drains must all reach the encoder — otherwise a source faster than
+// the drain silently loses frames, which is exactly what the Program-paced version
+// did (and why a ~240fps source wrote FEWER stem frames than a ~30fps one).
+TEST(ProgramBufferIntegration, IsoVideoDrainsEveryRenderedFrameNotJustTheLatest) {
+  auto rig = makeRecordingIsoRig();
+  auto& core = *rig.core;
+  core.setVideoOutputTickRunning(true);
+  std::mutex coreMutex;
+  core.renderIsoVideoTick();
+  rig.encoder->reset();
+
+  // Deliberately at the per-source pending cap (kMaxPendingIsoFramesPerSource):
+  // everything queued between two drains must survive, right up to the bound.
+  constexpr int kRenders = 4;
+  for (int i = 0; i < kRenders; ++i) {
+    core.renderDisplayTick();
+  }
+  core.renderIsoVideoTick();
+  EXPECT_EQ(rig.encoder->isoFramesSubmitted, static_cast<size_t>(kRenders) * 2u)
+      << "every distinct frame from every render must be drained, not just the last";
+  // Distinct arrival stamps, so the writers can space them on the timeline
+  // rather than colliding on one instant.
+  std::set<int64_t> stamps(rig.encoder->lastTimestamps100ns.begin(),
+                           rig.encoder->lastTimestamps100ns.end());
+  EXPECT_GE(stamps.size(), 2u) << "frames from different renders must not share one stamp";
 }
 
 // The direct/test path (no video tick) must keep working exactly as before:

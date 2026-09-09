@@ -727,6 +727,35 @@ rpc::Json MediaCore::sessionState() const {
       completed.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.completedCalls[i]));
       queued.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.queuedByKind[i]));
     }
+    // ISO-3 (fidelity): per-source distinct-frame accounting for ISO video, so
+    // an ISO stem's repeat-freeness is MEASURABLE. `framesWritten` on a stream
+    // is an append count and cannot tell a distinct picture from a repeat, which
+    // left any change to the ISO cadence unverifiable. The arrival-side numbers
+    // (queued / heldFrameSuppressed / queueOverflowed) come from the render
+    // gather's ISO queue; the sink-side numbers (submitted / duplicateRejected /
+    // dropped / written) come from the async encoder. Read together they are the
+    // whole chain from decoded frame to muxed frame.
+    std::map<std::string, rpc::Json::Object> isoVideoNodes;
+    {
+      std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
+      for (const auto& entry : isoVideoSourceCounters_) {
+        auto& node = isoVideoNodes[entry.first];
+        node.emplace("queued", static_cast<double>(entry.second.distinctSubmitted));
+        node.emplace("heldFrameSuppressed", static_cast<double>(entry.second.duplicateRejected));
+        node.emplace("queueOverflowed", static_cast<double>(entry.second.queueOverflowed));
+      }
+    }
+    for (const auto& entry : encoderEvidence.isoVideoBySource) {
+      auto& node = isoVideoNodes[entry.first];
+      node.emplace("submitted", static_cast<double>(entry.second.submitted));
+      node.emplace("duplicateRejected", static_cast<double>(entry.second.duplicateRejected));
+      node.emplace("dropped", static_cast<double>(entry.second.dropped));
+      node.emplace("written", static_cast<double>(entry.second.written));
+    }
+    rpc::Json::Object isoVideoBySource;
+    for (auto& entry : isoVideoNodes) {
+      isoVideoBySource.emplace(entry.first, std::move(entry.second));
+    }
     state.emplace("encoderEvidence", rpc::Json::Object{
         {"metricVersion", "async-encoder-evidence-v1"},
         {"generation", static_cast<double>(encoderEvidence.generation)},
@@ -741,6 +770,11 @@ rpc::Json MediaCore::sessionState() const {
         {"queuedByKind", std::move(queued)},
         {"droppedVideo", static_cast<double>(encoderEvidence.droppedVideo)},
         {"droppedAudio", static_cast<double>(encoderEvidence.droppedAudio)},
+        // Kept OUT of droppedVideo on purpose: video shed behind the writer's
+        // SYNCHRONOUS open is a clipped head, not steady-state loss. Reported
+        // here so it stays visible and attributable to the startup window.
+        {"startupDroppedVideo", static_cast<double>(encoderEvidence.startupDroppedVideo)},
+        {"isoVideoBySource", std::move(isoVideoBySource)},
         {"lastWriterProgressMs", static_cast<double>(encoderEvidence.lastWriterProgressMs)},
         {"programVideoWritten", static_cast<double>(encoderEvidence.programVideoWritten)},
         {"programAudioPacketsWritten", static_cast<double>(encoderEvidence.programAudioPacketsWritten)},
@@ -4596,6 +4630,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"recordingWriterReadyAt100ns", static_cast<double>(session.recordingWriterReadyAt100ns)},
            {"recordingMuxEpoch100ns", static_cast<double>(session.recordingMuxEpoch100ns)},
            {"recordingStartupDroppedAudioPackets", static_cast<double>(session.recordingStartupDroppedAudioPackets)},
+           {"recordingStartupDroppedVideoFrames", static_cast<double>(session.recordingStartupDroppedVideoFrames)},
            {"isoFrameCount", static_cast<double>(isoFramesWritten)},
            {"audioPacketsObserved", static_cast<double>(audioPacketsObserved)},
            {"audioPresent", audioPresent},
@@ -5496,35 +5531,81 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       const std::string key = pid.find(':') != std::string::npos ? pid : "zoom:" + pid;
       latestIsoSourceFrames_[key] = frame;
     }
-    // ISO-1 (cadence): publish THIS rendered frame's ISO set for the 60Hz video
-    // tick. The tick submits it lock-free next to the Program submit, so ISO
-    // stems are sampled at render cadence instead of the 20ms audio grid (a
-    // 60fps source could never exceed ~50 distinct frames in its file). Built
-    // here because the render gather already holds coreMutex and already owns
-    // the frame snapshot above; the video tick therefore takes NO coreMutex for
-    // ISO and cannot delay Program (rule 6). Cost is one vector of shared_ptr
-    // refs — the same work this replaces in gatherAudioOutputWork, and strictly
-    // less than the map build directly above it. No pixel work under the lock.
-    auto isoForVideoTick = std::make_shared<std::vector<modules::IsoSourceVideoFrame>>();
-    isoForVideoTick->reserve(recordingIsoParticipantIds_.size());
-    for (const auto& rawId : recordingIsoParticipantIds_) {
-      const auto it = latestIsoSourceFrames_.find(normalizeIsoSourceId(rawId));
-      if (it != latestIsoSourceFrames_.end()) {
+    // ISO-1 (cadence): APPEND this render's newly-seen ISO frames to the queue
+    // the ISO submit worker drains, and signal it. This is the arrival edge —
+    // ISO is driven from here, NOT from the Program video tick.
+    //
+    // The old code published a latest-value slot that renderVideoOutputTick
+    // sampled on its own, independent 60Hz Program clock. Two free-running 60Hz
+    // clocks beat: 15-22% of publications were never sampled, and the ones that
+    // were arrived as duplicates the sink rejected. It measured NON-MONOTONIC —
+    // a ~240fps source wrote 45.2fps of stem while a ~30fps source wrote 29.0.
+    // That is the same frame-pairing bug the Program video tick documents (and
+    // fixed by becoming signalled rather than paced); the lesson simply had not
+    // been carried across to ISO.
+    //
+    // Still zero-copy and still no pixel work under coreMutex: each entry is a
+    // VideoFrame whose payloads are shared_ptrs. isoVideoQueueMutex_ is a leaf
+    // (see MediaCore.h) held for a handful of vector/map operations.
+    //
+    // STAMP AT GATHER, not at submit. These pixels belong to this render, so
+    // this is the time they belong to — and it is the only stamp that keeps
+    // successive frames spread across the timeline. Stamping at submit would
+    // collapse everything drained in one pass onto one instant, which
+    // RecordingPtsClock would then de-collide into a 100ns clump.
+    const int64_t isoArrivalTimestamp100ns = monotonic100ns();
+    bool appended = false;
+    {
+      std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
+      for (const auto& rawId : recordingIsoParticipantIds_) {
+        const auto it = latestIsoSourceFrames_.find(normalizeIsoSourceId(rawId));
+        if (it == latestIsoSourceFrames_.end()) continue;
+        const std::string& sourceId = it->first;
+        auto& counters = isoVideoSourceCounters_[sourceId];
+        const auto lastId = lastQueuedIsoFrameId_.find(sourceId);
+        if (lastId != lastQueuedIsoFrameId_.end() && lastId->second == it->second.frameId) {
+          // Held frame re-served because this source is slower than the render
+          // rate. Not a loss — but never a distinct picture either.
+          ++counters.duplicateRejected;
+          continue;
+        }
+        lastQueuedIsoFrameId_[sourceId] = it->second.frameId;
+        // Bound the per-source backlog: if the submit worker is behind, shed the
+        // OLDEST pending frame for THIS source only.
+        size_t pendingForSource = 0;
+        for (const auto& queued : pendingIsoVideoQueue_) {
+          if (queued.sourceId == sourceId) ++pendingForSource;
+        }
+        if (pendingForSource >= kMaxPendingIsoFramesPerSource) {
+          for (auto queued = pendingIsoVideoQueue_.begin(); queued != pendingIsoVideoQueue_.end();
+               ++queued) {
+            if (queued->sourceId == sourceId) {
+              pendingIsoVideoQueue_.erase(queued);
+              ++counters.queueOverflowed;
+              break;
+            }
+          }
+        }
+        ++counters.distinctSubmitted;
         // displayName left empty: the sink maps by sourceId to a writer whose
         // name/path were resolved at recording start (no roster lookup here).
-        isoForVideoTick->push_back({it->first, std::string(), it->second});
+        modules::IsoSourceVideoFrame entry{sourceId, std::string(), it->second};
+        entry.timelineTimestamp100ns = isoArrivalTimestamp100ns;
+        pendingIsoVideoQueue_.push_back(std::move(entry));
+        appended = true;
       }
     }
-    std::atomic_store_explicit(
-        &pendingIsoVideoSources_,
-        std::shared_ptr<const std::vector<modules::IsoSourceVideoFrame>>(std::move(isoForVideoTick)),
-        std::memory_order_release);
+    if (appended) {
+      isoVideoPublishSeq_.fetch_add(1, std::memory_order_release);
+    }
   } else if (!latestIsoSourceFrames_.empty()) {
     latestIsoSourceFrames_.clear();
-    std::atomic_store_explicit(
-        &pendingIsoVideoSources_,
-        std::shared_ptr<const std::vector<modules::IsoSourceVideoFrame>>(),
-        std::memory_order_release);
+    // Recording ended: no dedup identity, no counters and no queued frames
+    // survive into the next take (frame ids restart with the meeting/SHM).
+    std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
+    pendingIsoVideoQueue_.clear();
+    lastQueuedIsoFrameId_.clear();
+    isoVideoSourceCounters_.clear();
   }
   markStage(s_stageIngestUs, 0);
 
@@ -6957,38 +7038,14 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   const bool programSubmitted = !buffered || bufferedFrameAvailable;
   if (programSubmitted) modules_.encoder->submit(frame);
 
-  // ISO-1 (cadence): each selected source's own video, on THIS tick rather than
-  // the 20ms audio grid — a 60fps source could not exceed ~50 distinct frames
-  // per second in its file while the audio worker owned the submit. Program is
-  // submitted FIRST and unconditionally above (rule 6: ISO cannot gain priority
-  // over Program), and this only runs on a tick that carried a real Program
-  // frame, so ISO stays exactly one submit per rendered frame.
-  //
-  // No coreMutex: the set was published by the render gather that produced this
-  // frame (pendingIsoVideoSources_).
-  //
-  // The stamp follows the SAME rule Program follows: a frame is stamped with
-  // the time its pixels belong to. Program in the unbuffered path is stamped
-  // `monotonic100ns()` at submit and ISO matches it exactly; in the buffered
-  // path Program carries the playout packet's own (deliberately older) stamp
-  // because those pixels are that old, while these ISO frames are the newest
-  // render gather and are not delayed by the Program buffer, so they keep the
-  // submit-time clock. That is also byte-for-byte what the audio worker did
-  // before this moved, so no ISO PTS relationship changes here — only the rate
-  // at which distinct frames reach the writers.
-  if (programSubmitted) {
-    const auto isoSources = std::atomic_load_explicit(
-        &pendingIsoVideoSources_, std::memory_order_acquire);
-    if (isoSources && !isoSources->empty()) {
-      const int64_t isoTimelineTimestamp100ns =
-          buffered ? monotonic100ns() : frame.timelineTimestamp100ns;
-      auto submission = *isoSources;
-      for (auto& source : submission) {
-        source.timelineTimestamp100ns = isoTimelineTimestamp100ns;
-      }
-      modules_.encoder->submitIsoVideo(submission);
-    }
-  }
+  // ISO video is NOT submitted here. It used to be, gated on `programSubmitted`
+  // — which made this Program-paced tick a second, independent 60Hz sampler
+  // reading the render thread's 60Hz ISO publication. Two free-running 60Hz
+  // clocks beat against each other and 15-22% of ISO submissions were rejected
+  // as duplicates; a ~240fps source wrote FEWER stem frames than a ~30fps one.
+  // ISO now has its own signalled worker driven by frame arrival
+  // (renderIsoVideoTick), which also keeps ISO encode entirely off the Program
+  // output path (rule 6).
 
   // Network senders: VIDEO on this cadence. Audio is pushed separately by the
   // audio worker (outputSender->submitAudio) because FFmpeg takes the two
@@ -7032,6 +7089,36 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   } catch (...) {
     failOutputSenderSync("Output sender failed during sync.");
   }
+}
+
+// ISO VIDEO OUT, driven by ISO FRAME ARRIVAL.
+//
+// See the header for why this exists at all. The shape is deliberately the same
+// one that fixed Program: WAIT on a publication sequence, then DRAIN everything
+// pending. It never samples, so a late wake costs latency and never frames.
+//
+// Locks: isoVideoQueueMutex_ (leaf) only, released before the encoder submit.
+// Never coreMutex, never audioOutputMutex_, so nothing here can delay Program
+// production, Program audio or Program playout. Downstream, the async sink's
+// writer already gives Program items weighted priority over ISO items, so a
+// burst of ISO submissions cannot displace Program work either.
+void MediaCore::renderIsoVideoTick() {
+  std::vector<modules::IsoSourceVideoFrame> submission;
+  {
+    std::unique_lock<std::mutex> lock(isoVideoQueueMutex_);
+    // Bounded wait: a liveness floor, not a cadence. Nothing pending means the
+    // recording is idle or every source is between frames.
+    isoVideoCv_.wait_for(lock, std::chrono::milliseconds(20), [&] {
+      return !pendingIsoVideoQueue_.empty() ||
+             isoVideoPublishSeq_.load(std::memory_order_acquire) != lastIsoVideoDrainSeq_;
+    });
+    lastIsoVideoDrainSeq_ = isoVideoPublishSeq_.load(std::memory_order_acquire);
+    if (pendingIsoVideoQueue_.empty()) return;
+    submission.swap(pendingIsoVideoQueue_);
+  }
+  // Outside the lock. submitIsoVideo splits the batch one item per source, so
+  // the writer can return to Program between individual ISO encodes.
+  modules_.encoder->submitIsoVideo(submission);
 }
 
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {

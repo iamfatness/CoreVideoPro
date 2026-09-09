@@ -1235,6 +1235,71 @@ ISO-4). What landed:
   `node scripts/validate-iso-record.mjs` (fake engine, ISO on 2 → 2 ISO mp4s with
   h264 video, deduped). ISO-2 extends it into A+V + clap alignment.
 
+## ISO video is ARRIVAL-DRIVEN, and its loss counters are SPLIT (2026-09-09)
+
+Three linked corrections to the ISO video path. Read the Program video-tick section
+above first — this is the same lesson, applied where it had not been carried across.
+
+- **ISO submission is signalled by ISO FRAME ARRIVAL, never by Program cadence.**
+  ISO used to be submitted inside `renderVideoOutputTick` gated on `programSubmitted`,
+  which made a Program-paced ~60Hz sampler read the render thread's independently
+  published ~60Hz ISO set. Two free-running 60Hz clocks beat: 15-22% of submissions
+  were rejected as duplicate `(sourceId, frameId)` by `AsyncEncoderSink`, and the
+  result was **NON-MONOTONIC** — a faster source wrote FEWER stem frames. The render
+  gather now APPENDS each newly-seen `(sourceId, frameId)` to an accumulating queue
+  (`pendingIsoVideoQueue_`, per-source dedup, per-source pending cap
+  `kMaxPendingIsoFramesPerSource = 4`) and bumps `isoVideoPublishSeq_`;
+  `MediaCore::renderIsoVideoTick` — its own `isoVideoThread` in `JsonRpcServer` —
+  waits on that signal and DRAINS EVERYTHING pending. **It does not sample, it
+  drains**: a late tick costs latency, never frames. Measured with the fake engine
+  (`validate-iso-record.mjs --source-fps N`, 20s, 2 ISO sources): 30 -> 29.8fps both
+  before and after; 60 -> **58.1-58.8 before, 59.3-59.5 after**; 120 -> **56.8-58.3
+  before, 59.4-59.5 after**. Rules it keeps: `isoVideoQueueMutex_` is a LEAF (taken
+  under `coreMutex` for shared_ptr ref copies only — no pixel work, no I/O) and never
+  reaches back for `coreMutex`/`audioOutputMutex_`; the worker touches neither; and
+  the async sink's writer already gives Program items weighted priority over ISO, so
+  an ISO burst cannot displace Program work. **ISO frames are stamped at GATHER, not
+  at submit** — stamping at submit collapses a whole drain onto one instant, which
+  `RecordingPtsClock` then de-collides into a 100ns clump.
+  Remaining cap, honestly: the render gather still samples each source
+  latest-per-tick, so a source above the render rate is capped at ~60 distinct ISO
+  frames/s (monotonic, but not 1:1). Making that lossless means changing
+  `ZoomEngineRuntime`'s per-participant latest-frame slot, not this path.
+- **A one-line change with teeth: the sink's per-source ISO coalesce now fires ONLY
+  at the cap.** It used to erase a source's older pending item unconditionally, which
+  is a silent fidelity ceiling the moment a producer legitimately hands the sink two
+  distinct frames for one source in quick succession — exactly what an arrival-driven
+  drain does when it catches up. Its stated purpose (stop a fast participant evicting
+  every slower guest when the GLOBAL cap bites) is preserved by gating it on that cap.
+- **Video startup drops are counted apart from steady-state loss** — the concept audio
+  has had since `recordingStartupDroppedAudioPackets`. The recording writer's Media
+  Foundation open is SYNCHRONOUS and applies as a FIFO item on the writer thread
+  (95-250ms), while the producer keeps submitting at 60Hz because `recording.status`
+  already reads "recording". 7-12 frames are shed there. **No frame is missing from
+  the file** — the head of the show is clipped — but they landed in the same
+  `droppedVideo` the Wave 0 judge is fail-closed on, so a clean run reported `failed`.
+  `startupDroppedVideo` (evidence) / `recordingStartupDroppedVideoFrames` (recording
+  proof) now carry them, and **the window ends at the writer's first committed video
+  frame (or failure), NOT when Start was applied** — the first WriteSample calls into
+  a freshly opened MF sink are slow too, and closing the window at Start left ~7 of 13
+  drops still poisoning the steady-state counter (measured: judge still `failed`;
+  after: `droppedVideo` flat 0 for the whole run, judge clean). NOTHING IS HIDDEN —
+  `runtime-snapshot-qualification.mjs` tracks it as a non-loss counter plus an
+  observation, `validate-recording-finalization.mjs` reports it, and no threshold in
+  either judge was weakened. Known remaining: each ISO writer performs its OWN lazy
+  synchronous open at its first frame, and the items shed there still land in
+  `droppedVideo` (bounded, one-time, before the first sample, so the delta-based judge
+  does not trip on it).
+- **ISO fidelity is measurable now.** `framesWritten` on an ISO stream is an APPEND
+  count and cannot tell a distinct picture from a repeat — which made any change to the
+  ISO cadence unverifiable. `encoderEvidence.isoVideoBySource` carries the whole chain
+  per source: `queued` / `heldFrameSuppressed` / `queueOverflowed` (arrival side, from
+  the render gather's queue) and `submitted` / `duplicateRejected` / `dropped` /
+  `written` (sink side). Live at 60fps after the fix: `queued == submitted` exactly,
+  `heldFrameSuppressed = 1`, `duplicateRejected = 0` — i.e. the sink-side dedup that
+  was rejecting 15-22% of submissions now rejects nothing, because the repeats are
+  suppressed where they are actually observed.
+
 ## ISO recording — ISO-2 (per-source AUDIO stems muxed into the ISO MP4s, 2026-07-20)
 
 ISO-2 completes the **Demo E** shape: each Zoom-participant ISO is now a

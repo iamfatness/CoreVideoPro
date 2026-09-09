@@ -532,6 +532,12 @@ struct OutputSession {
   // previously visible only in stderr logs.
   int64_t encoderQueueDroppedVideoFrames = 0;
   int64_t encoderQueueDroppedAudioPackets = 0;
+  // Video shed while the recording writer was still applying its SYNCHRONOUS
+  // open (95-250ms on Windows). Kept out of encoderQueueDroppedVideoFrames for
+  // the same reason recordingStartupDroppedAudioPackets is kept out of the
+  // audio counter: it is a clipped head, not steady-state loss, and folding the
+  // two together made every clean run report drops to a fail-closed judge.
+  int64_t recordingStartupDroppedVideoFrames = 0;
 };
 
 // One selected ISO source at recording start: the canonical id + the roster

@@ -149,6 +149,33 @@ class MediaCore {
   // Wake the video-out tick after a render. MUST be called with coreMutex
   // RELEASED — notifying under it wakes a thread that instantly blocks on it.
   void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
+  // ISO VIDEO out, SIGNALLED BY ISO FRAME ARRIVAL — never by Program cadence.
+  //
+  // ISO used to be submitted inside renderVideoOutputTick, gated on
+  // `programSubmitted`. That made a Program-paced 60Hz sampler read an
+  // independently-published 60Hz producer: the same frame-pairing bug the
+  // Program video tick was rewritten to avoid (see the comment above the CV
+  // wait in renderVideoOutputTick — a 60Hz sampler on a 60Hz producer muxed
+  // 51.7fps). Measured on ISO before this change: 29.0fps ISO at a ~30fps
+  // source but only 50.1-52.9 at ~60 and 45.2 at ~240 — NON-MONOTONIC, a
+  // faster source produced FEWER stem frames, with 15-22% of submissions
+  // rejected as duplicate (sourceId, frameId) by the sink.
+  //
+  // The fix is the same one Program got: stop sampling, start draining. The
+  // render gather APPENDS each newly-seen (sourceId, frameId) to an
+  // accumulating queue and bumps a sequence; this worker waits on that
+  // sequence and drains EVERYTHING pending. A drain that runs late costs
+  // latency, never frames.
+  //
+  // Runs on its OWN thread so ISO can never delay Program production, Program
+  // audio or Program playout (rule 6). It takes ONLY isoVideoQueueMutex_ (a
+  // leaf: nothing under it takes coreMutex or audioOutputMutex_) and then the
+  // async encoder sink's own queue mutex, whose writer already gives Program
+  // weighted priority over ISO. Call WITHOUT coreMutex held.
+  void renderIsoVideoTick();
+  // Wake the ISO video tick after a render published ISO frames. MUST be
+  // called with coreMutex RELEASED, for the same reason as the Program notify.
+  void notifyIsoVideoPublished() { isoVideoCv_.notify_one(); }
   // Render pacer telemetry arrives from JsonRpcServer's render thread outside
   // coreMutex. Keep a monotonic atomic total so UI/support evidence cannot lose
   // the 120-frame summaries that are printed and then reset in the log loop.
@@ -755,15 +782,39 @@ class MediaCore {
   // access to this pointer must use those functions.
   std::shared_ptr<const ProgramOutputConfiguration> programOutputConfiguration_;
   void publishProgramOutputConfiguration();
-  // ISO-1: the selected ISO sources' frames for the most recently RENDERED
-  // frame, published by the render gather (which already holds coreMutex and
-  // already snapshots latestIsoSourceFrames_) and consumed lock-free by the
-  // 60Hz video tick. Publishing rather than re-gathering keeps ISO off
-  // coreMutex entirely on the video path, so an ISO stem can never delay
-  // Program (rule 6). Null/empty means "nothing to submit this frame".
-  // Use the shared_ptr atomic free functions for every concurrent access, as
-  // with programOutputConfiguration_ above.
-  std::shared_ptr<const std::vector<modules::IsoSourceVideoFrame>> pendingIsoVideoSources_;
+  // ISO-1 (cadence): the ACCUMULATING queue of ISO source frames awaiting
+  // submission, appended by the render gather and drained whole by
+  // renderIsoVideoTick. Deliberately a queue and not a latest-value slot: a
+  // latest-value slot read on a second, independent 60Hz clock is exactly the
+  // sampling bug this replaced (see renderIsoVideoTick).
+  //
+  // isoVideoQueueMutex_ is a LEAF. It MAY be taken while coreMutex is held (the
+  // render gather does exactly that, for a handful of shared_ptr ref copies —
+  // no pixel work, no I/O); nothing taken under it ever reaches back for
+  // coreMutex or audioOutputMutex_, so it cannot participate in a cycle.
+  // mutable: the const snapshot builder reads the fidelity counters under it.
+  mutable std::mutex isoVideoQueueMutex_;
+  std::condition_variable isoVideoCv_;
+  std::vector<modules::IsoSourceVideoFrame> pendingIsoVideoQueue_;
+  // Last frameId APPENDED per source. The render tick re-serves a held frame
+  // whenever a source is slower than the render rate; suppressing the repeat
+  // here (rather than at the sink) keeps the queue, the sink budget and the
+  // fidelity counters honest about distinct pictures.
+  std::map<std::string, int64_t> lastQueuedIsoFrameId_;
+  // Bounded: a stalled drain must not grow memory without limit. Per source, so
+  // one fast participant cannot evict every slower guest's pending frame.
+  static constexpr size_t kMaxPendingIsoFramesPerSource = 4;
+  std::atomic<uint64_t> isoVideoPublishSeq_{0};
+  uint64_t lastIsoVideoDrainSeq_ = 0;
+  // ISO-3 (fidelity): per-source distinct-frame accounting, so an ISO stem's
+  // repeat-freeness is measurable rather than assumed. framesWritten on a
+  // stream is an APPEND count and proves nothing about distinct pictures.
+  struct IsoVideoSourceCounters {
+    uint64_t distinctSubmitted = 0;   // distinct (sourceId, frameId) queued
+    uint64_t duplicateRejected = 0;   // re-served held frames suppressed here
+    uint64_t queueOverflowed = 0;     // dropped by the per-source pending cap
+  };
+  std::map<std::string, IsoVideoSourceCounters> isoVideoSourceCounters_;
   std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
   int64_t lastBufferedDeliverySequence_ = 0;
   // Program-frame publish signal. The render thread bumps the counter and

@@ -112,6 +112,11 @@ try {
   const videoDuration = Number(video.duration), audioDuration = Number(audio.duration);
   evidence.effectiveVideoFps = Number(video.nb_read_frames) / videoDuration;
   evidence.encoderQueueDroppedVideoFrames = snapshot.recording.proof?.encoderQueueDroppedVideoFrames ?? null;
+  // Reported, never judged: video shed behind the recording writer's SYNCHRONOUS open
+  // clips the head of the show but loses nothing from the file, so folding it into the
+  // steady-state counter above made every clean run look like it dropped frames.
+  evidence.recordingStartupDroppedVideoFrames =
+    snapshot.recording.proof?.recordingStartupDroppedVideoFrames ?? null;
   evidence.performanceWarnings = [];
   if (evidence.effectiveVideoFps < 57 || evidence.encoderQueueDroppedVideoFrames > 0)
     evidence.performanceWarnings.push('Configured 60fps was not sustained without queue drops; this recording does not establish frame-rate acceptance.');
@@ -144,4 +149,5 @@ try {
 console.log(JSON.stringify({ status: evidence.status, failure: evidence.failure, evidence: join(outputDir, 'evidence.json'),
   artifact: evidence.artifact, states: evidence.states.map(state => state.state), avDurationDifferenceSeconds: evidence.avDurationDifferenceSeconds,
   effectiveVideoFps: evidence.effectiveVideoFps, encoderQueueDroppedVideoFrames: evidence.encoderQueueDroppedVideoFrames,
+  recordingStartupDroppedVideoFrames: evidence.recordingStartupDroppedVideoFrames,
   performanceWarnings: evidence.performanceWarnings }));
