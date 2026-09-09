@@ -20,6 +20,38 @@ class ShadowExactSourceFrames final {
   struct Limits { size_t sources{8192}, frames{32}, bytes{64*1024*1024}, epochs{128}; };
   enum class Status { Applied, Unchanged, Invalid, Stale, Capacity, Missing, Expired };
   struct Result { Status status; std::shared_ptr<const modules::VideoFrame> frame; };
+  struct Observation {
+    CurrentSource source;
+    std::optional<uint64_t> publicationSequence;
+    std::optional<int64_t> observedNs;
+  };
+  // Metadata only: queued shadow evidence cannot keep pixel buffers alive.
+  class Checkpoint final {
+   public:
+    const bool valid;
+    const std::string processEpoch;
+    const uint64_t sequence;
+    const std::vector<Observation> sources;
+   private:
+    friend class ShadowExactSourceFrames;
+    Checkpoint(bool v, std::string e, uint64_t s, std::vector<Observation> rows)
+        : valid(v), processEpoch(std::move(e)), sequence(s), sources(std::move(rows)) {}
+  };
+  std::shared_ptr<const Checkpoint> checkpoint() const {
+    std::lock_guard lock(mutex_);
+    std::vector<Observation> rows;
+    rows.reserve(current_.size());
+    for (const auto& [id, source] : current_) {
+      Observation row{source, {}, {}};
+      const auto frame = frames_.find({source.identity, source.publicationFence});
+      if (valid_ && source.available && frame != frames_.end()) {
+        row.publicationSequence = frame->second.frame->exactSourceEvidence->publicationSequence;
+        row.observedNs = frame->second.frame->exactSourceEvidence->observedNs;
+      }
+      rows.push_back(std::move(row));
+    }
+    return std::shared_ptr<const Checkpoint>(new Checkpoint(valid_, epoch_, sequence_, std::move(rows)));
+  }
   ShadowExactSourceFrames() = default;
   explicit ShadowExactSourceFrames(Limits limits) : limits_(limits) {
     if (!limits.sources || limits.sources > 8192 || !limits.frames || limits.frames > 8192 ||

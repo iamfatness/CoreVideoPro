@@ -3,6 +3,11 @@
 #include <utility>
 
 namespace corevideo::core {
+ShowStateOwner::ShowStateOwner(const ShowStateOwner& other) {
+  std::lock_guard lock(other.mutex_);
+  current_ = other.current_; generationMarks_ = other.generationMarks_;
+  maxGenerationMarks_ = other.maxGenerationMarks_;
+}
 namespace {
 constexpr std::uint64_t maxSafe = 9'007'199'254'740'991ULL;
 bool validRef(const ShowEntityRef& ref) {

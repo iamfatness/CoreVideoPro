@@ -26,6 +26,28 @@ TEST(SceneVersionStore, SameScenePreviewEditDoesNotChangeProgramOrRetainedFrame)
   EXPECT_EQ(program.lease->scene.routes.at("layer").x,100);
   EXPECT_EQ(laterPreview.lease->scene.routes.at("layer").x,200);
 }
+TEST(SceneVersionStore, BatchCapacityFailureLeavesNeitherDefinitionNorHead) {
+  Store store("show", {1, 4, 4, 1024 * 1024});
+  const auto rejected = store.publishBatch({{ref(), scene(10), {}}, {ref(2), scene(20), ref()}});
+  EXPECT_EQ(rejected.status, Store::Status::Capacity); EXPECT_TRUE(rejected.leases.empty());
+  EXPECT_EQ(store.head("scene").status, Store::Status::NotFound);
+  EXPECT_FALSE(store.resolve(ref()).lease); EXPECT_FALSE(store.resolve(ref(2)).lease);
+  EXPECT_EQ(store.publish(ref(), scene(99)).status, Store::Status::Applied);
+}
+TEST(SceneVersionStore, BatchConflictRollsBackEarlierEditAndReplayKeepsHead) {
+  Store store("show"); store.publish(ref(), scene(10));
+  auto secondScene = ref(); secondScene.sceneId = "other";
+  store.publish(secondScene, scene(20));
+  const auto rejected = store.publishBatch({{ref(2), scene(30), ref()}, {secondScene, scene(99), {}}});
+  EXPECT_EQ(rejected.status, Store::Status::Conflict);
+  EXPECT_EQ(store.head("scene").lease->ref, ref()); EXPECT_FALSE(store.resolve(ref(2)).lease);
+  auto admitted = store.publishBatch({{ref(), scene(10), {}}, {ref(2), scene(30), ref()}});
+  EXPECT_EQ(admitted.status, Store::Status::Applied); EXPECT_EQ(admitted.leases.size(), 2U);
+  auto replay = store.publishBatch({{ref(), scene(10), {}}, {ref(2), scene(30), ref()}});
+  EXPECT_EQ(replay.status, Store::Status::Unchanged);
+  EXPECT_EQ(store.head("scene").lease->ref, ref(2));
+  EXPECT_EQ(replay.leases[0].get(), admitted.leases[0].get());
+}
 TEST(SceneVersionStore, ExactReplayDoesNotMoveHeadAndConflictingPayloadIsRejected) {
   Store store("show");store.publish(ref(),scene());store.publish(ref(2),scene(5),ref());
   EXPECT_EQ(store.publish(ref(),scene()).status,Store::Status::Unchanged);

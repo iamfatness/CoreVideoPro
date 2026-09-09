@@ -838,6 +838,13 @@ ZoomEngineRuntime::AuthorityObservation ZoomEngineRuntime::authorityObservation(
   return authorityObservation_;
 }
 
+ZoomEngineRuntime::ShadowAuthorityCheckpoint ZoomEngineRuntime::shadowAuthorityCheckpoint() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  refreshAuthorityObservationLocked();
+  if (!authorityObservation_.valid) shadowExactFrames_.reconcile("", 0, {});
+  return {authorityObservation_, shadowExactFrames_.checkpoint()};
+}
+
 core::ShadowExactSourceFrames::Result ZoomEngineRuntime::shadowExactSourceFrame(
     const core::ExactRouteSourceRef& reference, int64_t freshAfterNs) {
   std::lock_guard<std::mutex> lock(mutex_);

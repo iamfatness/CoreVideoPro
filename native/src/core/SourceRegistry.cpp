@@ -4,6 +4,12 @@
 #include <utility>
 
 namespace corevideo::core {
+SourceRegistry::SourceRegistry(const SourceRegistry& other) {
+  std::lock_guard lock(other.mutex_);
+  epoch_ = other.epoch_; revision_ = other.revision_; decisionRevision_ = other.decisionRevision_;
+  persons_ = other.persons_; sources_ = other.sources_; retiredProcessEpochs_ = other.retiredProcessEpochs_;
+  maxPersons_ = other.maxPersons_; maxSources_ = other.maxSources_; maxRetiredProcessEpochs_ = other.maxRetiredProcessEpochs_;
+}
 
 SourceRegistry::SourceRegistry(std::string registryEpoch, std::size_t maxPersons,
     std::size_t maxSources, std::size_t maxRetiredProcessEpochs)
