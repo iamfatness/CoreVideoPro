@@ -438,6 +438,28 @@ comment at the code site; this is the index.
   hardware**: sizing CI down to `--load 3` scored *worse* (45.2fps vs 59.3), so shared
   runners cannot gate perf at any load. Run `--load 8` locally before shipping perf work
   — that is the real gate.
+  **The recorded-rate gate NAMES EVIDENCE, it does not assert a cause (2026-09-09).**
+  The drill used to hard-code "encoder->submit rides the ~50Hz audio worker" on that
+  failure. For Program video that is stale — the submit moved to the signalled video
+  tick and the audio-worker submit is guarded by `videoOutputTickRunning_`, which
+  `JsonRpcServer.cpp` sets true unconditionally in any real run — so the message was
+  pointing every reader at the wrong stage. It now prints a "Recording-window stage
+  rates" block on BOTH paths (compositor render slots/s, video-out tick/s, audio
+  worker tick/s, encoder programVideoWritten/s, render skipped/deadline misses,
+  encoder droppedVideo, program-buffer underruns/gpuNotReady, the recording proof's
+  `encoderQueueDroppedVideoFrames`, and the last full `[render]` window), sampled as
+  deltas from `realtimeEvidence`/`encoderEvidence` at both ends of the record window.
+  A compositor rate below 60 means the machine never produced 60; a compositor at 60
+  with a lower video-out/encoder/muxed rate means the loss is downstream.
+  `MIN_RECORDED_FPS_RATIO` is unchanged.
+- **The Wave 0 snapshot judge finally has a producer:**
+  `node scripts/qa/collect-runtime-snapshots.mjs --out capture.json [--seconds N]
+  [--interval-ms N] [--load N] [--recording]` runs its own core over stdio, samples
+  bare `{"type":"snapshot"}` on a DECLARED interval, and writes the
+  `{samples[], expectedWorkers, recordingExpected, policy}` envelope that
+  `production-qualification.mjs --runtime-snapshots` consumes. Full contract and the
+  two deliberate refusals (no fabricated `nativeNowMs`; never a quiet empty envelope)
+  are in `docs/qualification/WAVE-0.md`.
 - I420→RGB is a GPU HLSL shader in `D3D11CompositorAdapter.cpp`
   (`kCompositorYuvPixelShader`, BT.709 full-range). Zoom frames carry I420
   (`hasI420()`), NOT BGRA — any frame merge/match must check `hasI420()` too or Zoom
@@ -887,7 +909,17 @@ MPEG-TS/SRT stream at us and it becomes an ordinary capture source.
   `videoFrames` keyed `capture:<deviceId>` — so scenes, multiview, ISO, recording and
   every sender treat it exactly like a camera. Decoders run under a **job object**
   (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) so a core crash can't orphan an ffmpeg still
-  holding the SRT port.
+  holding the SRT port. **The OUTPUT senders do the same, in their OWN job**
+  (`outputJobObject`/`adoptOutputChild` in `modules/RtmpOutputSenderAdapter.cpp`,
+  shared by RTMP and SRT egress plus the encoder-availability probe): an orphaned
+  EGRESS ffmpeg keeps PUBLISHING to a live destination after the app is gone, which
+  is worse than a held port. Separate jobs because ingest's is a file-local static in
+  another TU, and because outputs may later need group-killing without touching
+  ingest. Assignment is BEST EFFORT — a failure logs loudly and the stream still
+  starts. The job never kills anything on its own (the handle is a leaked
+  process-lifetime static), so `stopFfmpegProcess()` restarts are unaffected; the
+  replacement child is simply assigned to the same job. **Any new long-lived child
+  process spawned by the core must be adopted into a KILL_ON_JOB_CLOSE job.**
 - **Embedded audio is a SECOND output on the same ffmpeg** — `-map 0:a:0? -vn -f f32le
   -ar 48000 -ac 2` into a **Windows named pipe** the adapter serves
   (`\\.\pipe\corevideo-srt-ingest-audio-<pid>-<n>`; POSIX hands the child an inherited
