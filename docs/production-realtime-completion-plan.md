@@ -15,6 +15,16 @@ It contains four things: a correction to the record, a set of defects that can s
 week independently of the migration, a lane-based execution order with the strategy's own
 dependency errors fixed, and the decisions that need an owner.
 
+**Platform scope (owner ruling, 2026-09-09): Windows is the primary platform for first
+release. macOS is not.** This reorders several things below. A defect measured on Windows
+is a first-release concern; the same defect visible only on a macOS CI runner is not, and
+must not be allowed to consume Windows effort or to hold the branch red in anyone's mind.
+The final qualification matrix already names two Windows machines and no Mac, so it needs
+no change. Client adoption for the macOS shell (item A9) drops behind everything else in
+its lane. The shared native core still has to compile and pass on macOS and under the
+Linux sanitizer, because those jobs gate code Windows ships — that is a correctness gate,
+not a platform commitment.
+
 ---
 
 ## 1. Correcting the record
@@ -91,11 +101,14 @@ Already landed today, in the same spirit: a use-after-close race on the SRT inge
 descriptors, a destructor-versus-shutdown lifetime bug in the new render worker, and two
 CI harness defects that were failing jobs this branch had turned red.
 
-**One caveat on S5.** The macOS drill reads 24.7 fps, which is not a 50 Hz alias; aliasing
+**One caveat on S5, now deprioritised.** The macOS drill reads 24.7 fps, which is not a 50 Hz alias; aliasing
 would read near 50, and Windows history recorded exactly that. The likelier cause is that
 the macos-14 runner cannot composite 60 at all, which the CI workflow itself half-admits by
-marking the loaded step `continue-on-error`. Confirm by printing the stage numbers before
-planning against it.
+marking the loaded step `continue-on-error`. Under the Windows-first ruling this is not a
+first-release investigation. The drill's own recorded rate on Windows measures 60.0 fps
+with the video-out tick at 59.9 and the audio worker at 49.9, so the coupling S5 used to
+blame is demonstrably absent on the platform that ships. Leave the macOS number until a
+Mac release is actually scheduled.
 
 ---
 
@@ -122,7 +135,7 @@ actually rendered. Zero of those six clauses hold today.
 | A6 | Migrate MediaCore control state to `ShowStateOwner` and delete the second store | L, probably two | `applyCommandMutation` is a 24-branch chain over 7400 lines of member state. This is the real G1 blocker and it cannot be flag-flipped. Split per domain. |
 | A7 | Production `IShowResourcePreparer` implementations with owning leases | L | All five implementations today are test doubles named `Ready`. |
 | A8 | WinUI cutover: transport shim, capability negotiation, replace the local swap, consume `sourceAuthority`, operation-ID reconciliation | L | The shell must receive native Preview revision, plan stamp and preparation certificate, none of which is published today. |
-| A9 | macOS adoption, then OHG and Companion | M-L, then S-M each | All three start from zero contract. |
+| A9 | OHG and Companion adoption; **macOS last** | S-M each, then M-L | All three start from zero contract. Windows-first puts the macOS shell behind OHG and Companion, which run on the platform that ships. |
 
 ### Lane B — real-time substrate, to G2
 
