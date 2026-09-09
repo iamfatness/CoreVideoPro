@@ -3,6 +3,9 @@
 Status: approved; execution in progress
 
 Controlling architecture: `production-realtime-architecture.md`
+Execution plan for the remaining work: `production-realtime-completion-plan.md`
+(written 2026-09-09 against an audit of the live tree; it corrects this record where the
+two disagree, and the audit is the authority)
 
 ## Execution record
 
@@ -65,6 +68,48 @@ Controlling architecture: `production-realtime-architecture.md`
   plus an enabled version-1 peer, preserves the caller operation identity, and
   treats malformed or uncertain post-dispatch outcomes as reconciliation work.
   It is not wired into WinUI and the native RPC capability remains disabled.
+- Wave 2 execution substrate foundations for PRs 13, 14 and 15: `cfd8d85`.
+  `SourceFrameLease` freezes an immutable, generation- and fence-checked frame
+  with exact identity and conservative byte accounting, and never retains a
+  caller-owned proof object. `ProgramRenderWorker` owns its renderer context on
+  one thread, admits without blocking (`Contended` rather than a wait), runs
+  every render call outside its own lock, discards stale-generation completions
+  before publishing, and survives a non-cooperative renderer because the shared
+  state outlives a detached worker. `ProgramPacketPlayout` schedules on fixed
+  slots from a `const` anchor that never reanchors, keys GPU readiness on the
+  full packet tuple so a late callback cannot ready a replacement frame, and
+  transfers retirement ownership out of `stop()` so no deleter runs under its
+  lock. Loss is always counted, never repaired: `skippedSlots`, `Missing`,
+  `GpuNotReady` and `GpuLate` are the only outcomes for a slot that did not
+  make its deadline. These three classes are standalone. None is registered
+  with MediaCore, the compositor, the RPC surface or any output, so the PR 14
+  exit-gate claim that no GPU call occurs under `coreMutex` is satisfied
+  structurally within the class but cannot be proven end to end until the
+  integration slice lands.
+  Review of this slice found one defect, fixed in the same commit: the
+  destructor called the same `try_to_lock` shutdown path as an external caller,
+  so a supervisor forcing a stop could still be inside the critical section,
+  using `thread_` and holding `joinMutex_`, while the owner destroyed both.
+  Destroying a held mutex or racing a `std::thread` object is undefined
+  behavior. The destructor now blocks for the join lock, and every `thread_`
+  access, including the failure path, moved inside it. `State::latest` also
+  became a real `std::atomic<std::shared_ptr<const Work>>`; the deprecated
+  free-function form was correct only by convention, and one plain assignment
+  by a later editor would have reintroduced a data race with no diagnostic.
+- Single-owner retirement for SRT ingest pipes: `13545fb`. ThreadSanitizer found the
+  reader thread closing a pipe descriptor while the audio thread was still reading it;
+  the atomic exchange guaranteed one closer but not that the reader had stopped, and a
+  reused descriptor number would have fed an unrelated file into the audio path as PCM.
+  The reading thread is now the only thread that closes its own pipe, `killProcess` kills
+  only the process, and readers are unblocked by the decoder's death rather than by
+  invalidating a descriptor underneath them. Windows keeps cancel-and-disconnect, which
+  unblocks without invalidating, re-issued until the thread confirms exit because a single
+  cancel can land between the running check and the blocking call and be lost. POSIX pipes
+  became close-on-exec: plain descriptors are inherited by every concurrent spawn, so a
+  sibling channel could hold a write end open and suppress the EOF this design relies on,
+  which would have been an unbounded hang rather than a race. Backoff sleeps are now
+  interruptible. The POSIX branch cannot be compiled or run on the Windows development box
+  and is reasoned, not exercised; the Linux sanitizer job is its first real compile.
 
 ## Outcome
 
