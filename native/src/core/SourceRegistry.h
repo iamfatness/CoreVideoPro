@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -32,11 +33,16 @@ class SourceRegistry final {
     std::string processEpoch;
     uint64_t generation = 0;
   };
-  struct Person { PersonId id; std::string displayName; };
+  struct Person {
+    PersonId id;
+    std::string displayName;
+    uint64_t generation = 1;
+  };
   struct Registration {
     SourceId sourceId;
     Kind kind = Kind::ParticipantVideo;
     std::optional<PersonId> personId; // Explicit operator/authority binding only.
+    uint64_t personGeneration = 0;
     std::string displayName;
     std::string processEpoch;
     std::string externalId; // SDK participant/device ID, scoped by processEpoch.
@@ -45,6 +51,7 @@ class SourceRegistry final {
     Token token;
     Kind kind = Kind::ParticipantVideo;
     std::optional<PersonId> personId;
+    uint64_t personGeneration = 0;
     std::string displayName, externalId;
     Availability availability = Availability::Available;
     bool subscriptionRequested = false;
@@ -62,7 +69,9 @@ class SourceRegistry final {
   };
   struct Mutation { Result result; std::optional<Token> token; };
 
-  explicit SourceRegistry(std::string registryEpoch);
+  explicit SourceRegistry(std::string registryEpoch, std::size_t maxPersons = 4'096,
+                          std::size_t maxSources = 16'384,
+                          std::size_t maxRetiredProcessEpochs = 4'096);
   Result upsertPerson(Person person);
   Mutation add(Registration registration);
   // Compare-and-replace: old callbacks can neither replace nor retire a new instance.
@@ -89,6 +98,7 @@ class SourceRegistry final {
   std::map<std::string, Person> persons_;
   std::map<std::string, Source> sources_;
   std::set<std::string> retiredProcessEpochs_;
+  std::size_t maxPersons_, maxSources_, maxRetiredProcessEpochs_;
 };
 
 } // namespace corevideo::core

@@ -5,8 +5,13 @@
 
 namespace corevideo::core {
 
-SourceRegistry::SourceRegistry(std::string registryEpoch) : epoch_(std::move(registryEpoch)) {
-  if (epoch_.empty()) throw std::invalid_argument("SourceRegistry requires an authority epoch");
+SourceRegistry::SourceRegistry(std::string registryEpoch, std::size_t maxPersons,
+    std::size_t maxSources, std::size_t maxRetiredProcessEpochs)
+    : epoch_(std::move(registryEpoch)), maxPersons_(maxPersons), maxSources_(maxSources),
+      maxRetiredProcessEpochs_(maxRetiredProcessEpochs) {
+  if (epoch_.empty() || maxPersons_ == 0 || maxSources_ == 0 ||
+      maxRetiredProcessEpochs_ == 0)
+    throw std::invalid_argument("SourceRegistry requires an authority epoch and positive capacities");
 }
 
 bool SourceRegistry::sameToken(const Token& a, const Token& b) {
@@ -16,10 +21,15 @@ bool SourceRegistry::sameToken(const Token& a, const Token& b) {
 
 SourceRegistry::Result SourceRegistry::upsertPerson(Person person) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (person.id.value.empty()) return Result::Invalid;
+  if (person.id.value.empty() || person.generation == 0 || person.generation > kMaxRevision)
+    return Result::Invalid;
   const auto existing = persons_.find(person.id.value);
-  if (existing != persons_.end() && existing->second.displayName == person.displayName)
-    return Result::Unchanged;
+  if (existing != persons_.end()) {
+    if (person.generation < existing->second.generation) return Result::Stale;
+    if (existing->second.displayName == person.displayName &&
+        existing->second.generation == person.generation) return Result::Unchanged;
+  }
+  if (persons_.size() >= maxPersons_) return Result::Exhausted;
   if (revision_ == kMaxRevision) return Result::Exhausted;
   const auto key = person.id.value;
   persons_[key] = std::move(person);
@@ -32,7 +42,9 @@ bool SourceRegistry::validRegistration(const Registration& r) const {
       r.kind == Kind::Device || r.kind == Kind::Media || r.kind == Kind::Browser;
   return knownKind && !r.sourceId.value.empty() && !r.processEpoch.empty() &&
       !retiredProcessEpochs_.contains(r.processEpoch) && !r.externalId.empty() &&
-      (!r.personId || persons_.find(r.personId->value) != persons_.end());
+      ((!r.personId && r.personGeneration == 0) ||
+       (r.personId && persons_.contains(r.personId->value) && r.personGeneration > 0 &&
+        persons_.at(r.personId->value).generation == r.personGeneration));
 }
 
 bool SourceRegistry::externalConflict(const Registration& r) const {
@@ -51,6 +63,7 @@ SourceRegistry::Mutation SourceRegistry::install(Registration r, uint64_t genera
   source.token = {r.sourceId, {epoch_ + ":" + std::to_string(revision_ + 1)}, r.processEpoch, generation};
   source.kind = r.kind;
   source.personId = std::move(r.personId);
+  source.personGeneration = r.personGeneration;
   source.displayName = std::move(r.displayName);
   source.externalId = std::move(r.externalId);
   const auto token = source.token;
@@ -63,6 +76,7 @@ SourceRegistry::Mutation SourceRegistry::add(Registration r) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!validRegistration(r)) return {Result::Invalid, {}};
   if (sources_.find(r.sourceId.value) != sources_.end() || externalConflict(r)) return {Result::Conflict, {}};
+  if (sources_.size() >= maxSources_) return {Result::Exhausted, {}};
   return install(std::move(r), 1);
 }
 
@@ -113,6 +127,7 @@ SourceRegistry::Result SourceRegistry::retireProcessEpoch(const std::string& pro
   std::lock_guard<std::mutex> lock(mutex_);
   if (processEpoch.empty()) return Result::Invalid;
   if (retiredProcessEpochs_.contains(processEpoch)) return Result::Unchanged;
+  if (retiredProcessEpochs_.size() >= maxRetiredProcessEpochs_) return Result::Exhausted;
   if (revision_ == kMaxRevision) return Result::Exhausted;
   // Persist the fence even if retirement wins the race with the first roster
   // callback. A delayed add from a dead helper must never look current.

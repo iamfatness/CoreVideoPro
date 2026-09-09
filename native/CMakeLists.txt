@@ -66,6 +66,9 @@ add_library(corevideo_native
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
   src/core/ShowStateOwner.cpp
+  src/core/ShowPlanGenerator.cpp
+  src/core/ShowPreparationTransaction.cpp
+  src/core/AtomicTakeCoordinator.cpp
   src/core/SourceRegistry.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
@@ -642,6 +645,9 @@ if(BUILD_TESTING)
     tests/ProgramAudioDelayTest.cpp
     tests/ProgramPlayoutTimelineTest.cpp
     tests/ShowStateOwnerTest.cpp
+    tests/ShowPlanGeneratorTest.cpp
+    tests/ShowPreparationTransactionTest.cpp
+    tests/AtomicTakeCoordinatorTest.cpp
     tests/SourceRegistryTest.cpp
     tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
