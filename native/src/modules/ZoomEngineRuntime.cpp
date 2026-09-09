@@ -1092,7 +1092,27 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
       {"sources", sources},
   };
 }
+
+rpc::Json ZoomEngineRuntime::sourceAuthorityJsonLocked() const {
+  rpc::Json::Array authoritySources;
+  if (authorityObservation_.valid) for (const auto& source : authorityObservation_.sources) {
+    authoritySources.emplace_back(rpc::Json::Object{
+        {"participantId", participantIdString(source.participantId)},
+        {"kind", source.kind == AuthoritySource::Kind::Camera ? "camera" : "share"},
+        {"sourceId", source.sourceId}, {"instanceId", source.instanceId},
+        {"processEpoch", authorityObservation_.processEpoch},
+        {"generation", static_cast<double>(source.generation)}, {"available", source.available}});
+  }
+  return rpc::Json::Object{
+      {"version", 1}, {"valid", authorityObservation_.valid},
+      {"processEpoch", authorityObservation_.processEpoch},
+      {"sequence", static_cast<double>(authorityObservation_.sequence)},
+      {"sources", std::move(authoritySources)}};
+}
+
 rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
+  // Refresh metadata under the same runtime lock as the roster projection.
+  refreshAuthorityObservationLocked();
   ++fallbackTick_;
   state_.advanceActiveSpeaker(monotonicMs());
   const auto snapshot = state_.snapshot();
@@ -1110,8 +1130,8 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
         {"networkQuality", "good"},
     });
   }
-
   rpc::Json::Object result{
+      {"sourceAuthority", sourceAuthorityJsonLocked()},
       {"meetingState", snapshot.meetingState == "in-meeting" ? "in_meeting" : snapshot.meetingState},
       {"participants", participants},
       {"tick", fallbackTick_},
@@ -1129,6 +1149,10 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
 }
 
 rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, double elapsedMs) {
+  // Spine sync is another authoritative snapshot boundary. Publish the exact
+  // catalog here as well so a later spine refresh cannot erase or resurrect
+  // identities observed by the raw capture snapshot.
+  refreshAuthorityObservationLocked();
   state_.advanceActiveSpeaker(monotonicMs());
   const auto runtime = state_.snapshot();
   rpc::Json::Array subscriptions;
@@ -1166,6 +1190,7 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
   }
 
   return rpc::Json::Object{
+      {"sourceAuthority", sourceAuthorityJsonLocked()},
       {"meetingState", runtime.meetingState},
       {"sdkVersion", "zoom-engine"},
       {"rawMediaActive", runtime.rawMediaActive},

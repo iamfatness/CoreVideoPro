@@ -4,14 +4,21 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public sealed class MediaCoreBridgeService : IMediaCoreBridge
 {
+    private const int SnapshotNotificationCapacity = 8;
     private readonly MediaCoreSupervisor _supervisor;
     private readonly object _gate = new();
+    private readonly object _publicationGate = new();
+    private readonly SourceAuthorityAdmission _sourceAuthorityAdmission = new();
+    private readonly Queue<NativeMediaCoreStateSnapshot> _snapshotNotifications = new();
+    private bool _snapshotNotificationDrainActive;
+    private long _coalescedSnapshotNotifications;
     private Timer? _pollTimer;
     private Timer? _spineSyncTimer;
     private readonly SingleFlightTimerWork _pollWork = new();
     private readonly SingleFlightTimerWork _spineWork = new();
     private double _elapsedMs;
     private NativeMediaCoreStateSnapshot? _lastSnapshot;
+    private int _lastSnapshotProcessGeneration = -1;
     private Func<CancellationToken, Task<Dictionary<string, object?>>>? _spinePayloadFactory;
     private bool _spineSyncInFlight;
     private long _spineFactoryVersion;
@@ -24,6 +31,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         {
             if (health.Recovering)
             {
+                FenceProcessGeneration(health.RestartCount);
                 // Do not let the periodic desired-state payload start a new recording
                 // generation against color bars before Zoom has rejoined.
                 StopSpineSync();
@@ -33,7 +41,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         };
         _supervisor.StatusChanged += status => StatusChanged?.Invoke(status);
         _supervisor.ProfileChanged += profile => ProfileChanged?.Invoke(profile);
-        _supervisor.ZoomRecovered += PublishCaptureSnapshot;
+        _supervisor.ZoomRecovered += (capture, processGeneration) =>
+            PublishCaptureSnapshot(capture, processGeneration);
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);
@@ -89,6 +98,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         lock (_gate)
         {
             _lastSnapshot = null;
+            _lastSnapshotProcessGeneration = -1;
             _elapsedMs = 0;
             _spinePayloadFactory = null;
             _spineFactoryVersion++;
@@ -183,6 +193,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             throw new InvalidOperationException("Media core is not running.");
         }
 
+        var processGeneration = Health.RestartCount;
         var capture = await _supervisor.JoinZoomAsync(
                 meetingUrl,
                 displayName,
@@ -191,8 +202,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
                 userZak,
                 cancellationToken)
             .ConfigureAwait(false);
-        PublishCaptureSnapshot(capture);
-        return capture;
+        return PublishCaptureSnapshot(capture, processGeneration);
     }
 
     public async Task<RawCaptureSnapshot> LeaveZoomAsync(CancellationToken cancellationToken = default)
@@ -202,9 +212,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             throw new InvalidOperationException("Media core is not running.");
         }
 
+        var processGeneration = Health.RestartCount;
         var capture = await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
-        PublishCaptureSnapshot(capture);
-        return capture;
+        return PublishCaptureSnapshot(capture, processGeneration);
     }
 
     /// <summary>
@@ -220,9 +230,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             throw new InvalidOperationException("Media core is not running.");
         }
 
+        var processGeneration = Health.RestartCount;
         var capture = await _supervisor.StopZoomCaptureAsync(cancellationToken).ConfigureAwait(false);
-        PublishCaptureSnapshot(capture);
-        return capture;
+        return PublishCaptureSnapshot(capture, processGeneration);
     }
 
     public static string SummarizeJoinLeaveMessage(RawCaptureSnapshot snapshot, string verb) =>
@@ -230,9 +240,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     public async Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default)
     {
+        var processGeneration = Health.RestartCount;
         var capture = await _supervisor.GetZoomSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        PublishCaptureSnapshot(capture);
-        return capture;
+        return PublishCaptureSnapshot(capture, processGeneration);
     }
 
     public async Task<NativeMediaCoreStateSnapshot> SyncAsync(
@@ -248,12 +258,12 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             }
         }
 
+        var processGeneration = Health.RestartCount;
         var snapshot = await _supervisor.SyncMediaCoreAsync(
             commands,
             GetElapsedMs(),
             cancellationToken).ConfigureAwait(false);
-        PublishSnapshot(snapshot);
-        return snapshot;
+        return PublishSnapshot(snapshot, processGeneration);
     }
 
     public async Task<NativeMediaCoreStateSnapshot> PollSnapshotAsync(
@@ -281,13 +291,13 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             }
         }
 
+        var processGeneration = Health.RestartCount;
         var spine = await _supervisor.SyncZoomMediaSpineAsync(
                 spinePayload,
                 GetElapsedMs(),
                 cancellationToken)
             .ConfigureAwait(false);
-        PublishSpineSnapshot(spine);
-        return spine;
+        return PublishSpineSnapshot(spine, processGeneration);
     }
 
     public static IReadOnlyList<NativeMediaCoreCommand> BuildSceneGraphCommand(
@@ -585,6 +595,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         }
         try
         {
+            var processGeneration = Health.RestartCount;
             var payload = await factory(cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false);
             Task<ZoomMediaSpineNativeSnapshot> response;
             lock (_gate)
@@ -597,7 +608,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             }
             var spine = await response.ConfigureAwait(false);
             lock (_gate) { if (version != _spineFactoryVersion) return; }
-            PublishSpineSnapshot(spine);
+            PublishSpineSnapshot(spine, processGeneration);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception error)
@@ -610,46 +621,257 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         }
     }
 
-    private void PublishSnapshot(NativeMediaCoreStateSnapshot snapshot)
+    private NativeMediaCoreStateSnapshot PublishSnapshot(
+        NativeMediaCoreStateSnapshot snapshot,
+        int processGeneration)
     {
-        lock (_gate)
+        var drainNotifications = false;
+        lock (_publicationGate)
         {
-            _lastSnapshot = snapshot;
-        }
+            if (processGeneration != Health.RestartCount)
+            {
+                return CurrentSnapshotForGenerationLocked(Health.RestartCount) ?? snapshot with
+                {
+                    SourceAuthority = new NativeSourceAuthority { Valid = false, Sources = [] },
+                    MeetingState = "recovering",
+                    ActiveSpeakerId = null,
+                    Participants = [],
+                    ZoomSubscriptions = []
+                };
+            }
+            if (!_sourceAuthorityAdmission.TryAdmit(
+                    processGeneration, snapshot.SourceAuthority, out var authority))
+            {
+                return CurrentSnapshotForGenerationLocked(processGeneration) ??
+                    snapshot with { SourceAuthority = authority };
+            }
+            snapshot = snapshot with
+            {
+                SourceAuthority = authority
+            };
+            lock (_gate)
+            {
+                _lastSnapshot = snapshot;
+                _lastSnapshotProcessGeneration = processGeneration;
+            }
 
-        SnapshotChanged?.Invoke(snapshot);
+            drainNotifications = EnqueueSnapshotNotificationLocked(snapshot);
+        }
+        if (drainNotifications) DrainSnapshotNotifications();
+        return snapshot;
     }
 
-    private void PublishCaptureSnapshot(RawCaptureSnapshot capture)
+    private RawCaptureSnapshot PublishCaptureSnapshot(RawCaptureSnapshot capture, int processGeneration)
     {
         NativeMediaCoreStateSnapshot merged;
-        lock (_gate)
+        var drainNotifications = false;
+        lock (_publicationGate)
         {
-            merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);
-            _lastSnapshot = merged;
-        }
+            if (processGeneration != Health.RestartCount)
+                return CurrentCaptureSnapshotLocked();
+            var publish = _sourceAuthorityAdmission.TryAdmit(
+                processGeneration, capture.SourceAuthority, out var authority);
+            capture = new RawCaptureSnapshot
+            {
+                MeetingState = capture.MeetingState,
+                SourceAuthority = authority,
+                Participants = capture.Participants,
+                ActiveSpeakerId = capture.ActiveSpeakerId,
+                Caption = capture.Caption,
+                Tick = capture.Tick,
+                Warnings = capture.Warnings,
+                RawMediaActive = capture.RawMediaActive
+            };
+            if (!publish) return CurrentCaptureSnapshotLocked();
+            lock (_gate)
+            {
+                merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);
+                _lastSnapshot = merged;
+                _lastSnapshotProcessGeneration = processGeneration;
+            }
 
-        SnapshotChanged?.Invoke(merged);
-        if (merged.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true)
-        {
-            StartSpineSync();
+            if (merged.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true)
+            {
+                StartSpineSync();
+            }
+            else
+            {
+                StopSpineSync();
+            }
+            drainNotifications = EnqueueSnapshotNotificationLocked(merged);
         }
-        else
+        if (drainNotifications) DrainSnapshotNotifications();
+        return capture;
+    }
+
+    private ZoomMediaSpineNativeSnapshot PublishSpineSnapshot(
+        ZoomMediaSpineNativeSnapshot spine,
+        int processGeneration)
+    {
+        NativeMediaCoreStateSnapshot merged;
+        var drainNotifications = false;
+        lock (_publicationGate)
         {
-            StopSpineSync();
+            if (processGeneration != Health.RestartCount)
+                return CurrentSpineSnapshotLocked();
+            var publish = _sourceAuthorityAdmission.TryAdmit(
+                processGeneration, spine.SourceAuthority, out var authority);
+            spine = new ZoomMediaSpineNativeSnapshot
+            {
+                SourceAuthority = authority,
+                MeetingState = spine.MeetingState,
+                SdkVersion = spine.SdkVersion,
+                ParticipantCount = spine.ParticipantCount,
+                ActiveSpeakerId = spine.ActiveSpeakerId,
+                ScreenShareParticipantId = spine.ScreenShareParticipantId,
+                Participants = spine.Participants,
+                Subscriptions = spine.Subscriptions,
+                Warnings = spine.Warnings,
+                Events = spine.Events
+            };
+            if (!publish) return CurrentSpineSnapshotLocked();
+            lock (_gate)
+            {
+                merged = ZoomMediaSpineSnapshotMerger.Merge(_lastSnapshot, spine);
+                _lastSnapshot = merged;
+                _lastSnapshotProcessGeneration = processGeneration;
+            }
+
+            drainNotifications = EnqueueSnapshotNotificationLocked(merged);
+        }
+        if (drainNotifications) DrainSnapshotNotifications();
+        return spine;
+    }
+
+    // These projections are returned to callers when an asynchronous response
+    // loses the ordering race. They expose the current coherent read model, so
+    // a stale join cannot make Settings report Zoom Live after a newer leave.
+    private RawCaptureSnapshot CurrentCaptureSnapshotLocked()
+    {
+        var current = CurrentSnapshotForGenerationLocked(Health.RestartCount);
+        return new RawCaptureSnapshot
+        {
+            MeetingState = current?.MeetingState ?? "idle",
+            SourceAuthority = current?.SourceAuthority ??
+                new NativeSourceAuthority { Valid = false, Sources = [] },
+            Participants = current?.Participants ?? [],
+            ActiveSpeakerId = current?.ActiveSpeakerId,
+            Warnings = ["A stale media-core capture response was rejected."]
+        };
+    }
+
+    private ZoomMediaSpineNativeSnapshot CurrentSpineSnapshotLocked()
+    {
+        var current = CurrentSnapshotForGenerationLocked(Health.RestartCount);
+        return new ZoomMediaSpineNativeSnapshot
+        {
+            MeetingState = current?.MeetingState ?? "idle",
+            SourceAuthority = current?.SourceAuthority ??
+                new NativeSourceAuthority { Valid = false, Sources = [] },
+            ParticipantCount = current?.Participants.Count ?? 0,
+            ActiveSpeakerId = current?.ActiveSpeakerId,
+            Participants = current?.Participants.Select(participant => new ZoomMediaSpineParticipant
+            {
+                SdkUserId = participant.UserId,
+                DisplayName = participant.DisplayName,
+                Role = participant.Role ?? "guest",
+                Muted = participant.Muted ?? false,
+                VideoOn = participant.VideoOn ?? false,
+                Talking = participant.Talking ?? false,
+                SharingScreen = participant.SharingScreen ?? false,
+                AudioLevel = participant.AudioLevel ?? 0,
+                NetworkQuality = participant.NetworkQuality ?? "unknown"
+            }).ToArray() ?? [],
+            Subscriptions = current?.ZoomSubscriptions ?? [],
+            Warnings = ["A stale media-core spine response was rejected."]
+        };
+    }
+
+    // Called with _publicationGate held. One drainer preserves accepted
+    // publication order without invoking arbitrary UI subscribers under a lock.
+    private bool EnqueueSnapshotNotificationLocked(NativeMediaCoreStateSnapshot snapshot)
+    {
+        if (_snapshotNotifications.Count >= SnapshotNotificationCapacity)
+        {
+            _snapshotNotifications.Dequeue();
+            _coalescedSnapshotNotifications++;
+        }
+        _snapshotNotifications.Enqueue(snapshot);
+        if (_snapshotNotificationDrainActive) return false;
+        _snapshotNotificationDrainActive = true;
+        return true;
+    }
+
+    private void DrainSnapshotNotifications()
+    {
+        while (true)
+        {
+            NativeMediaCoreStateSnapshot snapshot;
+            long coalesced;
+            lock (_publicationGate)
+            {
+                if (_snapshotNotifications.Count == 0)
+                {
+                    _snapshotNotificationDrainActive = false;
+                    return;
+                }
+                snapshot = _snapshotNotifications.Dequeue();
+                coalesced = _coalescedSnapshotNotifications;
+                _coalescedSnapshotNotifications = 0;
+            }
+
+            if (coalesced > 0)
+                DiagnosticLog.Write("media-core.log",
+                    $"snapshot notification backlog coalesced {coalesced} obsolete snapshot(s)");
+
+            try
+            {
+                SnapshotChanged?.Invoke(snapshot);
+            }
+            catch (Exception error)
+            {
+                DiagnosticLog.WriteException("media-core.log", "snapshot subscriber failed", error);
+            }
         }
     }
 
-    private void PublishSpineSnapshot(ZoomMediaSpineNativeSnapshot spine)
+    // Requires _publicationGate. A snapshot belongs to one supervisor process
+    // generation; never use a cached catalog after that process is retired.
+    private NativeMediaCoreStateSnapshot? CurrentSnapshotForGenerationLocked(int processGeneration)
     {
-        NativeMediaCoreStateSnapshot merged;
         lock (_gate)
-        {
-            merged = ZoomMediaSpineSnapshotMerger.Merge(_lastSnapshot, spine);
-            _lastSnapshot = merged;
-        }
+            return _lastSnapshotProcessGeneration == processGeneration ? _lastSnapshot : null;
+    }
 
-        SnapshotChanged?.Invoke(merged);
+    private void FenceProcessGeneration(int processGeneration)
+    {
+        NativeMediaCoreStateSnapshot? fenced = null;
+        var drainNotifications = false;
+        lock (_publicationGate)
+        {
+            _sourceAuthorityAdmission.TryAdmit(processGeneration, null, out _);
+            _coalescedSnapshotNotifications += _snapshotNotifications.Count;
+            _snapshotNotifications.Clear();
+            lock (_gate)
+            {
+                if (_lastSnapshot is not null)
+                {
+                    fenced = _lastSnapshot with
+                    {
+                        SourceAuthority = new NativeSourceAuthority { Valid = false, Sources = [] },
+                        MeetingState = "recovering",
+                        ActiveSpeakerId = null,
+                        Participants = [],
+                        ZoomSubscriptions = []
+                    };
+                    _lastSnapshot = fenced;
+                    _lastSnapshotProcessGeneration = processGeneration;
+                }
+            }
+            if (fenced is not null)
+                drainNotifications = EnqueueSnapshotNotificationLocked(fenced);
+        }
+        if (drainNotifications) DrainSnapshotNotifications();
     }
 
     private double GetElapsedMs()

@@ -679,6 +679,17 @@ TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined)
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {
+  static rpc::Json capture(ZoomEngineRuntime& runtime, bool invalidate = false) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    if (invalidate) runtime.authorityObservation_.valid = false;
+    return runtime.rawCaptureSnapshotLocked();
+  }
+
+  static rpc::Json spine(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    return runtime.spineSnapshotLocked(rpc::Json::Object{}, 0.0);
+  }
+
   static void useCanonicalCameraKey(ZoomEngineRuntime& runtime) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     auto node = runtime.videoStreams_.extract("test-camera");
@@ -1063,4 +1074,48 @@ TEST(ZoomEngineRuntime, AuthorityPublicationComesFromCopiedStreamAndRejectsOffOn
   auto resumed = runtime.authorityObservation();
   ASSERT_TRUE(resumed.sources[0].publication.has_value());
   EXPECT_TRUE(resumed.sources[0].publication->sequence > first.sources[0].publication->sequence);
+}
+
+TEST(ZoomEngineRuntime, CaptureEnvelopePreservesExactAuthorityAndEmptyInvalidDistinction) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  ZoomEngineEvent roster;
+  roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{42, "private display label", true, false, false, true}};
+  runtime.applyEngineEventForTest(roster);
+  const auto capture = ZoomEngineRuntimeTestAccess::capture(runtime);
+  const auto* catalog = capture.get("sourceAuthority");
+  ASSERT_TRUE(catalog != nullptr);
+  ASSERT_TRUE(catalog->get("valid")->asBool());
+  const auto observation = runtime.authorityObservation();
+  EXPECT_EQ(catalog->getString("processEpoch"), observation.processEpoch);
+  EXPECT_EQ(catalog->getNumber("sequence"), static_cast<double>(observation.sequence));
+  const auto& sources = catalog->get("sources")->asArray();
+  ASSERT_EQ(sources.size(), 2U);
+  for (std::size_t i = 0; i < sources.size(); ++i) {
+    EXPECT_EQ(sources[i].getString("sourceId"), observation.sources[i].sourceId);
+    EXPECT_EQ(sources[i].getString("instanceId"), observation.sources[i].instanceId);
+    EXPECT_EQ(sources[i].getNumber("generation"), static_cast<double>(observation.sources[i].generation));
+    EXPECT_EQ(sources[i].getString("participantId"), capture.get("participants")->asArray()[0].getString("userId"));
+    EXPECT_TRUE(sources[i].get("personId") == nullptr);
+    EXPECT_TRUE(sources[i].get("displayName") == nullptr);
+  }
+  EXPECT_EQ(sources[0].getString("kind"), "camera");
+  EXPECT_EQ(sources[1].getString("kind"), "share");
+  const auto spine = ZoomEngineRuntimeTestAccess::spine(runtime);
+  const auto* spineCatalog = spine.get("sourceAuthority");
+  ASSERT_TRUE(spineCatalog != nullptr);
+  EXPECT_EQ(spineCatalog->getString("processEpoch"), catalog->getString("processEpoch"));
+  EXPECT_EQ(spineCatalog->getNumber("sequence"), catalog->getNumber("sequence"));
+  ASSERT_EQ(spineCatalog->get("sources")->asArray().size(), sources.size());
+  EXPECT_EQ(spineCatalog->get("sources")->asArray()[0].getString("instanceId"),
+            sources[0].getString("instanceId"));
+  roster.participants.clear();
+  runtime.applyEngineEventForTest(roster);
+  const auto empty = ZoomEngineRuntimeTestAccess::capture(runtime);
+  EXPECT_TRUE(empty.get("sourceAuthority")->get("valid")->asBool());
+  EXPECT_TRUE(empty.get("sourceAuthority")->get("sources")->asArray().empty());
+  const auto invalid = ZoomEngineRuntimeTestAccess::capture(runtime, true);
+  EXPECT_FALSE(invalid.get("sourceAuthority")->get("valid")->asBool());
+  EXPECT_TRUE(invalid.get("sourceAuthority")->get("sources")->asArray().empty());
 }

@@ -17,6 +17,10 @@ Controlling architecture: `production-realtime-architecture.md`
   the rational ShowClock: `f6089d3`. These remain pre-cutover:
   the legacy MediaCore is still production authority until truthful runtime
   checkpoints, client adoption, and parity gates pass.
+- Semantic legacy capture ledger, lossless Zoom observation bridge with explicit
+  unknown evidence, source-format plan invalidation, and immutable Windows Take
+  request contract: `f5b9f53`. This provides cutover inputs without enabling a
+  second side-effect path.
 
 ## Outcome
 

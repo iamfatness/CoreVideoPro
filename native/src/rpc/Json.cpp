@@ -108,13 +108,13 @@ class Parser {
                 if (low >= 0xDC00 && low <= 0xDFFF) {
                   cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
                 } else {
-                  cp = 0xFFFD;  // unpaired low -> replacement char
+                  throw std::runtime_error("Invalid Unicode surrogate pair.");
                 }
               } else {
-                cp = 0xFFFD;  // lone high surrogate -> replacement char
+                throw std::runtime_error("Unpaired high Unicode surrogate.");
               }
             } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
-              cp = 0xFFFD;  // lone low surrogate -> replacement char
+              throw std::runtime_error("Unpaired low Unicode surrogate.");
             }
             appendUtf8(result, cp);
             break;
@@ -161,15 +161,33 @@ class Parser {
     }
   }
 
-  double parseNumber() {
+  Json::Number parseNumber() {
     size_t start = pos_;
     if (input_[pos_] == '-') ++pos_;
-    while (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_]))) ++pos_;
-    if (pos_ < input_.size() && input_[pos_] == '.') {
+    if (pos_ >= input_.size()) throw std::runtime_error("Invalid JSON number.");
+    if (input_[pos_] == '0') {
       ++pos_;
+      if (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_])))
+        throw std::runtime_error("Invalid leading zero in JSON number.");
+    } else {
+      if (!std::isdigit(static_cast<unsigned char>(input_[pos_]))) throw std::runtime_error("Invalid JSON number.");
       while (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_]))) ++pos_;
     }
-    return std::stod(input_.substr(start, pos_ - start));
+    if (pos_ < input_.size() && input_[pos_] == '.') {
+      ++pos_;
+      const auto fraction = pos_;
+      while (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_]))) ++pos_;
+      if (fraction == pos_) throw std::runtime_error("Invalid JSON fraction.");
+    }
+    if (pos_ < input_.size() && (input_[pos_] == 'e' || input_[pos_] == 'E')) {
+      ++pos_;
+      if (pos_ < input_.size() && (input_[pos_] == '+' || input_[pos_] == '-')) ++pos_;
+      const auto exponent = pos_;
+      while (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_]))) ++pos_;
+      if (exponent == pos_) throw std::runtime_error("Invalid JSON exponent.");
+    }
+    auto lexeme = input_.substr(start, pos_ - start);
+    return {std::stod(lexeme), std::move(lexeme)};
   }
 
   Json::Array parseArray() {
@@ -195,7 +213,9 @@ class Parser {
       std::string key = parseString();
       skipSpace();
       expect(':');
-      result.emplace(std::move(key), parseValue());
+      auto value = parseValue();
+      if (!result.emplace(std::move(key), std::move(value)).second)
+        throw std::runtime_error("Duplicate JSON object key.");
       skipSpace();
       if (consume('}')) return result;
       expect(',');
@@ -231,6 +251,7 @@ Json::Json(std::nullptr_t) : value_(nullptr) {}
 Json::Json(bool value) : value_(value) {}
 Json::Json(int value) : value_(static_cast<double>(value)) {}
 Json::Json(double value) : value_(value) {}
+Json::Json(Number value) : value_(std::move(value)) {}
 Json::Json(const char* value) : value_(std::string(value)) {}
 Json::Json(std::string value) : value_(std::move(value)) {}
 Json::Json(Array value) : value_(std::move(value)) {}
@@ -238,13 +259,21 @@ Json::Json(Object value) : value_(std::move(value)) {}
 
 bool Json::isNull() const { return std::holds_alternative<std::nullptr_t>(value_); }
 bool Json::isBool() const { return std::holds_alternative<bool>(value_); }
-bool Json::isNumber() const { return std::holds_alternative<double>(value_); }
+bool Json::isNumber() const { return std::holds_alternative<double>(value_) || std::holds_alternative<Number>(value_); }
 bool Json::isString() const { return std::holds_alternative<std::string>(value_); }
 bool Json::isArray() const { return std::holds_alternative<Array>(value_); }
 bool Json::isObject() const { return std::holds_alternative<Object>(value_); }
 
 bool Json::asBool(bool fallback) const { return isBool() ? std::get<bool>(value_) : fallback; }
-double Json::asNumber(double fallback) const { return isNumber() ? std::get<double>(value_) : fallback; }
+double Json::asNumber(double fallback) const {
+  if (const auto* value = std::get_if<double>(&value_)) return *value;
+  if (const auto* value = std::get_if<Number>(&value_)) return value->value;
+  return fallback;
+}
+std::optional<std::string_view> Json::numberLexeme() const {
+  if (const auto* value = std::get_if<Number>(&value_)) return value->lexeme;
+  return std::nullopt;
+}
 const std::string& Json::asString() const { return isString() ? std::get<std::string>(value_) : kEmptyString; }
 const Json::Array& Json::asArray() const { return isArray() ? std::get<Array>(value_) : kEmptyArray; }
 const Json::Object& Json::asObject() const { return isObject() ? std::get<Object>(value_) : kEmptyObject; }
@@ -279,6 +308,7 @@ std::string Json::stringify() const {
   if (isNull()) return "null";
   if (isBool()) return std::get<bool>(value_) ? "true" : "false";
   if (isNumber()) {
+    if (const auto* parsed = std::get_if<Number>(&value_)) return parsed->lexeme;
     std::ostringstream out;
     double value = std::get<double>(value_);
     if (value == static_cast<long long>(value)) out << static_cast<long long>(value);

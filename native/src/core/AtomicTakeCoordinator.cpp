@@ -5,6 +5,36 @@
 #include <utility>
 
 namespace corevideo::core {
+namespace {
+std::string boundedUtf8(std::string_view input, std::size_t limit) {
+  std::string output;
+  output.reserve((std::min)(input.size(), limit));
+  for (std::size_t i = 0; i < input.size() && output.size() < limit;) {
+    const auto lead = static_cast<unsigned char>(input[i]);
+    std::size_t width = lead < 0x80 ? 1 : (lead >= 0xC2 && lead <= 0xDF ? 2 :
+        (lead >= 0xE0 && lead <= 0xEF ? 3 : (lead >= 0xF0 && lead <= 0xF4 ? 4 : 0)));
+    bool valid = width != 0 && i + width <= input.size();
+    for (std::size_t j = 1; valid && j < width; ++j)
+      valid = (static_cast<unsigned char>(input[i + j]) & 0xC0) == 0x80;
+    if (valid && width > 1) {
+      std::uint32_t code = lead & (width == 2 ? 0x1F : (width == 3 ? 0x0F : 0x07));
+      for (std::size_t j = 1; j < width; ++j)
+        code = (code << 6) | (static_cast<unsigned char>(input[i + j]) & 0x3F);
+      const std::uint32_t minimum = width == 2 ? 0x80 : (width == 3 ? 0x800 : 0x10000);
+      valid = code >= minimum && code <= 0x10FFFF && !(code >= 0xD800 && code <= 0xDFFF);
+    }
+    if (!valid) {
+      output.push_back('?');
+      ++i;
+      continue;
+    }
+    if (output.size() + width > limit) break;
+    output.append(input.substr(i, width));
+    i += width;
+  }
+  return output;
+}
+}
 AtomicTakeCoordinator::AtomicTakeCoordinator(std::string epoch, uint64_t revision,
     uint64_t previewRevision, size_t capacity, Apply apply)
     : epoch_(std::move(epoch)), revision_(revision), previewRevision_(previewRevision),
@@ -151,7 +181,7 @@ AtomicTakeCoordinator::Reply AtomicTakeCoordinator::take(const Request& request)
   }
   else {
     record.outcome.error = Error::ApplyFailed;
-    record.outcome.failure = applied.failure.substr(0, 512);
+    record.outcome.failure = boundedUtf8(applied.failure, 512);
     record.outcome.resultRevision = revision_;
     record.pendingRendered = false;
     record.pendingDelivered = false;
