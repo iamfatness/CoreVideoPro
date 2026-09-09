@@ -6,6 +6,14 @@
 using namespace corevideo::core;
 namespace {
 using Worker = ProgramRenderWorker;
+// Generous on purpose. A correct worker satisfies every wait below in
+// milliseconds and returns immediately, so a large budget costs a passing run
+// nothing. Under a sanitizer on a loaded CI agent the same work takes an order
+// of magnitude longer, and a tight budget makes thread scheduling -- not the
+// code under test -- decide the verdict. Waits also sleep rather than yield:
+// a yield-spin on a small runner starves the very worker thread it waits for.
+constexpr auto kWait = std::chrono::seconds(10);
+inline void waitTick() { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
 Worker::Generation generation(uint64_t number = 1) { return {"show", "clock", number, 1}; }
 Worker::Config config() { Worker::Config c; c.enabled = true; c.generation = generation(); c.stallThreshold = std::chrono::milliseconds(1); return c; }
 std::shared_ptr<const Worker::Work> work(int64_t slot, uint64_t gen = 1, uint64_t revision = 1) {
@@ -18,8 +26,8 @@ struct Fixture {
   bool entered{false}, release{false}, cooperative{true}, destroyed{false};
   std::thread::id createdThread, renderedThread, destroyedThread;
   size_t created{0}, calls{0};
-  bool waitEntered() { std::unique_lock lock(mutex); return changed.wait_for(lock, std::chrono::seconds(2), [&]{return entered;}); }
-  bool waitDestroyed() { std::unique_lock lock(mutex); return changed.wait_for(lock, std::chrono::seconds(2), [&]{return destroyed;}); }
+  bool waitEntered() { std::unique_lock lock(mutex); return changed.wait_for(lock, kWait, [&]{return entered;}); }
+  bool waitDestroyed() { std::unique_lock lock(mutex); return changed.wait_for(lock, kWait, [&]{return destroyed;}); }
   void unblock() { {std::lock_guard lock(mutex); release = true;} changed.notify_all(); }
 };
 struct Renderer final : Worker::Renderer {
@@ -38,10 +46,10 @@ struct Renderer final : Worker::Renderer {
 };
 Worker::Factory factory(std::shared_ptr<Fixture> f) { return [f](const auto&, const auto&) {return std::make_unique<Renderer>(f);}; }
 bool waitRendered(Worker& worker, uint64_t count) {
-  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  const auto until = std::chrono::steady_clock::now() + kWait;
   while (std::chrono::steady_clock::now() < until) {
     if (worker.diagnostics().rendered >= count) return true;
-    std::this_thread::yield();
+    waitTick();
   }
   return false;
 }
@@ -67,8 +75,8 @@ TEST(ProgramRenderWorker, BlockedRendererCannotBlockSubmitAndQueueRemainsBounded
   EXPECT_EQ(admissions[0], Worker::Admission::Accepted);
   EXPECT_EQ(admissions[1], Worker::Admission::Accepted);
   EXPECT_EQ(admissions[2], Worker::Admission::Coalesced);
-  const auto stallLimit = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
-  while (!worker.diagnostics().stalled && std::chrono::steady_clock::now() < stallLimit) std::this_thread::yield();
+  const auto stallLimit = std::chrono::steady_clock::now() + kWait;
+  while (!worker.diagnostics().stalled && std::chrono::steady_clock::now() < stallLimit) waitTick();
   EXPECT_EQ(worker.diagnostics().stalled, 1ULL);
   auto d = worker.diagnostics(); EXPECT_EQ(d.queued, 2U); EXPECT_EQ(d.maximumQueued, 2U); EXPECT_EQ(d.coalesced, 1ULL); EXPECT_EQ(d.skipped, 1ULL);
   f->unblock(); ASSERT_TRUE(waitRendered(worker, 3)); EXPECT_EQ(worker.lastRendered()->slot, 3);
@@ -118,8 +126,8 @@ TEST(ProgramRenderWorker, ImmutableWorkAndStaleRevisionCannotOverwriteRenderedPl
 TEST(ProgramRenderWorker, FactoryFailureIsContainedAndWorkMetadataIsBounded) {
   Worker worker(config(), [](const auto&, const auto&) -> std::unique_ptr<Worker::Renderer> {throw std::runtime_error("factory");});
   worker.submit(work(0));
-  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (!worker.diagnostics().failed && std::chrono::steady_clock::now() < until) std::this_thread::yield();
+  const auto until = std::chrono::steady_clock::now() + kWait;
+  while (!worker.diagnostics().failed && std::chrono::steady_clock::now() < until) waitTick();
   EXPECT_EQ(worker.diagnostics().failed, 1ULL); EXPECT_TRUE(worker.shutdown());
   ShowPlans oversized; oversized.render.inputs.reserve(4097);
   bool rejected = false; try { Worker::Work invalid(generation(), 1, 0, 0, oversized); } catch (const std::invalid_argument&) { rejected = true; }
@@ -142,8 +150,8 @@ TEST(ProgramRenderWorker, ShutdownReleasesQueuedAndLatestOwnersEvenWhenRenderIsS
   f->unblock(); ASSERT_TRUE(f->waitDestroyed());
   EXPECT_FALSE(done); EXPECT_TRUE(latestReleased); EXPECT_TRUE(queuedReleased); EXPECT_TRUE(inflightRetained);
   EXPECT_TRUE(inflight.expired());
-  const auto completionLimit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (!worker.diagnostics().shutdownComplete && std::chrono::steady_clock::now() < completionLimit) std::this_thread::yield();
+  const auto completionLimit = std::chrono::steady_clock::now() + kWait;
+  while (!worker.diagnostics().shutdownComplete && std::chrono::steady_clock::now() < completionLimit) waitTick();
   EXPECT_TRUE(worker.shutdown());
   EXPECT_FALSE(worker.lastRendered()); EXPECT_EQ(worker.diagnostics().queued, 0U);
 }
