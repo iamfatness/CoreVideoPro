@@ -48,6 +48,14 @@ Controlling architecture: `production-realtime-architecture.md`
   rather than relabeling held pixels. Legacy participant rendering remains the
   active path; exact-source retention, route resolution, capability advertising,
   and client emission remain disabled pending their own cutover gates.
+- Gated G1 authority adapters: `68a5e4d`. The exact-frame shadow retains camera
+  and share independently with full source identity and persistent availability
+  fences; it is disabled at process startup by default and performs no frame or
+  source-map retention on the production path. Preview and Program can now hold
+  immutable scene-version leases through preparation, and the native atomic Take
+  RPC codec delegates all decisions to the coordinator. These adapters remain
+  unregistered and produce no live capability, routing, rendering, or Take side
+  effects until shadow parity and client adoption gates pass.
 
 ## Outcome
 
