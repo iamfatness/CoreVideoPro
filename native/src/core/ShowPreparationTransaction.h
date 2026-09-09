@@ -10,6 +10,7 @@
 #include <utility>
 
 namespace corevideo::core {
+class SceneVersionShadowEvidence;
 struct PreparationAuthority {
   std::string epoch;
   std::uint64_t revision{0}, generation{1};
@@ -29,7 +30,10 @@ struct ShowPreparationPlan {
   std::uint64_t revision{0};
   std::vector<ShowPreparationRequirement> requirements;
   ShowPlanStamp stamp; // Immutable input basis; controlRevision == base.revision.
-  bool operator==(const ShowPreparationPlan&) const = default;
+  // Optional shadow-only content ownership. Retained by the frozen plan and
+  // certificate; not a claim that any GPU/source/output resource is ready.
+  std::shared_ptr<const SceneVersionShadowEvidence> sceneVersions;
+  bool operator==(const ShowPreparationPlan&) const;
 };
 struct ShowPreparationToken {
   PreparationAuthority base;
