@@ -1490,7 +1490,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 {
                     if (ZoomCaptureSubscribed)
                     {
-                        UnsubscribeZoomCapture("Capture off — leaving meeting");
+                        UnsubscribeZoomCapture("Engine off — leaving meeting");
                     }
                 });
 
@@ -1612,8 +1612,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _currentRoomLabel;
 
-    // Design language: label stays "Capture"; the pill's colour + dot show on/off.
-    public string EngineRunningLabel => "Capture";
+    // Match the established OBS plugin language; the pill's colour + dot show on/off.
+    public string EngineRunningLabel => "Engine";
 
     public bool CanToggleCapture => Settings.IsInMeeting;
 
@@ -1622,8 +1622,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool CanToggleRecording => Settings.IsInMeeting && !_transportCoordinator.RecordingToggleInFlight;
 
     public string CaptureEngineHint => CanToggleCapture
-        ? "Start or stop Zoom video capture for this meeting."
-        : "Join a Zoom meeting before starting capture.";
+        ? "Turn the CoreVideo engine on or off for this Zoom meeting."
+        : "Join a Zoom meeting before turning the engine on.";
 
     public string RecordingLabel => Recording ? "Recording" : RecordingRequested ? "Starting…" : "Record";
 
@@ -10138,7 +10138,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = status;
         if (_bridge.Running && Settings.IsInMeeting)
         {
-            EngineStatus = "Stopping capture…";
+            EngineStatus = "Stopping engine…";
             _ = StopEngineRawMediaAsync(status);
         }
         if (Settings.IsInMeeting && _bridge.LastSnapshot is { } snapshot)
@@ -10371,13 +10371,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 if (!_awaitingRecordingPrivilege)
                 {
                     _awaitingRecordingPrivilege = true;
-                    EngineStatus = "Waiting for Zoom recording permission — ask the host to allow recording.";
+                    EngineStatus = "Engine waiting for Zoom media access — ask the host to approve the request.";
                 }
             }
             else if (_awaitingRecordingPrivilege && rawMediaActive == true)
             {
                 _awaitingRecordingPrivilege = false;
-                EngineStatus = "Zoom capture live.";
+                EngineStatus = "Engine on — Zoom media live.";
             }
             CurrentRoomLabel = _currentRoomName;
             ApplyCaptionAndLowerThirdPatch(patch);

@@ -246,7 +246,7 @@
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <!-- Status pills (design spec): IBM Plex Mono 11px, letter-spacing .1em,
-                         radius 6, padding 11x6, 7px status dot. Capture (toggle) + Zoom share
+                         radius 6, padding 11x6, 7px status dot. Engine (toggle) + Zoom share
                          one shape so they align; red dot+tint when off/offline, green when on/live. -->
                     <Button Command="{x:Bind ViewModel.ToggleEngineCommand}"
                             IsEnabled="{x:Bind ViewModel.CanToggleCapture, Mode=OneWay}"
@@ -259,7 +259,7 @@
                         <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
                             <Ellipse Width="7" Height="7" VerticalAlignment="Center"
                                      Fill="{x:Bind ViewModel.CaptureDotBrush, Mode=OneWay}" />
-                            <TextBlock Text="CAPTURE" CharacterSpacing="100" VerticalAlignment="Center" />
+                            <TextBlock Text="ENGINE" CharacterSpacing="100" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
                     <Border Background="{x:Bind ViewModel.ZoomPillBackground, Mode=OneWay}"

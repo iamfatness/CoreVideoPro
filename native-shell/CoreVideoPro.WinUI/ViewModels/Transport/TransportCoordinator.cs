@@ -64,7 +64,7 @@ public sealed class TransportCoordinator
         {
             if (_host.ZoomCaptureSubscribed)
             {
-                _host.UnsubscribeZoomCapture("Zoom capture paused");
+                _host.UnsubscribeZoomCapture("Engine off");
             }
             else
             {
@@ -82,12 +82,12 @@ public sealed class TransportCoordinator
                     return;
                 }
 
-                _host.EngineStatus = "Requesting Zoom capture…";
+                _host.EngineStatus = "Engine requesting Zoom media access…";
                 _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayloadAsync);
                 _host.ZoomCaptureSubscribed = true;
                 _host.NotifySurfacesCaptureSubscribed(true, _bridge.Profile?.Renderer);
                 _host.NotifySurfacesPreviewParticipant(_host.SelectedParticipantId);
-                _host.EngineStatus = $"Capture live — {_bridge.ProfileSummary}";
+                _host.EngineStatus = $"Engine on — {_bridge.ProfileSummary}";
                 _host.RefreshSdkReadiness();
                 try
                 {
@@ -99,7 +99,7 @@ public sealed class TransportCoordinator
                     // the operator flipped Engine On. Capture is enabled and the
                     // spine/periodic sync will apply the active scene shortly — this
                     // is NOT a toggle failure, so keep capture on.
-                    _host.EngineStatus = $"Capture live — {_bridge.ProfileSummary}";
+                    _host.EngineStatus = $"Engine on — {_bridge.ProfileSummary}";
                 }
                 _host.RefreshSurfaceBindings();
                 _host.RefreshTransportState();
@@ -109,7 +109,7 @@ public sealed class TransportCoordinator
         catch (MediaCoreSyncInFlightException)
         {
             // Backpressure during toggle — non-fatal; leave capture enabled.
-            _host.EngineStatus = "Capture starting…";
+            _host.EngineStatus = "Engine starting…";
             _host.RefreshTransportState();
             _host.NotifyRecordingCommandCanExecuteChanged();
         }
