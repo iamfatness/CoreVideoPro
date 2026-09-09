@@ -1,3 +1,5 @@
+using CoreVideoPro.MediaCore.Models;
+
 namespace CoreVideoPro.WinUI.Models;
 
 public enum SourceRouteMode
@@ -33,6 +35,7 @@ public static class SourceRouteVisualDefaults
 
 public sealed class SourceRoute
 {
+    public ExactSourceReference? ExactSource { get; set; }
     public required string Id { get; init; }
     public SourceRouteMode Mode { get; set; }
     public string? ParticipantId { get; set; }
@@ -63,6 +66,7 @@ public sealed class SourceRoute
         new()
         {
             Id = Id,
+            ExactSource = ExactSource,
             Mode = Mode,
             ParticipantId = ParticipantId,
             CaptureDeviceId = CaptureDeviceId,

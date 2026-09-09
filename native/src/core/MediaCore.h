@@ -422,6 +422,7 @@ class MediaCore {
     std::string routeId;
     std::string mode;
     std::string participantId;
+    std::optional<ExactRouteSourceIntent> exactSource;
     std::string captureDeviceId;
     std::string audioRole;
     std::string mediaAssetId;
