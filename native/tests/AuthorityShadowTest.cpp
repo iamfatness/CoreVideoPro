@@ -167,7 +167,8 @@ TEST(AuthorityShadow, CompleteCheckpointPreservesExactProviderSourceToken) {
   ZoomSourceAuthorityAdapter::Source source;
   source.id = "camera"; source.instanceId = "provider-camera-9";
   source.externalId = "42"; source.incarnation = 9;
-  source.subscriptionRequested = source.subscriptionObserved = true;
+  source.subscriptionRequested = true;
+  source.subscriptionObserved = true;
   source.publication = ZoomSourceAuthorityAdapter::Publication{1, 150, 1920, 1080, 60, 1, "I420"};
   r.sources.sources.push_back(source);
   ShowLayerIntent layer;

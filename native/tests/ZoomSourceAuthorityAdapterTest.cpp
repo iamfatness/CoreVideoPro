@@ -9,7 +9,7 @@ Adapter::Observation initial() {
   Adapter::Observation o; o.processEpoch = "epoch-a"; o.sequence = 1;
   o.people = {{"p-a", "Same", 1}, {"p-b", "Same", 1}};
   Adapter::Source a; a.id = "source-a"; a.externalId = "42"; a.personId = "p-a"; a.personGeneration = 1;
-  a.name = "Same"; a.subscriptionRequested = a.subscriptionObserved = true;
+  a.name = "Same"; a.subscriptionRequested = true; a.subscriptionObserved = true;
   a.instanceId = "provider-camera-a";
   a.publication = Adapter::Publication{1, 100, 1920, 1080, 60, 1, "I420"};
   auto b = a; b.id = "source-b"; b.externalId = "43"; b.personId = "p-b";
@@ -113,7 +113,7 @@ TEST(ZoomSourceAuthorityAdapter, RenameUpdatesMetadataWithoutReplacingSource) {
   EXPECT_EQ(changed.snapshot->sources[0].token.instanceId.value, before.snapshot->sources[0].token.instanceId.value);
   EXPECT_EQ(changed.snapshot->sources[0].token.generation, before.snapshot->sources[0].token.generation);
   EXPECT_EQ(changed.snapshot->sources[0].publicationSequence, before.snapshot->sources[0].publicationSequence);
-  EXPECT_TRUE(changed.snapshot->sources[0].subscriptionObserved);
+  EXPECT_TRUE(changed.snapshot->sources[0].subscriptionObserved.value_or(false));
   EXPECT_EQ(changed.snapshot->revision, before.snapshot->revision + 1);
   ++observation.sequence;
   EXPECT_EQ(adapter.sync(observation).status, Adapter::Status::Unchanged);
@@ -170,4 +170,20 @@ TEST(ZoomSourceAuthorityAdapter, ProviderIncarnationGapsAndEpochFencesRemainExac
   ASSERT_EQ(restarted.status, Adapter::Status::Applied);
   EXPECT_EQ(restarted.snapshot->sources[0].token.generation, 6ULL);
   EXPECT_EQ(restarted.snapshot->sources[0].token.processEpoch, "epoch-new");
+}
+
+TEST(ZoomSourceAuthorityAdapter, UnknownRatePreservesPublicationAndUnknownAcknowledgement) {
+  Adapter adapter("authority"); auto o = initial();
+  o.sources[0].subscriptionObserved.reset();
+  o.sources[0].publication->fpsNumerator.reset();
+  o.sources[0].publication->fpsDenominator.reset();
+  auto result = adapter.sync(o);
+  ASSERT_EQ(result.status, Adapter::Status::Applied);
+  EXPECT_TRUE(result.snapshot->sources[0].hasPublication);
+  EXPECT_FALSE(result.snapshot->sources[0].subscriptionObserved.has_value());
+  EXPECT_FALSE(result.snapshot->sources[0].format->fpsNumerator.has_value());
+  auto invalid = o; ++invalid.sequence; invalid.sources[0].publication->fpsDenominator = 1;
+  EXPECT_EQ(adapter.sync(invalid).status, Adapter::Status::Invalid);
+  EXPECT_EQ(adapter.snapshot()->revision, result.snapshot->revision);
+  EXPECT_EQ(adapter.sync(o).status, Adapter::Status::Unchanged);
 }
