@@ -14,7 +14,12 @@ public class SingleFlightTimerWorkTests
         using var held = new ManualResetEventSlim();
         using var attempting = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
-        var owner = Task.Run(() => { lock (gate) { held.Set(); release.Wait(TimeSpan.FromSeconds(5)); } });
+        // Dedicated threads, not Task.Run: both participants below block on
+        // purpose, and a saturated CI agent injects new pool threads only about
+        // twice a second. Queueing them made pool scheduling, rather than the
+        // admission logic under test, decide whether this test passed.
+        var owner = new Thread(() => { lock (gate) { held.Set(); release.Wait(TimeSpan.FromSeconds(5)); } }) { IsBackground = true };
+        owner.Start();
         Assert.True(held.Wait(TimeSpan.FromSeconds(2)));
         var count = 0;
         Task Tick() => work.RunAsync(generation, () =>
@@ -24,7 +29,8 @@ public class SingleFlightTimerWorkTests
             lock (gate) { }
             return Task.CompletedTask;
         });
-        var first = Task.Run(Tick);
+        var first = new Thread(() => Tick().GetAwaiter().GetResult()) { IsBackground = true };
+        first.Start();
         try
         {
             Assert.True(attempting.Wait(TimeSpan.FromSeconds(2)));
@@ -34,7 +40,8 @@ public class SingleFlightTimerWorkTests
             Assert.True(work.RunAsync(next, () => throw new Exception("Old work still owns admission")).IsCompletedSuccessfully);
         }
         finally { release.Set(); }
-        await Task.WhenAll(owner, first).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(owner.Join(TimeSpan.FromSeconds(5)));
+        Assert.True(first.Join(TimeSpan.FromSeconds(5)));
         await Tick(); // retired generation must remain inert after old work finishes
         Assert.Equal(1, count);
         await work.RunAsync(work.Reset(), () => { count++; return Task.CompletedTask; });
