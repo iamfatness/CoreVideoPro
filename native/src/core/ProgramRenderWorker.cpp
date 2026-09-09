@@ -1,9 +1,41 @@
 #include "core/ProgramRenderWorker.h"
 #include <condition_variable>
+#include <memory>
 #include <stdexcept>
 
 namespace corevideo::core {
 namespace {
+// libc++ ships no std::atomic<std::shared_ptr<T>> specialisation, so that type
+// falls through to the primary template and fails a trivially-copyable static
+// assert on macOS. The portable form is the deprecated free functions, which are
+// correct but correct only by CONVENTION: one plain assignment by a later editor
+// would reintroduce a data race with no diagnostic. Wrapping them restores the
+// compiler as the enforcer -- the value is private, so there is no plain
+// assignment left to write. Every read and write of the wrapped pointer goes
+// through the same synchronisation, which is what makes it safe.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#elif defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+template <class T>
+class AtomicSharedPtr final {
+ public:
+  std::shared_ptr<T> load() const { return std::atomic_load(&value_); }
+  std::shared_ptr<T> exchange(std::shared_ptr<T> next) {
+    return std::atomic_exchange(&value_, std::move(next));
+  }
+
+ private:
+  std::shared_ptr<T> value_;
+};
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#elif defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 constexpr uint64_t safe = 9007199254740991ULL;
 bool valid(const ProgramRenderWorker::Generation& g) {
   return !g.authorityEpoch.empty() && g.authorityEpoch.size() <= 512 && !g.clockId.empty() &&
@@ -88,10 +120,7 @@ struct ProgramRenderWorker::State {
   std::atomic<uint64_t> accepted{0}, coalesced{0}, rendered{0}, failed{0}, stalled{0}, skipped{0},
       contended{0}, rejectedStale{0}, staleCompletions{0}, deadlineMisses{0};
   std::atomic<size_t> queued{0}, maximumQueued{0};
-  // Real atomic, not the deprecated shared_ptr free functions: those make
-  // correctness a convention every future editor must remember, and a plain
-  // assignment to this member would reintroduce a data race with no warning.
-  std::atomic<std::shared_ptr<const Work>> latest;
+  AtomicSharedPtr<const Work> latest;
   void reportStall() {
     if (busy && nowNs() - startedNs.load() > std::chrono::duration_cast<std::chrono::nanoseconds>(config.stallThreshold).count() &&
         !stallReported.exchange(true)) ++stalled;
