@@ -5401,25 +5401,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     markStage(s_subFetchUs, 0);
     for (const auto& frame : decoded) {
-      if (frame.hasI420()) {
-        // GPU path: carry the raw I420 planes through to the compositor, which
-        // converts to RGB in-shader (no CPU per-pixel I420->BGRA convert).
-        realZoom->ingestI420Frame(
-            frame.participantId,
-            frame.i420,  // zero-copy: share the decoded buffer, don't memcpy it
-            frame.i420Width,
-            frame.i420Height,
-            frame.frameId,
-            frame.timestampMs);
-      } else if (frame.hasPixels()) {
-        realZoom->ingestFrame(
-            frame.participantId,
-            frame.pixels->data(),
-            frame.pixelWidth,
-            frame.pixelHeight,
-            frame.frameId,
-            frame.timestampMs);
-      }
+      realZoom->ingestVideoFrame(frame);
     }
     // Split the per-frame store calls from the destruction of `decoded` (which
     // releases each shared I420 buffer) so a long tap says which one it is.

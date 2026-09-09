@@ -612,6 +612,20 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.i420Width = decoded.width;
     frame.i420Height = decoded.height;
     frame.frameId = decoded.frameId;
+    frame.exactSourceEvidence = decoded.exactSourceEvidence;
+    if (frame.exactSourceEvidence) {
+      const auto& evidence = *frame.exactSourceEvidence;
+      const auto stream = videoStreams_.find(evidence.identity.sourceId);
+      const auto source = std::find_if(authorityObservation_.sources.begin(), authorityObservation_.sources.end(),
+          [&](const auto& item) { return item.sourceId == evidence.identity.sourceId && item.available &&
+              item.instanceId == evidence.identity.instanceId && static_cast<int64_t>(item.generation) == evidence.identity.generation; });
+      if (!authorityObservation_.valid || restartBeforeJoin_ || shuttingDown_ ||
+          authorityObservation_.processGeneration != processGeneration_ ||
+          evidence.identity.processEpoch != authorityObservation_.processEpoch ||
+          source == authorityObservation_.sources.end() || stream == videoStreams_.end() ||
+          stream->second.authorityPublicationFence != evidence.publicationFence)
+        frame.exactSourceEvidence.reset();
+    }
     frames.push_back(std::move(frame));
   }
 
@@ -1327,7 +1341,9 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
                    result.lumaRange.sampled);
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
-                            std::move(result.i420Shared), result.observedAt);
+                            std::move(result.i420Shared), result.observedAt,
+                            result.job.authorityIncarnation == stream->second.authorityIncarnation &&
+                            result.job.authorityPublicationFence == stream->second.authorityPublicationFence);
     if (result.job.authorityIncarnation != stream->second.authorityIncarnation ||
         result.job.authorityPublicationFence != stream->second.authorityPublicationFence)
       stream->second.authorityPublication.reset();
@@ -1346,7 +1362,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
 void ZoomEngineRuntime::publishVideoFrameLocked(
     const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
     std::shared_ptr<const std::vector<std::uint8_t>> i420,
-    std::chrono::steady_clock::time_point observedAt) {
+    std::chrono::steady_clock::time_point observedAt, bool authorityCopyCurrent) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs());
 
@@ -1371,6 +1387,23 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
     ++slotPublished_;
 
     DecodedFrame incoming;
+    if (authorityCopyCurrent && authorityObservation_.valid &&
+        authorityObservation_.processGeneration == processGeneration_ && !restartBeforeJoin_ && !shuttingDown_) {
+      const auto source = std::find_if(authorityObservation_.sources.begin(), authorityObservation_.sources.end(),
+          [&](const auto& item) { return item.sourceId == uuid && item.available &&
+              item.participantId == ref.participantId && item.generation == ref.authorityIncarnation; });
+      if (source != authorityObservation_.sources.end()) {
+        SourceFrameEvidence evidence;
+        evidence.identity = {source->sourceId, source->instanceId, authorityObservation_.processEpoch,
+            static_cast<int64_t>(source->generation)};
+        evidence.kind = source->kind == AuthoritySource::Kind::Camera ? SourceFrameEvidence::Kind::Camera : SourceFrameEvidence::Kind::Share;
+        evidence.publicationSequence = ref.authorityPublication->sequence;
+        evidence.publicationFence = ref.authorityPublicationFence;
+        evidence.observedNs = ref.authorityPublication->observedNs;
+        evidence.payload = i420;
+        incoming.exactSourceEvidence = std::make_shared<const SourceFrameEvidence>(std::move(evidence));
+      }
+    }
     incoming.i420 = std::move(i420);
     incoming.observedAt = observedAt;
     incoming.width = static_cast<int>(frame.i420Width);

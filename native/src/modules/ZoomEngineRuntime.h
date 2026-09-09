@@ -215,6 +215,7 @@ class ZoomEngineRuntime {
   std::vector<rpc::Json> pendingFrameEvents_;
 
   struct DecodedFrame {
+    std::shared_ptr<const SourceFrameEvidence> exactSourceEvidence;
     // Full-resolution I420 planes (Y + U + V tightly packed). The compositor
     // uploads these to the GPU and converts to RGB in-shader.
     std::shared_ptr<const std::vector<std::uint8_t>> i420;
@@ -355,7 +356,8 @@ class ZoomEngineRuntime {
   void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
                                const ZoomEngineRgbaFrame& frame,
                                std::shared_ptr<const std::vector<std::uint8_t>> i420,
-                               std::chrono::steady_clock::time_point observedAt);
+                               std::chrono::steady_clock::time_point observedAt,
+                               bool authorityCopyCurrent = true);
   void closeVideoStreamsLocked();
 };
 
