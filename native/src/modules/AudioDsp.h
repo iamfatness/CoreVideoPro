@@ -589,6 +589,11 @@ struct AudioFeedState {
   // 3.1% vs video before the pacer catch-up fix, silently).
   size_t shedSamples = 0;
   size_t shedEvents = 0;
+  // How much of `shedSamples` the owner has already folded into its cumulative
+  // session counter. The owner publishes the DELTA so the session total stays
+  // monotonic even if a per-source state is ever pruned and recreated (spec
+  // rule 4: loss is recorded, never repaired).
+  size_t shedSamplesPublished = 0;
   // Zoom's SDK packet clock is 10 ms while the program worker is 20 ms. Prime
   // to THREE complete worker ticks before the first emission, then retain two
   // ticks as a scheduling cushion. This absorbs callback/poll phase jitter
