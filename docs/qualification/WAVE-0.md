@@ -156,6 +156,43 @@ Unknown total stop age is reported unverified; old successful writer counts do n
 make an outstanding finalize healthy. Raw writer error text is not copied into
 the verdict to avoid exposing paths or other private content.
 
+## Producing the snapshot envelope
+
+`scripts/qa/collect-runtime-snapshots.mjs` is the collector that fills it. It runs
+its own media core over the same stdio JSON-RPC wire the shell and the other
+headless probes use, samples bare `{"type":"snapshot"}` (the minimum-work read
+path: no command mutation, no synthetic render tick) on a schedule, and writes the
+envelope.
+
+```powershell
+node scripts/qa/collect-runtime-snapshots.mjs --out capture.json --seconds 30 --load 2 --recording
+node scripts/qa/production-qualification.mjs --runtime-snapshots --input capture.json
+```
+
+- `--interval-ms` (default 250, floor 50) is **declared** in the envelope as
+  `sampleIntervalMs`, because the judge reasons about worker staleness and a
+  reader has to know how coarsely we looked. The floor exists so the collector
+  cannot quietly become the load it is measuring. Honest caveat: every request
+  path in the core serialises on `coreMutex`, so no read is free — 4 Hz is simply
+  well under the 2 Hz-per-shell traffic the product already generates, and the
+  collector never touches `audioOutputMutex_`, the encoder or the engine.
+- `processGeneration` comes from the handshake `processEpoch`, not a PID.
+- **`nativeNowMs` is deliberately not emitted.** The judge will only age a queued
+  stop against the core's own monotonic clock (`AsyncEncoderSink` steady_clock),
+  and the collector's clock is unrelated. The core publishes no monotonic "now",
+  so an outstanding queued stop stays unverified instead of being guessed at.
+  Closing that needs one field in `MediaCore::sessionState`.
+- The envelope is written in a `finally`, so a crashed or aborted run still
+  yields what it captured. A run that captured nothing is written too, but marked
+  `collectorFailed` with populated `errors[]` and exits non-zero — never a quiet
+  empty-but-well-formed envelope.
+
+A clean capture is `unverified` by construction; that is the adapter working, not
+a defect. Measured 2026-09-09 on this rig: 60 idle samples -> `unverified` with
+only the three structural caveats plus a first-sample audio worker that had not
+reported progress yet; 80 samples under 2x1080p60 with recording -> `failed`, one
+finding, `encoder.droppedVideo +9` in the first interval after recording start.
+
 Run adapter regressions with:
 
 ```powershell
