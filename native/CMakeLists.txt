@@ -73,6 +73,10 @@ add_library(corevideo_native
   src/core/AtomicTakeRpcAdapter.cpp
   src/core/SceneVersionStore.cpp
   src/core/SceneVersionShadow.cpp
+  src/core/ProgramRenderWorker.cpp
+  src/core/SourceFrameLease.cpp
+  src/core/DeliveredProgramPacket.cpp
+  src/core/ProgramPacketPlayout.cpp
   src/core/SourceRegistry.cpp
   src/core/ZoomSourceAuthorityAdapter.cpp
   src/core/ZoomRuntimeAuthorityBridge.cpp
@@ -663,6 +667,9 @@ if(BUILD_TESTING)
     tests/AtomicTakeRpcAdapterTest.cpp
     tests/SceneVersionStoreTest.cpp
     tests/SceneVersionShadowTest.cpp
+    tests/ProgramRenderWorkerTest.cpp
+    tests/SourceFrameLeaseTest.cpp
+    tests/ProgramPacketPlayoutTest.cpp
     tests/ShadowExactSourceFramesTest.cpp
     tests/SourceRegistryTest.cpp
     tests/ZoomSourceAuthorityAdapterTest.cpp
