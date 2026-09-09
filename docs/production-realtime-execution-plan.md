@@ -56,6 +56,15 @@ Controlling architecture: `production-realtime-architecture.md`
   RPC codec delegates all decisions to the coordinator. These adapters remain
   unregistered and produce no live capability, routing, rendering, or Take side
   effects until shadow parity and client adoption gates pass.
+- Transactional authority shadow integration: `9c9acbc`. Source registry,
+  ShowState, scene-version heads, and their retirement fences are staged as one
+  checkpoint and committed only after complete evidence is constructed. Exact
+  frame comparison is metadata-only, bounded, and startup-gated; rejected or
+  oversized checkpoints cannot advance any authority owner.
+- Gated managed atomic Take client: `e971698`. The client requires local opt-in
+  plus an enabled version-1 peer, preserves the caller operation identity, and
+  treats malformed or uncertain post-dispatch outcomes as reconciliation work.
+  It is not wired into WinUI and the native RPC capability remains disabled.
 
 ## Outcome
 
