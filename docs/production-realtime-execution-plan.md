@@ -21,6 +21,10 @@ Controlling architecture: `production-realtime-architecture.md`
   unknown evidence, source-format plan invalidation, and immutable Windows Take
   request contract: `f5b9f53`. This provides cutover inputs without enabling a
   second side-effect path.
+- Strict native Take JSON, exact source identity catalogs on full/capture/spine
+  snapshots, process/epoch/sequence admission, restart invalidation, and ordered
+  bounded shell publication: `0c0c90d`. Stale or malformed authority now fails
+  closed before it can restore roster, routing, or meeting UI state.
 
 ## Outcome
 
