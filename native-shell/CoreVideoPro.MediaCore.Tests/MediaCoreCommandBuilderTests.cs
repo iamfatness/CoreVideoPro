@@ -34,6 +34,37 @@ public sealed class MediaCoreCommandBuilderTests
     ];
 
     [Fact]
+    public void TakeTransitionIsAnEdgeTriggeredFirstCommand()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            TakeTransition = new MediaCoreTakeTransitionWire(
+                "take-42", 42, "wipe", 450, "right-to-left", "#112233")
+        });
+
+        var transition = commands[0];
+        Assert.Equal("begin-take-transition", transition.Type);
+        Assert.Equal("take-42", GetString(transition, "operationId"));
+        Assert.Equal("wipe", GetString(transition, "mode"));
+        Assert.Equal("right-to-left", GetString(transition, "direction"));
+        Assert.Equal(42, transition.ExtensionData!["revision"].GetInt64());
+        Assert.Equal(450, transition.ExtensionData!["durationMs"].GetInt32());
+        Assert.Equal("load-scene-graph", commands[4].Type);
+    }
+
+    [Fact]
+    public void OrdinarySyncDoesNotRestartTakeTransition()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview"
+        });
+
+        Assert.DoesNotContain(commands, command => command.Type == "begin-take-transition");
+    }
+
+    [Fact]
     public void SerializesActiveSceneRoutesForSceneGraph()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

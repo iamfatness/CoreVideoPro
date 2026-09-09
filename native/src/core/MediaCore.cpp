@@ -383,7 +383,7 @@ rpc::Json MediaCore::profile() const {
       {"encoder", encoderSession.encoderName},
       {"maxProgramResolution", "3840x2160"},
       {"maxProgramFps", 60},
-      {"maxParticipantFeeds", 8},
+      {"maxParticipantFeeds", 10},
       {"maxIsoRecordings", 8},
       {"capabilities", capabilityArray(renderer, encoderSession)},
   };
@@ -681,6 +681,16 @@ rpc::Json MediaCore::sessionState() const {
       {"overlayState", overlayState()},
       {"mediaPlayback", mediaPlaybackState()},
       {"autoProduction", autoProductionState()},
+      {"takeTransition", rpc::Json::Object{
+          {"operationId", takeTransition_.operationId},
+          {"revision", static_cast<double>(takeTransition_.revision)},
+          {"mode", takeTransition_.mode},
+          {"durationMs", takeTransition_.durationMs},
+          {"progress", takeTransition_.durationMs > 0.0
+              ? (std::min)(1.0, takeTransition_.elapsedMs / takeTransition_.durationMs)
+              : 1.0},
+          {"status", takeTransition_.operationId.empty() ? "idle" : takeTransition_.active ? "active" : "completed"},
+      }},
       {"meetingState", resolveMeetingStateForSession()},
       {"breakoutRoomId", breakoutRoomId_},
       {"breakoutRoomName", breakoutRoomName_},
@@ -1162,7 +1172,9 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
 
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
   const std::string type = command.getString("type");
-  if (type == "load-scene-graph") {
+  if (type == "begin-take-transition") {
+    beginTakeTransition(command);
+  } else if (type == "load-scene-graph") {
     loadSceneGraph(command);
   } else if (type == "set-preview-scene") {
     applyPreviewScene(command);
@@ -1260,6 +1272,30 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
                                  enabled ? "enabled" : "disabled");
   }
   publishProgramOutputConfiguration();
+}
+
+void MediaCore::beginTakeTransition(const rpc::Json& command) {
+  TakeTransitionState next;
+  next.operationId = command.getString("operationId");
+  next.revision = static_cast<int64_t>(command.getNumber("revision", 0.0));
+  next.mode = command.getString("mode", "cut");
+  if (next.mode != "fade" && next.mode != "dip" && next.mode != "wipe") {
+    next.mode = "cut";
+  }
+  next.durationMs = (std::max)(0.0, (std::min)(5000.0, command.getNumber("durationMs", 300.0)));
+  next.direction = command.getString("direction", "left-to-right");
+  next.dipColor = command.getString("dipColor", "#000000");
+  next.outgoingSceneId = sceneId_;
+  next.outgoingRoutes = sceneRoutes_;
+  next.outgoingBackground = sceneBackground_;
+  next.outgoingTiles = tilesLayer_;
+  next.outgoingColorGrade = colorGrade_;
+  next.outgoingOverlays = overlayAssets_;
+  next.outgoingCaptionEnabled = captionEnabled_;
+  next.outgoingCaptionText = captionText_;
+  next.outgoingCaptionSpeaker = captionSpeaker_;
+  next.active = next.mode != "cut" && next.durationMs > 0.0;
+  takeTransition_ = std::move(next);
 }
 
 void MediaCore::publishProgramOutputConfiguration() {
@@ -4505,7 +4541,128 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
                                       videoFrames, tilesLayer_);
   plan.warnings = sceneValidationWarnings_;
-  return plan;
+  return applyTakeTransition(std::move(plan), videoFrames);
+}
+
+modules::CompositorRenderPlan MediaCore::applyTakeTransition(
+    modules::CompositorRenderPlan incoming,
+    const std::vector<modules::VideoFrame>& videoFrames) const {
+  if (!takeTransition_.active || takeTransition_.mode == "cut") {
+    return incoming;
+  }
+
+  const float progress = static_cast<float>((std::max)(0.0, (std::min)(
+      1.0, takeTransition_.durationMs > 0.0
+          ? takeTransition_.elapsedMs / takeTransition_.durationMs
+          : 1.0)));
+  auto outgoing = buildRenderPlanForScene(
+      takeTransition_.outgoingSceneId,
+      static_cast<int>(takeTransition_.outgoingRoutes.size()),
+      static_cast<int>(takeTransition_.outgoingOverlays.size()),
+      takeTransition_.outgoingBackground,
+      takeTransition_.outgoingRoutes,
+      takeTransition_.outgoingColorGrade,
+      takeTransition_.outgoingOverlays,
+      takeTransition_.outgoingCaptionEnabled,
+      takeTransition_.outgoingCaptionText,
+      takeTransition_.outgoingCaptionSpeaker,
+      videoFrames,
+      takeTransition_.outgoingTiles);
+
+  // One combined plan has one global grade. Bake each scene's global grade into
+  // the layers that do not already carry a route-specific grade, then neutralize
+  // the combined global value so outgoing and incoming retain their own look.
+  auto bakeSceneGrade = [](modules::CompositorRenderPlan& plan) {
+    for (auto& layer : plan.layers) {
+      if (!layer.hasColorGrade) {
+        layer.hasColorGrade = true;
+        layer.colorGrade = plan.colorGrade;
+      }
+    }
+    plan.colorGrade = {};
+  };
+  bakeSceneGrade(outgoing);
+  bakeSceneGrade(incoming);
+
+  auto scaleOpacity = [](std::vector<modules::CompositorRenderPlanLayer>& layers, float amount) {
+    for (auto& layer : layers) {
+      layer.opacity = (std::max)(0.f, (std::min)(1.f, layer.opacity * amount));
+    }
+  };
+  auto namespaceLayers = [](std::vector<modules::CompositorRenderPlanLayer>& layers,
+                            const std::string& prefix, int orderOffset) {
+    for (auto& layer : layers) {
+      layer.layerId = prefix + layer.layerId;
+      layer.order += orderOffset;
+    }
+  };
+
+  namespaceLayers(outgoing.layers, "take-out:", 0);
+  namespaceLayers(incoming.layers, "take-in:", 100000);
+
+  modules::CompositorRenderPlan combined = incoming;
+  combined.renderPlanId = "take:" + takeTransition_.operationId + ":" +
+      std::to_string(takeTransition_.revision) + ":" + incoming.renderPlanId;
+  combined.layers.clear();
+  combined.layers.reserve(outgoing.layers.size() + incoming.layers.size() + 1);
+
+  if (takeTransition_.mode == "fade") {
+    scaleOpacity(outgoing.layers, 1.f - progress);
+    scaleOpacity(incoming.layers, progress);
+    combined.layers.insert(combined.layers.end(), outgoing.layers.begin(), outgoing.layers.end());
+    combined.layers.insert(combined.layers.end(), incoming.layers.begin(), incoming.layers.end());
+  } else if (takeTransition_.mode == "dip") {
+    const float incomingAmount = progress <= 0.5f ? 0.f : (progress - 0.5f) * 2.f;
+    combined.layers.insert(combined.layers.end(), outgoing.layers.begin(), outgoing.layers.end());
+    modules::CompositorRenderPlanLayer dip;
+    dip.layerId = "take-dip:" + takeTransition_.operationId;
+    dip.kind = "tiles-background";
+    dip.order = 100000;
+    dip.rect = {0.f, 0.f, 1.f, 1.f};
+    dip.hasFillColor = true;
+    dip.fillColor = takeTransition_.dipColor;
+    dip.opacity = (std::min)(1.f, progress * 2.f);
+    combined.layers.push_back(std::move(dip));
+    scaleOpacity(incoming.layers, incomingAmount);
+    for (auto& layer : incoming.layers) layer.order += 100000;
+    combined.layers.insert(combined.layers.end(), incoming.layers.begin(), incoming.layers.end());
+  } else {
+    modules::CompositorLayerRect reveal{0.f, 0.f, progress, 1.f};
+    if (takeTransition_.direction == "right-to-left") {
+      reveal.x = 1.f - progress;
+    } else if (takeTransition_.direction == "top-to-bottom") {
+      reveal = {0.f, 0.f, 1.f, progress};
+    } else if (takeTransition_.direction == "bottom-to-top") {
+      reveal = {0.f, 1.f - progress, 1.f, progress};
+    }
+    for (auto& layer : incoming.layers) {
+      if (layer.hasClipRect) {
+        const float left = (std::max)(layer.clipRect.x, reveal.x);
+        const float top = (std::max)(layer.clipRect.y, reveal.y);
+        const float right = (std::min)(layer.clipRect.x + layer.clipRect.width, reveal.x + reveal.width);
+        const float bottom = (std::min)(layer.clipRect.y + layer.clipRect.height, reveal.y + reveal.height);
+        layer.clipRect = {left, top, (std::max)(0.f, right - left), (std::max)(0.f, bottom - top)};
+      } else {
+        layer.hasClipRect = true;
+        layer.clipRect = reveal;
+      }
+    }
+    combined.layers.insert(combined.layers.end(), outgoing.layers.begin(), outgoing.layers.end());
+    combined.layers.insert(combined.layers.end(), incoming.layers.begin(), incoming.layers.end());
+  }
+  combined.warnings.insert(combined.warnings.end(), outgoing.warnings.begin(), outgoing.warnings.end());
+  return combined;
+}
+
+void MediaCore::advanceTakeTransition(double frameIntervalMs) {
+  if (!takeTransition_.active) return;
+  takeTransition_.elapsedMs = (std::min)(takeTransition_.durationMs,
+      takeTransition_.elapsedMs + (std::max)(0.0, frameIntervalMs));
+  if (takeTransition_.elapsedMs < takeTransition_.durationMs) return;
+  takeTransition_.active = false;
+  takeTransition_.outgoingRoutes.clear();
+  takeTransition_.outgoingOverlays.clear();
+  takeTransition_.outgoingTiles = {};
 }
 
 modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
@@ -5379,6 +5536,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
+  advanceTakeTransition(static_cast<double>(frameIntervalMs));
   lastProducedFrameNumber_ = producedFrame.frameNumber;
   if (modules_.compositor->programBufferFrames() > 0) {
     // Rendering queues owned pixels; only scheduled delivery advances Program.

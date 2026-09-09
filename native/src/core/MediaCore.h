@@ -514,6 +514,32 @@ class MediaCore {
     // the key for one frame at the transition boundary.
     bool retireAfterBuildOut = false;
   };
+
+  struct TakeTransitionState {
+    bool active = false;
+    std::string operationId;
+    int64_t revision = 0;
+    std::string mode = "cut";
+    std::string direction = "left-to-right";
+    std::string dipColor = "#000000";
+    double durationMs = 300.0;
+    double elapsedMs = 0.0;
+    std::string outgoingSceneId;
+    std::vector<SceneRouteState> outgoingRoutes;
+    SceneBackgroundState outgoingBackground;
+    TilesLayerState outgoingTiles;
+    modules::CompositorColorGrade outgoingColorGrade;
+    std::map<std::string, OverlayAssetState> outgoingOverlays;
+    bool outgoingCaptionEnabled = false;
+    std::string outgoingCaptionText;
+    std::string outgoingCaptionSpeaker;
+  };
+
+  void beginTakeTransition(const rpc::Json& command);
+  void advanceTakeTransition(double frameIntervalMs);
+  [[nodiscard]] modules::CompositorRenderPlan applyTakeTransition(
+      modules::CompositorRenderPlan incoming,
+      const std::vector<modules::VideoFrame>& videoFrames) const;
   std::map<std::string, OverlayAssetState> overlayAssets_;
   int overlayInsertionCounter_ = 0;
   // Shared render-plan builder parameterized on the scene state, so the PROGRAM
@@ -547,6 +573,7 @@ class MediaCore {
   // Monotonic compositor animation clock (ms), advanced each render tick, that
   // drives overlay keyPhase progress deterministically.
   double overlayAnimationClockMs_ = 0.0;
+  TakeTransitionState takeTransition_;
   std::string outputProfileId_ = "canvas-1080p60";
   std::string outputResolution_ = "1920x1080";
   int outputWidth_ = 1920;
@@ -952,7 +979,7 @@ class MediaCore {
   // User-selectable multiviewer configuration (configure-multiviewer command).
   // layoutMode: "grid" | "pgmPvwTop" | "pgmPvwLarge" | "pgmPvwSide".
   std::string multiviewLayoutMode_ = "grid";
-  int multiviewTileCount_ = 8;
+  int multiviewTileCount_ = 10;
   bool multiviewShowLabels_ = true;
   bool multiviewShowTally_ = true;
   bool multiviewShowMeters_ = true;

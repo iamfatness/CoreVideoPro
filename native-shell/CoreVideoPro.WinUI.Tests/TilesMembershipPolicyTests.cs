@@ -63,11 +63,25 @@ public class TilesMembershipPolicyTests
     [Fact]
     public void ManualSlotsKeepHolesAndMissingIdentityWithoutPromotingRoster()
     {
-        var settings = new DynamicGallerySettings { AutoFill = false,
+        var settings = new DynamicGallerySettings { AutoFill = false, MembershipMode = "manual",
             ManualSlots = ["zoom:a", null, "zoom:absent", "zoom:b", "zoom:a"], ExcludedSourceIds = ["zoom:b"] };
         var expected = new[] { "zoom:a", "", "zoom:absent", "", "" };
         Assert.Equal(expected, TilesMembershipPolicy.Resolve(settings, ["zoom:a", "zoom:c"]));
         Assert.Equal(expected, TilesMembershipPolicy.Resolve(settings, ["zoom:a", "zoom:c", "zoom:absent"]));
+    }
+    [Fact]
+    public void RoutedModeUsesOnlyLiveSourcesAssignedToTheShow()
+    {
+        var settings = new DynamicGallerySettings
+        {
+            MembershipMode = "routed",
+            ManualSlots = ["zoom:c"]
+        };
+        Assert.Equal(new[] { "zoom:c", "zoom:a" },
+            TilesMembershipPolicy.Resolve(
+                settings,
+                ["zoom:a", "zoom:b", "zoom:c"],
+                ["zoom:a", "zoom:c", "capture:cam"]));
     }
     [Fact]
     public void AutomaticFillRespectsPriorityAssignmentsExclusionsAndLimit()

@@ -169,10 +169,11 @@ async function main() {
       .join("/");
     const checkFile = path.join(tempDir, "barrel-types.ts");
     writeFileSync(checkFile, TYPE_CHECK_SOURCE.replace("DIST_SPECIFIER", specifier));
+    const tscCli = path.resolve(packageRoot, "..", "node_modules", "typescript", "bin", "tsc");
     execFileSync(
-      "npx",
+      process.execPath,
       [
-        "tsc",
+        tscCli,
         "--noEmit",
         "--strict",
         "--module",

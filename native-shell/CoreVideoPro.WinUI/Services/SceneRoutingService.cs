@@ -343,7 +343,10 @@ public static class SceneRoutingService
             {
                 Id = route.Id,
                 Mode = route.Mode,
-                ParticipantId = route.ParticipantId ?? participants.FirstOrDefault()?.Id,
+                // A transient null from a rebuilding ComboBox is not an instruction to
+                // route the first roster member. Keep the fixed route unassigned until
+                // the operator chooses a stable source identity.
+                ParticipantId = route.ParticipantId,
                 CaptureDeviceId = null,
                 ShowInputSlotNumber = route.ShowInputSlotNumber,
                 SpotlightIndex = route.SpotlightIndex,

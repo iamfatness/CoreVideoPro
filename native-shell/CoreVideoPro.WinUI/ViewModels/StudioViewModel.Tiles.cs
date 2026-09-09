@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.ViewModels;
@@ -65,10 +66,20 @@ public sealed partial class StudioViewModel
     public double GalleryManualSlot { get => _galleryManualSlot; set => SetProperty(ref _galleryManualSlot, double.IsFinite(value) ? Math.Clamp(Math.Round(value), 1, 64) : 1); }
     public IReadOnlyList<GalleryMemberChoice> GalleryMemberChoices => RoomVideoParticipants
         .Select(p => new GalleryMemberChoice(p.Id.Contains(':') ? p.Id : "zoom:" + p.Id, p.Name)).ToList();
-    public bool GalleryAutoFill
+    public IReadOnlyList<RouteSelectOption> GalleryMembershipModeOptions { get; } =
+    [
+        new() { Value = "routed", Label = "Routed show sources only" },
+        new() { Value = "eligible", Label = "All eligible meeting participants" },
+        new() { Value = "manual", Label = "Manual slots only" }
+    ];
+    public string GalleryMembershipMode
     {
-        get => PreviewScene.DynamicGallery?.AutoFill ?? true;
-        set => UpdateGallery(settings => settings.AutoFill = value);
+        get => TilesMembershipPolicy.NormalizeMode(PreviewScene.DynamicGallery?.MembershipMode);
+        set => UpdateGallery(settings =>
+        {
+            settings.MembershipMode = TilesMembershipPolicy.NormalizeMode(value);
+            settings.AutoFill = settings.MembershipMode != "manual";
+        });
     }
     public string GalleryMembershipSummary
     {
@@ -85,7 +96,7 @@ public sealed partial class StudioViewModel
     public void SetTilesAutoFill(bool enabled)
     {
         RequireTilesPreview();
-        GalleryAutoFill = enabled;
+        GalleryMembershipMode = enabled ? "eligible" : "manual";
     }
     public void AssignTilesSlot(int slot, string sourceId)
     {
