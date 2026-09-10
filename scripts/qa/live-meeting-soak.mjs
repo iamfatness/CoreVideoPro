@@ -37,7 +37,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { judgeTakeRecords } from './take-verdict-judge.mjs';
+import { judgeTakeRecords, scopeTakeRecords } from './take-verdict-judge.mjs';
 
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -223,20 +223,33 @@ try {
     label: p.displayName ?? p.name ?? `CAM ${i + 1}`,
   }));
 
+  const pgmLoadSceneGraph = { type: 'load-scene-graph', sceneId: 'pgm', routes: [
+    { routeId: 'pgm-0', slot: 0, mode: 'fixed', participantId: sources[0].participantId }] };
+
   await sync([
     { type: 'configure-multiviewer', layoutMode: 'pgmPvwTop', tileCount: Math.max(10, sources.length) },
     { type: 'set-multiview-layout', canvasWidth: 1920, canvasHeight: 1080, sources },
-    { type: 'load-scene-graph', sceneId: 'pgm', routes: [
-      { routeId: 'pgm-0', slot: 0, mode: 'fixed', participantId: sources[0].participantId }] },
+    pgmLoadSceneGraph,
     { type: 'set-preview-scene', sceneId: 'pvw', routes: [
       { routeId: 'pvw-0', slot: 0, mode: 'fixed', participantId: (sources[1] ?? sources[0]).participantId }] },
   ], 500);
   await sleep(5000);   // engine subscribe + first frame on every source
 
   // ── Takes: judge Takes by the take record, not by eye ───────────────────────
+  // This same 'pgm' setup above arms a real take record ("unloaded" -> "pgm") before
+  // the harness's own loop even starts — scopeTakeRecords below is what keeps that
+  // (and everything else outside the harness's own {sceneA, sceneB} pair and time
+  // window) from silently padding the count the judge sees.
   const takeRecordsSeen = new Map();
   if (takes > 0) {
     console.log(`Takes       : driving ${takes} take(s), alternating "${sceneA}" <-> "${sceneB}" (synthesized scenes, not shell scene ids)`);
+    // Floor: any record already armed (e.g. by the 'pgm' setup just above) must not
+    // count as one of the harness's own Takes.
+    const { snapshot: preTakes } = await sync([], 500);
+    collectTakeRecords(preTakes, takeRecordsSeen);
+    const armedAfterMs = (preTakes?.takeRecords?.records ?? [])
+      .reduce((max, r) => Math.max(max, Number(r.armedAtMs) || 0), 0);
+
     for (let i = 0; i < takes; i++) {
       const targetScene = i % 2 === 0 ? sceneA : sceneB;
       const src = sources[i % sources.length];
@@ -251,8 +264,19 @@ try {
       const { snapshot: after } = await sync([], 500);
       collectTakeRecords(after, takeRecordsSeen);
     }
-    const takeRecords = [...takeRecordsSeen.values()];
-    const takeJudge = judgeTakeRecords(takeRecords, { expectedTakes: takes });
+
+    // Restore Program to the original multi-participant wall before the recording/
+    // artifact-validation phase, so the rest of the soak still proves the wall its
+    // evidence header advertises. This itself arms a record (sceneB/sceneA -> 'pgm'),
+    // which scopeTakeRecords below excludes on the both-sides-in-the-pair rule.
+    await sync([pgmLoadSceneGraph], 500);
+    await sleep(500);
+    const { snapshot: afterRestore } = await sync([], 500);
+    collectTakeRecords(afterRestore, takeRecordsSeen);
+
+    const scopedRecords = scopeTakeRecords([...takeRecordsSeen.values()],
+      { sceneA, sceneB, armedAfterMs });
+    const takeJudge = judgeTakeRecords(scopedRecords, { expectedTakes: takes });
     evidence.takeJudge = takeJudge;
     console.log(`Takes       : ${takeJudge.cuts} cut, ${takeJudge.rebuilt} rebuilt (of ${takeJudge.total}/${takeJudge.expectedTakes} expected)`);
     for (const r of takeJudge.reasons) {

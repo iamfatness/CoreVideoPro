@@ -24,3 +24,26 @@ export function judgeTakeRecords(records, { expectedTakes = 0 } = {}) {
   const ok = rebuilt === 0 && list.length >= expectedTakes;
   return { ok, cuts, rebuilt, total: list.length, expectedTakes, reasons };
 }
+
+/**
+ * Scope a raw takeRecords list down to the ones a harness's own Takes phase actually
+ * armed. Without this, any record already sitting in the core's ring before the
+ * harness's first Take (e.g. the soak's own initial scene setup) — or armed by a
+ * post-phase restore back to the original scene — silently counts toward `total`,
+ * which can mask a genuinely lost take behind a coincidentally-matching count.
+ *
+ * A record is kept only if BOTH `fromSceneId` and `toSceneId` are in the harness's
+ * own {sceneA, sceneB} pair (this alone excludes a restore back to a THIRD scene,
+ * e.g. sceneB -> "pgm") AND its `armedAtMs` is strictly after `armedAfterMs` (the
+ * floor read from the ring immediately before the harness's first Take).
+ */
+export function scopeTakeRecords(records, { sceneA, sceneB, armedAfterMs = 0 } = {}) {
+  const list = Array.isArray(records) ? records : [];
+  const scenes = new Set([sceneA, sceneB]);
+  return list.filter((r) => {
+    if (!scenes.has(r.fromSceneId) || !scenes.has(r.toSceneId)) return false;
+    const armedAtMs = Number(r.armedAtMs);
+    if (!Number.isFinite(armedAtMs)) return false;
+    return armedAtMs > armedAfterMs;
+  });
+}
