@@ -374,6 +374,15 @@ public sealed class Direct3D11InteropService : IDisposable
             _stageWatchdog?.Mark("copy-back-buffer");
             s_sharedContext.CopyResource(_backBuffer, ingest.Private);
             _stageWatchdog?.Mark("present");
+            // Fault seam (test-only, inert in any shipped build — see
+            // PresentationFaultInjection). ONE static bool read on the hot path; a device
+            // loss injected here is thrown from the real present site, so it takes the
+            // real classify -> retire -> ladder -> rebuild path below rather than a
+            // parallel one written for the test.
+            if (PresentationFaultInjection.Armed)
+            {
+                PresentationFaultInjection.BeforePresent();
+            }
             var result = _swapChain.Present(1, PresentFlags.DoNotWait);
             if (!PresentationAttempt.Commit(result.Code, () =>
                 {
@@ -419,10 +428,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
             if (deviceLost)
             {
-                // Do NOT blacklist the handle: it is valid, the device under it is not.
-                // Retirement disposes the ingest map wholesale, so no per-handle dispose here.
-                RetireDevice(observedGeneration, removedReason, $"present[{Label}]");
-                ResetSwapChain();
+                HandleDeviceLoss(observedGeneration, removedReason, $"present[{Label}]");
             }
             else
             {
@@ -433,6 +439,83 @@ public sealed class Direct3D11InteropService : IDisposable
 
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
+        }
+    }
+
+    // Everything a host does when it observes that the DEVICE (not this present) is gone.
+    // Extracted so the fault-injection entry point below drives the SAME code the present
+    // catch does, rather than a parallel path written for a test.
+    //
+    // Do NOT blacklist the handle here: it is valid, the device under it is not.
+    // Retirement disposes the ingest map wholesale, so no per-handle dispose either.
+    private void HandleDeviceLoss(long observedGeneration, int removedReason, string context)
+    {
+        RetireDevice(observedGeneration, removedReason, context);
+        ResetSwapChain();
+    }
+
+    // ---- Test drive points (fault injection) --------------------------------------------
+    // Every one of these refuses unless PresentationFaultInjection is armed, which itself
+    // refuses outside the test host. They exist because a SwapChainPanel cannot be created
+    // in a headless test process, so the recovery ladder cannot be reached through
+    // TryPresentSharedTexture there — but the retirement, the generation bump, the
+    // blacklist clear and the real D3D11CreateDevice recreation all can be, and are.
+
+    private static void RequireFaultInjectionArmed()
+    {
+        if (!PresentationFaultInjection.Armed)
+        {
+            throw new InvalidOperationException(
+                "Direct3D11InteropService test drive points require an armed " +
+                "PresentationFaultInjection seam.");
+        }
+    }
+
+    /// <summary>Runs the real <c>EnsureDevice</c> — including the backoff gate, the real
+    /// <c>D3D11CreateDevice</c>, and generation adoption.</summary>
+    internal bool EnsureDeviceForTest()
+    {
+        RequireFaultInjectionArmed();
+        return EnsureDevice();
+    }
+
+    /// <summary>Injects a device loss at the point the present catch would have handled
+    /// one: same classification result, same retirement, same recovery ladder.</summary>
+    internal void InjectDeviceLossForTest(int removedReason = DeviceLossPolicy.DeviceRemoved)
+    {
+        RequireFaultInjectionArmed();
+        HandleDeviceLoss(_deviceGeneration, removedReason, $"fault-injection[{Label}]");
+        ReleaseIngestRef(_ingestHandle);
+        _ingestHandle = 0;
+        _lastPresentedGeneration = -1;
+        SetPresentationPath(PresentationPath.CpuFallback);
+    }
+
+    /// <summary>The device generation THIS instance is bound to (-1 = never attached).</summary>
+    internal long AdoptedDeviceGenerationForTest => _deviceGeneration;
+
+    internal bool IsHandleInvalidatedForTest(ulong ntHandle)
+    {
+        RequireFaultInjectionArmed();
+        return IsHandleInvalidated(ntHandle);
+    }
+
+    /// <summary>Clears the PROCESS-WIDE device-loss history so one case cannot inherit
+    /// another's counters or backoff deadline. Does not dispose the shared device: other
+    /// hosts' swap chains hold native references to it (see RetireDevice).</summary>
+    internal static void ResetProcessDeviceStateForTest()
+    {
+        RequireFaultInjectionArmed();
+        lock (CreationGate)
+        {
+            s_recoveryPolicy.Reset();
+            s_recoveryAbandoned = false;
+            s_deviceRetryAfterMs = 0;
+            s_deviceLossCount = 0;
+            s_deviceRecreateCount = 0;
+            s_lastRemovedReason = 0;
+            s_lastLossUtc = null;
+            s_lastRecoveryUtc = null;
         }
     }
 

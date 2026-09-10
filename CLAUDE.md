@@ -223,6 +223,124 @@ diagnose. Now:
 - **Unproven, honestly:** no real TDR was provoked (deliberately). The GPU-side ordering is
   reasoned + reviewed, not executed; only the classify-and-decide half is test-covered.
 
+## Fault-injection seams (beta slice, 2026-09-09) — how to prove stability work
+
+Gates G2 and G3 in `docs/production-realtime-execution-plan.md` are written in terms of
+injected faults, and until now nothing in this tree could inject anything, so neither
+could be attempted. There are now three seams. **All three are test-only, and the guard
+is structural, not conditional compilation** — `corevideo-native-tests` links the same
+`corevideo_native` library the product does, so a compile-time gate would delete the seam
+from the tests too. The guarantee is the same one
+`MediaCore::setStillImageDecoderForTest` already relies on: no env var, no command, no
+config key, no wire field reaches any of them, and nothing outside `native/tests/` or
+`CoreVideoPro.WinUI.Tests` calls them.
+
+- **Forced device loss + blocked present** (shell):
+  `native-shell/CoreVideoPro.WinUI/Services/PresentationFaultInjection.cs`. `internal`
+  (the WinUI assembly's only `InternalsVisibleTo` is the test project) AND arming refuses
+  unless `CoreVideoPro.WinUI.Tests` is loaded in the process — a positive check that fails
+  closed. The present hot path reads exactly one static bool. Arming returns an
+  `IDisposable` that disarms, and a blocked present ALWAYS carries a hard timeout: a seam
+  that can wedge the process it exists to diagnose is not a diagnostic.
+- **Blocked monitor render** (core): `native/src/compositor/CompositorFaultInjection.h`,
+  consulted at the top of `D3D11Compositor::renderMultiview` / `renderPreview`. One
+  relaxed atomic bool per monitor pass; the stall is a plain function pointer, so arming
+  allocates nothing and null is the disarmed state.
+
+**What the seams proved, and what they did not:**
+
+- **Device-loss recovery survives a real injected loss.** `PresentationFaultInjectionTests`
+  drives the real `Direct3D11InteropService` against a real D3D11 device: the loss is
+  classified, the generation is retired, the bounded ladder schedules, a real
+  `D3D11CreateDevice` runs at the 250ms rung (measured 266ms), the host adopts the new
+  generation, its per-generation handle blacklist is cleared, and the loss report is
+  accurate. A second host observing the same loss does NOT spend a second ladder rung.
+  **Still unproven:** the swap-chain rebuild and on-screen GPU presentation — a
+  `SwapChainPanel` is a XAML object and the test host runs with the Windows App SDK
+  bootstrap disabled, so no panel can exist there. That last hop needs the app.
+- **A blocked present still blocks UI control** — presents run on the UI thread from
+  `CompositionTarget.Rendering`, so the property G2 wants is FALSE today, and no test can
+  make it come out otherwise while that is the shape. What is proven is that the
+  DIAGNOSIS is independent: `PresentationStageWatchdog` names the stalled stage from its
+  own thread while the present is still stuck. `BlockedPresentFaultTests` pins the
+  structural gap, so moving presents off the UI thread fails a test that says to come back
+  and prove the real property.
+- **Program is NOT isolated from monitor rendering.** `MonitorRenderFaultInjectionTest`
+  measured it on this rig (RTX 4090, 1080p Program + 720p Preview, 3-frame buffer): with
+  no fault, 121 produced / 124 delivered / 4 underruns per 2s; with a sustained 25ms
+  Preview stall, 65 / 65 / 64 — **a Preview compositor overrunning by one and a half frame
+  periods costs Program HALF its frames.** Program `render()`, `renderMultiview()` and
+  `renderPreview()` share one render thread and one D3D immediate context. A one-off stall
+  costs only the slots it spans and Program recovers on its own. **The program buffer does
+  not help here** — it protects delivery timing for frames that were produced, and these
+  frames were never rendered. The monitor-compositor split in
+  `docs/production-realtime-completion-plan.md` is what would give G2 its property; the
+  sustained-stall case must be INVERTED when that lands, not deleted.
+
+## Destination lifecycle is TRUTHFUL, and Stop does not claim completion (beta slice, PR22)
+
+Every output destination — the recording writer and each RTMP/SRT/NDI sender — reports
+one contract state machine, and it is decided from evidence, never from a request:
+
+```
+requested -> preparing -> producing -> stopping -> finalizing -> completed | failed | interrupted
+```
+
+Three things changed, each of which was a lie an operator could read:
+
+- **Stop used to report success before the work was done.** `MediaCore::stopRecordingSession`
+  assigned `recordingStatus_ = "stopped"` **immediately**, before it had even called
+  `encoder->stopRecording()`. The RPC returned there — so the operator was told the
+  recording had finished while the FIFO barrier was still draining and the moov atom had
+  not been written. The truth lived only in `recording.lifecycle`, and the two fields
+  disagreed for the whole finalize window. Stop now reports that stopping has **begun**
+  (`status: "stopping"`, `writerStatus: "finalizing"`), and the terminal state arrives from
+  the writer thread when the barrier has drained and finalization has actually succeeded or
+  failed. **The RPC still does not block** — the asynchronous finalization was always
+  correct, and `scripts/validate-recording-finalization.mjs` proves it completes with the
+  core alive. Only the lying field was fixed.
+- **`recording.status` / `recording.writerStatus` are now PROJECTIONS of the lifecycle**
+  (`core::publishedRecordingStatus` / `publishedRecordingWriterStatus`, pure and tested), so
+  they cannot contradict it again. `recordingStatus_` survives as the internal desired-state
+  gate that the render gather and the idempotent-start dedup read — it is not, and never
+  was, evidence of what the writer is doing. New values: `stopping`, `starting`,
+  `interrupted`, `idle` (and `opening`/`finalizing`/`stalled` on the writer side).
+- **`producing` REQUIRES FRESH PROGRESS.** The old `live` was latched the moment a request
+  produced its first frame and was never re-examined, so a wedged writer reported healthy
+  for the rest of the show. `AsyncEncoderSink::session()` now re-decides the active state
+  against the clock at **READ** time — which is the only thing that works, because a writer
+  blocked inside the wrapped sink applies no further items and therefore publishes no
+  further snapshots. A destination whose last observed progress is older than the budget
+  decays to `interrupted`, and returns to `producing` when real progress resumes.
+  **The budget is not a new number:** it is
+  `scripts/qa/runtime-snapshot-qualification.mjs` `DEFAULT_RUNTIME_POLICY.encoderQueueAgeMs`
+  (1000 ms), reused so there is one declared definition of "the encoder has stopped moving".
+
+**Senders have a lifecycle now.** `OutputSender.lifecycle` (snapshot
+`outputSenders.senders[].lifecycle`) gives every destination a state and a terminal
+outcome. It is computed centrally in `MediaCore::evaluateSenderLifecycle` from the pure
+`core::SenderLifecyclePolicy`, so RTMP/SRT/NDI keep exactly ONE status machine each instead
+of gaining a second. Two traps encoded there: **`lastError` is sticky history, not current
+state** (a genuinely streaming SRT sender still carries its first-tick "waiting for composed
+BGRA program pixels" — treating that as failure reports every live stream as broken; failure
+is `status`/`destinationHealth`), and freshness is sampled between snapshot reads, so a dead
+sender decays within one poll interval of the budget, not instantly.
+
+**The decision logic is pure and testable without a writer** — `native/src/core/OutputLifecyclePolicy.h`,
+the `CaptureReaderStallPolicy`/`NativeUvcCapturePolicy` shape, covered by
+`native/tests/OutputLifecyclePolicyTest.cpp` plus two integration tests in
+`AsyncEncoderSinkTest.cpp`: a writer wedged inside the wrapped sink decays out of
+`producing` and recovers, and Stop never claims completion until finalize returns.
+
+**It reaches a support bundle**, which is the point — `SupportBundleBuilder` projects both
+the recording lifecycle and every sender lifecycle (redaction-safe: `Error` rides the same
+endpoint filter), and triage names a failed/interrupted destination, a bundle exported
+during the finalize window, and a stream that ended without sending media.
+
+**Contract:** `starting`/`live` remain in the `OutputLifecycle` enum as the RETIRED names so
+a newer consumer can read an older core; new producers must not emit them. Absent lifecycle
+means UNKNOWN, never healthy. Vocabulary and rules: `contracts/README.md`.
+
 ## Live-meeting QA day (2026-08-09) — eight defects found in ONE real session
 
 An afternoon of the owner operating a real 7-guest meeting surfaced more product
