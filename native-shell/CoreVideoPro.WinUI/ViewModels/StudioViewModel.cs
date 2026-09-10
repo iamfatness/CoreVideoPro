@@ -6375,29 +6375,44 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task StartMediaCoreOnLaunchAsync()
     {
+        Exception? failure = null;
         try
         {
             await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
             await SyncActiveSceneAsync().ConfigureAwait(false);
             // Re-apply the saved multiviewer preferences so the core matches the operator's choice.
             await ConfigureMultiviewerAsync().ConfigureAwait(false);
-            RunOnUiThread(() =>
-            {
-                EngineStatus = $"Media core ready - {_bridge.ProfileSummary}";
-                RefreshSurfaceBindings();
-                RefreshOutputStatus();
-                RefreshTransportState();
-            });
         }
         catch (Exception ex)
         {
-            RunOnUiThread(() =>
-            {
-                EngineStatus = $"Media core unavailable - {ex.Message}";
-                CommandStatus = EngineStatus;
-                RefreshTransportState();
-            });
+            failure = ex;
         }
+
+        // T1.5 (#432): a launch sync skipped for backpressure (it collided with the bridge's
+        // poll) is NOT "Media core unavailable". The policy reports the running core as ready and
+        // hands the state to the retry worker. The multiviewer config it skipped is re-sent by
+        // OnBridgeProfileChanged for this core generation.
+        var status = MediaCoreLaunchStatusPolicy.Resolve(failure, _bridge.ProfileSummary);
+        if (status.QueueSyncRetry)
+        {
+            LaunchLog.Write("media-core: launch sync skipped for backpressure; retry queued");
+            QueueProductionSyncRetry("launch");
+        }
+
+        RunOnUiThread(() =>
+        {
+            EngineStatus = status.EngineStatus;
+            if (status.Failed)
+            {
+                CommandStatus = EngineStatus;
+            }
+            else
+            {
+                RefreshSurfaceBindings();
+                RefreshOutputStatus();
+            }
+            RefreshTransportState();
+        });
     }
 
     private async Task EnsureMediaCoreRunningAsync(string startingStatus)

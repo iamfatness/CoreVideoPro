@@ -1509,6 +1509,26 @@ Zoom recording indicator cleared"), polling briefly until confirmed — never
 claiming stopped on hope. (This section belongs with the engine-teardown rules
 from PR #302 once that lands.)
 
+**Engine off does NOT stop the shell polling the core (T1.5, #432).** The
+bridge's 250 ms poll (`MediaCoreBridgeService.PollLoopAsync`) requests the core
+snapshot on EVERY tick, with Engine on or off. While capture is off in a meeting
+it ALSO refreshes the Zoom roster, because the spine sync that normally carries
+the roster is not running. It used to do only the roster refresh there, and
+`ZoomCaptureSnapshotMerger` carried the old core fields forward. So after a join
+with Engine off, `/snapshot` aged and `nativeProgramFrameCount` froze, and so did
+everything bound to `LastSnapshot` (meters, output health, program buffer). In one
+session that lasted 67 minutes. Operators read it as a core wedge, but Program
+had rendered at 60 Hz the whole time. The decision is `MediaCorePollPolicy`: core
+first, then roster, each best-effort on its own. An empty `media-core-sync`
+returns the published snapshot without a tick, so the poll costs the core
+nothing. Test: `MediaCoreBridgePollTests` (a node fake core; it asserts the poll
+cadence and a fresh `RawReceivedUtc` with Engine off). Same report, second half:
+a launch sync that collided with that poll used to leave EngineStatus reading
+"Media core unavailable - media-core sync in flight; skipped for backpressure"
+until Engine On. `MediaCoreLaunchStatusPolicy` now treats a skipped launch sync
+as backpressure: the core is reported ready and the retry worker delivers the
+sync. Only a real failure reads "unavailable" (`MediaCoreLaunchStatusPolicyTests`).
+
 ## Browser sources (BR-1, 2026-07-13 — render-only URL sources)
 
 `docs/capture-sources-spec.md` §4 status block has the full shape. The short version:
