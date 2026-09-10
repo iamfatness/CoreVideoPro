@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <chrono>
+#include <map>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -729,4 +732,379 @@ TEST(TilesRenderPlan, WithNoSceneBackgroundTheWallStillPaintsItsOwn) {
   const auto plan = core.lastRenderPlanForTest();
   EXPECT_FALSE(plan.layers.empty());
   EXPECT_NE(findLayer(plan, "tiles-bg:tiles:s"), nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Preview -> Program wall hand-off (live-show defect, owner report 2026-09-09)
+//
+// "I am ok if panelists leave and join the video but what I can't have is a
+// total rerender from what is in preview to program like it is loading for the
+// first time. It needs to be a constant rendered source that is able to be cut
+// to without the need to redraw it in PGM."
+//
+// A wall settled in PREVIEW that is TAKEN must be at its settled state on the
+// first program frame that draws it. The converse still holds: a wall the
+// other bus never held is not handed anything.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Delivers real pixels for N wall members with an ADVANCING frameId, so every
+// member stays admitted (kTilesStaleFrameMs) for as long as the test ticks.
+// pause()/resume() reproduces the transient every Tiles take can hit: the wall
+// is still configured, but for a beat not one member has a fresh frame.
+class LiveWallCaptureDevice final : public corevideo::modules::ICaptureDevice {
+ public:
+  explicit LiveWallCaptureDevice(std::vector<std::string> ids) : ids_(std::move(ids)) {}
+
+  void pause() { delivering_ = false; }
+  void resume() { delivering_ = true; frozen_ = false; }
+  // The frozen-but-still-delivering shape a real feed actually presents: every
+  // producer in this codebase re-serves its held frame with a FRESH timestamp
+  // and an unchanged frameId (see FrozenFrameIdCaptureDevice and the I4 note in
+  // MediaCore's age gather), so the source stays in videoFrames and only its
+  // AGE grows. pause() is the different, harsher case — no frame at all.
+  void freeze() { frozen_ = true; }
+
+  std::vector<corevideo::modules::CaptureDeviceInfo> enumerate() const override { return {}; }
+  std::vector<corevideo::modules::CaptureDeviceInfo> selectInput(const std::string&,
+                                                                  const std::string&) override {
+    return {};
+  }
+  std::vector<corevideo::modules::CaptureDeviceInfo> setAudioSyncOffset(const std::string&, int) override {
+    return {};
+  }
+  std::vector<corevideo::modules::CaptureDeviceInfo> connect(const std::string&) override { return {}; }
+
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+    if (!delivering_) return {};
+    if (!frozen_) ++frameId_;
+    std::vector<corevideo::modules::VideoFrame> frames;
+    frames.reserve(ids_.size());
+    for (const auto& id : ids_) {
+      corevideo::modules::VideoFrame frame;
+      frame.participantId = id;
+      frame.width = frame.naturalWidth = frame.pixelWidth = 64;
+      frame.height = frame.naturalHeight = frame.pixelHeight = 64;
+      frame.pixelStride = 64 * 4;
+      frame.timestampMs = timestampMs;
+      frame.frameId = frameId_;
+      frame.pixels = pixels_;
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
+
+ private:
+  std::vector<std::string> ids_;
+  bool delivering_ = true;
+  bool frozen_ = false;
+  int64_t frameId_ = 0;
+  std::shared_ptr<const std::vector<uint8_t>> pixels_ =
+      std::make_shared<std::vector<uint8_t>>(64 * 64 * 4, 128);
+};
+
+corevideo::rpc::Json animatedTilesPayload(const std::string& layerId,
+                                          const std::vector<std::string>& members) {
+  corevideo::rpc::Json::Array memberJson;
+  for (const auto& member : members) memberJson.push_back(corevideo::rpc::Json{member});
+  return corevideo::rpc::Json{corevideo::rpc::Json::Object{
+      {"layerId", corevideo::rpc::Json{layerId}},
+      {"members", corevideo::rpc::Json{memberJson}},
+      {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"fillMode", corevideo::rpc::Json{"auto"}},
+          {"animateLayout", corevideo::rpc::Json{true}},
+          // The clamped floor (TilesAnimator) — the shortest entrance the wire
+          // can ask for, so the settle loops below stay short real-time waits.
+          {"animationDurationMs", corevideo::rpc::Json{100.0}},
+          {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}};
+}
+
+corevideo::rpc::Json wallScene(const char* type, const char* sceneId,
+                               const std::vector<std::string>& members) {
+  return corevideo::rpc::Json{corevideo::rpc::Json::Object{
+      {"type", corevideo::rpc::Json{type}},
+      {"sceneId", corevideo::rpc::Json{sceneId}},
+      {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+      {"tiles", animatedTilesPayload(std::string("tiles:") + sceneId, members)}}};
+}
+
+// The same wall, but carrying a LIVE background feed (tiles-source-bg:<layerId>).
+corevideo::rpc::Json wallSceneWithBackground(const char* type, const char* sceneId,
+                                             const std::vector<std::string>& members,
+                                             const char* backgroundSourceId) {
+  auto tiles = animatedTilesPayload(std::string("tiles:") + sceneId, members);
+  auto object = tiles.asObject();
+  auto style = object.at("style").asObject();
+  style.emplace("backgroundSourceId", corevideo::rpc::Json{backgroundSourceId});
+  object.insert_or_assign("style", corevideo::rpc::Json{style});
+  return corevideo::rpc::Json{corevideo::rpc::Json::Object{
+      {"type", corevideo::rpc::Json{type}},
+      {"sceneId", corevideo::rpc::Json{sceneId}},
+      {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+      {"tiles", corevideo::rpc::Json{object}}}};
+}
+
+corevideo::rpc::Json wallLessScene(const char* type, const char* sceneId) {
+  return corevideo::rpc::Json{corevideo::rpc::Json::Object{
+      {"type", corevideo::rpc::Json{type}},
+      {"sceneId", corevideo::rpc::Json{sceneId}},
+      {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}}}};
+}
+
+std::vector<const corevideo::modules::CompositorRenderPlanLayer*> tileLayers(
+    const corevideo::modules::CompositorRenderPlan& plan) {
+  std::vector<const corevideo::modules::CompositorRenderPlanLayer*> tiles;
+  for (const auto& layer : plan.layers) {
+    if (layer.kind == "participant-video" && layer.layerId.rfind("tile:", 0) == 0) {
+      tiles.push_back(&layer);
+    }
+  }
+  return tiles;
+}
+
+bool allSettled(const std::vector<const corevideo::modules::CompositorRenderPlanLayer*>& tiles) {
+  return !tiles.empty() &&
+         std::all_of(tiles.begin(), tiles.end(), [](const auto* tile) { return tile->opacity == 1.f; });
+}
+
+std::map<std::string, corevideo::modules::CompositorRenderPlanLayer> snapshotTiles(
+    const corevideo::modules::CompositorRenderPlan& plan) {
+  std::map<std::string, corevideo::modules::CompositorRenderPlanLayer> tiles;
+  for (const auto* tile : tileLayers(plan)) tiles[tile->layerId] = *tile;
+  return tiles;
+}
+
+// Ticks the real production path in REAL TIME until the preview wall's tiles
+// have finished their entrance — the animator runs off steady_clock, so this
+// has to be wall time, not tick count.
+void settlePreviewWall(MediaCore& core, const RecordingCompositor& compositor, size_t expected) {
+  for (int tick = 0; tick < 60; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    const auto tiles = tileLayers(compositor.lastPreviewPlan);
+    if (tiles.size() == expected && allSettled(tiles)) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+const std::vector<std::string>& wallMembers() {
+  static const std::vector<std::string> members{"capture:g1", "capture:g2", "capture:g3"};
+  return members;
+}
+
+corevideo::modules::ModuleSet wallModules(RecordingCompositor** compositor,
+                                          LiveWallCaptureDevice** device) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  *compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  auto ownedDevice = std::make_unique<LiveWallCaptureDevice>(wallMembers());
+  if (device != nullptr) *device = ownedDevice.get();
+  modules.captureDevice = std::move(ownedDevice);
+  return modules;
+}
+
+// The take TransportCoordinator.TakeAsync actually sends: ONE sync carrying the
+// new PROGRAM scene and the new PREVIEW scene together.
+void take(MediaCore& core, const corevideo::rpc::Json& program, const corevideo::rpc::Json& preview) {
+  (void)core.applyCommands(corevideo::rpc::Json::Array{program, preview});
+}
+
+}  // namespace
+
+// THE PROPERTY: a wall settled in preview, then taken, is at its settled state
+// on the first program frame — a cut, not a redraw.
+TEST(TilesRenderPlan, AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame) {
+  RecordingCompositor* compositor = nullptr;
+  MediaCore core(wallModules(&compositor, nullptr));
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallLessScene("load-scene-graph", "solo"),
+      wallScene("set-preview-scene", "gallery", wallMembers())});
+  settlePreviewWall(core, *compositor, wallMembers().size());
+  ASSERT_TRUE(allSettled(tileLayers(compositor->lastPreviewPlan)))
+      << "precondition: the preview wall must settle before the take";
+  const auto settled = snapshotTiles(compositor->lastPreviewPlan);
+
+  take(core, wallScene("load-scene-graph", "gallery", wallMembers()),
+       wallLessScene("set-preview-scene", "solo"));
+
+  const auto onAir = tileLayers(compositor->lastPlan);
+  ASSERT_EQ(onAir.size(), wallMembers().size()) << "the taken wall lost tiles on its first program frame";
+  for (const auto* tile : onAir) {
+    ASSERT_EQ(settled.count(tile->layerId), 1u);
+    const auto& want = settled.at(tile->layerId);
+    EXPECT_EQ(tile->opacity, 1.f)
+        << tile->layerId << " faded in on PROGRAM — the settled preview wall was redrawn, not cut to";
+    EXPECT_NEAR(tile->rect.x, want.rect.x, 1e-5f);
+    EXPECT_NEAR(tile->rect.y, want.rect.y, 1e-5f);
+    EXPECT_NEAR(tile->rect.width, want.rect.width, 1e-5f);
+    EXPECT_NEAR(tile->rect.height, want.rect.height, 1e-5f);
+  }
+}
+
+// The same property across the transient that actually produced the reported
+// redraw: the wall is taken on a tick where every member's frame has momentarily
+// aged out (CLAUDE.md: an all-stale wall is an ORDINARY state, and every Tiles
+// take can hit it before first frames land). The wall is still the wall — when
+// its frames return it must appear settled, not replay its entrance from zero.
+TEST(TilesRenderPlan, AWallTakenWhileItsFramesLapseIsStillCutToNotRedrawn) {
+  RecordingCompositor* compositor = nullptr;
+  LiveWallCaptureDevice* device = nullptr;
+  MediaCore core(wallModules(&compositor, &device));
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallLessScene("load-scene-graph", "solo"),
+      wallScene("set-preview-scene", "gallery", wallMembers())});
+  settlePreviewWall(core, *compositor, wallMembers().size());
+  ASSERT_TRUE(allSettled(tileLayers(compositor->lastPreviewPlan)));
+  const auto settled = snapshotTiles(compositor->lastPreviewPlan);
+
+  // Age every member out of the wall (kTilesStaleFrameMs at the synthetic
+  // ~17ms tick; the frozen-frameId test above uses the same 400-tick budget).
+  device->pause();
+  bool wallWentEmpty = false;
+  for (int tick = 0; tick < 400 && !wallWentEmpty; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    wallWentEmpty = tileLayers(compositor->lastPreviewPlan).empty();
+  }
+  ASSERT_TRUE(wallWentEmpty) << "the preview wall never went all-stale — the transient is not under test";
+
+  take(core, wallScene("load-scene-graph", "gallery", wallMembers()),
+       wallLessScene("set-preview-scene", "solo"));
+  device->resume();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{});
+
+  const auto onAir = tileLayers(compositor->lastPlan);
+  ASSERT_EQ(onAir.size(), wallMembers().size());
+  for (const auto* tile : onAir) {
+    ASSERT_EQ(settled.count(tile->layerId), 1u);
+    const auto& want = settled.at(tile->layerId);
+    EXPECT_EQ(tile->opacity, 1.f)
+        << tile->layerId << " replayed its entrance on PROGRAM after a stale beat";
+    EXPECT_NEAR(tile->rect.x, want.rect.x, 1e-5f);
+    EXPECT_NEAR(tile->rect.width, want.rect.width, 1e-5f);
+  }
+}
+
+// The converse: the hand-off is a match on the wall key, not the removal of the
+// entrance animation. A wall the preview bus never held is handed nothing — it
+// composites its OWN fresh layout, and the preview bus keeps its own wall.
+TEST(TilesRenderPlan, AWallThatWasNeverInPreviewIsHandedNothing) {
+  RecordingCompositor* compositor = nullptr;
+  MediaCore core(wallModules(&compositor, nullptr));
+
+  // A DIFFERENT wall (different scene id => different key, and two members
+  // instead of three => a visibly different layout) sits settled in preview.
+  const std::vector<std::string> otherMembers{"capture:g1", "capture:g2"};
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallLessScene("load-scene-graph", "solo"),
+      wallScene("set-preview-scene", "other-gallery", otherMembers)});
+  settlePreviewWall(core, *compositor, otherMembers.size());
+  ASSERT_TRUE(allSettled(tileLayers(compositor->lastPreviewPlan)));
+  const auto otherWall = snapshotTiles(compositor->lastPreviewPlan);
+
+  take(core, wallScene("load-scene-graph", "gallery", wallMembers()),
+       wallScene("set-preview-scene", "other-gallery", otherMembers));
+
+  const auto onAir = tileLayers(compositor->lastPlan);
+  ASSERT_EQ(onAir.size(), wallMembers().size());
+  const auto* first = onAir.front();
+  ASSERT_EQ(otherWall.count(first->layerId), 1u);
+  EXPECT_GT(std::abs(first->rect.width - otherWall.at(first->layerId).rect.width), 1e-4f)
+      << "the taken wall inherited the OTHER wall's geometry — buses must not contaminate each other";
+
+  // And the preview bus still owns its own settled wall after the take.
+  const auto previewAfter = tileLayers(compositor->lastPreviewPlan);
+  ASSERT_EQ(previewAfter.size(), otherMembers.size());
+  EXPECT_TRUE(allSettled(previewAfter)) << "the preview wall lost its state to a take it was not part of";
+}
+
+// THE PROPERTY (owner report, live broadcast 2026-09-09: "Tiles background still
+// refreshing on cut to program, that should be seamless"): the wall's LIVE
+// background feed rode the same 1500ms kTilesStaleFrameMs admission the tiles
+// do, so one beat of its frames lapsing across the take dropped the
+// `tiles-source-bg:` layer entirely — program fell through to the solid colour
+// and the picture popped back when frames resumed. A background that is being
+// drawn must survive the beat.
+TEST(TilesRenderPlan, AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  RecordingCompositor* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  // The background source is a real feed on the same device, but NOT a wall
+  // member — exactly how the operator configures it (a gallery member choice
+  // promoted to the backdrop).
+  std::vector<std::string> feeds = wallMembers();
+  feeds.push_back("capture:bg");
+  auto ownedDevice = std::make_unique<LiveWallCaptureDevice>(feeds);
+  LiveWallCaptureDevice* device = ownedDevice.get();
+  modules.captureDevice = std::move(ownedDevice);
+  MediaCore core(std::move(modules));
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallLessScene("load-scene-graph", "solo"),
+      wallSceneWithBackground("set-preview-scene", "gallery", wallMembers(), "capture:bg")});
+  settlePreviewWall(core, *compositor, wallMembers().size());
+  ASSERT_NE(findLayer(compositor->lastPreviewPlan, "tiles-source-bg:tiles:gallery"), nullptr)
+      << "precondition: the live background must be drawn on the preview wall before the take";
+
+  // Lapse every feed — the background's included — past kTilesStaleFrameMs, the
+  // transient CLAUDE.md records as ordinary on a Tiles take. FREEZE, not pause:
+  // the frames keep arriving with a held frameId, which is what a real Zoom or
+  // capture source does. The source is still there; only its age has grown.
+  device->freeze();
+  bool wallWentEmpty = false;
+  for (int tick = 0; tick < 400 && !wallWentEmpty; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    wallWentEmpty = tileLayers(compositor->lastPreviewPlan).empty();
+  }
+  ASSERT_TRUE(wallWentEmpty) << "the preview wall never went all-stale — the transient is not under test";
+
+  take(core, wallSceneWithBackground("load-scene-graph", "gallery", wallMembers(), "capture:bg"),
+       wallLessScene("set-preview-scene", "solo"));
+
+  const auto* background = findLayer(compositor->lastPlan, "tiles-source-bg:tiles:gallery");
+  ASSERT_NE(background, nullptr)
+      << "the wall's live background vanished on the first PROGRAM frame — the cut showed the "
+         "solid colour and the backdrop popped back when frames resumed";
+  EXPECT_EQ(background->sourceId, "capture:bg");
+  EXPECT_EQ(background->participantId, "capture:bg");
+  EXPECT_EQ(background->kind, "participant-video");
+}
+
+// The converse, and the "never invent a source" rule: holding the background is
+// evidence-based, not memory-based. A background source with NO frame in the
+// gather — never arrived, or genuinely departed after having been drawn — is
+// refused exactly as it is today. Emitting it anyway would paint a solid
+// colorFromParticipantId() slab over the wall background (resolveLayers), which
+// is worse than the pop this fix removes.
+TEST(TilesRenderPlan, AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated) {
+  MediaCore core;
+  const auto command = corevideo::rpc::Json::parse(R"({"type":"load-scene-graph","sceneId":"pinned","routes":[],
+    "tiles":{"layerId":"tiles:pinned","members":["zoom:1"],
+      "style":{"backgroundSourceId":"zoom:background","backgroundColor":"#123456"}}})");
+  ASSERT_TRUE(command.has_value());
+  core.applyCommands(corevideo::rpc::Json::Array{*command});
+
+  // Drawn, fresh.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:background", true, 0}});
+  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tiles-source-bg:tiles:pinned"), nullptr);
+
+  // Still present, merely frozen well past kTilesStaleFrameMs — HELD.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:background", true, 60000}});
+  EXPECT_NE(findLayer(core.lastRenderPlanForTest(), "tiles-source-bg:tiles:pinned"), nullptr)
+      << "a background frozen for a beat must not vanish from the plan";
+
+  // Departed: the frame is gone from the gather entirely — RELEASED, not held.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:background", false, 0}});
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tiles-source-bg:tiles:pinned"), nullptr)
+      << "a departed background source was fabricated into the plan";
+
+  // Never arrived: no entry at all — same refusal.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tiles-source-bg:tiles:pinned"), nullptr);
+
+  // And the wall never ships an empty plan either way: its own solid background
+  // is above the admission gate and is what program falls back to.
+  EXPECT_NE(findLayer(core.lastRenderPlanForTest(), "tiles-bg:tiles:pinned"), nullptr);
 }

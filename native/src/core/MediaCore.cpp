@@ -5206,8 +5206,31 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
 
     // A live background feed is drawn under tiles. An unavailable source leaves
     // the solid/scene background intact; it must never trigger fallback guests.
+    //
+    // THE BACKGROUND IS HELD ACROSS A STALE BEAT (owner report, live broadcast
+    // 2026-09-09: "Tiles background still refreshing on cut to program, that
+    // should be seamless"). This gate used to be admitTilesMembers — the SAME
+    // kTilesStaleFrameMs admission the tiles go through — so one beat of the
+    // background source's frameId not advancing dropped the layer entirely,
+    // program fell through to the solid colour or the scene background, and the
+    // picture popped back when frames resumed. tilesBackgroundSourceIsDrawable
+    // asks the question that actually applies to a backdrop instead: is a real
+    // frame for this source present in THIS tick's gather? A frozen backdrop is
+    // indistinguishable from a live one; its disappearance is a full-frame
+    // colour change on air. kTilesStaleFrameMs itself is untouched — it is
+    // shared with tile admission and moving it would change wall membership for
+    // every source. Full reasoning, and why a stale TILE is still refused, sits
+    // on the predicate in compositor/TilesMembership.h.
+    //
+    // Nothing is fabricated: hasFrame is false for a source that never arrived
+    // or has departed, so those keep today's behaviour exactly, and the layer
+    // below always carries a non-empty participantId so RouteSourcePolicy's
+    // positional fallback stays unreachable.
+    // Regression tests: TilesRenderPlan.AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat,
+    // ABackgroundSourceThatNeverArrivedIsNeverFabricated,
+    // ADepartedBackgroundSourceIsReleasedNotHeld.
     if (!wall.style.backgroundSourceId.empty() && wall.style.backgroundSourceId != wall.layerId &&
-        !compositor::admitTilesMembers({wall.style.backgroundSourceId}, tilesMemberFrameAges_).empty()) {
+        compositor::tilesBackgroundSourceIsDrawable(wall.style.backgroundSourceId, tilesMemberFrameAges_)) {
       modules::CompositorRenderPlanLayer background;
       background.layerId = "tiles-source-bg:" + wall.layerId;
       background.kind = "participant-video";
@@ -5795,7 +5818,22 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
   const double animationNowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
-  programTilesAnimation_.advance(renderPlan, sceneId_ + ":" + tilesLayer_.layerId,
+  // THE TAKE HAND-OFF (owner report 2026-09-09: a gallery taken from preview to
+  // program must be a CUT to something already rendered, never a redraw).
+  // TransportCoordinator.TakeAsync swaps ActiveSceneId/PreviewSceneId and sends
+  // ONE sync, so the program wall key becomes the key preview held on the
+  // previous tick — the same wall, continuing on the other bus. Carry its
+  // settled animation state over before advancing, instead of letting the
+  // key change reset the animator. Refused unless the keys match EXACTLY and
+  // the preview wall is settled, and the state is MOVED (preview is reset), so
+  // the two buses cannot contaminate each other. Cost is a key compare plus a
+  // move of <=64 tiles, only on the tick a wall changes bus — no added
+  // coreMutex hold.
+  const std::string programWallKey = sceneId_ + ":" + tilesLayer_.layerId;
+  if (tilesLayer_.present && tilesLayer_.style.animateLayout) {
+    programTilesAnimation_.adoptSettledFrom(previewTilesAnimation_, programWallKey);
+  }
+  programTilesAnimation_.advance(renderPlan, programWallKey,
       tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
   // Advance Preview on this same render clock even when its wall is empty.
   // Snapshot/prefetch builds must not change entry/departure animation state.

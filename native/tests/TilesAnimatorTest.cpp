@@ -108,4 +108,74 @@ TEST(TilesAnimator, DifferentWallCannotReuseAnotherWallsCachedGeometry) {
   EXPECT_EQ(plan.layers[0].rect.x, .5f);
   EXPECT_EQ(plan.layers[0].opacity, 1.f);
 }
+// The take hand-off (owner report 2026-09-09). A wall that changes BUS is the
+// same wall: preview's settled state moves to program instead of being thrown
+// away and re-adopted. Scoped by an exact key match + settledness, and MOVED so
+// the two buses can never alias each other.
+corevideo::modules::CompositorRenderPlan wallPlan(std::initializer_list<TilesAnimationTarget> tiles) {
+  corevideo::modules::CompositorRenderPlan plan;
+  for (const auto& tile : tiles) {
+    corevideo::modules::CompositorRenderPlanLayer layer;
+    layer.kind = "participant-video";
+    layer.layerId = "tile:" + tile.id;
+    layer.rect = {tile.rect.x, tile.rect.y, tile.rect.width, tile.rect.height};
+    plan.layers.push_back(layer);
+  }
+  return plan;
+}
+TEST(TilesAnimator, ASettledWallMovesBusWithoutReplayingItsEntrance) {
+  TilesPlanAnimation preview, program;
+  auto plan = wallPlan({tile("a", 0, .5f), tile("b", .5f, .5f)});
+  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 0);
+  plan = wallPlan({tile("a", 0, .5f), tile("b", .5f, .5f)});
+  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 5000);
+  ASSERT_EQ(plan.layers[0].opacity, 1.f);
+
+  EXPECT_TRUE(program.adoptSettledFrom(preview, "gallery:tiles:gallery"));
+  plan = wallPlan({tile("a", 0, .5f), tile("b", .5f, .5f)});
+  program.advance(plan, "gallery:tiles:gallery", true, true, 350, 5016);
+  EXPECT_EQ(plan.layers[0].opacity, 1.f);
+  EXPECT_EQ(plan.layers[1].opacity, 1.f);
+
+  // Preview was RESET, not aliased: its next wall starts clean, and it no
+  // longer claims the wall program now owns.
+  auto stale = wallPlan({tile("a", 0, .5f)});
+  preview.applyLatest(stale, "gallery:tiles:gallery");
+  EXPECT_EQ(stale.layers[0].opacity, 1.f);
+}
+TEST(TilesAnimator, HandOffIsRefusedForADifferentOrUnsettledWall) {
+  TilesPlanAnimation preview, program;
+  auto plan = wallPlan({tile("a")});
+  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 0);
+  plan = wallPlan({tile("a")});
+  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 5000);
+  EXPECT_FALSE(program.adoptSettledFrom(preview, "other:tiles:other"));
+
+  // Mid-entrance is not settled — it belongs to the bus flying it.
+  TilesPlanAnimation entering, taking;
+  auto empty = wallPlan({});
+  entering.advance(empty, "gallery:tiles:gallery", true, true, 350, 0);
+  auto arriving = wallPlan({tile("a")});
+  entering.advance(arriving, "gallery:tiles:gallery", true, true, 350, 16);
+  ASSERT_EQ(arriving.layers[0].opacity, 0.f);
+  EXPECT_FALSE(taking.adoptSettledFrom(entering, "gallery:tiles:gallery"));
+}
+TEST(TilesAnimator, AnAllStaleBeatDoesNotWipeAWallThatIsAlreadyDrawn) {
+  TilesPlanAnimation animation;
+  auto plan = wallPlan({tile("a")});
+  animation.advance(plan, "gallery:tiles:gallery", true, true, 350, 0);
+  auto lapsed = wallPlan({});
+  animation.advance(lapsed, "gallery:tiles:gallery", true, true, 350, 16);
+  auto returned = wallPlan({tile("a")});
+  animation.advance(returned, "gallery:tiles:gallery", true, true, 350, 32);
+  EXPECT_EQ(returned.layers[0].opacity, 1.f)
+      << "a momentary all-stale beat replayed the whole wall's entrance";
+
+  // A DIFFERENT wall still starts cold — retained geometry is never reused.
+  auto other = wallPlan({});
+  animation.advance(other, "other:tiles:other", true, true, 350, 48);
+  auto otherArriving = wallPlan({tile("a")});
+  animation.advance(otherArriving, "other:tiles:other", true, true, 350, 64);
+  EXPECT_EQ(otherArriving.layers[0].opacity, 0.f);
+}
 }

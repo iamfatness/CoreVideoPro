@@ -472,6 +472,77 @@ comment at the code site; this is the index.
   dark-grey slab on macOS; named in a comment at the site, owned by
   `docs/corevideo-tiles-iso-scaling-plan.md` implementation slice 3 (Metal parity).
 
+- **A TILES WALL TAKEN FROM PREVIEW IS CUT TO, NEVER REDRAWN (owner report,
+  live show 2026-09-09).** "I am ok if panelists leave and join the video but
+  what I can't have is a total rerender from what is in preview to program like
+  it is loading for the first time." The wall key is `sceneId + ":" + layerId`
+  and the layer id is derived from the scene id, so the SAME gallery has the
+  SAME key on both buses — `MediaCore` holds two animation objects
+  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one used
+  to reset its animator the moment the key it had never held arrived. Two
+  corrections, both in `compositor/TilesPlanAnimation.h`:
+  `adoptSettledFrom()` MOVES a settled wall's state from preview to program on
+  the take tick (exact key match + every sampled tile `atRest` only; the source
+  is reset, never aliased, so the next wall cued in preview starts clean), and
+  `advance()` no longer samples an EMPTY target set for a wall that is still
+  present and has already drawn tiles. That second one is what actually produced
+  the reported replay: an all-stale beat (`kTilesStaleFrameMs`, an ordinary
+  state — see the empty-plan rule above) erased every retained tile AND consumed
+  the animator's adoption, so the instant frames returned the whole wall faded in
+  from alpha 0. A COLD wall's first tick is untouched, so a wall that was never
+  in preview behaves exactly as before. Not a contributor, measured: preview and
+  program share one device and one `sourceTextures_` cache keyed by
+  `participantId` (`D3D11CompositorAdapter`), so tile textures are already warm
+  across a take. Tests: `TilesRenderPlan.AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame`,
+  `AWallTakenWhileItsFramesLapseIsStillCutToNotRedrawn` (fails without the fix),
+  `AWallThatWasNeverInPreviewIsHandedNothing`, plus three `TilesAnimator.*`
+  hand-off unit tests.
+  **The wall's LIVE BACKGROUND had the same defect and needed a different fix
+  (same show, follow-up report: "Tiles background still refreshing on cut to
+  program, that should be seamless").** The wall emits TWO background layers:
+  `tiles-bg:<layerId>`, a sourceless solid, emitted unconditionally above the
+  admission gate (safe — it depends only on `!sceneBackground.enabled`, which is
+  parsed from the scene payload and cannot move across a take); and
+  `tiles-source-bg:<layerId>`, the live background FEED, which rode
+  `admitTilesMembers` — the SAME 1500 ms `kTilesStaleFrameMs` gate the tiles go
+  through. So one beat of the background source's frameId not advancing dropped
+  the layer entirely, program fell through to the solid colour or the scene
+  background, and the picture popped back when frames resumed. The gate is now
+  `compositor::tilesBackgroundSourceIsDrawable`, which asks the question that
+  applies to a BACKDROP instead: is a real-content frame for this source in this
+  tick's gather (`TilesMemberFrameAge::hasFrame`)? A stale TILE is still refused
+  — it occupies a slot, and holding it seats a dead guest — but a stale
+  BACKGROUND competes with nothing, and a backdrop frozen for a beat is
+  indistinguishable from a live one where its absence is a full-frame colour
+  change on air. `kTilesStaleFrameMs` is deliberately NOT widened: it is shared
+  with tile admission and moving it changes wall membership for every source.
+  The hold is EVIDENCE, not memory — there is no retained layer and no per-bus
+  state, so a source that never arrived or has departed keeps today's behaviour
+  exactly and the two buses cannot contaminate each other through it. That
+  matters concretely: a `participant-video` layer whose sourceId resolves to no
+  frame renders a solid `colorFromParticipantId()` slab OVER the wall background
+  (`resolveLayers`), which is worse than the pop; and the layer always carries a
+  non-empty participantId, so `RouteSourcePolicy`'s positional-fallback hazard
+  stays unreachable. Tests: `TilesRenderPlan.AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat`
+  (the live wall harness, using the new `LiveWallCaptureDevice::freeze()` — a
+  frozen feed still DELIVERS with a held frameId; `pause()` is the harsher
+  no-frame case) and `AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated`.
+  Both fail without the gate change.
+  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTS AND THIS FIX CANNOT TOUCH IT.**
+  `ZoomMediaSpinePayloadBuilder` assigns each video subscription a `purpose`
+  (active-speaker, then program routes, then preview routes, then roster order)
+  and caps the list at `maxVideoSubscriptions`. The core keys its
+  re-subscribe dedup on RESOLUTION, and resolution is `purpose == "active-speaker"
+  ? 1080P : 720P` — so a source flipping into or out of active-speaker is
+  re-subscribed at a new resolution, tearing down and rebuilding its engine
+  renderer. And because a Tiles scene serialises an EMPTY route list, a take
+  reorders the candidate list, which can push a source past the cap and
+  unsubscribe it outright. Either produces a real frame gap on the background
+  source, which reads exactly like this defect. The subscription UUID itself is
+  fine (`participant-video-<pid>-camera`, purpose deliberately excluded, so
+  Preview -> Program promotion alone never tears it down). UNPROVEN without a
+  live meeting: which of the two the owner is watching, and whether Zoom
+  re-subscribe churn on the taken members adds a third redraw.
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
   "layer boxes show live video inconsistently". `VideoSurfaceHost` attaches a
