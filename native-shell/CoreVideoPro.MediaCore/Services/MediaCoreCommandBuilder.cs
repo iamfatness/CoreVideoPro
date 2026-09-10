@@ -230,6 +230,7 @@ public static class MediaCoreCommandBuilder
             ["mediaAssetPath"] = route.MediaAssetPath,
             ["mediaPlaybackKey"] = route.MediaPlaybackKey,
             ["mediaAssetPlaying"] = route.MediaAssetPlaying,
+            ["mediaAssetLoop"] = route.MediaAssetLoop,
             ["colorGrade"] = route.ColorGrade is null
                 ? null
                 : new Dictionary<string, object?>

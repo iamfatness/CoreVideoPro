@@ -618,6 +618,8 @@ if(BUILD_TESTING)
     tests/RouteSourcePolicyTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp
+    tests/ProgramPixelContinuityTest.cpp
+    tests/SourceContinuityLedgerTest.cpp
     tests/MonitorRenderFaultInjectionTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp

@@ -1,5 +1,6 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.ViewModels.Transport;
 
@@ -71,11 +72,19 @@ public interface ITransportHost
 
     void CopyPreviewRoutesToScene(string sceneId);
 
-    void PromoteProgramMediaRouteToPlayback();
+    // Hands a clip that WENT LIVE to the playback selection (and plays it). An empty list is a
+    // no-op: a clip that stayed on Program is never un-paused by a Take.
+    void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds);
 
     void RefreshPreviewRoutingState();
 
-    void IncrementProgramMediaPlaybackTakeVersion();
+    // The Program scene's resolved routes right now. TakeAsync reads this BEFORE the swap so
+    // the go-live policy can tell which clips ENTER Program (and roll) from those that stay.
+    IReadOnlyList<SourceRoute> GetResolvedProgramRoutes();
+
+    // Replaces the per-Take playback-key bump: a clip's key advances only when it goes live.
+    // Returns the media asset ids that went live (entered Program) on this Take.
+    IReadOnlyList<string> RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes);
 
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task EnsureMediaCoreRunningAsync(string startingStatus);

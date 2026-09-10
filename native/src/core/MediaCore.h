@@ -7,6 +7,7 @@
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
+#include "core/SourceContinuityLedger.h"
 #include "core/TakeRecordPolicy.h"
 #include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
@@ -234,6 +235,11 @@ class MediaCore {
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
 
+  // Test seam: the last program frame this core rendered (whatever the stub
+  // compositor filled `preview` with). Same law as setStillImageDecoderForTest
+  // — nothing outside native/tests/ calls it.
+  [[nodiscard]] const modules::ProgramFrame& lastProgramFrameForTest() const { return lastProgramFrame_; }
+
   // T1: the PROGRAM-bus tiles wall parsed off the load-scene-graph command,
   // and the scene validation warnings a bad/unrecognised value gets recorded
   // into (loud, never silent — see parseTilesLayer in MediaCore.cpp).
@@ -424,6 +430,7 @@ class MediaCore {
     std::string mediaAssetPath;
     std::string mediaPlaybackKey;
     bool mediaAssetPlaying = false;
+    bool mediaAssetLoop = false;
     float rectX = 0.f;
     float rectY = 0.f;
     float rectWidth = 0.f;
@@ -698,6 +705,15 @@ class MediaCore {
     std::string operationId, mode;
     std::int64_t revision = 0;
     std::vector<std::string> fromLayerIds, toLayerIds;
+    // FRAME source ids (layer.participantId, else sourceId — frameKeyForLayer) of the outgoing
+    // Program plan UNION the outgoing Preview plan — a Take promotes Preview,
+    // so that is where the operator last saw the incoming sources — and their
+    // SourceContinuityLedger state at arm time.
+    std::vector<std::string> fromSourceIds;
+    std::map<std::string, SourceContinuity> continuityBefore;
+    // renderTickCounter_ when armed: a source counts as RUNNING at arm time when
+    // its ledger lastSeenTick is within absentTicksBeforeRestart of this.
+    std::int64_t armedAtTick = 0;
     std::string fromWallKey, toWallKey;
     bool hadWallBefore = false;
     bool completed = false;
@@ -710,11 +726,18 @@ class MediaCore {
   static constexpr std::size_t kTakeRecordRing = 8;
   std::optional<TakeRecord> pendingTakeRecord_;
   std::deque<TakeRecord> takeRecords_;
+  // Per-source restart evidence, fed from every render tick's final gather.
+  SourceContinuityLedger sourceContinuity_;
+  std::int64_t renderTickCounter_ = 0;
   [[nodiscard]] rpc::Json takeRecordsState() const;
   [[nodiscard]] rpc::Json zoomSubscriptionChurnState() const;
   void armTakeRecord(const std::string& toSceneId);
+  // `frames` is THIS tick's final gather (media frames included): a source the
+  // take brought on air with no frame in it counts as missing.
   void completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                          bool wallAdoptedSettled);
+                          bool wallAdoptedSettled,
+                          const std::vector<modules::VideoFrame>& frames);
+  static std::vector<std::string> renderPlanSourceIds(const modules::CompositorRenderPlan& plan);
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
   // pre-lock engine poll (see pollZoomAudioUnlocked).
   std::atomic<std::int64_t> lastProgramFrameNumberAtomic_{0};

@@ -181,7 +181,7 @@ public sealed class MediaCoreCommandBuilderTests
                     MediaAssetName: "Intro Sting",
                     MediaAssetKind: "stinger",
                     MediaAssetPath: @"C:\media\intro.mp4",
-                    MediaPlaybackKey: "program-take:2:media:clip-intro",
+                    MediaPlaybackKey: "media:clip-intro:live:2",
                     MediaAssetPlaying: true)
             ],
             Participants = Participants
@@ -197,8 +197,42 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Intro Sting", route.GetProperty("mediaAssetName").GetString());
         Assert.Equal("stinger", route.GetProperty("mediaAssetKind").GetString());
         Assert.Equal(@"C:\media\intro.mp4", route.GetProperty("mediaAssetPath").GetString());
-        Assert.Equal("program-take:2:media:clip-intro", route.GetProperty("mediaPlaybackKey").GetString());
+        Assert.Equal("media:clip-intro:live:2", route.GetProperty("mediaPlaybackKey").GetString());
         Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
+        Assert.False(route.GetProperty("mediaAssetLoop").GetBoolean());
+    }
+
+    [Fact]
+    public void SerializesTheRouteLoopFlagNextToPlaying()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "loop-program",
+            SceneRoutes =
+            [
+                new(
+                    "bg-1",
+                    "fixed",
+                    "mix",
+                    "media:bg-loop",
+                    MediaAssetId: "bg-loop",
+                    MediaAssetName: "Backdrop",
+                    MediaAssetKind: "background",
+                    MediaAssetPath: @"C:\media\bg.mp4",
+                    MediaPlaybackKey: "media:bg-loop",
+                    MediaAssetPlaying: true,
+                    MediaAssetLoop: true)
+            ],
+            Participants = Participants
+        });
+
+        var route = commands.Single(command => command.Type == "load-scene-graph")
+            .ExtensionData!["routes"]
+            .EnumerateArray()
+            .Single();
+
+        Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
+        Assert.True(route.GetProperty("mediaAssetLoop").GetBoolean());
     }
 
     [Fact]
@@ -763,7 +797,7 @@ public sealed class MediaCoreCommandBuilderTests
             SelectedMediaAssetName = "Intro Sting",
             SelectedMediaAssetKind = "stinger",
             SelectedMediaAssetPath = @"C:\media\intro.mp4",
-            SelectedMediaPlaybackKey = "program-take:3:media:clip-intro",
+            SelectedMediaPlaybackKey = "media:clip-intro:live:3",
             SelectedMediaAssetPlaying = true
         });
 
@@ -772,7 +806,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Intro Sting", GetString(playback, "mediaAssetName"));
         Assert.Equal("stinger", GetString(playback, "mediaAssetKind"));
         Assert.Equal(@"C:\media\intro.mp4", GetString(playback, "mediaAssetPath"));
-        Assert.Equal("program-take:3:media:clip-intro", GetString(playback, "mediaPlaybackKey"));
+        Assert.Equal("media:clip-intro:live:3", GetString(playback, "mediaPlaybackKey"));
         Assert.NotNull(playback.ExtensionData);
         Assert.True(playback.ExtensionData!["playing"].GetBoolean());
     }

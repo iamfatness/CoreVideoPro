@@ -1,5 +1,6 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels.Transport;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -177,7 +178,6 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
         var previewRoutes = GetMutableRoutes(preview).Select(route => route.Clone()).ToList();
         var draft = _livePreviewDraft?.Select(route => route.Clone()).ToList();
         var draftScene = _livePreviewDraftSceneId;
-        var playbackVersion = _programMediaPlaybackTakeVersion;
         return () =>
         {
             var attemptedProgram = ActiveSceneId;
@@ -212,7 +212,6 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
                         _livePreviewDraft = draft;
                         _livePreviewDraftSceneId = draftScene;
                     }
-                    _programMediaPlaybackTakeVersion = playbackVersion;
                     RefreshPreviewRoutingState();
                     OnPropertyChanged(nameof(CanTake));
                     TakeCommand.NotifyCanExecuteChanged();
@@ -225,11 +224,18 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     void ITransportHost.CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesToScene(sceneId);
 
-    void ITransportHost.PromoteProgramMediaRouteToPlayback() => PromoteProgramMediaRouteToPlayback();
+    void ITransportHost.PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds) =>
+        PromoteProgramMediaRouteToPlayback(wentLiveMediaAssetIds);
 
     void ITransportHost.RefreshPreviewRoutingState() => RefreshPreviewRoutingState();
 
-    void ITransportHost.IncrementProgramMediaPlaybackTakeVersion() => _programMediaPlaybackTakeVersion++;
+    // Explicit forwarder: satisfies the host seam without widening the god file's public surface.
+    IReadOnlyList<SourceRoute> ITransportHost.GetResolvedProgramRoutes() => GetResolvedProgramRoutes();
+
+    // A rollback deliberately does NOT rewind the ledger: a clip that rolled on an unconfirmed
+    // Take may really have gone to air, and reusing its old key could resume a stale decoder.
+    IReadOnlyList<string> ITransportHost.RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
+        _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
 
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task ITransportHost.EnsureMediaCoreRunningAsync(string startingStatus) =>

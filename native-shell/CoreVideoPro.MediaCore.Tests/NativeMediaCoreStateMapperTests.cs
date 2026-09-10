@@ -442,9 +442,9 @@ public sealed class NativeMediaCoreStateMapperTests
                 MediaAssetName = "Intro Sting",
                 MediaAssetKind = "stinger",
                 MediaAssetPath = @"C:\media\intro.mp4",
-                MediaPlaybackKey = "program-take:3:media:clip-intro",
+                MediaPlaybackKey = "media:clip-intro:live:3",
                 Playing = true,
-                Summary = "Playing Intro Sting with key program-take:3:media:clip-intro.",
+                Summary = "Playing Intro Sting with key media:clip-intro:live:3.",
                 Warnings = []
             }
         });
@@ -478,7 +478,7 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("on-air", snapshot.Diagnostics.OverlayState.Overlays[0].KeyPhase);
         Assert.Equal("playing", snapshot.MediaPlayback.Status);
         Assert.Equal("clip-intro", snapshot.MediaPlayback.MediaAssetId);
-        Assert.Equal("program-take:3:media:clip-intro", snapshot.MediaPlayback.MediaPlaybackKey);
+        Assert.Equal("media:clip-intro:live:3", snapshot.MediaPlayback.MediaPlaybackKey);
         Assert.Equal(@"C:\media\intro.mp4", snapshot.Diagnostics.MediaPlayback.MediaAssetPath);
         Assert.Equal(72, snapshot.Diagnostics.AudioMixSession.MasterLevel);
         Assert.Equal(2, snapshot.Diagnostics.AudioRoutingMatrix.BusTaps.Count);

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace corevideo::core {
 
@@ -22,23 +24,48 @@ namespace corevideo::core {
 //     arriving and the wall or its background goes black and re-decodes).
 //
 // Pure decision, in the OutputLifecyclePolicy / CaptureReaderStallPolicy shape.
+//
+// The wall is not the only thing that can rebuild. A Take between two scenes
+// that SHARE a source (the owner's case: a gallery's media background and
+// foreground on both Preview and Program) is only a cut if that source kept
+// running across it. So the record also carries every frame source present on
+// both sides with its SourceContinuityLedger generation before and after — a
+// generation that moved is a decoder that reopened on air — and every source
+// the take brought on air that had no frame on its first program tick (a cold
+// start the operator watched). Either one refuses the word "cut".
 struct TakeRecordPolicy {
+  struct SharedSourceContinuity {
+    std::string sourceId;
+    std::uint64_t generationBefore = 0, generationAfter = 0;
+    std::int64_t frameIdBefore = -1, frameIdAfter = -1;
+  };
+
   struct Observation {
     bool hasWallAfter = false;         // the taken scene carries a Tiles wall
     bool wallAdoptedSettled = false;   // adoptSettledFrom() returned true
     bool liveBackgroundExpected = false;   // the wall declares a live source background
     bool liveBackgroundEmitted = false;    // ...and it was in the first program frame
     std::uint64_t subscriptionChurnDelta = 0;  // real re-subscribes across the take
+    // Every frame source present in BOTH the outgoing (Program + Preview) and
+    // incoming plans, with its SourceContinuityLedger generation on each side.
+    std::vector<SharedSourceContinuity> sharedSources;
+    // Incoming-plan sources with no frame on the first program tick that were
+    // expected to have one (a media layer, or a source already running before).
+    std::vector<std::string> sourcesMissingOnFirstFrame;
   };
 
   struct Verdict {
     // How the wall arrived on Program.
     const char* wall = "none";       // none | adopted-settled | reset
-    // The one-word answer to "did the wall rebuild or cut".
+    // The one-word answer to "did the take rebuild or cut".
     const char* verdict = "no-wall";  // cut | rebuilt | no-wall
     // Whether anything other than the render plan could explain a rebuild.
     bool backgroundDropped = false;
     bool subscriptionsChurned = false;
+    bool sharedSourceRestarted = false;
+    std::vector<std::string> restartedSources;  // sourceIds whose generation changed
+    bool sourceMissing = false;
+    std::vector<std::string> missingSources;    // no frame on the first program tick
   };
 
   [[nodiscard]] static Verdict evaluate(const Observation& observation) {
@@ -46,9 +73,23 @@ struct TakeRecordPolicy {
     verdict.backgroundDropped =
         observation.liveBackgroundExpected && !observation.liveBackgroundEmitted;
     verdict.subscriptionsChurned = observation.subscriptionChurnDelta > 0;
+    for (const auto& source : observation.sharedSources) {
+      if (source.generationAfter != source.generationBefore) {
+        verdict.restartedSources.push_back(source.sourceId);
+      }
+    }
+    verdict.sharedSourceRestarted = !verdict.restartedSources.empty();
+    verdict.missingSources = observation.sourcesMissingOnFirstFrame;
+    verdict.sourceMissing = !verdict.missingSources.empty();
+    const bool sourcesBroke = verdict.sharedSourceRestarted || verdict.sourceMissing;
+
     if (!observation.hasWallAfter) {
       verdict.wall = "none";
-      verdict.verdict = "no-wall";
+      // No wall: the take is about its sources. Nothing shared and nothing
+      // missing is the old "no-wall"; a restart or a cold start is a rebuild on
+      // air; shared sources that all kept running are a cut.
+      if (sourcesBroke) verdict.verdict = "rebuilt";
+      else verdict.verdict = observation.sharedSources.empty() ? "no-wall" : "cut";
       return verdict;
     }
     if (!observation.wallAdoptedSettled) {
@@ -58,10 +99,12 @@ struct TakeRecordPolicy {
     }
     verdict.wall = "adopted-settled";
     // The animator cut cleanly. If the background never made the first frame,
-    // or a subscription was torn down in the same tick, the operator can still
-    // have seen a rebuild — say so instead of certifying a clean cut.
-    verdict.verdict =
-        (verdict.backgroundDropped || verdict.subscriptionsChurned) ? "rebuilt" : "cut";
+    // a subscription was torn down in the same tick, or a source restarted or
+    // cold-started, the operator can still have seen a rebuild — say so
+    // instead of certifying a clean cut.
+    verdict.verdict = (verdict.backgroundDropped || verdict.subscriptionsChurned || sourcesBroke)
+                          ? "rebuilt"
+                          : "cut";
     return verdict;
   }
 };

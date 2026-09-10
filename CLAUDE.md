@@ -652,67 +652,6 @@ comment at the code site; this is the index.
   re-subscribe churn on the taken members adds a third redraw.
   **Both are now INSTRUMENTED, not fixed** (2026-09-10, see the next section).
 
-## A Take is traceable, and "what Program rendered" no longer lies (2026-09-10)
-
-Three things, all core-side, all born from the same live show. The first is a
-correctness fix; the other two are instruments, deliberately built before any
-further fix, because three of that night's wrong conclusions came from a
-measurement rather than from the product.
-
-- **THE RENDERED SCENE ID WAS STUCK, NOT LAGGING.** `programFrame.sceneId`
-  (snapshot) sat on the pre-take scene for 15+ seconds while Program was
-  demonstrably compositing the new one. Root cause, in `MediaCore::renderTick`'s
-  buffered branch: it attributed the snapshot from
-  `ICompositor::latestDeliveredProgramFrame`, which is a **PEEK** — the program
-  buffer hands back the same delivered frame on every call until its delivery
-  thread advances `latest_`, and `D3DProgramBuffer` deliberately refuses to
-  advance it when the export it is paired with was busy, and CLEARS it when a
-  packet expires. So "a frame came back" was never evidence Program moved, and
-  when nothing came back there was **no else branch at all** — the attribution
-  simply stopped being written and the old scene stood forever. The delivery
-  SEQUENCE is now what says a new frame reached air, and the rest is the pure
-  `core/RenderedSceneAttributionPolicy.h` (`OutputLifecyclePolicy` shape):
-  Follow a new delivery with plan evidence, Hold through <=12 ticks (200ms) of
-  delivery jitter, then Forget. `programFrame.sceneIdAttribution` publishes
-  `live`/`holding`/`unknown` unconditionally alongside
-  `sceneIdAttributionTicks` and `deliverySequence`, so the field can never again
-  assert a scene nothing confirmed. **Rule: a peek is not an observation** — if a
-  reader republishes the same value, key your freshness on a sequence the
-  producer advances, not on the call succeeding.
-- **ONE STRUCTURED RECORD PER TAKE**, per operator action and never per frame, so
-  it is on by default without flooding the bounded log. Armed in `loadSceneGraph`
-  when the scene id actually changes (Take is a client-side scene swap that sends
-  ONE sync, so that IS the take on this wire) and completed on the first program
-  render tick after it — the only place the "after" half exists. Carries scene id
-  and renderPlanId on both sides, the layer ids on both sides, the wall keys,
-  whether `TilesPlanAnimation::adoptSettledFrom` **adopted or reset**, whether the
-  wall's live background (`tiles-source-bg:`) made the first program frame, and
-  the subscription-churn delta across the take. `core/TakeRecordPolicy.h` turns
-  those into the one-word answer to "did the wall rebuild or cut" — and it will
-  NOT certify a clean cut when the background dropped or a subscription churned
-  in the same tick, because both look identical on air. Lands as a `[take]` line
-  in the bounded process log (which the support bundle already collects) and as
-  a bounded 8-deep `takeRecords` node in `sessionState`. The outgoing plan is
-  built once on the command thread; the render tick pays only a layer-id copy.
-- **SUBSCRIPTION CHURN IS MEASURED PER SOURCE.** `ZoomEngineRuntime` keeps a
-  ledger keyed by sourceUuid — a `generation` that increments on every real
-  (re)subscribe or teardown, a cumulative `churn` count, and the REASON
-  (`resolution-change` / `cap-eviction` / `departure` / `resubscribe`), decided by
-  the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
-  `sessionState().zoomSubscriptionChurn` (engine:false with empty arrays when there is
-  no engine — the multiviewer-node rule). Two things it is built to catch:
-  resolution is part of the subscription key and is `purpose == "active-speaker"
-  ? 1080P : 720P`, so an active-speaker flip is a genuine engine-side renderer
-  teardown; and a source dropped from the requested set is unsubscribed outright.
-  **The ledger deliberately SURVIVES the unsubscribe** — a record erased with the
-  subscription cannot answer the question it exists for — and is cleared only
-  where `sentSubscriptions_` is (leave / rejoin / a new engine process).
-  **The churn itself is NOT fixed. Do not fix it until the instrument has shown
-  how often it actually fires on a real show.**
-
-Tests: `native/tests/RenderedSceneAttributionTest.cpp` (the attribution defect
-red/green, the policies, and the take record end to end) and
-`ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
   "layer boxes show live video inconsistently". `VideoSurfaceHost` attaches a
@@ -900,6 +839,183 @@ red/green, the policies, and the take record end to end) and
   `coreMutex` → `audioOutputMutex_`, and `coreMutex` → `ZoomEngineRuntime::mutex_` →
   `::sendMutex_` (never reversed). `coreMutex` holds are budgeted sub-ms outside
   sanctioned sites — `core/LockHoldGuardrail` warns (rate-capped) on violations.
+
+## A Take is traceable, and "what Program rendered" no longer lies (2026-09-10)
+
+Three things, all core-side, all born from the same live show. The first is a
+correctness fix; the other two are instruments, deliberately built before any
+further fix, because three of that night's wrong conclusions came from a
+measurement rather than from the product.
+
+- **THE RENDERED SCENE ID WAS STUCK, NOT LAGGING.** `programFrame.sceneId`
+  (snapshot) sat on the pre-take scene for 15+ seconds while Program was
+  demonstrably compositing the new one. Root cause, in `MediaCore::renderTick`'s
+  buffered branch: it attributed the snapshot from
+  `ICompositor::latestDeliveredProgramFrame`, which is a **PEEK** — the program
+  buffer hands back the same delivered frame on every call until its delivery
+  thread advances `latest_`, and `D3DProgramBuffer` deliberately refuses to
+  advance it when the export it is paired with was busy, and CLEARS it when a
+  packet expires. So "a frame came back" was never evidence Program moved, and
+  when nothing came back there was **no else branch at all** — the attribution
+  simply stopped being written and the old scene stood forever. The delivery
+  SEQUENCE is now what says a new frame reached air, and the rest is the pure
+  `core/RenderedSceneAttributionPolicy.h` (`OutputLifecyclePolicy` shape):
+  Follow a new delivery with plan evidence, Hold through <=12 ticks (200ms) of
+  delivery jitter, then Forget. `programFrame.sceneIdAttribution` publishes
+  `live`/`holding`/`unknown` unconditionally alongside
+  `sceneIdAttributionTicks` and `deliverySequence`, so the field can never again
+  assert a scene nothing confirmed. **Rule: a peek is not an observation** — if a
+  reader republishes the same value, key your freshness on a sequence the
+  producer advances, not on the call succeeding.
+- **ONE STRUCTURED RECORD PER TAKE**, per operator action and never per frame, so
+  it is on by default without flooding the bounded log. Armed in `loadSceneGraph`
+  when the scene id actually changes (Take is a client-side scene swap that sends
+  ONE sync, so that IS the take on this wire) and completed on the first program
+  render tick after it — the only place the "after" half exists. Carries scene id
+  and renderPlanId on both sides, the layer ids on both sides, the wall keys,
+  whether `TilesPlanAnimation::adoptSettledFrom` **adopted or reset**, whether the
+  wall's live background (`tiles-source-bg:`) made the first program frame, and
+  the subscription-churn delta across the take. `core/TakeRecordPolicy.h` turns
+  those into the one-word answer to "did the wall rebuild or cut" — and it will
+  NOT certify a clean cut when the background dropped or a subscription churned
+  in the same tick, because both look identical on air. Lands as a `[take]` line
+  in the bounded process log (which the support bundle already collects) and as
+  a bounded 8-deep `takeRecords` node in `sessionState`. The outgoing plan is
+  built once on the command thread; the render tick pays only a layer-id copy.
+- **SUBSCRIPTION CHURN IS MEASURED PER SOURCE.** `ZoomEngineRuntime` keeps a
+  ledger keyed by sourceUuid — a `generation` that increments on every real
+  (re)subscribe or teardown, a cumulative `churn` count, and the REASON
+  (`resolution-change` / `cap-eviction` / `departure` / `resubscribe`), decided by
+  the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
+  `sessionState().zoomSubscriptionChurn` (engine:false with empty arrays when there is
+  no engine — the multiviewer-node rule). Two things it is built to catch:
+  resolution is part of the subscription key and is `purpose == "active-speaker"
+  ? 1080P : 720P`, so an active-speaker flip is a genuine engine-side renderer
+  teardown; and a source dropped from the requested set is unsubscribed outright.
+  **The ledger deliberately SURVIVES the unsubscribe** — a record erased with the
+  subscription cannot answer the question it exists for — and is cleared only
+  where `sentSubscriptions_` is (leave / rejoin / a new engine process).
+  **The churn itself is NOT fixed. Do not fix it until the instrument has shown
+  how often it actually fires on a real show.**
+- **PER-SOURCE CONTINUITY IS PART OF THE VERDICT (slice 1 of the persistent-sources
+  redesign, 2026-09-10).** The wall-only verdict above missed the owner's actual
+  case: a Tiles gallery whose foreground AND media background are on both Preview
+  and Program re-rendered on every cut, and the take record still said `cut`,
+  because nothing was watching the SOURCES a shared scene depends on.
+  `core/SourceContinuityLedger.h` observes every render tick over `videoFrames`
+  (keyed by `frame.participantId`) and bumps a per-source `generation` whenever a
+  frameId regresses (a decoder reopened) or a source reappears after
+  `absentTicksBeforeRestart` (30 ticks, 500 ms at 60 Hz) — a cold start. Only
+  frames with CONTENT count (`hasPixels() || hasI420()`): a metadata-only Zoom
+  roster frame is neither observed by the ledger nor accepted as "had a frame".
+  The take record now carries `fromSourceIds` (the frame keys — participantId,
+  else sourceId — of the outgoing Program plan UNION the outgoing Preview plan,
+  i.e. the before-set), `sources[]` ({sourceId, generationBefore, generationAfter,
+  frameIdBefore, frameIdAfter, restarted}) for every source in that before-set
+  that is also in the incoming plan, `restartedSources` + the boolean
+  `sharedSourceRestarted`, and `missingSources` + the boolean `sourceMissing` (a
+  source the take brought on air with no frame on its first program tick, judged
+  only when a frame was EXPECTED — a media layer, or a source that was running
+  within the ledger's own restart window when the take was armed). Any restart or
+  missing source forces `verdict=rebuilt`, even when the wall itself cut cleanly.
+  **A HELD frame counts as continuous.** A source slower than the render rate
+  (a 30 fps guest, a still, a paused poster) re-presents the same frameId for
+  several ticks; the ledger treats that as the same generation, not a stall. This
+  deliberately differs from spec §4.1's "each kept advancing frameId" — requiring
+  an advance on the take tick would call every slow source a rebuild. Only a
+  regression or a >30-tick absence is a restart.
+  **Known low-probability race (documented, not fixed):** the before-set is read
+  when the Take's `load-scene-graph` arms the record. If a repeating spine sync
+  applies the swapped Preview (the outgoing scene) BEFORE that `load-scene-graph`
+  lands, the "outgoing Preview plan" is already the new one and the before-union
+  can miss incoming sources that were on the old Preview — so a source can be
+  judged missing/unshared rather than continuous. The shell sends both in one
+  sync, so this needs an interleaved spine tick. Extends the existing rule "a peek is not an
+  observation" one step further: **a counter that only counts submits is not
+  continuity** — the ledger has to watch frameId actually advance across the
+  take, not just that something arrived.
+
+Tests: `native/tests/RenderedSceneAttributionTest.cpp` (the attribution defect
+red/green, the policies, and the take record end to end),
+`native/tests/SourceContinuityLedgerTest.cpp`, and
+`ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
+
+## Media is a persistent source (slice 1, 2026-09-10)
+
+Slice 1 of `docs/superpowers/specs/2026-09-10-persistent-sources-design.md`: a
+media asset is now one decoder with one clock, not one per bus.
+
+- **Same source id on both buses.** `buildPreviewCompositorRenderPlan` no longer
+  renames every Preview media layer to `preview:<id>` — Program and Preview
+  address the SAME source: `media:<assetId>` for a routed asset or still,
+  `background:<assetId>` for a scene background. So `OwnedMediaFrameSource` runs
+  one decoder (and `StillMediaFrameCache` one entry) for a background or still
+  shared by both scenes, and a Take cannot restart it. **The one exception:** a
+  paused, non-still `media-video` layer (a clip cue poster) still gets `preview:` —
+  its paused poster frame is a different playback position from Program's rolling
+  copy, and the two must never replace each other in the frame set.
+- **Route stills never reach a decoder.** A still on both buses arrives playing
+  on Program and paused on Preview; `OwnedMediaFrameSource::requests()` skips
+  `media-video` stills (`isStillImageMediaAsset`, the MF adapter's own filter),
+  so they are served only by `StillMediaFrameCache` — no dead decoder threads, no
+  false "two playback identities" warning. Background stills keep the decoder path.
+- **The route wire carries the loop flag** (`mediaAssetLoop`, from
+  `MediaRoutePlaybackService.IsLoopingAsset`), parsed at BOTH scene parse sites
+  onto `SceneRouteState` and the layer — without it a looping route asset played
+  once and froze. The preview-scene dedup signature includes the media path,
+  playback key, playing and loop flags, so a change to any of them is applied.
+- **Loop vs clip go-live policy** (shell, `MediaRoutePlaybackService` /
+  `TransportCoordinator` / `StudioViewModel`). A looping background asset (kind
+  "background") plays under key `media:<id>` on both buses, identical to Program,
+  matching §2 of the spec ("nothing" on go-live for loops). A clip (non-loop)
+  plays under `media:<id>:live:<n>` — paused on first frame while only in
+  Preview, rolling from 0 with audio on only when it actually GOES LIVE. `n` is
+  the `MediaGoLiveLedger` generation for that asset, which advances only when
+  the asset enters Program for the first time or the operator explicitly presses
+  Play on a Program-routed clip — never on every Take, so a clip already playing
+  on Program stays rolling across an unrelated cut. `ChooseAssetToPromote` /
+  `ITransportHost.RecordProgramMediaGoLive` runs promotion only for the assets
+  that actually went live, and never for a still (`SupportsPlayback` filter).
+  **Operator pause is PER-ASSET state, not "is it the selection":**
+  `MediaGoLiveLedger` keeps an operator-paused set — pausing a Program-routed clip
+  adds it, playing it removes it, the clip GOING LIVE clears it — and
+  `ShouldPlaySceneMediaRoute` / `ResolveSceneRoutePlayback` read that set (loops
+  always play). Promotion only moves the selection, so a paused clip that stays
+  on Program stays paused when another asset goes live (before this, promoting Y
+  un-paused X and, because `playing` is part of the decoder's request key,
+  cold-restarted it). Selecting a Program clip in the bin reports its real state
+  instead of pausing it.
+- **KNOWN GAP: a clip going live still cold-starts.** The Preview cue poster
+  (`preview:media:<id>`) and the rolling Program source (`media:<id>`) are
+  different decoders, so a clip entering Program opens a fresh one: a placeholder
+  slab for a few ticks, and its take record reads `rebuilt` with
+  `missingSources=[media:<id>]`. That record is correct and honest — do not teach
+  the judge to excuse it. The fix (hand the warmed cue decoder to Program) belongs
+  to a later slice.
+- **The 16-decoder cap warning names the refused source** (`OwnedMediaFrameSource`)
+  instead of just stating the count, and a loud, once-per-id `[media-playback]`
+  warning fires when two different playback identities request one source id —
+  now a real risk once media sources outlive buses (spec §5 risk called out
+  up front).
+
+Tests: `native/tests/MediaCoreCommandTest.cpp` (media identity across buses),
+`native/tests/MediaPlaybackTimelineTest.cpp` (`OwnedMediaFrameSource.*`),
+`native/tests/ProgramPixelContinuityTest.cpp` (dark 0x10 fill placed outside the
+placeholder colour range — fails against the old per-bus rename),
+`MediaRoutePlaybackServiceTests` (incl. the per-asset pause rules) /
+`TransportCoordinatorTests` / `MediaCoreCommandBuilderTests.SerializesTheRouteLoopFlagNextToPlaying`
+(shell), `MediaCoreCommand.ARouteLoopFlagReachesTheMediaSourceOnBothBuses`,
+`TakeRecord.AMetadataOnlyZoomFrameDoesNotCountAsHavingAFrame`, and
+`scripts/qa/take-verdict-judge.test.mjs`. Not yet run: `scripts/qa/live-meeting-soak.mjs
+--takes N [--background <file>]` against a real meeting. Its Takes mirror the
+shell's Take (one sync: `load-scene-graph` incoming + `set-preview-scene` outgoing),
+both scenes carry the same Tiles wall over the live Zoom members (plus the same
+media background with `--background`), and Program is primed to scene B before the
+floor is read so N takes score N records. **Remaining limits:** cuts only (no fade
+Takes); no clip or still routes, so the go-live cold start above is not exercised;
+without `--background` it proves Zoom/wall continuity only; no pixel probe across
+the take (the record is the only judge); and the synthesized scenes are not the
+shell's own scene payloads.
 
 ## Secrets at rest + OAuth return URI (beta S4, 2026-07-18)
 

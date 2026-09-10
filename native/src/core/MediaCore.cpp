@@ -1857,6 +1857,17 @@ std::vector<std::string> renderPlanLayerIds(const modules::CompositorRenderPlan&
   return ids;
 }
 
+// The key a layer's frame is matched by in the gather — the compositor matches
+// frames by participantId, and the SourceContinuityLedger is keyed by the
+// frame's participantId. A Zoom layer carries sourceId "zoom:<pid>" but its
+// frames carry the BARE pid, so sourceId is the wrong key for it; media and
+// backgrounds have no participantId and are keyed by sourceId; capture carries
+// participantId == sourceId. One helper, so the take record's two id sites
+// (renderPlanSourceIds and the missing-source check) can never disagree.
+const std::string& frameKeyForLayer(const modules::CompositorRenderPlanLayer& layer) {
+  return !layer.participantId.empty() ? layer.participantId : layer.sourceId;
+}
+
 std::string joinLayerIds(const std::vector<std::string>& ids) {
   std::string joined;
   for (const auto& id : ids) {
@@ -1867,6 +1878,18 @@ std::string joinLayerIds(const std::vector<std::string>& ids) {
 }
 
 }  // namespace
+
+std::vector<std::string> MediaCore::renderPlanSourceIds(const modules::CompositorRenderPlan& plan) {
+  // FRAME keys (frameKeyForLayer) — what a VideoFrame carries as participantId
+  // and the SourceContinuityLedger is keyed by. A layer with no source (a
+  // colour slab) has no clock to judge.
+  std::vector<std::string> ids;
+  for (const auto& layer : plan.layers) {
+    const auto& id = frameKeyForLayer(layer);
+    if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+  }
+  return ids;
+}
 
 rpc::Json MediaCore::takeRecordsState() const {
   rpc::Json::Array records;
@@ -1890,6 +1913,25 @@ rpc::Json MediaCore::takeRecordsState() const {
         {"backgroundDropped", record.verdict.backgroundDropped},
         {"subscriptionChurnDelta", static_cast<double>(record.observation.subscriptionChurnDelta)},
         {"subscriptionsChurned", record.verdict.subscriptionsChurned},
+        {"fromSourceIds", stringArray(record.fromSourceIds)},
+        {"sources", [&] {
+           rpc::Json::Array sources;
+           for (const auto& s : record.observation.sharedSources) {
+             const bool restarted = s.generationAfter != s.generationBefore;
+             sources.emplace_back(rpc::Json::Object{
+                 {"sourceId", s.sourceId},
+                 {"generationBefore", static_cast<double>(s.generationBefore)},
+                 {"generationAfter", static_cast<double>(s.generationAfter)},
+                 {"frameIdBefore", static_cast<double>(s.frameIdBefore)},
+                 {"frameIdAfter", static_cast<double>(s.frameIdAfter)},
+                 {"restarted", restarted}});
+           }
+           return sources;
+         }()},
+        {"restartedSources", stringArray(record.verdict.restartedSources)},
+        {"sharedSourceRestarted", record.verdict.sharedSourceRestarted},
+        {"missingSources", stringArray(record.verdict.missingSources)},
+        {"sourceMissing", record.verdict.sourceMissing},
         {"armedAtMs", record.armedAtMs},
         {"armedAtFrame", static_cast<double>(record.armedAtFrame)},
     });
@@ -1929,6 +1971,20 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
   const auto outgoing = buildCompositorRenderPlan({});
   record.fromRenderPlanId = outgoing.renderPlanId;
   record.fromLayerIds = renderPlanLayerIds(outgoing);
+  // The sources "before" the take are Program's AND Preview's: a Take promotes
+  // Preview, so a source the operator watched there and is now cutting to must
+  // be judged against its clock as of now, not treated as new.
+  record.fromSourceIds = renderPlanSourceIds(outgoing);
+  if (hasPreviewScene()) {
+    for (auto& id : renderPlanSourceIds(buildPreviewCompositorRenderPlan({}))) {
+      if (std::find(record.fromSourceIds.begin(), record.fromSourceIds.end(), id) ==
+          record.fromSourceIds.end()) {
+        record.fromSourceIds.push_back(std::move(id));
+      }
+    }
+  }
+  record.continuityBefore = sourceContinuity_.snapshot(record.fromSourceIds);
+  record.armedAtTick = renderTickCounter_;
   record.armedAtFrame = lastProducedFrameNumber_;
   record.armedAtMs = static_cast<double>(monotonicMs());
   record.subscriptionChurnAtArm =
@@ -1939,7 +1995,8 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
 }
 
 void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                                   bool wallAdoptedSettled) {
+                                   bool wallAdoptedSettled,
+                                   const std::vector<modules::VideoFrame>& frames) {
   if (!pendingTakeRecord_) return;
   TakeRecord record = std::move(*pendingTakeRecord_);
   pendingTakeRecord_.reset();
@@ -1964,6 +2021,45 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
       zoomEngineRuntime_ ? zoomEngineRuntime_->subscriptionChurnTotal() : 0;
   record.observation.subscriptionChurnDelta =
       churnNow > record.subscriptionChurnAtArm ? churnNow - record.subscriptionChurnAtArm : 0;
+
+  // Per-source continuity across the take. The ledger has already observed
+  // THIS tick's frames (the call site runs after the observe loop), so the
+  // "after" generation is the one the first program frame was composited from.
+  const auto toSourceIds = renderPlanSourceIds(programPlan);
+  const auto continuityAfter = sourceContinuity_.snapshot(toSourceIds);
+  for (const auto& id : toSourceIds) {
+    const auto before = record.continuityBefore.find(id);
+    const auto after = continuityAfter.find(id);
+    if (before == record.continuityBefore.end() || after == continuityAfter.end()) continue;
+    record.observation.sharedSources.push_back({id, before->second.generation, after->second.generation,
+                                                before->second.lastFrameId, after->second.lastFrameId});
+  }
+  // A source the take brought on air with no frame on its first program tick
+  // is a cold start on air — but only where a frame was EXPECTED: a media
+  // layer (its decoder owes us a picture) or a source that was RUNNING when the
+  // take was armed. "Running" means seen within the ledger's own restart window
+  // of the arm tick; the ledger keeps a source's entry forever, so "ever seen"
+  // would call a guest whose camera went off minutes ago a cold start the take
+  // caused. A guest who simply has no video is not a rebuild.
+  const std::int64_t runningSinceTick =
+      record.armedAtTick - SourceContinuityLedger::absentTicksBeforeRestart;
+  for (const auto& layer : programPlan.layers) {
+    const auto& id = frameKeyForLayer(layer);
+    if (id.empty()) continue;
+    auto& missing = record.observation.sourcesMissingOnFirstFrame;
+    if (std::find(missing.begin(), missing.end(), id) != missing.end()) continue;
+    const auto before = record.continuityBefore.find(id);
+    const bool runningAtArm =
+        before != record.continuityBefore.end() && before->second.lastSeenTick >= runningSinceTick;
+    const bool expected = !layer.mediaAssetId.empty() || runningAtArm;
+    if (!expected) continue;
+    // Content only: a metadata-only frame (a Zoom roster entry with no
+    // pixels and no I420) puts nothing on air, so it is not "a frame".
+    const bool hasFrame = std::any_of(frames.begin(), frames.end(), [&](const auto& frame) {
+      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+    });
+    if (!hasFrame) missing.push_back(id);
+  }
   record.verdict = TakeRecordPolicy::evaluate(record.observation);
   record.completed = true;
 
@@ -1973,7 +2069,7 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
   nativeLogf(
       "[take] from=%s to=%s op=%s rev=%lld mode=%s planFrom=%s planTo=%s wall=%s verdict=%s "
       "wallKeyFrom=%s wallKeyTo=%s bgExpected=%d bgEmitted=%d churn=%llu layersFrom=%zu "
-      "layersTo=%zu ids=[%s]\n",
+      "layersTo=%zu ids=[%s] restarted=[%s] missing=[%s]\n",
       record.fromSceneId.c_str(), record.toSceneId.c_str(), record.operationId.c_str(),
       static_cast<long long>(record.revision), record.mode.c_str(),
       record.fromRenderPlanId.c_str(), record.toRenderPlanId.c_str(), record.verdict.wall,
@@ -1982,7 +2078,9 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
       record.observation.liveBackgroundEmitted ? 1 : 0,
       static_cast<unsigned long long>(record.observation.subscriptionChurnDelta),
       record.fromLayerIds.size(), record.toLayerIds.size(),
-      joinLayerIds(record.toLayerIds).c_str());
+      joinLayerIds(record.toLayerIds).c_str(),
+      joinLayerIds(record.verdict.restartedSources).c_str(),
+      joinLayerIds(record.verdict.missingSources).c_str());
 
   takeRecords_.push_back(std::move(record));
   while (takeRecords_.size() > kTakeRecordRing) takeRecords_.pop_front();
@@ -2037,6 +2135,8 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.mediaAssetPath = route.getString("mediaAssetPath");
       state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
       state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
+      // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
+      state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       const rpc::Json* rect = route.get("rect");
       if (rect && rect->isObject()) {
@@ -2127,8 +2227,11 @@ void MediaCore::syncStillMediaDesired() {
                          modules::normalizeMediaAssetPath(route.mediaAssetPath)});
     }
   };
+  // One key per still on both buses (persistent-sources spec §2): a still has
+  // no playback position, so Preview and Program share `media:<asset>`. The
+  // cache keeps the first request per key, so a still on both buses is ONE entry.
   addRoutes(sceneRoutes_, "media:");
-  addRoutes(previewSceneRoutes_, "preview:media:");
+  addRoutes(previewSceneRoutes_, "media:");
   stillMediaCache_->setDesired(std::move(desired));
 }
 
@@ -3235,6 +3338,8 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.mediaAssetPath = route.getString("mediaAssetPath");
       state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
       state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
+      // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
+      state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       if (const rpc::Json* rect = route.get("rect"); rect && rect->isObject()) {
         state.rectX = static_cast<float>(rect->getNumber("x", 0.0));
@@ -3262,7 +3367,9 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
         state.routeId = "preview-route-" + std::to_string(routeIndex);
       }
       signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
-                   state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.fitMode + ":" +
+                   state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
+                   state.mediaPlaybackKey + ":" + (state.mediaAssetPlaying ? "p" : "s") +
+                   (state.mediaAssetLoop ? "l" : "o") + ":" + state.fitMode + ":" +
                    std::to_string(state.rectX) + "," + std::to_string(state.rectY) + "," +
                    std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "," +
                    std::to_string(state.opacity) + "|";
@@ -5130,14 +5237,19 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
                                       previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
                                       previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
                                       videoFrames, previewTilesLayer_);
-  // Program and Preview may hold the same asset at different playback positions.
-  // Give Preview its own frame-source namespace so its held cue frame cannot be
-  // replaced by Program's moving decoder (or vice versa).
+  // PERSISTENT SOURCES (spec 2026-09-10 §2): Preview and Program address the
+  // SAME media source. A looping background or a still that is on both buses is
+  // one decoder with one clock, so a Take cannot restart it. The single case
+  // that keeps a Preview-only namespace is a PAUSED CLIP CUE: its poster frame
+  // is a different playback position from Program's rolling copy, and the two
+  // must not replace each other in the frame set.
   for (auto& layer : plan.layers) {
-    if (!layer.mediaAssetId.empty()) {
-      const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
-      layer.sourceId = "preview:" + sourceId;
-    }
+    if (layer.mediaAssetId.empty()) continue;
+    const bool pausedClipCue = layer.kind == "media-video" && !layer.mediaAssetPlaying &&
+                               !modules::isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath);
+    if (!pausedClipCue) continue;
+    const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+    layer.sourceId = "preview:" + sourceId;
   }
   return plan;
 }
@@ -5262,6 +5374,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.mediaAssetPath = route.mediaAssetPath;
         layer.mediaPlaybackKey = route.mediaPlaybackKey;
         layer.mediaAssetPlaying = route.mediaAssetPlaying;
+        layer.mediaAssetLoop = route.mediaAssetLoop;
       }
       if (route.hasRect) {
         layer.rect = {route.rectX, route.rectY, route.rectWidth, route.rectHeight};
@@ -6053,11 +6166,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (tilesLayer_.present) {
     lastRenderPlan_ = renderPlan;
   }
-  // First program plan after a Take: this is the only tick where the "after"
-  // half of the take record exists. Per operator action, not per frame.
-  if (pendingTakeRecord_) {
-    completeTakeRecord(renderPlan, wallAdoptedSettled);
-  }
+  // (The take record is completed further down, AFTER media frames join the
+  // gather — see "First program plan after a Take".)
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
   // needed on screen, and the per-frame CPU Map otherwise caps the render rate.
@@ -6108,6 +6218,27 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         renderPlan.warnings.push_back(warning);
       }
     }
+  }
+  // Per-source restart evidence. `videoFrames` is final here — Zoom, capture,
+  // stills AND this tick's media frames — so every source the compositor is
+  // about to draw is observed on every tick it is drawn. Strings and ints only.
+  ++renderTickCounter_;
+  for (const auto& frame : videoFrames) {
+    // A metadata-only frame (Zoom roster entry: no pixels, no I420) is not
+    // evidence the source is running — observing it would keep a dead
+    // source "continuous" and count it as having had a frame.
+    if (!frame.hasPixels() && !frame.hasI420()) continue;
+    sourceContinuity_.observe(frame.participantId, frame.frameId, renderTickCounter_);
+  }
+  sourceContinuity_.endTick(renderTickCounter_);
+  // First program plan after a Take: this is the only tick where the "after"
+  // half of the take record exists. Per operator action, not per frame. It
+  // must run AFTER the media poll and the observe loop above: media frames
+  // (a scene's background and foreground) only join the gather after the plan
+  // is built, and judging continuity or "had a frame" before they arrive would
+  // call every media source missing and read the previous tick's generations.
+  if (pendingTakeRecord_) {
+    completeTakeRecord(renderPlan, wallAdoptedSettled, videoFrames);
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
