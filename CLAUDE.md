@@ -580,6 +580,69 @@ comment at the code site; this is the index.
   Preview -> Program promotion alone never tears it down). UNPROVEN without a
   live meeting: which of the two the owner is watching, and whether Zoom
   re-subscribe churn on the taken members adds a third redraw.
+  **Both are now INSTRUMENTED, not fixed** (2026-09-10, see the next section).
+
+## A Take is traceable, and "what Program rendered" no longer lies (2026-09-10)
+
+Three things, all core-side, all born from the same live show. The first is a
+correctness fix; the other two are instruments, deliberately built before any
+further fix, because three of that night's wrong conclusions came from a
+measurement rather than from the product.
+
+- **THE RENDERED SCENE ID WAS STUCK, NOT LAGGING.** `programFrame.sceneId`
+  (snapshot) sat on the pre-take scene for 15+ seconds while Program was
+  demonstrably compositing the new one. Root cause, in `MediaCore::renderTick`'s
+  buffered branch: it attributed the snapshot from
+  `ICompositor::latestDeliveredProgramFrame`, which is a **PEEK** — the program
+  buffer hands back the same delivered frame on every call until its delivery
+  thread advances `latest_`, and `D3DProgramBuffer` deliberately refuses to
+  advance it when the export it is paired with was busy, and CLEARS it when a
+  packet expires. So "a frame came back" was never evidence Program moved, and
+  when nothing came back there was **no else branch at all** — the attribution
+  simply stopped being written and the old scene stood forever. The delivery
+  SEQUENCE is now what says a new frame reached air, and the rest is the pure
+  `core/RenderedSceneAttributionPolicy.h` (`OutputLifecyclePolicy` shape):
+  Follow a new delivery with plan evidence, Hold through <=12 ticks (200ms) of
+  delivery jitter, then Forget. `programFrame.sceneIdAttribution` publishes
+  `live`/`holding`/`unknown` unconditionally alongside
+  `sceneIdAttributionTicks` and `deliverySequence`, so the field can never again
+  assert a scene nothing confirmed. **Rule: a peek is not an observation** — if a
+  reader republishes the same value, key your freshness on a sequence the
+  producer advances, not on the call succeeding.
+- **ONE STRUCTURED RECORD PER TAKE**, per operator action and never per frame, so
+  it is on by default without flooding the bounded log. Armed in `loadSceneGraph`
+  when the scene id actually changes (Take is a client-side scene swap that sends
+  ONE sync, so that IS the take on this wire) and completed on the first program
+  render tick after it — the only place the "after" half exists. Carries scene id
+  and renderPlanId on both sides, the layer ids on both sides, the wall keys,
+  whether `TilesPlanAnimation::adoptSettledFrom` **adopted or reset**, whether the
+  wall's live background (`tiles-source-bg:`) made the first program frame, and
+  the subscription-churn delta across the take. `core/TakeRecordPolicy.h` turns
+  those into the one-word answer to "did the wall rebuild or cut" — and it will
+  NOT certify a clean cut when the background dropped or a subscription churned
+  in the same tick, because both look identical on air. Lands as a `[take]` line
+  in the bounded process log (which the support bundle already collects) and as
+  a bounded 8-deep `takeRecords` node in `sessionState`. The outgoing plan is
+  built once on the command thread; the render tick pays only a layer-id copy.
+- **SUBSCRIPTION CHURN IS MEASURED PER SOURCE.** `ZoomEngineRuntime` keeps a
+  ledger keyed by sourceUuid — a `generation` that increments on every real
+  (re)subscribe or teardown, a cumulative `churn` count, and the REASON
+  (`resolution-change` / `cap-eviction` / `departure` / `resubscribe`), decided by
+  the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
+  `sessionState().zoomSubscriptions` (engine:false with empty arrays when there is
+  no engine — the multiviewer-node rule). Two things it is built to catch:
+  resolution is part of the subscription key and is `purpose == "active-speaker"
+  ? 1080P : 720P`, so an active-speaker flip is a genuine engine-side renderer
+  teardown; and a source dropped from the requested set is unsubscribed outright.
+  **The ledger deliberately SURVIVES the unsubscribe** — a record erased with the
+  subscription cannot answer the question it exists for — and is cleared only
+  where `sentSubscriptions_` is (leave / rejoin / a new engine process).
+  **The churn itself is NOT fixed. Do not fix it until the instrument has shown
+  how often it actually fires on a real show.**
+
+Tests: `native/tests/RenderedSceneAttributionTest.cpp` (the attribution defect
+red/green, the policies, and the take record end to end) and
+`ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
   "layer boxes show live video inconsistently". `VideoSurfaceHost` attaches a

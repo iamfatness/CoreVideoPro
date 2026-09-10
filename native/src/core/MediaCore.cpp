@@ -642,6 +642,14 @@ rpc::Json MediaCore::sessionState() const {
       {"programFrame",
        rpc::Json::Object{
            {"sceneId", renderedProgramSources_.sceneId()},
+           // Always present, whatever the attribution is doing. "live" = this
+           // scene id is attributed to a program frame delivered this tick;
+           // "holding" = brief delivery jitter, the id is the last delivered
+           // one; "unknown" = nothing has confirmed it and sceneId is empty.
+           // See RenderedSceneAttributionPolicy.
+           {"sceneIdAttribution", std::string(renderedSceneAttributionState_)},
+           {"sceneIdAttributionTicks", renderedSceneAttributionTicks_},
+           {"deliverySequence", static_cast<double>(lastProgramFrame_.deliverySequence)},
            {"videoSources", renderedProgramSources_.videoSources()},
            {"frameNumber", static_cast<double>(lastProgramFrame_.frameNumber)},
            {"renderPlanId", lastProgramFrame_.renderPlanId},
@@ -667,6 +675,11 @@ rpc::Json MediaCore::sessionState() const {
            {"renderDeadlineMisses", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
            {"degradedFrameCount", lastProgramFrame_.health == "degraded" ? 1 : 0},
        }},
+      // Both unconditional. A take ledger that appears only after a Take, or a
+      // subscription node that appears only once churn happens, is absent in
+      // exactly the case worth detecting (the multiviewer-node lesson).
+      {"takeRecords", takeRecordsState()},
+      {"zoomSubscriptions", zoomSubscriptionChurnState()},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
       {"virtualCamera", virtualCameraState()},
@@ -1838,7 +1851,156 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
 
 }  // namespace
 
+namespace {
+
+std::vector<std::string> renderPlanLayerIds(const modules::CompositorRenderPlan& plan) {
+  std::vector<std::string> ids;
+  ids.reserve(plan.layers.size());
+  for (const auto& layer : plan.layers) ids.push_back(layer.layerId);
+  return ids;
+}
+
+std::string joinLayerIds(const std::vector<std::string>& ids) {
+  std::string joined;
+  for (const auto& id : ids) {
+    if (!joined.empty()) joined += ",";
+    joined += id;
+  }
+  return joined;
+}
+
+}  // namespace
+
+rpc::Json MediaCore::takeRecordsState() const {
+  rpc::Json::Array records;
+  for (const auto& record : takeRecords_) {
+    records.emplace_back(rpc::Json::Object{
+        {"fromSceneId", record.fromSceneId},
+        {"toSceneId", record.toSceneId},
+        {"fromRenderPlanId", record.fromRenderPlanId},
+        {"toRenderPlanId", record.toRenderPlanId},
+        {"operationId", record.operationId},
+        {"revision", static_cast<double>(record.revision)},
+        {"mode", record.mode},
+        {"fromLayerIds", stringArray(record.fromLayerIds)},
+        {"toLayerIds", stringArray(record.toLayerIds)},
+        {"fromWallKey", record.fromWallKey},
+        {"toWallKey", record.toWallKey},
+        {"wall", std::string(record.verdict.wall)},
+        {"verdict", std::string(record.verdict.verdict)},
+        {"liveBackgroundExpected", record.observation.liveBackgroundExpected},
+        {"liveBackgroundEmitted", record.observation.liveBackgroundEmitted},
+        {"backgroundDropped", record.verdict.backgroundDropped},
+        {"subscriptionChurnDelta", static_cast<double>(record.observation.subscriptionChurnDelta)},
+        {"subscriptionsChurned", record.verdict.subscriptionsChurned},
+        {"armedAtMs", record.armedAtMs},
+        {"armedAtFrame", static_cast<double>(record.armedAtFrame)},
+    });
+  }
+  return rpc::Json::Object{
+      {"count", static_cast<double>(takeRecords_.size())},
+      {"pending", pendingTakeRecord_.has_value()},
+      {"records", records},
+  };
+}
+
+rpc::Json MediaCore::zoomSubscriptionChurnState() const {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->subscriptionChurnState();
+  }
+  // No engine: the node still exists, and says so, rather than vanishing.
+  return rpc::Json::Object{
+      {"engine", false},
+      {"sourceCount", 0.0},
+      {"subscribedCount", 0.0},
+      {"totalChurn", 0.0},
+      {"lastResolutionChanges", 0.0},
+      {"lastCapEvictions", 0.0},
+      {"lastDepartures", 0.0},
+      {"sources", rpc::Json::Array{}},
+  };
+}
+
+void MediaCore::armTakeRecord(const std::string& toSceneId) {
+  // Per operator action. The outgoing plan is built ONCE here, on the command
+  // thread, so the render tick pays nothing for the "before" half.
+  TakeRecord record;
+  record.fromSceneId = sceneId_;
+  record.toSceneId = toSceneId;
+  record.hadWallBefore = tilesLayer_.present;
+  record.fromWallKey = tilesLayer_.present ? sceneId_ + ":" + tilesLayer_.layerId : std::string();
+  const auto outgoing = buildCompositorRenderPlan({});
+  record.fromRenderPlanId = outgoing.renderPlanId;
+  record.fromLayerIds = renderPlanLayerIds(outgoing);
+  record.armedAtFrame = lastProducedFrameNumber_;
+  record.armedAtMs = static_cast<double>(monotonicMs());
+  record.subscriptionChurnAtArm =
+      zoomEngineRuntime_ ? zoomEngineRuntime_->subscriptionChurnTotal() : 0;
+  // An unfinished record is replaced, not queued: a second Take before the first
+  // one rendered means the first never reached air as its own frame.
+  pendingTakeRecord_ = std::move(record);
+}
+
+void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
+                                   bool wallAdoptedSettled) {
+  if (!pendingTakeRecord_) return;
+  TakeRecord record = std::move(*pendingTakeRecord_);
+  pendingTakeRecord_.reset();
+
+  record.toRenderPlanId = programPlan.renderPlanId;
+  record.toLayerIds = renderPlanLayerIds(programPlan);
+  record.toWallKey = tilesLayer_.present ? sceneId_ + ":" + tilesLayer_.layerId : std::string();
+  record.operationId = takeTransition_.operationId;
+  record.revision = takeTransition_.revision;
+  record.mode = takeTransition_.mode;
+
+  const std::string liveBackgroundLayerId = "tiles-source-bg:" + tilesLayer_.layerId;
+  record.observation.hasWallAfter = tilesLayer_.present;
+  record.observation.wallAdoptedSettled = wallAdoptedSettled;
+  record.observation.liveBackgroundExpected =
+      tilesLayer_.present && !tilesLayer_.style.backgroundSourceId.empty() &&
+      tilesLayer_.style.backgroundSourceId != tilesLayer_.layerId;
+  record.observation.liveBackgroundEmitted =
+      std::any_of(programPlan.layers.begin(), programPlan.layers.end(),
+                  [&](const auto& layer) { return layer.layerId == liveBackgroundLayerId; });
+  const std::uint64_t churnNow =
+      zoomEngineRuntime_ ? zoomEngineRuntime_->subscriptionChurnTotal() : 0;
+  record.observation.subscriptionChurnDelta =
+      churnNow > record.subscriptionChurnAtArm ? churnNow - record.subscriptionChurnAtArm : 0;
+  record.verdict = TakeRecordPolicy::evaluate(record.observation);
+  record.completed = true;
+
+  // Bounded async log: the support bundle already collects the process log, and
+  // the write itself is queued off this thread. One line per Take, so it is on by
+  // default without competing with media work.
+  nativeLogf(
+      "[take] from=%s to=%s op=%s rev=%lld mode=%s planFrom=%s planTo=%s wall=%s verdict=%s "
+      "wallKeyFrom=%s wallKeyTo=%s bgExpected=%d bgEmitted=%d churn=%llu layersFrom=%zu "
+      "layersTo=%zu ids=[%s]\n",
+      record.fromSceneId.c_str(), record.toSceneId.c_str(), record.operationId.c_str(),
+      static_cast<long long>(record.revision), record.mode.c_str(),
+      record.fromRenderPlanId.c_str(), record.toRenderPlanId.c_str(), record.verdict.wall,
+      record.verdict.verdict, record.fromWallKey.c_str(), record.toWallKey.c_str(),
+      record.observation.liveBackgroundExpected ? 1 : 0,
+      record.observation.liveBackgroundEmitted ? 1 : 0,
+      static_cast<unsigned long long>(record.observation.subscriptionChurnDelta),
+      record.fromLayerIds.size(), record.toLayerIds.size(),
+      joinLayerIds(record.toLayerIds).c_str());
+
+  takeRecords_.push_back(std::move(record));
+  while (takeRecords_.size() > kTakeRecordRing) takeRecords_.pop_front();
+}
+
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
+  // Arm the take record BEFORE any scene state moves — the "before" half only
+  // exists here. Take is a client-side scene swap that sends ONE sync, so a
+  // scene id that actually changed IS the operator's Take on this wire.
+  {
+    const auto incomingSceneId = command.getString("sceneId", "unloaded");
+    if (!incomingSceneId.empty() && incomingSceneId != "unloaded" && incomingSceneId != sceneId_) {
+      armTakeRecord(incomingSceneId);
+    }
+  }
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
   if (sceneId_.empty() || sceneId_ == "unloaded") {
@@ -5834,8 +5996,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // move of <=64 tiles, only on the tick a wall changes bus — no added
   // coreMutex hold.
   const std::string programWallKey = sceneId_ + ":" + tilesLayer_.layerId;
+  bool wallAdoptedSettled = false;
   if (tilesLayer_.present && tilesLayer_.style.animateLayout) {
-    programTilesAnimation_.adoptSettledFrom(previewTilesAnimation_, programWallKey);
+    wallAdoptedSettled = programTilesAnimation_.adoptSettledFrom(previewTilesAnimation_, programWallKey);
   }
   programTilesAnimation_.advance(renderPlan, programWallKey,
       tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
@@ -5870,6 +6033,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // for a Tiles scene, so the perf rationale is unchanged.
   if (tilesLayer_.present) {
     lastRenderPlan_ = renderPlan;
+  }
+  // First program plan after a Take: this is the only tick where the "after"
+  // half of the take record exists. Per operator action, not per frame.
+  if (pendingTakeRecord_) {
+    completeTakeRecord(renderPlan, wallAdoptedSettled);
   }
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
@@ -5928,24 +6096,54 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   lastProducedFrameNumber_ = producedFrame.frameNumber;
   if (modules_.compositor->programBufferFrames() > 0) {
     // Rendering queues owned pixels; only scheduled delivery advances Program.
+    //
+    // THE STALE SCENE STAMP (live show 2026-09-09). `latestDeliveredProgramFrame`
+    // is a PEEK: it hands back the same delivered frame on every call until the
+    // buffer's delivery thread advances it, and the buffer deliberately refuses
+    // to advance it when the export it is paired with was busy. So "a frame came
+    // back" was never evidence that Program moved — and when nothing came back at
+    // all there was no branch here, so the attribution was simply never written
+    // again. `programFrame.sceneId` sat on the pre-take scene for 15+ seconds
+    // while Program composited the new one, and never caught up.
+    //
+    // The delivery SEQUENCE is what says a new frame reached air. Everything
+    // else is the pure RenderedSceneAttributionPolicy.
     modules::ProgramFrame delivered;
-    if (modules_.compositor->latestDeliveredProgramFrame(delivered)) {
+    const bool peeked = modules_.compositor->latestDeliveredProgramFrame(delivered);
+    bool deliveryAdvanced = false;
+    if (peeked) {
+      deliveryAdvanced = delivered.deliverySequence != attributedDeliverySequence_;
       lastProgramFrame_ = std::move(delivered);
-      if (lastProgramFrame_.renderPlanEvidence)
-        renderedProgramSources_.publish(*lastProgramFrame_.renderPlanEvidence);
-      else
-        renderedProgramSources_.invalidate();
+    }
+    if (deliveryAdvanced) {
+      attributedDeliverySequence_ = lastProgramFrame_.deliverySequence;
+      renderedSceneAttributionTicks_ = 0;
+    } else if (renderedSceneAttributionTicks_ < 1'000'000) {
+      ++renderedSceneAttributionTicks_;
+    }
+    const auto decision = RenderedSceneAttributionPolicy::evaluate(
+        deliveryAdvanced,
+        deliveryAdvanced && lastProgramFrame_.renderPlanEvidence != nullptr,
+        renderedSceneAttributionTicks_);
+    renderedSceneAttributionState_ = decision.state;
+    if (decision.action == RenderedSceneAttributionPolicy::Action::Follow) {
+      renderedProgramSources_.publish(*lastProgramFrame_.renderPlanEvidence);
+    } else if (decision.action == RenderedSceneAttributionPolicy::Action::Forget) {
+      renderedProgramSources_.invalidate();
     }
   } else {
   lastProgramFrame_ = std::move(producedFrame);
+  renderedSceneAttributionTicks_ = 0;
   if ((lastProgramFrame_.gpuComposed || !lastProgramFrame_.preview.bgra.empty()) &&
       lastProgramFrame_.frameNumber > 0 && lastProgramFrame_.health != "failed" &&
       lastProgramFrame_.renderPlanId == renderPlan.renderPlanId) {
     renderedProgramSources_.publish(renderPlan);
+    renderedSceneAttributionState_ = "live";
   } else {
     // The returned frame now owns the snapshot identity. Never attach source
     // or overlay proof from an older successful frame to this failed frame.
     renderedProgramSources_.invalidate();
+    renderedSceneAttributionState_ = "unknown";
   }
   }
   // Mirrored for the audio worker's PRE-LOCK engine poll: it needs a frame

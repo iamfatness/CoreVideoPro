@@ -6,6 +6,8 @@
 #include "core/OutputLifecyclePolicy.h"
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
+#include "core/RenderedSceneAttributionPolicy.h"
+#include "core/TakeRecordPolicy.h"
 #include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
@@ -22,9 +24,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -675,6 +679,43 @@ class MediaCore {
   int64_t lastProducedFrameNumber_ = 0;
   std::string lastProgramTextureIdentity_;
   RenderedProgramSources renderedProgramSources_;
+  // Whether `programFrame.sceneId` is currently attributed to a delivery, and how
+  // long it has been since one advanced. See RenderedSceneAttributionPolicy — the
+  // buffered path used to keep asserting the last attribution forever.
+  std::int64_t attributedDeliverySequence_ = -1;
+  int renderedSceneAttributionTicks_ = 0;
+  const char* renderedSceneAttributionState_ = "unknown";
+
+  // ONE STRUCTURED RECORD PER TAKE (operator action, never per frame).
+  //
+  // Armed by loadSceneGraph when the scene id actually changes — that IS the
+  // take on the wire, since Take is a client-side scene swap that sends one sync
+  // — and completed on the first program render tick afterwards, which is the
+  // only place the "after" half exists. Emitted to the bounded process log (so a
+  // support bundle carries it) and kept as a short ring in the snapshot.
+  struct TakeRecord {
+    std::string fromSceneId, toSceneId;
+    std::string fromRenderPlanId, toRenderPlanId;
+    std::string operationId, mode;
+    std::int64_t revision = 0;
+    std::vector<std::string> fromLayerIds, toLayerIds;
+    std::string fromWallKey, toWallKey;
+    bool hadWallBefore = false;
+    bool completed = false;
+    TakeRecordPolicy::Observation observation;
+    TakeRecordPolicy::Verdict verdict;
+    std::uint64_t subscriptionChurnAtArm = 0;
+    double armedAtMs = 0.0;
+    std::int64_t armedAtFrame = 0;
+  };
+  static constexpr std::size_t kTakeRecordRing = 8;
+  std::optional<TakeRecord> pendingTakeRecord_;
+  std::deque<TakeRecord> takeRecords_;
+  [[nodiscard]] rpc::Json takeRecordsState() const;
+  [[nodiscard]] rpc::Json zoomSubscriptionChurnState() const;
+  void armTakeRecord(const std::string& toSceneId);
+  void completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
+                          bool wallAdoptedSettled);
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
   // pre-lock engine poll (see pollZoomAudioUnlocked).
   std::atomic<std::int64_t> lastProgramFrameNumberAtomic_{0};

@@ -54,6 +54,11 @@ class ZoomEngineRuntimeState {
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
   [[nodiscard]] bool sdkAuthenticated() const { return sdkAuthenticated_; }
+  // Roster membership without projecting the whole snapshot. Tells a dropped
+  // subscription apart from a departed participant.
+  [[nodiscard]] bool hasParticipant(std::uint32_t participantId) const {
+    return participants_.find(participantId) != participants_.end();
+  }
   [[nodiscard]] rpc::Json::Array participantsJson() const;
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs) const;
   [[nodiscard]] std::vector<AudioFrame> pollCompositorAudioFrames(int64_t timestampMs) const;
