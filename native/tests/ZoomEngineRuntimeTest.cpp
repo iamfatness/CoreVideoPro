@@ -869,6 +869,21 @@ TEST(ZoomEngineRuntime, ShutdownBeforeFirstFrameNeverStartsIngest) {
   EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
 }
 
+namespace {
+
+const corevideo::rpc::Json* findChurnSource(const corevideo::rpc::Json& churn,
+                                            const std::string& sourceUuid) {
+  const auto* sources = churn.get("sources");
+  if (!sources || !sources->isArray()) return nullptr;
+  for (const auto& source : sources->asArray()) {
+    if (source.getString("sourceUuid") == sourceUuid) return &source;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+
 TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
   setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
   auto fake = std::make_shared<FakeZoomEngineProcessClient>();
