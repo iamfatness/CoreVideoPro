@@ -13,7 +13,7 @@ export function validateProtocolVersion(value: unknown): value is ProtocolVersio
 export type OutputLifecycle = {
   sessionId: string;
   desiredActive: boolean;
-  state: "idle" | "starting" | "live" | "stopping" | "finalizing" | "completed" | "failed" | "interrupted";
+  state: "idle" | "requested" | "preparing" | "producing" | "starting" | "live" | "stopping" | "finalizing" | "completed" | "failed" | "interrupted";
   health: "unknown" | "healthy" | "degraded" | "failed";
   finalized: boolean;
   error?: string;
@@ -23,7 +23,7 @@ export function validateOutputLifecycle(value: unknown): value is OutputLifecycl
   const v = value as Record<string, unknown>;
   if (!(typeof v["sessionId"] === "string" && (v["sessionId"] as string).length >= 1)) return false;
   if (!(typeof v["desiredActive"] === "boolean")) return false;
-  if (!(typeof v["state"] === "string" && ["idle","starting","live","stopping","finalizing","completed","failed","interrupted"].includes(v["state"] as string))) return false;
+  if (!(typeof v["state"] === "string" && ["idle","requested","preparing","producing","starting","live","stopping","finalizing","completed","failed","interrupted"].includes(v["state"] as string))) return false;
   if (!(typeof v["health"] === "string" && ["unknown","healthy","degraded","failed"].includes(v["health"] as string))) return false;
   if (!(typeof v["finalized"] === "boolean")) return false;
   if (v["error"] !== undefined && !(typeof v["error"] === "string")) return false;

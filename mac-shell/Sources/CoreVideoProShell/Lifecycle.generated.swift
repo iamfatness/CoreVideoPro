@@ -37,7 +37,7 @@ func validateOutputLifecycle(_ value: [String: Any]) -> Bool {
   } else { return false }
   if let raw = value["state"] {
     guard let parsed = raw as? String else { return false }
-    if !["idle","starting","live","stopping","finalizing","completed","failed","interrupted"].contains(parsed) { return false }
+    if !["idle","requested","preparing","producing","starting","live","stopping","finalizing","completed","failed","interrupted"].contains(parsed) { return false }
   } else { return false }
   if let raw = value["health"] {
     guard let parsed = raw as? String else { return false }

@@ -309,6 +309,11 @@ public sealed class NativeMediaCoreOutputSender
     public string? LastError { get; init; }
     public string? LastResultCode { get; init; }
     public string? RuntimeDetail { get; init; }
+    /// <summary>
+    /// PR22: the destination's truthful lifecycle and terminal outcome. Absent on
+    /// a core that predates it — treat absence as unknown, never as healthy.
+    /// </summary>
+    public CoreVideoPro.MediaCore.Contracts.OutputLifecycle? Lifecycle { get; init; }
 }
 
 public sealed class NativeMediaCoreOutputSenderSession

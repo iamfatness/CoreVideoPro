@@ -241,12 +241,36 @@ public sealed record SupportBundleMediaCoreSender
     public int AudioChannels { get; init; }
     public int AudioSampleRate { get; init; }
     public string? Warning { get; init; }
+    /// <summary>
+    /// PR22: how this destination's run ended (or where it is). A stream that died
+    /// mid-show used to leave NOTHING in a bundle a supporter could read as a
+    /// state — only the adapter's last free-text status. Null on a core that
+    /// predates the field, which is "unknown", not "fine".
+    /// </summary>
+    public SupportBundleOutputLifecycle? Lifecycle { get; init; }
+}
+
+/// <summary>Redaction-safe projection of contracts.OutputLifecycle. Carries no
+/// endpoint, key or path — `Error` is a writer/transport diagnostic and is
+/// redacted through the same endpoint filter as every other free-text field.</summary>
+public sealed record SupportBundleOutputLifecycle
+{
+    public required string SessionId { get; init; }
+    public bool DesiredActive { get; init; }
+    public required string State { get; init; }
+    public required string Health { get; init; }
+    public bool Finalized { get; init; }
+    public string? Error { get; init; }
 }
 
 public sealed record SupportBundleMediaCoreRecording
 {
     public required string Status { get; init; }
     public required string WriterStatus { get; init; }
+    /// <summary>PR22: the writer's own lifecycle, so a bundle exported during the
+    /// finalize window shows `stopping`/`finalizing` instead of a `Status` that
+    /// used to claim the recording had already stopped.</summary>
+    public SupportBundleOutputLifecycle? Lifecycle { get; init; }
     public int TotalFramesWritten { get; init; }
     public int TotalDroppedFrames { get; init; }
     public double EstimatedDiskRateMBps { get; init; }

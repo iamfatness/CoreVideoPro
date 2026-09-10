@@ -39,7 +39,7 @@ inline bool validateOutputLifecycle(const rpc::Json& value) {
   const auto* desiredActive = value.get("desiredActive");
   if (!desiredActive || !(desiredActive->isBool())) return false;
   const auto* state = value.get("state");
-  if (!state || !(state->isString() && (state->asString() == "idle" || state->asString() == "starting" || state->asString() == "live" || state->asString() == "stopping" || state->asString() == "finalizing" || state->asString() == "completed" || state->asString() == "failed" || state->asString() == "interrupted"))) return false;
+  if (!state || !(state->isString() && (state->asString() == "idle" || state->asString() == "requested" || state->asString() == "preparing" || state->asString() == "producing" || state->asString() == "starting" || state->asString() == "live" || state->asString() == "stopping" || state->asString() == "finalizing" || state->asString() == "completed" || state->asString() == "failed" || state->asString() == "interrupted"))) return false;
   const auto* health = value.get("health");
   if (!health || !(health->isString() && (health->asString() == "unknown" || health->asString() == "healthy" || health->asString() == "degraded" || health->asString() == "failed"))) return false;
   const auto* finalized = value.get("finalized");

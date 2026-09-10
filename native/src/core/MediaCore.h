@@ -3,6 +3,7 @@
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/Director.h"
+#include "core/OutputLifecyclePolicy.h"
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/ProgramAudioDelay.h"
@@ -948,6 +949,25 @@ class MediaCore {
   std::vector<std::string> audioRoutingWarnings_;
   bool audioRoutingSynced_ = false;
   std::vector<std::string> outputDestinations_;
+
+  // PR22 sender lifecycle. The adapters report cumulative counters and a status
+  // string; freshness is a function of TIME, which needs one place that
+  // remembers when each destination last moved. Guarded by coreMutex — the only
+  // reader/writer is outputSenderSessionState(), which the RPC thread calls with
+  // coreMutex held. The decision itself is pure (core::SenderLifecyclePolicy);
+  // this holds nothing but the observed evidence.
+  struct SenderLifecycleEvidence {
+    int64_t lastFramesSent = 0;
+    int64_t lastProgressMs = 0;
+    bool everProduced = false;
+    // The last TERMINAL outcome for this destination, retained after the sender
+    // goes quiet so a support bundle exported after the show still names how the
+    // stream ended instead of an anonymous "idle".
+    std::optional<contracts::OutputLifecycle> terminal;
+  };
+  mutable std::map<std::string, SenderLifecycleEvidence> senderLifecycles_;
+  [[nodiscard]] contracts::OutputLifecycle evaluateSenderLifecycle(
+      const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const;
 
   // ---- Phase 2 audio/output decouple (gather → work → publish) ----
   // Per-tick inputs gathered under `coreMutex` (plain-data copies + freshly polled

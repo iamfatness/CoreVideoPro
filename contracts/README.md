@@ -36,6 +36,43 @@ Wire rules:
 - Protocol major 1 is supported; higher minor versions remain additive. Legacy
   messages without these new objects pass through explicit legacy adapters.
 
+## OutputLifecycle vocabulary (PR22, truthful destination lifecycle)
+
+`OutputLifecycle.state` is the destination state machine:
+
+```
+requested -> preparing -> producing -> stopping -> finalizing -> completed | failed | interrupted
+```
+
+- **requested** — a Start command was ACCEPTED. Nothing has been opened, nothing
+  written. An acknowledgement is not evidence (engineering rule 7).
+- **preparing** — the writer/sender has actually been asked to open. Still no output.
+- **producing** — output progress has been OBSERVED, and it is FRESH. This state is
+  re-decided against the clock every time the session is read, so a wedged writer
+  cannot latch it. The staleness budget is
+  `runtime-snapshot-qualification.mjs` `DEFAULT_RUNTIME_POLICY.encoderQueueAgeMs`
+  (1000 ms) — one declared definition of "the encoder has stopped moving", not two.
+- **stopping** — Stop has BEGUN. It does not claim, imply or approximate completion.
+- **finalizing** — the stop barrier is draining / the container is being finalized.
+- **completed** — the finalize returned AND media was written. `finalized` says so.
+- **failed** — a writer/transport failure, or a finalize with nothing written.
+- **interrupted** — it produced, then stopped producing, and nobody asked it to.
+  Recoverable: it returns to `producing` if real progress resumes.
+
+`starting` and `live` are the RETIRED names for `preparing` and `producing`. They
+remain in the enum so a newer consumer can read an older producer; new producers
+must not emit them. A consumer that treats an unknown state as healthy is wrong —
+fail closed and report incompatibility.
+
+The legacy `recording.status` / `recording.writerStatus` fields are PROJECTIONS of
+this lifecycle whenever the core reports one (`core::publishedRecordingStatus`), so
+they can no longer contradict it — which they did, for the whole finalize window,
+because Stop assigned `"stopped"` before the writer had been asked to finalize.
+
+Senders (RTMP/SRT/NDI) carry the same contract per destination
+(`outputSenders.senders[].lifecycle`). Absent means UNKNOWN — an older core — never
+healthy.
+
 ## Remaining supported protocol families
 
 | Family | Current handwritten owners | Next coverage boundary |

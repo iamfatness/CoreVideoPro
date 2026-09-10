@@ -104,6 +104,11 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       // the writer thread (95-250ms on Windows). Everything the producer submits
       // meanwhile is head-of-show, not steady-state loss.
       state_->videoStartupPhase = true;
+      // A new take's evidence starts empty: no open applied, nothing written.
+      state_->startApplied.store(false, std::memory_order_release);
+      state_->everProgressed.store(false, std::memory_order_release);
+      state_->lastProgressAtMs.store(0, std::memory_order_release);
+      state_->degradedWarning.store(false, std::memory_order_release);
     }
 
     if (item.kind == Kind::Configure) {
@@ -117,9 +122,13 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       state_->snapshot = OutputSession{};
       state_->snapshot.destinations = item.destinations;
       if (std::find(item.destinations.begin(), item.destinations.end(), "recording") != item.destinations.end()) {
+        // A Start command that has been ACCEPTED. Nothing has been opened and
+        // nothing has been written, so this is `requested` and never more —
+        // the state advances only on observed writer evidence (Rule 7).
+        const auto requested = ::corevideo::core::OutputLifecyclePolicy::requested();
         state_->snapshot.lifecycle = contracts::OutputLifecycle{
             state_->configuredSessionId + ":" + state_->epoch + ":" + std::to_string(item.generation),
-            true, "starting", "unknown", false, std::nullopt};
+            true, requested.state, requested.health, false, std::nullopt};
       }
     } else {
       item.generation = state_->generation;
@@ -365,16 +374,50 @@ void AsyncEncoderSink::stopRecording() {
     state_->snapshot.active = false;
     if (state_->snapshot.lifecycle) {
       state_->snapshot.lifecycle->desiredActive = false;
+      // Stop has BEGUN. It does not claim, imply or approximate completion:
+      // the barrier has not drained and Finalize has not run. The terminal
+      // state arrives from the writer thread when it actually does.
       if (state_->snapshot.lifecycle->state != "failed")
-        state_->snapshot.lifecycle->state = "stopping";
+        state_->snapshot.lifecycle->state = ::corevideo::core::OutputLifecyclePolicy::stopping().state;
     }
   }
   state_->queueCv.notify_one();
 }
 
+void AsyncEncoderSink::setProducingStaleMsForTest(int64_t staleMs) {
+  state_->producingStaleMs.store(staleMs, std::memory_order_release);
+}
+
+// The whole point of PR22's second defect: `producing` is not a latch. It is
+// re-decided against the clock every time anyone reads the session, from
+// evidence that only real writer progress can refresh. A writer wedged inside
+// the wrapped sink applies no further items and therefore publishes no further
+// snapshots, so without this a stalled recording reports healthy forever.
+void AsyncEncoderSink::refreshActiveLifecycle(const State& state, contracts::OutputLifecycle& lifecycle) {
+  if (!lifecycle.desiredActive) return;
+  // Stopping/finalizing/terminal states are owned by the Stop barrier.
+  if (lifecycle.state == "stopping" || lifecycle.state == "finalizing" ||
+      ::corevideo::core::OutputLifecyclePolicy::isTerminal(lifecycle.state))
+    return;
+  ::corevideo::core::ActiveOutputObservation observation;
+  observation.startApplied = state.startApplied.load(std::memory_order_acquire);
+  observation.everProgressed = state.everProgressed.load(std::memory_order_acquire);
+  observation.lastProgressMs = state.lastProgressAtMs.load(std::memory_order_acquire);
+  observation.nowMs = evidenceNowMs();
+  observation.staleMs = state.producingStaleMs.load(std::memory_order_acquire);
+  observation.degraded = state.degradedWarning.load(std::memory_order_acquire);
+  const auto decision = ::corevideo::core::OutputLifecyclePolicy::evaluateActive(observation);
+  lifecycle.state = decision.state;
+  lifecycle.health = decision.health;
+}
+
 OutputSession AsyncEncoderSink::session() const {
   std::lock_guard<std::mutex> lock(state_->snapshotMutex);
   auto snapshot = state_->snapshot;
+  if (snapshot.lifecycle) {
+    refreshActiveLifecycle(*state_, *snapshot.lifecycle);
+    snapshot.active = snapshot.lifecycle->state == "producing";
+  }
   snapshot.encoderQueueDroppedVideoFrames =
       static_cast<int64_t>(state_->droppedVideo.load(std::memory_order_relaxed));
   snapshot.encoderQueueDroppedAudioPackets =
@@ -407,7 +450,11 @@ AsyncEncoderSink::Evidence AsyncEncoderSink::evidence() const {
   if (state_->applying) result.operationAgeMs = now - result.operationStartedMs;
   {
     std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
-    if (state_->snapshot.lifecycle) result.lifecycleState = state_->snapshot.lifecycle->state;
+    if (state_->snapshot.lifecycle) {
+      auto lifecycle = *state_->snapshot.lifecycle;
+      refreshActiveLifecycle(*state_, lifecycle);
+      result.lifecycleState = lifecycle.state;
+    }
   }
   return result;
 }
@@ -497,7 +544,7 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
       if (state->snapshot.lifecycle && item.generation == state->generation &&
           state->snapshot.lifecycle->state != "failed")
-        state->snapshot.lifecycle->state = "finalizing";
+        state->snapshot.lifecycle->state = ::corevideo::core::OutputLifecyclePolicy::finalizing().state;
     }
     OutputSession fresh;
     std::string failure;
@@ -537,6 +584,11 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       if (item.kind == Kind::Start) {
         startVideoCount = fresh.recordingVideoFrameCount;
         madeProgress = false;
+        // The writer has now actually applied the (synchronous) open. This is
+        // what moves the take out of `requested` — an accepted command did not.
+        state->startApplied.store(true, std::memory_order_release);
+        state->everProgressed.store(false, std::memory_order_release);
+        state->lastProgressAtMs.store(0, std::memory_order_release);
       }
       // encodedFrameCount includes attempted submissions in the MF adapter;
       // only successfully written recording frames establish output truth.
@@ -561,7 +613,7 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       const auto now = evidenceNowMs();
       if (state->videoStartupPhase && (madeProgress || !failure.empty())) {
         // The head of the show is over the moment the writer commits its first
-        // real video frame (which is also when the lifecycle turns "live"), or
+        // real video frame (which is also when the lifecycle turns "producing"), or
         // gives up. Deliberately NOT "when Start was applied": the synchronous
         // open runs inside Start, but the first WriteSample calls into a freshly
         // opened Media Foundation sink are slow too, and frames shed there are
@@ -581,8 +633,14 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
         if (!sameGeneration) evidence.lastWriterProgressMs = 0;
         if (item.kind != Kind::Start &&
             (fresh.recordingVideoFrameCount > (sameGeneration ? evidence.programVideoWritten : 0) ||
-             fresh.recordingAudioPacketCount > (sameGeneration ? evidence.programAudioPacketsWritten : 0)))
+             fresh.recordingAudioPacketCount > (sameGeneration ? evidence.programAudioPacketsWritten : 0))) {
           evidence.lastWriterProgressMs = now;
+          // The ONLY thing that can keep a destination in `producing`.
+          if (item.generation == state->generation) {
+            state->everProgressed.store(true, std::memory_order_release);
+            state->lastProgressAtMs.store(now, std::memory_order_release);
+          }
+        }
         evidence.writtenGeneration = item.generation;
         evidence.programVideoWritten = fresh.recordingVideoFrameCount;
         evidence.programAudioPacketsWritten = fresh.recordingAudioPacketCount;
@@ -601,16 +659,22 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       if (item.generation == state->generation && state->snapshot.lifecycle &&
           (item.kind != Kind::Configure || !failure.empty())) {
         auto lifecycle = *state->snapshot.lifecycle;
+        state->degradedWarning.store(!fresh.recordingWarning.empty(), std::memory_order_release);
         if (!failure.empty()) {
-          lifecycle.state = "failed";
-          lifecycle.health = "failed";
+          const auto decision = ::corevideo::core::OutputLifecyclePolicy::failed();
+          lifecycle.state = decision.state;
+          lifecycle.health = decision.health;
           lifecycle.error = failure;
           state->active.store(false);
         } else if (lifecycle.state != "failed") {
           if (item.kind == Kind::StopRecording) {
+            // The stop barrier has DRAINED and Finalize has returned. Only now
+            // may any state claim completion — and only if media was actually
+            // written. Everything before this point is stopping/finalizing.
+            const auto decision = ::corevideo::core::OutputLifecyclePolicy::finalized(madeProgress);
             lifecycle.finalized = madeProgress;
-            lifecycle.state = madeProgress ? "completed" : "failed";
-            lifecycle.health = madeProgress ? "healthy" : "failed";
+            lifecycle.state = decision.state;
+            lifecycle.health = decision.health;
             if (!madeProgress) {
               lifecycle.error = "Recording stopped before any media was written";
               if (evidence.firstFailure.empty()) {
@@ -620,14 +684,13 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
               }
             }
           } else if (lifecycle.desiredActive) {
-            lifecycle.state = madeProgress ? "live" : "starting";
-            lifecycle.health = madeProgress ? "healthy" : "unknown";
+            // requested -> preparing -> producing, decided from observed
+            // evidence and the clock, never from the request itself.
+            refreshActiveLifecycle(*state, lifecycle);
           }
-          if (!fresh.recordingWarning.empty() && lifecycle.health == "healthy")
-            lifecycle.health = "degraded";
         }
         fresh.lifecycle = std::move(lifecycle);
-        fresh.active = fresh.lifecycle->state == "live";
+        fresh.active = fresh.lifecycle->state == "producing";
         state->snapshot = std::move(fresh);
       } else if (item.generation == state->generation && !state->snapshot.lifecycle) {
         // Non-recording encoder use retains its legacy observed sink state.

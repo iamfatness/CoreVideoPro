@@ -94,8 +94,8 @@ async function record(frames, fixture) {
       { type: 'start-recording-session', sessionId: `flash-beep-${frames}`, targetFolder: runDirectory, filenamePrefix: 'flash-beep', format: 'mp4', quality: 'high', isoParticipantIds: [] }
     ]);
     const startDeadline = Date.now() + 15000;
-    while (snapshot.recording?.lifecycle?.state !== 'live' && Date.now() < startDeadline) { await sleep(200); await poll(); }
-    if (snapshot.recording?.lifecycle?.state !== 'live') throw new Error('Recording did not become live.');
+    while (snapshot.recording?.lifecycle?.state !== 'producing' && Date.now() < startDeadline) { await sleep(200); await poll(); }
+    if (snapshot.recording?.lifecycle?.state !== 'producing') throw new Error('Recording did not become producing.');
     const sessionId = snapshot.recording.lifecycle.sessionId;
     run.startBuffer = snapshot.programBuffer;
     const end = Date.now() + 7500;

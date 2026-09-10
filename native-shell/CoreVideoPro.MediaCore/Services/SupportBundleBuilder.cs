@@ -257,7 +257,8 @@ public static class SupportBundleBuilder
                         AudioBytesSent = sender.AudioBytesSent,
                         AudioChannels = sender.AudioChannels,
                         AudioSampleRate = sender.AudioSampleRate,
-                        Warning = sender.Warning
+                        Warning = sender.Warning,
+                        Lifecycle = ProjectLifecycle(sender.Lifecycle)
                     })
                     .ToArray()
             },
@@ -266,6 +267,7 @@ public static class SupportBundleBuilder
                 {
                     Status = recording.Status,
                     WriterStatus = recording.WriterStatus,
+                    Lifecycle = ProjectLifecycle(recording.Lifecycle),
                     TotalFramesWritten = recording.TotalFramesWritten,
                     TotalDroppedFrames = recording.TotalDroppedFrames,
                     EstimatedDiskRateMBps = recording.EstimatedDiskRateMBps,
@@ -575,6 +577,42 @@ public static class SupportBundleBuilder
                     }
                 }
 
+                // PR22: a destination that failed or stopped producing must be visible
+                // in triage WITHOUT an active sender count — the whole point is a
+                // stream that died mid-show on a machine nobody was watching.
+                foreach (var sender in mediaCore.Senders.Destinations)
+                {
+                    if (sender.Lifecycle is not { } lifecycle) continue;
+                    if (lifecycle.State is "failed" or "interrupted")
+                    {
+                        lines.Add(
+                            $"Output destination fault: {sender.Destination} lifecycle {lifecycle.State} " +
+                            $"(health {lifecycle.Health}, finalized {lifecycle.Finalized}, frames {sender.FramesSent})" +
+                            (string.IsNullOrWhiteSpace(lifecycle.Error) ? string.Empty : $": {lifecycle.Error}"));
+                    }
+                    else if (lifecycle.State == "completed" && !lifecycle.Finalized)
+                    {
+                        lines.Add(
+                            $"Output destination ended without sending media: {sender.Destination} (frames {sender.FramesSent}).");
+                    }
+                }
+
+                if (mediaCore.Recording?.Lifecycle is { } recordingLifecycle)
+                {
+                    lines.Add(
+                        $"Recording lifecycle: {recordingLifecycle.State} (health {recordingLifecycle.Health}, " +
+                        $"finalized {recordingLifecycle.Finalized}, session {recordingLifecycle.SessionId})" +
+                        (string.IsNullOrWhiteSpace(recordingLifecycle.Error) ? string.Empty : $": {recordingLifecycle.Error}"));
+                    if (recordingLifecycle.State is "stopping" or "finalizing")
+                    {
+                        lines.Add("Recording fault: the bundle was exported while the writer was still finalizing — the file on disk is not yet complete.");
+                    }
+                    else if (recordingLifecycle.State == "interrupted")
+                    {
+                        lines.Add("Recording fault: the writer stopped making progress without being asked to stop.");
+                    }
+                }
+
                 if (mediaCore.Senders.ActiveSenderCount > 0)
                 {
                     lines.Add(
@@ -582,7 +620,8 @@ public static class SupportBundleBuilder
                     if (audio.Capture.RoutedMasterFrames > 0)
                     {
                         foreach (var sender in mediaCore.Senders.Destinations.Where(sender =>
-                                     sender.Status == "live" && sender.AudioFramesSent <= 0))
+                                     (sender.Lifecycle?.State ?? sender.Status) is "producing" or "live" &&
+                                     sender.AudioFramesSent <= 0))
                         {
                             lines.Add($"Output audio fault: {sender.Destination} is live but has accepted no program-audio frames.");
                         }
@@ -654,6 +693,22 @@ public static class SupportBundleBuilder
     /// Redacts secrets embedded in an endpoint/URL. Mirrors redactEndpoint in
     /// src/engine/supportBundle.ts (credentials and known secret query params).
     /// </summary>
+    // Redaction-safe projection. `Error` is free text from a writer or transport,
+    // so it goes through the same endpoint filter as every other free-text field.
+    private static SupportBundleOutputLifecycle? ProjectLifecycle(
+        CoreVideoPro.MediaCore.Contracts.OutputLifecycle? lifecycle) =>
+        lifecycle is null
+            ? null
+            : new SupportBundleOutputLifecycle
+            {
+                SessionId = lifecycle.SessionId,
+                DesiredActive = lifecycle.DesiredActive,
+                State = lifecycle.State,
+                Health = lifecycle.Health,
+                Finalized = lifecycle.Finalized,
+                Error = string.IsNullOrWhiteSpace(lifecycle.Error) ? null : RedactEndpoint(lifecycle.Error)
+            };
+
     public static string RedactEndpoint(string? endpoint)
     {
         if (string.IsNullOrEmpty(endpoint))

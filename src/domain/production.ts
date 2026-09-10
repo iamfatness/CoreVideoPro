@@ -474,7 +474,7 @@ export type SupportBundleMediaCore = {
     lifecycle?: OutputLifecycle;
     active?: boolean;
     finalized?: boolean;
-    writerStatus: "writing" | "warning" | "stopped" | "failed";
+    writerStatus: "idle" | "opening" | "writing" | "warning" | "finalizing" | "stalled" | "stopped" | "failed";
     totalFramesWritten: number;
     totalDroppedFrames: number;
     estimatedDiskRateMBps: number;

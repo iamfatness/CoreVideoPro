@@ -14,12 +14,20 @@ export function recordingReadModel(
     if (!validateOutputLifecycle(lifecycle)) {
       return { active: false, status: "failed" as const, label: "Recording status unavailable", finalized: false };
     }
-    const status: RecordingObservedStatus = lifecycle.state === "live"
+    // PR22 vocabulary: requested -> preparing -> producing -> stopping ->
+    // finalizing -> completed/failed/interrupted. `producing` is published only
+    // while the writer has fresh progress, so it is evidence, not a latch.
+    // `live`/`starting` are the retired names, still read so a newer shell can
+    // talk to an older core.
+    const producing = lifecycle.state === "producing" || lifecycle.state === "live";
+    const preparing = lifecycle.state === "requested" || lifecycle.state === "preparing" ||
+      lifecycle.state === "starting";
+    const status: RecordingObservedStatus = producing
       ? (lifecycle.health === "failed" ? "failed" : lifecycle.health === "unknown" ? "starting"
         : lifecycle.health === "degraded" ? "warning" : "recording")
-      : lifecycle.state;
+      : preparing ? "starting" : lifecycle.state as RecordingObservedStatus;
     return {
-      active: lifecycle.state === "live" && (lifecycle.health === "healthy" || lifecycle.health === "degraded"),
+      active: producing && (lifecycle.health === "healthy" || lifecycle.health === "degraded"),
       status,
       label: recordingLabel(status),
       finalized: lifecycle.state === "completed" && lifecycle.finalized,

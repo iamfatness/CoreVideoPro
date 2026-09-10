@@ -75,6 +75,16 @@ export function assessRuntimeSnapshots(capture) {
     if (enc.startupDroppedVideo !== undefined) counter(index, 'encoder', 'startupDroppedVideo', enc.startupDroppedVideo, false);
     for (const field of ['programVideoWritten', 'programAudioPacketsWritten']) counter(index, 'encoder', field, enc[field], false);
     if (enc.lifecycleState === 'failed' || enc.finalizeResult === 'failed' || enc.firstFailure) add(index, 'encoder', 'writer failure reported'); // Do not copy possibly private failure strings.
+    // PR22: `producing` requires fresh writer progress, so `interrupted` is the core
+    // reporting that the writer stopped producing without being asked to. It is a
+    // separate issue from an outright failure, and it is NOT a relaxation: this
+    // state did not exist before, and the run it describes previously reported the
+    // stale `live` as healthy.
+    if (enc.lifecycleState === 'interrupted') add(index, 'encoder', 'writer stopped producing');
+    // A recording that is EXPECTED and is not producing is worth naming, not failing:
+    // the sample may legitimately precede Start or follow Stop.
+    if (capture.recordingExpected && enc.lifecycleState !== undefined)
+      observations.push({ sample: index, component: 'encoder', lifecycleState: enc.lifecycleState });
     if (!count(enc.queueDepth) || !age(enc.oldestQueuedAgeMs)) missing.push(`${index}:encoder queue coverage`);
     else if (enc.queueDepth > 0 && enc.oldestQueuedAgeMs > policy.encoderQueueAgeMs) add(index, 'encoder', 'stale queue', { queueDepth: enc.queueDepth, oldestQueuedAgeMs: enc.oldestQueuedAgeMs });
     if (!age(enc.operationAgeMs)) missing.push(`${index}:encoder operation age`);
@@ -91,6 +101,7 @@ export function assessRuntimeSnapshots(capture) {
       operationAgeMs: enc.operationAgeMs, queueDepth: enc.queueDepth, oldestQueuedAgeMs: enc.oldestQueuedAgeMs,
       programVideoWritten: enc.programVideoWritten, programAudioPacketsWritten: enc.programAudioPacketsWritten,
       startupDroppedVideo: enc.startupDroppedVideo ?? null,
+      lifecycleState: enc.lifecycleState ?? null,
       // ISO-3: per-source distinct-frame accounting. An ISO stem's framesWritten is an
       // append count; this is the only place the repeat-freeness of a stem is visible.
       isoVideoBySource: enc.isoVideoBySource ?? null,
