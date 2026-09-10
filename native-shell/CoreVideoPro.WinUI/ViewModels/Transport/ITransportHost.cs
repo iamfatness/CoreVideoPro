@@ -99,6 +99,19 @@ public interface ITransportHost
     // and is not after. An operator event, never a frame-rate path.
     void RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes);
 
+    // --- media selection across a rolled-back Take (T1.3, #430) ---
+    // The selected media asset as it stands right now. TakeAsync captures it before and after
+    // the local Take mutations so a rollback can put back what the Take changed.
+    MediaSelectionState CaptureMediaSelection();
+
+    // The go-live ledger's operator-paused set: the real on-air truth for a Program clip.
+    IReadOnlyCollection<string> OperatorPausedMediaAssetIds { get; }
+
+    // Applies the selection TakeMediaSelectionRollback resolved after a successful rollback,
+    // and rebuilds the media bin ONCE so every row shows its restored on-air state. An operator
+    // event (a failed Take), never a frame-rate path.
+    void RestoreMediaSelectionAfterRollback(MediaSelectionState selection);
+
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task EnsureMediaCoreRunningAsync(string startingStatus);
 

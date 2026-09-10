@@ -126,8 +126,10 @@ public static class MediaRoutePlaybackService
 
     // MediaAsset carries no loop flag; a scene background is the only looping kind. Every
     // other asset is a clip: paused on its first frame in Preview, rolls when it goes live.
-    public static bool IsLoopingAsset(MediaAsset asset) =>
-        string.Equals(asset.Kind, "background", StringComparison.OrdinalIgnoreCase);
+    public static bool IsLoopingAsset(MediaAsset asset) => IsLoopingKind(asset.Kind);
+
+    public static bool IsLoopingKind(string? kind) =>
+        string.Equals(kind, "background", StringComparison.OrdinalIgnoreCase);
 
     // A loop is a persistent source: one key on every bus, never restarted by a cut.
     // A clip's key carries its go-live generation, so it changes ONLY when the clip

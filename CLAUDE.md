@@ -75,7 +75,8 @@ they carry real characterization tests (`MagicSceneCoordinatorTests`) — Studio
 is still NOT constructible in tests (field-init `DispatcherQueue.GetForCurrentThread()` + ctor
 hard-`new()`s ~10 services + launches the core; a later DI-seam PR). **PR2 (done):** the
 `IMediaCoreBridge` DI seam + `TransportCoordinator` (`ITransportHost` + `ITransportDispatcher`)
-owning the Engine/Take/Record/Stream async command bodies, in-flight guards, #286 rollback,
+owning the Engine/Take/Record/Stream async command bodies, in-flight guards, #286 rollback
+(scenes + the media selection the Take moved, T1.3),
 backpressure-retry, and sender-proof — constructible + characterization-tested
 (`TransportCoordinatorTests`). Same move-only façade rules: the `[RelayCommand]` objects stay
 generated on StudioViewModel as thin forwarders (XAML + external `NotifyCanExecuteChanged` pokes
@@ -1073,6 +1074,25 @@ media asset is now one decoder with one clock, not one per bus.
   promoted one — its current on-air state, so a second rebuild in the same
   Take would be pure waste). This is what keeps an automated Magic Scene Take
   between two non-media scenes from rebuilding `MediaBinGroups` on every cut.
+  **A ROLLED-BACK TAKE RESTORES THE MEDIA SELECTION TOO (T1.3, #430).** The #286
+  rollback (`CaptureTakeRollback`) only ever put the SCENES back. A failed Take
+  kept the selection Promote had moved to a clip that went live. That clip was
+  still marked playing and kept auditioning locally with audio, and the status
+  said it was on Program. Worse, a Program clip X that LEFT on the failed Take
+  had its playing flag cleared. The rollback put X back on air, still rolling,
+  yet the toggle read "Resume Program", and pressing it paused X ON AIR.
+  `TransportCoordinator.TakeAsync` now captures the selection
+  (`ITransportHost.CaptureMediaSelection`) before and after the local mutations.
+  On a SUCCESSFUL scene rollback the pure `TakeMediaSelectionRollback.Resolve`
+  decides what stands: the pre-Take selection, unless the operator moved it
+  while the sync was pending (their choice is kept, like the scene rollback's
+  newer-edits rule); and for a clip on the restored Program, the playing flag
+  and status come from the real on-air state (`IsPlayingOnAir` over the paused
+  set), never from the saved flag. `RestoreMediaSelectionAfterRollback` then
+  rebuilds the bin ONCE. A refused rollback restores nothing. The go-live
+  ledger and the paused set are still deliberately NOT rewound. Tests:
+  `TransportCoordinatorTests.Take_Rollback*` and
+  `Take_RefusedRollbackLeavesTheSelectionAlone`.
   Tests: `native/tests/MediaPlaybackTimelineTest.cpp`
   (`MediaPlaybackTimeline.PauseFreezesElapsedAndResumeContinues`,
   `OwnedMediaFrameSource.PauseAndResumeKeepOneDecoder` /

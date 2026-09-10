@@ -142,6 +142,9 @@ public sealed class TransportCoordinator
             }
 
             var sealRollback = _host.CaptureTakeRollback();
+            // T1.3 (#430): the Take can move the media selection too (Promote / the left-Program
+            // refresh), so a rollback needs the selection from before AND after the mutations.
+            var selectionBeforeTake = _host.CaptureMediaSelection();
             // Captured before the swap/copy: the go-live policy compares before vs after.
             var previousProgramRoutes = _host.GetResolvedProgramRoutes();
             _host.BeginTakeMutation();
@@ -174,7 +177,9 @@ public sealed class TransportCoordinator
                 _host.RefreshPreviewRoutingState();
             }
             finally { _host.EndTakeMutation(); }
-            var rollback = sealRollback();
+            var rollbackScenes = sealRollback();
+            var selectionAfterTake = _host.CaptureMediaSelection();
+            bool rollback() => RollBackTake(rollbackScenes, selectionBeforeTake, selectionAfterTake);
 
             if (!_bridge.Running)
             {
@@ -200,7 +205,6 @@ public sealed class TransportCoordinator
                 catch (Exception ex)
                 {
                     var restored = rollback();
-                    if (restored) _host.RequestTakeReconciliation();
                     var failure = restored
                         ? $"Take was not confirmed; previous local Program restored. Verify live output before retrying. {ex.Message}"
                         : $"Take was not confirmed; newer local edits preserved. Verify live output. {ex.Message}";
@@ -209,7 +213,6 @@ public sealed class TransportCoordinator
                 }
             }
             var rolledBack = rollback();
-            if (rolledBack) _host.RequestTakeReconciliation();
             var exhausted = rolledBack
                 ? "Take could not reach the busy media core. Previous local Program restored; retry Take."
                 : "Take could not reach the busy media core; newer local edits preserved.";
@@ -217,6 +220,30 @@ public sealed class TransportCoordinator
             return TakeResult.Failed(exhausted);
         }
         finally { _takeInFlight = false; }
+    }
+
+    // The #286 rollback, whole: scenes first (refused when newer edits landed during the pending
+    // sync), then the media selection the Take moved (T1.3, #430), then reconciliation. The
+    // selection restore also rebuilds the media bin once, so every row reads its restored on-air
+    // state. The go-live ledger and paused set are deliberately left alone.
+    private bool RollBackTake(
+        Func<bool> rollbackScenes,
+        MediaSelectionState selectionBeforeTake,
+        MediaSelectionState selectionAfterTake)
+    {
+        if (!rollbackScenes())
+        {
+            return false;
+        }
+
+        _host.RestoreMediaSelectionAfterRollback(TakeMediaSelectionRollback.Resolve(
+            selectionBeforeTake,
+            selectionAfterTake,
+            _host.CaptureMediaSelection(),
+            _host.GetResolvedProgramRoutes(),
+            _host.OperatorPausedMediaAssetIds));
+        _host.RequestTakeReconciliation();
+        return true;
     }
 
     public Task ToggleRecordingAsync() => SetRecordingAsync(!_host.Recording);
