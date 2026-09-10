@@ -121,6 +121,46 @@ public static class MediaRoutePlaybackService
         return loop ? $"media:{id}" : $"media:{id}:live:{Math.Max(0, goLiveGeneration)}";
     }
 
+    // What a bin-row tap or the transport toggle does to a clip: Select (move the selection,
+    // audition play/pause off-Program) or Pause/Resume it on its clock, never a restart. A
+    // looping asset (kind "background") is always playing and can't be usefully paused via the
+    // ledger, so a tap on one is a Select too (matches "not on Program" — the toggle logic there
+    // is preserved for both).
+    public enum MediaTapAction
+    {
+        Select,
+        Pause,
+        Resume
+    }
+
+    public static MediaTapAction ResolveTap(bool isOnProgram, bool isLooping, bool isOperatorPaused)
+    {
+        if (!isOnProgram || isLooping)
+        {
+            return MediaTapAction.Select;
+        }
+
+        return isOperatorPaused ? MediaTapAction.Resume : MediaTapAction.Pause;
+    }
+
+    // The real on-air state of a media asset: routed on Program AND (looping OR not paused by
+    // the operator). Unlike ShouldPlaySceneMediaRoute this takes the already-resolved
+    // "is it on Program" boolean rather than a route list, so a caller that already has it
+    // (StudioViewModel almost always does) never resolves routes twice.
+    public static bool IsPlayingOnAir(
+        string mediaAssetId,
+        bool isOnProgram,
+        bool isLooping,
+        IReadOnlyCollection<string> operatorPausedAssetIds)
+    {
+        if (string.IsNullOrWhiteSpace(mediaAssetId) || !isOnProgram)
+        {
+            return false;
+        }
+
+        return isLooping || !operatorPausedAssetIds.Contains(mediaAssetId);
+    }
+
     public static SceneRoutePlayback ResolveSceneRoutePlayback(
         string mediaAssetId,
         bool isProgramScene,

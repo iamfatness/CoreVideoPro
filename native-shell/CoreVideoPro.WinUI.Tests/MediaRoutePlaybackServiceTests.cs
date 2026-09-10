@@ -464,6 +464,93 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.True(playback.Playing);
     }
 
+    // ---- Tap pauses/resumes a Program clip on its clock; it never restarts it (T1.2 task 2) ----
+
+    [Fact]
+    public void ResolveTap_ARollingUnselectedProgramClipPauses()
+    {
+        var action = MediaRoutePlaybackService.ResolveTap(isOnProgram: true, isLooping: false, isOperatorPaused: false);
+        Assert.Equal(MediaRoutePlaybackService.MediaTapAction.Pause, action);
+    }
+
+    [Fact]
+    public void ResolveTap_APausedProgramClipResumes()
+    {
+        var action = MediaRoutePlaybackService.ResolveTap(isOnProgram: true, isLooping: false, isOperatorPaused: true);
+        Assert.Equal(MediaRoutePlaybackService.MediaTapAction.Resume, action);
+    }
+
+    [Fact]
+    public void ResolveTap_AClipNotOnProgramIsJustSelected()
+    {
+        var action = MediaRoutePlaybackService.ResolveTap(isOnProgram: false, isLooping: false, isOperatorPaused: false);
+        Assert.Equal(MediaRoutePlaybackService.MediaTapAction.Select, action);
+    }
+
+    [Fact]
+    public void ResolveTap_ALoopOnProgramIsJustSelectedNeverPaused()
+    {
+        var action = MediaRoutePlaybackService.ResolveTap(isOnProgram: true, isLooping: true, isOperatorPaused: false);
+        Assert.Equal(MediaRoutePlaybackService.MediaTapAction.Select, action);
+    }
+
+    [Fact]
+    public void IsPlayingOnAir_TrueForARollingUnselectedProgramClip()
+    {
+        Assert.True(MediaRoutePlaybackService.IsPlayingOnAir("clip", isOnProgram: true, isLooping: false, NoPaused));
+    }
+
+    [Fact]
+    public void IsPlayingOnAir_FalseForAPausedProgramClip()
+    {
+        Assert.False(MediaRoutePlaybackService.IsPlayingOnAir("clip", isOnProgram: true, isLooping: false, new[] { "clip" }));
+    }
+
+    [Fact]
+    public void IsPlayingOnAir_TrueForALoopingAssetEvenIfPaused()
+    {
+        Assert.True(MediaRoutePlaybackService.IsPlayingOnAir("bg", isOnProgram: true, isLooping: true, new[] { "bg" }));
+    }
+
+    [Fact]
+    public void IsPlayingOnAir_FalseWhenNotOnProgram()
+    {
+        Assert.False(MediaRoutePlaybackService.IsPlayingOnAir("clip", isOnProgram: false, isLooping: false, NoPaused));
+    }
+
+    [Fact]
+    public void TappingARollingProgramClipPausesItWithoutTouchingTheGeneration()
+    {
+        var ledger = new MediaGoLiveLedger();
+        var clip = MediaRoute("clip");
+        ledger.RecordTake(Array.Empty<SourceRoute>(), new[] { clip });
+        var generationBefore = ledger.GenerationOf("clip");
+
+        var action = MediaRoutePlaybackService.ResolveTap(isOnProgram: true, isLooping: false, ledger.IsOperatorPaused("clip"));
+        Assert.Equal(MediaRoutePlaybackService.MediaTapAction.Pause, action);
+        ledger.RecordPause("clip");
+
+        Assert.Equal(generationBefore, ledger.GenerationOf("clip"));
+        Assert.Contains("clip", ledger.OperatorPausedAssetIds);
+    }
+
+    [Fact]
+    public void TappingAPausedProgramClipResumesItWithoutTouchingTheGeneration()
+    {
+        var ledger = new MediaGoLiveLedger();
+        var clip = MediaRoute("clip");
+        ledger.RecordTake(Array.Empty<SourceRoute>(), new[] { clip });
+        ledger.RecordPause("clip");
+        var generationBefore = ledger.GenerationOf("clip");
+
+        var action = MediaRoutePlaybackService.ResolveTap(isOnProgram: true, isLooping: false, ledger.IsOperatorPaused("clip"));
+        Assert.Equal(MediaRoutePlaybackService.MediaTapAction.Resume, action);
+        ledger.RecordPlay("clip");
+
+        Assert.Equal(generationBefore, ledger.GenerationOf("clip"));
+        Assert.DoesNotContain("clip", ledger.OperatorPausedAssetIds);
+    }
+
     private static readonly IReadOnlyCollection<string> NoPaused = Array.Empty<string>();
 
     private static SourceRoute MediaRoute(string assetId) =>
