@@ -90,6 +90,7 @@ add_library(corevideo_native
   src/modules/BrowserSourceHostAdapter.cpp
   src/compositor/CompositorOverlayRaster.cpp
   src/modules/D3D11CompositorAdapter.cpp
+  src/modules/EncoderCapacityProbe.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
@@ -263,7 +264,8 @@ if(COREVIDEO_WITH_MF_ENCODER)
     message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER currently supports the Windows Media Foundation adapter only.")
   endif()
 
-  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs)
+  # dxgi identifies the adapter the hardware encoder sits on (EncoderCapacityProbe.cpp).
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs dxgi)
 endif()
 
 if(COREVIDEO_WITH_UVC)
@@ -684,6 +686,7 @@ if(BUILD_TESTING)
     tests/RtmpCompatibilityTest.cpp
     tests/EncoderPolicyTest.cpp
     tests/IsoEncoderPlacementTest.cpp
+    tests/IsoEncoderAdmissionTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp

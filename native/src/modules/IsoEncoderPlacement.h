@@ -28,6 +28,14 @@ struct IsoEncoderCapacity {
   int reservedHardwareSessions = 0;
   bool hardwareAvailable = false;
   bool softwareAvailable = true;
+  // How many concurrent SOFTWARE ISO encodes this machine is admitted to
+  // attempt at the workload this capacity describes. `-1` means unbounded /
+  // unknown, which is what an UNPROBED capacity reports — placement ignores
+  // this field entirely (an Auto spill is still a spill), but
+  // IsoEncoderAdmission uses it to turn a hopeless over-subscription into a
+  // refusal before the show instead of a pegged CPU during it. Kept here rather
+  // than in the admission struct so one value describes one machine's budget.
+  int softwareSessionLimit = -1;
 };
 
 struct IsoEncoderAssignment {
