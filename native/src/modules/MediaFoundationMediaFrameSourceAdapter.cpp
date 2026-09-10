@@ -550,6 +550,12 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     std::int64_t ffmpegFrameIdBase = 0;
     bool ffmpegPoster = false;          // The running FFmpeg decoder emits exactly one frame.
     bool ffmpegResumePending = false;   // Stopped for a pause; restart at the clock position on Play.
+    // A failed resume RETRIES at the clock position (bounded, loud) and never
+    // falls back to a fresh open, which would restart the clip from the top.
+    int ffmpegResumeAttempts = 0;
+    int64_t ffmpegResumeNextMs = 0;
+    bool ffmpegResumeGaveUp = false;
+    std::string ffmpegResumeError;
     int64_t mediaDuration100ns = 0;     // From Media Foundation's container parse, when it had one.
     std::string videoDecoderError;
     ComPtrLite<MediaReadCallback> audioCallback;
@@ -598,6 +604,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
         state.lastFrame.hasPixels()) {
       state.ffmpegVideo = {};
       state.ffmpegResumePending = true;
+    }
+    // A fresh operator Pause (then Play) re-arms a resume that had given up.
+    if (!layer.mediaAssetPlaying && state.ffmpegResumePending) {
+      state.ffmpegResumeAttempts = 0;
+      state.ffmpegResumeNextMs = 0;
+      state.ffmpegResumeGaveUp = false;
+      state.ffmpegResumeError.clear();
     }
     return state;
   }
@@ -679,19 +692,50 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       state.ended = false;
     }
     if (state.ffmpegResumePending && !state.ffmpegVideo && !state.reader) {
-      state.ffmpegResumePending = false;
-      int64_t position = state.clock.elapsed100ns(timestampMs * 10000);
-      if (layer.mediaAssetLoop && state.mediaDuration100ns > 0) position %= state.mediaDuration100ns;
-      std::string fallbackError;
-      state.ffmpegFrameIdBase = state.lastFrame.hasPixels() ? state.lastFrame.frameId : 0;
-      state.ffmpegPublishedFrameId = 0;
-      state.ended = false;
-      state.ffmpegPoster = false;
-      state.ffmpegVideo = FfmpegVideoDecoder::start(path, false, layer.mediaAssetLoop, fallbackError, position);
+      // Bounded retry ladder (250 ms -> 500 ms -> 1 s -> 2 s, give up after 5
+      // attempts). Each attempt seeks to the clock's CURRENT position: the
+      // clock resumed from the paused position, so a late restart lands where
+      // the audio is, and never at 0. Until one succeeds the paused frame is
+      // held and a fresh open (which would start from the top) is never tried.
+      static constexpr int64_t kResumeRetryMs[] = {250, 500, 1000, 2000};
+      static constexpr int kMaxResumeAttempts = 5;
+      if (!state.ffmpegResumeGaveUp && timestampMs >= state.ffmpegResumeNextMs) {
+        int64_t position = state.clock.elapsed100ns(timestampMs * 10000);
+        if (layer.mediaAssetLoop && state.mediaDuration100ns > 0) position %= state.mediaDuration100ns;
+        std::string fallbackError;
+        state.ffmpegFrameIdBase = state.lastFrame.hasPixels() ? state.lastFrame.frameId : 0;
+        state.ffmpegPublishedFrameId = 0;
+        state.ended = false;
+        state.ffmpegPoster = false;
+        state.ffmpegVideo = FfmpegVideoDecoder::start(path, false, layer.mediaAssetLoop, fallbackError, position);
+        ++state.ffmpegResumeAttempts;
+        if (state.ffmpegVideo) {
+          state.ffmpegResumePending = false;
+          state.ffmpegResumeAttempts = 0;
+          state.ffmpegResumeError.clear();
+        } else {
+          state.ffmpegResumeError = fallbackError;
+          state.ffmpegResumeGaveUp = state.ffmpegResumeAttempts >= kMaxResumeAttempts;
+          if (!state.ffmpegResumeGaveUp)
+            state.ffmpegResumeNextMs = timestampMs + kResumeRetryMs[(std::min)(state.ffmpegResumeAttempts, 4) - 1];
+          ::corevideo::core::nativeLogf(
+              "[media-playback] source=%s FFmpeg resume attempt %d/%d at %.3fs failed: %s%s\n",
+              frameSourceId.c_str(), state.ffmpegResumeAttempts, kMaxResumeAttempts,
+              static_cast<double>(position) / 10000000.0, fallbackError.c_str(),
+              state.ffmpegResumeGaveUp ? " - GAVE UP, holding the paused frame" : " - retrying at the clock position");
+        }
+      }
       if (!state.ffmpegVideo) {
-        warnings_.push_back("Media asset " + layer.mediaAssetId + " could not resume after a pause: " + fallbackError);
+        // Loud every poll while it lasts (the decoder warnings are rebuilt per poll).
+        warnings_.push_back("Media asset " + layer.mediaAssetId + " could not resume after a pause" +
+                            (state.ffmpegResumeGaveUp ? " (gave up after " + std::to_string(state.ffmpegResumeAttempts) +
+                                                            " attempts; holding the paused frame, pause and play to retry)"
+                                                      : " (retrying at the clock position)") +
+                            (state.ffmpegResumeError.empty() ? "." : ": " + state.ffmpegResumeError));
         if (!state.lastFrame.hasPixels()) return false;
-        frame = state.lastFrame; // Keep holding the paused frame rather than dropping to a slab.
+        frame = state.lastFrame; // Keep holding the paused frame; never restart from the top.
+        frame.participantId = frameSourceId;
+        frame.timestampMs = timestampMs;
         return true;
       }
     }

@@ -3093,7 +3093,12 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
 TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPositionNotTheTop) {
   const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
   std::error_code missing;
-  if (!std::filesystem::exists(ffmpegDir / "ffmpeg.exe", missing)) return;
+  if (!std::filesystem::exists(ffmpegDir / "ffmpeg.exe", missing)) {
+    // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+    std::fprintf(stderr, "[  SKIPPED ] MediaFoundationMediaFrameSource.AnFfmpegDecodedClipResumesFromThePausedPositionNotTheTop"
+                         " (ffmpeg absent at C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
   const auto dir = std::filesystem::temp_directory_path() /
       ("corevideo-ffmpeg-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   std::filesystem::create_directories(dir);
@@ -3165,6 +3170,105 @@ TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPos
   // clock (and the audio) actually are.
   EXPECT_TRUE(resumedSeconds >= heldSeconds - 0.1) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
   EXPECT_TRUE(resumedSeconds <= heldSeconds + 0.7) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  source.reset();
+}
+
+// If the FFmpeg restart on Play FAILS (FFmpeg briefly unavailable), the clip
+// holds its paused frame, says so, and retries at the clock position; it must
+// never fall back to a fresh open, which would roll the clip from the top.
+TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop) {
+  const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
+  std::error_code missing;
+  if (!std::filesystem::exists(ffmpegDir / "ffmpeg.exe", missing)) {
+    std::fprintf(stderr, "[  SKIPPED ] MediaFoundationMediaFrameSource.AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop"
+                         " (ffmpeg absent at C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
+  const auto dir = std::filesystem::temp_directory_path() /
+      ("corevideo-ffmpeg-resume-fail-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(dir);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{dir};
+  const auto clip = dir / "ramp.mov";
+  // 8 s, luma = 16 + 25 * t (limited range): long enough to land a late retry.
+  const auto command = "\"\"" + (ffmpegDir / "ffmpeg.exe").string() +
+      "\" -hide_banner -loglevel error -y -f lavfi -i \"color=c=black:s=64x64:r=30:d=8,format=yuv444p,"
+      "geq=lum='min(235,16+T*25)':cb=128:cr=128\" -c:v prores_ks -profile:v 0 \"" + clip.string() + "\"\"";
+  ASSERT_EQ(std::system(command.c_str()), 0);
+  struct SavedEnv {
+    std::string name, value;
+    explicit SavedEnv(const char* n) : name(n) { const char* v = std::getenv(n); value = v ? v : ""; }
+    ~SavedEnv() { _putenv_s(name.c_str(), value.c_str()); }
+  } savedDir{"COREVIDEO_FFMPEG_BIN_DIR"}, savedAltDir{"FFMPEG_BIN_DIR"}, savedPath{"PATH"};
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:prores-retry";
+  layer.mediaAssetId = "prores-retry";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = clip.string();
+  layer.mediaPlaybackKey = "media:prores-retry:live:1";
+  layer.mediaAssetPlaying = true;
+  const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
+    const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
+    return ((*frame.pixels)[centre + 1] * 219.0 / 255.0) / 25.0;
+  };
+
+  corevideo::modules::VideoFrame held;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while ((!held.hasPixels() || mediaSeconds(held) < 0.6) && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().hasPixels()) held = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(held.hasPixels());
+  ASSERT_TRUE(held.pixelWidth == 1920); // This test is about the FFmpeg path.
+  const double heldSeconds = mediaSeconds(held);
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  // FFmpeg disappears exactly as the operator presses Play.
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", (dir / "no-ffmpeg-here").string().c_str());
+  _putenv_s("FFMPEG_BIN_DIR", "");
+  _putenv_s("PATH", "C:\\Windows\\System32");
+  layer.mediaAssetPlaying = true;
+  bool warned = false;
+  const auto outageEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+  while (std::chrono::steady_clock::now() < outageEnd) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames.front().frameId, held.frameId); // Holds the paused frame; nothing from the top.
+    for (const auto& warning : source->warnings())
+      warned = warned || warning.find("could not resume after a pause") != std::string::npos;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(warned);
+
+  // FFmpeg is back: the next retry must land at the clock position.
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+  _putenv_s("PATH", savedPath.value.c_str());
+  corevideo::modules::VideoFrame resumed;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while (!resumed.hasPixels() && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().frameId != held.frameId) resumed = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(resumed.hasPixels());
+  const double resumedSeconds = mediaSeconds(resumed);
+  std::fprintf(stderr, "[ffmpeg-resume-retry] held t=%.3fs resumed t=%.3fs\n", heldSeconds, resumedSeconds);
+  EXPECT_TRUE(resumed.frameId > held.frameId);
+  // Never the top of the clip; at or after the paused picture (the clock kept
+  // running during the outage, so a late retry lands later, not earlier).
+  EXPECT_TRUE(resumedSeconds >= heldSeconds - 0.1) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  EXPECT_TRUE(resumedSeconds <= heldSeconds + 4.0) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
   source.reset();
 }
 #endif

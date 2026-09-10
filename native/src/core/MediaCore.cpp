@@ -6196,6 +6196,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
        modules_.compositor->wantsFullProgramReadbackForRecording());
 
   if (modules_.mediaFrames) {
+    // ORDER IS LOAD-BEARING: Program's layers first, Preview's appended. Play state is not part of a
+    // media source's key, and OwnedMediaFrameSource::requests() lets the FIRST request for a key win,
+    // so this order is what keeps Program authoritative when a shared key arrives paused on Preview.
     auto mediaLayers = renderPlan.layers;
     if (hasPreviewScene()) {
       const auto previewMediaPlan = buildPreviewCompositorRenderPlan(videoFrames);

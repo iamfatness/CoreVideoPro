@@ -351,16 +351,20 @@ TEST(OwnedMediaFrameSource, PauseHoldsTheOnAirFrame) {
   held = pollUntilFrame(source, layer, held + 2); // Let it roll a few frames.
   ASSERT_TRUE(held > 0);
   layer.mediaAssetPlaying = false;
+  // At least 250 ms AND at least 20 polls (Windows' 15.6 ms default timer can
+  // stretch each 2 ms sleep), within a generous 3 s ceiling.
   int polls = 0;
-  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
-  while (std::chrono::steady_clock::now() < pauseEnd) {
+  const auto start = std::chrono::steady_clock::now();
+  const auto minEnd = start + std::chrono::milliseconds(250);
+  const auto ceiling = start + std::chrono::seconds(3);
+  while ((std::chrono::steady_clock::now() < minEnd || polls < 20) && std::chrono::steady_clock::now() < ceiling) {
     const auto frames = source.pollMediaFrames({layer}, steadyNowMs());
     ASSERT_EQ(frames.size(), 1u);
     EXPECT_EQ(frames.front().frameId, held);
     ++polls;
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  EXPECT_TRUE(polls > 10);
+  EXPECT_TRUE(polls >= 20);
   layer.mediaAssetPlaying = true;
   EXPECT_TRUE(pollUntilFrame(source, layer, held) > held);
 }
