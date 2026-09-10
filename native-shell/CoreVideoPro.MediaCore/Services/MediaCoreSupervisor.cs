@@ -587,11 +587,20 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 if (wire is not null)
                 {
                     _syncFrameNumber += 1;
+                    // The wire path maps onto a SYNTHESIZED base snapshot, so the mapped record
+                    // is a projection by construction. Tag it with the core's own JSON so an
+                    // observer can still see every node the mapping drops (encoder evidence,
+                    // real-time worker evidence, tiles, browser sources, ...). This is the live
+                    // path on a real core — the typed branch above is the stub/test one.
                     return NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(
                         commands,
                         elapsedMs,
                         _syncFrameNumber,
-                        wire);
+                        wire) with
+                    {
+                        RawJson = CoreProtocolParser.TryGetStateJson(response),
+                        RawReceivedUtc = DateTimeOffset.UtcNow
+                    };
                 }
 
                 throw new InvalidOperationException("media-core sync failed: Unexpected response type.");

@@ -490,19 +490,44 @@ public static class CoreProtocolParser
 
         if (root.TryGetProperty("snapshot", out var snapshotElement))
         {
-            return JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(
-                ValidatedRecordingLifecycleJson(snapshotElement),
-                MediaCoreJson.Options);
+            return DeserializeSnapshot(snapshotElement);
         }
 
         if (root.TryGetProperty("state", out var stateElement))
         {
-            return JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(
-                ValidatedRecordingLifecycleJson(stateElement),
-                MediaCoreJson.Options);
+            return DeserializeSnapshot(stateElement);
         }
 
         return null;
+    }
+
+    /// <summary>The core's own session-state JSON from a sync response, if present. Used to tag a
+    /// snapshot with <see cref="NativeMediaCoreStateSnapshot.RawJson"/> on the paths that do NOT
+    /// bind it directly — the real native core answers with a WIRE state, which is mapped onto a
+    /// synthesized base and would otherwise carry no record of what the core actually said.
+    /// </summary>
+    public static string? TryGetStateJson(JsonDocument response)
+    {
+        var root = response.RootElement;
+        if (root.TryGetProperty("snapshot", out var snapshotElement))
+        {
+            return snapshotElement.GetRawText();
+        }
+
+        return root.TryGetProperty("state", out var stateElement) ? stateElement.GetRawText() : null;
+    }
+
+    /// <summary>Binds the typed snapshot AND retains the core's own JSON text alongside it. The
+    /// text costs nothing extra here — <see cref="ValidatedRecordingLifecycleJson"/> already
+    /// materializes it for the deserializer — and it is the only record of the nodes this type
+    /// does not bind (see <see cref="NativeMediaCoreStateSnapshot.RawJson"/>).</summary>
+    private static NativeMediaCoreStateSnapshot? DeserializeSnapshot(JsonElement element)
+    {
+        var json = ValidatedRecordingLifecycleJson(element);
+        var snapshot = JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(json, MediaCoreJson.Options);
+        return snapshot is null
+            ? null
+            : snapshot with { RawJson = json, RawReceivedUtc = DateTimeOffset.UtcNow };
     }
 
     public static NativeMediaCoreWireState? TryParseWireState(JsonDocument response)
