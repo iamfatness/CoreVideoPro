@@ -87,6 +87,7 @@ add_library(corevideo_native
   src/core/ShowClock.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
+  src/modules/OutputDestinationSupervisor.cpp
   src/modules/BrowserSourceHostAdapter.cpp
   src/compositor/CompositorOverlayRaster.cpp
   src/modules/D3D11CompositorAdapter.cpp
@@ -620,6 +621,7 @@ if(BUILD_TESTING)
     tests/AsyncEncoderSinkTest.cpp
     tests/AsyncOutputSenderTest.cpp
     tests/IsolatedOutputSenderTest.cpp
+    tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp

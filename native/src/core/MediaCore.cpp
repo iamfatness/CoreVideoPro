@@ -4715,6 +4715,29 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     if (!sender.runtimeDetail.empty()) {
       senderJson.emplace("runtimeDetail", sender.runtimeDetail);
     }
+    // PR19: the output supervisor's per-destination state, verbatim. /snapshot
+    // serves sessionState as-is, so this is the whole path from "a destination
+    // failed on a machine we cannot see" to "the support bundle says which one,
+    // how many times, and why we stopped restarting it".
+    if (sender.supervisor) {
+      const auto& supervisor = *sender.supervisor;
+      senderJson.emplace("supervisor", rpc::Json::Object{
+          {"generation", static_cast<double>(supervisor.generation)},
+          {"healthy", supervisor.healthy},
+          {"gaveUp", supervisor.gaveUp},
+          {"consecutiveFailures", supervisor.consecutiveFailures},
+          {"restarts", supervisor.restarts},
+          {"nextAttemptInMs", static_cast<double>(supervisor.nextAttemptInMs)},
+          {"lastProgressAgeMs", static_cast<double>(supervisor.lastProgressAgeMs)},
+          {"acceptedUnits", static_cast<double>(supervisor.acceptedUnits)},
+          {"staleEventsRejected", static_cast<double>(supervisor.staleEventsRejected)},
+          {"malformedObservations", static_cast<double>(supervisor.malformedObservations)},
+          {"failureClass", supervisor.failureClass},
+          {"reason", supervisor.reason},
+          {"inProcessRisk", supervisor.inProcessRisk},
+          {"interruptible", supervisor.interruptible},
+      });
+    }
     senderJson.emplace("lifecycle", contracts::toJson(lifecycle));
     senders.emplace_back(std::move(senderJson));
   }
