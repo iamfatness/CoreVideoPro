@@ -37,7 +37,7 @@ func validateOutputLifecycle(_ value: [String: Any]) -> Bool {
   } else { return false }
   if let raw = value["state"] {
     guard let parsed = raw as? String else { return false }
-    if !["idle","starting","live","stopping","finalizing","completed","failed","interrupted"].contains(parsed) { return false }
+    if !["idle","requested","preparing","producing","starting","live","stopping","finalizing","completed","failed","interrupted"].contains(parsed) { return false }
   } else { return false }
   if let raw = value["health"] {
     guard let parsed = raw as? String else { return false }
@@ -88,6 +88,1395 @@ func validateProtocolFailure(_ value: [String: Any]) -> Bool {
     if parsed.isEmpty { return false }
   } else { return false }
   if let raw = value["message"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  return true;
+}
+struct EntityIdentity: Codable {
+  var kind: String
+  var id: String
+}
+func validateEntityIdentity(_ value: [String: Any]) -> Bool {
+  if let raw = value["kind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["person","participant","source","scene","route","audioRoute","showInput","output","recorder"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["id"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  return true;
+}
+struct EntityRevision: Codable {
+  var kind: String
+  var id: String
+  var authorityEpoch: String
+  var revision: Int64
+}
+func validateEntityRevision(_ value: [String: Any]) -> Bool {
+  if let raw = value["kind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["person","participant","source","scene","route","audioRoute","showInput","output","recorder"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["id"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["revision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct SourceInstanceIdentity: Codable {
+  var sourceId: String
+  var instanceId: String
+  var processEpoch: String
+  var generation: Int64
+}
+func validateSourceInstanceIdentity(_ value: [String: Any]) -> Bool {
+  if let raw = value["sourceId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["instanceId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["generation"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct ParticipantBindingIdentity: Codable {
+  var participantId: String
+  var sourceId: String
+  var instanceId: String
+  var processEpoch: String
+  var generation: Int64
+}
+func validateParticipantBindingIdentity(_ value: [String: Any]) -> Bool {
+  if let raw = value["participantId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["sourceId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["instanceId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["generation"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct ControlRevision: Codable {
+  var authorityEpoch: String
+  var revision: Int64
+}
+func validateControlRevision(_ value: [String: Any]) -> Bool {
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["revision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct PlanGeneration: Codable {
+  var kind: String
+  var planId: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var generation: Int64
+  var clockGeneration: Int64
+}
+func validatePlanGeneration(_ value: [String: Any]) -> Bool {
+  if let raw = value["kind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["render","audio","output"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["planId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["generation"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct ControlOperationIdentity: Codable {
+  var operationId: String
+  var authorityEpoch: String
+  var expectedRevision: Int64
+}
+func validateControlOperationIdentity(_ value: [String: Any]) -> Bool {
+  if let raw = value["operationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["expectedRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct AcceptedOperationObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var operationId: String
+  var expectedRevision: Int64
+}
+func validateAcceptedOperationObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["accepted"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["operationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["expectedRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct AppliedOperationObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var operationId: String
+  var appliedRevision: Int64
+}
+func validateAppliedOperationObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["applied"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["operationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["appliedRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct RenderedMediaObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var planId: String
+  var planGeneration: Int64
+  var streamId: String
+  var streamGeneration: Int64
+  var mediaKind: String
+  var sequenceStart: Int64
+  var sequenceCount: Int64
+  var contentStartNs: Int64
+  var contentDurationNs: Int64
+  var resourceId: String
+  var leaseId: String
+  var leaseGeneration: Int64
+  var completionToken: String
+}
+func validateRenderedMediaObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["rendered"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["planId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["planGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["streamId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["streamGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["mediaKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["audio","video"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["sequenceStart"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sequenceCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentStartNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentDurationNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["resourceId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["leaseId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["leaseGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["completionToken"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  return true;
+}
+struct DeliveredMediaObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var planId: String
+  var planGeneration: Int64
+  var streamId: String
+  var streamGeneration: Int64
+  var mediaKind: String
+  var sequenceStart: Int64
+  var sequenceCount: Int64
+  var contentStartNs: Int64
+  var contentDurationNs: Int64
+  var destinationId: String
+  var destinationGeneration: Int64
+  var sessionId: String
+  var deliveryId: String
+  var scheduledAtNs: Int64
+  var consumedAtNs: Int64
+}
+func validateDeliveredMediaObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["delivered"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["planId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["planGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["streamId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["streamGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["mediaKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["audio","video"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["sequenceStart"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sequenceCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentStartNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentDurationNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["destinationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["destinationGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sessionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["deliveryId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["scheduledAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["consumedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct PresentedMediaObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var planId: String
+  var planGeneration: Int64
+  var streamId: String
+  var streamGeneration: Int64
+  var mediaKind: String
+  var sequenceStart: Int64
+  var sequenceCount: Int64
+  var contentStartNs: Int64
+  var contentDurationNs: Int64
+  var destinationId: String
+  var destinationGeneration: Int64
+  var sessionId: String
+  var presentationId: String
+  var presentedAtNs: Int64
+}
+func validatePresentedMediaObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["presented"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["planId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["planGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["streamId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["streamGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["mediaKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["audio","video"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["sequenceStart"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sequenceCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentStartNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentDurationNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["destinationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["destinationGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sessionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["presentationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["presentedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct MuxedMediaObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var planId: String
+  var planGeneration: Int64
+  var streamId: String
+  var streamGeneration: Int64
+  var mediaKind: String
+  var sequenceStart: Int64
+  var sequenceCount: Int64
+  var contentStartNs: Int64
+  var contentDurationNs: Int64
+  var destinationId: String
+  var destinationGeneration: Int64
+  var sessionId: String
+  var artifactId: String
+  var packetStart: Int64
+  var packetCount: Int64
+}
+func validateMuxedMediaObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["muxed"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["planId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["planGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["streamId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["streamGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["mediaKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["audio","video"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["sequenceStart"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sequenceCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentStartNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentDurationNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["destinationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["destinationGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sessionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["artifactId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["packetStart"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["packetCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct CommittedMediaObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var planId: String
+  var planGeneration: Int64
+  var streamId: String
+  var streamGeneration: Int64
+  var mediaKind: String
+  var sequenceStart: Int64
+  var sequenceCount: Int64
+  var contentStartNs: Int64
+  var contentDurationNs: Int64
+  var destinationId: String
+  var destinationGeneration: Int64
+  var sessionId: String
+  var artifactId: String
+  var commitId: String
+  var byteOffset: Int64
+  var byteCount: Int64
+}
+func validateCommittedMediaObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["committed"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["planId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["planGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["streamId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["streamGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["mediaKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["audio","video"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["sequenceStart"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sequenceCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentStartNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["contentDurationNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["destinationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["destinationGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sessionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["artifactId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["commitId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["byteOffset"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["byteCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct CompletedOutputObservation: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var stage: String
+  var destinationId: String
+  var destinationGeneration: Int64
+  var sessionId: String
+  var completionId: String
+  var finalPlanId: String
+  var finalPlanGeneration: Int64
+  var finalStreamId: String
+  var finalStreamGeneration: Int64
+  var mediaKind: String
+  var deliveredUnits: Int64
+  var muxedPackets: Int64
+  var committedBytes: Int64
+}
+func validateCompletedOutputObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["stage"] {
+    guard let parsed = raw as? String else { return false }
+    if !["completed"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["destinationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["destinationGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sessionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["completionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["finalPlanId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["finalPlanGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["finalStreamId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["finalStreamGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["mediaKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["audio","video"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["deliveredUnits"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["muxedPackets"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["committedBytes"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct ResourceLeaseDescriptor: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var resourceId: String
+  var leaseId: String
+  var leaseGeneration: Int64
+  var resourceKind: String
+  var ownerDomain: String
+  var state: String
+  var byteLength: Int64
+}
+func validateResourceLeaseDescriptor(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["resourceId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["leaseId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["leaseGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["resourceKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["cpuBuffer","gpuTexture","sharedMemory","encoder","sdkSubscription"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["ownerDomain"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["state"] {
+    guard let parsed = raw as? String else { return false }
+    if !["active","retiring","released"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["byteLength"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct DestinationProgress: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var destinationId: String
+  var destinationGeneration: Int64
+  var sessionId: String
+  var planId: String
+  var planGeneration: Int64
+  var streamId: String
+  var streamGeneration: Int64
+  var mediaKind: String
+  var state: String
+  var producedUnits: Int64
+  var deliveredUnits: Int64
+  var presentedUnits: Int64
+  var muxedPackets: Int64
+  var committedBytes: Int64
+  var deadlineMisses: Int64
+  var droppedUnits: Int64
+  var counterEpoch: String
+}
+func validateDestinationProgress(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["destinationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["destinationGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sessionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["planId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["planGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["streamId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["streamGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["mediaKind"] {
+    guard let parsed = raw as? String else { return false }
+    if !["audio","video"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["state"] {
+    guard let parsed = raw as? String else { return false }
+    if !["idle","preparing","ready","running","finalizing","completed","failed","interrupted"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["producedUnits"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["deliveredUnits"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["presentedUnits"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["muxedPackets"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["committedBytes"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["deadlineMisses"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["droppedUnits"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["counterEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  return true;
+}
+struct ArtifactValidationResult: Codable {
+  var observationId: String
+  var processEpoch: String
+  var authorityEpoch: String
+  var controlRevision: Int64
+  var clockId: String
+  var clockGeneration: Int64
+  var observedAtNs: Int64
+  var destinationId: String
+  var destinationGeneration: Int64
+  var sessionId: String
+  var artifactId: String
+  var artifactRevision: Int64
+  var validatorId: String
+  var validatorVersion: String
+  var status: String
+  var checkedAtNs: Int64
+  var byteLength: Int64
+  var packetCount: Int64
+  var decodedUnits: Int64
+  var checkSetId: String
+  var resultId: String
+}
+func validateArtifactValidationResult(_ value: [String: Any]) -> Bool {
+  if let raw = value["observationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["processEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["authorityEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["controlRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["clockId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clockGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["destinationId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["destinationGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["sessionId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["artifactId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["artifactRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["validatorId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["validatorVersion"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["status"] {
+    guard let parsed = raw as? String else { return false }
+    if !["passed","failed","incomplete"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["checkedAtNs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["byteLength"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["packetCount"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["decodedUnits"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["checkSetId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["resultId"] {
     guard let parsed = raw as? String else { return false }
     if parsed.isEmpty { return false }
   } else { return false }

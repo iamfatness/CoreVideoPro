@@ -3,7 +3,11 @@
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/Director.h"
+#include "core/OutputLifecyclePolicy.h"
+#include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
+#include "core/RenderedSceneAttributionPolicy.h"
+#include "core/TakeRecordPolicy.h"
 #include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
@@ -20,9 +24,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -149,6 +155,33 @@ class MediaCore {
   // Wake the video-out tick after a render. MUST be called with coreMutex
   // RELEASED — notifying under it wakes a thread that instantly blocks on it.
   void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
+  // ISO VIDEO out, SIGNALLED BY ISO FRAME ARRIVAL — never by Program cadence.
+  //
+  // ISO used to be submitted inside renderVideoOutputTick, gated on
+  // `programSubmitted`. That made a Program-paced 60Hz sampler read an
+  // independently-published 60Hz producer: the same frame-pairing bug the
+  // Program video tick was rewritten to avoid (see the comment above the CV
+  // wait in renderVideoOutputTick — a 60Hz sampler on a 60Hz producer muxed
+  // 51.7fps). Measured on ISO before this change: 29.0fps ISO at a ~30fps
+  // source but only 50.1-52.9 at ~60 and 45.2 at ~240 — NON-MONOTONIC, a
+  // faster source produced FEWER stem frames, with 15-22% of submissions
+  // rejected as duplicate (sourceId, frameId) by the sink.
+  //
+  // The fix is the same one Program got: stop sampling, start draining. The
+  // render gather APPENDS each newly-seen (sourceId, frameId) to an
+  // accumulating queue and bumps a sequence; this worker waits on that
+  // sequence and drains EVERYTHING pending. A drain that runs late costs
+  // latency, never frames.
+  //
+  // Runs on its OWN thread so ISO can never delay Program production, Program
+  // audio or Program playout (rule 6). It takes ONLY isoVideoQueueMutex_ (a
+  // leaf: nothing under it takes coreMutex or audioOutputMutex_) and then the
+  // async encoder sink's own queue mutex, whose writer already gives Program
+  // weighted priority over ISO. Call WITHOUT coreMutex held.
+  void renderIsoVideoTick();
+  // Wake the ISO video tick after a render published ISO frames. MUST be
+  // called with coreMutex RELEASED, for the same reason as the Program notify.
+  void notifyIsoVideoPublished() { isoVideoCv_.notify_one(); }
   // Render pacer telemetry arrives from JsonRpcServer's render thread outside
   // coreMutex. Keep a monotonic atomic total so UI/support evidence cannot lose
   // the 120-frame summaries that are printed and then reset in the log loop.
@@ -157,6 +190,18 @@ class MediaCore {
       renderDeadlineMisses_.fetch_add(count, std::memory_order_relaxed);
     }
   }
+  // Always-on, allocation-free worker evidence. These observations are updated
+  // after a worker completes an iteration, so a blocking GPU/DSP/output call
+  // leaves an increasing progress age instead of a stale "live" boolean.
+  void reportRenderWorkerStarted();
+  void reportRenderWorkerProgress(int64_t completedSlots, int64_t skippedSlots,
+                                  int64_t deadlineMisses, int64_t maximumLatenessNs,
+                                  int64_t lockWaitNs, int64_t workNs, int64_t drainNs);
+  void reportAudioWorkerStarted();
+  void reportAudioWorkerProgress(int64_t workNs);
+  void reportAudioWorkerReanchor(int64_t discardedTimelineNs);
+  void reportVideoOutputWorkerStarted();
+  void reportVideoOutputWorkerProgress(int64_t workNs);
   void setVideoOutputTickRunning(bool running) {
     videoOutputTickRunning_.store(running, std::memory_order_release);
   }
@@ -514,6 +559,32 @@ class MediaCore {
     // the key for one frame at the transition boundary.
     bool retireAfterBuildOut = false;
   };
+
+  struct TakeTransitionState {
+    bool active = false;
+    std::string operationId;
+    int64_t revision = 0;
+    std::string mode = "cut";
+    std::string direction = "left-to-right";
+    std::string dipColor = "#000000";
+    double durationMs = 300.0;
+    double elapsedMs = 0.0;
+    std::string outgoingSceneId;
+    std::vector<SceneRouteState> outgoingRoutes;
+    SceneBackgroundState outgoingBackground;
+    TilesLayerState outgoingTiles;
+    modules::CompositorColorGrade outgoingColorGrade;
+    std::map<std::string, OverlayAssetState> outgoingOverlays;
+    bool outgoingCaptionEnabled = false;
+    std::string outgoingCaptionText;
+    std::string outgoingCaptionSpeaker;
+  };
+
+  void beginTakeTransition(const rpc::Json& command);
+  void advanceTakeTransition(double frameIntervalMs);
+  [[nodiscard]] modules::CompositorRenderPlan applyTakeTransition(
+      modules::CompositorRenderPlan incoming,
+      const std::vector<modules::VideoFrame>& videoFrames) const;
   std::map<std::string, OverlayAssetState> overlayAssets_;
   int overlayInsertionCounter_ = 0;
   // Shared render-plan builder parameterized on the scene state, so the PROGRAM
@@ -547,6 +618,7 @@ class MediaCore {
   // Monotonic compositor animation clock (ms), advanced each render tick, that
   // drives overlay keyPhase progress deterministically.
   double overlayAnimationClockMs_ = 0.0;
+  TakeTransitionState takeTransition_;
   std::string outputProfileId_ = "canvas-1080p60";
   std::string outputResolution_ = "1920x1080";
   int outputWidth_ = 1920;
@@ -606,6 +678,43 @@ class MediaCore {
   int64_t lastProducedFrameNumber_ = 0;
   std::string lastProgramTextureIdentity_;
   RenderedProgramSources renderedProgramSources_;
+  // Whether `programFrame.sceneId` is currently attributed to a delivery, and how
+  // long it has been since one advanced. See RenderedSceneAttributionPolicy — the
+  // buffered path used to keep asserting the last attribution forever.
+  std::int64_t attributedDeliverySequence_ = -1;
+  int renderedSceneAttributionTicks_ = 0;
+  const char* renderedSceneAttributionState_ = "unknown";
+
+  // ONE STRUCTURED RECORD PER TAKE (operator action, never per frame).
+  //
+  // Armed by loadSceneGraph when the scene id actually changes — that IS the
+  // take on the wire, since Take is a client-side scene swap that sends one sync
+  // — and completed on the first program render tick afterwards, which is the
+  // only place the "after" half exists. Emitted to the bounded process log (so a
+  // support bundle carries it) and kept as a short ring in the snapshot.
+  struct TakeRecord {
+    std::string fromSceneId, toSceneId;
+    std::string fromRenderPlanId, toRenderPlanId;
+    std::string operationId, mode;
+    std::int64_t revision = 0;
+    std::vector<std::string> fromLayerIds, toLayerIds;
+    std::string fromWallKey, toWallKey;
+    bool hadWallBefore = false;
+    bool completed = false;
+    TakeRecordPolicy::Observation observation;
+    TakeRecordPolicy::Verdict verdict;
+    std::uint64_t subscriptionChurnAtArm = 0;
+    double armedAtMs = 0.0;
+    std::int64_t armedAtFrame = 0;
+  };
+  static constexpr std::size_t kTakeRecordRing = 8;
+  std::optional<TakeRecord> pendingTakeRecord_;
+  std::deque<TakeRecord> takeRecords_;
+  [[nodiscard]] rpc::Json takeRecordsState() const;
+  [[nodiscard]] rpc::Json zoomSubscriptionChurnState() const;
+  void armTakeRecord(const std::string& toSceneId);
+  void completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
+                          bool wallAdoptedSettled);
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
   // pre-lock engine poll (see pollZoomAudioUnlocked).
   std::atomic<std::int64_t> lastProgramFrameNumberAtomic_{0};
@@ -662,6 +771,36 @@ class MediaCore {
   // time after outputs clear, so the stop-carrying sync() is actually delivered.
   std::atomic<bool> senderSyncActive_{false};
   std::atomic<int64_t> renderDeadlineMisses_{0};
+  std::atomic<int64_t> renderWorkerGeneration_{0};
+  std::atomic<int64_t> renderWorkerCompletedSlots_{0};
+  std::atomic<int64_t> renderWorkerSkippedSlots_{0};
+  std::atomic<int64_t> renderWorkerDeadlineMisses_{0};
+  std::atomic<int64_t> renderWorkerMaximumLatenessNs_{0};
+  std::atomic<int64_t> renderWorkerLastProgressNs_{0};
+  std::atomic<int64_t> renderWorkerLockWaitTotalNs_{0};
+  std::atomic<int64_t> renderWorkerLockWaitMaximumNs_{0};
+  std::atomic<int64_t> renderWorkerWorkTotalNs_{0};
+  std::atomic<int64_t> renderWorkerWorkMaximumNs_{0};
+  std::atomic<int64_t> renderWorkerDrainTotalNs_{0};
+  std::atomic<int64_t> renderWorkerDrainMaximumNs_{0};
+  std::atomic<int64_t> audioWorkerGeneration_{0};
+  std::atomic<int64_t> audioWorkerCompletedTicks_{0};
+  std::atomic<int64_t> audioWorkerLastProgressNs_{0};
+  std::atomic<int64_t> audioWorkerWorkTotalNs_{0};
+  std::atomic<int64_t> audioWorkerWorkMaximumNs_{0};
+  std::atomic<int64_t> audioWorkerReanchors_{0};
+  std::atomic<int64_t> audioWorkerDiscardedTimelineNs_{0};
+  // Cumulative, monotonic count of interleaved PCM samples PERMANENTLY lost at
+  // the per-source feed FIFO cap (AudioFeedState::shedSamples), summed over
+  // every source for the life of the process. Never decreases and is never
+  // reset: the qualification harness treats any reset as a failure, and a shed
+  // is real audio no consumer will ever receive (rule 4 - no hidden repair).
+  std::atomic<int64_t> audioWorkerLostSamples_{0};
+  std::atomic<int64_t> videoOutputWorkerGeneration_{0};
+  std::atomic<int64_t> videoOutputWorkerCompletedTicks_{0};
+  std::atomic<int64_t> videoOutputWorkerLastProgressNs_{0};
+  std::atomic<int64_t> videoOutputWorkerWorkTotalNs_{0};
+  std::atomic<int64_t> videoOutputWorkerWorkMaximumNs_{0};
   // The newest program NV12 tap. Video owns output submission independently of
   // audio; this small mutex protects only the shared immutable tap reference and
   // dimensions, never DSP, encoder or sender work.
@@ -686,6 +825,39 @@ class MediaCore {
   // access to this pointer must use those functions.
   std::shared_ptr<const ProgramOutputConfiguration> programOutputConfiguration_;
   void publishProgramOutputConfiguration();
+  // ISO-1 (cadence): the ACCUMULATING queue of ISO source frames awaiting
+  // submission, appended by the render gather and drained whole by
+  // renderIsoVideoTick. Deliberately a queue and not a latest-value slot: a
+  // latest-value slot read on a second, independent 60Hz clock is exactly the
+  // sampling bug this replaced (see renderIsoVideoTick).
+  //
+  // isoVideoQueueMutex_ is a LEAF. It MAY be taken while coreMutex is held (the
+  // render gather does exactly that, for a handful of shared_ptr ref copies —
+  // no pixel work, no I/O); nothing taken under it ever reaches back for
+  // coreMutex or audioOutputMutex_, so it cannot participate in a cycle.
+  // mutable: the const snapshot builder reads the fidelity counters under it.
+  mutable std::mutex isoVideoQueueMutex_;
+  std::condition_variable isoVideoCv_;
+  std::vector<modules::IsoSourceVideoFrame> pendingIsoVideoQueue_;
+  // Last frameId APPENDED per source. The render tick re-serves a held frame
+  // whenever a source is slower than the render rate; suppressing the repeat
+  // here (rather than at the sink) keeps the queue, the sink budget and the
+  // fidelity counters honest about distinct pictures.
+  std::map<std::string, int64_t> lastQueuedIsoFrameId_;
+  // Bounded: a stalled drain must not grow memory without limit. Per source, so
+  // one fast participant cannot evict every slower guest's pending frame.
+  static constexpr size_t kMaxPendingIsoFramesPerSource = 4;
+  std::atomic<uint64_t> isoVideoPublishSeq_{0};
+  uint64_t lastIsoVideoDrainSeq_ = 0;
+  // ISO-3 (fidelity): per-source distinct-frame accounting, so an ISO stem's
+  // repeat-freeness is measurable rather than assumed. framesWritten on a
+  // stream is an APPEND count and proves nothing about distinct pictures.
+  struct IsoVideoSourceCounters {
+    uint64_t distinctSubmitted = 0;   // distinct (sourceId, frameId) queued
+    uint64_t duplicateRejected = 0;   // re-served held frames suppressed here
+    uint64_t queueOverflowed = 0;     // dropped by the per-source pending cap
+  };
+  std::map<std::string, IsoVideoSourceCounters> isoVideoSourceCounters_;
   std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
   int64_t lastBufferedDeliverySequence_ = 0;
   // Program-frame publish signal. The render thread bumps the counter and
@@ -817,6 +989,25 @@ class MediaCore {
   std::vector<std::string> audioRoutingWarnings_;
   bool audioRoutingSynced_ = false;
   std::vector<std::string> outputDestinations_;
+
+  // PR22 sender lifecycle. The adapters report cumulative counters and a status
+  // string; freshness is a function of TIME, which needs one place that
+  // remembers when each destination last moved. Guarded by coreMutex — the only
+  // reader/writer is outputSenderSessionState(), which the RPC thread calls with
+  // coreMutex held. The decision itself is pure (core::SenderLifecyclePolicy);
+  // this holds nothing but the observed evidence.
+  struct SenderLifecycleEvidence {
+    int64_t lastFramesSent = 0;
+    int64_t lastProgressMs = 0;
+    bool everProduced = false;
+    // The last TERMINAL outcome for this destination, retained after the sender
+    // goes quiet so a support bundle exported after the show still names how the
+    // stream ended instead of an anonymous "idle".
+    std::optional<contracts::OutputLifecycle> terminal;
+  };
+  mutable std::map<std::string, SenderLifecycleEvidence> senderLifecycles_;
+  [[nodiscard]] contracts::OutputLifecycle evaluateSenderLifecycle(
+      const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const;
 
   // ---- Phase 2 audio/output decouple (gather → work → publish) ----
   // Per-tick inputs gathered under `coreMutex` (plain-data copies + freshly polled
@@ -952,7 +1143,7 @@ class MediaCore {
   // User-selectable multiviewer configuration (configure-multiviewer command).
   // layoutMode: "grid" | "pgmPvwTop" | "pgmPvwLarge" | "pgmPvwSide".
   std::string multiviewLayoutMode_ = "grid";
-  int multiviewTileCount_ = 8;
+  int multiviewTileCount_ = 10;
   bool multiviewShowLabels_ = true;
   bool multiviewShowTally_ = true;
   bool multiviewShowMeters_ = true;

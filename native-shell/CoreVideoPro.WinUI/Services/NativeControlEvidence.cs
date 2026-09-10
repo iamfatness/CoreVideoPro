@@ -14,8 +14,12 @@ internal static class NativeControlEvidence
             NativeActiveSceneId = snapshot?.SceneId,
             NativeRenderedSceneId = snapshot?.ProgramFrame?.SceneId,
             NativeRenderPlanId = snapshot?.ProgramFrame?.RenderPlanId,
-            NativeProgramVideoSources = snapshot?.ProgramFrame?.VideoSources?.Select(source =>
-                new ControlProgramVideoSource(source.LayerId, source.SourceId, source.ParticipantId, source.Kind)).ToArray(),
+            // Order is the index in the core's published array, which the core has already
+            // sorted into draw order — 0 is the bottom-most layer. The core publishes no other
+            // per-layer state (no rect / fit / opacity / fill colour), so there is nothing
+            // further to carry; see ControlProgramVideoSource.
+            NativeProgramVideoSources = snapshot?.ProgramFrame?.VideoSources?.Select((source, order) =>
+                new ControlProgramVideoSource(source.LayerId, source.SourceId, source.ParticipantId, source.Kind, order)).ToArray(),
             NativeLowerThirdSourceId = lowerThird?.SourceId,
             NativePreviewSceneId = snapshot?.PreviewScene?.SceneId,
             NativeProgramFrameCount = snapshot?.ProgramFrameCount,

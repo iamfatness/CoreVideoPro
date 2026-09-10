@@ -41,8 +41,14 @@ export type MediaCoreCompositorHealth = "idle" | "live" | "degraded" | "failed";
 export type MediaCoreMediaSourceKind = "zoom-sdk" | "local-camera" | "test-pattern";
 export type MediaCoreFrameSourceStatus = "idle" | "subscribed" | "degraded" | "failed";
 export type MediaCoreZoomSourceHealth = "live" | "low-resolution" | "recovering" | "video-off";
-export type MediaCoreRecordingStatus = "recording" | "warning" | "stopped" | "failed";
-export type MediaCoreRecordingWriterStatus = "writing" | "warning" | "stopped" | "failed";
+// PR22: both are PROJECTIONS of the OutputLifecycle whenever the core reports
+// one, so `recording.status` can no longer contradict `recording.lifecycle`.
+// `stopping` is the window between the Stop request and the writer's finalize,
+// which this field used to report as "stopped".
+export type MediaCoreRecordingStatus =
+  "idle" | "starting" | "recording" | "warning" | "stopping" | "stopped" | "failed" | "interrupted";
+export type MediaCoreRecordingWriterStatus =
+  "idle" | "opening" | "writing" | "warning" | "finalizing" | "stalled" | "stopped" | "failed";
 export type MediaCoreOutputHealthStatus = "idle" | "live" | "warning" | "failed";
 export type MediaCoreEncoderTargetStatus = "idle" | "attached" | "warning" | "failed";
 export type MediaCoreEncoderSessionStatus = "idle" | "encoding" | "warning" | "failed";
@@ -486,6 +492,15 @@ export type MediaCoreDiagnosticsSnapshot = {
 };
 
 export type MediaCoreCommand =
+  | {
+      type: "begin-take-transition";
+      operationId: string;
+      revision: number;
+      mode: "cut" | "fade" | "dip" | "wipe";
+      durationMs: number;
+      direction?: "left-to-right" | "right-to-left" | "top-to-bottom" | "bottom-to-top";
+      dipColor?: string;
+    }
   | {
       type: "load-scene-graph";
       sceneId: string;

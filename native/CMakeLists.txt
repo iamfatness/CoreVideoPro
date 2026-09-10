@@ -67,9 +67,11 @@ add_library(corevideo_native
   src/core/MediaCore.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
+  src/modules/OutputDestinationSupervisor.cpp
   src/modules/BrowserSourceHostAdapter.cpp
   src/compositor/CompositorOverlayRaster.cpp
   src/modules/D3D11CompositorAdapter.cpp
+  src/modules/EncoderCapacityProbe.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
@@ -243,7 +245,8 @@ if(COREVIDEO_WITH_MF_ENCODER)
     message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER currently supports the Windows Media Foundation adapter only.")
   endif()
 
-  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs)
+  # dxgi identifies the adapter the hardware encoder sits on (EncoderCapacityProbe.cpp).
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs dxgi)
 endif()
 
 if(COREVIDEO_WITH_UVC)
@@ -598,6 +601,7 @@ if(BUILD_TESTING)
     tests/AsyncEncoderSinkTest.cpp
     tests/AsyncOutputSenderTest.cpp
     tests/IsolatedOutputSenderTest.cpp
+    tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
@@ -612,6 +616,9 @@ if(BUILD_TESTING)
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
+    tests/OutputLifecyclePolicyTest.cpp
+    tests/RenderedSceneAttributionTest.cpp
+    tests/MonitorRenderFaultInjectionTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp
@@ -642,6 +649,7 @@ if(BUILD_TESTING)
     tests/RtmpCompatibilityTest.cpp
     tests/EncoderPolicyTest.cpp
     tests/IsoEncoderPlacementTest.cpp
+    tests/IsoEncoderAdmissionTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp

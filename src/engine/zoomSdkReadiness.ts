@@ -62,7 +62,7 @@ export type ZoomRawMediaSubscriptionOptions = {
   selectedBreakoutRoomId?: string;
 };
 
-const DEFAULT_MAX_VIDEO_SUBSCRIPTIONS = 8;
+const DEFAULT_MAX_VIDEO_SUBSCRIPTIONS = 10;
 
 export function shouldBlockZoomJoin(
   runtime: RuntimeEnvironment | undefined,

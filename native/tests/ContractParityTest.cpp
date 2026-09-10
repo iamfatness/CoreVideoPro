@@ -54,6 +54,60 @@ TEST(ContractParity, LifecycleGoldenMessagesMatchSchema) {
   EXPECT_EQ(wire.get("error"), nullptr);
 }
 
+TEST(ContractParity, IdentityGoldenMessagesMatchSchema) {
+  const auto fixtures = corevideo::rpc::Json::parse(readRepoFile("contracts/identity.fixtures.json"));
+  ASSERT_TRUE(fixtures && fixtures->isArray());
+  ASSERT_FALSE(fixtures->asArray().empty());
+  for (const auto& fixture : fixtures->asArray()) {
+    const auto payload = corevideo::rpc::Json::parse(fixture.getString("json"));
+    ASSERT_TRUE(payload);
+    const auto name = fixture.getString("contract");
+    bool valid = false;
+    using namespace corevideo::contracts;
+    if (name == "EntityIdentity") valid = validateEntityIdentity(*payload);
+    else if (name == "EntityRevision") valid = validateEntityRevision(*payload);
+    else if (name == "SourceInstanceIdentity") valid = validateSourceInstanceIdentity(*payload);
+    else if (name == "ParticipantBindingIdentity") valid = validateParticipantBindingIdentity(*payload);
+    else if (name == "ControlRevision") valid = validateControlRevision(*payload);
+    else if (name == "PlanGeneration") valid = validatePlanGeneration(*payload);
+    else if (name == "ControlOperationIdentity") valid = validateControlOperationIdentity(*payload);
+    else ASSERT_TRUE(false) << "Unknown identity contract: " << name;
+    EXPECT_EQ(valid, fixture.get("accepted")->asBool()) << fixture.getString("id");
+  }
+  const corevideo::contracts::EntityRevision revision{"scene", "scene-1", "epoch-1", 9007199254740991LL};
+  const auto wire = corevideo::contracts::toJson(revision);
+  const auto reparsed = corevideo::rpc::Json::parse(wire.stringify());
+  ASSERT_TRUE(reparsed);
+  EXPECT_TRUE(corevideo::contracts::validateEntityRevision(*reparsed));
+  EXPECT_EQ(reparsed->getNumber("revision"), 9007199254740991.0);
+}
+
+TEST(ContractParity, EvidenceGoldenMessagesMatchSchema) {
+  const auto fixtures = corevideo::rpc::Json::parse(readRepoFile("contracts/evidence.fixtures.json"));
+  ASSERT_TRUE(fixtures && fixtures->isArray());
+  ASSERT_FALSE(fixtures->asArray().empty());
+  for (const auto& fixture : fixtures->asArray()) {
+    const auto payload = corevideo::rpc::Json::parse(fixture.getString("json"));
+    ASSERT_TRUE(payload);
+    const auto name = fixture.getString("contract");
+    bool valid = false;
+    using namespace corevideo::contracts;
+    if (name == "AcceptedOperationObservation") valid = validateAcceptedOperationObservation(*payload);
+    else if (name == "AppliedOperationObservation") valid = validateAppliedOperationObservation(*payload);
+    else if (name == "RenderedMediaObservation") valid = validateRenderedMediaObservation(*payload);
+    else if (name == "DeliveredMediaObservation") valid = validateDeliveredMediaObservation(*payload);
+    else if (name == "PresentedMediaObservation") valid = validatePresentedMediaObservation(*payload);
+    else if (name == "MuxedMediaObservation") valid = validateMuxedMediaObservation(*payload);
+    else if (name == "CommittedMediaObservation") valid = validateCommittedMediaObservation(*payload);
+    else if (name == "CompletedOutputObservation") valid = validateCompletedOutputObservation(*payload);
+    else if (name == "ResourceLeaseDescriptor") valid = validateResourceLeaseDescriptor(*payload);
+    else if (name == "DestinationProgress") valid = validateDestinationProgress(*payload);
+    else if (name == "ArtifactValidationResult") valid = validateArtifactValidationResult(*payload);
+    else ASSERT_TRUE(false) << "Unknown identity contract: " << name;
+    EXPECT_EQ(valid, fixture.get("accepted")->asBool()) << fixture.getString("id");
+  }
+}
+
 TEST(ContractParity, MediaCoreCommandTypesMatchTypeScriptProtocol) {
   const std::string source = readRepoFile("src/engine/nativeMediaCoreProtocol.ts");
   ASSERT_FALSE(source.empty());

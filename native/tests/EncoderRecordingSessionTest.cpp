@@ -1,6 +1,8 @@
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
 
+#include "EncoderCapacityProbeTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -918,6 +920,9 @@ corevideo::modules::IsoSourceVideoFrame makeIsoI420(const std::string& sourceId,
 // independently (no 0-byte tails), and PROGRAM is never regressed (it still muxes
 // A+V with ISO writers present). Exercises the real Media Foundation sink.
 TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayableFiles) {
+  // This test is about MP4 writers, not capacity: pin an ample machine so the
+  // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
+  const corevideo::testing::ForcedEncoderCapacity ampleCapacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   if (!encoder) {
     return;  // Media Foundation unavailable — nothing to test.
@@ -1061,6 +1066,9 @@ corevideo::modules::IsoSourceAudio makeIsoTone(const std::string& sourceId, int 
 // ISO writer must NOT lose its audio track), silence-fill advances a gapped stem,
 // and PROGRAM A+V is never regressed with ISO AUDIO enabled.
 TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
+  // This test is about MP4 writers, not capacity: pin an ample machine so the
+  // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
+  const corevideo::testing::ForcedEncoderCapacity ampleCapacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   if (!encoder) {
     return;  // Media Foundation unavailable.
@@ -1161,6 +1169,9 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
 // already consumed. Auto placement must keep every stem alive by spilling the
 // overflow to the software H.264 transform.
 TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCapacity) {
+  // Pin EXACTLY the capacity the product used to assume (8 sessions, Program owns
+  // one) so the 8th ISO still has to spill — that spill is what this test is for.
+  const corevideo::testing::ForcedEncoderCapacity eightSessionMachine(8);
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   if (!encoder) {
     return;  // Media Foundation unavailable.
@@ -1221,7 +1232,12 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
   }
 
   const auto session = encoder->session();
-  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  // The spill is REPORTED now, not silent: this used to assert an empty warning
+  // while one stem quietly went to the CPU encoder. Program keeps recording and
+  // all eight ISOs still arm — the change is that the operator is told.
+  EXPECT_NE(session.recordingWarning.find("1 ISO source will record on the CPU software encoder"),
+            std::string::npos)
+      << session.recordingWarning;
   ASSERT_EQ(session.isoStreams.size(), 8u);
   int hardwareIsoCount = 0;
   int softwareIsoCount = 0;
@@ -1278,6 +1294,9 @@ corevideo::modules::IsoSourceVideoFrame makeIsoBgra(const std::string& sourceId,
 // the correct per-source input type, program A+V is never regressed, and a
 // paired capture source carries its own audio stem.
 TEST(EncoderRecordingSession, MediaFoundationCaptureBgraIsoMixedWithZoomNv12) {
+  // This test is about MP4 writers, not capacity: pin an ample machine so the
+  // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
+  const corevideo::testing::ForcedEncoderCapacity ampleCapacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   if (!encoder) {
     return;  // Media Foundation unavailable.
@@ -1362,6 +1381,9 @@ TEST(EncoderRecordingSession, MediaFoundationCaptureBgraIsoMixedWithZoomNv12) {
 // AAC stream, so even if the audio worker submits an (empty) stem the file stays
 // honestly video-only (no all-silence track), and program is never regressed.
 TEST(EncoderRecordingSession, MediaFoundationVideoOnlyCaptureIsoHasNoAudioTrack) {
+  // This test is about MP4 writers, not capacity: pin an ample machine so the
+  // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
+  const corevideo::testing::ForcedEncoderCapacity ampleCapacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   if (!encoder) {
     return;

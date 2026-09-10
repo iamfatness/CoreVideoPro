@@ -9,6 +9,7 @@
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
 #include "modules/AudioDsp.h"
+#include "modules/AsyncEncoderSink.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
@@ -383,7 +384,7 @@ rpc::Json MediaCore::profile() const {
       {"encoder", encoderSession.encoderName},
       {"maxProgramResolution", "3840x2160"},
       {"maxProgramFps", 60},
-      {"maxParticipantFeeds", 8},
+      {"maxParticipantFeeds", 10},
       {"maxIsoRecordings", 8},
       {"capabilities", capabilityArray(renderer, encoderSession)},
   };
@@ -641,6 +642,14 @@ rpc::Json MediaCore::sessionState() const {
       {"programFrame",
        rpc::Json::Object{
            {"sceneId", renderedProgramSources_.sceneId()},
+           // Always present, whatever the attribution is doing. "live" = this
+           // scene id is attributed to a program frame delivered this tick;
+           // "holding" = brief delivery jitter, the id is the last delivered
+           // one; "unknown" = nothing has confirmed it and sceneId is empty.
+           // See RenderedSceneAttributionPolicy.
+           {"sceneIdAttribution", std::string(renderedSceneAttributionState_)},
+           {"sceneIdAttributionTicks", renderedSceneAttributionTicks_},
+           {"deliverySequence", static_cast<double>(lastProgramFrame_.deliverySequence)},
            {"videoSources", renderedProgramSources_.videoSources()},
            {"frameNumber", static_cast<double>(lastProgramFrame_.frameNumber)},
            {"renderPlanId", lastProgramFrame_.renderPlanId},
@@ -666,6 +675,11 @@ rpc::Json MediaCore::sessionState() const {
            {"renderDeadlineMisses", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
            {"degradedFrameCount", lastProgramFrame_.health == "degraded" ? 1 : 0},
        }},
+      // Both unconditional. A take ledger that appears only after a Take, or a
+      // subscription node that appears only once churn happens, is absent in
+      // exactly the case worth detecting (the multiviewer-node lesson).
+      {"takeRecords", takeRecordsState()},
+      {"zoomSubscriptionChurn", zoomSubscriptionChurnState()},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
       {"virtualCamera", virtualCameraState()},
@@ -681,6 +695,16 @@ rpc::Json MediaCore::sessionState() const {
       {"overlayState", overlayState()},
       {"mediaPlayback", mediaPlaybackState()},
       {"autoProduction", autoProductionState()},
+      {"takeTransition", rpc::Json::Object{
+          {"operationId", takeTransition_.operationId},
+          {"revision", static_cast<double>(takeTransition_.revision)},
+          {"mode", takeTransition_.mode},
+          {"durationMs", takeTransition_.durationMs},
+          {"progress", takeTransition_.durationMs > 0.0
+              ? (std::min)(1.0, takeTransition_.elapsedMs / takeTransition_.durationMs)
+              : 1.0},
+          {"status", takeTransition_.operationId.empty() ? "idle" : takeTransition_.active ? "active" : "completed"},
+      }},
       {"meetingState", resolveMeetingStateForSession()},
       {"breakoutRoomId", breakoutRoomId_},
       {"breakoutRoomName", breakoutRoomName_},
@@ -706,6 +730,124 @@ rpc::Json MediaCore::sessionState() const {
       {"logTruncated", static_cast<double>(logStats.truncated)},
       {"logSinkFailures", static_cast<double>(logStats.sinkFailures)},
       {"logQueued", static_cast<double>(logStats.queued)}});
+  if (const auto* asyncEncoder = dynamic_cast<const modules::AsyncEncoderSink*>(modules_.encoder.get())) {
+    const auto encoderEvidence = asyncEncoder->evidence();
+    static constexpr std::array<const char*, 7> evidenceKinds{
+        "configure", "start", "programVideo", "isoVideo", "programAudio", "isoAudio", "stop"};
+    rpc::Json::Object enqueued, completed, queued;
+    for (size_t i = 0; i < evidenceKinds.size(); ++i) {
+      enqueued.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.enqueued[i]));
+      completed.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.completedCalls[i]));
+      queued.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.queuedByKind[i]));
+    }
+    // ISO-3 (fidelity): per-source distinct-frame accounting for ISO video, so
+    // an ISO stem's repeat-freeness is MEASURABLE. `framesWritten` on a stream
+    // is an append count and cannot tell a distinct picture from a repeat, which
+    // left any change to the ISO cadence unverifiable. The arrival-side numbers
+    // (queued / heldFrameSuppressed / queueOverflowed) come from the render
+    // gather's ISO queue; the sink-side numbers (submitted / duplicateRejected /
+    // dropped / written) come from the async encoder. Read together they are the
+    // whole chain from decoded frame to muxed frame.
+    std::map<std::string, rpc::Json::Object> isoVideoNodes;
+    {
+      std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
+      for (const auto& entry : isoVideoSourceCounters_) {
+        auto& node = isoVideoNodes[entry.first];
+        node.emplace("queued", static_cast<double>(entry.second.distinctSubmitted));
+        node.emplace("heldFrameSuppressed", static_cast<double>(entry.second.duplicateRejected));
+        node.emplace("queueOverflowed", static_cast<double>(entry.second.queueOverflowed));
+      }
+    }
+    for (const auto& entry : encoderEvidence.isoVideoBySource) {
+      auto& node = isoVideoNodes[entry.first];
+      node.emplace("submitted", static_cast<double>(entry.second.submitted));
+      node.emplace("duplicateRejected", static_cast<double>(entry.second.duplicateRejected));
+      node.emplace("dropped", static_cast<double>(entry.second.dropped));
+      node.emplace("written", static_cast<double>(entry.second.written));
+    }
+    rpc::Json::Object isoVideoBySource;
+    for (auto& entry : isoVideoNodes) {
+      isoVideoBySource.emplace(entry.first, std::move(entry.second));
+    }
+    state.emplace("encoderEvidence", rpc::Json::Object{
+        {"metricVersion", "async-encoder-evidence-v1"},
+        {"generation", static_cast<double>(encoderEvidence.generation)},
+        {"lifecycleState", encoderEvidence.lifecycleState},
+        {"operation", encoderEvidence.operation},
+        {"operationGeneration", static_cast<double>(encoderEvidence.operationGeneration)},
+        {"operationSequence", static_cast<double>(encoderEvidence.operationSequence)},
+        {"operationAgeMs", static_cast<double>(encoderEvidence.operationAgeMs)},
+        {"queueDepth", static_cast<double>(encoderEvidence.queueDepth)},
+        {"oldestQueuedAgeMs", static_cast<double>(encoderEvidence.oldestQueuedAgeMs)},
+        {"enqueued", std::move(enqueued)}, {"completedCalls", std::move(completed)},
+        {"queuedByKind", std::move(queued)},
+        {"droppedVideo", static_cast<double>(encoderEvidence.droppedVideo)},
+        {"droppedAudio", static_cast<double>(encoderEvidence.droppedAudio)},
+        // Kept OUT of droppedVideo on purpose: video shed behind the writer's
+        // SYNCHRONOUS open is a clipped head, not steady-state loss. Reported
+        // here so it stays visible and attributable to the startup window.
+        {"startupDroppedVideo", static_cast<double>(encoderEvidence.startupDroppedVideo)},
+        {"isoVideoBySource", std::move(isoVideoBySource)},
+        {"lastWriterProgressMs", static_cast<double>(encoderEvidence.lastWriterProgressMs)},
+        {"programVideoWritten", static_cast<double>(encoderEvidence.programVideoWritten)},
+        {"programAudioPacketsWritten", static_cast<double>(encoderEvidence.programAudioPacketsWritten)},
+        {"writtenGeneration", static_cast<double>(encoderEvidence.writtenGeneration)},
+        {"stopGeneration", static_cast<double>(encoderEvidence.stopGeneration)},
+        {"stopRequestedMs", static_cast<double>(encoderEvidence.stopRequestedMs)},
+        {"finalizeStartedMs", static_cast<double>(encoderEvidence.finalizeStartedMs)},
+        {"finalizeFinishedMs", static_cast<double>(encoderEvidence.finalizeFinishedMs)},
+        {"finalizeResult", encoderEvidence.finalizeResult},
+        {"firstFailure", encoderEvidence.firstFailure},
+        {"firstFailureGeneration", static_cast<double>(encoderEvidence.firstFailureGeneration)},
+        {"firstFailureMs", static_cast<double>(encoderEvidence.firstFailureMs)}});
+  }
+  const auto evidenceNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  const auto progressAgeMs = [evidenceNowNs](int64_t lastProgressNs) -> double {
+    return lastProgressNs > 0
+        ? static_cast<double>((std::max)(int64_t{0}, evidenceNowNs - lastProgressNs)) / 1'000'000.0
+        : -1.0;
+  };
+  const auto renderLastProgressNs = renderWorkerLastProgressNs_.load(std::memory_order_relaxed);
+  const auto audioLastProgressNs = audioWorkerLastProgressNs_.load(std::memory_order_relaxed);
+  const auto videoOutputLastProgressNs = videoOutputWorkerLastProgressNs_.load(std::memory_order_relaxed);
+  state.emplace("realtimeEvidence", rpc::Json::Object{
+      {"metricVersion", "realtime-worker-evidence-v1"},
+      {"render", rpc::Json::Object{
+          {"generation", static_cast<double>(renderWorkerGeneration_.load(std::memory_order_relaxed))},
+          {"observed", renderLastProgressNs > 0},
+          {"progressAgeMs", progressAgeMs(renderLastProgressNs)},
+          {"completedSlots", static_cast<double>(renderWorkerCompletedSlots_.load(std::memory_order_relaxed))},
+          {"skippedSlots", static_cast<double>(renderWorkerSkippedSlots_.load(std::memory_order_relaxed))},
+          {"deadlineMisses", static_cast<double>(renderWorkerDeadlineMisses_.load(std::memory_order_relaxed))},
+          {"maximumLatenessNs", static_cast<double>(renderWorkerMaximumLatenessNs_.load(std::memory_order_relaxed))},
+          {"lockWaitTotalNs", static_cast<double>(renderWorkerLockWaitTotalNs_.load(std::memory_order_relaxed))},
+          {"lockWaitMaximumNs", static_cast<double>(renderWorkerLockWaitMaximumNs_.load(std::memory_order_relaxed))},
+          {"workTotalNs", static_cast<double>(renderWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
+          {"workMaximumNs", static_cast<double>(renderWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
+          {"eventDrainTotalNs", static_cast<double>(renderWorkerDrainTotalNs_.load(std::memory_order_relaxed))},
+          {"eventDrainMaximumNs", static_cast<double>(renderWorkerDrainMaximumNs_.load(std::memory_order_relaxed))},
+          {"gpuCompletionVerified", false}, {"deliveryVerified", false}}},
+      {"audio", rpc::Json::Object{
+          {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
+          {"observed", audioLastProgressNs > 0},
+          {"progressAgeMs", progressAgeMs(audioLastProgressNs)},
+          {"completedTicks", static_cast<double>(audioWorkerCompletedTicks_.load(std::memory_order_relaxed))},
+          {"workTotalNs", static_cast<double>(audioWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
+          {"workMaximumNs", static_cast<double>(audioWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
+          {"pacerReanchors", static_cast<double>(audioWorkerReanchors_.load(std::memory_order_relaxed))},
+          {"discardedTimelineNs", static_cast<double>(audioWorkerDiscardedTimelineNs_.load(std::memory_order_relaxed))},
+          // Cumulative interleaved PCM samples permanently shed at the feed
+          // FIFO cap, summed over every source. Monotonic for the life of the
+          // process; the qualification harness fails on any reset.
+          {"audioLostSamples", static_cast<double>(audioWorkerLostSamples_.load(std::memory_order_relaxed))}}},
+      {"videoOutput", rpc::Json::Object{
+          {"generation", static_cast<double>(videoOutputWorkerGeneration_.load(std::memory_order_relaxed))},
+          {"observed", videoOutputLastProgressNs > 0},
+          {"progressAgeMs", progressAgeMs(videoOutputLastProgressNs)},
+          {"completedTicks", static_cast<double>(videoOutputWorkerCompletedTicks_.load(std::memory_order_relaxed))},
+          {"workTotalNs", static_cast<double>(videoOutputWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
+          {"workMaximumNs", static_cast<double>(videoOutputWorkerWorkMaximumNs_.load(std::memory_order_relaxed))}}}});
   const auto zoomCapture = zoomSnapshot();
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
@@ -1162,7 +1304,9 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
 
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
   const std::string type = command.getString("type");
-  if (type == "load-scene-graph") {
+  if (type == "begin-take-transition") {
+    beginTakeTransition(command);
+  } else if (type == "load-scene-graph") {
     loadSceneGraph(command);
   } else if (type == "set-preview-scene") {
     applyPreviewScene(command);
@@ -1260,6 +1404,97 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
                                  enabled ? "enabled" : "disabled");
   }
   publishProgramOutputConfiguration();
+}
+
+namespace {
+int64_t steadyNowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void updateAtomicMaximum(std::atomic<int64_t>& destination, int64_t value) {
+  auto current = destination.load(std::memory_order_relaxed);
+  while (current < value &&
+         !destination.compare_exchange_weak(current, value, std::memory_order_relaxed)) {}
+}
+}  // namespace
+
+void MediaCore::reportRenderWorkerStarted() {
+  renderWorkerGeneration_.fetch_add(1, std::memory_order_relaxed);
+  renderWorkerLastProgressNs_.store(0, std::memory_order_relaxed);
+}
+
+void MediaCore::reportRenderWorkerProgress(int64_t completedSlots, int64_t skippedSlots,
+                                           int64_t deadlineMisses, int64_t maximumLatenessNs,
+                                           int64_t lockWaitNs, int64_t workNs, int64_t drainNs) {
+  renderWorkerCompletedSlots_.store(completedSlots, std::memory_order_relaxed);
+  renderWorkerSkippedSlots_.store(skippedSlots, std::memory_order_relaxed);
+  // Keep the worker's CPU-completion misses distinct from the legacy aggregate,
+  // which also includes explicitly skipped slots reported after cadence advance.
+  // Overwriting the aggregate here would make a cumulative loss counter go down.
+  renderWorkerDeadlineMisses_.store(deadlineMisses, std::memory_order_relaxed);
+  updateAtomicMaximum(renderWorkerMaximumLatenessNs_, maximumLatenessNs);
+  renderWorkerLockWaitTotalNs_.fetch_add((std::max)(int64_t{0}, lockWaitNs), std::memory_order_relaxed);
+  renderWorkerWorkTotalNs_.fetch_add((std::max)(int64_t{0}, workNs), std::memory_order_relaxed);
+  renderWorkerDrainTotalNs_.fetch_add((std::max)(int64_t{0}, drainNs), std::memory_order_relaxed);
+  updateAtomicMaximum(renderWorkerLockWaitMaximumNs_, lockWaitNs);
+  updateAtomicMaximum(renderWorkerWorkMaximumNs_, workNs);
+  updateAtomicMaximum(renderWorkerDrainMaximumNs_, drainNs);
+  renderWorkerLastProgressNs_.store(steadyNowNs(), std::memory_order_release);
+}
+
+void MediaCore::reportAudioWorkerStarted() {
+  audioWorkerGeneration_.fetch_add(1, std::memory_order_relaxed);
+  audioWorkerLastProgressNs_.store(0, std::memory_order_relaxed);
+}
+
+void MediaCore::reportAudioWorkerProgress(int64_t workNs) {
+  audioWorkerCompletedTicks_.fetch_add(1, std::memory_order_relaxed);
+  audioWorkerWorkTotalNs_.fetch_add((std::max)(int64_t{0}, workNs), std::memory_order_relaxed);
+  updateAtomicMaximum(audioWorkerWorkMaximumNs_, workNs);
+  audioWorkerLastProgressNs_.store(steadyNowNs(), std::memory_order_release);
+}
+
+void MediaCore::reportAudioWorkerReanchor(int64_t discardedTimelineNs) {
+  audioWorkerReanchors_.fetch_add(1, std::memory_order_relaxed);
+  audioWorkerDiscardedTimelineNs_.fetch_add(
+      (std::max)(int64_t{0}, discardedTimelineNs), std::memory_order_relaxed);
+}
+
+void MediaCore::reportVideoOutputWorkerStarted() {
+  videoOutputWorkerGeneration_.fetch_add(1, std::memory_order_relaxed);
+  videoOutputWorkerLastProgressNs_.store(0, std::memory_order_relaxed);
+}
+
+void MediaCore::reportVideoOutputWorkerProgress(int64_t workNs) {
+  videoOutputWorkerCompletedTicks_.fetch_add(1, std::memory_order_relaxed);
+  videoOutputWorkerWorkTotalNs_.fetch_add((std::max)(int64_t{0}, workNs), std::memory_order_relaxed);
+  updateAtomicMaximum(videoOutputWorkerWorkMaximumNs_, workNs);
+  videoOutputWorkerLastProgressNs_.store(steadyNowNs(), std::memory_order_release);
+}
+
+void MediaCore::beginTakeTransition(const rpc::Json& command) {
+  TakeTransitionState next;
+  next.operationId = command.getString("operationId");
+  next.revision = static_cast<int64_t>(command.getNumber("revision", 0.0));
+  next.mode = command.getString("mode", "cut");
+  if (next.mode != "fade" && next.mode != "dip" && next.mode != "wipe") {
+    next.mode = "cut";
+  }
+  next.durationMs = (std::max)(0.0, (std::min)(5000.0, command.getNumber("durationMs", 300.0)));
+  next.direction = command.getString("direction", "left-to-right");
+  next.dipColor = command.getString("dipColor", "#000000");
+  next.outgoingSceneId = sceneId_;
+  next.outgoingRoutes = sceneRoutes_;
+  next.outgoingBackground = sceneBackground_;
+  next.outgoingTiles = tilesLayer_;
+  next.outgoingColorGrade = colorGrade_;
+  next.outgoingOverlays = overlayAssets_;
+  next.outgoingCaptionEnabled = captionEnabled_;
+  next.outgoingCaptionText = captionText_;
+  next.outgoingCaptionSpeaker = captionSpeaker_;
+  next.active = next.mode != "cut" && next.durationMs > 0.0;
+  takeTransition_ = std::move(next);
 }
 
 void MediaCore::publishProgramOutputConfiguration() {
@@ -1613,7 +1848,156 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
 
 }  // namespace
 
+namespace {
+
+std::vector<std::string> renderPlanLayerIds(const modules::CompositorRenderPlan& plan) {
+  std::vector<std::string> ids;
+  ids.reserve(plan.layers.size());
+  for (const auto& layer : plan.layers) ids.push_back(layer.layerId);
+  return ids;
+}
+
+std::string joinLayerIds(const std::vector<std::string>& ids) {
+  std::string joined;
+  for (const auto& id : ids) {
+    if (!joined.empty()) joined += ",";
+    joined += id;
+  }
+  return joined;
+}
+
+}  // namespace
+
+rpc::Json MediaCore::takeRecordsState() const {
+  rpc::Json::Array records;
+  for (const auto& record : takeRecords_) {
+    records.emplace_back(rpc::Json::Object{
+        {"fromSceneId", record.fromSceneId},
+        {"toSceneId", record.toSceneId},
+        {"fromRenderPlanId", record.fromRenderPlanId},
+        {"toRenderPlanId", record.toRenderPlanId},
+        {"operationId", record.operationId},
+        {"revision", static_cast<double>(record.revision)},
+        {"mode", record.mode},
+        {"fromLayerIds", stringArray(record.fromLayerIds)},
+        {"toLayerIds", stringArray(record.toLayerIds)},
+        {"fromWallKey", record.fromWallKey},
+        {"toWallKey", record.toWallKey},
+        {"wall", std::string(record.verdict.wall)},
+        {"verdict", std::string(record.verdict.verdict)},
+        {"liveBackgroundExpected", record.observation.liveBackgroundExpected},
+        {"liveBackgroundEmitted", record.observation.liveBackgroundEmitted},
+        {"backgroundDropped", record.verdict.backgroundDropped},
+        {"subscriptionChurnDelta", static_cast<double>(record.observation.subscriptionChurnDelta)},
+        {"subscriptionsChurned", record.verdict.subscriptionsChurned},
+        {"armedAtMs", record.armedAtMs},
+        {"armedAtFrame", static_cast<double>(record.armedAtFrame)},
+    });
+  }
+  return rpc::Json::Object{
+      {"count", static_cast<double>(takeRecords_.size())},
+      {"pending", pendingTakeRecord_.has_value()},
+      {"records", records},
+  };
+}
+
+rpc::Json MediaCore::zoomSubscriptionChurnState() const {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->subscriptionChurnState();
+  }
+  // No engine: the node still exists, and says so, rather than vanishing.
+  return rpc::Json::Object{
+      {"engine", false},
+      {"sourceCount", 0.0},
+      {"subscribedCount", 0.0},
+      {"totalChurn", 0.0},
+      {"lastResolutionChanges", 0.0},
+      {"lastCapEvictions", 0.0},
+      {"lastDepartures", 0.0},
+      {"sources", rpc::Json::Array{}},
+  };
+}
+
+void MediaCore::armTakeRecord(const std::string& toSceneId) {
+  // Per operator action. The outgoing plan is built ONCE here, on the command
+  // thread, so the render tick pays nothing for the "before" half.
+  TakeRecord record;
+  record.fromSceneId = sceneId_;
+  record.toSceneId = toSceneId;
+  record.hadWallBefore = tilesLayer_.present;
+  record.fromWallKey = tilesLayer_.present ? sceneId_ + ":" + tilesLayer_.layerId : std::string();
+  const auto outgoing = buildCompositorRenderPlan({});
+  record.fromRenderPlanId = outgoing.renderPlanId;
+  record.fromLayerIds = renderPlanLayerIds(outgoing);
+  record.armedAtFrame = lastProducedFrameNumber_;
+  record.armedAtMs = static_cast<double>(monotonicMs());
+  record.subscriptionChurnAtArm =
+      zoomEngineRuntime_ ? zoomEngineRuntime_->subscriptionChurnTotal() : 0;
+  // An unfinished record is replaced, not queued: a second Take before the first
+  // one rendered means the first never reached air as its own frame.
+  pendingTakeRecord_ = std::move(record);
+}
+
+void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
+                                   bool wallAdoptedSettled) {
+  if (!pendingTakeRecord_) return;
+  TakeRecord record = std::move(*pendingTakeRecord_);
+  pendingTakeRecord_.reset();
+
+  record.toRenderPlanId = programPlan.renderPlanId;
+  record.toLayerIds = renderPlanLayerIds(programPlan);
+  record.toWallKey = tilesLayer_.present ? sceneId_ + ":" + tilesLayer_.layerId : std::string();
+  record.operationId = takeTransition_.operationId;
+  record.revision = takeTransition_.revision;
+  record.mode = takeTransition_.mode;
+
+  const std::string liveBackgroundLayerId = "tiles-source-bg:" + tilesLayer_.layerId;
+  record.observation.hasWallAfter = tilesLayer_.present;
+  record.observation.wallAdoptedSettled = wallAdoptedSettled;
+  record.observation.liveBackgroundExpected =
+      tilesLayer_.present && !tilesLayer_.style.backgroundSourceId.empty() &&
+      tilesLayer_.style.backgroundSourceId != tilesLayer_.layerId;
+  record.observation.liveBackgroundEmitted =
+      std::any_of(programPlan.layers.begin(), programPlan.layers.end(),
+                  [&](const auto& layer) { return layer.layerId == liveBackgroundLayerId; });
+  const std::uint64_t churnNow =
+      zoomEngineRuntime_ ? zoomEngineRuntime_->subscriptionChurnTotal() : 0;
+  record.observation.subscriptionChurnDelta =
+      churnNow > record.subscriptionChurnAtArm ? churnNow - record.subscriptionChurnAtArm : 0;
+  record.verdict = TakeRecordPolicy::evaluate(record.observation);
+  record.completed = true;
+
+  // Bounded async log: the support bundle already collects the process log, and
+  // the write itself is queued off this thread. One line per Take, so it is on by
+  // default without competing with media work.
+  nativeLogf(
+      "[take] from=%s to=%s op=%s rev=%lld mode=%s planFrom=%s planTo=%s wall=%s verdict=%s "
+      "wallKeyFrom=%s wallKeyTo=%s bgExpected=%d bgEmitted=%d churn=%llu layersFrom=%zu "
+      "layersTo=%zu ids=[%s]\n",
+      record.fromSceneId.c_str(), record.toSceneId.c_str(), record.operationId.c_str(),
+      static_cast<long long>(record.revision), record.mode.c_str(),
+      record.fromRenderPlanId.c_str(), record.toRenderPlanId.c_str(), record.verdict.wall,
+      record.verdict.verdict, record.fromWallKey.c_str(), record.toWallKey.c_str(),
+      record.observation.liveBackgroundExpected ? 1 : 0,
+      record.observation.liveBackgroundEmitted ? 1 : 0,
+      static_cast<unsigned long long>(record.observation.subscriptionChurnDelta),
+      record.fromLayerIds.size(), record.toLayerIds.size(),
+      joinLayerIds(record.toLayerIds).c_str());
+
+  takeRecords_.push_back(std::move(record));
+  while (takeRecords_.size() > kTakeRecordRing) takeRecords_.pop_front();
+}
+
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
+  // Arm the take record BEFORE any scene state moves — the "before" half only
+  // exists here. Take is a client-side scene swap that sends ONE sync, so a
+  // scene id that actually changed IS the operator's Take on this wire.
+  {
+    const auto incomingSceneId = command.getString("sceneId", "unloaded");
+    if (!incomingSceneId.empty() && incomingSceneId != "unloaded" && incomingSceneId != sceneId_) {
+      armTakeRecord(incomingSceneId);
+    }
+  }
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
   if (sceneId_.empty() || sceneId_ == "unloaded") {
@@ -1998,8 +2382,19 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
 }
 
 void MediaCore::stopRecordingSession(const rpc::Json& command) {
-  recordingStatus_ = "stopped";
-  recordingWriterStatus_ = "stopped";
+  // STOP DOES NOT CLAIM COMPLETION. This used to assign "stopped" here, before
+  // encoder->stopRecording() had even been called — so the RPC returned, and the
+  // operator was told the recording had finished, while the FIFO barrier was
+  // still draining and the moov atom had not been written. The truth lived only
+  // in recording.lifecycle, and the two fields disagreed for the whole finalize
+  // window. What Stop reports now is that stopping has BEGUN; the terminal state
+  // arrives from the writer thread when the barrier has drained and finalization
+  // has actually succeeded or failed (AsyncEncoderSink::writerLoop). The RPC
+  // still does not block — the asynchronous finalization is correct, and
+  // scripts/validate-recording-finalization.mjs proves it completes with the
+  // core alive. Only the lying status field is fixed.
+  recordingStatus_ = "stopping";
+  recordingWriterStatus_ = "finalizing";
   recordingWarning_ = command.getString("reason", "");
   {
     // Encoder module mutation: guard against the audio/output worker's
@@ -4196,6 +4591,63 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
   return encoderState;
 }
 
+// PR22: a destination's state and terminal outcome, decided purely.
+//
+// The adapters (RTMP/SRT/NDI) publish cumulative counters and a status string.
+// "Is it still producing?" is a question about TIME, which none of them track,
+// so the freshness evidence is remembered here and the DECISION is delegated to
+// core::SenderLifecyclePolicy — the same rule the recording writer obeys, with
+// the same declared staleness budget. A stream that dies mid-show therefore
+// decays out of `producing` on its own instead of reporting the last status the
+// adapter happened to write.
+contracts::OutputLifecycle MediaCore::evaluateSenderLifecycle(
+    const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const {
+  const std::string key = sender.senderId.empty() ? sender.destination : sender.senderId;
+  auto& evidence = senderLifecycles_[key];
+  const int64_t sent = sender.framesSent + sender.audioFramesSent;
+  if (sent > evidence.lastFramesSent) {
+    evidence.lastFramesSent = sent;
+    evidence.lastProgressMs = nowMs;
+    evidence.everProduced = true;
+  } else if (sent < evidence.lastFramesSent) {
+    // A restarted sender resets its counters; that is a new run, not progress.
+    evidence.lastFramesSent = sent;
+    evidence.everProduced = sent > 0;
+    evidence.lastProgressMs = sent > 0 ? nowMs : 0;
+  }
+  core::SenderObservation observation;
+  observation.status = sender.status;
+  observation.destinationHealth = sender.destinationHealth;
+  observation.desiredActive = desiredActive;
+  observation.framesSent = sent;
+  observation.everProduced = evidence.everProduced;
+  observation.lastProgressMs = evidence.lastProgressMs;
+  observation.nowMs = nowMs;
+  observation.hasError = !sender.lastError.empty();
+  const auto decision = core::SenderLifecyclePolicy::evaluate(observation);
+  contracts::OutputLifecycle lifecycle;
+  lifecycle.sessionId = key.empty() ? std::string("output-sender") : key;
+  lifecycle.desiredActive = desiredActive;
+  lifecycle.state = decision.state;
+  lifecycle.health = decision.health;
+  lifecycle.finalized = core::SenderLifecyclePolicy::finalizedFor(decision, evidence.everProduced);
+  // The error field is diagnostic context for a state that is already bad. It is
+  // NOT attached to a healthy destination: `lastError` is sticky history, and a
+  // producing stream carrying an old string would read as broken in a bundle.
+  if (decision.state == "failed" && !sender.lastError.empty()) {
+    lifecycle.error = sender.lastError;
+  } else if (decision.state == "interrupted") {
+    lifecycle.error = sender.lastError.empty()
+                          ? std::string("Destination stopped producing without being asked to stop")
+                          : "Destination stopped producing without being asked to stop: " + sender.lastError;
+  } else if (decision.state == "failed" && !sender.warning.empty()) {
+    lifecycle.error = sender.warning;
+  }
+  if (core::OutputLifecyclePolicy::isTerminal(decision.state)) evidence.terminal = lifecycle;
+  else if (decision.state == "idle" && evidence.terminal) return *evidence.terminal;
+  return lifecycle;
+}
+
 rpc::Json MediaCore::outputSenderSessionState() const {
   // outputSender->session() is mutated by the worker's outputSender->sync; guard it.
   modules::OutputSenderSession senderSession;
@@ -4203,8 +4655,14 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     senderSession = modules_.outputSender->session();
   }
+  const int64_t senderNowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
   rpc::Json::Array senders;
   for (const auto& sender : senderSession.senders) {
+    const bool desiredActive =
+        std::find(outputDestinations_.begin(), outputDestinations_.end(), sender.destination) !=
+        outputDestinations_.end();
+    const auto lifecycle = evaluateSenderLifecycle(sender, desiredActive, senderNowMs);
     rpc::Json::Object senderJson{
         {"senderId", sender.senderId},
         {"destination", sender.destination},
@@ -4243,6 +4701,30 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     if (!sender.runtimeDetail.empty()) {
       senderJson.emplace("runtimeDetail", sender.runtimeDetail);
     }
+    // PR19: the output supervisor's per-destination state, verbatim. /snapshot
+    // serves sessionState as-is, so this is the whole path from "a destination
+    // failed on a machine we cannot see" to "the support bundle says which one,
+    // how many times, and why we stopped restarting it".
+    if (sender.supervisor) {
+      const auto& supervisor = *sender.supervisor;
+      senderJson.emplace("supervisor", rpc::Json::Object{
+          {"generation", static_cast<double>(supervisor.generation)},
+          {"healthy", supervisor.healthy},
+          {"gaveUp", supervisor.gaveUp},
+          {"consecutiveFailures", supervisor.consecutiveFailures},
+          {"restarts", supervisor.restarts},
+          {"nextAttemptInMs", static_cast<double>(supervisor.nextAttemptInMs)},
+          {"lastProgressAgeMs", static_cast<double>(supervisor.lastProgressAgeMs)},
+          {"acceptedUnits", static_cast<double>(supervisor.acceptedUnits)},
+          {"staleEventsRejected", static_cast<double>(supervisor.staleEventsRejected)},
+          {"malformedObservations", static_cast<double>(supervisor.malformedObservations)},
+          {"failureClass", supervisor.failureClass},
+          {"reason", supervisor.reason},
+          {"inProcessRisk", supervisor.inProcessRisk},
+          {"interruptible", supervisor.interruptible},
+      });
+    }
+    senderJson.emplace("lifecycle", contracts::toJson(lifecycle));
     senders.emplace_back(std::move(senderJson));
   }
 
@@ -4268,6 +4750,17 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
     return nullptr;
   }
 
+  // The published status is DERIVED from the observed lifecycle whenever the
+  // sink reports one, so `recording.status` and `recording.lifecycle` can never
+  // disagree again. recordingStatus_ remains the internal desired-state gate
+  // (it is what the render gather and the idempotent-start dedup read); it is
+  // not, and never was, evidence of what the writer is doing.
+  const std::string publishedStatus =
+      session.lifecycle ? publishedRecordingStatus(session.lifecycle->state, session.lifecycle->health)
+                        : recordingStatus_;
+  const std::string publishedWriterStatus =
+      session.lifecycle ? publishedRecordingWriterStatus(session.lifecycle->state)
+                        : recordingWriterStatus_;
   const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
   const int64_t programFramesWritten = session.recordingVideoFrameCount;
   int64_t isoFramesWritten = 0;
@@ -4303,7 +4796,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       rpc::Json::Object{
           {"kind", "program"},
           {"path", programPath},
-          {"status", recordingWriterStatus_},
+          {"status", publishedWriterStatus},
           {"expectedFrames", static_cast<double>(programFramesWritten)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
           {"durationMs", durationMs},
@@ -4329,7 +4822,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"participantId", iso.sourceId},
           {"displayName", iso.displayName},
           {"path", iso.path},
-          {"status", iso.warning.empty() ? recordingWriterStatus_ : std::string("warning")},
+          {"status", iso.warning.empty() ? publishedWriterStatus : std::string("warning")},
           {"readiness", iso.trackOpen ? "ready" : "missing"},
           {"framesWritten", static_cast<double>(iso.videoFrameCount)},
           {"durationMs", durationMs},
@@ -4372,10 +4865,10 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
 
   rpc::Json::Object recording{
       {"sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_},
-      {"active", session.lifecycle ? session.lifecycle->state == "live" :
+      {"active", session.lifecycle ? session.lifecycle->state == "producing" :
                  recordingStatus_ == "recording" || recordingStatus_ == "warning"},
-      {"status", recordingStatus_},
-      {"writerStatus", recordingWriterStatus_},
+      {"status", publishedStatus},
+      {"writerStatus", publishedWriterStatus},
       {"startedAtMs", recordingStartedAtMs_},
       {"elapsedMs", durationMs},
       {"targetFolder", recordingTargetFolder_},
@@ -4408,6 +4901,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"recordingWriterReadyAt100ns", static_cast<double>(session.recordingWriterReadyAt100ns)},
            {"recordingMuxEpoch100ns", static_cast<double>(session.recordingMuxEpoch100ns)},
            {"recordingStartupDroppedAudioPackets", static_cast<double>(session.recordingStartupDroppedAudioPackets)},
+           {"recordingStartupDroppedVideoFrames", static_cast<double>(session.recordingStartupDroppedVideoFrames)},
            {"isoFrameCount", static_cast<double>(isoFramesWritten)},
            {"audioPacketsObserved", static_cast<double>(audioPacketsObserved)},
            {"audioPresent", audioPresent},
@@ -4505,7 +4999,128 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
                                       videoFrames, tilesLayer_);
   plan.warnings = sceneValidationWarnings_;
-  return plan;
+  return applyTakeTransition(std::move(plan), videoFrames);
+}
+
+modules::CompositorRenderPlan MediaCore::applyTakeTransition(
+    modules::CompositorRenderPlan incoming,
+    const std::vector<modules::VideoFrame>& videoFrames) const {
+  if (!takeTransition_.active || takeTransition_.mode == "cut") {
+    return incoming;
+  }
+
+  const float progress = static_cast<float>((std::max)(0.0, (std::min)(
+      1.0, takeTransition_.durationMs > 0.0
+          ? takeTransition_.elapsedMs / takeTransition_.durationMs
+          : 1.0)));
+  auto outgoing = buildRenderPlanForScene(
+      takeTransition_.outgoingSceneId,
+      static_cast<int>(takeTransition_.outgoingRoutes.size()),
+      static_cast<int>(takeTransition_.outgoingOverlays.size()),
+      takeTransition_.outgoingBackground,
+      takeTransition_.outgoingRoutes,
+      takeTransition_.outgoingColorGrade,
+      takeTransition_.outgoingOverlays,
+      takeTransition_.outgoingCaptionEnabled,
+      takeTransition_.outgoingCaptionText,
+      takeTransition_.outgoingCaptionSpeaker,
+      videoFrames,
+      takeTransition_.outgoingTiles);
+
+  // One combined plan has one global grade. Bake each scene's global grade into
+  // the layers that do not already carry a route-specific grade, then neutralize
+  // the combined global value so outgoing and incoming retain their own look.
+  auto bakeSceneGrade = [](modules::CompositorRenderPlan& plan) {
+    for (auto& layer : plan.layers) {
+      if (!layer.hasColorGrade) {
+        layer.hasColorGrade = true;
+        layer.colorGrade = plan.colorGrade;
+      }
+    }
+    plan.colorGrade = {};
+  };
+  bakeSceneGrade(outgoing);
+  bakeSceneGrade(incoming);
+
+  auto scaleOpacity = [](std::vector<modules::CompositorRenderPlanLayer>& layers, float amount) {
+    for (auto& layer : layers) {
+      layer.opacity = (std::max)(0.f, (std::min)(1.f, layer.opacity * amount));
+    }
+  };
+  auto namespaceLayers = [](std::vector<modules::CompositorRenderPlanLayer>& layers,
+                            const std::string& prefix, int orderOffset) {
+    for (auto& layer : layers) {
+      layer.layerId = prefix + layer.layerId;
+      layer.order += orderOffset;
+    }
+  };
+
+  namespaceLayers(outgoing.layers, "take-out:", 0);
+  namespaceLayers(incoming.layers, "take-in:", 100000);
+
+  modules::CompositorRenderPlan combined = incoming;
+  combined.renderPlanId = "take:" + takeTransition_.operationId + ":" +
+      std::to_string(takeTransition_.revision) + ":" + incoming.renderPlanId;
+  combined.layers.clear();
+  combined.layers.reserve(outgoing.layers.size() + incoming.layers.size() + 1);
+
+  if (takeTransition_.mode == "fade") {
+    scaleOpacity(outgoing.layers, 1.f - progress);
+    scaleOpacity(incoming.layers, progress);
+    combined.layers.insert(combined.layers.end(), outgoing.layers.begin(), outgoing.layers.end());
+    combined.layers.insert(combined.layers.end(), incoming.layers.begin(), incoming.layers.end());
+  } else if (takeTransition_.mode == "dip") {
+    const float incomingAmount = progress <= 0.5f ? 0.f : (progress - 0.5f) * 2.f;
+    combined.layers.insert(combined.layers.end(), outgoing.layers.begin(), outgoing.layers.end());
+    modules::CompositorRenderPlanLayer dip;
+    dip.layerId = "take-dip:" + takeTransition_.operationId;
+    dip.kind = "tiles-background";
+    dip.order = 100000;
+    dip.rect = {0.f, 0.f, 1.f, 1.f};
+    dip.hasFillColor = true;
+    dip.fillColor = takeTransition_.dipColor;
+    dip.opacity = (std::min)(1.f, progress * 2.f);
+    combined.layers.push_back(std::move(dip));
+    scaleOpacity(incoming.layers, incomingAmount);
+    for (auto& layer : incoming.layers) layer.order += 100000;
+    combined.layers.insert(combined.layers.end(), incoming.layers.begin(), incoming.layers.end());
+  } else {
+    modules::CompositorLayerRect reveal{0.f, 0.f, progress, 1.f};
+    if (takeTransition_.direction == "right-to-left") {
+      reveal.x = 1.f - progress;
+    } else if (takeTransition_.direction == "top-to-bottom") {
+      reveal = {0.f, 0.f, 1.f, progress};
+    } else if (takeTransition_.direction == "bottom-to-top") {
+      reveal = {0.f, 1.f - progress, 1.f, progress};
+    }
+    for (auto& layer : incoming.layers) {
+      if (layer.hasClipRect) {
+        const float left = (std::max)(layer.clipRect.x, reveal.x);
+        const float top = (std::max)(layer.clipRect.y, reveal.y);
+        const float right = (std::min)(layer.clipRect.x + layer.clipRect.width, reveal.x + reveal.width);
+        const float bottom = (std::min)(layer.clipRect.y + layer.clipRect.height, reveal.y + reveal.height);
+        layer.clipRect = {left, top, (std::max)(0.f, right - left), (std::max)(0.f, bottom - top)};
+      } else {
+        layer.hasClipRect = true;
+        layer.clipRect = reveal;
+      }
+    }
+    combined.layers.insert(combined.layers.end(), outgoing.layers.begin(), outgoing.layers.end());
+    combined.layers.insert(combined.layers.end(), incoming.layers.begin(), incoming.layers.end());
+  }
+  combined.warnings.insert(combined.warnings.end(), outgoing.warnings.begin(), outgoing.warnings.end());
+  return combined;
+}
+
+void MediaCore::advanceTakeTransition(double frameIntervalMs) {
+  if (!takeTransition_.active) return;
+  takeTransition_.elapsedMs = (std::min)(takeTransition_.durationMs,
+      takeTransition_.elapsedMs + (std::max)(0.0, frameIntervalMs));
+  if (takeTransition_.elapsedMs < takeTransition_.durationMs) return;
+  takeTransition_.active = false;
+  takeTransition_.outgoingRoutes.clear();
+  takeTransition_.outgoingOverlays.clear();
+  takeTransition_.outgoingTiles = {};
 }
 
 modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
@@ -4776,8 +5391,31 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
 
     // A live background feed is drawn under tiles. An unavailable source leaves
     // the solid/scene background intact; it must never trigger fallback guests.
+    //
+    // THE BACKGROUND IS HELD ACROSS A STALE BEAT (owner report, live broadcast
+    // 2026-09-09: "Tiles background still refreshing on cut to program, that
+    // should be seamless"). This gate used to be admitTilesMembers — the SAME
+    // kTilesStaleFrameMs admission the tiles go through — so one beat of the
+    // background source's frameId not advancing dropped the layer entirely,
+    // program fell through to the solid colour or the scene background, and the
+    // picture popped back when frames resumed. tilesBackgroundSourceIsDrawable
+    // asks the question that actually applies to a backdrop instead: is a real
+    // frame for this source present in THIS tick's gather? A frozen backdrop is
+    // indistinguishable from a live one; its disappearance is a full-frame
+    // colour change on air. kTilesStaleFrameMs itself is untouched — it is
+    // shared with tile admission and moving it would change wall membership for
+    // every source. Full reasoning, and why a stale TILE is still refused, sits
+    // on the predicate in compositor/TilesMembership.h.
+    //
+    // Nothing is fabricated: hasFrame is false for a source that never arrived
+    // or has departed, so those keep today's behaviour exactly, and the layer
+    // below always carries a non-empty participantId so RouteSourcePolicy's
+    // positional fallback stays unreachable.
+    // Regression tests: TilesRenderPlan.AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat,
+    // ABackgroundSourceThatNeverArrivedIsNeverFabricated,
+    // ADepartedBackgroundSourceIsReleasedNotHeld.
     if (!wall.style.backgroundSourceId.empty() && wall.style.backgroundSourceId != wall.layerId &&
-        !compositor::admitTilesMembers({wall.style.backgroundSourceId}, tilesMemberFrameAges_).empty()) {
+        compositor::tilesBackgroundSourceIsDrawable(wall.style.backgroundSourceId, tilesMemberFrameAges_)) {
       modules::CompositorRenderPlanLayer background;
       background.layerId = "tiles-source-bg:" + wall.layerId;
       background.kind = "participant-video";
@@ -5187,8 +5825,81 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       const std::string key = pid.find(':') != std::string::npos ? pid : "zoom:" + pid;
       latestIsoSourceFrames_[key] = frame;
     }
+    // ISO-1 (cadence): APPEND this render's newly-seen ISO frames to the queue
+    // the ISO submit worker drains, and signal it. This is the arrival edge —
+    // ISO is driven from here, NOT from the Program video tick.
+    //
+    // The old code published a latest-value slot that renderVideoOutputTick
+    // sampled on its own, independent 60Hz Program clock. Two free-running 60Hz
+    // clocks beat: 15-22% of publications were never sampled, and the ones that
+    // were arrived as duplicates the sink rejected. It measured NON-MONOTONIC —
+    // a ~240fps source wrote 45.2fps of stem while a ~30fps source wrote 29.0.
+    // That is the same frame-pairing bug the Program video tick documents (and
+    // fixed by becoming signalled rather than paced); the lesson simply had not
+    // been carried across to ISO.
+    //
+    // Still zero-copy and still no pixel work under coreMutex: each entry is a
+    // VideoFrame whose payloads are shared_ptrs. isoVideoQueueMutex_ is a leaf
+    // (see MediaCore.h) held for a handful of vector/map operations.
+    //
+    // STAMP AT GATHER, not at submit. These pixels belong to this render, so
+    // this is the time they belong to — and it is the only stamp that keeps
+    // successive frames spread across the timeline. Stamping at submit would
+    // collapse everything drained in one pass onto one instant, which
+    // RecordingPtsClock would then de-collide into a 100ns clump.
+    const int64_t isoArrivalTimestamp100ns = monotonic100ns();
+    bool appended = false;
+    {
+      std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
+      for (const auto& rawId : recordingIsoParticipantIds_) {
+        const auto it = latestIsoSourceFrames_.find(normalizeIsoSourceId(rawId));
+        if (it == latestIsoSourceFrames_.end()) continue;
+        const std::string& sourceId = it->first;
+        auto& counters = isoVideoSourceCounters_[sourceId];
+        const auto lastId = lastQueuedIsoFrameId_.find(sourceId);
+        if (lastId != lastQueuedIsoFrameId_.end() && lastId->second == it->second.frameId) {
+          // Held frame re-served because this source is slower than the render
+          // rate. Not a loss — but never a distinct picture either.
+          ++counters.duplicateRejected;
+          continue;
+        }
+        lastQueuedIsoFrameId_[sourceId] = it->second.frameId;
+        // Bound the per-source backlog: if the submit worker is behind, shed the
+        // OLDEST pending frame for THIS source only.
+        size_t pendingForSource = 0;
+        for (const auto& queued : pendingIsoVideoQueue_) {
+          if (queued.sourceId == sourceId) ++pendingForSource;
+        }
+        if (pendingForSource >= kMaxPendingIsoFramesPerSource) {
+          for (auto queued = pendingIsoVideoQueue_.begin(); queued != pendingIsoVideoQueue_.end();
+               ++queued) {
+            if (queued->sourceId == sourceId) {
+              pendingIsoVideoQueue_.erase(queued);
+              ++counters.queueOverflowed;
+              break;
+            }
+          }
+        }
+        ++counters.distinctSubmitted;
+        // displayName left empty: the sink maps by sourceId to a writer whose
+        // name/path were resolved at recording start (no roster lookup here).
+        modules::IsoSourceVideoFrame entry{sourceId, std::string(), it->second};
+        entry.timelineTimestamp100ns = isoArrivalTimestamp100ns;
+        pendingIsoVideoQueue_.push_back(std::move(entry));
+        appended = true;
+      }
+    }
+    if (appended) {
+      isoVideoPublishSeq_.fetch_add(1, std::memory_order_release);
+    }
   } else if (!latestIsoSourceFrames_.empty()) {
     latestIsoSourceFrames_.clear();
+    // Recording ended: no dedup identity, no counters and no queued frames
+    // survive into the next take (frame ids restart with the meeting/SHM).
+    std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
+    pendingIsoVideoQueue_.clear();
+    lastQueuedIsoFrameId_.clear();
+    isoVideoSourceCounters_.clear();
   }
   markStage(s_stageIngestUs, 0);
 
@@ -5292,7 +6003,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
   const double animationNowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
-  programTilesAnimation_.advance(renderPlan, sceneId_ + ":" + tilesLayer_.layerId,
+  // THE TAKE HAND-OFF (owner report 2026-09-09: a gallery taken from preview to
+  // program must be a CUT to something already rendered, never a redraw).
+  // TransportCoordinator.TakeAsync swaps ActiveSceneId/PreviewSceneId and sends
+  // ONE sync, so the program wall key becomes the key preview held on the
+  // previous tick — the same wall, continuing on the other bus. Carry its
+  // settled animation state over before advancing, instead of letting the
+  // key change reset the animator. Refused unless the keys match EXACTLY and
+  // the preview wall is settled, and the state is MOVED (preview is reset), so
+  // the two buses cannot contaminate each other. Cost is a key compare plus a
+  // move of <=64 tiles, only on the tick a wall changes bus — no added
+  // coreMutex hold.
+  const std::string programWallKey = sceneId_ + ":" + tilesLayer_.layerId;
+  bool wallAdoptedSettled = false;
+  if (tilesLayer_.present && tilesLayer_.style.animateLayout) {
+    wallAdoptedSettled = programTilesAnimation_.adoptSettledFrom(previewTilesAnimation_, programWallKey);
+  }
+  programTilesAnimation_.advance(renderPlan, programWallKey,
       tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
   // Advance Preview on this same render clock even when its wall is empty.
   // Snapshot/prefetch builds must not change entry/departure animation state.
@@ -5325,6 +6052,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // for a Tiles scene, so the perf rationale is unchanged.
   if (tilesLayer_.present) {
     lastRenderPlan_ = renderPlan;
+  }
+  // First program plan after a Take: this is the only tick where the "after"
+  // half of the take record exists. Per operator action, not per frame.
+  if (pendingTakeRecord_) {
+    completeTakeRecord(renderPlan, wallAdoptedSettled);
   }
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
@@ -5379,27 +6111,58 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
+  advanceTakeTransition(static_cast<double>(frameIntervalMs));
   lastProducedFrameNumber_ = producedFrame.frameNumber;
   if (modules_.compositor->programBufferFrames() > 0) {
     // Rendering queues owned pixels; only scheduled delivery advances Program.
+    //
+    // THE STALE SCENE STAMP (live show 2026-09-09). `latestDeliveredProgramFrame`
+    // is a PEEK: it hands back the same delivered frame on every call until the
+    // buffer's delivery thread advances it, and the buffer deliberately refuses
+    // to advance it when the export it is paired with was busy. So "a frame came
+    // back" was never evidence that Program moved — and when nothing came back at
+    // all there was no branch here, so the attribution was simply never written
+    // again. `programFrame.sceneId` sat on the pre-take scene for 15+ seconds
+    // while Program composited the new one, and never caught up.
+    //
+    // The delivery SEQUENCE is what says a new frame reached air. Everything
+    // else is the pure RenderedSceneAttributionPolicy.
     modules::ProgramFrame delivered;
-    if (modules_.compositor->latestDeliveredProgramFrame(delivered)) {
+    const bool peeked = modules_.compositor->latestDeliveredProgramFrame(delivered);
+    bool deliveryAdvanced = false;
+    if (peeked) {
+      deliveryAdvanced = delivered.deliverySequence != attributedDeliverySequence_;
       lastProgramFrame_ = std::move(delivered);
-      if (lastProgramFrame_.renderPlanEvidence)
-        renderedProgramSources_.publish(*lastProgramFrame_.renderPlanEvidence);
-      else
-        renderedProgramSources_.invalidate();
+    }
+    if (deliveryAdvanced) {
+      attributedDeliverySequence_ = lastProgramFrame_.deliverySequence;
+      renderedSceneAttributionTicks_ = 0;
+    } else if (renderedSceneAttributionTicks_ < 1'000'000) {
+      ++renderedSceneAttributionTicks_;
+    }
+    const auto decision = RenderedSceneAttributionPolicy::evaluate(
+        deliveryAdvanced,
+        deliveryAdvanced && lastProgramFrame_.renderPlanEvidence != nullptr,
+        renderedSceneAttributionTicks_);
+    renderedSceneAttributionState_ = decision.state;
+    if (decision.action == RenderedSceneAttributionPolicy::Action::Follow) {
+      renderedProgramSources_.publish(*lastProgramFrame_.renderPlanEvidence);
+    } else if (decision.action == RenderedSceneAttributionPolicy::Action::Forget) {
+      renderedProgramSources_.invalidate();
     }
   } else {
   lastProgramFrame_ = std::move(producedFrame);
+  renderedSceneAttributionTicks_ = 0;
   if ((lastProgramFrame_.gpuComposed || !lastProgramFrame_.preview.bgra.empty()) &&
       lastProgramFrame_.frameNumber > 0 && lastProgramFrame_.health != "failed" &&
       lastProgramFrame_.renderPlanId == renderPlan.renderPlanId) {
     renderedProgramSources_.publish(renderPlan);
+    renderedSceneAttributionState_ = "live";
   } else {
     // The returned frame now owns the snapshot identity. Never attach source
     // or overlay proof from an older successful frame to this failed frame.
     renderedProgramSources_.invalidate();
+    renderedSceneAttributionState_ = "unknown";
   }
   }
   // Mirrored for the audio worker's PRE-LOCK engine poll: it needs a frame
@@ -5709,7 +6472,14 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
   // ISO-1: pick the selected sources' latest frames (snapshotted under coreMutex
   // above in the render gather) into the work item — zero-copy shared_ptr refs.
-  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && !latestIsoSourceFrames_.empty()) {
+  // ONLY for the direct/test path. When a video tick is running it owns the ISO
+  // submit (renderVideoOutputTick, beside Program) from pendingIsoVideoSources_,
+  // and gathering here as well would both waste coreMutex hold time and risk a
+  // double submission that the sink's (sourceId, frameId) dedup would silently
+  // absorb. The two producers are mutually exclusive on this one flag, exactly
+  // as the Program submit is.
+  if (!videoOutputTickRunning_.load(std::memory_order_acquire) && work.recordingActive &&
+      !recordingIsoParticipantIds_.empty() && !latestIsoSourceFrames_.empty()) {
     for (const auto& rawId : recordingIsoParticipantIds_) {
       const std::string sourceId = normalizeIsoSourceId(rawId);
       const auto it = latestIsoSourceFrames_.find(sourceId);
@@ -5744,6 +6514,27 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // (buses, monitor, encoder) is exactly one tick of samples per source -
   // variable 480/960 blocks were audible as raw-path distortion.
   modules::steadyAudioFrameFeed(work.audioFrames, audioFeedStates_);
+
+  // AUDIO LOSS IS EVIDENCE, NOT A LOG LINE (rule 4). steadyAudioFrameFeed sheds
+  // at the per-source FIFO cap when this worker under-ticks; those interleaved
+  // samples are permanently gone from the recording mux, the stream and the
+  // monitor. Fold the per-source deltas into one cumulative session counter so
+  // `sessionState().realtimeEvidence.audio.audioLostSamples` can be differenced across a
+  // qualification interval. Delta-based, so the total is monotonic even if a
+  // source state is ever pruned and recreated; it counts PERMANENT loss only,
+  // never transient FIFO occupancy. audioFeedStates_ is audioOutputMutex_-owned,
+  // so this runs on the worker that owns it and publishes through an atomic.
+  int64_t shedDelta = 0;
+  for (auto& [sourceId, state] : audioFeedStates_) {
+    (void)sourceId;
+    if (state.shedSamples > state.shedSamplesPublished) {
+      shedDelta += static_cast<int64_t>(state.shedSamples - state.shedSamplesPublished);
+      state.shedSamplesPublished = state.shedSamples;
+    }
+  }
+  if (shedDelta > 0) {
+    audioWorkerLostSamples_.fetch_add(shedDelta, std::memory_order_relaxed);
+  }
 
   // Canonical bus rate for every source BEFORE any mixing (Zoom-source buzz:
   // 32k PCM summed raw into the 48k bus = wrong speed + per-tick shortfall).
@@ -6242,19 +7033,28 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // separate, faster tick cannot drift the A/V relationship; it just stops
   // dropping ~10 frameNumbers a second. Audio still leaves from this worker.
   const int64_t videoTimelineTimestamp100ns = monotonic100ns();
+  // ISO VIDEO IS SUBMITTED BY THE VIDEO TICK TOO, and for the same reason: on
+  // this 20ms grid every ISO stem was sampled at 50Hz, so a 60fps source could
+  // never write more than ~50 distinct frames per second into its own MP4 —
+  // about 17% of its motion, gone. AsyncEncoderSink dedups by
+  // (sourceId, frameId), which stops resubmit spam but cannot recover a frame
+  // this grid never sampled. ISO PTS is wall-clock and deduped by frame id
+  // exactly like Program, so a faster tick cannot drift A/V; it only stops
+  // dropping frames. Both submits are gated on the SAME flag, so exactly one
+  // producer is ever live.
   if (!videoOutputTickRunning_.load(std::memory_order_acquire)) {
     work.programFrame.timelineTimestamp100ns = videoTimelineTimestamp100ns;
     modules_.encoder->submit(work.programFrame);
-  }
-  // ISO-1: each selected source's OWN video into its own MP4 (rides the same
-  // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
-  // drop-to-latest under back-pressure, never program A/V). Program above is
-  // priority-1 and unaffected by ISO.
-  if (!work.isoSources.empty()) {
-    for (auto& source : work.isoSources) {
-      source.timelineTimestamp100ns = videoTimelineTimestamp100ns;
+    // ISO-1: each selected source's OWN video into its own MP4 (rides the same
+    // AsyncEncoderSink, so ISO disk I/O can never wedge the 4ms audio deadline —
+    // drop-to-latest under back-pressure, never program A/V). Program above is
+    // priority-1, submitted first, and unaffected by ISO.
+    if (!work.isoSources.empty()) {
+      for (auto& source : work.isoSources) {
+        source.timelineTimestamp100ns = videoTimelineTimestamp100ns;
+      }
+      modules_.encoder->submitIsoVideo(work.isoSources);
     }
-    modules_.encoder->submitIsoVideo(work.isoSources);
   }
   auto outputDestinations = work.outputDestinations;
   outputDestinations.erase(
@@ -6580,7 +7380,17 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     frame.programNv12Shared = latestProgramNv12;
   }
   if (!buffered) frame.timelineTimestamp100ns = monotonic100ns();
-  if (!buffered || bufferedFrameAvailable) modules_.encoder->submit(frame);
+  const bool programSubmitted = !buffered || bufferedFrameAvailable;
+  if (programSubmitted) modules_.encoder->submit(frame);
+
+  // ISO video is NOT submitted here. It used to be, gated on `programSubmitted`
+  // — which made this Program-paced tick a second, independent 60Hz sampler
+  // reading the render thread's 60Hz ISO publication. Two free-running 60Hz
+  // clocks beat against each other and 15-22% of ISO submissions were rejected
+  // as duplicates; a ~240fps source wrote FEWER stem frames than a ~30fps one.
+  // ISO now has its own signalled worker driven by frame arrival
+  // (renderIsoVideoTick), which also keeps ISO encode entirely off the Program
+  // output path (rule 6).
 
   // Network senders: VIDEO on this cadence. Audio is pushed separately by the
   // audio worker (outputSender->submitAudio) because FFmpeg takes the two
@@ -6624,6 +7434,36 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   } catch (...) {
     failOutputSenderSync("Output sender failed during sync.");
   }
+}
+
+// ISO VIDEO OUT, driven by ISO FRAME ARRIVAL.
+//
+// See the header for why this exists at all. The shape is deliberately the same
+// one that fixed Program: WAIT on a publication sequence, then DRAIN everything
+// pending. It never samples, so a late wake costs latency and never frames.
+//
+// Locks: isoVideoQueueMutex_ (leaf) only, released before the encoder submit.
+// Never coreMutex, never audioOutputMutex_, so nothing here can delay Program
+// production, Program audio or Program playout. Downstream, the async sink's
+// writer already gives Program items weighted priority over ISO items, so a
+// burst of ISO submissions cannot displace Program work either.
+void MediaCore::renderIsoVideoTick() {
+  std::vector<modules::IsoSourceVideoFrame> submission;
+  {
+    std::unique_lock<std::mutex> lock(isoVideoQueueMutex_);
+    // Bounded wait: a liveness floor, not a cadence. Nothing pending means the
+    // recording is idle or every source is between frames.
+    isoVideoCv_.wait_for(lock, std::chrono::milliseconds(20), [&] {
+      return !pendingIsoVideoQueue_.empty() ||
+             isoVideoPublishSeq_.load(std::memory_order_acquire) != lastIsoVideoDrainSeq_;
+    });
+    lastIsoVideoDrainSeq_ = isoVideoPublishSeq_.load(std::memory_order_acquire);
+    if (pendingIsoVideoQueue_.empty()) return;
+    submission.swap(pendingIsoVideoQueue_);
+  }
+  // Outside the lock. submitIsoVideo splits the batch one item per source, so
+  // the writer can return to Program between individual ISO encodes.
+  modules_.encoder->submitIsoVideo(submission);
 }
 
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {

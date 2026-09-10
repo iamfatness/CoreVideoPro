@@ -34,6 +34,15 @@ export type NativeMediaCoreProfile = {
 
 export type NativeMediaCoreCommand =
   | {
+      type: "begin-take-transition";
+      operationId: string;
+      revision: number;
+      mode: "cut" | "fade" | "dip" | "wipe";
+      durationMs: number;
+      direction?: "left-to-right" | "right-to-left" | "top-to-bottom" | "bottom-to-top";
+      dipColor?: string;
+    }
+  | {
       type: "load-scene-graph";
       sceneId: string;
       routes: Array<{
@@ -453,8 +462,13 @@ export type NativeMediaCoreRecordingSession = {
   lifecycle?: import("./generated/lifecycle").OutputLifecycle;
   sessionId: string;
   active: boolean;
-  status: "recording" | "warning" | "stopped" | "failed";
-  writerStatus: "writing" | "warning" | "stopped" | "failed";
+  // PR22: `stopping`/`interrupted` are new. `stopping` covers the window between
+  // the Stop request and the writer's finalize — this field used to read
+  // "stopped" there, contradicting `lifecycle` for the whole finalize. `opening`
+  // and `stalled` are the writer-side counterparts. Both fields are PROJECTIONS
+  // of `lifecycle` whenever the core reports one.
+  status: "recording" | "warning" | "starting" | "stopping" | "stopped" | "failed" | "interrupted" | "idle";
+  writerStatus: "writing" | "warning" | "opening" | "finalizing" | "stalled" | "stopped" | "failed" | "idle";
   startedAtMs: number;
   stoppedAtMs?: number;
   elapsedMs: number;

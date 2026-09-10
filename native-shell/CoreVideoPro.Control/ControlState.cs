@@ -95,4 +95,22 @@ public sealed record ControlState
     public static ControlState Empty { get; } = new();
 }
 
-public sealed record ControlProgramVideoSource(string LayerId, string SourceId, string ParticipantId, string Kind);
+/// <summary>One video layer of the last Program frame the core actually composed.
+///
+/// <paramref name="Order"/> is the layer's position in the core's own published draw order — the
+/// core sorts the array through <c>sortCompositorRenderPlan</c> before publishing it, so index 0
+/// is the bottom-most (background) layer. It is derived from that ordering, not a per-layer order
+/// value on the wire.
+///
+/// GEOMETRY IS ABSENT ON PURPOSE. The core publishes exactly four fields per layer
+/// (native/src/core/RenderedProgramSources.h: layerId, sourceId, participantId, kind); rect, fit
+/// mode, opacity/alpha and the fill colour for sourceless layers are held on
+/// <c>CompositorRenderPlanLayer</c> inside the core and never reach the wire. The one exception is
+/// the <c>tiles</c> node, which publishes a rect per member — visible through GET /snapshot.
+/// Adding geometry here would require the core to publish it, which is a native change.</summary>
+public sealed record ControlProgramVideoSource(
+    string LayerId,
+    string SourceId,
+    string ParticipantId,
+    string Kind,
+    int Order);

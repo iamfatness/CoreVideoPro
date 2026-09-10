@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -532,6 +533,12 @@ struct OutputSession {
   // previously visible only in stderr logs.
   int64_t encoderQueueDroppedVideoFrames = 0;
   int64_t encoderQueueDroppedAudioPackets = 0;
+  // Video shed while the recording writer was still applying its SYNCHRONOUS
+  // open (95-250ms on Windows). Kept out of encoderQueueDroppedVideoFrames for
+  // the same reason recordingStartupDroppedAudioPackets is kept out of the
+  // audio counter: it is a clipped head, not steady-state loss, and folding the
+  // two together made every clean run report drops to a fail-closed judge.
+  int64_t recordingStartupDroppedVideoFrames = 0;
 };
 
 // One selected ISO source at recording start: the canonical id + the roster
@@ -578,6 +585,37 @@ struct RecordingSessionRequest {
   bool programNv12 = false;
 };
 
+// PR19 supervisor state for one destination. Declared here (rather than in the
+// supervisor header) only because it rides on OutputSender; the supervisor owns
+// every value in it.
+struct OutputSupervisorState {
+  // Monotonic per-destination run generation. Bumped on every restart and on
+  // every operator re-arm, so a stale event from a retired child is rejectable.
+  std::uint64_t generation = 0;
+  // FRESH evidence at read time: accepted units advanced within the staleness
+  // budget. Never a latch, never "we launched it".
+  bool healthy = false;
+  // The ladder ran out (or the failure was terminal). The destination stays
+  // published as failed until an operator re-arms it.
+  bool gaveUp = false;
+  int consecutiveFailures = 0;
+  int restarts = 0;
+  std::int64_t nextAttemptInMs = 0;
+  std::int64_t lastProgressAgeMs = -1;  // -1 = nothing has ever been accepted
+  std::int64_t acceptedUnits = 0;
+  // Evidence discarded because it belonged to a retired generation, and replies
+  // discarded because they were malformed. Both are counted rather than hidden.
+  std::int64_t staleEventsRejected = 0;
+  std::int64_t malformedObservations = 0;
+  std::string failureClass = "none";  // none | retryable | terminal
+  std::string reason;
+  // TRUE = this destination's media path runs inside corevideo-native.exe and a
+  // wedge in it cannot be released (NDI today). Published so the residual risk
+  // is visible in a bundle instead of being an implementation detail.
+  bool inProcessRisk = false;
+  bool interruptible = false;
+};
+
 struct OutputSender {
   std::string senderId;
   std::string destination;
@@ -601,6 +639,23 @@ struct OutputSender {
   std::string sendArtifactPath;
   int64_t sendBytesWritten = 0;
   std::string runtimeDetail;
+  // PR22: every destination carries a lifecycle and a terminal outcome. Before
+  // this an RTMP/SRT/NDI stream that died mid-show had NOTHING an operator or a
+  // support bundle could read as a state — only free-text adapter status
+  // strings that no consumer agreed on. Recording had per-stream outcomes;
+  // senders had none. Populated centrally by MediaCore from the pure
+  // core::SenderLifecyclePolicy, so the three adapters keep exactly one status
+  // machine each instead of gaining a second.
+  std::optional<contracts::OutputLifecycle> lifecycle;
+  // PR19: the output supervisor's view of this destination — its process/run
+  // generation, whether it is healthy on FRESH evidence (accepted units
+  // advancing, not a launch), where it sits on the restart ladder, and whether
+  // its media path is actually isolated from ours. Published verbatim into
+  // sessionState so a support bundle from a machine we cannot see says which
+  // destination failed, how often, and why we stopped restarting it.
+  // Populated by modules::SupervisedOutputSender; absent when a build wires an
+  // output sender without a supervisor (unit tests, the synthetic sender).
+  std::optional<OutputSupervisorState> supervisor;
 };
 
 struct OutputSenderSession {

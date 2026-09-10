@@ -3,6 +3,7 @@
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/IsolatedOutputSender.h"
+#include "modules/OutputDestinationSupervisor.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
@@ -132,7 +133,8 @@ CompositorRenderPlan validateRenderPlan(CompositorRenderPlan renderPlan) {
       layer.rect.width = 0.f;
       layer.rect.height = 0.f;
     }
-    if (!compositorLayerIsOverlay(layer) && layer.participantId.empty() && layer.sourceId.empty()) {
+    if (!compositorLayerIsOverlay(layer) && !layer.hasFillColor &&
+        layer.participantId.empty() && layer.sourceId.empty()) {
       addWarning(warnings, "Scene layer " + layerLabel + " has no source binding.");
     }
   }
@@ -593,8 +595,18 @@ class CompositeOutputSender final : public IOutputSender {
       std::vector<std::string> supported = {})
       : senders_(std::move(senders)), supportedDestinations_(std::move(supported)) {}
 
-  void enableIndependentWriters() {
-    for (auto& sender : senders_) sender = std::make_unique<AsyncOutputSender>(std::move(sender));
+  // One writer thread per protocol, and (PR19) one SUPERVISOR per protocol
+  // outside it. Order matters and is the isolation argument: the supervisor
+  // must sit OUTSIDE the async writer, so every call it makes lands on the
+  // non-blocking queue rather than on a wedged FFmpeg pipe or libNDI send. See
+  // the header comment in OutputDestinationSupervisor.h.
+  void enableIndependentWriters(bool supervised = true) {
+    for (auto& sender : senders_) {
+      sender = std::make_unique<AsyncOutputSender>(std::move(sender));
+      if (supervised) {
+        sender = std::make_unique<SupervisedOutputSender>(std::move(sender));
+      }
+    }
   }
 
   OutputSenderSession sync(

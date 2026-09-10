@@ -1,6 +1,8 @@
 ﻿#include "compositor/CompositorLayout.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
+
+#include "EncoderCapacityProbeTestSupport.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
@@ -3595,6 +3597,9 @@ TEST(HardwareEncoderAdapter, FactoryIsDisabledUnlessMediaFoundationGateIsEnabled
 
 TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArmed) {
 #if COREVIDEO_WITH_MF_ENCODER
+  // Pin an ample machine: this test is about the MP4 artifact, and the live
+  // capacity probe is asynchronous and GPU-dependent.
+  const corevideo::testing::ForcedEncoderCapacity ampleCapacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   ASSERT_NE(encoder, nullptr);
   const auto started = encoder->start({"recording"}, {"participant-1"});
@@ -4414,6 +4419,77 @@ TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {
   EXPECT_EQ(preview->get("layerCount")->asNumber(), 3);
   // Multi-layer preview runs the dedicated third composite (not the single-source path).
   EXPECT_TRUE(preview->get("composite")->asBool());
+}
+
+TEST(MediaCoreCommand, PublishesAlwaysOnRealtimeWorkerEvidenceWithoutVerboseLogging) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.reportRenderDeadlineMisses(5);  // legacy aggregate also includes skipped slots
+  mediaCore.reportRenderWorkerStarted();
+  mediaCore.reportRenderWorkerProgress(7, 2, 3, 1'500'000, 20'000, 40'000, 5'000);
+  mediaCore.reportAudioWorkerStarted();
+  mediaCore.reportAudioWorkerProgress(900'000);
+  mediaCore.reportAudioWorkerReanchor(510'000'000);
+  mediaCore.reportVideoOutputWorkerStarted();
+  mediaCore.reportVideoOutputWorkerProgress(2'000'000);
+
+  const auto state = mediaCore.sessionState();
+  const auto* evidence = state.get("realtimeEvidence");
+  ASSERT_NE(evidence, nullptr);
+  EXPECT_EQ(evidence->getString("metricVersion"), "realtime-worker-evidence-v1");
+  const auto* render = evidence->get("render");
+  ASSERT_NE(render, nullptr);
+  EXPECT_TRUE(render->get("observed")->asBool());
+  EXPECT_EQ(render->getNumber("completedSlots"), 7);
+  EXPECT_EQ(render->getNumber("skippedSlots"), 2);
+  EXPECT_EQ(render->getNumber("deadlineMisses"), 3);
+  EXPECT_EQ(render->getNumber("workMaximumNs"), 40'000);
+  EXPECT_FALSE(render->get("gpuCompletionVerified")->asBool());
+  EXPECT_FALSE(render->get("deliveryVerified")->asBool());
+  const auto* audio = evidence->get("audio");
+  ASSERT_NE(audio, nullptr);
+  EXPECT_EQ(audio->getNumber("completedTicks"), 1);
+  EXPECT_EQ(audio->getNumber("pacerReanchors"), 1);
+  EXPECT_EQ(audio->getNumber("discardedTimelineNs"), 510'000'000);
+  const auto* videoOutput = evidence->get("videoOutput");
+  ASSERT_NE(videoOutput, nullptr);
+  EXPECT_EQ(videoOutput->getNumber("completedTicks"), 1);
+  EXPECT_GE(render->getNumber("progressAgeMs"), 0);
+  EXPECT_EQ(state.get("health")->getNumber("renderDeadlineMisses"), 5);
+}
+
+TEST(MediaCoreCommand, TakeTransitionTracksOneEdgeTriggeredOperationToCompletion) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"},
+      {"sceneId", "outgoing"},
+      {"routes", corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"routeId", "old"}, {"mode", "fixed"}, {"participantId", "p1"}}
+      }}
+  });
+
+  const auto active = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "begin-take-transition"}, {"operationId", "take-7"},
+          {"revision", 7}, {"mode", "fade"}, {"durationMs", 300}},
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "incoming"},
+          {"routes", corevideo::rpc::Json::Array{
+              corevideo::rpc::Json::Object{{"routeId", "new"}, {"mode", "fixed"}, {"participantId", "p2"}}
+          }}
+  }});
+  const auto* activeTransition = active.get("takeTransition");
+  ASSERT_NE(activeTransition, nullptr);
+  EXPECT_EQ(activeTransition->getString("operationId"), "take-7");
+  EXPECT_EQ(activeTransition->getString("mode"), "fade");
+  EXPECT_EQ(activeTransition->getString("status"), "active");
+  EXPECT_EQ(active.getString("sceneId"), "incoming");
+
+  const auto complete = mediaCore.applyCommands({}, 1000.0);
+  const auto* completedTransition = complete.get("takeTransition");
+  ASSERT_NE(completedTransition, nullptr);
+  EXPECT_EQ(completedTransition->getString("status"), "completed");
+  EXPECT_EQ(completedTransition->get("progress")->asNumber(), 1.0);
 }
 
 TEST(MediaCoreCommand, PreviewSceneSingleSourceStillCompositesAndDedups) {

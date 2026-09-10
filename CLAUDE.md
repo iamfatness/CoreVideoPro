@@ -122,6 +122,43 @@ all REQUIRED — any gap hard-fails (never a silent unsigned artifact). `-DryRun
 prints the resolved plan; tests: `scripts/tests/test-sign-native-msix.ps1`. Full
 env contract in the script header and `docs/beta-engineering-spec.md` §D2.
 
+## Observing a RUNNING core: `GET /snapshot` (2026-09-09)
+
+`GET http://127.0.0.1:8011/snapshot` serves **the core's own sessionState JSON**, verbatim,
+from the snapshot the shell already holds. It exists because `ControlState` forwards only a
+handful of hand-picked `Native*` fields and the typed `NativeMediaCoreStateSnapshot` binds only
+what the shell consumes — encoder evidence, real-time worker evidence, the program buffer,
+tiles, multiviewer, browser sources and ~40 other nodes were parsed and dropped. A qualification
+judge can now watch the core the operator is actually running instead of spawning its own.
+
+- **How it flows.** `CoreProtocolParser` / `MediaCoreSupervisor` tag every parsed snapshot with
+  `RawJson` + `RawReceivedUtc` (`[JsonIgnore]`, in-process only). **Both** sync paths must tag:
+  a real core answers with a WIRE state that is mapped onto a *synthesized* base
+  (`NativeMediaCoreStateMapper`), so tagging only `TryParseSyncSnapshot` leaves the live path
+  with no raw at all — that is exactly the bug this endpoint was first caught by.
+  `StudioControlSurface` (an `INativeSnapshotObserver`) reads the reference the bridge already
+  publishes: no core round-trip, no UI marshal, no render-path lock.
+- **Envelope.** Always states `available`, `receivedUtc` (shell receipt), `servedUtc`, `ageMs`
+  and `stale` (>2s). Absent / synthesized / unparseable snapshots answer `available:false` with
+  a `reasonCode`, never something that reads as current.
+- **Auth.** Same rules as every other route — loopback needs none, a LAN bind (`"+"`) refuses to
+  start without `COREVIDEO_CONTROL_TOKEN`. No new unauthenticated surface.
+- **Redaction** (`CoreSnapshotObserver`, tests in `CoreSnapshotObserverTests`): applied at the
+  observation boundary, not per tick. It **walks the JSON** and filters each string value through
+  `SupportBundleLogRedactor` + drops secret-NAMED values. Do not run that redactor over the
+  document as text: its rtmp rule is greedy over non-whitespace, so one URL in a `lastError`
+  eats the closing quote and the properties after it. Name matching is by suffix
+  (`…Key/Token/Secret/Password/Passphrase/Jwt/Zak`) so `keyPhase`/`keyer`/`keyPosition` survive.
+  Audit result: the snapshot carries **no** stream keys or passphrases (destination settings are
+  inputs; the RTMP/SRT adapters already publish `redactedEndpoint`), but it does carry adapter
+  free text that could quote one, operator browser-source URLs, and recording paths — paths are
+  deliberately kept, matching the support bundle's "ISO paths are not secrets".
+- **Per-layer geometry does not exist on the wire.** `RenderedProgramSources.h` publishes exactly
+  `layerId/sourceId/participantId/kind`; rect / fit / opacity / fill colour live on
+  `CompositorRenderPlanLayer` inside the core and are never serialized. `ControlProgramVideoSource`
+  adds `order` (the index in the core's already-sorted publish order). Only the `tiles` node
+  carries a rect per member. Adding real geometry is a **core** change.
+
 ## Testing multi-participant WITHOUT a real meeting (important)
 
 ### Current test-meeting authorization (2026-09-06)
@@ -182,6 +219,234 @@ Rules of thumb: never replace a bound collection at frame rate (sync in place / 
 keep one stable swap chain per surface (program, preview, one multiview);
 present with **skip-present** (only on a new keyed-mutex frame) — smooth-present crashes
 ~31s in.
+
+## D3D device loss is RECOVERED, by generation (beta slice, 2026-09-09)
+
+The shared device (`Direct3D11InteropService.s_sharedDevice`) can die mid-show — a TDR, a
+driver upgrade, a hardware fault. It used to die **permanently**: the present threw,
+one host dropped to CPU fallback, and nothing ever cleared `s_sharedDevice`, so
+`EnsureDevice` kept returning true for a dead device and EVERY surface stayed on CPU
+until the app restarted. Nothing in the tree called `GetDeviceRemovedReason`, so the log
+never named the cause. On a tester's machine that is a silently degraded show we cannot
+diagnose. Now:
+
+- **Classification is pure and tested** (`Services/DeviceLossPolicy.cs`,
+  `DeviceLossPolicyTests`): only `DXGI_ERROR_DEVICE_REMOVED`/`DEVICE_RESET` — or a
+  negative `GetDeviceRemovedReason` — retire the device. Everything else
+  (`WAS_STILL_DRAWING`, occlusion, a resource-pressure create failure, a stale shared
+  handle) keeps the existing per-handle invalidation path. `PresentationAttempt` is
+  unchanged.
+- **Retirement is a GENERATION bump, never ad-hoc field clearing.** `RetireDevice` is a
+  no-op for an already-retired generation, so a late callback from the dead device cannot
+  resurrect anything. It disposes the whole `HandleIngest` map and drops the device/context
+  RCWs — it does NOT dispose them, because other hosts' swap chains still hold native refs.
+  Each host rebuilds its swap chain when it adopts the new generation (a CREATE — **still
+  never `ResizeBuffers`**), and clears `_invalidHandles`, since a handle blacklisted against
+  the dead device is usually fine against the new one.
+- **Recovery is automatic and BOUNDED.** No restart needed: the next
+  `CompositionTarget.Rendering` tick past the backoff deadline recreates the device and GPU
+  presentation resumes. `DeviceLossPolicy.DeviceRecoveryPolicy` is the same shape as
+  `ShowEngineRestartPolicy`/`MediaCoreSupervisor`/`BrowserHostRestartPolicy`/
+  `PluginHostRespawnPolicy` — 250ms→1s→2s→5s→10s→30s, **give up after 5 consecutive
+  failures**, 60s of healthy presenting resets the budget. Recreation never runs inline on
+  the failing frame (that frame just drops to CPU), so the UI thread never eats a
+  device-create stall on the same tick it already lost.
+- **What a tester's log shows** (launch.log, which the support bundle already collects):
+  `d3d: DEVICE LOST context=… generation=N->N+1 removedReason=0x887A0006 (DEVICE_HUNG …)
+  totalLosses=K`, then `d3d: device recovery attempt K scheduled in Nms`, then either
+  `d3d: DEVICE RECOVERED generation=… recreates=… losses=…` or
+  `d3d: DEVICE RECOVERY ABANDONED after 5 consecutive failures …`. The per-vsync "no device"
+  line is throttled to 5s so it can't roll the diagnosis out of the bundle.
+- **Unproven, honestly:** no real TDR was provoked (deliberately). The GPU-side ordering is
+  reasoned + reviewed, not executed; only the classify-and-decide half is test-covered.
+
+## Fault-injection seams (beta slice, 2026-09-09) — how to prove stability work
+
+Gates G2 and G3 in `docs/production-realtime-execution-plan.md` (on the PR #419 branch) are written in terms of
+injected faults, and until now nothing in this tree could inject anything, so neither
+could be attempted. There are now three seams. **All three are test-only, and the guard
+is structural, not conditional compilation** — `corevideo-native-tests` links the same
+`corevideo_native` library the product does, so a compile-time gate would delete the seam
+from the tests too. The guarantee is the same one
+`MediaCore::setStillImageDecoderForTest` already relies on: no env var, no command, no
+config key, no wire field reaches any of them, and nothing outside `native/tests/` or
+`CoreVideoPro.WinUI.Tests` calls them.
+
+- **Forced device loss + blocked present** (shell):
+  `native-shell/CoreVideoPro.WinUI/Services/PresentationFaultInjection.cs`. `internal`
+  (the WinUI assembly's only `InternalsVisibleTo` is the test project) AND arming refuses
+  unless `CoreVideoPro.WinUI.Tests` is loaded in the process — a positive check that fails
+  closed. The present hot path reads exactly one static bool. Arming returns an
+  `IDisposable` that disarms, and a blocked present ALWAYS carries a hard timeout: a seam
+  that can wedge the process it exists to diagnose is not a diagnostic.
+- **Blocked monitor render** (core): `native/src/compositor/CompositorFaultInjection.h`,
+  consulted at the top of `D3D11Compositor::renderMultiview` / `renderPreview`. One
+  relaxed atomic bool per monitor pass; the stall is a plain function pointer, so arming
+  allocates nothing and null is the disarmed state.
+
+**What the seams proved, and what they did not:**
+
+- **Device-loss recovery survives a real injected loss.** `PresentationFaultInjectionTests`
+  drives the real `Direct3D11InteropService` against a real D3D11 device: the loss is
+  classified, the generation is retired, the bounded ladder schedules, a real
+  `D3D11CreateDevice` runs at the 250ms rung (measured 266ms), the host adopts the new
+  generation, its per-generation handle blacklist is cleared, and the loss report is
+  accurate. A second host observing the same loss does NOT spend a second ladder rung.
+  **Still unproven:** the swap-chain rebuild and on-screen GPU presentation — a
+  `SwapChainPanel` is a XAML object and the test host runs with the Windows App SDK
+  bootstrap disabled, so no panel can exist there. That last hop needs the app.
+- **A blocked present still blocks UI control** — presents run on the UI thread from
+  `CompositionTarget.Rendering`, so the property G2 wants is FALSE today, and no test can
+  make it come out otherwise while that is the shape. What is proven is that the
+  DIAGNOSIS is independent: `PresentationStageWatchdog` names the stalled stage from its
+  own thread while the present is still stuck. `BlockedPresentFaultTests` pins the
+  structural gap, so moving presents off the UI thread fails a test that says to come back
+  and prove the real property.
+- **Program is NOT isolated from monitor rendering.** `MonitorRenderFaultInjectionTest`
+  measured it on this rig (RTX 4090, 1080p Program + 720p Preview, 3-frame buffer): with
+  no fault, 121 produced / 124 delivered / 4 underruns per 2s; with a sustained 25ms
+  Preview stall, 65 / 65 / 64 — **a Preview compositor overrunning by one and a half frame
+  periods costs Program HALF its frames.** Program `render()`, `renderMultiview()` and
+  `renderPreview()` share one render thread and one D3D immediate context. A one-off stall
+  costs only the slots it spans and Program recovers on its own. **The program buffer does
+  not help here** — it protects delivery timing for frames that were produced, and these
+  frames were never rendered. The monitor-compositor split in
+  `docs/production-realtime-completion-plan.md` (on the PR #419 branch) is what would give G2 its property; the
+  sustained-stall case must be INVERTED when that lands, not deleted.
+
+## One destination failing cannot take the show down (beta slice, PR19 — output supervisor)
+
+Each network destination now has a supervisor with **a generation, a health signal and a
+bounded restart policy**. It is a decorator that sits OUTSIDE the per-protocol async writer:
+
+```
+CompositeOutputSender -> SupervisedOutputSender -> AsyncOutputSender -> RTMP / SRT / NDI adapter
+```
+
+**Outside, not inside — that is the entire isolation argument.** Every call the supervisor
+makes lands on `AsyncOutputSender` (enqueue-and-return; `session()` is a cached snapshot),
+so a wedged FFmpeg pipe or a blocked libNDI send cannot block the supervisor, the control
+path, or a sibling destination. Restarts run on the supervisor's own thread — never the
+render tick, never under `coreMutex`, the same reason `BrowserSourceHostAdapter` spawns on
+its own supervisor thread.
+
+- **The ladder is the HOUSE ladder** (`modules/OutputDestinationSupervisorPolicy.h`), adopted
+  verbatim from `BrowserHostRestartPolicy` / `PluginHostRespawnPolicy` / `ShowEngineRestartPolicy`
+  / `MediaCoreSupervisor`: 5→10→20→40→60 s, **give up after 5 consecutive failures**, reset the
+  budget after a healthy RUN, and an operator reset (`recover`) always clears give-up.
+- **HEALTHY = accepted units advancing, re-evaluated at read time.** `framesSent +
+  audioFramesSent` is the only number that can only move when the transport actually took
+  bytes from us. A launched FFmpeg child, a non-null `NDIlib_send_create`, or a status string
+  reading "live" are all LAUNCHES, and each has been observed to survive the destination
+  dying. Rule 7, at the exact point it was ignored.
+- **Three budgets, three questions, and they are deliberately different numbers.**
+  1000 ms = "is it producing right now?" (the SAME declared value as
+  `core::kProducingProgressStaleMs` / the qualification judge's `encoderQueueAgeMs`, so health
+  and the truthful lifecycle cannot drift apart); 5000 ms = "is it coming back on its own?"
+  — restarting an encoder over a 1.2 s hiccup costs a reconnect and a keyframe for nothing;
+  30 s = "has it earned its budget back?"; 15 s = "did it ever come up at all?".
+- **Generations are checked by OBJECT IDENTITY, not a counter** (`DestinationEventStamp`
+  carries a `weak_ptr` to the run token). `ShowEngineSupervisor`'s stated reason applies
+  exactly: a number-only guard reds nothing when the child object is swapped, and a retired
+  FFmpeg child's last snapshot would otherwise vouch for the generation that replaced it.
+- **A terminal failure BYPASSES the ladder.** The show engine's exit 78 is the model: an
+  unreachable endpoint is retryable, an inadmissible configuration is not.
+  `isTerminalResultCode` names them (`endpoint-missing`, `rtmp-settings-{missing,invalid}`,
+  `source-name-invalid`, `runtime-missing`, `ffmpeg-missing`, `*-output-unavailable`), and an
+  **unknown code is RETRYABLE** — guessing "terminal" would silently stop protecting a
+  destination, which is the failure this exists to prevent.
+- **Give-up is LOUD, never a private opinion.** The supervisor rewrites the published sender
+  record to `status: failed` / `lastResultCode: "supervisor-gave-up"` with its reason, so
+  `core::SenderLifecyclePolicy` (which reads `status`/`destinationHealth`) reports it as
+  failed everywhere downstream. There is no second status machine.
+- **It reaches a support bundle.** `outputSenders.senders[].supervisor` carries generation,
+  healthy, gaveUp, consecutiveFailures, restarts, nextAttemptInMs, lastProgressAgeMs,
+  acceptedUnits, staleEventsRejected, malformedObservations, failureClass, reason — and
+  `/snapshot` serves `sessionState` verbatim, so it is visible immediately.
+- **NDI's residual risk is PUBLISHED, not fixed.** `destinationIsolationTraits()` is the one
+  place that says which destinations are actually contained: RTMP/SRT are out-of-process
+  FFmpeg children in a job object and `interrupt()` ends them; **NDI is in-process** (runtime
+  `Processing.NDI.Lib.x64.dll`, `send_send_video_v2` on the writer thread with `clock_video`
+  set) and **implements no `interrupt()` at all**, so a wedged libNDI send can be detected,
+  published and escalated but NOT released — the writer is detached after
+  `AsyncOutputSender`'s 2 s grace and leaks until exit. Moving NDI out of process is PR 20/28.
+  An UNKNOWN destination is assumed unprotected; never claim isolation that was not established.
+
+Tests: `native/tests/OutputDestinationSupervisorTest.cpp` — the ladder, the health rule, and
+a deterministic in-process fault host covering hang, crash, malformed reply, IPC disconnect,
+stale completion, restart, terminal failure, and off-caller-thread action.
+
+**Build gotcha this shipped with:** widening `OutputSender` (in `Interfaces.h`, included
+almost everywhere) while another agent was building in the same `native/build-dev` left a
+test TU compiled against the OLD struct. The symptom was NOT a link error — it was
+`FAST_FAIL_STACK_COOKIE_CHECK_FAILURE (0xC0000409)` inside a test that stack-constructs
+`MediaCore`, at a different point on each run, which reads exactly like a heap race in
+someone else's code. **After changing a widely-included struct, rebuild with `--clean-first`
+before believing any crash you see.**
+
+## Destination lifecycle is TRUTHFUL, and Stop does not claim completion (beta slice, PR22)
+
+Every output destination — the recording writer and each RTMP/SRT/NDI sender — reports
+one contract state machine, and it is decided from evidence, never from a request:
+
+```
+requested -> preparing -> producing -> stopping -> finalizing -> completed | failed | interrupted
+```
+
+Three things changed, each of which was a lie an operator could read:
+
+- **Stop used to report success before the work was done.** `MediaCore::stopRecordingSession`
+  assigned `recordingStatus_ = "stopped"` **immediately**, before it had even called
+  `encoder->stopRecording()`. The RPC returned there — so the operator was told the
+  recording had finished while the FIFO barrier was still draining and the moov atom had
+  not been written. The truth lived only in `recording.lifecycle`, and the two fields
+  disagreed for the whole finalize window. Stop now reports that stopping has **begun**
+  (`status: "stopping"`, `writerStatus: "finalizing"`), and the terminal state arrives from
+  the writer thread when the barrier has drained and finalization has actually succeeded or
+  failed. **The RPC still does not block** — the asynchronous finalization was always
+  correct, and `scripts/validate-recording-finalization.mjs` proves it completes with the
+  core alive. Only the lying field was fixed.
+- **`recording.status` / `recording.writerStatus` are now PROJECTIONS of the lifecycle**
+  (`core::publishedRecordingStatus` / `publishedRecordingWriterStatus`, pure and tested), so
+  they cannot contradict it again. `recordingStatus_` survives as the internal desired-state
+  gate that the render gather and the idempotent-start dedup read — it is not, and never
+  was, evidence of what the writer is doing. New values: `stopping`, `starting`,
+  `interrupted`, `idle` (and `opening`/`finalizing`/`stalled` on the writer side).
+- **`producing` REQUIRES FRESH PROGRESS.** The old `live` was latched the moment a request
+  produced its first frame and was never re-examined, so a wedged writer reported healthy
+  for the rest of the show. `AsyncEncoderSink::session()` now re-decides the active state
+  against the clock at **READ** time — which is the only thing that works, because a writer
+  blocked inside the wrapped sink applies no further items and therefore publishes no
+  further snapshots. A destination whose last observed progress is older than the budget
+  decays to `interrupted`, and returns to `producing` when real progress resumes.
+  **The budget is not a new number:** it is
+  `scripts/qa/runtime-snapshot-qualification.mjs` `DEFAULT_RUNTIME_POLICY.encoderQueueAgeMs`
+  (1000 ms), reused so there is one declared definition of "the encoder has stopped moving".
+
+**Senders have a lifecycle now.** `OutputSender.lifecycle` (snapshot
+`outputSenders.senders[].lifecycle`) gives every destination a state and a terminal
+outcome. It is computed centrally in `MediaCore::evaluateSenderLifecycle` from the pure
+`core::SenderLifecyclePolicy`, so RTMP/SRT/NDI keep exactly ONE status machine each instead
+of gaining a second. Two traps encoded there: **`lastError` is sticky history, not current
+state** (a genuinely streaming SRT sender still carries its first-tick "waiting for composed
+BGRA program pixels" — treating that as failure reports every live stream as broken; failure
+is `status`/`destinationHealth`), and freshness is sampled between snapshot reads, so a dead
+sender decays within one poll interval of the budget, not instantly.
+
+**The decision logic is pure and testable without a writer** — `native/src/core/OutputLifecyclePolicy.h`,
+the `CaptureReaderStallPolicy`/`NativeUvcCapturePolicy` shape, covered by
+`native/tests/OutputLifecyclePolicyTest.cpp` plus two integration tests in
+`AsyncEncoderSinkTest.cpp`: a writer wedged inside the wrapped sink decays out of
+`producing` and recovers, and Stop never claims completion until finalize returns.
+
+**It reaches a support bundle**, which is the point — `SupportBundleBuilder` projects both
+the recording lifecycle and every sender lifecycle (redaction-safe: `Error` rides the same
+endpoint filter), and triage names a failed/interrupted destination, a bundle exported
+during the finalize window, and a stream that ended without sending media.
+
+**Contract:** `starting`/`live` remain in the `OutputLifecycle` enum as the RETIRED names so
+a newer consumer can read an older core; new producers must not emit them. Absent lifecycle
+means UNKNOWN, never healthy. Vocabulary and rules: `contracts/README.md`.
 
 ## Live-meeting QA day (2026-08-09) — eight defects found in ONE real session
 
@@ -314,6 +579,140 @@ comment at the code site; this is the index.
   dark-grey slab on macOS; named in a comment at the site, owned by
   `docs/corevideo-tiles-iso-scaling-plan.md` implementation slice 3 (Metal parity).
 
+- **A TILES WALL TAKEN FROM PREVIEW IS CUT TO, NEVER REDRAWN (owner report,
+  live show 2026-09-09).** "I am ok if panelists leave and join the video but
+  what I can't have is a total rerender from what is in preview to program like
+  it is loading for the first time." The wall key is `sceneId + ":" + layerId`
+  and the layer id is derived from the scene id, so the SAME gallery has the
+  SAME key on both buses — `MediaCore` holds two animation objects
+  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one used
+  to reset its animator the moment the key it had never held arrived. Two
+  corrections, both in `compositor/TilesPlanAnimation.h`:
+  `adoptSettledFrom()` MOVES a settled wall's state from preview to program on
+  the take tick (exact key match + every sampled tile `atRest` only; the source
+  is reset, never aliased, so the next wall cued in preview starts clean), and
+  `advance()` no longer samples an EMPTY target set for a wall that is still
+  present and has already drawn tiles. That second one is what actually produced
+  the reported replay: an all-stale beat (`kTilesStaleFrameMs`, an ordinary
+  state — see the empty-plan rule above) erased every retained tile AND consumed
+  the animator's adoption, so the instant frames returned the whole wall faded in
+  from alpha 0. A COLD wall's first tick is untouched, so a wall that was never
+  in preview behaves exactly as before. Not a contributor, measured: preview and
+  program share one device and one `sourceTextures_` cache keyed by
+  `participantId` (`D3D11CompositorAdapter`), so tile textures are already warm
+  across a take. Tests: `TilesRenderPlan.AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame`,
+  `AWallTakenWhileItsFramesLapseIsStillCutToNotRedrawn` (fails without the fix),
+  `AWallThatWasNeverInPreviewIsHandedNothing`, plus three `TilesAnimator.*`
+  hand-off unit tests.
+  **The wall's LIVE BACKGROUND had the same defect and needed a different fix
+  (same show, follow-up report: "Tiles background still refreshing on cut to
+  program, that should be seamless").** The wall emits TWO background layers:
+  `tiles-bg:<layerId>`, a sourceless solid, emitted unconditionally above the
+  admission gate (safe — it depends only on `!sceneBackground.enabled`, which is
+  parsed from the scene payload and cannot move across a take); and
+  `tiles-source-bg:<layerId>`, the live background FEED, which rode
+  `admitTilesMembers` — the SAME 1500 ms `kTilesStaleFrameMs` gate the tiles go
+  through. So one beat of the background source's frameId not advancing dropped
+  the layer entirely, program fell through to the solid colour or the scene
+  background, and the picture popped back when frames resumed. The gate is now
+  `compositor::tilesBackgroundSourceIsDrawable`, which asks the question that
+  applies to a BACKDROP instead: is a real-content frame for this source in this
+  tick's gather (`TilesMemberFrameAge::hasFrame`)? A stale TILE is still refused
+  — it occupies a slot, and holding it seats a dead guest — but a stale
+  BACKGROUND competes with nothing, and a backdrop frozen for a beat is
+  indistinguishable from a live one where its absence is a full-frame colour
+  change on air. `kTilesStaleFrameMs` is deliberately NOT widened: it is shared
+  with tile admission and moving it changes wall membership for every source.
+  The hold is EVIDENCE, not memory — there is no retained layer and no per-bus
+  state, so a source that never arrived or has departed keeps today's behaviour
+  exactly and the two buses cannot contaminate each other through it. That
+  matters concretely: a `participant-video` layer whose sourceId resolves to no
+  frame renders a solid `colorFromParticipantId()` slab OVER the wall background
+  (`resolveLayers`), which is worse than the pop; and the layer always carries a
+  non-empty participantId, so `RouteSourcePolicy`'s positional-fallback hazard
+  stays unreachable. Tests: `TilesRenderPlan.AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat`
+  (the live wall harness, using the new `LiveWallCaptureDevice::freeze()` — a
+  frozen feed still DELIVERS with a held frameId; `pause()` is the harsher
+  no-frame case) and `AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated`.
+  Both fail without the gate change.
+  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTS AND THIS FIX CANNOT TOUCH IT.**
+  `ZoomMediaSpinePayloadBuilder` assigns each video subscription a `purpose`
+  (active-speaker, then program routes, then preview routes, then roster order)
+  and caps the list at `maxVideoSubscriptions`. The core keys its
+  re-subscribe dedup on RESOLUTION, and resolution is `purpose == "active-speaker"
+  ? 1080P : 720P` — so a source flipping into or out of active-speaker is
+  re-subscribed at a new resolution, tearing down and rebuilding its engine
+  renderer. And because a Tiles scene serialises an EMPTY route list, a take
+  reorders the candidate list, which can push a source past the cap and
+  unsubscribe it outright. Either produces a real frame gap on the background
+  source, which reads exactly like this defect. The subscription UUID itself is
+  fine (`participant-video-<pid>-camera`, purpose deliberately excluded, so
+  Preview -> Program promotion alone never tears it down). UNPROVEN without a
+  live meeting: which of the two the owner is watching, and whether Zoom
+  re-subscribe churn on the taken members adds a third redraw.
+  **Both are now INSTRUMENTED, not fixed** (2026-09-10, see the next section).
+
+## A Take is traceable, and "what Program rendered" no longer lies (2026-09-10)
+
+Three things, all core-side, all born from the same live show. The first is a
+correctness fix; the other two are instruments, deliberately built before any
+further fix, because three of that night's wrong conclusions came from a
+measurement rather than from the product.
+
+- **THE RENDERED SCENE ID WAS STUCK, NOT LAGGING.** `programFrame.sceneId`
+  (snapshot) sat on the pre-take scene for 15+ seconds while Program was
+  demonstrably compositing the new one. Root cause, in `MediaCore::renderTick`'s
+  buffered branch: it attributed the snapshot from
+  `ICompositor::latestDeliveredProgramFrame`, which is a **PEEK** — the program
+  buffer hands back the same delivered frame on every call until its delivery
+  thread advances `latest_`, and `D3DProgramBuffer` deliberately refuses to
+  advance it when the export it is paired with was busy, and CLEARS it when a
+  packet expires. So "a frame came back" was never evidence Program moved, and
+  when nothing came back there was **no else branch at all** — the attribution
+  simply stopped being written and the old scene stood forever. The delivery
+  SEQUENCE is now what says a new frame reached air, and the rest is the pure
+  `core/RenderedSceneAttributionPolicy.h` (`OutputLifecyclePolicy` shape):
+  Follow a new delivery with plan evidence, Hold through <=12 ticks (200ms) of
+  delivery jitter, then Forget. `programFrame.sceneIdAttribution` publishes
+  `live`/`holding`/`unknown` unconditionally alongside
+  `sceneIdAttributionTicks` and `deliverySequence`, so the field can never again
+  assert a scene nothing confirmed. **Rule: a peek is not an observation** — if a
+  reader republishes the same value, key your freshness on a sequence the
+  producer advances, not on the call succeeding.
+- **ONE STRUCTURED RECORD PER TAKE**, per operator action and never per frame, so
+  it is on by default without flooding the bounded log. Armed in `loadSceneGraph`
+  when the scene id actually changes (Take is a client-side scene swap that sends
+  ONE sync, so that IS the take on this wire) and completed on the first program
+  render tick after it — the only place the "after" half exists. Carries scene id
+  and renderPlanId on both sides, the layer ids on both sides, the wall keys,
+  whether `TilesPlanAnimation::adoptSettledFrom` **adopted or reset**, whether the
+  wall's live background (`tiles-source-bg:`) made the first program frame, and
+  the subscription-churn delta across the take. `core/TakeRecordPolicy.h` turns
+  those into the one-word answer to "did the wall rebuild or cut" — and it will
+  NOT certify a clean cut when the background dropped or a subscription churned
+  in the same tick, because both look identical on air. Lands as a `[take]` line
+  in the bounded process log (which the support bundle already collects) and as
+  a bounded 8-deep `takeRecords` node in `sessionState`. The outgoing plan is
+  built once on the command thread; the render tick pays only a layer-id copy.
+- **SUBSCRIPTION CHURN IS MEASURED PER SOURCE.** `ZoomEngineRuntime` keeps a
+  ledger keyed by sourceUuid — a `generation` that increments on every real
+  (re)subscribe or teardown, a cumulative `churn` count, and the REASON
+  (`resolution-change` / `cap-eviction` / `departure` / `resubscribe`), decided by
+  the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
+  `sessionState().zoomSubscriptionChurn` (engine:false with empty arrays when there is
+  no engine — the multiviewer-node rule). Two things it is built to catch:
+  resolution is part of the subscription key and is `purpose == "active-speaker"
+  ? 1080P : 720P`, so an active-speaker flip is a genuine engine-side renderer
+  teardown; and a source dropped from the requested set is unsubscribed outright.
+  **The ledger deliberately SURVIVES the unsubscribe** — a record erased with the
+  subscription cannot answer the question it exists for — and is cleared only
+  where `sentSubscriptions_` is (leave / rejoin / a new engine process).
+  **The churn itself is NOT fixed. Do not fix it until the instrument has shown
+  how often it actually fires on a real show.**
+
+Tests: `native/tests/RenderedSceneAttributionTest.cpp` (the attribution defect
+red/green, the policies, and the take record end to end) and
+`ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
   "layer boxes show live video inconsistently". `VideoSurfaceHost` attaches a
@@ -428,6 +827,17 @@ comment at the code site; this is the index.
   engine actually delivered the rate you asked for (`COREVIDEO_FAKE_ENGINE_LOG`), and
   run `git status` before any measurement build — a stale tree answers a different
   question than the one you asked.
+  **The fake engine delivers ONE video stream per participant** (2026-09-09): it used
+  to keep its `participant-video-<id>-auto` stand-in alive alongside the app's explicit
+  `participant-video-<id>-camera` subscribe, so 3 participants ran 6 targets and every
+  participant got 2 x `COREVIDEO_FAKE_ENGINE_FPS` interleaved into one core slot
+  (`latestDecodedFrames_[participantId]`) — every fps number from the rig was
+  uninterpretable. An explicit subscribe now retires the auto target, and the
+  achieved-rate line states target count, participant count and per-participant fps
+  next to the configured source rate, so a 6-target log can never again be read as a
+  3-participant rate. Every fake-engine harness must PIN `COREVIDEO_FAKE_ENGINE_FPS`
+  (`mac-show-drill.py`, `qa/collect-runtime-snapshots.mjs`, `validate-iso-record.mjs`)
+  and print it — an unpinned run silently measures at the default 30.
   **The drill now enforces that "did the harness source the load" check itself**
   (2026-08-07): delivery is (frames the compositor saw)/(frames we ASKED for), so a
   harness that under-produces reads as the CORE losing frames. It said "only 51% of
@@ -438,6 +848,40 @@ comment at the code site; this is the index.
   hardware**: sizing CI down to `--load 3` scored *worse* (45.2fps vs 59.3), so shared
   runners cannot gate perf at any load. Run `--load 8` locally before shipping perf work
   — that is the real gate.
+  **The recorded-rate gate NAMES EVIDENCE, it does not assert a cause (2026-09-09).**
+  The drill used to hard-code "encoder->submit rides the ~50Hz audio worker" on that
+  failure. For Program video that is stale — the submit moved to the signalled video
+  tick and the audio-worker submit is guarded by `videoOutputTickRunning_`, which
+  `JsonRpcServer.cpp` sets true unconditionally in any real run — so the message was
+  pointing every reader at the wrong stage. It now prints a "Recording-window stage
+  rates" block on BOTH paths (compositor render slots/s, video-out tick/s, audio
+  worker tick/s, encoder programVideoWritten/s, render skipped/deadline misses,
+  encoder droppedVideo, program-buffer underruns/gpuNotReady, the recording proof's
+  `encoderQueueDroppedVideoFrames`, and the last full `[render]` window), sampled as
+  deltas from `realtimeEvidence`/`encoderEvidence` at both ends of the record window.
+  A compositor rate below 60 means the machine never produced 60; a compositor at 60
+  with a lower video-out/encoder/muxed rate means the loss is downstream.
+  `MIN_RECORDED_FPS_RATIO` is unchanged.
+- **`MonitorRenderFaultInjection.*` are TIMING MEASUREMENTS on a real GPU, not unit
+  tests.** They drive the real compositor on the real 60Hz production timeline and every
+  assertion is relative to an unfaulted baseline window measured moments earlier. That
+  baseline is a PRECONDITION, so `measureSettledBaseline` retries up to four windows
+  before giving up — but sustained contention (another build, a soak, a second test run)
+  can starve every attempt, and then the test fails for machine load rather than for the
+  property under test. Observed failing this way while an A/B soak had the box.
+  **Run them on a quiet machine**, and exclude them with
+  `corevideo-native-tests.exe --gtest_filter=-MonitorRenderFaultInjection.*` when the box
+  is busy. Same posture `mac-show-drill.py` already carries: a shared or loaded machine
+  cannot gate a timing property at any threshold. Do NOT "fix" a load failure by widening
+  the margin — that trades a flaky test for one that asserts nothing.
+- **The Wave 0 snapshot judge finally has a producer:**
+  `node scripts/qa/collect-runtime-snapshots.mjs --out capture.json [--seconds N]
+  [--interval-ms N] [--load N] [--recording]` runs its own core over stdio, samples
+  bare `{"type":"snapshot"}` on a DECLARED interval, and writes the
+  `{samples[], expectedWorkers, recordingExpected, policy}` envelope that
+  `production-qualification.mjs --runtime-snapshots` consumes. Full contract and the
+  two deliberate refusals (no fabricated `nativeNowMs`; never a quiet empty envelope)
+  are in `docs/qualification/WAVE-0.md`.
 - I420→RGB is a GPU HLSL shader in `D3D11CompositorAdapter.cpp`
   (`kCompositorYuvPixelShader`, BT.709 full-range). Zoom frames carry I420
   (`hasI420()`), NOT BGRA — any frame merge/match must check `hasI420()` too or Zoom
@@ -887,7 +1331,17 @@ MPEG-TS/SRT stream at us and it becomes an ordinary capture source.
   `videoFrames` keyed `capture:<deviceId>` — so scenes, multiview, ISO, recording and
   every sender treat it exactly like a camera. Decoders run under a **job object**
   (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) so a core crash can't orphan an ffmpeg still
-  holding the SRT port.
+  holding the SRT port. **The OUTPUT senders do the same, in their OWN job**
+  (`outputJobObject`/`adoptOutputChild` in `modules/RtmpOutputSenderAdapter.cpp`,
+  shared by RTMP and SRT egress plus the encoder-availability probe): an orphaned
+  EGRESS ffmpeg keeps PUBLISHING to a live destination after the app is gone, which
+  is worse than a held port. Separate jobs because ingest's is a file-local static in
+  another TU, and because outputs may later need group-killing without touching
+  ingest. Assignment is BEST EFFORT — a failure logs loudly and the stream still
+  starts. The job never kills anything on its own (the handle is a leaked
+  process-lifetime static), so `stopFfmpegProcess()` restarts are unaffected; the
+  replacement child is simply assigned to the same job. **Any new long-lived child
+  process spawned by the core must be adopted into a KILL_ON_JOB_CLOSE job.**
 - **Embedded audio is a SECOND output on the same ffmpeg** — `-map 0:a:0? -vn -f f32le
   -ar 48000 -ac 2` into a **Windows named pipe** the adapter serves
   (`\\.\pipe\corevideo-srt-ingest-audio-<pid>-<n>`; POSIX hands the child an inherited
@@ -1092,6 +1546,70 @@ before first frames, then silent. Companion audit: `WgcSession` was the ONLY fre
 callback in the capture layer — `UvcCaptureSession` owns its pull thread and signal+joins in
 its destructor — so the WGC teardown-drain fix closed that crash class everywhere.
 
+## Encoder capacity is PROBED, and the software spill is LOUD (beta slice, 2026-09-09)
+
+ISO encoder placement used to be planned against a hard-coded literal —
+`hardwareSessionLimit = 8, reserved = 1, hardware = true, software = true` — passed
+straight into `planIsoEncoders`. Every machine was told it had eight hardware encode
+sessions, and an over-subscribed one **spilled to the CPU software MFT in silence**:
+the only record was a `fallbackReason` in a manifest nobody opens. Beta testers have
+GPUs we have never seen, so that is exactly the unwitnessed failure this slice exists
+to remove.
+
+- **`modules/EncoderCapacityProbe`** replaces the literal. Per `(codec, width, height,
+  fps)` it names the DXGI adapter (description/vendor/device/LUID — a support bundle
+  now says which GPU), finds the hardware encoder MFT, and counts how many independent
+  sessions it can CREATE at that exact size and rate, taking each one to
+  `MFT_MESSAGE_NOTIFY_BEGIN_STREAMING` (where NVENC's driver-side limit is actually
+  enforced), plus whether an OS software H.264 MFT exists.
+- **The number is a CEILING, and says so** (`ceilingIsCreationProofOnly`).
+  `production-realtime-architecture.md:136` is explicit that hardware-session creation
+  is not proof of sustainable capacity, and this probe establishes creation and nothing
+  more. Never promote it to a guarantee without measuring sustained throughput.
+- **Two traps found on the rig, both now fixed in the probe, both would have produced a
+  confidently wrong answer:** a hardware encoder MFT is an ASYNC MFT and refuses
+  `SetInputType` with `MF_E_TRANSFORM_ASYNC_LOCKED` (0xC00D6D77) until
+  `MF_TRANSFORM_ASYNC_UNLOCK` is set — without it an RTX 4090 reported "no hardware
+  encoder"; and two probes running concurrently (the sink's default-profile prewarm and
+  the `configureRecording` prewarm) cannibalise each other's sessions, so probes are
+  **serialised process-wide**. Relatedly, "an MFT exists but not one session could be
+  created" is reported as an INCONCLUSIVE probe, never as "no hardware" — that shape is
+  contention far more often than incapability.
+- **Never on a hot path.** `lookup()` is a leaf-mutex map read and returns immediately;
+  a miss reports `pending` and kicks a detached background probe (the `startPluginHostScan`
+  / `StillMediaFrameCache` law). Prewarm happens at sink construction (default profile)
+  and at `configureRecording` (the real one), rate-limited to once a minute per workload
+  and **suppressed entirely while a recording is live** — the probe transiently occupies
+  encoder sessions and must never compete with a show. Cached per workload; the whole
+  cache is dropped when the DXGI adapter LUID changes (eGPU, driver reinstall,
+  switchable graphics). The singleton is deliberately leaked so a detached probe cannot
+  publish into a destroyed object at process exit.
+- **`modules/IsoEncoderAdmission` decides admit / warn / refuse** and is pure and
+  unit-tested (`IsoEncoderAdmissionTest.cpp`), in the `CaptureReaderStallPolicy` /
+  `DeviceLossPolicy` shape. Tracks with nowhere to go, or a spill bigger than the
+  machine's software budget, **refuse ISO before the show** — program still records,
+  same priority-1 treatment as the unwritable-folder refusal — with an ACTIONABLE
+  message naming how many ISO sources this machine is good for. A spill within budget
+  arms but rides `recording.warning`.
+- **THE TESTER RULE: we never refuse a show on an assumption.** If the probe is pending,
+  failed, disabled or unavailable, the capacity falls back to `assumedIsoEncoderCapacity`
+  — byte-for-byte the old literal — and the verdict may warn but may NOT refuse. Nobody's
+  show gets blocked because we could not read their driver. `COREVIDEO_ENCODER_PROBE=0`
+  turns probing off entirely; `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` raises the count cap
+  (default 8).
+- **Diagnosability:** the probe summary and the admission code go into the session
+  `manifest.json` (`encoderCapacity`, `isoAdmission`) and to `[encoder-probe]` /
+  `[recording] iso-admission` log lines.
+- **Measured here (RTX 4090, 28 logical CPUs):** `hw=yes sessions<=8 (creation-proof
+  only) (probe cap reached; true ceiling may be higher) mft="NVIDIA H.264 Encoder MFT"
+  sw=yes`, ~0.5-1.0 s per workload on a background thread. **One machine proves the probe
+  RUNS, not that it is correct everywhere** — nothing here has been seen on an Intel or
+  AMD integrated GPU, and no over-subscribed machine has been observed refusing a real
+  show (the refusal is covered by unit tests only).
+- **Tests that arm a real recording must pin the capacity** with
+  `corevideo::testing::ForcedEncoderCapacity` (`tests/EncoderCapacityProbeTestSupport.h`)
+  — otherwise they race an asynchronous, GPU-dependent probe.
+
 ## ISO recording — ISO-1 (per-source Zoom VIDEO ISO, 2026-07-20)
 
 `docs/iso-record-spec.md` is the source of truth; ISO-1 ships the video slice for
@@ -1151,6 +1669,71 @@ ISO-4). What landed:
   independent finalize, bad-folder-loud) + headless
   `node scripts/validate-iso-record.mjs` (fake engine, ISO on 2 → 2 ISO mp4s with
   h264 video, deduped). ISO-2 extends it into A+V + clap alignment.
+
+## ISO video is ARRIVAL-DRIVEN, and its loss counters are SPLIT (2026-09-09)
+
+Three linked corrections to the ISO video path. Read the Program video-tick section
+above first — this is the same lesson, applied where it had not been carried across.
+
+- **ISO submission is signalled by ISO FRAME ARRIVAL, never by Program cadence.**
+  ISO used to be submitted inside `renderVideoOutputTick` gated on `programSubmitted`,
+  which made a Program-paced ~60Hz sampler read the render thread's independently
+  published ~60Hz ISO set. Two free-running 60Hz clocks beat: 15-22% of submissions
+  were rejected as duplicate `(sourceId, frameId)` by `AsyncEncoderSink`, and the
+  result was **NON-MONOTONIC** — a faster source wrote FEWER stem frames. The render
+  gather now APPENDS each newly-seen `(sourceId, frameId)` to an accumulating queue
+  (`pendingIsoVideoQueue_`, per-source dedup, per-source pending cap
+  `kMaxPendingIsoFramesPerSource = 4`) and bumps `isoVideoPublishSeq_`;
+  `MediaCore::renderIsoVideoTick` — its own `isoVideoThread` in `JsonRpcServer` —
+  waits on that signal and DRAINS EVERYTHING pending. **It does not sample, it
+  drains**: a late tick costs latency, never frames. Measured with the fake engine
+  (`validate-iso-record.mjs --source-fps N`, 20s, 2 ISO sources): 30 -> 29.8fps both
+  before and after; 60 -> **58.1-58.8 before, 59.3-59.5 after**; 120 -> **56.8-58.3
+  before, 59.4-59.5 after**. Rules it keeps: `isoVideoQueueMutex_` is a LEAF (taken
+  under `coreMutex` for shared_ptr ref copies only — no pixel work, no I/O) and never
+  reaches back for `coreMutex`/`audioOutputMutex_`; the worker touches neither; and
+  the async sink's writer already gives Program items weighted priority over ISO, so
+  an ISO burst cannot displace Program work. **ISO frames are stamped at GATHER, not
+  at submit** — stamping at submit collapses a whole drain onto one instant, which
+  `RecordingPtsClock` then de-collides into a 100ns clump.
+  Remaining cap, honestly: the render gather still samples each source
+  latest-per-tick, so a source above the render rate is capped at ~60 distinct ISO
+  frames/s (monotonic, but not 1:1). Making that lossless means changing
+  `ZoomEngineRuntime`'s per-participant latest-frame slot, not this path.
+- **A one-line change with teeth: the sink's per-source ISO coalesce now fires ONLY
+  at the cap.** It used to erase a source's older pending item unconditionally, which
+  is a silent fidelity ceiling the moment a producer legitimately hands the sink two
+  distinct frames for one source in quick succession — exactly what an arrival-driven
+  drain does when it catches up. Its stated purpose (stop a fast participant evicting
+  every slower guest when the GLOBAL cap bites) is preserved by gating it on that cap.
+- **Video startup drops are counted apart from steady-state loss** — the concept audio
+  has had since `recordingStartupDroppedAudioPackets`. The recording writer's Media
+  Foundation open is SYNCHRONOUS and applies as a FIFO item on the writer thread
+  (95-250ms), while the producer keeps submitting at 60Hz because `recording.status`
+  already reads "recording". 7-12 frames are shed there. **No frame is missing from
+  the file** — the head of the show is clipped — but they landed in the same
+  `droppedVideo` the Wave 0 judge is fail-closed on, so a clean run reported `failed`.
+  `startupDroppedVideo` (evidence) / `recordingStartupDroppedVideoFrames` (recording
+  proof) now carry them, and **the window ends at the writer's first committed video
+  frame (or failure), NOT when Start was applied** — the first WriteSample calls into
+  a freshly opened MF sink are slow too, and closing the window at Start left ~7 of 13
+  drops still poisoning the steady-state counter (measured: judge still `failed`;
+  after: `droppedVideo` flat 0 for the whole run, judge clean). NOTHING IS HIDDEN —
+  `runtime-snapshot-qualification.mjs` tracks it as a non-loss counter plus an
+  observation, `validate-recording-finalization.mjs` reports it, and no threshold in
+  either judge was weakened. Known remaining: each ISO writer performs its OWN lazy
+  synchronous open at its first frame, and the items shed there still land in
+  `droppedVideo` (bounded, one-time, before the first sample, so the delta-based judge
+  does not trip on it).
+- **ISO fidelity is measurable now.** `framesWritten` on an ISO stream is an APPEND
+  count and cannot tell a distinct picture from a repeat — which made any change to the
+  ISO cadence unverifiable. `encoderEvidence.isoVideoBySource` carries the whole chain
+  per source: `queued` / `heldFrameSuppressed` / `queueOverflowed` (arrival side, from
+  the render gather's queue) and `submitted` / `duplicateRejected` / `dropped` /
+  `written` (sink side). Live at 60fps after the fix: `queued == submitted` exactly,
+  `heldFrameSuppressed = 1`, `duplicateRejected = 0` — i.e. the sink-side dedup that
+  was rejecting 15-22% of submissions now rejects nothing, because the repeats are
+  suppressed where they are actually observed.
 
 ## ISO recording — ISO-2 (per-source AUDIO stems muxed into the ISO MP4s, 2026-07-20)
 

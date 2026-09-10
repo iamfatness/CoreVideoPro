@@ -124,4 +124,34 @@ public sealed class NativeControlEvidenceTests
         Assert.Equal("previous-scene:2:0", absentScene.NativeRenderPlanId);
     }
 
+    [Fact]
+    public void ProgramVideoLayersCarryTheCoresPublishedDrawOrder()
+    {
+        // The core sorts programFrame.videoSources into draw order before publishing, so index 0
+        // is the bottom-most layer — which is what tells you whether a wall's background layer
+        // was continuous across a cut. Nothing further is available: the core publishes exactly
+        // layerId/sourceId/participantId/kind per layer (RenderedProgramSources.h), and rect /
+        // fit / opacity / fill colour never reach the wire, so this projection must not invent
+        // them.
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            SceneId = "wall",
+            ProgramFrame = new()
+            {
+                SceneId = "wall", RenderPlanId = "wall:8:0", FrameNumber = 900, Health = "live",
+                VideoSources =
+                [
+                    new() { LayerId = "bg", SourceId = "media:backdrop", ParticipantId = "", Kind = "media-video" },
+                    new() { LayerId = "tile:0", SourceId = "zoom:1", ParticipantId = "1", Kind = "participant-video" },
+                    new() { LayerId = "tile:1", SourceId = "zoom:2", ParticipantId = "2", Kind = "participant-video" }
+                ]
+            }
+        };
+
+        var layers = NativeControlEvidence.Apply(ControlState.Empty, snapshot).NativeProgramVideoSources!;
+
+        Assert.Equal(["bg", "tile:0", "tile:1"], layers.Select(layer => layer.LayerId));
+        Assert.Equal([0, 1, 2], layers.Select(layer => layer.Order));
+        Assert.Equal("media-video", layers[0].Kind);
+    }
 }

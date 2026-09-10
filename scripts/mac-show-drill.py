@@ -176,6 +176,53 @@ def load_env(sources):
     }
 
 
+def _counter(node, *path):
+    """Read one numeric counter out of a snapshot, or None if it is absent."""
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node if isinstance(node, (int, float)) and not isinstance(node, bool) else None
+
+
+# Deltas over the record window, per pipeline stage. Each entry is
+# (label, snapshot path, "rate" per second or "count" over the window).
+_STAGE_COUNTERS = (
+    ("compositor render", ("realtimeEvidence", "render", "completedSlots"), "rate"),
+    ("video-out tick", ("realtimeEvidence", "videoOutput", "completedTicks"), "rate"),
+    ("audio worker tick", ("realtimeEvidence", "audio", "completedTicks"), "rate"),
+    ("encoder program-video written", ("encoderEvidence", "programVideoWritten"), "rate"),
+    ("render skipped slots", ("realtimeEvidence", "render", "skippedSlots"), "count"),
+    ("render deadline misses", ("realtimeEvidence", "render", "deadlineMisses"), "count"),
+    ("encoder dropped video", ("encoderEvidence", "droppedVideo"), "count"),
+    ("program-buffer underruns", ("programBuffer", "underruns"), "count"),
+    ("program-buffer gpuNotReady", ("programBuffer", "gpuNotReady"), "count"),
+)
+
+
+def stage_evidence(before, after, seconds):
+    """What each stage actually did over the record window.
+
+    Returns an ordered list of (label, formatted value) so a reader can locate the
+    stage that lost the frames instead of being handed one asserted cause. A
+    counter missing from either end is reported as such rather than guessed at:
+    an absent number is not a zero.
+    """
+    rows = []
+    for label, path, kind in _STAGE_COUNTERS:
+        a, b = _counter(before, *path), _counter(after, *path)
+        if a is None or b is None:
+            rows.append((label, "unavailable"))
+        elif b < a:
+            rows.append((label, "counter reset (%g -> %g)" % (a, b)))
+        elif kind == "rate":
+            rows.append((label, "%.1f/s (%g over %.1fs)" % (
+                (b - a) / seconds if seconds > 0 else 0.0, b - a, seconds)))
+        else:
+            rows.append((label, "%g" % (b - a)))
+    return rows
+
+
 def wall_sources(sources):
     return [{"sourceId": f"zoom:{101 + i}", "kind": "zoom",
              "participantId": str(101 + i), "slot": i,
@@ -273,7 +320,8 @@ def main():
     # 3. Record a short session and confirm the artifact is real.
     folder = os.path.join(REPO, "artifacts", "show-drill")
     os.makedirs(folder, exist_ok=True)
-    step("record-start", [
+    record_started_at = time.time()
+    record_start = step("record-start", [
         {"type": "start-program-output", "destinations": ["recording"],
          "isoSourceIds": [], "isoParticipantIds": []},
         {"type": "set-recording-targets", "targetFolder": folder,
@@ -288,6 +336,7 @@ def main():
     # bytes are on disk.
     stop = step("record-stop", [{"type": "stop-recording-session",
                                  "reason": "drill complete"}], 66000)
+    record_stopped_at = time.time()
     step("encoder-stop", [{"type": "stop-encoder-session",
                            "reason": "drill complete"}], 67000)
     time.sleep(2.5)
@@ -295,7 +344,40 @@ def main():
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
 
+    # STAGE EVIDENCE for the recorded-rate gate. The muxed rate on its own cannot
+    # tell "the compositor never produced 60" from "the compositor produced 60 and
+    # the encoder path lost them", and this drill used to ASSERT the second one
+    # (blaming the ~50Hz audio worker) in a message it printed either way. That
+    # attribution is stale for Program video: the submit moved to the signalled
+    # video tick (MediaCore.cpp renderVideoOutputTick), and the audio-worker
+    # submit is guarded by videoOutputTickRunning_, which JsonRpcServer sets true
+    # unconditionally in any real run. The gate is unchanged; only the diagnosis
+    # is now printed as numbers instead of asserted. These come from the core's
+    # own realtimeEvidence/encoderEvidence nodes sampled at both ends of the
+    # record window, so they are deltas over that window, not lifetime totals.
+    record_window_s = max(0.0, record_stopped_at - record_started_at)
+    stage_rates = stage_evidence((record_start or {}).get("snapshot", {}),
+                                 snapshot, record_window_s)
+    # Prefer a full render-rate WINDOW (it carries dropped=/worst=); the bare
+    # "displayTick #N" line also matches "[render] ... fps" and says much less.
+    last_render_window = next(
+        (l for l in reversed(core.stderr) if l.startswith("[render] ") and "dropped=" in l),
+        next((l for l in reversed(core.stderr)
+              if l.startswith("[render] ") and "fps" in l), ""))
+
     recording = snapshot.get("recording", {})
+    queue_dropped = (recording.get("proof") or {}).get("encoderQueueDroppedVideoFrames")
+    # Printed on the PASS path too. A green recorded rate whose video-out tick sits
+    # at 50 is a different fact from one that sits at 60, and only one of them is
+    # safe to keep believing.
+    print("")
+    print(f"Recording-window stage rates (over {record_window_s:.1f}s):")
+    for label, value in stage_rates:
+        print(f"  {label}: {value}")
+    print(f"  encoder queue dropped video frames: "
+          f"{queue_dropped if queue_dropped is not None else 'unavailable'}")
+    if last_render_window:
+        print(f"  last render window: {last_render_window}")
     artifact = recording.get("artifactPath", "")
     if not os.path.isabs(artifact or ""):
         artifact = os.path.join(REPO, artifact) if artifact else ""
@@ -370,11 +452,35 @@ def main():
                               f"{actual:.1f}fps of {TARGET_OUTPUT_FPS:.0f} "
                               f"({frames} frames / {seconds:.2f}s)")
                         if not ok_rate:
+                            # NAME THE EVIDENCE, DO NOT ASSERT THE CAUSE. The old
+                            # message blamed the ~50Hz audio worker; Program video
+                            # no longer leaves from there, so that pointed every
+                            # future reader at the wrong stage. The gate is
+                            # unchanged — this is still a failure — but the reader
+                            # now gets the numbers that separate the candidates.
                             failures.append(
-                                f"recording muxed {actual:.1f}fps while the compositor "
-                                f"produced {TARGET_OUTPUT_FPS:.0f} — encoder->submit "
-                                f"rides the ~50Hz audio worker, so the file is off-spec "
-                                f"no matter what the container declares")
+                                f"recording muxed {actual:.1f}fps while the drill "
+                                f"configured {TARGET_OUTPUT_FPS:.0f} ({frames} frames / "
+                                f"{seconds:.2f}s), which is off-spec no matter what the "
+                                f"container declares. Stage evidence over the "
+                                f"{record_window_s:.1f}s record window: "
+                                + "; ".join(f"{label} {value}" for label, value in stage_rates)
+                                + f"; encoder queue dropped video frames "
+                                f"{queue_dropped if queue_dropped is not None else 'unavailable'}"
+                                + (f"; last render window '{last_render_window}'"
+                                   if last_render_window else "")
+                                + ". Read it this way: if the compositor render rate is "
+                                f"itself below {TARGET_OUTPUT_FPS:.0f} then this machine "
+                                f"never produced 60 and the file is honest about it; if "
+                                f"the compositor held {TARGET_OUTPUT_FPS:.0f} but the "
+                                f"video-out tick, the encoder written rate or the muxed "
+                                f"rate is lower, the frames were lost downstream of the "
+                                f"compositor — the queue-drop and dropped-video counters "
+                                f"say whether the encoder path shed them. A muxed rate "
+                                f"near 50 with a healthy 60 compositor is the historic "
+                                f"audio-worker alias, but Program submit now rides the "
+                                f"signalled video tick, so check the video-out tick rate "
+                                f"before assuming that is what happened.")
     else:
         failures.append(f"recording produced no artifact (path={artifact or 'none'})")
 

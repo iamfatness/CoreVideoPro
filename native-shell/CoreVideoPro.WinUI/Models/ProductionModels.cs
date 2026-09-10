@@ -99,6 +99,7 @@ public sealed class DynamicGallerySettings
     public string BackgroundSourceId { get; set; } = string.Empty;
     public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
     public bool AutoFill { get; set; } = true;
+    public string MembershipMode { get; set; } = "eligible";
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
     public int MaxTiles { get; set; } = 16;
@@ -120,6 +121,7 @@ public sealed class DynamicGallerySettings
     public DynamicGallerySettings Clone() => new()
     {
         AutoFill = AutoFill,
+        MembershipMode = MembershipMode,
         BackgroundColor = BackgroundColor,
         BackgroundSourceId = BackgroundSourceId,
         Overrides = Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),

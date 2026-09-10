@@ -23,6 +23,7 @@ public static class ScenePersistenceService
         new()
         {
             AutoFill = settings.AutoFill,
+            MembershipMode = settings.MembershipMode,
             BackgroundColor = settings.BackgroundColor,
             BackgroundSourceId = settings.BackgroundSourceId,
             Overrides = settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
@@ -92,6 +93,8 @@ public static class ScenePersistenceService
         new()
         {
             AutoFill = persisted.AutoFill,
+            MembershipMode = TilesMembershipPolicy.NormalizeMode(
+                persisted.MembershipMode ?? (persisted.AutoFill ? "eligible" : "manual")),
             BackgroundColor = persisted.BackgroundColor,
             BackgroundSourceId = persisted.BackgroundSourceId,
             Overrides = (persisted.Overrides ?? []).Where(p => p.Value is not null).Take(64).ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),

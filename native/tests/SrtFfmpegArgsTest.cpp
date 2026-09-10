@@ -1,9 +1,15 @@
 #include "modules/SrtFfmpegArgs.h"
 
+#include "modules/Interfaces.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
+#include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 using corevideo::modules::SrtEndpointConfig;
 using corevideo::modules::buildSrtIngestArgv;
@@ -202,4 +208,60 @@ TEST(SrtFfmpegArgs, RedactsThePassphraseButKeepsTheRestReadable) {
 
   // A URL with no passphrase is returned untouched.
   EXPECT_EQ(redactedSrtUrl("srt://h:1?mode=caller"), "srt://h:1?mode=caller");
+}
+
+// Retiring an SRT ingest channel must be BOUNDED even when both of its readers
+// are wedged -- the state a real show ends in, because an SRT listener spends
+// most of its life blocked on a publisher that has not arrived (or has left).
+//
+// This is the shutdown half of the descriptor-ownership contract in
+// SrtIngestCaptureAdapter.cpp: nothing outside a reading thread may close that
+// thread's descriptor, so a stop can no longer break a reader by yanking its fd
+// or handle. It has to unblock the readers instead -- kill the decoder (EOF) and,
+// on Windows, keep re-issuing CancelIoEx/DisconnectNamedPipe for an audio thread
+// parked in ConnectNamedPipe waiting for an ffmpeg that will never connect --
+// and then join. A missed cancel, a lost EOF, or a retirement ordered wrong all
+// present the same way: this test hangs.
+//
+// Two channels, deliberately in different states: one listener nothing ever
+// publishes to (both readers parked), and one caller pointed at a closed port,
+// which fails fast and keeps the reader churning through reconnect generations,
+// so the stop can also land mid-retirement.
+TEST(SrtIngestChannel, RetiringWedgedChannelsIsBounded) {
+  auto device = corevideo::modules::createSrtIngestCaptureDevice();
+  ASSERT_NE(device, nullptr);
+
+  corevideo::modules::SrtIngestSourceConfig parked;
+  parked.id = "srt-parked-input";
+  parked.deviceId = "srt-parked";
+  parked.name = "Parked listener";
+  parked.mode = "listener";
+  parked.host = "127.0.0.1";
+  parked.port = 39217;
+
+  corevideo::modules::SrtIngestSourceConfig churning;
+  churning.id = "srt-churning-input";
+  churning.deviceId = "srt-churning";
+  churning.name = "Churning caller";
+  churning.mode = "caller";
+  churning.host = "127.0.0.1";
+  churning.port = 39218;  // nothing listens here: connect fails, decoder exits
+
+  device->configureSrtIngestSources({parked, churning});
+  device->connect(parked.deviceId);
+  device->connect(churning.deviceId);
+
+  // Long enough for the readers to reach their blocking calls (and for the caller
+  // to have turned over at least one decoder generation).
+  std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+  const auto startedAt = std::chrono::steady_clock::now();
+  device.reset();  // ~SrtIngestCaptureDevice -> stopAll -> stopChannel per channel
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - startedAt)
+                           .count();
+
+  // Generous: the point is a BOUND, not a benchmark. The old code could sit out a
+  // whole reconnect backoff rung (up to 10s) before the reader noticed the stop.
+  EXPECT_LT(elapsed, 5000);
 }

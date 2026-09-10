@@ -8,7 +8,7 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class ZoomMediaSpinePayloadBuilder
 {
-    // 8, matching the product's advertised maxParticipantFeeds. This was 6, which
+    // Ten matches the Show Input and Multiview capacity contract. This was 6, then 8, which
     // silently left the 7th and 8th camera-on participants with NO raw video
     // subscription at all — they showed as frozen/placeholder tiles with no error
     // anywhere (live meeting, 2026-08-09: seven cameras on, Susan Cho never
@@ -16,7 +16,7 @@ public static class ZoomMediaSpinePayloadBuilder
     // per-participant downgrade ladder handles it LOUDLY (video_subscribe code +
     // video_resolution_downgraded), so the cap must not pre-censor what the SDK
     // might grant.
-    public const int DefaultMaxVideoSubscriptions = 8;
+    public const int DefaultMaxVideoSubscriptions = 10;
 
     public sealed record BuildInput
     {

@@ -671,6 +671,27 @@ struct ZoomEngineRuntimeTestAccess {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     return runtime.latestDecodedFrames_.size();
   }
+  static void seedSubscribedVideoCaches(ZoomEngineRuntime& runtime,
+                                        const std::string& sourceUuid,
+                                        std::uint32_t participantId) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    runtime.sentSubscriptions_[sourceUuid] = 1;
+    auto& stream = runtime.videoStreams_[sourceUuid];
+    stream.participantId = participantId;
+    auto& decoded = runtime.latestDecodedFrames_[std::to_string(participantId)];
+    decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(24, 128);
+    auto& sync = runtime.frameSync_[std::to_string(participantId)];
+    sync.frames.push_back(decoded);
+    sync.primed = true;
+  }
+  static bool hasVideoCaches(ZoomEngineRuntime& runtime,
+                             const std::string& sourceUuid,
+                             std::uint32_t participantId) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    const auto id = std::to_string(participantId);
+    return runtime.videoStreams_.contains(sourceUuid) ||
+           runtime.latestDecodedFrames_.contains(id) || runtime.frameSync_.contains(id);
+  }
   static std::uint64_t staleVideoCount(ZoomEngineRuntime& runtime) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     return runtime.staleVideoPublications_;
@@ -726,6 +747,25 @@ struct InMemoryVideoRegion {
     return std::shared_ptr<void>(owner, &owner->region);
   }
 };
+}
+
+TEST(ZoomEngineRuntime, UnsubscribeRetiresHeldFrameAndFrameSyncQueue) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const std::string sourceUuid = "participant-video-42-camera";
+    ZoomEngineRuntimeTestAccess::seedSubscribedVideoCaches(runtime, sourceUuid, 42);
+    ASSERT_TRUE(ZoomEngineRuntimeTestAccess::hasVideoCaches(runtime, sourceUuid, 42));
+
+    EXPECT_FALSE(runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{}), 0.0).isNull());
+    ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
+    EXPECT_NE(fake->sentLines().front().find("unsubscribe"), std::string::npos);
+    EXPECT_FALSE(ZoomEngineRuntimeTestAccess::hasVideoCaches(runtime, sourceUuid, 42));
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
 TEST(ZoomEngineRuntime, VideoPublicationRejectsReplacedMappingIdentityAndRetiredGenerations) {
@@ -827,4 +867,107 @@ TEST(ZoomEngineRuntime, ShutdownBeforeFirstFrameNeverStartsIngest) {
   runtime.applyEngineEventForTest(frame);
   EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestRunning(runtime));
   EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
+}
+
+namespace {
+
+const corevideo::rpc::Json* findChurnSource(const corevideo::rpc::Json& churn,
+                                            const std::string& sourceUuid) {
+  const auto* sources = churn.get("sources");
+  if (!sources || !sources->isArray()) return nullptr;
+  for (const auto& source : sources->asArray()) {
+    if (source.getString("sourceUuid") == sourceUuid) return &source;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+
+TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+
+    // 301 is the active speaker (1080P); 302 is an ordinary wall member (720P).
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "active-speaker"),
+                                subscriptionRequest("302", "participant-video", "program"),
+                            }),
+                            10.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      EXPECT_TRUE(churn.get("engine")->asBool(false));
+      EXPECT_EQ(churn.getNumber("totalChurn"), 0);  // starting is not churning
+      const auto* speaker = findChurnSource(churn, "participant-video-301-camera");
+      ASSERT_NE(speaker, nullptr);
+      EXPECT_EQ(speaker->getNumber("generation"), 1);
+      EXPECT_EQ(speaker->getNumber("churn"), 0);
+      EXPECT_EQ(speaker->getString("lastReason"), "initial");
+      EXPECT_EQ(speaker->getNumber("resolution"), 2);  // 1080P
+      EXPECT_TRUE(speaker->get("subscribed")->asBool(false));
+      const auto* member = findChurnSource(churn, "participant-video-302-camera");
+      ASSERT_NE(member, nullptr);
+      EXPECT_EQ(member->getNumber("resolution"), 1);  // 720P
+    }
+
+    // The active speaker changes. 301's uuid is unchanged — the purpose is
+    // deliberately not in it — but its RESOLUTION is, so it is re-subscribed.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "program"),
+                                subscriptionRequest("302", "participant-video", "active-speaker"),
+                            }),
+                            20.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      EXPECT_EQ(churn.getNumber("totalChurn"), 2);
+      EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 2);
+      const auto* speaker = findChurnSource(churn, "participant-video-301-camera");
+      ASSERT_NE(speaker, nullptr);
+      EXPECT_EQ(speaker->getNumber("generation"), 2);
+      EXPECT_EQ(speaker->getNumber("churn"), 1);
+      EXPECT_EQ(speaker->getString("lastReason"), "resolution-change");
+      EXPECT_EQ(speaker->getNumber("resolution"), 1);
+      EXPECT_EQ(speaker->getNumber("lastChangeMs"), 20.0);
+    }
+
+    // 302 falls out of the requested set entirely — the cap-reordering shape.
+    // Its ledger SURVIVES the unsubscribe: a record erased with the subscription
+    // could not answer the question it exists for.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "program"),
+                            }),
+                            30.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      const auto* dropped = findChurnSource(churn, "participant-video-302-camera");
+      ASSERT_NE(dropped, nullptr);
+      EXPECT_FALSE(dropped->get("subscribed")->asBool(true));
+      EXPECT_EQ(dropped->getNumber("generation"), 3);
+      EXPECT_EQ(dropped->getNumber("churn"), 2);
+      // No roster in this harness, so the retire reads as a departure; the
+      // cap-eviction/departure split itself is pinned by the policy test.
+      EXPECT_EQ(dropped->getString("lastReason"), "departure");
+      EXPECT_EQ(churn.getNumber("subscribedCount"), 1);
+      EXPECT_EQ(churn.getNumber("sourceCount"), 2);
+    }
+
+    // Coming back is churn too, and the generation keeps advancing.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "program"),
+                                subscriptionRequest("302", "participant-video", "program"),
+                            }),
+                            40.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      const auto* back = findChurnSource(churn, "participant-video-302-camera");
+      ASSERT_NE(back, nullptr);
+      EXPECT_TRUE(back->get("subscribed")->asBool(false));
+      EXPECT_EQ(back->getNumber("generation"), 4);
+      EXPECT_EQ(back->getString("lastReason"), "resubscribe");
+    }
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }

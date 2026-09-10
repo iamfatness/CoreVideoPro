@@ -332,6 +332,106 @@ public sealed class SupportBundleBuilderTests
             line => line.Contains("Recording audio fault: active recording has no audio proof telemetry from the native writer.", StringComparison.Ordinal));
     }
 
+    // PR22: a stream that dies mid-show must leave a state and a terminal outcome
+    // in the bundle. Before this the bundle carried only the adapter's free-text
+    // status, and a failed destination on a machine nobody was watching was
+    // indistinguishable from an idle one.
+    [Fact]
+    public void Build_ReportsSenderLifecycleAndTerminalOutcome()
+    {
+        var snapshot = BuildSampleSnapshot() with
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 0,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp:program",
+                        Destination = "rtmps://cdn.example.com/live?key=PRIVATE_KEY",
+                        Status = "failed",
+                        FramesSent = 900,
+                        Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+                        {
+                            SessionId = "rtmp:program",
+                            DesiredActive = true,
+                            State = "failed",
+                            Health = "failed",
+                            Finalized = false,
+                            Error = "ffmpeg exited: Connection to rtmps://cdn.example.com/live?key=PRIVATE_KEY failed"
+                        }
+                    },
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "srt:program",
+                        Destination = "srt://contrib.example.com:9000",
+                        Status = "live",
+                        FramesSent = 1200,
+                        Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+                        {
+                            SessionId = "srt:program",
+                            DesiredActive = true,
+                            State = "interrupted",
+                            Health = "degraded",
+                            Finalized = false,
+                            Error = "Destination stopped producing without being asked to stop"
+                        }
+                    }
+                ]
+            }
+        };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+        var json = SupportBundleBuilder.Serialize(bundle);
+
+        Assert.DoesNotContain("PRIVATE_KEY", json, StringComparison.Ordinal);
+        var rtmp = bundle.MediaCore!.Senders.Destinations.Single(s => s.Status == "failed");
+        Assert.Equal("failed", rtmp.Lifecycle!.State);
+        Assert.False(rtmp.Lifecycle.Finalized);
+        var srt = bundle.MediaCore.Senders.Destinations.Single(s => s.Lifecycle!.State == "interrupted");
+        Assert.Equal("degraded", srt.Lifecycle!.Health);
+
+        Assert.Contains(bundle.TriageLines, line =>
+            line.Contains("Output destination fault", StringComparison.Ordinal) &&
+            line.Contains("lifecycle failed", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line =>
+            line.Contains("Output destination fault", StringComparison.Ordinal) &&
+            line.Contains("lifecycle interrupted", StringComparison.Ordinal));
+    }
+
+    // PR22: a bundle exported during the finalize window must say the file is not
+    // ready. `Status` alone used to read "stopped" there.
+    [Fact]
+    public void Build_ReportsRecordingLifecycleDuringTheFinalizeWindow()
+    {
+        var recording = BuildRecordingSession(null) with
+        {
+            Status = "stopping",
+            WriterStatus = "finalizing",
+            Active = false,
+            Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+            {
+                SessionId = "show:1",
+                DesiredActive = false,
+                State = "finalizing",
+                Health = "healthy",
+                Finalized = false
+            }
+        };
+        var snapshot = BuildSampleSnapshot() with { Recording = recording };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+
+        Assert.Equal("finalizing", bundle.MediaCore!.Recording!.Lifecycle!.State);
+        Assert.False(bundle.MediaCore.Recording.Lifecycle.Finalized);
+        Assert.Contains(bundle.TriageLines, line =>
+            line.Contains("Recording lifecycle: finalizing", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line =>
+            line.Contains("the file on disk is not yet complete", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void Build_ListsIsoStreamPathsAndEncodeHealth()
     {

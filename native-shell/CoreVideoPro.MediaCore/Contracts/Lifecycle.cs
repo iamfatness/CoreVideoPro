@@ -10,6 +10,16 @@ public sealed class ContractIntegerConverter : JsonConverter<int> {
   }
   public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options) => writer.WriteNumberValue(value);
 }
+public sealed class ContractSafeIntegerConverter : JsonConverter<long> {
+  public override long Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) {
+    if (reader.TokenType != JsonTokenType.Number || !reader.TryGetDouble(out var value) || !double.IsFinite(value) || Math.Truncate(value) != value || value < -9007199254740991d || value > 9007199254740991d) throw new JsonException("Expected an exact JSON-safe integer");
+    return (long)value;
+  }
+  public override void Write(Utf8JsonWriter writer, long value, JsonSerializerOptions options) {
+    if (value < -9007199254740991L || value > 9007199254740991L) throw new JsonException("Integer is outside JSON-safe bounds");
+    writer.WriteNumberValue(value);
+  }
+}
 public sealed record ProtocolVersion {
   [JsonConverter(typeof(ContractIntegerConverter))]
   [JsonPropertyName("major")] public required int Major { get; init; }
@@ -43,7 +53,7 @@ public static class OutputLifecycleContract {
     var hasDesiredActive = value.TryGetProperty("desiredActive", out var desiredActive);
     if (!hasDesiredActive || !((desiredActive.ValueKind == JsonValueKind.True || desiredActive.ValueKind == JsonValueKind.False))) return false;
     var hasState = value.TryGetProperty("state", out var state);
-    if (!hasState || !(state.ValueKind == JsonValueKind.String && (state.GetString() == "idle" || state.GetString() == "starting" || state.GetString() == "live" || state.GetString() == "stopping" || state.GetString() == "finalizing" || state.GetString() == "completed" || state.GetString() == "failed" || state.GetString() == "interrupted"))) return false;
+    if (!hasState || !(state.ValueKind == JsonValueKind.String && (state.GetString() == "idle" || state.GetString() == "requested" || state.GetString() == "preparing" || state.GetString() == "producing" || state.GetString() == "starting" || state.GetString() == "live" || state.GetString() == "stopping" || state.GetString() == "finalizing" || state.GetString() == "completed" || state.GetString() == "failed" || state.GetString() == "interrupted"))) return false;
     var hasHealth = value.TryGetProperty("health", out var health);
     if (!hasHealth || !(health.ValueKind == JsonValueKind.String && (health.GetString() == "unknown" || health.GetString() == "healthy" || health.GetString() == "degraded" || health.GetString() == "failed"))) return false;
     var hasFinalized = value.TryGetProperty("finalized", out var finalized);
@@ -85,6 +95,973 @@ public static class ProtocolFailureContract {
     if (!hasCode || !(code.ValueKind == JsonValueKind.String && code.GetString()!.Length >= 1)) return false;
     var hasMessage = value.TryGetProperty("message", out var message);
     if (!hasMessage || !(message.ValueKind == JsonValueKind.String && message.GetString()!.Length >= 1)) return false;
+    return true;
+  }
+}
+public sealed record EntityIdentity {
+  [JsonPropertyName("kind")] public required string Kind { get; init; }
+  [JsonPropertyName("id")] public required string Id { get; init; }
+}
+public static class EntityIdentityContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasKind = value.TryGetProperty("kind", out var kind);
+    if (!hasKind || !(kind.ValueKind == JsonValueKind.String && (kind.GetString() == "person" || kind.GetString() == "participant" || kind.GetString() == "source" || kind.GetString() == "scene" || kind.GetString() == "route" || kind.GetString() == "audioRoute" || kind.GetString() == "showInput" || kind.GetString() == "output" || kind.GetString() == "recorder"))) return false;
+    var hasId = value.TryGetProperty("id", out var id);
+    if (!hasId || !(id.ValueKind == JsonValueKind.String && id.GetString()!.Length >= 1)) return false;
+    return true;
+  }
+}
+public sealed record EntityRevision {
+  [JsonPropertyName("kind")] public required string Kind { get; init; }
+  [JsonPropertyName("id")] public required string Id { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("revision")] public required long Revision { get; init; }
+}
+public static class EntityRevisionContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasKind = value.TryGetProperty("kind", out var kind);
+    if (!hasKind || !(kind.ValueKind == JsonValueKind.String && (kind.GetString() == "person" || kind.GetString() == "participant" || kind.GetString() == "source" || kind.GetString() == "scene" || kind.GetString() == "route" || kind.GetString() == "audioRoute" || kind.GetString() == "showInput" || kind.GetString() == "output" || kind.GetString() == "recorder"))) return false;
+    var hasId = value.TryGetProperty("id", out var id);
+    if (!hasId || !(id.ValueKind == JsonValueKind.String && id.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasRevision = value.TryGetProperty("revision", out var revision);
+    if (!hasRevision || !(revision.ValueKind == JsonValueKind.Number && revision.TryGetDouble(out var revisionNumber) && double.IsFinite(revisionNumber) && Math.Truncate(revisionNumber) == revisionNumber && revisionNumber >= 0 && revisionNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record SourceInstanceIdentity {
+  [JsonPropertyName("sourceId")] public required string SourceId { get; init; }
+  [JsonPropertyName("instanceId")] public required string InstanceId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("generation")] public required long Generation { get; init; }
+}
+public static class SourceInstanceIdentityContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasSourceId = value.TryGetProperty("sourceId", out var sourceId);
+    if (!hasSourceId || !(sourceId.ValueKind == JsonValueKind.String && sourceId.GetString()!.Length >= 1)) return false;
+    var hasInstanceId = value.TryGetProperty("instanceId", out var instanceId);
+    if (!hasInstanceId || !(instanceId.ValueKind == JsonValueKind.String && instanceId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasGeneration = value.TryGetProperty("generation", out var generation);
+    if (!hasGeneration || !(generation.ValueKind == JsonValueKind.Number && generation.TryGetDouble(out var generationNumber) && double.IsFinite(generationNumber) && Math.Truncate(generationNumber) == generationNumber && generationNumber >= 1 && generationNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record ParticipantBindingIdentity {
+  [JsonPropertyName("participantId")] public required string ParticipantId { get; init; }
+  [JsonPropertyName("sourceId")] public required string SourceId { get; init; }
+  [JsonPropertyName("instanceId")] public required string InstanceId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("generation")] public required long Generation { get; init; }
+}
+public static class ParticipantBindingIdentityContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasParticipantId = value.TryGetProperty("participantId", out var participantId);
+    if (!hasParticipantId || !(participantId.ValueKind == JsonValueKind.String && participantId.GetString()!.Length >= 1)) return false;
+    var hasSourceId = value.TryGetProperty("sourceId", out var sourceId);
+    if (!hasSourceId || !(sourceId.ValueKind == JsonValueKind.String && sourceId.GetString()!.Length >= 1)) return false;
+    var hasInstanceId = value.TryGetProperty("instanceId", out var instanceId);
+    if (!hasInstanceId || !(instanceId.ValueKind == JsonValueKind.String && instanceId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasGeneration = value.TryGetProperty("generation", out var generation);
+    if (!hasGeneration || !(generation.ValueKind == JsonValueKind.Number && generation.TryGetDouble(out var generationNumber) && double.IsFinite(generationNumber) && Math.Truncate(generationNumber) == generationNumber && generationNumber >= 1 && generationNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record ControlRevision {
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("revision")] public required long Revision { get; init; }
+}
+public static class ControlRevisionContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasRevision = value.TryGetProperty("revision", out var revision);
+    if (!hasRevision || !(revision.ValueKind == JsonValueKind.Number && revision.TryGetDouble(out var revisionNumber) && double.IsFinite(revisionNumber) && Math.Truncate(revisionNumber) == revisionNumber && revisionNumber >= 0 && revisionNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record PlanGeneration {
+  [JsonPropertyName("kind")] public required string Kind { get; init; }
+  [JsonPropertyName("planId")] public required string PlanId { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("generation")] public required long Generation { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+}
+public static class PlanGenerationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasKind = value.TryGetProperty("kind", out var kind);
+    if (!hasKind || !(kind.ValueKind == JsonValueKind.String && (kind.GetString() == "render" || kind.GetString() == "audio" || kind.GetString() == "output"))) return false;
+    var hasPlanId = value.TryGetProperty("planId", out var planId);
+    if (!hasPlanId || !(planId.ValueKind == JsonValueKind.String && planId.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasGeneration = value.TryGetProperty("generation", out var generation);
+    if (!hasGeneration || !(generation.ValueKind == JsonValueKind.Number && generation.TryGetDouble(out var generationNumber) && double.IsFinite(generationNumber) && Math.Truncate(generationNumber) == generationNumber && generationNumber >= 1 && generationNumber <= 9007199254740991)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record ControlOperationIdentity {
+  [JsonPropertyName("operationId")] public required string OperationId { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("expectedRevision")] public required long ExpectedRevision { get; init; }
+}
+public static class ControlOperationIdentityContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasOperationId = value.TryGetProperty("operationId", out var operationId);
+    if (!hasOperationId || !(operationId.ValueKind == JsonValueKind.String && operationId.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasExpectedRevision = value.TryGetProperty("expectedRevision", out var expectedRevision);
+    if (!hasExpectedRevision || !(expectedRevision.ValueKind == JsonValueKind.Number && expectedRevision.TryGetDouble(out var expectedRevisionNumber) && double.IsFinite(expectedRevisionNumber) && Math.Truncate(expectedRevisionNumber) == expectedRevisionNumber && expectedRevisionNumber >= 0 && expectedRevisionNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record AcceptedOperationObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("operationId")] public required string OperationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("expectedRevision")] public required long ExpectedRevision { get; init; }
+}
+public static class AcceptedOperationObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "accepted"))) return false;
+    var hasOperationId = value.TryGetProperty("operationId", out var operationId);
+    if (!hasOperationId || !(operationId.ValueKind == JsonValueKind.String && operationId.GetString()!.Length >= 1)) return false;
+    var hasExpectedRevision = value.TryGetProperty("expectedRevision", out var expectedRevision);
+    if (!hasExpectedRevision || !(expectedRevision.ValueKind == JsonValueKind.Number && expectedRevision.TryGetDouble(out var expectedRevisionNumber) && double.IsFinite(expectedRevisionNumber) && Math.Truncate(expectedRevisionNumber) == expectedRevisionNumber && expectedRevisionNumber >= 0 && expectedRevisionNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record AppliedOperationObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("operationId")] public required string OperationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("appliedRevision")] public required long AppliedRevision { get; init; }
+}
+public static class AppliedOperationObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "applied"))) return false;
+    var hasOperationId = value.TryGetProperty("operationId", out var operationId);
+    if (!hasOperationId || !(operationId.ValueKind == JsonValueKind.String && operationId.GetString()!.Length >= 1)) return false;
+    var hasAppliedRevision = value.TryGetProperty("appliedRevision", out var appliedRevision);
+    if (!hasAppliedRevision || !(appliedRevision.ValueKind == JsonValueKind.Number && appliedRevision.TryGetDouble(out var appliedRevisionNumber) && double.IsFinite(appliedRevisionNumber) && Math.Truncate(appliedRevisionNumber) == appliedRevisionNumber && appliedRevisionNumber >= 0 && appliedRevisionNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record RenderedMediaObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("planId")] public required string PlanId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("planGeneration")] public required long PlanGeneration { get; init; }
+  [JsonPropertyName("streamId")] public required string StreamId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("streamGeneration")] public required long StreamGeneration { get; init; }
+  [JsonPropertyName("mediaKind")] public required string MediaKind { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceStart")] public required long SequenceStart { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceCount")] public required long SequenceCount { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentStartNs")] public required long ContentStartNs { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentDurationNs")] public required long ContentDurationNs { get; init; }
+  [JsonPropertyName("resourceId")] public required string ResourceId { get; init; }
+  [JsonPropertyName("leaseId")] public required string LeaseId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("leaseGeneration")] public required long LeaseGeneration { get; init; }
+  [JsonPropertyName("completionToken")] public required string CompletionToken { get; init; }
+}
+public static class RenderedMediaObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "rendered"))) return false;
+    var hasPlanId = value.TryGetProperty("planId", out var planId);
+    if (!hasPlanId || !(planId.ValueKind == JsonValueKind.String && planId.GetString()!.Length >= 1)) return false;
+    var hasPlanGeneration = value.TryGetProperty("planGeneration", out var planGeneration);
+    if (!hasPlanGeneration || !(planGeneration.ValueKind == JsonValueKind.Number && planGeneration.TryGetDouble(out var planGenerationNumber) && double.IsFinite(planGenerationNumber) && Math.Truncate(planGenerationNumber) == planGenerationNumber && planGenerationNumber >= 1 && planGenerationNumber <= 9007199254740991)) return false;
+    var hasStreamId = value.TryGetProperty("streamId", out var streamId);
+    if (!hasStreamId || !(streamId.ValueKind == JsonValueKind.String && streamId.GetString()!.Length >= 1)) return false;
+    var hasStreamGeneration = value.TryGetProperty("streamGeneration", out var streamGeneration);
+    if (!hasStreamGeneration || !(streamGeneration.ValueKind == JsonValueKind.Number && streamGeneration.TryGetDouble(out var streamGenerationNumber) && double.IsFinite(streamGenerationNumber) && Math.Truncate(streamGenerationNumber) == streamGenerationNumber && streamGenerationNumber >= 1 && streamGenerationNumber <= 9007199254740991)) return false;
+    var hasMediaKind = value.TryGetProperty("mediaKind", out var mediaKind);
+    if (!hasMediaKind || !(mediaKind.ValueKind == JsonValueKind.String && (mediaKind.GetString() == "audio" || mediaKind.GetString() == "video"))) return false;
+    var hasSequenceStart = value.TryGetProperty("sequenceStart", out var sequenceStart);
+    if (!hasSequenceStart || !(sequenceStart.ValueKind == JsonValueKind.Number && sequenceStart.TryGetDouble(out var sequenceStartNumber) && double.IsFinite(sequenceStartNumber) && Math.Truncate(sequenceStartNumber) == sequenceStartNumber && sequenceStartNumber >= 0 && sequenceStartNumber <= 9007199254740991)) return false;
+    var hasSequenceCount = value.TryGetProperty("sequenceCount", out var sequenceCount);
+    if (!hasSequenceCount || !(sequenceCount.ValueKind == JsonValueKind.Number && sequenceCount.TryGetDouble(out var sequenceCountNumber) && double.IsFinite(sequenceCountNumber) && Math.Truncate(sequenceCountNumber) == sequenceCountNumber && sequenceCountNumber >= 1 && sequenceCountNumber <= 9007199254740991)) return false;
+    var hasContentStartNs = value.TryGetProperty("contentStartNs", out var contentStartNs);
+    if (!hasContentStartNs || !(contentStartNs.ValueKind == JsonValueKind.Number && contentStartNs.TryGetDouble(out var contentStartNsNumber) && double.IsFinite(contentStartNsNumber) && Math.Truncate(contentStartNsNumber) == contentStartNsNumber && contentStartNsNumber >= 0 && contentStartNsNumber <= 9007199254740991)) return false;
+    var hasContentDurationNs = value.TryGetProperty("contentDurationNs", out var contentDurationNs);
+    if (!hasContentDurationNs || !(contentDurationNs.ValueKind == JsonValueKind.Number && contentDurationNs.TryGetDouble(out var contentDurationNsNumber) && double.IsFinite(contentDurationNsNumber) && Math.Truncate(contentDurationNsNumber) == contentDurationNsNumber && contentDurationNsNumber >= 1 && contentDurationNsNumber <= 9007199254740991)) return false;
+    var hasResourceId = value.TryGetProperty("resourceId", out var resourceId);
+    if (!hasResourceId || !(resourceId.ValueKind == JsonValueKind.String && resourceId.GetString()!.Length >= 1)) return false;
+    var hasLeaseId = value.TryGetProperty("leaseId", out var leaseId);
+    if (!hasLeaseId || !(leaseId.ValueKind == JsonValueKind.String && leaseId.GetString()!.Length >= 1)) return false;
+    var hasLeaseGeneration = value.TryGetProperty("leaseGeneration", out var leaseGeneration);
+    if (!hasLeaseGeneration || !(leaseGeneration.ValueKind == JsonValueKind.Number && leaseGeneration.TryGetDouble(out var leaseGenerationNumber) && double.IsFinite(leaseGenerationNumber) && Math.Truncate(leaseGenerationNumber) == leaseGenerationNumber && leaseGenerationNumber >= 1 && leaseGenerationNumber <= 9007199254740991)) return false;
+    var hasCompletionToken = value.TryGetProperty("completionToken", out var completionToken);
+    if (!hasCompletionToken || !(completionToken.ValueKind == JsonValueKind.String && completionToken.GetString()!.Length >= 1)) return false;
+    return true;
+  }
+}
+public sealed record DeliveredMediaObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("planId")] public required string PlanId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("planGeneration")] public required long PlanGeneration { get; init; }
+  [JsonPropertyName("streamId")] public required string StreamId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("streamGeneration")] public required long StreamGeneration { get; init; }
+  [JsonPropertyName("mediaKind")] public required string MediaKind { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceStart")] public required long SequenceStart { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceCount")] public required long SequenceCount { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentStartNs")] public required long ContentStartNs { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentDurationNs")] public required long ContentDurationNs { get; init; }
+  [JsonPropertyName("destinationId")] public required string DestinationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("destinationGeneration")] public required long DestinationGeneration { get; init; }
+  [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+  [JsonPropertyName("deliveryId")] public required string DeliveryId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("scheduledAtNs")] public required long ScheduledAtNs { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("consumedAtNs")] public required long ConsumedAtNs { get; init; }
+}
+public static class DeliveredMediaObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "delivered"))) return false;
+    var hasPlanId = value.TryGetProperty("planId", out var planId);
+    if (!hasPlanId || !(planId.ValueKind == JsonValueKind.String && planId.GetString()!.Length >= 1)) return false;
+    var hasPlanGeneration = value.TryGetProperty("planGeneration", out var planGeneration);
+    if (!hasPlanGeneration || !(planGeneration.ValueKind == JsonValueKind.Number && planGeneration.TryGetDouble(out var planGenerationNumber) && double.IsFinite(planGenerationNumber) && Math.Truncate(planGenerationNumber) == planGenerationNumber && planGenerationNumber >= 1 && planGenerationNumber <= 9007199254740991)) return false;
+    var hasStreamId = value.TryGetProperty("streamId", out var streamId);
+    if (!hasStreamId || !(streamId.ValueKind == JsonValueKind.String && streamId.GetString()!.Length >= 1)) return false;
+    var hasStreamGeneration = value.TryGetProperty("streamGeneration", out var streamGeneration);
+    if (!hasStreamGeneration || !(streamGeneration.ValueKind == JsonValueKind.Number && streamGeneration.TryGetDouble(out var streamGenerationNumber) && double.IsFinite(streamGenerationNumber) && Math.Truncate(streamGenerationNumber) == streamGenerationNumber && streamGenerationNumber >= 1 && streamGenerationNumber <= 9007199254740991)) return false;
+    var hasMediaKind = value.TryGetProperty("mediaKind", out var mediaKind);
+    if (!hasMediaKind || !(mediaKind.ValueKind == JsonValueKind.String && (mediaKind.GetString() == "audio" || mediaKind.GetString() == "video"))) return false;
+    var hasSequenceStart = value.TryGetProperty("sequenceStart", out var sequenceStart);
+    if (!hasSequenceStart || !(sequenceStart.ValueKind == JsonValueKind.Number && sequenceStart.TryGetDouble(out var sequenceStartNumber) && double.IsFinite(sequenceStartNumber) && Math.Truncate(sequenceStartNumber) == sequenceStartNumber && sequenceStartNumber >= 0 && sequenceStartNumber <= 9007199254740991)) return false;
+    var hasSequenceCount = value.TryGetProperty("sequenceCount", out var sequenceCount);
+    if (!hasSequenceCount || !(sequenceCount.ValueKind == JsonValueKind.Number && sequenceCount.TryGetDouble(out var sequenceCountNumber) && double.IsFinite(sequenceCountNumber) && Math.Truncate(sequenceCountNumber) == sequenceCountNumber && sequenceCountNumber >= 1 && sequenceCountNumber <= 9007199254740991)) return false;
+    var hasContentStartNs = value.TryGetProperty("contentStartNs", out var contentStartNs);
+    if (!hasContentStartNs || !(contentStartNs.ValueKind == JsonValueKind.Number && contentStartNs.TryGetDouble(out var contentStartNsNumber) && double.IsFinite(contentStartNsNumber) && Math.Truncate(contentStartNsNumber) == contentStartNsNumber && contentStartNsNumber >= 0 && contentStartNsNumber <= 9007199254740991)) return false;
+    var hasContentDurationNs = value.TryGetProperty("contentDurationNs", out var contentDurationNs);
+    if (!hasContentDurationNs || !(contentDurationNs.ValueKind == JsonValueKind.Number && contentDurationNs.TryGetDouble(out var contentDurationNsNumber) && double.IsFinite(contentDurationNsNumber) && Math.Truncate(contentDurationNsNumber) == contentDurationNsNumber && contentDurationNsNumber >= 1 && contentDurationNsNumber <= 9007199254740991)) return false;
+    var hasDestinationId = value.TryGetProperty("destinationId", out var destinationId);
+    if (!hasDestinationId || !(destinationId.ValueKind == JsonValueKind.String && destinationId.GetString()!.Length >= 1)) return false;
+    var hasDestinationGeneration = value.TryGetProperty("destinationGeneration", out var destinationGeneration);
+    if (!hasDestinationGeneration || !(destinationGeneration.ValueKind == JsonValueKind.Number && destinationGeneration.TryGetDouble(out var destinationGenerationNumber) && double.IsFinite(destinationGenerationNumber) && Math.Truncate(destinationGenerationNumber) == destinationGenerationNumber && destinationGenerationNumber >= 1 && destinationGenerationNumber <= 9007199254740991)) return false;
+    var hasSessionId = value.TryGetProperty("sessionId", out var sessionId);
+    if (!hasSessionId || !(sessionId.ValueKind == JsonValueKind.String && sessionId.GetString()!.Length >= 1)) return false;
+    var hasDeliveryId = value.TryGetProperty("deliveryId", out var deliveryId);
+    if (!hasDeliveryId || !(deliveryId.ValueKind == JsonValueKind.String && deliveryId.GetString()!.Length >= 1)) return false;
+    var hasScheduledAtNs = value.TryGetProperty("scheduledAtNs", out var scheduledAtNs);
+    if (!hasScheduledAtNs || !(scheduledAtNs.ValueKind == JsonValueKind.Number && scheduledAtNs.TryGetDouble(out var scheduledAtNsNumber) && double.IsFinite(scheduledAtNsNumber) && Math.Truncate(scheduledAtNsNumber) == scheduledAtNsNumber && scheduledAtNsNumber >= 0 && scheduledAtNsNumber <= 9007199254740991)) return false;
+    var hasConsumedAtNs = value.TryGetProperty("consumedAtNs", out var consumedAtNs);
+    if (!hasConsumedAtNs || !(consumedAtNs.ValueKind == JsonValueKind.Number && consumedAtNs.TryGetDouble(out var consumedAtNsNumber) && double.IsFinite(consumedAtNsNumber) && Math.Truncate(consumedAtNsNumber) == consumedAtNsNumber && consumedAtNsNumber >= 0 && consumedAtNsNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record PresentedMediaObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("planId")] public required string PlanId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("planGeneration")] public required long PlanGeneration { get; init; }
+  [JsonPropertyName("streamId")] public required string StreamId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("streamGeneration")] public required long StreamGeneration { get; init; }
+  [JsonPropertyName("mediaKind")] public required string MediaKind { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceStart")] public required long SequenceStart { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceCount")] public required long SequenceCount { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentStartNs")] public required long ContentStartNs { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentDurationNs")] public required long ContentDurationNs { get; init; }
+  [JsonPropertyName("destinationId")] public required string DestinationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("destinationGeneration")] public required long DestinationGeneration { get; init; }
+  [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+  [JsonPropertyName("presentationId")] public required string PresentationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("presentedAtNs")] public required long PresentedAtNs { get; init; }
+}
+public static class PresentedMediaObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "presented"))) return false;
+    var hasPlanId = value.TryGetProperty("planId", out var planId);
+    if (!hasPlanId || !(planId.ValueKind == JsonValueKind.String && planId.GetString()!.Length >= 1)) return false;
+    var hasPlanGeneration = value.TryGetProperty("planGeneration", out var planGeneration);
+    if (!hasPlanGeneration || !(planGeneration.ValueKind == JsonValueKind.Number && planGeneration.TryGetDouble(out var planGenerationNumber) && double.IsFinite(planGenerationNumber) && Math.Truncate(planGenerationNumber) == planGenerationNumber && planGenerationNumber >= 1 && planGenerationNumber <= 9007199254740991)) return false;
+    var hasStreamId = value.TryGetProperty("streamId", out var streamId);
+    if (!hasStreamId || !(streamId.ValueKind == JsonValueKind.String && streamId.GetString()!.Length >= 1)) return false;
+    var hasStreamGeneration = value.TryGetProperty("streamGeneration", out var streamGeneration);
+    if (!hasStreamGeneration || !(streamGeneration.ValueKind == JsonValueKind.Number && streamGeneration.TryGetDouble(out var streamGenerationNumber) && double.IsFinite(streamGenerationNumber) && Math.Truncate(streamGenerationNumber) == streamGenerationNumber && streamGenerationNumber >= 1 && streamGenerationNumber <= 9007199254740991)) return false;
+    var hasMediaKind = value.TryGetProperty("mediaKind", out var mediaKind);
+    if (!hasMediaKind || !(mediaKind.ValueKind == JsonValueKind.String && (mediaKind.GetString() == "audio" || mediaKind.GetString() == "video"))) return false;
+    var hasSequenceStart = value.TryGetProperty("sequenceStart", out var sequenceStart);
+    if (!hasSequenceStart || !(sequenceStart.ValueKind == JsonValueKind.Number && sequenceStart.TryGetDouble(out var sequenceStartNumber) && double.IsFinite(sequenceStartNumber) && Math.Truncate(sequenceStartNumber) == sequenceStartNumber && sequenceStartNumber >= 0 && sequenceStartNumber <= 9007199254740991)) return false;
+    var hasSequenceCount = value.TryGetProperty("sequenceCount", out var sequenceCount);
+    if (!hasSequenceCount || !(sequenceCount.ValueKind == JsonValueKind.Number && sequenceCount.TryGetDouble(out var sequenceCountNumber) && double.IsFinite(sequenceCountNumber) && Math.Truncate(sequenceCountNumber) == sequenceCountNumber && sequenceCountNumber >= 1 && sequenceCountNumber <= 9007199254740991)) return false;
+    var hasContentStartNs = value.TryGetProperty("contentStartNs", out var contentStartNs);
+    if (!hasContentStartNs || !(contentStartNs.ValueKind == JsonValueKind.Number && contentStartNs.TryGetDouble(out var contentStartNsNumber) && double.IsFinite(contentStartNsNumber) && Math.Truncate(contentStartNsNumber) == contentStartNsNumber && contentStartNsNumber >= 0 && contentStartNsNumber <= 9007199254740991)) return false;
+    var hasContentDurationNs = value.TryGetProperty("contentDurationNs", out var contentDurationNs);
+    if (!hasContentDurationNs || !(contentDurationNs.ValueKind == JsonValueKind.Number && contentDurationNs.TryGetDouble(out var contentDurationNsNumber) && double.IsFinite(contentDurationNsNumber) && Math.Truncate(contentDurationNsNumber) == contentDurationNsNumber && contentDurationNsNumber >= 1 && contentDurationNsNumber <= 9007199254740991)) return false;
+    var hasDestinationId = value.TryGetProperty("destinationId", out var destinationId);
+    if (!hasDestinationId || !(destinationId.ValueKind == JsonValueKind.String && destinationId.GetString()!.Length >= 1)) return false;
+    var hasDestinationGeneration = value.TryGetProperty("destinationGeneration", out var destinationGeneration);
+    if (!hasDestinationGeneration || !(destinationGeneration.ValueKind == JsonValueKind.Number && destinationGeneration.TryGetDouble(out var destinationGenerationNumber) && double.IsFinite(destinationGenerationNumber) && Math.Truncate(destinationGenerationNumber) == destinationGenerationNumber && destinationGenerationNumber >= 1 && destinationGenerationNumber <= 9007199254740991)) return false;
+    var hasSessionId = value.TryGetProperty("sessionId", out var sessionId);
+    if (!hasSessionId || !(sessionId.ValueKind == JsonValueKind.String && sessionId.GetString()!.Length >= 1)) return false;
+    var hasPresentationId = value.TryGetProperty("presentationId", out var presentationId);
+    if (!hasPresentationId || !(presentationId.ValueKind == JsonValueKind.String && presentationId.GetString()!.Length >= 1)) return false;
+    var hasPresentedAtNs = value.TryGetProperty("presentedAtNs", out var presentedAtNs);
+    if (!hasPresentedAtNs || !(presentedAtNs.ValueKind == JsonValueKind.Number && presentedAtNs.TryGetDouble(out var presentedAtNsNumber) && double.IsFinite(presentedAtNsNumber) && Math.Truncate(presentedAtNsNumber) == presentedAtNsNumber && presentedAtNsNumber >= 0 && presentedAtNsNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record MuxedMediaObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("planId")] public required string PlanId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("planGeneration")] public required long PlanGeneration { get; init; }
+  [JsonPropertyName("streamId")] public required string StreamId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("streamGeneration")] public required long StreamGeneration { get; init; }
+  [JsonPropertyName("mediaKind")] public required string MediaKind { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceStart")] public required long SequenceStart { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceCount")] public required long SequenceCount { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentStartNs")] public required long ContentStartNs { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentDurationNs")] public required long ContentDurationNs { get; init; }
+  [JsonPropertyName("destinationId")] public required string DestinationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("destinationGeneration")] public required long DestinationGeneration { get; init; }
+  [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+  [JsonPropertyName("artifactId")] public required string ArtifactId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("packetStart")] public required long PacketStart { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("packetCount")] public required long PacketCount { get; init; }
+}
+public static class MuxedMediaObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "muxed"))) return false;
+    var hasPlanId = value.TryGetProperty("planId", out var planId);
+    if (!hasPlanId || !(planId.ValueKind == JsonValueKind.String && planId.GetString()!.Length >= 1)) return false;
+    var hasPlanGeneration = value.TryGetProperty("planGeneration", out var planGeneration);
+    if (!hasPlanGeneration || !(planGeneration.ValueKind == JsonValueKind.Number && planGeneration.TryGetDouble(out var planGenerationNumber) && double.IsFinite(planGenerationNumber) && Math.Truncate(planGenerationNumber) == planGenerationNumber && planGenerationNumber >= 1 && planGenerationNumber <= 9007199254740991)) return false;
+    var hasStreamId = value.TryGetProperty("streamId", out var streamId);
+    if (!hasStreamId || !(streamId.ValueKind == JsonValueKind.String && streamId.GetString()!.Length >= 1)) return false;
+    var hasStreamGeneration = value.TryGetProperty("streamGeneration", out var streamGeneration);
+    if (!hasStreamGeneration || !(streamGeneration.ValueKind == JsonValueKind.Number && streamGeneration.TryGetDouble(out var streamGenerationNumber) && double.IsFinite(streamGenerationNumber) && Math.Truncate(streamGenerationNumber) == streamGenerationNumber && streamGenerationNumber >= 1 && streamGenerationNumber <= 9007199254740991)) return false;
+    var hasMediaKind = value.TryGetProperty("mediaKind", out var mediaKind);
+    if (!hasMediaKind || !(mediaKind.ValueKind == JsonValueKind.String && (mediaKind.GetString() == "audio" || mediaKind.GetString() == "video"))) return false;
+    var hasSequenceStart = value.TryGetProperty("sequenceStart", out var sequenceStart);
+    if (!hasSequenceStart || !(sequenceStart.ValueKind == JsonValueKind.Number && sequenceStart.TryGetDouble(out var sequenceStartNumber) && double.IsFinite(sequenceStartNumber) && Math.Truncate(sequenceStartNumber) == sequenceStartNumber && sequenceStartNumber >= 0 && sequenceStartNumber <= 9007199254740991)) return false;
+    var hasSequenceCount = value.TryGetProperty("sequenceCount", out var sequenceCount);
+    if (!hasSequenceCount || !(sequenceCount.ValueKind == JsonValueKind.Number && sequenceCount.TryGetDouble(out var sequenceCountNumber) && double.IsFinite(sequenceCountNumber) && Math.Truncate(sequenceCountNumber) == sequenceCountNumber && sequenceCountNumber >= 1 && sequenceCountNumber <= 9007199254740991)) return false;
+    var hasContentStartNs = value.TryGetProperty("contentStartNs", out var contentStartNs);
+    if (!hasContentStartNs || !(contentStartNs.ValueKind == JsonValueKind.Number && contentStartNs.TryGetDouble(out var contentStartNsNumber) && double.IsFinite(contentStartNsNumber) && Math.Truncate(contentStartNsNumber) == contentStartNsNumber && contentStartNsNumber >= 0 && contentStartNsNumber <= 9007199254740991)) return false;
+    var hasContentDurationNs = value.TryGetProperty("contentDurationNs", out var contentDurationNs);
+    if (!hasContentDurationNs || !(contentDurationNs.ValueKind == JsonValueKind.Number && contentDurationNs.TryGetDouble(out var contentDurationNsNumber) && double.IsFinite(contentDurationNsNumber) && Math.Truncate(contentDurationNsNumber) == contentDurationNsNumber && contentDurationNsNumber >= 1 && contentDurationNsNumber <= 9007199254740991)) return false;
+    var hasDestinationId = value.TryGetProperty("destinationId", out var destinationId);
+    if (!hasDestinationId || !(destinationId.ValueKind == JsonValueKind.String && destinationId.GetString()!.Length >= 1)) return false;
+    var hasDestinationGeneration = value.TryGetProperty("destinationGeneration", out var destinationGeneration);
+    if (!hasDestinationGeneration || !(destinationGeneration.ValueKind == JsonValueKind.Number && destinationGeneration.TryGetDouble(out var destinationGenerationNumber) && double.IsFinite(destinationGenerationNumber) && Math.Truncate(destinationGenerationNumber) == destinationGenerationNumber && destinationGenerationNumber >= 1 && destinationGenerationNumber <= 9007199254740991)) return false;
+    var hasSessionId = value.TryGetProperty("sessionId", out var sessionId);
+    if (!hasSessionId || !(sessionId.ValueKind == JsonValueKind.String && sessionId.GetString()!.Length >= 1)) return false;
+    var hasArtifactId = value.TryGetProperty("artifactId", out var artifactId);
+    if (!hasArtifactId || !(artifactId.ValueKind == JsonValueKind.String && artifactId.GetString()!.Length >= 1)) return false;
+    var hasPacketStart = value.TryGetProperty("packetStart", out var packetStart);
+    if (!hasPacketStart || !(packetStart.ValueKind == JsonValueKind.Number && packetStart.TryGetDouble(out var packetStartNumber) && double.IsFinite(packetStartNumber) && Math.Truncate(packetStartNumber) == packetStartNumber && packetStartNumber >= 0 && packetStartNumber <= 9007199254740991)) return false;
+    var hasPacketCount = value.TryGetProperty("packetCount", out var packetCount);
+    if (!hasPacketCount || !(packetCount.ValueKind == JsonValueKind.Number && packetCount.TryGetDouble(out var packetCountNumber) && double.IsFinite(packetCountNumber) && Math.Truncate(packetCountNumber) == packetCountNumber && packetCountNumber >= 1 && packetCountNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record CommittedMediaObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("planId")] public required string PlanId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("planGeneration")] public required long PlanGeneration { get; init; }
+  [JsonPropertyName("streamId")] public required string StreamId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("streamGeneration")] public required long StreamGeneration { get; init; }
+  [JsonPropertyName("mediaKind")] public required string MediaKind { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceStart")] public required long SequenceStart { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sequenceCount")] public required long SequenceCount { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentStartNs")] public required long ContentStartNs { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("contentDurationNs")] public required long ContentDurationNs { get; init; }
+  [JsonPropertyName("destinationId")] public required string DestinationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("destinationGeneration")] public required long DestinationGeneration { get; init; }
+  [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+  [JsonPropertyName("artifactId")] public required string ArtifactId { get; init; }
+  [JsonPropertyName("commitId")] public required string CommitId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("byteOffset")] public required long ByteOffset { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("byteCount")] public required long ByteCount { get; init; }
+}
+public static class CommittedMediaObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "committed"))) return false;
+    var hasPlanId = value.TryGetProperty("planId", out var planId);
+    if (!hasPlanId || !(planId.ValueKind == JsonValueKind.String && planId.GetString()!.Length >= 1)) return false;
+    var hasPlanGeneration = value.TryGetProperty("planGeneration", out var planGeneration);
+    if (!hasPlanGeneration || !(planGeneration.ValueKind == JsonValueKind.Number && planGeneration.TryGetDouble(out var planGenerationNumber) && double.IsFinite(planGenerationNumber) && Math.Truncate(planGenerationNumber) == planGenerationNumber && planGenerationNumber >= 1 && planGenerationNumber <= 9007199254740991)) return false;
+    var hasStreamId = value.TryGetProperty("streamId", out var streamId);
+    if (!hasStreamId || !(streamId.ValueKind == JsonValueKind.String && streamId.GetString()!.Length >= 1)) return false;
+    var hasStreamGeneration = value.TryGetProperty("streamGeneration", out var streamGeneration);
+    if (!hasStreamGeneration || !(streamGeneration.ValueKind == JsonValueKind.Number && streamGeneration.TryGetDouble(out var streamGenerationNumber) && double.IsFinite(streamGenerationNumber) && Math.Truncate(streamGenerationNumber) == streamGenerationNumber && streamGenerationNumber >= 1 && streamGenerationNumber <= 9007199254740991)) return false;
+    var hasMediaKind = value.TryGetProperty("mediaKind", out var mediaKind);
+    if (!hasMediaKind || !(mediaKind.ValueKind == JsonValueKind.String && (mediaKind.GetString() == "audio" || mediaKind.GetString() == "video"))) return false;
+    var hasSequenceStart = value.TryGetProperty("sequenceStart", out var sequenceStart);
+    if (!hasSequenceStart || !(sequenceStart.ValueKind == JsonValueKind.Number && sequenceStart.TryGetDouble(out var sequenceStartNumber) && double.IsFinite(sequenceStartNumber) && Math.Truncate(sequenceStartNumber) == sequenceStartNumber && sequenceStartNumber >= 0 && sequenceStartNumber <= 9007199254740991)) return false;
+    var hasSequenceCount = value.TryGetProperty("sequenceCount", out var sequenceCount);
+    if (!hasSequenceCount || !(sequenceCount.ValueKind == JsonValueKind.Number && sequenceCount.TryGetDouble(out var sequenceCountNumber) && double.IsFinite(sequenceCountNumber) && Math.Truncate(sequenceCountNumber) == sequenceCountNumber && sequenceCountNumber >= 1 && sequenceCountNumber <= 9007199254740991)) return false;
+    var hasContentStartNs = value.TryGetProperty("contentStartNs", out var contentStartNs);
+    if (!hasContentStartNs || !(contentStartNs.ValueKind == JsonValueKind.Number && contentStartNs.TryGetDouble(out var contentStartNsNumber) && double.IsFinite(contentStartNsNumber) && Math.Truncate(contentStartNsNumber) == contentStartNsNumber && contentStartNsNumber >= 0 && contentStartNsNumber <= 9007199254740991)) return false;
+    var hasContentDurationNs = value.TryGetProperty("contentDurationNs", out var contentDurationNs);
+    if (!hasContentDurationNs || !(contentDurationNs.ValueKind == JsonValueKind.Number && contentDurationNs.TryGetDouble(out var contentDurationNsNumber) && double.IsFinite(contentDurationNsNumber) && Math.Truncate(contentDurationNsNumber) == contentDurationNsNumber && contentDurationNsNumber >= 1 && contentDurationNsNumber <= 9007199254740991)) return false;
+    var hasDestinationId = value.TryGetProperty("destinationId", out var destinationId);
+    if (!hasDestinationId || !(destinationId.ValueKind == JsonValueKind.String && destinationId.GetString()!.Length >= 1)) return false;
+    var hasDestinationGeneration = value.TryGetProperty("destinationGeneration", out var destinationGeneration);
+    if (!hasDestinationGeneration || !(destinationGeneration.ValueKind == JsonValueKind.Number && destinationGeneration.TryGetDouble(out var destinationGenerationNumber) && double.IsFinite(destinationGenerationNumber) && Math.Truncate(destinationGenerationNumber) == destinationGenerationNumber && destinationGenerationNumber >= 1 && destinationGenerationNumber <= 9007199254740991)) return false;
+    var hasSessionId = value.TryGetProperty("sessionId", out var sessionId);
+    if (!hasSessionId || !(sessionId.ValueKind == JsonValueKind.String && sessionId.GetString()!.Length >= 1)) return false;
+    var hasArtifactId = value.TryGetProperty("artifactId", out var artifactId);
+    if (!hasArtifactId || !(artifactId.ValueKind == JsonValueKind.String && artifactId.GetString()!.Length >= 1)) return false;
+    var hasCommitId = value.TryGetProperty("commitId", out var commitId);
+    if (!hasCommitId || !(commitId.ValueKind == JsonValueKind.String && commitId.GetString()!.Length >= 1)) return false;
+    var hasByteOffset = value.TryGetProperty("byteOffset", out var byteOffset);
+    if (!hasByteOffset || !(byteOffset.ValueKind == JsonValueKind.Number && byteOffset.TryGetDouble(out var byteOffsetNumber) && double.IsFinite(byteOffsetNumber) && Math.Truncate(byteOffsetNumber) == byteOffsetNumber && byteOffsetNumber >= 0 && byteOffsetNumber <= 9007199254740991)) return false;
+    var hasByteCount = value.TryGetProperty("byteCount", out var byteCount);
+    if (!hasByteCount || !(byteCount.ValueKind == JsonValueKind.Number && byteCount.TryGetDouble(out var byteCountNumber) && double.IsFinite(byteCountNumber) && Math.Truncate(byteCountNumber) == byteCountNumber && byteCountNumber >= 1 && byteCountNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record CompletedOutputObservation {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("stage")] public required string Stage { get; init; }
+  [JsonPropertyName("destinationId")] public required string DestinationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("destinationGeneration")] public required long DestinationGeneration { get; init; }
+  [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+  [JsonPropertyName("completionId")] public required string CompletionId { get; init; }
+  [JsonPropertyName("finalPlanId")] public required string FinalPlanId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("finalPlanGeneration")] public required long FinalPlanGeneration { get; init; }
+  [JsonPropertyName("finalStreamId")] public required string FinalStreamId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("finalStreamGeneration")] public required long FinalStreamGeneration { get; init; }
+  [JsonPropertyName("mediaKind")] public required string MediaKind { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("deliveredUnits")] public required long DeliveredUnits { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("muxedPackets")] public required long MuxedPackets { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("committedBytes")] public required long CommittedBytes { get; init; }
+}
+public static class CompletedOutputObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasStage = value.TryGetProperty("stage", out var stage);
+    if (!hasStage || !(stage.ValueKind == JsonValueKind.String && (stage.GetString() == "completed"))) return false;
+    var hasDestinationId = value.TryGetProperty("destinationId", out var destinationId);
+    if (!hasDestinationId || !(destinationId.ValueKind == JsonValueKind.String && destinationId.GetString()!.Length >= 1)) return false;
+    var hasDestinationGeneration = value.TryGetProperty("destinationGeneration", out var destinationGeneration);
+    if (!hasDestinationGeneration || !(destinationGeneration.ValueKind == JsonValueKind.Number && destinationGeneration.TryGetDouble(out var destinationGenerationNumber) && double.IsFinite(destinationGenerationNumber) && Math.Truncate(destinationGenerationNumber) == destinationGenerationNumber && destinationGenerationNumber >= 1 && destinationGenerationNumber <= 9007199254740991)) return false;
+    var hasSessionId = value.TryGetProperty("sessionId", out var sessionId);
+    if (!hasSessionId || !(sessionId.ValueKind == JsonValueKind.String && sessionId.GetString()!.Length >= 1)) return false;
+    var hasCompletionId = value.TryGetProperty("completionId", out var completionId);
+    if (!hasCompletionId || !(completionId.ValueKind == JsonValueKind.String && completionId.GetString()!.Length >= 1)) return false;
+    var hasFinalPlanId = value.TryGetProperty("finalPlanId", out var finalPlanId);
+    if (!hasFinalPlanId || !(finalPlanId.ValueKind == JsonValueKind.String && finalPlanId.GetString()!.Length >= 1)) return false;
+    var hasFinalPlanGeneration = value.TryGetProperty("finalPlanGeneration", out var finalPlanGeneration);
+    if (!hasFinalPlanGeneration || !(finalPlanGeneration.ValueKind == JsonValueKind.Number && finalPlanGeneration.TryGetDouble(out var finalPlanGenerationNumber) && double.IsFinite(finalPlanGenerationNumber) && Math.Truncate(finalPlanGenerationNumber) == finalPlanGenerationNumber && finalPlanGenerationNumber >= 1 && finalPlanGenerationNumber <= 9007199254740991)) return false;
+    var hasFinalStreamId = value.TryGetProperty("finalStreamId", out var finalStreamId);
+    if (!hasFinalStreamId || !(finalStreamId.ValueKind == JsonValueKind.String && finalStreamId.GetString()!.Length >= 1)) return false;
+    var hasFinalStreamGeneration = value.TryGetProperty("finalStreamGeneration", out var finalStreamGeneration);
+    if (!hasFinalStreamGeneration || !(finalStreamGeneration.ValueKind == JsonValueKind.Number && finalStreamGeneration.TryGetDouble(out var finalStreamGenerationNumber) && double.IsFinite(finalStreamGenerationNumber) && Math.Truncate(finalStreamGenerationNumber) == finalStreamGenerationNumber && finalStreamGenerationNumber >= 1 && finalStreamGenerationNumber <= 9007199254740991)) return false;
+    var hasMediaKind = value.TryGetProperty("mediaKind", out var mediaKind);
+    if (!hasMediaKind || !(mediaKind.ValueKind == JsonValueKind.String && (mediaKind.GetString() == "audio" || mediaKind.GetString() == "video"))) return false;
+    var hasDeliveredUnits = value.TryGetProperty("deliveredUnits", out var deliveredUnits);
+    if (!hasDeliveredUnits || !(deliveredUnits.ValueKind == JsonValueKind.Number && deliveredUnits.TryGetDouble(out var deliveredUnitsNumber) && double.IsFinite(deliveredUnitsNumber) && Math.Truncate(deliveredUnitsNumber) == deliveredUnitsNumber && deliveredUnitsNumber >= 0 && deliveredUnitsNumber <= 9007199254740991)) return false;
+    var hasMuxedPackets = value.TryGetProperty("muxedPackets", out var muxedPackets);
+    if (!hasMuxedPackets || !(muxedPackets.ValueKind == JsonValueKind.Number && muxedPackets.TryGetDouble(out var muxedPacketsNumber) && double.IsFinite(muxedPacketsNumber) && Math.Truncate(muxedPacketsNumber) == muxedPacketsNumber && muxedPacketsNumber >= 0 && muxedPacketsNumber <= 9007199254740991)) return false;
+    var hasCommittedBytes = value.TryGetProperty("committedBytes", out var committedBytes);
+    if (!hasCommittedBytes || !(committedBytes.ValueKind == JsonValueKind.Number && committedBytes.TryGetDouble(out var committedBytesNumber) && double.IsFinite(committedBytesNumber) && Math.Truncate(committedBytesNumber) == committedBytesNumber && committedBytesNumber >= 0 && committedBytesNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record ResourceLeaseDescriptor {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("resourceId")] public required string ResourceId { get; init; }
+  [JsonPropertyName("leaseId")] public required string LeaseId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("leaseGeneration")] public required long LeaseGeneration { get; init; }
+  [JsonPropertyName("resourceKind")] public required string ResourceKind { get; init; }
+  [JsonPropertyName("ownerDomain")] public required string OwnerDomain { get; init; }
+  [JsonPropertyName("state")] public required string State { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("byteLength")] public required long ByteLength { get; init; }
+}
+public static class ResourceLeaseDescriptorContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasResourceId = value.TryGetProperty("resourceId", out var resourceId);
+    if (!hasResourceId || !(resourceId.ValueKind == JsonValueKind.String && resourceId.GetString()!.Length >= 1)) return false;
+    var hasLeaseId = value.TryGetProperty("leaseId", out var leaseId);
+    if (!hasLeaseId || !(leaseId.ValueKind == JsonValueKind.String && leaseId.GetString()!.Length >= 1)) return false;
+    var hasLeaseGeneration = value.TryGetProperty("leaseGeneration", out var leaseGeneration);
+    if (!hasLeaseGeneration || !(leaseGeneration.ValueKind == JsonValueKind.Number && leaseGeneration.TryGetDouble(out var leaseGenerationNumber) && double.IsFinite(leaseGenerationNumber) && Math.Truncate(leaseGenerationNumber) == leaseGenerationNumber && leaseGenerationNumber >= 1 && leaseGenerationNumber <= 9007199254740991)) return false;
+    var hasResourceKind = value.TryGetProperty("resourceKind", out var resourceKind);
+    if (!hasResourceKind || !(resourceKind.ValueKind == JsonValueKind.String && (resourceKind.GetString() == "cpuBuffer" || resourceKind.GetString() == "gpuTexture" || resourceKind.GetString() == "sharedMemory" || resourceKind.GetString() == "encoder" || resourceKind.GetString() == "sdkSubscription"))) return false;
+    var hasOwnerDomain = value.TryGetProperty("ownerDomain", out var ownerDomain);
+    if (!hasOwnerDomain || !(ownerDomain.ValueKind == JsonValueKind.String && ownerDomain.GetString()!.Length >= 1)) return false;
+    var hasState = value.TryGetProperty("state", out var state);
+    if (!hasState || !(state.ValueKind == JsonValueKind.String && (state.GetString() == "active" || state.GetString() == "retiring" || state.GetString() == "released"))) return false;
+    var hasByteLength = value.TryGetProperty("byteLength", out var byteLength);
+    if (!hasByteLength || !(byteLength.ValueKind == JsonValueKind.Number && byteLength.TryGetDouble(out var byteLengthNumber) && double.IsFinite(byteLengthNumber) && Math.Truncate(byteLengthNumber) == byteLengthNumber && byteLengthNumber >= 0 && byteLengthNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record DestinationProgress {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("destinationId")] public required string DestinationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("destinationGeneration")] public required long DestinationGeneration { get; init; }
+  [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+  [JsonPropertyName("planId")] public required string PlanId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("planGeneration")] public required long PlanGeneration { get; init; }
+  [JsonPropertyName("streamId")] public required string StreamId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("streamGeneration")] public required long StreamGeneration { get; init; }
+  [JsonPropertyName("mediaKind")] public required string MediaKind { get; init; }
+  [JsonPropertyName("state")] public required string State { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("producedUnits")] public required long ProducedUnits { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("deliveredUnits")] public required long DeliveredUnits { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("presentedUnits")] public required long PresentedUnits { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("muxedPackets")] public required long MuxedPackets { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("committedBytes")] public required long CommittedBytes { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("deadlineMisses")] public required long DeadlineMisses { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("droppedUnits")] public required long DroppedUnits { get; init; }
+  [JsonPropertyName("counterEpoch")] public required string CounterEpoch { get; init; }
+}
+public static class DestinationProgressContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasDestinationId = value.TryGetProperty("destinationId", out var destinationId);
+    if (!hasDestinationId || !(destinationId.ValueKind == JsonValueKind.String && destinationId.GetString()!.Length >= 1)) return false;
+    var hasDestinationGeneration = value.TryGetProperty("destinationGeneration", out var destinationGeneration);
+    if (!hasDestinationGeneration || !(destinationGeneration.ValueKind == JsonValueKind.Number && destinationGeneration.TryGetDouble(out var destinationGenerationNumber) && double.IsFinite(destinationGenerationNumber) && Math.Truncate(destinationGenerationNumber) == destinationGenerationNumber && destinationGenerationNumber >= 1 && destinationGenerationNumber <= 9007199254740991)) return false;
+    var hasSessionId = value.TryGetProperty("sessionId", out var sessionId);
+    if (!hasSessionId || !(sessionId.ValueKind == JsonValueKind.String && sessionId.GetString()!.Length >= 1)) return false;
+    var hasPlanId = value.TryGetProperty("planId", out var planId);
+    if (!hasPlanId || !(planId.ValueKind == JsonValueKind.String && planId.GetString()!.Length >= 1)) return false;
+    var hasPlanGeneration = value.TryGetProperty("planGeneration", out var planGeneration);
+    if (!hasPlanGeneration || !(planGeneration.ValueKind == JsonValueKind.Number && planGeneration.TryGetDouble(out var planGenerationNumber) && double.IsFinite(planGenerationNumber) && Math.Truncate(planGenerationNumber) == planGenerationNumber && planGenerationNumber >= 1 && planGenerationNumber <= 9007199254740991)) return false;
+    var hasStreamId = value.TryGetProperty("streamId", out var streamId);
+    if (!hasStreamId || !(streamId.ValueKind == JsonValueKind.String && streamId.GetString()!.Length >= 1)) return false;
+    var hasStreamGeneration = value.TryGetProperty("streamGeneration", out var streamGeneration);
+    if (!hasStreamGeneration || !(streamGeneration.ValueKind == JsonValueKind.Number && streamGeneration.TryGetDouble(out var streamGenerationNumber) && double.IsFinite(streamGenerationNumber) && Math.Truncate(streamGenerationNumber) == streamGenerationNumber && streamGenerationNumber >= 1 && streamGenerationNumber <= 9007199254740991)) return false;
+    var hasMediaKind = value.TryGetProperty("mediaKind", out var mediaKind);
+    if (!hasMediaKind || !(mediaKind.ValueKind == JsonValueKind.String && (mediaKind.GetString() == "audio" || mediaKind.GetString() == "video"))) return false;
+    var hasState = value.TryGetProperty("state", out var state);
+    if (!hasState || !(state.ValueKind == JsonValueKind.String && (state.GetString() == "idle" || state.GetString() == "preparing" || state.GetString() == "ready" || state.GetString() == "running" || state.GetString() == "finalizing" || state.GetString() == "completed" || state.GetString() == "failed" || state.GetString() == "interrupted"))) return false;
+    var hasProducedUnits = value.TryGetProperty("producedUnits", out var producedUnits);
+    if (!hasProducedUnits || !(producedUnits.ValueKind == JsonValueKind.Number && producedUnits.TryGetDouble(out var producedUnitsNumber) && double.IsFinite(producedUnitsNumber) && Math.Truncate(producedUnitsNumber) == producedUnitsNumber && producedUnitsNumber >= 0 && producedUnitsNumber <= 9007199254740991)) return false;
+    var hasDeliveredUnits = value.TryGetProperty("deliveredUnits", out var deliveredUnits);
+    if (!hasDeliveredUnits || !(deliveredUnits.ValueKind == JsonValueKind.Number && deliveredUnits.TryGetDouble(out var deliveredUnitsNumber) && double.IsFinite(deliveredUnitsNumber) && Math.Truncate(deliveredUnitsNumber) == deliveredUnitsNumber && deliveredUnitsNumber >= 0 && deliveredUnitsNumber <= 9007199254740991)) return false;
+    var hasPresentedUnits = value.TryGetProperty("presentedUnits", out var presentedUnits);
+    if (!hasPresentedUnits || !(presentedUnits.ValueKind == JsonValueKind.Number && presentedUnits.TryGetDouble(out var presentedUnitsNumber) && double.IsFinite(presentedUnitsNumber) && Math.Truncate(presentedUnitsNumber) == presentedUnitsNumber && presentedUnitsNumber >= 0 && presentedUnitsNumber <= 9007199254740991)) return false;
+    var hasMuxedPackets = value.TryGetProperty("muxedPackets", out var muxedPackets);
+    if (!hasMuxedPackets || !(muxedPackets.ValueKind == JsonValueKind.Number && muxedPackets.TryGetDouble(out var muxedPacketsNumber) && double.IsFinite(muxedPacketsNumber) && Math.Truncate(muxedPacketsNumber) == muxedPacketsNumber && muxedPacketsNumber >= 0 && muxedPacketsNumber <= 9007199254740991)) return false;
+    var hasCommittedBytes = value.TryGetProperty("committedBytes", out var committedBytes);
+    if (!hasCommittedBytes || !(committedBytes.ValueKind == JsonValueKind.Number && committedBytes.TryGetDouble(out var committedBytesNumber) && double.IsFinite(committedBytesNumber) && Math.Truncate(committedBytesNumber) == committedBytesNumber && committedBytesNumber >= 0 && committedBytesNumber <= 9007199254740991)) return false;
+    var hasDeadlineMisses = value.TryGetProperty("deadlineMisses", out var deadlineMisses);
+    if (!hasDeadlineMisses || !(deadlineMisses.ValueKind == JsonValueKind.Number && deadlineMisses.TryGetDouble(out var deadlineMissesNumber) && double.IsFinite(deadlineMissesNumber) && Math.Truncate(deadlineMissesNumber) == deadlineMissesNumber && deadlineMissesNumber >= 0 && deadlineMissesNumber <= 9007199254740991)) return false;
+    var hasDroppedUnits = value.TryGetProperty("droppedUnits", out var droppedUnits);
+    if (!hasDroppedUnits || !(droppedUnits.ValueKind == JsonValueKind.Number && droppedUnits.TryGetDouble(out var droppedUnitsNumber) && double.IsFinite(droppedUnitsNumber) && Math.Truncate(droppedUnitsNumber) == droppedUnitsNumber && droppedUnitsNumber >= 0 && droppedUnitsNumber <= 9007199254740991)) return false;
+    var hasCounterEpoch = value.TryGetProperty("counterEpoch", out var counterEpoch);
+    if (!hasCounterEpoch || !(counterEpoch.ValueKind == JsonValueKind.String && counterEpoch.GetString()!.Length >= 1)) return false;
+    return true;
+  }
+}
+public sealed record ArtifactValidationResult {
+  [JsonPropertyName("observationId")] public required string ObservationId { get; init; }
+  [JsonPropertyName("processEpoch")] public required string ProcessEpoch { get; init; }
+  [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("controlRevision")] public required long ControlRevision { get; init; }
+  [JsonPropertyName("clockId")] public required string ClockId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockGeneration")] public required long ClockGeneration { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("observedAtNs")] public required long ObservedAtNs { get; init; }
+  [JsonPropertyName("destinationId")] public required string DestinationId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("destinationGeneration")] public required long DestinationGeneration { get; init; }
+  [JsonPropertyName("sessionId")] public required string SessionId { get; init; }
+  [JsonPropertyName("artifactId")] public required string ArtifactId { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("artifactRevision")] public required long ArtifactRevision { get; init; }
+  [JsonPropertyName("validatorId")] public required string ValidatorId { get; init; }
+  [JsonPropertyName("validatorVersion")] public required string ValidatorVersion { get; init; }
+  [JsonPropertyName("status")] public required string Status { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("checkedAtNs")] public required long CheckedAtNs { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("byteLength")] public required long ByteLength { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("packetCount")] public required long PacketCount { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("decodedUnits")] public required long DecodedUnits { get; init; }
+  [JsonPropertyName("checkSetId")] public required string CheckSetId { get; init; }
+  [JsonPropertyName("resultId")] public required string ResultId { get; init; }
+}
+public static class ArtifactValidationResultContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasObservationId = value.TryGetProperty("observationId", out var observationId);
+    if (!hasObservationId || !(observationId.ValueKind == JsonValueKind.String && observationId.GetString()!.Length >= 1)) return false;
+    var hasProcessEpoch = value.TryGetProperty("processEpoch", out var processEpoch);
+    if (!hasProcessEpoch || !(processEpoch.ValueKind == JsonValueKind.String && processEpoch.GetString()!.Length >= 1)) return false;
+    var hasAuthorityEpoch = value.TryGetProperty("authorityEpoch", out var authorityEpoch);
+    if (!hasAuthorityEpoch || !(authorityEpoch.ValueKind == JsonValueKind.String && authorityEpoch.GetString()!.Length >= 1)) return false;
+    var hasControlRevision = value.TryGetProperty("controlRevision", out var controlRevision);
+    if (!hasControlRevision || !(controlRevision.ValueKind == JsonValueKind.Number && controlRevision.TryGetDouble(out var controlRevisionNumber) && double.IsFinite(controlRevisionNumber) && Math.Truncate(controlRevisionNumber) == controlRevisionNumber && controlRevisionNumber >= 0 && controlRevisionNumber <= 9007199254740991)) return false;
+    var hasClockId = value.TryGetProperty("clockId", out var clockId);
+    if (!hasClockId || !(clockId.ValueKind == JsonValueKind.String && clockId.GetString()!.Length >= 1)) return false;
+    var hasClockGeneration = value.TryGetProperty("clockGeneration", out var clockGeneration);
+    if (!hasClockGeneration || !(clockGeneration.ValueKind == JsonValueKind.Number && clockGeneration.TryGetDouble(out var clockGenerationNumber) && double.IsFinite(clockGenerationNumber) && Math.Truncate(clockGenerationNumber) == clockGenerationNumber && clockGenerationNumber >= 1 && clockGenerationNumber <= 9007199254740991)) return false;
+    var hasObservedAtNs = value.TryGetProperty("observedAtNs", out var observedAtNs);
+    if (!hasObservedAtNs || !(observedAtNs.ValueKind == JsonValueKind.Number && observedAtNs.TryGetDouble(out var observedAtNsNumber) && double.IsFinite(observedAtNsNumber) && Math.Truncate(observedAtNsNumber) == observedAtNsNumber && observedAtNsNumber >= 0 && observedAtNsNumber <= 9007199254740991)) return false;
+    var hasDestinationId = value.TryGetProperty("destinationId", out var destinationId);
+    if (!hasDestinationId || !(destinationId.ValueKind == JsonValueKind.String && destinationId.GetString()!.Length >= 1)) return false;
+    var hasDestinationGeneration = value.TryGetProperty("destinationGeneration", out var destinationGeneration);
+    if (!hasDestinationGeneration || !(destinationGeneration.ValueKind == JsonValueKind.Number && destinationGeneration.TryGetDouble(out var destinationGenerationNumber) && double.IsFinite(destinationGenerationNumber) && Math.Truncate(destinationGenerationNumber) == destinationGenerationNumber && destinationGenerationNumber >= 1 && destinationGenerationNumber <= 9007199254740991)) return false;
+    var hasSessionId = value.TryGetProperty("sessionId", out var sessionId);
+    if (!hasSessionId || !(sessionId.ValueKind == JsonValueKind.String && sessionId.GetString()!.Length >= 1)) return false;
+    var hasArtifactId = value.TryGetProperty("artifactId", out var artifactId);
+    if (!hasArtifactId || !(artifactId.ValueKind == JsonValueKind.String && artifactId.GetString()!.Length >= 1)) return false;
+    var hasArtifactRevision = value.TryGetProperty("artifactRevision", out var artifactRevision);
+    if (!hasArtifactRevision || !(artifactRevision.ValueKind == JsonValueKind.Number && artifactRevision.TryGetDouble(out var artifactRevisionNumber) && double.IsFinite(artifactRevisionNumber) && Math.Truncate(artifactRevisionNumber) == artifactRevisionNumber && artifactRevisionNumber >= 0 && artifactRevisionNumber <= 9007199254740991)) return false;
+    var hasValidatorId = value.TryGetProperty("validatorId", out var validatorId);
+    if (!hasValidatorId || !(validatorId.ValueKind == JsonValueKind.String && validatorId.GetString()!.Length >= 1)) return false;
+    var hasValidatorVersion = value.TryGetProperty("validatorVersion", out var validatorVersion);
+    if (!hasValidatorVersion || !(validatorVersion.ValueKind == JsonValueKind.String && validatorVersion.GetString()!.Length >= 1)) return false;
+    var hasStatus = value.TryGetProperty("status", out var status);
+    if (!hasStatus || !(status.ValueKind == JsonValueKind.String && (status.GetString() == "passed" || status.GetString() == "failed" || status.GetString() == "incomplete"))) return false;
+    var hasCheckedAtNs = value.TryGetProperty("checkedAtNs", out var checkedAtNs);
+    if (!hasCheckedAtNs || !(checkedAtNs.ValueKind == JsonValueKind.Number && checkedAtNs.TryGetDouble(out var checkedAtNsNumber) && double.IsFinite(checkedAtNsNumber) && Math.Truncate(checkedAtNsNumber) == checkedAtNsNumber && checkedAtNsNumber >= 0 && checkedAtNsNumber <= 9007199254740991)) return false;
+    var hasByteLength = value.TryGetProperty("byteLength", out var byteLength);
+    if (!hasByteLength || !(byteLength.ValueKind == JsonValueKind.Number && byteLength.TryGetDouble(out var byteLengthNumber) && double.IsFinite(byteLengthNumber) && Math.Truncate(byteLengthNumber) == byteLengthNumber && byteLengthNumber >= 0 && byteLengthNumber <= 9007199254740991)) return false;
+    var hasPacketCount = value.TryGetProperty("packetCount", out var packetCount);
+    if (!hasPacketCount || !(packetCount.ValueKind == JsonValueKind.Number && packetCount.TryGetDouble(out var packetCountNumber) && double.IsFinite(packetCountNumber) && Math.Truncate(packetCountNumber) == packetCountNumber && packetCountNumber >= 0 && packetCountNumber <= 9007199254740991)) return false;
+    var hasDecodedUnits = value.TryGetProperty("decodedUnits", out var decodedUnits);
+    if (!hasDecodedUnits || !(decodedUnits.ValueKind == JsonValueKind.Number && decodedUnits.TryGetDouble(out var decodedUnitsNumber) && double.IsFinite(decodedUnitsNumber) && Math.Truncate(decodedUnitsNumber) == decodedUnitsNumber && decodedUnitsNumber >= 0 && decodedUnitsNumber <= 9007199254740991)) return false;
+    var hasCheckSetId = value.TryGetProperty("checkSetId", out var checkSetId);
+    if (!hasCheckSetId || !(checkSetId.ValueKind == JsonValueKind.String && checkSetId.GetString()!.Length >= 1)) return false;
+    var hasResultId = value.TryGetProperty("resultId", out var resultId);
+    if (!hasResultId || !(resultId.ValueKind == JsonValueKind.String && resultId.GetString()!.Length >= 1)) return false;
     return true;
   }
 }

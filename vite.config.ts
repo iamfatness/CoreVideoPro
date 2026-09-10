@@ -31,7 +31,11 @@ export default defineConfig({
       "**/.claude/**",
       "native-core/**",
       // Infrastructure tests use node:test and run in their own CI command.
+      // Both roots: scripts/ and test/ (see "test:scripts" in package.json).
+      // vitest cannot bundle a node:test import, so a stray match here fails
+      // the whole unit job even though the file passes under node --test.
       "scripts/**/*.test.mjs",
+      "test/**/*.test.mjs",
       "tests/e2e/**",
       "src/App.test.tsx"
     ],

@@ -11,8 +11,13 @@ public static class MediaCoreCommandBuilder
 {
     public static IReadOnlyList<NativeMediaCoreCommand> BuildSyncCommands(MediaCoreProductionSyncContext context)
     {
-        var commands = new List<NativeMediaCoreCommand>
+        var commands = new List<NativeMediaCoreCommand>();
+        if (context.TakeTransition is { } transition)
         {
+            commands.Add(BuildTakeTransitionCommand(transition));
+        }
+
+        commands.AddRange([
             BuildZoomSourceRosterCommand(context.Participants),
             BuildActiveSpeakerCommand(context.Participants),
             BuildScreenShareCommand(context.Participants),
@@ -38,7 +43,7 @@ public static class MediaCoreCommandBuilder
             BuildAudioRoutingMatrixCommand(context),
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources),
             BuildVirtualCameraCommand(context)
-        };
+        ]);
 
         commands.AddRange(BuildOverlayCommands(context.Graphics, context.LowerThirdKey));
         commands.AddRange(BuildCaptionCommands(context.CaptionText, context.CaptionSpeaker));
@@ -85,6 +90,17 @@ public static class MediaCoreCommandBuilder
         }
         return commands;
     }
+
+    public static NativeMediaCoreCommand BuildTakeTransitionCommand(MediaCoreTakeTransitionWire transition) =>
+        Command("begin-take-transition", new Dictionary<string, object?>
+        {
+            ["operationId"] = transition.OperationId,
+            ["revision"] = transition.Revision,
+            ["mode"] = transition.Mode,
+            ["durationMs"] = transition.DurationMs,
+            ["direction"] = transition.Direction,
+            ["dipColor"] = transition.DipColor
+        });
 
     public static NativeMediaCoreCommand BuildSceneGraphCommand(
         string sceneId,
