@@ -4053,10 +4053,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var scene = PreviewScene;
         var trimmed = string.IsNullOrWhiteSpace(name) ? scene.Name : name.Trim();
         var updatesProgramScene = string.Equals(scene.Id, ActiveSceneId, StringComparison.Ordinal);
-        var previousProgramMediaRoutes = updatesProgramScene
-            ? BuildProgramMediaRouteSignature(GetMutableRoutes(scene.Id))
-            : string.Empty;
-        // Snapshot the resolved route LIST (not just the signature) before
+        // Snapshot the resolved route LIST before
         // CopyPreviewRoutesToScene rewrites it: the go-live ledger compares before vs after,
         // resolved exactly as the Take path does (a Show Input slot can resolve to media).
         var previousProgramRoutes = updatesProgramScene
@@ -4076,14 +4073,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CopyPreviewRoutesToScene(scene.Id);
         if (updatesProgramScene)
         {
-            // Idempotent for an unchanged media set: only clips ENTERING Program roll.
-            _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
-        }
-
-        if (updatesProgramScene &&
-            !string.Equals(previousProgramMediaRoutes, BuildProgramMediaRouteSignature(GetMutableRoutes(scene.Id)), StringComparison.Ordinal))
-        {
-            PromoteProgramMediaRouteToPlayback();
+            // Only clips ENTERING Program roll, and only they are promoted: a clip that stayed on
+            // Program keeps the operator's play/pause state (same rule as Take).
+            var wentLive = _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
+            if (wentLive.Count > 0) PromoteProgramMediaRouteToPlayback(wentLive);
         }
 
         if (!string.Equals(scene.Name, trimmed, StringComparison.Ordinal))
@@ -6060,12 +6053,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetPlaying &&
         string.Equals(SelectedMediaAssetId, assetId, StringComparison.Ordinal);
 
-    private void PromoteProgramMediaRouteToPlayback()
+    private void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
     {
-        var programRoutes = GetResolvedProgramRoutes();
-        var mediaAssetId = MediaRoutePlaybackService.ResolveProgramAutoplayAssetId(
-            SelectedMediaAssetId,
-            programRoutes);
+        // Empty went-live list -> null -> no selection, Playing or status change.
+        var mediaAssetId = MediaRoutePlaybackService.ChooseAssetToPromote(
+            wentLiveMediaAssetIds,
+            SelectedMediaAssetId);
         if (string.IsNullOrWhiteSpace(mediaAssetId) ||
             FindMediaAsset(mediaAssetId) is not { } asset)
         {

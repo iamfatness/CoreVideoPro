@@ -253,6 +253,28 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
+    public void ChooseAssetToPromote_PrefersTheSelectedAssetWhenItWentLive()
+    {
+        Assert.Equal("outro", MediaRoutePlaybackService.ChooseAssetToPromote(new[] { "intro", "outro" }, "outro"));
+    }
+
+    [Fact]
+    public void ChooseAssetToPromote_OtherwiseTakesTheFirstWentLiveAsset()
+    {
+        Assert.Equal("intro", MediaRoutePlaybackService.ChooseAssetToPromote(new[] { "intro", "outro" }, "bumper"));
+        Assert.Equal("intro", MediaRoutePlaybackService.ChooseAssetToPromote(new[] { "intro", "outro" }, null));
+    }
+
+    [Fact]
+    public void ChooseAssetToPromote_NothingWentLivePromotesNothing()
+    {
+        // A clip that STAYED on Program (paused or playing) is not in the went-live list, so a
+        // Take must not touch it, even when it is the selected asset.
+        Assert.Null(MediaRoutePlaybackService.ChooseAssetToPromote(Array.Empty<string>(), "intro"));
+        Assert.Null(MediaRoutePlaybackService.ChooseAssetToPromote(Array.Empty<string>(), null));
+    }
+
+    [Fact]
     public void GoLiveLedger_OperatorRestartAdvancesTheGeneration()
     {
         var ledger = new MediaGoLiveLedger();

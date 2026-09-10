@@ -72,7 +72,9 @@ public interface ITransportHost
 
     void CopyPreviewRoutesToScene(string sceneId);
 
-    void PromoteProgramMediaRouteToPlayback();
+    // Hands a clip that WENT LIVE to the playback selection (and plays it). An empty list is a
+    // no-op: a clip that stayed on Program is never un-paused by a Take.
+    void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds);
 
     void RefreshPreviewRoutingState();
 
@@ -81,7 +83,8 @@ public interface ITransportHost
     IReadOnlyList<SourceRoute> GetResolvedProgramRoutes();
 
     // Replaces the per-Take playback-key bump: a clip's key advances only when it goes live.
-    void RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes);
+    // Returns the media asset ids that went live (entered Program) on this Take.
+    IReadOnlyList<string> RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes);
 
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task EnsureMediaCoreRunningAsync(string startingStatus);

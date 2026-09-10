@@ -153,8 +153,9 @@ public sealed class TransportCoordinator
                     _host.ActiveSceneId = takenSceneId;
                     _host.PreviewSceneId = previousProgramSceneId;
                 }
-                _host.RecordProgramMediaGoLive(previousProgramRoutes);
-                _host.PromoteProgramMediaRouteToPlayback();
+                var wentLive = _host.RecordProgramMediaGoLive(previousProgramRoutes);
+                // Go-live is the only event a source reacts to: promote only what entered Program.
+                if (wentLive.Count > 0) _host.PromoteProgramMediaRouteToPlayback(wentLive);
                 _host.RefreshPreviewRoutingState();
             }
             finally { _host.EndTakeMutation(); }

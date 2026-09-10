@@ -224,7 +224,8 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     void ITransportHost.CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesToScene(sceneId);
 
-    void ITransportHost.PromoteProgramMediaRouteToPlayback() => PromoteProgramMediaRouteToPlayback();
+    void ITransportHost.PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds) =>
+        PromoteProgramMediaRouteToPlayback(wentLiveMediaAssetIds);
 
     void ITransportHost.RefreshPreviewRoutingState() => RefreshPreviewRoutingState();
 
@@ -233,7 +234,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     // A rollback deliberately does NOT rewind the ledger: a clip that rolled on an unconfirmed
     // Take may really have gone to air, and reusing its old key could resume a stale decoder.
-    void ITransportHost.RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
+    IReadOnlyList<string> ITransportHost.RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
         _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
 
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---

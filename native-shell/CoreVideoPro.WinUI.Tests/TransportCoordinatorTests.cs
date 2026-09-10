@@ -458,7 +458,7 @@ public sealed class TransportCoordinatorTests
 
         Assert.Equal("interview", host.ActiveSceneId);          // preview promoted to program
         Assert.Equal("intro", host.PreviewSceneId);             // old program swapped back to preview
-        Assert.Equal(1, host.PromoteCallCount);
+        Assert.Equal(0, host.PromoteCallCount);                 // no media went live -> nothing promoted
         Assert.Equal(1, host.GoLiveRecords);
         Assert.Equal("Program updated", host.OutputStatus);
         Assert.Equal(1, host.SyncCallCount);
@@ -485,6 +485,40 @@ public sealed class TransportCoordinatorTests
     }
 
     [Fact]
+    public async Task Take_AClipThatStaysOnProgramIsNotPromoted()
+    {
+        // The operator paused clip X on Program, then Takes to a scene that also carries X.
+        // X did not go live, so the Take must not un-pause it (spec section 2: go-live is the
+        // only event a source reacts to).
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [ClipRoute("clip")];
+        host.ProgramRoutesByScene["interview"] = [ClipRoute("clip")];
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal("interview", host.ActiveSceneId);
+        Assert.Empty(host.LastWentLive!);
+        Assert.Equal(0, host.PromoteCallCount);
+    }
+
+    [Fact]
+    public async Task Take_PromotesOnlyTheClipThatWentLive()
+    {
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [ClipRoute("bed")];
+        host.ProgramRoutesByScene["interview"] = [ClipRoute("bed"), ClipRoute("sting")];
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal(1, host.PromoteCallCount);
+        Assert.Equal(new[] { "sting" }, host.LastPromoted);
+    }
+
+    [Fact]
     public async Task Take_CommitsPendingDraft_WhenPreviewAndProgramShareTheScene()
     {
         var (coordinator, _, host) = Build();
@@ -497,8 +531,28 @@ public sealed class TransportCoordinatorTests
         Assert.Equal(1, host.CopyPreviewRoutesCallCount);       // draft committed in place
         Assert.Equal("intro", host.ActiveSceneId);              // no scene swap
         Assert.Equal("intro", host.PreviewSceneId);
-        Assert.Equal(1, host.PromoteCallCount);
+        Assert.Equal(0, host.PromoteCallCount);                 // the draft carried no new media
     }
+
+    [Fact]
+    public async Task Take_CommittingADraftThatCuesAClipPromotesThatClip()
+    {
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "intro";
+        host.HasPendingCue = true;
+        host.ProgramRoutesByScene["intro"] = [];
+        host.DraftRoutesByScene["intro"] = [ClipRoute("sting")];
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal(1, host.CopyPreviewRoutesCallCount);
+        Assert.Equal(1, host.PromoteCallCount);
+        Assert.Equal(new[] { "sting" }, host.LastPromoted);
+    }
+
+    private static SourceRoute ClipRoute(string assetId) =>
+        new() { Id = $"route-{assetId}", Mode = SourceRouteMode.Fixed, ParticipantId = ShowInputRosterService.ToMediaSourceId(assetId) };
 
     // ---------------------------------------------------------------- Engine
 
@@ -602,6 +656,16 @@ public sealed class TransportCoordinatorTests
         // Program routes per scene id; GetResolvedProgramRoutes answers for ActiveSceneId.
         public Dictionary<string, IReadOnlyList<SourceRoute>> ProgramRoutesByScene { get; } = new(StringComparer.Ordinal);
 
+        // Preview-draft routes per scene id; CopyPreviewRoutesToScene commits them when present.
+        public Dictionary<string, IReadOnlyList<SourceRoute>> DraftRoutesByScene { get; } = new(StringComparer.Ordinal);
+
+        // A REAL ledger, so the went-live list the coordinator acts on is the production rule.
+        private readonly MediaGoLiveLedger _goLive = new();
+
+        public IReadOnlyList<string>? LastWentLive { get; private set; }
+
+        public IReadOnlyList<string>? LastPromoted { get; private set; }
+
         public int CopyPreviewRoutesCallCount { get; private set; }
 
         public int RollbackCount { get; private set; }
@@ -629,19 +693,29 @@ public sealed class TransportCoordinatorTests
         public void EndTakeMutation() { }
         public void RequestTakeReconciliation() { }
 
-        public void CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesCallCount++;
+        public void CopyPreviewRoutesToScene(string sceneId)
+        {
+            CopyPreviewRoutesCallCount++;
+            if (DraftRoutesByScene.TryGetValue(sceneId, out var draft)) ProgramRoutesByScene[sceneId] = draft;
+        }
 
-        public void PromoteProgramMediaRouteToPlayback() => PromoteCallCount++;
+        public void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
+        {
+            PromoteCallCount++;
+            LastPromoted = wentLiveMediaAssetIds;
+        }
 
         public void RefreshPreviewRoutingState() { }
 
         public IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
             ProgramRoutesByScene.TryGetValue(ActiveSceneId ?? string.Empty, out var routes) ? routes : [];
 
-        public void RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes)
+        public IReadOnlyList<string> RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes)
         {
             GoLiveRecords++;
             LastPreviousProgramRoutes = previousProgramRoutes;
+            LastWentLive = _goLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
+            return LastWentLive;
         }
 
         public Task EnsureMediaCoreRunningAsync(string startingStatus) => Task.CompletedTask;

@@ -84,6 +84,21 @@ public static class MediaRoutePlaybackService
         return new PlaybackSelection(selectedMediaAssetId, Playing: false);
     }
 
+    // Which clip a Take/Update hands to the playback selection. Only assets that WENT LIVE are
+    // candidates (spec section 2: go-live is the only event a source reacts to): the selected
+    // asset wins if it went live, otherwise the first that did. Nothing went live -> null, so a
+    // clip that merely STAYED on Program (paused or playing) is left exactly as the operator set it.
+    public static string? ChooseAssetToPromote(IReadOnlyList<string> wentLiveMediaAssetIds, string? selectedMediaAssetId)
+    {
+        if (!string.IsNullOrWhiteSpace(selectedMediaAssetId) &&
+            wentLiveMediaAssetIds.Contains(selectedMediaAssetId, StringComparer.Ordinal))
+        {
+            return selectedMediaAssetId;
+        }
+
+        return wentLiveMediaAssetIds.FirstOrDefault(id => !string.IsNullOrWhiteSpace(id));
+    }
+
     // MediaAsset carries no loop flag; a scene background is the only looping kind. Every
     // other asset is a clip: paused on its first frame in Preview, rolls when it goes live.
     public static bool IsLoopingAsset(MediaAsset asset) =>
