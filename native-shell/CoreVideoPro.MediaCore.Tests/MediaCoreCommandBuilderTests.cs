@@ -199,6 +199,40 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal(@"C:\media\intro.mp4", route.GetProperty("mediaAssetPath").GetString());
         Assert.Equal("media:clip-intro:live:2", route.GetProperty("mediaPlaybackKey").GetString());
         Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
+        Assert.False(route.GetProperty("mediaAssetLoop").GetBoolean());
+    }
+
+    [Fact]
+    public void SerializesTheRouteLoopFlagNextToPlaying()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "loop-program",
+            SceneRoutes =
+            [
+                new(
+                    "bg-1",
+                    "fixed",
+                    "mix",
+                    "media:bg-loop",
+                    MediaAssetId: "bg-loop",
+                    MediaAssetName: "Backdrop",
+                    MediaAssetKind: "background",
+                    MediaAssetPath: @"C:\media\bg.mp4",
+                    MediaPlaybackKey: "media:bg-loop",
+                    MediaAssetPlaying: true,
+                    MediaAssetLoop: true)
+            ],
+            Participants = Participants
+        });
+
+        var route = commands.Single(command => command.Type == "load-scene-graph")
+            .ExtensionData!["routes"]
+            .EnumerateArray()
+            .Single();
+
+        Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
+        Assert.True(route.GetProperty("mediaAssetLoop").GetBoolean());
     }
 
     [Fact]

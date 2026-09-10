@@ -25,7 +25,10 @@ public sealed record MediaCoreSceneRouteWire(
     string? MediaAssetKind = null,
     string? MediaAssetPath = null,
     string? MediaPlaybackKey = null,
-    bool MediaAssetPlaying = false);
+    bool MediaAssetPlaying = false,
+    // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
+    // Without it a looping route asset plays once and freezes on its last frame.
+    bool MediaAssetLoop = false);
 
 /// <summary>
 /// One ordered multiview tile source for <c>set-multiview-layout</c>. <paramref name="Kind"/> is
