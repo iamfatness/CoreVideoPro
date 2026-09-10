@@ -23,6 +23,7 @@
 
 #include "compositor/ComPtrLite.h"
 #include "compositor/CompositorLayout.h"
+#include "compositor/CompositorFaultInjection.h"  // test-only monitor-pass stall seam (G2)
 #include "compositor/CompositorOverlayRaster.h"  // extracted DirectWrite/WIC/D2D overlay raster
 #include "compositor/TilesDecorationParams.h"
 #include "compositor/CompositorShaders.h"  // extracted HLSL shader sources + pure shader/format helpers
@@ -278,6 +279,11 @@ class D3D11Compositor final : public ICompositor {
   // program pass is never affected.
   ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ProgramFrameSharedTexture out;
+    // G2 fault seam (test-only, inert in any shipped build — see
+    // compositor/CompositorFaultInjection.h). One relaxed atomic bool per pass.
+    if (::corevideo::compositor::monitorRenderStallArmed()) {
+      ::corevideo::compositor::invokeMonitorRenderStall(::corevideo::compositor::MonitorPass::Multiview);
+    }
     if (!pipelineReady_ || !device_ || !context_) {
       return out;
     }
@@ -364,6 +370,11 @@ class D3D11Compositor final : public ICompositor {
   // program pass is never affected.
   ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ProgramFrameSharedTexture out;
+    // G2 fault seam (test-only, inert in any shipped build — see
+    // compositor/CompositorFaultInjection.h). One relaxed atomic bool per pass.
+    if (::corevideo::compositor::monitorRenderStallArmed()) {
+      ::corevideo::compositor::invokeMonitorRenderStall(::corevideo::compositor::MonitorPass::Preview);
+    }
     if (!pipelineReady_ || !device_ || !context_) {
       return out;
     }
