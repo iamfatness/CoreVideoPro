@@ -1,5 +1,6 @@
 #include "core/MediaCore.h"
 #include "core/RenderedSceneAttributionPolicy.h"
+#include "core/SourceContinuityLedger.h"
 #include "core/TakeRecordPolicy.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomSubscriptionChurnPolicy.h"
@@ -393,11 +394,56 @@ corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId) {
       {"routes", corevideo::rpc::Json::Array{}}};
 }
 
-corevideo::rpc::Json emptyScene(const char* sceneId) {
+corevideo::rpc::Json emptyScene(const char* sceneId, const char* type = "load-scene-graph") {
   return corevideo::rpc::Json::Object{
-      {"type", "load-scene-graph"},
+      {"type", type},
       {"sceneId", sceneId},
       {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+// A scene with one explicitly routed Zoom guest: the core resolves it to a
+// layer with sourceId "zoom:<pid>" and participantId "<pid>" (RouteSourcePolicy).
+corevideo::rpc::Json zoomRouteScene(const char* sceneId, const char* participantId,
+                                    const char* type = "load-scene-graph") {
+  return corevideo::rpc::Json::Object{
+      {"type", type},
+      {"sceneId", sceneId},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "guest"}, {"mode", "fixed"}, {"participantId", participantId}}}}};
+}
+
+// A Zoom capture source whose frames are keyed by the BARE participant id, the
+// way the real engine keys them, each guest on its own frame clock. `restart`
+// reopens a guest (frame ids go back to 1); `pause` stops it delivering.
+class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+    std::vector<corevideo::modules::VideoFrame> frames;
+    for (const auto& participantId : participants) {
+      if (paused.count(participantId) > 0) continue;
+      corevideo::modules::VideoFrame frame;
+      frame.participantId = participantId;
+      frame.width = frame.height = 2;
+      frame.i420Width = frame.i420Height = 2;
+      frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
+      frame.frameId = ++frameIds[participantId];
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
+  void restart(const std::string& participantId) { frameIds[participantId] = 0; }
+  std::vector<std::string> participants{"7"};
+  std::set<std::string> paused;
+  std::map<std::string, std::int64_t> frameIds;
+};
+
+bool arrayContains(const corevideo::rpc::Json* node, const std::string& value) {
+  if (node == nullptr) return false;
+  for (const auto& item : node->asArray()) {
+    if (item.asString() == value) return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -478,6 +524,144 @@ TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
     if (id.asString() == "background:bg-1") named = true;
   }
   EXPECT_TRUE(named) << "missingSources did not name background:bg-1";
+}
+
+// Zoom frames are keyed by the BARE participant id while the plan layer carries
+// sourceId "zoom:<pid>": the record must judge the key the compositor matches
+// frames by, or every Zoom source is silently exempt from the rule.
+TEST(TakeRecord, AZoomGuestWhoseRendererRestartedAcrossTheTakeIsRebuilt) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto zoom = std::make_unique<CountingZoomSource>();
+  auto* zoomPtr = zoom.get();
+  modules.zoom = std::move(zoom);
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-b", "7")});
+  zoomPtr->restart("7");  // the engine rebuilt this guest's renderer on the take
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "rebuilt");
+  EXPECT_TRUE(take.get("sharedSourceRestarted")->asBool(false));
+  EXPECT_TRUE(arrayContains(take.get("restartedSources"), "7"))
+      << "restartedSources did not name the Zoom guest by its frame key";
+}
+
+TEST(TakeRecord, AZoomGuestWhoKeptRunningAcrossTheTakeIsACut) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  modules.zoom = std::make_unique<CountingZoomSource>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-b", "7")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "cut");
+  const auto& sources = take.get("sources")->asArray();
+  ASSERT_EQ(sources.size(), 1u);
+  EXPECT_EQ(sources[0].getString("sourceId"), "7");
+  EXPECT_EQ(sources[0].getNumber("generationBefore"), sources[0].getNumber("generationAfter"));
+}
+
+// A Take promotes Preview: a guest the operator was watching on Preview is a
+// source "before" the take even though Program never showed it.
+//
+// Deliberately a Zoom guest, not a media background: until slice-1 Task 3,
+// buildPreviewCompositorRenderPlan renames Preview MEDIA layers to
+// `preview:<id>` — a separate decoder — so a background on Preview is honestly
+// NOT the source Program cuts to. Zoom layers carry no bus prefix.
+TEST(TakeRecord, ASourceSeenOnPreviewBeforeTheTakeIsJudgedAsShared) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  modules.zoom = std::make_unique<CountingZoomSource>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      emptyScene("scene-a"), zoomRouteScene("scene-b", "7", "set-preview-scene")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      zoomRouteScene("scene-b", "7"), emptyScene("scene-a", "set-preview-scene")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_TRUE(arrayContains(take.get("fromSourceIds"), "7"))
+      << "the outgoing Preview plan's sources were not part of the take's before-set";
+  const auto& sources = take.get("sources")->asArray();
+  ASSERT_EQ(sources.size(), 1u);
+  EXPECT_EQ(sources[0].getString("sourceId"), "7");
+  EXPECT_EQ(take.getString("verdict"), "cut");
+}
+
+// "Expected a frame" means RUNNING at arm time, not ever observed: a guest whose
+// video stopped long before the take is not a cold start the take caused.
+TEST(TakeRecord, ASourceLongGoneBeforeTheTakeIsNotCalledMissing) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto zoom = std::make_unique<CountingZoomSource>();
+  auto* zoomPtr = zoom.get();
+  modules.zoom = std::move(zoom);
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  zoomPtr->paused.insert("7");  // the guest turned their camera off
+  for (int i = 0; i < corevideo::core::SourceContinuityLedger::absentTicksBeforeRestart + 10; ++i) {
+    core.renderDisplayTick();
+  }
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-b", "7")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_FALSE(take.get("sourceMissing")->asBool(true));
+  EXPECT_TRUE(take.get("missingSources")->asArray().empty())
+      << "a source absent long before the take was reported missing on its first frame";
+}
+
+// ...but a guest who was running right up to the take and has no frame on its
+// first program tick IS missing: the recency window must not excuse that.
+TEST(TakeRecord, AZoomGuestRunningAtTheTakeWithNoFirstFrameIsMissing) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto zoom = std::make_unique<CountingZoomSource>();
+  auto* zoomPtr = zoom.get();
+  modules.zoom = std::move(zoom);
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-b", "7")});
+  zoomPtr->paused.insert("7");  // torn down exactly on the take
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "rebuilt");
+  EXPECT_TRUE(arrayContains(take.get("missingSources"), "7"));
 }
 
 // ---------------------------------------------------------------------------

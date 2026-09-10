@@ -1857,6 +1857,17 @@ std::vector<std::string> renderPlanLayerIds(const modules::CompositorRenderPlan&
   return ids;
 }
 
+// The key a layer's frame is matched by in the gather — the compositor matches
+// frames by participantId, and the SourceContinuityLedger is keyed by the
+// frame's participantId. A Zoom layer carries sourceId "zoom:<pid>" but its
+// frames carry the BARE pid, so sourceId is the wrong key for it; media and
+// backgrounds have no participantId and are keyed by sourceId; capture carries
+// participantId == sourceId. One helper, so the take record's two id sites
+// (renderPlanSourceIds and the missing-source check) can never disagree.
+const std::string& frameKeyForLayer(const modules::CompositorRenderPlanLayer& layer) {
+  return !layer.participantId.empty() ? layer.participantId : layer.sourceId;
+}
+
 std::string joinLayerIds(const std::vector<std::string>& ids) {
   std::string joined;
   for (const auto& id : ids) {
@@ -1869,12 +1880,12 @@ std::string joinLayerIds(const std::vector<std::string>& ids) {
 }  // namespace
 
 std::vector<std::string> MediaCore::renderPlanSourceIds(const modules::CompositorRenderPlan& plan) {
-  // FRAME source ids — the key a VideoFrame carries as participantId and the
-  // SourceContinuityLedger is keyed by. A layer with no source (the wall's
-  // solid background, a colour slab) has no clock to judge.
+  // FRAME keys (frameKeyForLayer) — what a VideoFrame carries as participantId
+  // and the SourceContinuityLedger is keyed by. A layer with no source (a
+  // colour slab) has no clock to judge.
   std::vector<std::string> ids;
   for (const auto& layer : plan.layers) {
-    const auto& id = !layer.sourceId.empty() ? layer.sourceId : layer.participantId;
+    const auto& id = frameKeyForLayer(layer);
     if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
   }
   return ids;
@@ -1973,6 +1984,7 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
     }
   }
   record.continuityBefore = sourceContinuity_.snapshot(record.fromSourceIds);
+  record.armedAtTick = renderTickCounter_;
   record.armedAtFrame = lastProducedFrameNumber_;
   record.armedAtMs = static_cast<double>(monotonicMs());
   record.subscriptionChurnAtArm =
@@ -2024,14 +2036,22 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
   }
   // A source the take brought on air with no frame on its first program tick
   // is a cold start on air — but only where a frame was EXPECTED: a media
-  // layer (its decoder owes us a picture) or a source that was already running
-  // before the take. A guest who simply has no video yet is not a rebuild.
+  // layer (its decoder owes us a picture) or a source that was RUNNING when the
+  // take was armed. "Running" means seen within the ledger's own restart window
+  // of the arm tick; the ledger keeps a source's entry forever, so "ever seen"
+  // would call a guest whose camera went off minutes ago a cold start the take
+  // caused. A guest who simply has no video is not a rebuild.
+  const std::int64_t runningSinceTick =
+      record.armedAtTick - SourceContinuityLedger::absentTicksBeforeRestart;
   for (const auto& layer : programPlan.layers) {
-    const auto& id = !layer.sourceId.empty() ? layer.sourceId : layer.participantId;
+    const auto& id = frameKeyForLayer(layer);
     if (id.empty()) continue;
     auto& missing = record.observation.sourcesMissingOnFirstFrame;
     if (std::find(missing.begin(), missing.end(), id) != missing.end()) continue;
-    const bool expected = !layer.mediaAssetId.empty() || record.continuityBefore.count(id) > 0;
+    const auto before = record.continuityBefore.find(id);
+    const bool runningAtArm =
+        before != record.continuityBefore.end() && before->second.lastSeenTick >= runningSinceTick;
+    const bool expected = !layer.mediaAssetId.empty() || runningAtArm;
     if (!expected) continue;
     const bool hasFrame = std::any_of(frames.begin(), frames.end(),
                                       [&](const auto& frame) { return frame.participantId == id; });

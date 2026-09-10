@@ -705,6 +705,9 @@ class MediaCore {
     // SourceContinuityLedger state at arm time.
     std::vector<std::string> fromSourceIds;
     std::map<std::string, SourceContinuity> continuityBefore;
+    // renderTickCounter_ when armed: a source counts as RUNNING at arm time when
+    // its ledger lastSeenTick is within absentTicksBeforeRestart of this.
+    std::int64_t armedAtTick = 0;
     std::string fromWallKey, toWallKey;
     bool hadWallBefore = false;
     bool completed = false;
