@@ -2,6 +2,8 @@
 #include <deque>
 #include <limits>
 #include "modules/Interfaces.h"
+#include "modules/EncoderCapacityProbe.h"
+#include "modules/IsoEncoderAdmission.h"
 #include "modules/IsoEncoderPlacement.h"
 #include "modules/RecordingPtsClock.h"
 
@@ -991,6 +993,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.codec = "h264";
     session_.targetBitrateMbps = 18;
     session_.hardwareAccelerated = true;
+    // Warm the encoder-capacity probe for the default profile as early as the
+    // sink exists (engine start, long before any arm), on its own detached
+    // thread. By the time an operator hits Record the cache is populated, so
+    // the arm path only ever reads it.
+    EncoderCapacityCache::instance().prewarm(EncoderProbeKey{"h264", kDefaultWidth, kDefaultHeight, kDefaultFps});
   }
 
   ~MediaFoundationEncoderSink() override {
@@ -1017,6 +1024,16 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     if (!request.isoParticipantIds.empty()) {
       session_.isoParticipantIds = request.isoParticipantIds;
     }
+    // Re-warm for the workload this session will ACTUALLY use. Capacity is not a
+    // property of the machine alone — the same GPU that takes eight 1080p30
+    // sessions may take none at 4K60 — so the cache is keyed by the whole tuple
+    // and the probe is refreshed (rate-limited, and skipped outright while a
+    // recording is live) whenever the tuple changes.
+    EncoderCapacityCache::instance().prewarm(EncoderProbeKey{
+        canonicalVideoCodecName(request.videoCodec.empty() ? "h264" : request.videoCodec),
+        request.width > 0 ? request.width : kDefaultWidth,
+        request.height > 0 ? request.height : kDefaultHeight,
+        request.fps > 0 ? request.fps : kDefaultFps});
   }
 
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
@@ -1068,6 +1085,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingStatus = "encoding";
     if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
       session_.recordingStatus = "recording";
+      // A capacity probe transiently occupies hardware encoder sessions; it must
+      // never compete with a live show for them.
+      EncoderCapacityCache::instance().setRecordingActive(true);
       openRecordingWriters();
     }
     return session_;
@@ -1426,6 +1446,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     if (session_.recordingStatus == "recording" || session_.recordingStatus == "warning") {
       session_.recordingStatus = "stopped";
     }
+    // The encoder sessions are free again, so the capacity probe may run.
+    EncoderCapacityCache::instance().setRecordingActive(false);
   }
 
   OutputSession session() const override { return session_; }
@@ -1502,12 +1524,45 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Program owns the first hardware session. Place ISOs once at arm time:
     // overflow is forced onto the software MFT before any samples are written,
     // instead of discovering GPU exhaustion as zero-byte stems mid-show.
-    const auto isoPlacement = planIsoEncoders(
-        isoSourceIds, IsoEncoderMode::Auto,
-        IsoEncoderCapacity{.hardwareSessionLimit = 8,
-                           .reservedHardwareSessions = 1,
-                           .hardwareAvailable = true,
-                           .softwareAvailable = true});
+    //
+    // The capacity is PROBED, not assumed. This used to be the literal
+    // `8 / 1 / hardware:true / software:true`, which told a two-session laptop
+    // that it had eight and then spilled the difference onto the CPU without
+    // telling anybody. `lookup()` is non-blocking by contract — this call site
+    // runs on the command path — so a cold cache reports "pending" and we fall
+    // back to exactly the old assumed numbers, loudly.
+    const EncoderProbeKey probeKey{canonicalVideoCodecName(codec), width, height, fps};
+    const auto probe = EncoderCapacityCache::instance().lookup(probeKey);
+    const auto capacity = toIsoEncoderCapacity(probe, /*reservedForProgram=*/1);
+    isoCapacitySummary_ = probe.describe();
+
+    const auto isoPlacement = planIsoEncoders(isoSourceIds, IsoEncoderMode::Auto, capacity);
+
+    // ADMISSION. A spill that this machine cannot carry is refused BEFORE the
+    // show (program still records — same priority-1 treatment as the unwritable
+    // folder above); a spill it can carry arms but says so on
+    // `recording.warning` instead of hiding in the manifest. A capacity we only
+    // ASSUMED may warn but never refuse: nobody's show gets blocked because we
+    // could not read their driver.
+    IsoCapacitySource capacitySource;
+    capacitySource.probed = probe.probed;
+    capacitySource.status = encoderProbeStatusId(probe.status);
+    capacitySource.adapterDescription = probe.adapterDescription;
+    capacitySource.ceilingIsCreationProofOnly = probe.ceilingIsCreationProofOnly;
+    capacitySource.workload = probeKey.describe();
+    const auto admission =
+        evaluateIsoAdmission(isoPlacement, IsoEncoderMode::Auto, capacity, capacitySource);
+    isoAdmissionCode_ = admission.code;
+    if (!admission.message.empty()) {
+      ::corevideo::core::nativeLogf("[recording] iso-admission %s: %s | %s\n",
+                                    admission.code.c_str(), admission.message.c_str(),
+                                    isoCapacitySummary_.c_str());
+      raiseIsoWarning(admission.message);
+    }
+    if (!admission.armIso()) {
+      isoSel.clear();
+      isoSourceIds.clear();
+    }
 
     std::string error;
     // NV12 when the compositor supplies the full-resolution program tap (see
@@ -1662,6 +1717,14 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     out << "  \"containerMode\": \"fragmented-mp4\",\n";
     out << "  \"crashSafe\": true,\n";
     out << "  \"targetFragmentDurationMs\": 1000,\n";
+    // Encoder-capacity provenance: which GPU, what the probe could establish,
+    // and whether the ISO set was admitted, warned or refused. Post-hoc by
+    // nature — the operator-facing copy of this rides recording.warning at arm —
+    // but it is what makes an unwitnessed run diagnosable.
+    out << "  \"encoderCapacity\": \"" << jsonEscape(isoCapacitySummary_) << "\",\n";
+    out << "  \"isoAdmission\": \""
+        << jsonEscape(isoAdmissionCode_.empty() ? std::string("admitted") : isoAdmissionCode_)
+        << "\",\n";
     out << "  \"entries\": [\n";
     out << "    { \"sourceId\": \"program\", \"name\": \"Program\", \"path\": \""
         << jsonEscape(programPath.filename().string())
@@ -1830,6 +1893,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // A3: plugin content latency (atomic — the audio worker sets it, the writer
   // thread reads it; the PTS clock latches per session).
   std::atomic<int> audioContentLatencySamples_{0};
+  // What the encoder-capacity probe said when this session armed, and the
+  // admission verdict it produced. Both go into the session manifest so a
+  // support bundle from a machine nobody watched explains its own ISO
+  // placement — including "the probe never ran".
+  std::string isoCapacitySummary_;
+  std::string isoAdmissionCode_;
 };
 
 }  // namespace

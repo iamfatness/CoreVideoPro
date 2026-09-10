@@ -1,6 +1,8 @@
 ﻿#include "compositor/CompositorLayout.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
+
+#include "EncoderCapacityProbeTestSupport.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
@@ -3595,6 +3597,9 @@ TEST(HardwareEncoderAdapter, FactoryIsDisabledUnlessMediaFoundationGateIsEnabled
 
 TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArmed) {
 #if COREVIDEO_WITH_MF_ENCODER
+  // Pin an ample machine: this test is about the MP4 artifact, and the live
+  // capacity probe is asynchronous and GPU-dependent.
+  const corevideo::testing::ForcedEncoderCapacity ampleCapacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   ASSERT_NE(encoder, nullptr);
   const auto started = encoder->start({"recording"}, {"participant-1"});
