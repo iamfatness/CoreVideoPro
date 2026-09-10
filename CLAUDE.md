@@ -37,6 +37,14 @@ while the user is using the PC. Do not take over the desktop with Computer Use
 unless the user explicitly requests it again. Existing authorization for tests,
 spikes, and soaks in the designated test meeting remains in effect.
 
+## What to work on: `docs/BACKLOG.md` (owner-approved 2026-09-10)
+
+The single ranked list. Pick the top unblocked item there, not the latest incident; a new
+defect found mid-task gets a GitHub issue (label `backlog`) and a row in its tier, and the
+owner re-ranks. `docs/beta-plan.md` and `docs/FOCUS_PLAN.md` are superseded for ordering
+and status. A #419 architecture foundation lands on `main` only together with its first
+real consumer, never as an unwired island.
+
 ## What this app is
 
 Three processes, not a web app (plus an optional fourth, the OHG show engine host — see

@@ -1,5 +1,7 @@
 # CoreVideo Pro — Focus & Competitiveness Plan
 
+> **Superseded for ordering and status (2026-09-10):** the single ranked list is [`docs/BACKLOG.md`](BACKLOG.md), built from an evidence audit. Keep this document for its rationale; do not trust its checkboxes or status claims.
+
 _Status: owner decisions 2026-07-19. Companion to [`alpha-plan.md`](alpha-plan.md),
 [`beta-plan.md`](beta-plan.md), and [`COREVIDEO_PRO_PRODUCT_SPEC.md`](../COREVIDEO_PRO_PRODUCT_SPEC.md).
 This document is the **product spine**: what we build, what we freeze, and how we stay

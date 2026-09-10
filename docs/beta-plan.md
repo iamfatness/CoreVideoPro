@@ -1,5 +1,7 @@
 # CoreVideo Pro - Beta Plan
 
+> **Superseded for ordering and status (2026-09-10):** the single ranked list is [`docs/BACKLOG.md`](BACKLOG.md), built from an evidence audit. Keep this document for its rationale; do not trust its checkboxes or status claims.
+
 _Created 2026-07-12; rewritten 2026-07-18 after the alpha gates were re-scored (PRs
 #280, #286-#291, and the owner's 30-minute large soak completed 2026-07-18). Beta
 changes the question from "does the product work?" to "can someone who is not us
