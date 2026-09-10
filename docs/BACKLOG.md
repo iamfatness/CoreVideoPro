@@ -50,6 +50,7 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T1.5](https://github.com/iamfatness/CoreVideoPro/issues/432) | Investigate the ~45 s after a Zoom join with no core snapshots reaching the shell (core busy, recovered on its own) | 2/1 | unsized |
 | [T1.6](https://github.com/iamfatness/CoreVideoPro/issues/455) | Media clip audio never reaches the audio engine (fix in PR #458) | 1/3 | S |
 | [T1.7](https://github.com/iamfatness/CoreVideoPro/issues/457) | Triage: WinUI shell crash dump during a forced stop | 1 | unsized |
+| [T1.9](https://github.com/iamfatness/CoreVideoPro/issues/463) | Multiview sources 9 and 10 not clickable / undecorated (overlay capped PGM+PVW+sources at 10 total) | 1 | S |
 
 ## Tier 2 — first external install
 
