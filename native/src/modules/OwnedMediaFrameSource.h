@@ -44,7 +44,11 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     for (const auto& [id, layer] : videoRequests_) {
       const auto found = entries_.find(id); if (found == entries_.end()) continue;
       std::lock_guard<std::mutex> entryLock(found->second->mutex);
-      const auto& selected = found->second->video.select(timestamp100ns);
+      // PAUSE HOLDS THE ON-AIR FRAME (T1.2). A paused layer never advances
+      // the presentation, and neither does a resumed one until its worker
+      // has re-timed the frames prepared before the pause (clockFrozen).
+      const bool hold = !layer.mediaAssetPlaying || found->second->clockFrozen;
+      const auto& selected = hold ? found->second->video.hold() : found->second->video.select(timestamp100ns);
       found->second->wake = true; found->second->changed.notify_all();
       if (selected.hasPixels()) {
         result.push_back(selected); result.back().timestampMs = timestamp100ns / 10000;
@@ -76,6 +80,9 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
       std::lock_guard<std::mutex> entryLock(found->second->mutex);
       auto& entry = *found->second;
       entry.wake = true; entry.changed.notify_all();
+      // The video path has already paused this source (its layer reaches the
+      // entry every render tick): no PCM, not even silence, while paused.
+      if (!entry.layer.mediaAssetPlaying || entry.clockFrozen) { entry.audioNextTime = clock->second.nextTimeMs(); continue; }
       while (!entry.audio.empty() && entry.audio.front().timestampMs < target) entry.audio.pop_front();
       if (!entry.audio.empty() && entry.audio.front().timestampMs == target) {
         result.push_back(std::move(entry.audio.front())); entry.audio.pop_front();
@@ -103,10 +110,15 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
   }
  private:
   struct Entry {
-    CompositorRenderPlanLayer layer;
+    CompositorRenderPlanLayer layer; // Guarded by mutex: manage() refreshes it, the worker reads a copy.
     std::mutex mutex;
     std::condition_variable changed;
     bool wake = false;
+    // Set by the worker when it freezes the decoder clock for a pause that
+    // follows playback; cleared once it has resumed that clock and re-timed
+    // the prepared frames by the same paused duration (frozenAtMs -> resume).
+    bool clockFrozen = false;
+    int64_t frozenAtMs = 0;
     MediaVideoPresentation video;
     std::deque<AudioFrame> audio;
     int64_t audioNextTime = 0;
@@ -127,10 +139,16 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
       // requesting it here would start two dead decoders and call the pair a
       // playback-identity collision. Background stills keep the decoder path.
       if (layer.kind == "media-video" && isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath)) continue;
+      // Playing/paused is NOT part of the identity (T1.2): a pause must reach
+      // the running decoder as state, never open a new one. Restart from the
+      // top is a go-live policy carried by a new mediaPlaybackKey.
       const auto id = (layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId) + "|" +
-          layer.mediaAssetPath + "|" + layer.mediaAssetId + "|" + layer.mediaPlaybackKey + (layer.mediaAssetPlaying ? "|playing" : "|paused") +
+          layer.mediaAssetPath + "|" + layer.mediaAssetId + "|" + layer.mediaPlaybackKey +
           (layer.mediaAssetLoop ? "|loop" : "|once");
-      result[id] = layer;
+      // The FIRST request for a key wins. MediaCore passes Program's layers
+      // before Preview's, so a paused copy of the same source on Preview can
+      // never pause Program's roll.
+      result.emplace(id, layer);
     }
     return result;
   }
@@ -176,23 +194,54 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
           }
         });
       }
+      bool haveSyncedPlaying = false, syncedPlaying = false, playedOnce = false;
       while (!entry->stop.load()) {
         const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        CompositorRenderPlanLayer layer;
+        { std::lock_guard<std::mutex> lock(entry->mutex); layer = entry->layer; }
+        const bool playing = layer.mediaAssetPlaying;
+        // PAUSE / RESUME (T1.2). Every transition is carried to the decoder's
+        // clock at one instant (nowMs) and the SAME instant is recorded here,
+        // so the prepared frames are re-timed by exactly the paused duration
+        // the decoder's epoch moves by. One decoder throughout.
+        if (!haveSyncedPlaying || playing != syncedPlaying) {
+          if (prefetchDecoder) prefetchDecoder->syncMediaClock({layer}, nowMs);
+          std::lock_guard<std::mutex> lock(entry->mutex);
+          if (!playing && playedOnce && !entry->clockFrozen) {
+            entry->clockFrozen = true; entry->frozenAtMs = nowMs;
+          } else if (playing && entry->clockFrozen) {
+            entry->video.shift((nowMs - entry->frozenAtMs) * 10000);
+            entry->clockFrozen = false;
+          }
+          haveSyncedPlaying = true; syncedPlaying = playing;
+        }
+        if (playing) playedOnce = true;
+        // A paused clip that has rolled holds its on-air frame: prefetch
+        // nothing (no video, no audio) until it resumes. A clip that has
+        // never played (a cue poster) still decodes and holds one frame.
+        bool holding;
+        { std::lock_guard<std::mutex> lock(entry->mutex); holding = !playing && playedOnce && entry->video.hasFrame(); }
+        if (holding) {
+          std::unique_lock<std::mutex> lock(entry->mutex);
+          entry->changed.wait_for(lock, std::chrono::milliseconds(20), [&] { return entry->stop.load() || entry->wake; });
+          entry->wake = false;
+          continue;
+        }
         std::vector<ScheduledMediaVideo> video;
         bool videoRoom;
         { std::lock_guard<std::mutex> lock(entry->mutex); videoRoom = entry->video.hasRoom(); }
         if (entry->wantsVideo.load() && videoRoom) {
-          if (auto* prefetch = dynamic_cast<IMediaVideoPrefetch*>(decoder.get())) {
-            video = prefetch->prefetchMediaVideo({entry->layer}, nowMs);
+          if (prefetchDecoder) {
+            video = prefetchDecoder->prefetchMediaVideo({layer}, nowMs);
           } else {
-            for (auto& frame : decoder->pollMediaFrames({entry->layer}, nowMs)) video.push_back({std::move(frame), nowMs * 10000});
+            for (auto& frame : decoder->pollMediaFrames({layer}, nowMs)) video.push_back({std::move(frame), nowMs * 10000});
           }
         }
         bool audioRoom; int64_t audioTarget;
         { std::lock_guard<std::mutex> lock(entry->mutex);
           audioRoom = entry->audio.size() < 2; audioTarget = entry->audioNextTime + static_cast<int64_t>(entry->audio.size()) * 20;
         }
-        auto audio = entry->wantsAudio.load() && audioRoom ? decoder->pollMediaAudioFrames({entry->layer}, audioTarget) : std::vector<AudioFrame>{};
+        auto audio = playing && entry->wantsAudio.load() && audioRoom ? decoder->pollMediaAudioFrames({layer}, audioTarget) : std::vector<AudioFrame>{};
         auto warnings = decoder->warnings();
         {
           std::lock_guard<std::mutex> lock(entry->mutex);
@@ -255,6 +304,15 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
             found = entries_.emplace(id, entry).first;
             entry->wantsVideo.store(videoRequests_.count(id) != 0); entry->wantsAudio.store(audioRequests_.count(id) != 0);
             starting.emplace_back(id, entry);
+          }
+          {
+            // An existing entry keeps its decoder; a play/pause change reaches
+            // its worker as state (the key no longer carries it), and wakes it.
+            auto& entry = *found->second;
+            std::lock_guard<std::mutex> entryLock(entry.mutex);
+            if (entry.layer.mediaAssetPlaying != layer.mediaAssetPlaying) {
+              entry.layer = layer; entry.wake = true; entry.changed.notify_all();
+            }
           }
           found->second->wantsVideo.store(videoRequests_.count(id) != 0);
           const bool audioWanted = audioRequests_.count(id) != 0;
