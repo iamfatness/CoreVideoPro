@@ -11,9 +11,10 @@
 // program-only scenario would pass even with the old bug (it never exercises
 // Preview). This test instead models the real async decoder
 // (`OwnedMediaFrameSource`): no frame on a source id's FIRST poll, a flat
-// mid-grey frame on every later poll. The background is cued on PREVIEW
-// first (warming that decoder), then Taken onto Program — the exact shape of
-// the live-show defect fixed by the `preview:` rename removal in
+// dark frame on every later poll (dark, not mid-grey — see
+// ColdStartGreyMediaFrameSource below for why). The background is cued on
+// PREVIEW first (warming that decoder), then Taken onto Program — the exact
+// shape of the live-show defect fixed by the `preview:` rename removal in
 // `MediaCore::buildPreviewCompositorRenderPlan`.
 
 #include "core/MediaCore.h"
@@ -63,8 +64,14 @@ class NoCaptureDevice final : public corevideo::modules::ICaptureDevice {
 
 // Emulates the real async decoder's cold start: the first time a given
 // source id is polled it has no frame yet (still opening); every later poll
-// delivers a flat mid-grey (0x80 BGRA) 64x36 frame on that source's own
-// advancing frameId clock.
+// delivers a flat DARK (0x10 BGRA) 64x36 frame on that source's own
+// advancing frameId clock. Dark, not mid-grey: the cold-start placeholder
+// this test guards against (compositor::colorFromParticipantId) always draws
+// each channel independently in [72,199] — a "medium" debug palette centred
+// around ~135 — so a fill anywhere near that band risks landing inside the
+// placeholder's range by pure hash coincidence for some asset id. 0x10 (16)
+// sits far below the placeholder's entire possible range, so the two can
+// never be confused regardless of which id or hash produces the placeholder.
 class ColdStartGreyMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
  public:
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
@@ -81,13 +88,13 @@ class ColdStartGreyMediaFrameSource final : public corevideo::modules::IMediaFra
       frame.pixelStride = 64 * 4;
       frame.timestampMs = timestampMs;
       frame.frameId = ++frameIds_[sourceId];
-      // BGRA, 0x80 on every color channel, fully OPAQUE (alpha 0xff) — a real
+      // BGRA, 0x10 on every color channel, fully OPAQUE (alpha 0xff) — a real
       // decoded frame carries no meaningful alpha, and the preview blend is a
       // straight src-over (blendPixelBgra): a non-opaque source alpha blends
       // toward whatever the preview canvas already held, which would corrupt
       // the very luma this test measures.
       auto pixels = std::make_shared<std::vector<std::uint8_t>>(
-          static_cast<std::size_t>(64) * static_cast<std::size_t>(36) * 4u, 0x80);
+          static_cast<std::size_t>(64) * static_cast<std::size_t>(36) * 4u, 0x10);
       for (std::size_t i = 3; i < pixels->size(); i += 4) (*pixels)[i] = 0xff;
       frame.pixels = std::move(pixels);
       frames.push_back(std::move(frame));
@@ -153,19 +160,15 @@ TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
       sceneWithBackground("scene-b", "load-scene-graph"),
       sceneWithNoBackground("scene-a", "set-preview-scene")});
 
-  // Expected luma is computed from the grey fill itself (0x80 on every
-  // channel -> weights sum to 1.0 -> luma 128), not from a pre-take sample —
-  // the whole point is that the take must not restart the decoder.
-  constexpr double kExpectedGreyLuma = 0.114 * 0x80 + 0.587 * 0x80 + 0.299 * 0x80;
-  // Tolerance tightened from the brief's 2.0 to 1.0. Measured: the cold-start
-  // placeholder for THIS source id (colorFromParticipantId("media:bg"), which
-  // always draws r/g/b independently in [72,199]) happens to land at luma
-  // 129.649 — inside a 2.0 tolerance, so the probe would silently pass on the
-  // very defect it exists to catch. 1.0 preserves a wide margin around the
-  // real grey fill's exact, deterministic 128.0 (proven bit-exact across 10
-  // ticks on the fixed tree) while still failing on that placeholder. See the
-  // RED-proof evidence in task-6-report.md.
-  constexpr double kLumaTolerance = 1.0;
+  // Expected luma is computed from the fill itself (0x10 on every channel ->
+  // weights sum to 1.0 -> luma 16), not from a pre-take sample — the whole
+  // point is that the take must not restart the decoder.
+  constexpr double kExpectedGreyLuma = 0.114 * 0x10 + 0.587 * 0x10 + 0.299 * 0x10;
+  // The fill is deliberately dark (see ColdStartGreyMediaFrameSource above) so
+  // its luma (~16) sits far outside colorFromParticipantId's entire possible
+  // range (each channel in [72,199], luma centred ~135) — a designed margin,
+  // not a property of one hash output. 2.0 is comfortable here.
+  constexpr double kLumaTolerance = 2.0;
 
   for (int tick = 0; tick < 10; ++tick) {
     core.renderDisplayTick();
