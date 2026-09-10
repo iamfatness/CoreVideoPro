@@ -1,7 +1,5 @@
 #pragma once
 
-#include <set>
-#include <string>
 #include <string_view>
 
 namespace corevideo::core {
@@ -15,9 +13,20 @@ namespace corevideo::core {
 // "media" -> bus sends. The core matched strips and sends by exact id, so every
 // media frame was dropped by the FADER LAW and reached no bus.
 //
-// The alias: the "media" strip and "media" sends govern every `media:*` source.
-// Each clip keeps its own id everywhere else. An EXPLICIT per-clip strip or send
-// (one whose id is exactly `media:<assetId>`) still wins over the alias.
+// The alias: every `media:*` clip with no strip AND no send of its own is
+// PRE-SUMMED into one routed source keyed "media" before any strip processing,
+// so the "media" strip (fader, gate, compressor, inserts, VST) runs ONCE on the
+// combined signal — exactly like a hardware desk's media-return channel — and
+// the existing "media" sends route it. Clips keep their own ids everywhere
+// else (mixer-session meters, diagnostics).
+//
+// Explicit per-clip rows win. A clip with an exact `media:<assetId>` strip or
+// send stays a separate source (its own DSP chain). A clip with its own send
+// rows is routed by THOSE rows alone: a clip with its own send row does NOT
+// inherit missing cells from the generic "media" row. With no exact strip it is
+// still governed by the "media" strip (the FADER LAW holds through the alias).
+// A clip with its own strip but no send rows of its own is routed by the
+// "media" row.
 //
 // Do NOT fix this by making the shell send per-clip ids: the routing grid
 // un-routes any cell the core did not echo, so a "media" row would switch itself
@@ -25,25 +34,27 @@ namespace corevideo::core {
 inline constexpr std::string_view kMediaAudioControlSourceId = "media";
 inline constexpr std::string_view kMediaAudioSourcePrefix = "media:";
 
-// The id whose strip/sends govern `sourceId` when it has none of its own.
-// Identity for everything that is not a media clip.
-inline std::string audioControlSourceIdFor(const std::string& sourceId) {
-  if (sourceId.size() > kMediaAudioSourcePrefix.size() &&
-      std::string_view(sourceId).substr(0, kMediaAudioSourcePrefix.size()) == kMediaAudioSourcePrefix) {
-    return std::string(kMediaAudioControlSourceId);
-  }
-  return sourceId;
+// A per-clip media audio id: `media:<non-empty assetId>`.
+inline bool isMediaClipAudioSourceId(std::string_view sourceId) {
+  return sourceId.size() > kMediaAudioSourcePrefix.size() &&
+         sourceId.substr(0, kMediaAudioSourcePrefix.size()) == kMediaAudioSourcePrefix;
 }
 
-// The source id whose SENDS route `sourceId`: its own when any send names it
-// exactly (an explicit per-source route wins as a whole), otherwise its alias.
-// `sendSourceIds` is the set of sourceIds named by the routing sends.
-inline std::string routingSendSourceIdFor(const std::string& sourceId,
-                                          const std::set<std::string>& sendSourceIds) {
-  if (sendSourceIds.count(sourceId) != 0) {
-    return sourceId;
+// The id whose strip governs `sourceId` when it has none of its own. Returns
+// either a static constant or `sourceId` itself (so the view lives as long as
+// the argument does). Identity for everything that is not a media clip.
+inline std::string_view audioControlSourceIdFor(std::string_view sourceId) {
+  return isMediaClipAudioSourceId(sourceId) ? kMediaAudioControlSourceId : sourceId;
+}
+
+// Whether a PCM source is folded into the single "media" pre-sum: any media
+// clip without an exact strip or exact send, plus a legacy source literally
+// named "media" (so it cannot collide with the pre-sum's key).
+inline bool joinsMediaAudioPreSum(std::string_view sourceId, bool hasOwnStrip, bool hasOwnSend) {
+  if (sourceId == kMediaAudioControlSourceId) {
+    return true;
   }
-  return audioControlSourceIdFor(sourceId);
+  return isMediaClipAudioSourceId(sourceId) && !hasOwnStrip && !hasOwnSend;
 }
 
 }  // namespace corevideo::core

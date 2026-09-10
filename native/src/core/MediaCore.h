@@ -240,6 +240,18 @@ class MediaCore {
   // — nothing outside native/tests/ calls it.
   [[nodiscard]] const modules::ProgramFrame& lastProgramFrameForTest() const { return lastProgramFrame_; }
 
+  // Test seam (T1.6): the source ids that own persistent channel DSP state —
+  // proves the "media" pre-sum runs ONE strip chain instead of one per clip.
+  // Worker-domain map; only the single-threaded test path may call this.
+  [[nodiscard]] std::vector<std::string> channelDspStateIdsForTest() const {
+    std::vector<std::string> ids;
+    for (const auto& [id, state] : channelDspStates_) {
+      (void)state;
+      ids.push_back(id);
+    }
+    return ids;
+  }
+
   // T1: the PROGRAM-bus tiles wall parsed off the load-scene-graph command,
   // and the scene validation warnings a bad/unrecognised value gets recorded
   // into (loud, never silent — see parseTilesLayer in MediaCore.cpp).
@@ -932,6 +944,16 @@ class MediaCore {
   // consumed only inside runAudioOutputWork). Without this, biquads/envelopes
   // restart every 20ms block = audible buzz (owner-reported mic distortion).
   std::map<std::string, modules::ChannelDspState> channelDspStates_;
+  // T1.6: the "media" pre-sum — every `media:*` clip without its own strip/send
+  // summed (stereo, mono upmixed) into ONE routed source before the strip
+  // (core/AudioControlSourcePolicy.h). Worker domain (audioOutputMutex_); the
+  // buffer keeps its capacity across ticks, so the steady state allocates nothing.
+  std::vector<float> mediaPreSumPcm_;
+  // The pre-sum's measured input level (published from the worker like
+  // audioCompGainReductionDbBySource_), metered on the "media" strip.
+  bool mediaPreSumMetered_ = false;
+  double mediaPreSumRmsLevel_ = 0.0;
+  double mediaPreSumPeakLevel_ = 0.0;
   // C7d: per-bus limiter gain state (same block-continuity requirement).
   std::map<std::string, modules::LimiterState> busLimiterGains_;
   // Bus-send re-limit state: summing a bus into a target can exceed the
@@ -1079,6 +1101,10 @@ class MediaCore {
     bool monitorFeedbackRisk = false;
     // C7b: per-source compressor gain reduction this tick (dB, >0 only).
     std::map<std::string, double> compGainReductionDbBySource;
+    // T1.6: the "media" pre-sum's measured input level this tick.
+    bool mediaPreSumMetered = false;
+    double mediaPreSumRmsLevel = 0.0;
+    double mediaPreSumPeakLevel = 0.0;
     bool recordingActive = false;
     // Encoder-side recording warning (e.g. "Media Foundation dropped program
     // audio: ..."), published into recordingWarning_ so the snapshot's

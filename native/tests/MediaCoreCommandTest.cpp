@@ -23,6 +23,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -2933,22 +2934,24 @@ const corevideo::rpc::Json* audioMixParticipant(const corevideo::rpc::Json& stat
 
 TEST(AudioControlSourcePolicy, MediaClipsAreGovernedByTheShellMediaControls) {
   using corevideo::core::audioControlSourceIdFor;
-  using corevideo::core::routingSendSourceIdFor;
-  EXPECT_EQ(audioControlSourceIdFor("media:clip-intro"), "media");
-  EXPECT_EQ(audioControlSourceIdFor("media:media-5f953bd23617"), "media");
-  EXPECT_EQ(audioControlSourceIdFor("media"), "media");
-  EXPECT_EQ(audioControlSourceIdFor("media:"), "media:");  // no asset id: not a clip
-  EXPECT_EQ(audioControlSourceIdFor("mediafoo"), "mediafoo");
-  EXPECT_EQ(audioControlSourceIdFor("zoom-mix"), "zoom-mix");
-  EXPECT_EQ(audioControlSourceIdFor("capture:cam-1"), "capture:cam-1");
-  EXPECT_EQ(audioControlSourceIdFor("background:clip"), "background:clip");
+  using corevideo::core::joinsMediaAudioPreSum;
+  using std::string_view_literals::operator""sv;
+  EXPECT_EQ(audioControlSourceIdFor("media:clip-intro"), "media"sv);
+  EXPECT_EQ(audioControlSourceIdFor("media:media-5f953bd23617"), "media"sv);
+  EXPECT_EQ(audioControlSourceIdFor("media"), "media"sv);
+  EXPECT_EQ(audioControlSourceIdFor("media:"), "media:"sv);  // no asset id: not a clip
+  EXPECT_EQ(audioControlSourceIdFor("mediafoo"), "mediafoo"sv);
+  EXPECT_EQ(audioControlSourceIdFor("zoom-mix"), "zoom-mix"sv);
+  EXPECT_EQ(audioControlSourceIdFor("capture:cam-1"), "capture:cam-1"sv);
+  EXPECT_EQ(audioControlSourceIdFor("background:clip"), "background:clip"sv);
 
-  const std::set<std::string> genericOnly{"media", "zoom-mix"};
-  EXPECT_EQ(routingSendSourceIdFor("media:a", genericOnly), "media");
-  EXPECT_EQ(routingSendSourceIdFor("zoom-mix", genericOnly), "zoom-mix");
-  const std::set<std::string> withExplicitClip{"media", "media:a"};
-  EXPECT_EQ(routingSendSourceIdFor("media:a", withExplicitClip), "media:a");
-  EXPECT_EQ(routingSendSourceIdFor("media:b", withExplicitClip), "media");
+  // Pre-sum membership: a clip joins unless it has its own strip or send row.
+  EXPECT_TRUE(joinsMediaAudioPreSum("media:a", false, false));
+  EXPECT_FALSE(joinsMediaAudioPreSum("media:a", true, false));
+  EXPECT_FALSE(joinsMediaAudioPreSum("media:a", false, true));
+  EXPECT_TRUE(joinsMediaAudioPreSum("media", true, true));  // legacy id cannot collide with the pre-sum
+  EXPECT_FALSE(joinsMediaAudioPreSum("zoom-mix", false, false));
+  EXPECT_FALSE(joinsMediaAudioPreSum("media:", false, false));
 }
 
 // T1.6 / #455, RED before the alias: with the console the shell ALWAYS syncs
@@ -2984,7 +2987,7 @@ TEST(MediaCoreCommand, SceneMediaAudioReachesMasterThroughTheShellMediaStrip) {
   EXPECT_NE(mediaStrip->getString("status"), "waiting-for-pcm");
 
   // The alias respects the fader: muting the "media" strip silences the clip.
-  mediaCore.applyCommands(corevideo::rpc::Json::Array{
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media", true), shellAudioStrip("zoom-mix")}),
   });
   const auto mutedState = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
@@ -3003,7 +3006,7 @@ TEST(MediaCoreCommand, TwoMediaClipsBothSumThroughTheOneMediaStrip) {
   modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
-  mediaCore.applyCommands(corevideo::rpc::Json::Array{
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "load-scene-graph"},
           {"sceneId", "two-clips"},
@@ -3026,7 +3029,7 @@ TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
     modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
     corevideo::core::MediaCore mediaCore(std::move(modules));
     // Generic Media strip muted, the clip's own strip open: the clip is audible.
-    mediaCore.applyCommands(corevideo::rpc::Json::Array{
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
         corevideo::rpc::Json::Object{
             {"type", "load-scene-graph"},
             {"sceneId", "explicit-strip"},
@@ -3043,7 +3046,7 @@ TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
     modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
     corevideo::core::MediaCore mediaCore(std::move(modules));
     // The clip's own send (aux-1 only) replaces the generic media sends for it.
-    mediaCore.applyCommands(corevideo::rpc::Json::Array{
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
         corevideo::rpc::Json::Object{
             {"type", "load-scene-graph"},
             {"sceneId", "explicit-send"},
@@ -3057,6 +3060,80 @@ TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
     EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm("aux-1")) > 0.05f);
     EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) < 0.001f);
   }
+}
+
+// A clip with its own send row but no strip of its own is still governed by the
+// "media" strip: muting it silences the clip on EVERY bus (the FADER LAW holds
+// through the alias strip), including the clip's own explicit send.
+TEST(MediaCoreCommand, AClipWithItsOwnSendIsStillSilencedByTheMutedMediaStrip) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "own-send-muted-strip"},
+          {"routes", corevideo::rpc::Json::Array{playingMediaRoute("media-main", "clip-intro")}},
+      },
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media", true), shellAudioStrip("zoom-mix")}),
+      shellMediaRouting(corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "aux-1"}, {"gainDb", 0},
+                                       {"busPluginInserts", corevideo::rpc::Json::Array{}}},
+          corevideo::rpc::Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "master"}, {"gainDb", 0},
+                                       {"busPluginInserts", corevideo::rpc::Json::Array{}}}}),
+  });
+  for (const char* busId : {"master", "pgm-l", "pgm-r", "stream", "mon", "aux-1"}) {
+    EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm(busId)) < 0.001f) << busId;
+  }
+}
+
+// Fix round 1 (Important): the "media" strip processes the MIX of its clips,
+// not each clip separately. A compressor at -12 dBFS (hard knee) leaves one
+// 0.2-peak clip (-14 dBFS) alone but must bite on two summed (0.4, -8 dBFS) —
+// per-clip processing would report no gain reduction in either case. And the
+// strip chain runs once: one persistent DSP state, keyed "media".
+TEST(MediaCoreCommand, TheMediaStripCompressesTheSumOfItsClipsInOneChain) {
+  const auto compressedMediaStrip = [] {
+    return corevideo::rpc::Json::Object{
+        {"participantId", "media"},
+        {"inputLevel", 0},
+        {"muted", false},
+        {"noiseSuppression", false},
+        {"manualGainDb", 0},
+        {"pan", 0},
+        {"solo", false},
+        {"pluginInserts", corevideo::rpc::Json::Array{"compressor"}},
+        {"insertSettings",
+         corevideo::rpc::Json::Object{
+             {"compressor", corevideo::rpc::Json::Object{{"thresholdDb", -12}, {"kneeDb", 0}, {"ratio", 4}}}}},
+    };
+  };
+  const auto runWithClips = [&](corevideo::rpc::Json::Array routes, std::vector<std::string>* dspIds) {
+    auto modules = corevideo::modules::createStubModules();
+    modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+    corevideo::core::MediaCore mediaCore(std::move(modules));
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "compressed-media"},
+                                     {"routes", std::move(routes)}},
+        shellAudioMix(corevideo::rpc::Json::Array{compressedMediaStrip(), shellAudioStrip("zoom-mix")}),
+        shellMediaRouting(),
+    });
+    const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+    if (dspIds != nullptr) *dspIds = mediaCore.channelDspStateIdsForTest();
+    const auto* strip = audioMixParticipant(state, "media");
+    return strip == nullptr ? -1.0 : strip->get("gainReductionDb")->asNumber();
+  };
+
+  const double oneClipGr = runWithClips(corevideo::rpc::Json::Array{playingMediaRoute("clip-a", "clip-a")}, nullptr);
+  std::vector<std::string> dspIds;
+  const double twoClipGr = runWithClips(corevideo::rpc::Json::Array{playingMediaRoute("clip-a", "clip-a"),
+                                                                    playingMediaRoute("clip-b", "clip-b")},
+                                        &dspIds);
+  EXPECT_EQ(oneClipGr, 0.0);
+  EXPECT_TRUE(twoClipGr > 0.5) << "the Media strip compressor must react to the combined clips";
+  EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media") != dspIds.end());
+  EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media:clip-a") == dspIds.end());
+  EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media:clip-b") == dspIds.end());
 }
 
 #if !COREVIDEO_STUB && COREVIDEO_WITH_MF_ENCODER
