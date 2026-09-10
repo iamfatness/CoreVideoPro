@@ -237,13 +237,13 @@ public sealed partial class ShowMultiviewHost : UserControl
 
     private void OnOverlaySizeChanged(object sender, SizeChangedEventArgs e) => PositionOverlay();
 
-    // Builds ≤10 transparent click buttons (one per tile). Called only when the tile-rect LAYOUT
+    // Builds one transparent click button per tile (PGM + PVW + ≤10 sources). Called only when the tile-rect LAYOUT
     // changes (structural), so there is no per-frame / per-active-speaker UI churn.
     private void RebuildOverlay()
     {
         ClickOverlay.Children.Clear();
 
-        var tiles = _tiles.Take(10).ToList();
+        var tiles = MultiviewOverlayFormatting.SelectOverlayTiles(_tiles);
         EmptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         foreach (var tile in tiles)
@@ -283,7 +283,7 @@ public sealed partial class ShowMultiviewHost : UserControl
         DecorOverlay.Children.Clear();
         _meters.Clear();
 
-        var tiles = _tiles.Take(10).ToList();
+        var tiles = MultiviewOverlayFormatting.SelectOverlayTiles(_tiles);
         foreach (var tile in tiles)
         {
             var decor = new Grid { Tag = tile, IsHitTestVisible = false };

@@ -829,6 +829,25 @@ rpc::Json MediaCore::sessionState() const {
           {"eventDrainTotalNs", static_cast<double>(renderWorkerDrainTotalNs_.load(std::memory_order_relaxed))},
           {"eventDrainMaximumNs", static_cast<double>(renderWorkerDrainMaximumNs_.load(std::memory_order_relaxed))},
           {"gpuCompletionVerified", false}, {"deliveryVerified", false}}},
+      // T1.4 monitor load-shedding (core/MonitorShedPolicy.h). Published
+      // unconditionally — divisor 1 / level 0 is the healthy state, and a node
+      // that only appeared while shedding would be absent in exactly the case
+      // worth comparing against.
+      {"monitorShed", rpc::Json::Object{
+          {"divisor", monitorShed_.divisor()},
+          {"level", monitorShed_.level()},
+          {"enteredCount", static_cast<double>(monitorShed_.enteredCount())},
+          {"shedTicks", static_cast<double>(monitorShed_.shedTicks())},
+          {"lastReason", std::string(monitorShed_.lastReason())},
+          // The observation that caused the last divisor change: a shed with a
+          // big monitorCycleMs was monitor-bound; one with a big programMs was
+          // Program- or GPU-bound (see MonitorShedPolicy.h — both shed, by design).
+          {"lastTransitionProgramMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().programCostNs) / 1e6},
+          {"lastTransitionMonitorCycleMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().monitorCycleCostNs) / 1e6},
+          {"lastTransitionBudgetMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().budgetNs) / 1e6}}},
       {"audio", rpc::Json::Object{
           {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
           {"observed", audioLastProgressNs > 0},
@@ -5792,6 +5811,10 @@ void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnch
 }
 
 void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTime100ns) {
+  // T1.4: the monitor load-shedding policy needs this tick's total render cost
+  // on EVERY tick, not just when verbose stage diagnostics are on. One clock
+  // read here and a few around the monitor passes below; nothing else.
+  const auto tickStartTp = std::chrono::steady_clock::now();
   if (mediaPresentationTime100ns < 0) {
     mediaPresentationTime100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
@@ -6330,6 +6353,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
   markStage(s_stageProgramUs, 2);
+  const auto monitorStartTp = std::chrono::steady_clock::now();
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
@@ -6354,9 +6378,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // is expected to run at full rate. Kept as a named constant so it can be
   // raised again if a slower machine ever needs it.
   constexpr int kMultiviewTickDivisor = 1;
+  // T1.4 MONITOR LOAD-SHEDDING. Program `render()` and both monitor passes
+  // share this thread and one D3D immediate context, so a monitor pass that
+  // overruns takes its time straight out of Program (measured, unmitigated: a
+  // sustained 25ms Preview stall cost Program ~36% of its frames, 121 -> 77 per
+  // 2s — MonitorRenderFaultInjectionTest).
+  // `kMultiviewTickDivisor` stays the HEALTHY cadence; the policy multiplies
+  // it by 1/2/3 when the tick cannot fit the Program frame budget, and the
+  // SAME divisor applies to the preview pass below. Program always renders.
+  // The two passes run on different phases of the cycle (multiview on 0,
+  // preview on 1) so a shed cycle spreads the monitor cost over its ticks
+  // instead of stacking both passes on one. Structural changes and the first
+  // tick still render immediately (the *StructureEmitted_ gates).
+  const auto monitorDivisor = static_cast<std::uint64_t>(kMultiviewTickDivisor * monitorShed_.divisor());
+  const bool multiviewActive = !multiviewSources_.empty() || multiviewHasProgramPreview;
   const bool multiviewDue = !multiviewStructureEmitted_ ||
-                            (multiviewTickCounter_ % kMultiviewTickDivisor) == 0;
-  if ((!multiviewSources_.empty() || multiviewHasProgramPreview) && multiviewDue) {
+                            (multiviewTickCounter_ % monitorDivisor) == 0;
+  if (multiviewActive && multiviewDue) {
     auto multiviewPlan = buildMultiviewRenderPlan(videoFrames);
     multiviewPlan.skipCpuReadback = true;
     lastProgramFrame_.multiviewSharedTexture = modules_.compositor->renderMultiview(multiviewPlan, videoFrames);
@@ -6380,6 +6418,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastMultiviewTiles_ = lastProgramFrame_.multiviewTiles;
     lastMultiviewWidth_ = lastProgramFrame_.multiviewWidth;
     lastMultiviewHeight_ = lastProgramFrame_.multiviewHeight;
+    // A compositor that exports no multiview handle never sets
+    // multiviewStructureEmitted_, so `multiviewDue` forces this pass EVERY tick:
+    // the shed cannot touch it. Its cost is not sheddable and must not drive the
+    // decision (it would pin the divisor up while shedding nothing).
+    const bool multiviewSheddable = !lastMultiviewTexture_.sharedHandleHex.empty() ||
+                                    lastMultiviewTexture_.iosurfaceId != 0;
+    lastMultiviewPassNs_ = multiviewSheddable
+        ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - monitorStartTp).count()
+        : 0;
   } else if (lastMultiviewTexture_.iosurfaceId != 0 ||
              !lastMultiviewTexture_.sharedHandleHex.empty()) {
     // Throttled tick: the program frame is rebuilt every tick, so without this
@@ -6393,13 +6441,26 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastProgramFrame_.multiviewWidth = lastMultiviewWidth_;
     lastProgramFrame_.multiviewHeight = lastMultiviewHeight_;
   }
+  if (!multiviewActive) {
+    lastMultiviewPassNs_ = 0;
+  }
   markStage(s_stageMultiviewUs, 3);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
   // (mirrors the program shared texture). Opt-in â€” only for a genuinely multi-layer
   // preview scene (a single passthrough source stays on the cheap WinUI single-source
   // path). Reuses the same videoFrames, stays on the light videoOnly tick (no CPU
   // readback), and never touches the audio/output lock.
-  if (hasPreviewScene()) {
+  const bool previewActive = hasPreviewScene();
+  const bool previewCached = lastPreviewTexture_.iosurfaceId != 0 ||
+                             !lastPreviewTexture_.sharedHandleHex.empty();
+  // Phase 1 of the shed cycle (see the multiview block). At divisor 1 this is
+  // `% 1 == 0`, i.e. every tick — the pre-T1.4 behaviour exactly. Nothing
+  // cached yet (first composite, or a compositor that exports no handle) also
+  // forces the pass, so a shed can never strand the preview on nothing.
+  const bool previewDue = !previewStructureEmitted_ || !previewCached ||
+                          (multiviewTickCounter_ % monitorDivisor) == (1u % monitorDivisor);
+  if (previewActive && previewDue) {
+    const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
     previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
     previewPlan.skipCpuReadback = true;
@@ -6414,14 +6475,42 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
                    lastProgramFrame_.previewSharedTexture.sharedHandleHex.c_str(),
                    previewPlan.width, previewPlan.height);
     }
-  } else if (lastProgramFrame_.previewSharedTexture.width != 0) {
-    // Preview scene retired / became single-source: clear the handle so the WinUI
-    // falls back to the single-source preview path and the event re-emits on return.
-    lastProgramFrame_.previewSharedTexture = {};
-    lastProgramFrame_.previewWidth = 0;
-    lastProgramFrame_.previewHeight = 0;
-    previewStructureEmitted_ = false;
+    // Cache for the shed ticks below.
+    lastPreviewTexture_ = lastProgramFrame_.previewSharedTexture;
+    lastPreviewWidth_ = lastProgramFrame_.previewWidth;
+    lastPreviewHeight_ = lastProgramFrame_.previewHeight;
+    // Same rule as multiview: with no exported handle `!previewCached` forces
+    // the pass on every tick, so it is not sheddable and its cost must not feed
+    // the decision.
+    const bool previewSheddable = !lastPreviewTexture_.sharedHandleHex.empty() ||
+                                  lastPreviewTexture_.iosurfaceId != 0;
+    lastPreviewPassNs_ = previewSheddable
+        ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - previewStartTp).count()
+        : 0;
+  } else if (previewActive) {
+    // Shed tick: the composite is skipped, its published identity is not —
+    // exactly the multiview rule above. Without this the preview handle reads
+    // EMPTY on every skipped tick, and a consumer sampling the snapshot (or a
+    // fresh shell connecting mid-shed) loses the preview monitor.
+    lastProgramFrame_.previewSharedTexture = lastPreviewTexture_;
+    lastProgramFrame_.previewWidth = lastPreviewWidth_;
+    lastProgramFrame_.previewHeight = lastPreviewHeight_;
+  } else {
+    lastPreviewPassNs_ = 0;
+    lastPreviewTexture_ = {};
+    lastPreviewWidth_ = 0;
+    lastPreviewHeight_ = 0;
+    if (lastProgramFrame_.previewSharedTexture.width != 0) {
+      // Preview scene retired / became single-source: clear the handle so the WinUI
+      // falls back to the single-source preview path and the event re-emits on return.
+      lastProgramFrame_.previewSharedTexture = {};
+      lastProgramFrame_.previewWidth = 0;
+      lastProgramFrame_.previewHeight = 0;
+      previewStructureEmitted_ = false;
+    }
   }
+  const auto monitorEndTp = std::chrono::steady_clock::now();
   markStage(s_stagePreviewUs, 4);
   if (collectStageDiagnostics && ++s_stageTicks >= 120) {
     const auto buffer = modules_.compositor->programBufferDiagnostics();
@@ -6487,6 +6576,32 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       lastFrameEventEmit_ = nowTp;
     }
     markStage(s_stageEmitUs, 5);
+  }
+  // T1.4: feed the monitor load-shedding policy. Display ticks only — they are
+  // the paced 60Hz production timeline the budget describes. A synthetic full
+  // tick (a direct caller with no render worker) carries CPU readback and audio
+  // work that is not render cost, and would only make ordinary unit tests
+  // timing-dependent. A few integer ops under the lock we already hold; the log
+  // line is per STATE CHANGE, never per tick.
+  if (videoOnly) {
+    const auto tickEndTp = std::chrono::steady_clock::now();
+    MonitorShedObservation shedObservation;
+    shedObservation.budgetNs = 1'000'000'000LL / std::max(1, outputFps_);
+    shedObservation.programCostNs =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(tickEndTp - tickStartTp).count() -
+        std::chrono::duration_cast<std::chrono::nanoseconds>(monitorEndTp - monitorStartTp).count();
+    shedObservation.monitorCycleCostNs = lastMultiviewPassNs_ + lastPreviewPassNs_;
+    const auto transition = monitorShed_.observe(shedObservation);
+    if (transition != MonitorShedTransition::None) {
+      ::corevideo::core::nativeLogf(
+          "[monitor-shed] %s divisor=%d level=%d reason=%s programMs=%.2f monitorCycleMs=%.2f "
+          "budgetMs=%.2f entered=%lld shedTicks=%lld\n",
+          MonitorShedPolicy::transitionName(transition), monitorShed_.divisor(), monitorShed_.level(),
+          monitorShed_.lastReason(), shedObservation.programCostNs / 1e6,
+          shedObservation.monitorCycleCostNs / 1e6, shedObservation.budgetNs / 1e6,
+          static_cast<long long>(monitorShed_.enteredCount()),
+          static_cast<long long>(monitorShed_.shedTicks()));
+    }
   }
   if (collectStageDiagnostics) {
     static std::array<int64_t, 6> peakStages{};

@@ -617,6 +617,7 @@ if(BUILD_TESTING)
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
+    tests/MonitorShedPolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp
     tests/ProgramPixelContinuityTest.cpp
     tests/SourceContinuityLedgerTest.cpp

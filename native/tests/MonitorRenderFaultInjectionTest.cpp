@@ -10,19 +10,27 @@
 //   * The seam is inert until armed, and names the pass it fired on (portable, no GPU).
 //   * A one-off monitor stall costs Program only the slots it spans, and Program returns
 //     to its unfaulted rate on its own. The cost is bounded and transient.
-//   * A SUSTAINED monitor stall cuts Program delivery in proportion to it (measured:
-//     a 25ms Preview overrun HALVES Program). Program render and the monitor passes
-//     share one render thread and one D3D immediate context, so this is a real, measured
-//     coupling — the OPPOSITE of the property G2 asks for. That isolation does not exist
-//     today; the monitor-compositor split in docs/production-realtime-completion-plan.md
-//     is what would create it, and these cases are the instrument for that.
+//   * A SUSTAINED monitor stall, driven through the real MediaCore render tick, no
+//     longer takes Program's frames: the T1.4 monitor load-shedding policy
+//     (core/MonitorShedPolicy.h) drops the monitor passes to every 2nd/3rd tick and
+//     Program keeps >= 90% of its unfaulted rate. Driven raw (no shed), a true 25ms
+//     Preview stall still costs Program ~36% (121 -> 77 produced per 2s, 1ms timer);
+//     the originally documented "halves Program" (121 -> 65) was measured at the
+//     default ~15.6ms timer tick, where the seam really slept ~31ms. That is a MITIGATION, not
+//     isolation: Program render and the monitor passes still share one render thread
+//     and one D3D immediate context, so a stall longer than the shed can absorb still
+//     costs Program frames. The monitor-compositor split in
+//     docs/production-realtime-completion-plan.md is what would create isolation, and
+//     these cases are the instrument for that.
 //
 // The program buffer does NOT hide any of this. It protects DELIVERY timing for frames
 // that were produced; a slot the render thread never reached because a monitor pass was
 // stalled has no packet for the buffer to schedule.
 
 #include "compositor/CompositorFaultInjection.h"
+#include "core/MediaCore.h"
 #include "modules/Interfaces.h"
+#include "rpc/Json.h"
 
 #include <gtest/gtest.h>
 
@@ -31,6 +39,7 @@
 #include <cstdio>
 #include <chrono>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -103,7 +112,33 @@ TEST(MonitorRenderFaultInjection, TheSeamNamesWhichMonitorPassItFiredOn) {
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <timeapi.h>
+
 namespace {
+
+// The product's render thread runs under timeBeginPeriod(1) (JsonRpcServer.cpp — without
+// it every sub-frame sleep rounds up to the ~15.6ms default tick). These harnesses stand
+// in for that thread, so they must run under the same resolution, or the measurement is
+// of the Windows default timer rather than of the render path: under the default tick the
+// seam's "25ms" stall actually slept ~31ms (the pre-T1.4 65/121 numbers were taken that
+// way), and the harness's own sleep_until for a slot 1-2ms away overshot by up to a whole
+// frame period. Scoped to each timing test; timeEndPeriod restores it.
+struct ProductTimerResolution {
+  ProductTimerResolution() { active = timeBeginPeriod(1) == TIMERR_NOERROR; }
+  ~ProductTimerResolution() {
+    if (active) timeEndPeriod(1);
+  }
+  ProductTimerResolution(const ProductTimerResolution&) = delete;
+  ProductTimerResolution& operator=(const ProductTimerResolution&) = delete;
+  bool active = false;
+};
 
 corevideo::modules::CompositorRenderPlan monitorPlan(const char* id, int width, int height) {
   corevideo::modules::CompositorRenderPlan plan;
@@ -161,6 +196,18 @@ class RenderThread {
     anchorNs_ = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor_.time_since_epoch()).count();
   }
 
+  // The PRODUCT render tick instead of a stand-in: each slot calls
+  // MediaCore::renderDisplayTick exactly as JsonRpcServer's render worker does, so
+  // Program, the monitor passes AND the T1.4 shed policy all run as shipped. The
+  // core owns `compositor` (its program buffer was configured by
+  // enableAudioOutputWorker); the reference is kept only to read diagnostics and
+  // to drain delivered frames the way the video-out worker would.
+  RenderThread(corevideo::modules::ICompositor& compositor, corevideo::core::MediaCore& core)
+      : compositor_(compositor), core_(&core) {
+    anchor_ = std::chrono::steady_clock::now();
+    anchorNs_ = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor_.time_since_epoch()).count();
+  }
+
   // One render tick. The production slot is derived from WALL TIME, not from a tick
   // counter — that is what the core's anchored deadline tracker does, and it is the
   // difference between a stalled tick SKIPPING the slots it overran (the real
@@ -171,10 +218,19 @@ class RenderThread {
     const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                std::chrono::steady_clock::now() - anchor_).count();
     const int64_t slot = std::max(nextSlot_, elapsedNs * 60 / 1000000000LL);
-    compositor_.setProgramProductionTiming(slot, anchorNs_);
-    const std::vector<corevideo::modules::VideoFrame> frames{sourceFrame(slot)};
-    (void)compositor_.render(program_, frames);
-    (void)compositor_.renderPreview(preview_, frames);
+    if (core_ != nullptr) {
+      core_->renderDisplayTick(slot, anchorNs_);
+      // The render worker drains these after every tick; left alone they grow.
+      (void)core_->drainProgramSharedTextureEvents();
+      (void)core_->drainParticipantSharedTextureEvents();
+      (void)core_->drainMultiviewSharedTextureEvents();
+      (void)core_->drainPreviewSharedTextureEvents();
+    } else {
+      compositor_.setProgramProductionTiming(slot, anchorNs_);
+      const std::vector<corevideo::modules::VideoFrame> frames{sourceFrame(slot)};
+      (void)compositor_.render(program_, frames);
+      (void)compositor_.renderPreview(preview_, frames);
+    }
     corevideo::modules::ProgramFrame drained;
     while (compositor_.takeDeliveredProgramFrame(drained, 0)) {
     }
@@ -214,6 +270,7 @@ class RenderThread {
   corevideo::modules::ICompositor& compositor_;
   corevideo::modules::CompositorRenderPlan program_;
   corevideo::modules::CompositorRenderPlan preview_;
+  corevideo::core::MediaCore* core_ = nullptr;
   std::chrono::steady_clock::time_point anchor_{};
   int64_t anchorNs_ = 0;
   int64_t nextSlot_ = 0;
@@ -266,6 +323,7 @@ bool skipUnlessTimingMeasurementsEnabled(const char* name) {
 
 TEST(MonitorRenderFaultInjection, AOneOffMonitorStallCostsOnlyTheSlotsItSpansAndProgramRecovers) {
   if (skipUnlessTimingMeasurementsEnabled("AOneOffMonitorStallCostsOnlyTheSlotsItSpansAndProgramRecovers")) return;
+  const ProductTimerResolution timerResolution;
   resetSeam();
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_TRUE(compositor != nullptr);
@@ -297,9 +355,13 @@ TEST(MonitorRenderFaultInjection, AOneOffMonitorStallCostsOnlyTheSlotsItSpansAnd
   // loaded machine — observed failing at baseline=12 faulted=14 against a +2
   // margin, i.e. the baseline window was degraded, not the fault absent. That
   // the fault fired is proven directly above (g_previewStalls); that a monitor
-  // stall costs Program frames is proven unambiguously by the SUSTAINED case
-  // below (65 delivered against 121). What this one-off case uniquely proves is
-  // the bound and the recovery, asserted next.
+  // stall costs Program frames was proven unambiguously by the SUSTAINED case
+  // before T1.4 (65 delivered against 121 on this same raw compositor harness;
+  // that case now runs through MediaCore's monitor shed policy). This one-off
+  // case still drives the compositor directly, and a single stall is exactly
+  // what the shed policy deliberately does NOT react to, so it measures the raw
+  // coupling either way. What it uniquely proves is the bound and the recovery,
+  // asserted next.
   // But the cost is BOUNDED by the stall, not sticky: ~6 slots plus measurement noise,
   // not a permanent lag. A wall-clock production slot is what makes that true — the
   // render thread rejoins the timeline at the next slot instead of running 100ms behind.
@@ -319,45 +381,156 @@ TEST(MonitorRenderFaultInjection, AOneOffMonitorStallCostsOnlyTheSlotsItSpansAnd
       << "baseline=" << settled.delivered << " recovered=" << recovered.delivered;
 }
 
-TEST(MonitorRenderFaultInjection, ASustainedMonitorStallCutsProgramDeliveryInProportionToIt) {
-  if (skipUnlessTimingMeasurementsEnabled("ASustainedMonitorStallCutsProgramDeliveryInProportionToIt")) return;
+namespace {
+
+struct MonitorShedReading {
+  int divisor = 0;
+  double enteredCount = 0;
+  double shedTicks = 0;
+  std::string lastReason;
+};
+
+MonitorShedReading readMonitorShed(const corevideo::core::MediaCore& core) {
+  MonitorShedReading reading;
+  const auto state = core.sessionState();
+  const auto* evidence = state.get("realtimeEvidence");
+  const auto* shed = evidence != nullptr ? evidence->get("monitorShed") : nullptr;
+  if (shed == nullptr) return reading;
+  reading.divisor = static_cast<int>(shed->getNumber("divisor"));
+  reading.enteredCount = shed->getNumber("enteredCount");
+  reading.shedTicks = shed->getNumber("shedTicks");
+  reading.lastReason = shed->getString("lastReason");
+  return reading;
+}
+
+}  // namespace
+
+TEST(MonitorRenderFaultInjection, ASustainedMonitorStallIsShedAndProgramKeepsItsRate) {
+  if (skipUnlessTimingMeasurementsEnabled("ASustainedMonitorStallIsShedAndProgramKeepsItsRate")) return;
+  const ProductTimerResolution timerResolution;
   resetSeam();
-  auto compositor = corevideo::modules::createD3D11Compositor();
-  ASSERT_TRUE(compositor != nullptr);
-  RenderThread thread(*compositor, 3);
+
+  // (A) THE RAW COUPLING, UNMITIGATED — measured first, in the same run and under the
+  // same timer resolution, so the mitigation below is judged against a "before" taken on
+  // the same machine at the same moment rather than against a number in a comment. This
+  // drives the compositor directly (no MediaCore, therefore no shed policy): Program,
+  // then the stalled Preview pass, every tick.
+  RenderThread::Window rawSettled{}, rawStalled{};
+  {
+    auto raw = corevideo::modules::createD3D11Compositor();
+    ASSERT_TRUE(raw != nullptr);
+    if (raw == nullptr) return;
+    RenderThread rawThread(*raw, 3);
+    rawThread.runFor(std::chrono::milliseconds(2000));
+    rawSettled = measureSettledBaseline(rawThread);
+    ASSERT_TRUE(rawSettled.produced > 100u) << "the unfaulted raw baseline itself is not producing";
+    ArmedStall armed(25000, 1000000);
+    rawStalled = rawThread.measure("raw-sustained-25ms", std::chrono::milliseconds(2000));
+  }
+  resetSeam();
+
+  // (B) THE PRODUCT RENDER TICK, with the T1.4 shed policy.
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(modules.compositor != nullptr);
+  if (modules.compositor == nullptr) return;
+  auto& compositor = *modules.compositor;
+  corevideo::core::MediaCore core(std::move(modules));
+  // Latches the 3-frame program buffer exactly as the live server does (and moves
+  // the audio half off this tick, which is what a real render worker sees).
+  core.enableAudioOutputWorker();
+  // A multi-layer preview scene, so the core runs its third (preview) composite —
+  // the pass the fault seam stalls.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-preview-scene"},
+          {"sceneId", "monitor-fault-preview"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{{"routeId", "pa"}, {"mode", "fixed"}, {"participantId", "spk-1"}},
+                         corevideo::rpc::Json::Object{{"routeId", "pb"}, {"mode", "fixed"}, {"participantId", "spk-2"}},
+                     }},
+      },
+  });
+  RenderThread thread(compositor, core);
 
   thread.runFor(std::chrono::milliseconds(2000));
   const auto settled = measureSettledBaseline(thread);
-  ASSERT_TRUE(settled.delivered > 100u) << "the unfaulted baseline itself is not delivering";
+  ASSERT_TRUE(settled.produced > 100u) << "the unfaulted baseline itself is not producing";
+  const auto beforeStall = readMonitorShed(core);
 
   RenderThread::Window stalled{};
+  MonitorShedReading duringStall;
   {
-    // 25ms on EVERY preview pass: one and a half frame periods of monitor work, forever.
+    // 25ms on EVERY preview pass: ~1.5 frame periods of monitor work, forever.
     ArmedStall armed(25000, 1000000);
-    stalled = thread.measure("sustained-25ms", std::chrono::milliseconds(2000));
+    stalled = thread.measure("sustained-25ms-shed", std::chrono::milliseconds(2000));
+    duringStall = readMonitorShed(core);
     EXPECT_GT(g_previewStalls.load(), 20);
   }
+  // Recovery: the stall is gone; the policy steps back one level per second of
+  // healthy ticks, so allow two levels plus margin.
+  const auto recovered = thread.measure("after-shed", std::chrono::milliseconds(3000));
+  const auto afterRecovery = readMonitorShed(core);
+  std::fprintf(stderr,
+               "[monitor-shed] before divisor=%d entered=%.0f shedTicks=%.0f | during divisor=%d entered=%.0f "
+               "shedTicks=%.0f reason=%s | after divisor=%d entered=%.0f shedTicks=%.0f reason=%s\n",
+               beforeStall.divisor, beforeStall.enteredCount, beforeStall.shedTicks, duringStall.divisor,
+               duringStall.enteredCount, duringStall.shedTicks, duringStall.lastReason.c_str(),
+               afterRecovery.divisor, afterRecovery.enteredCount, afterRecovery.shedTicks,
+               afterRecovery.lastReason.c_str());
 
-  // THE G2 FINDING, and it is the OPPOSITE of what the gate asks for. Program render and
-  // the monitor passes share one render thread and one D3D immediate context, so every
-  // millisecond a monitor pass overruns is a millisecond Program is off the GPU. The
-  // Program rate falls to 1/(render + stall) and the slots in between are simply lost.
-  //
-  // Measured on this rig (RTX 4090, 1080p Program + 720p Preview, 3-frame buffer):
-  //   baseline           121 produced / 124 delivered /  4 underruns per 2s (~60fps)
-  //   sustained 25ms      65 produced /  65 delivered / 64 underruns per 2s (~32fps)
-  // i.e. a Preview compositor that overruns by one and a half frame periods costs
-  // Program HALF its frames. There is no buffer depth that fixes this, because the
-  // frames were never rendered.
-  //
-  // Program is NOT isolated from monitor rendering today. The monitor-compositor split
-  // named in docs/production-realtime-completion-plan.md is what would give G2 its
-  // property; this test is the instrument that will show it when that lands, and it must
-  // be INVERTED then — not deleted.
-  EXPECT_LT(stalled.delivered * 10, settled.delivered * 7)
-      << "baseline delivered=" << settled.delivered << " stalled delivered=" << stalled.delivered;
-  EXPECT_GT(stalled.underruns, settled.underruns + 30u)
-      << "baseline underruns=" << settled.underruns << " stalled underruns=" << stalled.underruns;
+  // THE COUPLING ITSELF IS STILL THERE — and the bound is tied to the stall, not to the
+  // mitigation's threshold. Every tick of the raw leg carries a ~25.7ms preview pass
+  // (25ms seam + the real composite) against a 16.7ms slot, so Program can complete at
+  // most ~16.7/25.7 = 65% of its slots: an expected loss of ~35%, measured 121 -> 77
+  // produced / 124 -> 77 delivered. Asserting < 75% delivered leaves room for machine
+  // noise while still failing hard if the coupling were ever quietly weakened; the
+  // underrun rise is the same loss seen at the delivery deadline. This pair is what makes
+  // the measurement an A/B rather than two unrelated numbers, and it is the assertion
+  // that must be INVERTED (a sustained monitor stall costs raw Program nothing) when the
+  // monitor-compositor split lands — not deleted.
+  EXPECT_LT(rawStalled.delivered * 100, rawSettled.delivered * 75)
+      << "raw baseline delivered=" << rawSettled.delivered << " raw stalled delivered=" << rawStalled.delivered;
+  EXPECT_GT(rawStalled.underruns, rawSettled.underruns + 30u)
+      << "raw baseline underruns=" << rawSettled.underruns << " raw stalled underruns=" << rawStalled.underruns;
+
+  // WHAT T1.4 NOW GUARANTEES. Program render and the monitor passes share one render
+  // thread and one D3D immediate context, so every millisecond of monitor overrun was a
+  // millisecond Program was off the GPU: the raw leg above loses ~36% at a true 25ms
+  // stall. (The originally documented numbers — 121 / 124 / 4 baseline, 65 / 65 / 64
+  // under "25ms", i.e. HALF — were taken at the default ~15.6ms timer tick, where this
+  // seam actually slept ~31ms per pass.) The shed policy now sees the tick overrun the
+  // Program budget, runs the monitor passes on every 2nd/3rd tick, and Program keeps
+  // its rate: >= 90% of the unfaulted produced frames, measured the same way.
+  // Measured 2026-09-10 on the same rig, 1ms timer resolution, same run:
+  //   raw (A)   baseline 121 / 124 / 4    sustained 25ms  77 /  77 / 51
+  //   shed (B)  baseline 121 / 124 / 4    sustained 25ms 119 / 119 /  9  (divisor 2)
+  //   after the stall (3s)                              182 / 182 /  6  (back to 1)
+  EXPECT_GE(stalled.produced * 10, settled.produced * 9)
+      << "baseline produced=" << settled.produced << " stalled produced=" << stalled.produced;
+  // And the snapshot says so: shedding engaged during the stall, not merely present.
+  EXPECT_GE(duringStall.divisor, 2) << "divisor=" << duringStall.divisor;
+  EXPECT_GT(duringStall.enteredCount, beforeStall.enteredCount);
+  EXPECT_GT(duringStall.shedTicks - beforeStall.shedTicks, 60.0)
+      << "shedTicks before=" << beforeStall.shedTicks << " during=" << duringStall.shedTicks;
+  // And it gives the monitors back once the overload is gone.
+  EXPECT_EQ(afterRecovery.divisor, 1) << "divisor=" << afterRecovery.divisor;
+  EXPECT_EQ(afterRecovery.lastReason, std::string("recovered"));
+  // The recovery window is 3s against a 2s baseline window: scale both to the same
+  // duration before applying the 90% bar (recovered/3 >= 0.9 * settled/2).
+  EXPECT_GT(recovered.produced * 2 * 10, settled.produced * 3 * 9)
+      << "baseline produced=" << settled.produced << " per 2s, recovered produced=" << recovered.produced
+      << " per 3s";
+
+  // WHAT IS STILL NOT GUARANTEED — do not read this test as G2 isolation. The shed
+  // bounds Program's exposure to ONE monitor pass per 2-3 ticks; a single monitor pass
+  // longer than the slack that cadence leaves (roughly > 2 frame periods at divisor 3)
+  // still holds Program off the GPU and still costs it slots, and the ticks that enter
+  // shedding (kEnterAfterOverBudgetTicks) are paid in full. Program is protected by
+  // cadence, not isolated. The monitor-compositor split named in
+  // docs/production-realtime-completion-plan.md is what would give G2 its property;
+  // when it lands this case must be INVERTED to assert that a sustained monitor stall
+  // costs Program NOTHING, with or without shedding — not deleted.
 }
 
 #endif  // Windows + D3D11 dev adapter
