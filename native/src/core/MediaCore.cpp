@@ -1868,6 +1868,18 @@ std::string joinLayerIds(const std::vector<std::string>& ids) {
 
 }  // namespace
 
+std::vector<std::string> MediaCore::renderPlanSourceIds(const modules::CompositorRenderPlan& plan) {
+  // FRAME source ids — the key a VideoFrame carries as participantId and the
+  // SourceContinuityLedger is keyed by. A layer with no source (the wall's
+  // solid background, a colour slab) has no clock to judge.
+  std::vector<std::string> ids;
+  for (const auto& layer : plan.layers) {
+    const auto& id = !layer.sourceId.empty() ? layer.sourceId : layer.participantId;
+    if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+  }
+  return ids;
+}
+
 rpc::Json MediaCore::takeRecordsState() const {
   rpc::Json::Array records;
   for (const auto& record : takeRecords_) {
@@ -1890,6 +1902,25 @@ rpc::Json MediaCore::takeRecordsState() const {
         {"backgroundDropped", record.verdict.backgroundDropped},
         {"subscriptionChurnDelta", static_cast<double>(record.observation.subscriptionChurnDelta)},
         {"subscriptionsChurned", record.verdict.subscriptionsChurned},
+        {"fromSourceIds", stringArray(record.fromSourceIds)},
+        {"sources", [&] {
+           rpc::Json::Array sources;
+           for (const auto& s : record.observation.sharedSources) {
+             const bool restarted = s.generationAfter != s.generationBefore;
+             sources.emplace_back(rpc::Json::Object{
+                 {"sourceId", s.sourceId},
+                 {"generationBefore", static_cast<double>(s.generationBefore)},
+                 {"generationAfter", static_cast<double>(s.generationAfter)},
+                 {"frameIdBefore", static_cast<double>(s.frameIdBefore)},
+                 {"frameIdAfter", static_cast<double>(s.frameIdAfter)},
+                 {"restarted", restarted}});
+           }
+           return sources;
+         }()},
+        {"restartedSources", stringArray(record.verdict.restartedSources)},
+        {"sharedSourceRestarted", record.verdict.sharedSourceRestarted},
+        {"missingSources", stringArray(record.verdict.missingSources)},
+        {"sourceMissing", record.verdict.sourceMissing},
         {"armedAtMs", record.armedAtMs},
         {"armedAtFrame", static_cast<double>(record.armedAtFrame)},
     });
@@ -1929,6 +1960,19 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
   const auto outgoing = buildCompositorRenderPlan({});
   record.fromRenderPlanId = outgoing.renderPlanId;
   record.fromLayerIds = renderPlanLayerIds(outgoing);
+  // The sources "before" the take are Program's AND Preview's: a Take promotes
+  // Preview, so a source the operator watched there and is now cutting to must
+  // be judged against its clock as of now, not treated as new.
+  record.fromSourceIds = renderPlanSourceIds(outgoing);
+  if (hasPreviewScene()) {
+    for (auto& id : renderPlanSourceIds(buildPreviewCompositorRenderPlan({}))) {
+      if (std::find(record.fromSourceIds.begin(), record.fromSourceIds.end(), id) ==
+          record.fromSourceIds.end()) {
+        record.fromSourceIds.push_back(std::move(id));
+      }
+    }
+  }
+  record.continuityBefore = sourceContinuity_.snapshot(record.fromSourceIds);
   record.armedAtFrame = lastProducedFrameNumber_;
   record.armedAtMs = static_cast<double>(monotonicMs());
   record.subscriptionChurnAtArm =
@@ -1939,7 +1983,8 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
 }
 
 void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                                   bool wallAdoptedSettled) {
+                                   bool wallAdoptedSettled,
+                                   const std::vector<modules::VideoFrame>& frames) {
   if (!pendingTakeRecord_) return;
   TakeRecord record = std::move(*pendingTakeRecord_);
   pendingTakeRecord_.reset();
@@ -1964,6 +2009,34 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
       zoomEngineRuntime_ ? zoomEngineRuntime_->subscriptionChurnTotal() : 0;
   record.observation.subscriptionChurnDelta =
       churnNow > record.subscriptionChurnAtArm ? churnNow - record.subscriptionChurnAtArm : 0;
+
+  // Per-source continuity across the take. The ledger has already observed
+  // THIS tick's frames (the call site runs after the observe loop), so the
+  // "after" generation is the one the first program frame was composited from.
+  const auto toSourceIds = renderPlanSourceIds(programPlan);
+  const auto continuityAfter = sourceContinuity_.snapshot(toSourceIds);
+  for (const auto& id : toSourceIds) {
+    const auto before = record.continuityBefore.find(id);
+    const auto after = continuityAfter.find(id);
+    if (before == record.continuityBefore.end() || after == continuityAfter.end()) continue;
+    record.observation.sharedSources.push_back({id, before->second.generation, after->second.generation,
+                                                before->second.lastFrameId, after->second.lastFrameId});
+  }
+  // A source the take brought on air with no frame on its first program tick
+  // is a cold start on air — but only where a frame was EXPECTED: a media
+  // layer (its decoder owes us a picture) or a source that was already running
+  // before the take. A guest who simply has no video yet is not a rebuild.
+  for (const auto& layer : programPlan.layers) {
+    const auto& id = !layer.sourceId.empty() ? layer.sourceId : layer.participantId;
+    if (id.empty()) continue;
+    auto& missing = record.observation.sourcesMissingOnFirstFrame;
+    if (std::find(missing.begin(), missing.end(), id) != missing.end()) continue;
+    const bool expected = !layer.mediaAssetId.empty() || record.continuityBefore.count(id) > 0;
+    if (!expected) continue;
+    const bool hasFrame = std::any_of(frames.begin(), frames.end(),
+                                      [&](const auto& frame) { return frame.participantId == id; });
+    if (!hasFrame) missing.push_back(id);
+  }
   record.verdict = TakeRecordPolicy::evaluate(record.observation);
   record.completed = true;
 
@@ -1973,7 +2046,7 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
   nativeLogf(
       "[take] from=%s to=%s op=%s rev=%lld mode=%s planFrom=%s planTo=%s wall=%s verdict=%s "
       "wallKeyFrom=%s wallKeyTo=%s bgExpected=%d bgEmitted=%d churn=%llu layersFrom=%zu "
-      "layersTo=%zu ids=[%s]\n",
+      "layersTo=%zu ids=[%s] restarted=[%s] missing=[%s]\n",
       record.fromSceneId.c_str(), record.toSceneId.c_str(), record.operationId.c_str(),
       static_cast<long long>(record.revision), record.mode.c_str(),
       record.fromRenderPlanId.c_str(), record.toRenderPlanId.c_str(), record.verdict.wall,
@@ -1982,7 +2055,9 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
       record.observation.liveBackgroundEmitted ? 1 : 0,
       static_cast<unsigned long long>(record.observation.subscriptionChurnDelta),
       record.fromLayerIds.size(), record.toLayerIds.size(),
-      joinLayerIds(record.toLayerIds).c_str());
+      joinLayerIds(record.toLayerIds).c_str(),
+      joinLayerIds(record.verdict.restartedSources).c_str(),
+      joinLayerIds(record.verdict.missingSources).c_str());
 
   takeRecords_.push_back(std::move(record));
   while (takeRecords_.size() > kTakeRecordRing) takeRecords_.pop_front();
@@ -6053,11 +6128,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (tilesLayer_.present) {
     lastRenderPlan_ = renderPlan;
   }
-  // First program plan after a Take: this is the only tick where the "after"
-  // half of the take record exists. Per operator action, not per frame.
-  if (pendingTakeRecord_) {
-    completeTakeRecord(renderPlan, wallAdoptedSettled);
-  }
+  // (The take record is completed further down, AFTER media frames join the
+  // gather — see "First program plan after a Take".)
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
   // needed on screen, and the per-frame CPU Map otherwise caps the render rate.
@@ -6108,6 +6180,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         renderPlan.warnings.push_back(warning);
       }
     }
+  }
+  // Per-source restart evidence. `videoFrames` is final here — Zoom, capture,
+  // stills AND this tick's media frames — so every source the compositor is
+  // about to draw is observed on every tick it is drawn. Strings and ints only.
+  ++renderTickCounter_;
+  for (const auto& frame : videoFrames) {
+    sourceContinuity_.observe(frame.participantId, frame.frameId, renderTickCounter_);
+  }
+  sourceContinuity_.endTick(renderTickCounter_);
+  // First program plan after a Take: this is the only tick where the "after"
+  // half of the take record exists. Per operator action, not per frame. It
+  // must run AFTER the media poll and the observe loop above: media frames
+  // (a scene's background and foreground) only join the gather after the plan
+  // is built, and judging continuity or "had a frame" before they arrive would
+  // call every media source missing and read the previous tick's generations.
+  if (pendingTakeRecord_) {
+    completeTakeRecord(renderPlan, wallAdoptedSettled, videoFrames);
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);

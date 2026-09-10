@@ -7,7 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -257,6 +260,224 @@ TEST(TakeRecordPolicyRules, TheWallVerdictSeparatesACutFromARebuild) {
 
   observation.subscriptionChurnDelta = 0;
   EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).verdict), "cut");
+}
+
+// ---------------------------------------------------------------------------
+// Per-source continuity: a Take is only a cut if every source on both sides of
+// it kept its clock, and every source it brought on air had a frame.
+// ---------------------------------------------------------------------------
+
+TEST(TakeRecordPolicyRules, ASharedSourceThatRestartedDeniesTheCut) {
+  TakeRecordPolicy::Observation observation;
+  observation.hasWallAfter = false;
+  observation.sharedSources.push_back({"background:bg", 1, 2, 40, 1});
+  observation.sharedSources.push_back({"zoom:7", 3, 3, 500, 501});
+  const auto verdict = TakeRecordPolicy::evaluate(observation);
+  EXPECT_TRUE(verdict.sharedSourceRestarted);
+  ASSERT_EQ(verdict.restartedSources.size(), 1u);
+  EXPECT_EQ(verdict.restartedSources[0], "background:bg");
+  EXPECT_EQ(std::string(verdict.verdict), "rebuilt");
+}
+
+TEST(TakeRecordPolicyRules, SharedSourcesThatKeptTheirGenerationAllowACut) {
+  TakeRecordPolicy::Observation observation;
+  observation.hasWallAfter = true;
+  observation.wallAdoptedSettled = true;
+  observation.sharedSources.push_back({"background:bg", 1, 1, 40, 45});
+  const auto verdict = TakeRecordPolicy::evaluate(observation);
+  EXPECT_FALSE(verdict.sharedSourceRestarted);
+  EXPECT_EQ(std::string(verdict.verdict), "cut");
+}
+
+TEST(TakeRecordPolicyRules, ANoWallTakeWithNoRestartIsACutNotNoWall) {
+  // A plain scene-to-scene cut that shares a background: the verdict must be
+  // about the sources, not only about the wall.
+  TakeRecordPolicy::Observation observation;
+  observation.hasWallAfter = false;
+  observation.sharedSources.push_back({"background:bg", 2, 2, 10, 11});
+  EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).verdict), "cut");
+}
+
+TEST(TakeRecordPolicyRules, ASourceMissingOnTheFirstFrameDeniesTheCut) {
+  // A source the take brought on air with no frame on its first program tick is
+  // a cold start the operator watched happen, whatever the shared ones did.
+  TakeRecordPolicy::Observation observation;
+  observation.hasWallAfter = false;
+  observation.sharedSources.push_back({"zoom:7", 3, 3, 500, 501});
+  observation.sourcesMissingOnFirstFrame.push_back("background:bg");
+  const auto verdict = TakeRecordPolicy::evaluate(observation);
+  EXPECT_FALSE(verdict.sharedSourceRestarted);
+  EXPECT_TRUE(verdict.sourceMissing);
+  EXPECT_EQ(verdict.missingSources, (std::vector<std::string>{"background:bg"}));
+  EXPECT_EQ(std::string(verdict.verdict), "rebuilt");
+}
+
+namespace {
+
+corevideo::modules::VideoFrame solidMediaFrame(const std::string& sourceId, std::int64_t frameId,
+                                               std::int64_t timestampMs, int width, int height) {
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = sourceId;
+  frame.width = width;
+  frame.height = height;
+  frame.naturalWidth = width;
+  frame.naturalHeight = height;
+  frame.timestampMs = timestampMs;
+  frame.pixelWidth = width;
+  frame.pixelHeight = height;
+  frame.pixelStride = width * 4;
+  frame.frameId = frameId;
+  auto pixels = std::make_shared<std::vector<std::uint8_t>>(
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u);
+  for (std::size_t index = 0; index < pixels->size(); index += 4) {
+    (*pixels)[index + 0] = 0x22;
+    (*pixels)[index + 1] = 0xb4;
+    (*pixels)[index + 2] = 0xf1;
+    (*pixels)[index + 3] = 0xff;
+  }
+  frame.pixels = std::move(pixels);
+  return frame;
+}
+
+std::string mediaSourceId(const corevideo::modules::CompositorRenderPlanLayer& layer) {
+  return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+}
+
+// SolidMediaFrameSource (MediaCoreCommandTest.cpp) with one change: every
+// source runs its OWN frame clock, the way a real decoder does, and a test can
+// reopen one (`restart`) so its frame ids go back to 1.
+class CountingMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
+      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      int64_t timestampMs) override {
+    std::vector<corevideo::modules::VideoFrame> frames;
+    for (const auto& layer : layers) {
+      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
+      const auto sourceId = mediaSourceId(layer);
+      frames.push_back(solidMediaFrame(sourceId, ++frameIds[sourceId], timestampMs, 16, 16));
+    }
+    return frames;
+  }
+  void restart(const std::string& sourceId) { frameIds[sourceId] = 0; }
+  std::map<std::string, std::int64_t> frameIds;
+};
+
+// A decoder that cold-starts: the first time a source is asked for, it has
+// nothing yet; every later poll delivers a frame on that source's own clock.
+class ColdStartMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
+      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      int64_t timestampMs) override {
+    std::vector<corevideo::modules::VideoFrame> frames;
+    for (const auto& layer : layers) {
+      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
+      const auto sourceId = mediaSourceId(layer);
+      if (polled.insert(sourceId).second) continue;  // first poll: still opening
+      frames.push_back(solidMediaFrame(sourceId, ++frameIds[sourceId], timestampMs, 16, 9));
+    }
+    return frames;
+  }
+  std::set<std::string> polled;
+  std::map<std::string, std::int64_t> frameIds;
+};
+
+corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId) {
+  return corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"},
+      {"sceneId", sceneId},
+      {"background", corevideo::rpc::Json::Object{
+          {"mediaAssetId", assetId}, {"mediaAssetName", "bg"}, {"mediaAssetKind", "video"},
+          {"mediaAssetPath", "C:\\media\\bg.mp4"}, {"playing", true}}},
+      {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+corevideo::rpc::Json emptyScene(const char* sceneId) {
+  return corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"},
+      {"sceneId", sceneId},
+      {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+}  // namespace
+
+TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto media = std::make_unique<CountingMediaFrameSource>();
+  modules.mediaFrames = std::move(media);
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-a", "bg-1")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "cut");
+  EXPECT_FALSE(take.get("sharedSourceRestarted")->asBool(true));
+  const auto& sources = take.get("sources")->asArray();
+  ASSERT_EQ(sources.size(), 1u);
+  EXPECT_EQ(sources[0].getString("sourceId"), "background:bg-1");
+  EXPECT_EQ(sources[0].getNumber("generationBefore"), 1);
+  EXPECT_EQ(sources[0].getNumber("generationAfter"), 1);
+  EXPECT_GT(sources[0].getNumber("frameIdAfter"), sources[0].getNumber("frameIdBefore"));
+}
+
+TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto media = std::make_unique<CountingMediaFrameSource>();
+  auto* mediaPtr = media.get();
+  modules.mediaFrames = std::move(media);
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-a", "bg-1")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
+  mediaPtr->restart("background:bg-1");  // the decoder reopened on the take
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "rebuilt");
+  EXPECT_TRUE(take.get("sharedSourceRestarted")->asBool(false));
+  ASSERT_EQ(take.get("restartedSources")->asArray().size(), 1u);
+  EXPECT_EQ(take.get("restartedSources")->asArray()[0].asString(), "background:bg-1");
+}
+
+TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  modules.mediaFrames = std::make_unique<ColdStartMediaFrameSource>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{emptyScene("scene-a")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "rebuilt");
+  EXPECT_TRUE(take.get("sourceMissing")->asBool(false));
+  ASSERT_NE(take.get("missingSources"), nullptr);
+  bool named = false;
+  for (const auto& id : take.get("missingSources")->asArray()) {
+    if (id.asString() == "background:bg-1") named = true;
+  }
+  EXPECT_TRUE(named) << "missingSources did not name background:bg-1";
 }
 
 // ---------------------------------------------------------------------------

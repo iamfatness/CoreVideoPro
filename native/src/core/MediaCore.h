@@ -7,6 +7,7 @@
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
+#include "core/SourceContinuityLedger.h"
 #include "core/TakeRecordPolicy.h"
 #include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
@@ -698,6 +699,12 @@ class MediaCore {
     std::string operationId, mode;
     std::int64_t revision = 0;
     std::vector<std::string> fromLayerIds, toLayerIds;
+    // FRAME source ids (layer.sourceId, else participantId) of the outgoing
+    // Program plan UNION the outgoing Preview plan — a Take promotes Preview,
+    // so that is where the operator last saw the incoming sources — and their
+    // SourceContinuityLedger state at arm time.
+    std::vector<std::string> fromSourceIds;
+    std::map<std::string, SourceContinuity> continuityBefore;
     std::string fromWallKey, toWallKey;
     bool hadWallBefore = false;
     bool completed = false;
@@ -710,11 +717,18 @@ class MediaCore {
   static constexpr std::size_t kTakeRecordRing = 8;
   std::optional<TakeRecord> pendingTakeRecord_;
   std::deque<TakeRecord> takeRecords_;
+  // Per-source restart evidence, fed from every render tick's final gather.
+  SourceContinuityLedger sourceContinuity_;
+  std::int64_t renderTickCounter_ = 0;
   [[nodiscard]] rpc::Json takeRecordsState() const;
   [[nodiscard]] rpc::Json zoomSubscriptionChurnState() const;
   void armTakeRecord(const std::string& toSceneId);
+  // `frames` is THIS tick's final gather (media frames included): a source the
+  // take brought on air with no frame in it counts as missing.
   void completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                          bool wallAdoptedSettled);
+                          bool wallAdoptedSettled,
+                          const std::vector<modules::VideoFrame>& frames);
+  static std::vector<std::string> renderPlanSourceIds(const modules::CompositorRenderPlan& plan);
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's
   // pre-lock engine poll (see pollZoomAudioUnlocked).
   std::atomic<std::int64_t> lastProgramFrameNumberAtomic_{0};
