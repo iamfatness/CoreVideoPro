@@ -679,7 +679,7 @@ rpc::Json MediaCore::sessionState() const {
       // subscription node that appears only once churn happens, is absent in
       // exactly the case worth detecting (the multiviewer-node lesson).
       {"takeRecords", takeRecordsState()},
-      {"zoomSubscriptions", zoomSubscriptionChurnState()},
+      {"zoomSubscriptionChurn", zoomSubscriptionChurnState()},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
       {"virtualCamera", virtualCameraState()},

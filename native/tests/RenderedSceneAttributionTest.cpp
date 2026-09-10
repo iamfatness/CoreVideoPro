@@ -163,9 +163,9 @@ TEST(RenderedSceneAttribution, TheAttributionFieldsArePresentBeforeAnythingHappe
   ASSERT_NE(node->get("sceneIdAttributionTicks"), nullptr);
   ASSERT_NE(node->get("deliverySequence"), nullptr);
   ASSERT_NE(snapshot.get("takeRecords"), nullptr);
-  ASSERT_NE(snapshot.get("zoomSubscriptions"), nullptr);
+  ASSERT_NE(snapshot.get("zoomSubscriptionChurn"), nullptr);
   // No engine in this build path: the node still exists and says so.
-  EXPECT_FALSE(snapshot.get("zoomSubscriptions")->get("engine")->asBool(true));
+  EXPECT_FALSE(snapshot.get("zoomSubscriptionChurn")->get("engine")->asBool(true));
   EXPECT_EQ(snapshot.get("takeRecords")->getNumber("count"), 0);
 }
 
