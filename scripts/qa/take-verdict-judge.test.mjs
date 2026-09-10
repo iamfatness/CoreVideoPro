@@ -89,3 +89,36 @@ test('scopeTakeRecords excludes the post-phase restore back to the original scen
   assert.equal(scoped.length, 1);
   assert.equal(scoped[0].toSceneId, 'take-b');
 });
+
+// The first-take shape (final review FR2). A take whose FROM scene is the setup scene
+// (pgm -> take-a) is outside the pair and excluded; the harness's expected count must
+// still be met by N in-pair takes, which is why the soak primes Program to take-b first.
+test('a first take from the setup scene is excluded and N in-pair takes still meet N', () => {
+  const records = [
+    { fromSceneId: 'pgm', toSceneId: 'take-a', armedAtMs: 200, verdict: 'cut' },
+    { fromSceneId: 'take-a', toSceneId: 'take-b', armedAtMs: 300, verdict: 'cut' },
+    { fromSceneId: 'take-b', toSceneId: 'take-a', armedAtMs: 400, verdict: 'cut' },
+  ];
+  const scoped = scopeTakeRecords(records, { sceneA: 'take-a', sceneB: 'take-b', armedAfterMs: 150 });
+  assert.equal(scoped.length, 2);
+  assert.ok(scoped.every((r) => r.fromSceneId !== 'pgm'));
+  const result = judgeTakeRecords(scoped, { expectedTakes: 2 });
+  assert.equal(result.ok, true);
+  assert.equal(result.total, 2);
+});
+
+test('the soak shape: prime pgm -> take-b below the floor, then N takes B->A, A->B... all scored', () => {
+  const records = [
+    { fromSceneId: 'unloaded', toSceneId: 'pgm', armedAtMs: 100, verdict: 'no-wall' },
+    { fromSceneId: 'pgm', toSceneId: 'take-b', armedAtMs: 150, verdict: 'rebuilt' },  // the prime
+    { fromSceneId: 'take-b', toSceneId: 'take-a', armedAtMs: 200, verdict: 'cut' },
+    { fromSceneId: 'take-a', toSceneId: 'take-b', armedAtMs: 300, verdict: 'cut' },
+    { fromSceneId: 'take-b', toSceneId: 'take-a', armedAtMs: 400, verdict: 'cut' },
+    { fromSceneId: 'take-a', toSceneId: 'pgm', armedAtMs: 900, verdict: 'rebuilt' },  // the restore
+  ];
+  const floor = 150;  // max armedAtMs read after the prime, before take 1
+  const scoped = scopeTakeRecords(records, { sceneA: 'take-a', sceneB: 'take-b', armedAfterMs: floor });
+  const result = judgeTakeRecords(scoped, { expectedTakes: 3 });
+  assert.equal(result.total, 3);
+  assert.equal(result.ok, true);
+});

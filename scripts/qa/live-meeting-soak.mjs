@@ -16,17 +16,23 @@
  *     muxed rate, a full decode to null, and a mean-luma pixel check. CLAUDE.md records
  *     a recording that shipped 8995 frames of flat luma while every validator passed,
  *     so a frame count alone is not evidence of pictures.
- *   - With --takes N, N Takes are driven by alternating `load-scene-graph` between two
- *     SYNTHESIZED scenes (`--scene-a`/`--scene-b`, default `take-a`/`take-b` — these are
- *     harness-invented scene ids on the core's stdio wire, not the shell's real scene
- *     names such as "speaker-slides"/"panel", which do not exist on this wire), and the
- *     core's own `sessionState().takeRecords` is judged by `judgeTakeRecords` (see
- *     take-verdict-judge.mjs) instead of eyeballing the picture across a Take.
+ *   - With --takes N, N Takes are driven between two SYNTHESIZED scenes (`--scene-a`/
+ *     `--scene-b`, default `take-a`/`take-b` — harness-invented scene ids on the core's
+ *     stdio wire, not the shell's real scene names such as "speaker-slides"/"panel",
+ *     which do not exist on this wire). Each Take MIRRORS THE SHELL'S TAKE: one sync
+ *     carrying `load-scene-graph` for the incoming scene AND `set-preview-scene` for the
+ *     outgoing one. Both scenes carry the SAME shared Tiles wall over the live Zoom
+ *     members (and, with `--background <file>`, the same media background), so what is
+ *     judged is the continuity of sources shared across the cut. Program is primed to
+ *     scene B (Preview A) before the floor is read, so take 1 is B -> A inside the pair
+ *     and N takes yield N scored records. The core's own `sessionState().takeRecords`
+ *     is judged by `judgeTakeRecords` (see take-verdict-judge.mjs) instead of
+ *     eyeballing the picture across a Take.
  *
  * Usage:
  *   node scripts/qa/live-meeting-soak.mjs --meeting-url "<url>" [--minutes 30]
  *        [--sources 8] [--passcode X] [--churn] [--out DIR] [--keep-artifact]
- *        [--takes N] [--scene-a take-a] [--scene-b take-b]
+ *        [--takes N] [--scene-a take-a] [--scene-b take-b] [--background <file>]
  *   COREVIDEO_TEST_MEETING_URL / COREVIDEO_ZOOM_MEETING_PASSCODE are honoured so the
  *   URL never has to appear on a command line or in a log. The URL is NEVER printed:
  *   only a redacted form reaches stdout or the evidence file.
@@ -70,11 +76,15 @@ const zoomEngine = resolve(arg('zoom-engine',
 const takes = Number(arg('takes', '0'));
 const sceneA = arg('scene-a', 'take-a');
 const sceneB = arg('scene-b', 'take-b');
+// Optional shared media background for both Take scenes: judges a decoder-backed
+// source's continuity across the cut, not only Zoom members and the wall.
+const backgroundArg = arg('background', undefined);
+const backgroundFile = backgroundArg ? resolve(backgroundArg) : null;
 
 function usage() {
   console.log(`Usage: node scripts/qa/live-meeting-soak.mjs --meeting-url "<url>" [--minutes 30]
        [--sources 8] [--passcode X] [--churn] [--out DIR] [--keep-artifact]
-       [--takes N] [--scene-a take-a] [--scene-b take-b]
+       [--takes N] [--scene-a take-a] [--scene-b take-b] [--background <file>]
 COREVIDEO_TEST_MEETING_URL / COREVIDEO_ZOOM_MEETING_PASSCODE are honoured in place of
 --meeting-url / --passcode so the URL never has to appear on a command line.`);
 }
@@ -93,6 +103,7 @@ if (!meetingUrl) { usage(); die('Missing --meeting-url (or COREVIDEO_TEST_MEETIN
 if (!Number.isFinite(takes) || takes < 0) die(`--takes must be a non-negative number, got ${arg('takes', '0')}.`);
 if (!existsSync(nativeCore)) die(`Missing native core at ${nativeCore}.`);
 if (!existsSync(zoomEngine)) die(`Missing Zoom engine at ${zoomEngine}.`);
+if (backgroundFile && !existsSync(backgroundFile)) die(`Missing --background file at ${backgroundFile}.`);
 function die(msg) { console.error(`live-meeting-soak: ${msg}`); process.exit(2); }
 
 const embeddedKey = (() => {
@@ -176,6 +187,7 @@ const evidence = {
   status: 'failed', startedAt: new Date().toISOString(),
   core: nativeCore, engine: zoomEngine, meeting: redactUrl(meetingUrl),
   requestedSources: wantSources, minutes, churn: doChurn, takes, sceneA, sceneB,
+  takeBackground: backgroundFile,
 };
 const failures = [];
 
@@ -225,13 +237,14 @@ try {
 
   const pgmLoadSceneGraph = { type: 'load-scene-graph', sceneId: 'pgm', routes: [
     { routeId: 'pgm-0', slot: 0, mode: 'fixed', participantId: sources[0].participantId }] };
+  const pvwPreviewScene = { type: 'set-preview-scene', sceneId: 'pvw', routes: [
+    { routeId: 'pvw-0', slot: 0, mode: 'fixed', participantId: (sources[1] ?? sources[0]).participantId }] };
 
   await sync([
     { type: 'configure-multiviewer', layoutMode: 'pgmPvwTop', tileCount: Math.max(10, sources.length) },
     { type: 'set-multiview-layout', canvasWidth: 1920, canvasHeight: 1080, sources },
     pgmLoadSceneGraph,
-    { type: 'set-preview-scene', sceneId: 'pvw', routes: [
-      { routeId: 'pvw-0', slot: 0, mode: 'fixed', participantId: (sources[1] ?? sources[0]).participantId }] },
+    pvwPreviewScene,
   ], 500);
   await sleep(5000);   // engine subscribe + first frame on every source
 
@@ -242,21 +255,48 @@ try {
   // window) from silently padding the count the judge sees.
   const takeRecordsSeen = new Map();
   if (takes > 0) {
-    console.log(`Takes       : driving ${takes} take(s), alternating "${sceneA}" <-> "${sceneB}" (synthesized scenes, not shell scene ids)`);
-    // Floor: any record already armed (e.g. by the 'pgm' setup just above) must not
-    // count as one of the harness's own Takes.
+    // Both Take scenes carry the SAME Tiles wall over the live Zoom members (and the
+    // same media background when --background is given), so every take shares sources
+    // and the record judges their continuity — the owner's actual case. Routes stay
+    // empty: a Tiles scene serialises no routes (CLAUDE.md "routes and the wall share
+    // ONE order namespace").
+    const takeScene = (type, sceneId) => ({
+      type, sceneId, routes: [],
+      tiles: {
+        layerId: `tiles:${sceneId}`,
+        members: sources.map((s) => s.sourceId),
+        style: { fillMode: 'auto', backgroundColor: '#101418' },
+      },
+      ...(backgroundFile ? { background: {
+        mediaAssetId: 'soak-background', mediaAssetName: 'soak background',
+        mediaAssetKind: 'video', mediaAssetPath: backgroundFile, playing: true,
+      } } : {}),
+    });
+    // The shell's Take: Program gets the incoming scene, Preview gets the outgoing one,
+    // in ONE sync — so the outgoing Preview plan is part of every take's before-set.
+    const takeTo = (incoming, outgoing) => [
+      takeScene('load-scene-graph', incoming),
+      takeScene('set-preview-scene', outgoing),
+    ];
+    console.log(`Takes       : driving ${takes} take(s), "${sceneA}" <-> "${sceneB}" with a shared Tiles wall of ${sources.length} Zoom member(s)${backgroundFile ? ' + shared media background' : ''} (synthesized scenes, not shell scene ids)`);
+
+    // Prime Program to scene B (Preview A) BEFORE the floor is read, so take 1 is
+    // B -> A inside the pair. Without this, take 1 is pgm -> A, which the pair scope
+    // excludes, and N takes yield N-1 records against an expected N.
+    await sync(takeTo(sceneB, sceneA), 500);
+    await sleep(3000);
+
+    // Floor: any record already armed (the 'pgm' setup and the prime just above) must
+    // not count as one of the harness's own Takes.
     const { snapshot: preTakes } = await sync([], 500);
     collectTakeRecords(preTakes, takeRecordsSeen);
     const armedAfterMs = (preTakes?.takeRecords?.records ?? [])
       .reduce((max, r) => Math.max(max, Number(r.armedAtMs) || 0), 0);
 
     for (let i = 0; i < takes; i++) {
-      const targetScene = i % 2 === 0 ? sceneA : sceneB;
-      const src = sources[i % sources.length];
-      const { snapshot } = await sync([
-        { type: 'load-scene-graph', sceneId: targetScene, routes: [
-          { routeId: `${targetScene}-0`, slot: 0, mode: 'fixed', participantId: src.participantId }] },
-      ], 500);
+      const incoming = i % 2 === 0 ? sceneA : sceneB;
+      const outgoing = incoming === sceneA ? sceneB : sceneA;
+      const { snapshot } = await sync(takeTo(incoming, outgoing), 500);
       collectTakeRecords(snapshot, takeRecordsSeen);
       await sleep(3000);
       // One more poll per take: the record completes on the render tick AFTER the
@@ -269,7 +309,7 @@ try {
     // artifact-validation phase, so the rest of the soak still proves the wall its
     // evidence header advertises. This itself arms a record (sceneB/sceneA -> 'pgm'),
     // which scopeTakeRecords below excludes on the both-sides-in-the-pair rule.
-    await sync([pgmLoadSceneGraph], 500);
+    await sync([pgmLoadSceneGraph, pvwPreviewScene], 500);
     await sleep(500);
     const { snapshot: afterRestore } = await sync([], 500);
     collectTakeRecords(afterRestore, takeRecordsSeen);
