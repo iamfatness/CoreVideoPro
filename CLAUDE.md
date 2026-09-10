@@ -270,7 +270,7 @@ diagnose. Now:
 
 ## Fault-injection seams (beta slice, 2026-09-09) — how to prove stability work
 
-Gates G2 and G3 in `docs/production-realtime-execution-plan.md` (on the PR #419 branch) are written in terms of
+Gates G2 and G3 in `docs/production-realtime-execution-plan.md` are written in terms of
 injected faults, and until now nothing in this tree could inject anything, so neither
 could be attempted. There are now three seams. **All three are test-only, and the guard
 is structural, not conditional compilation** — `corevideo-native-tests` links the same
@@ -319,7 +319,7 @@ config key, no wire field reaches any of them, and nothing outside `native/tests
   costs only the slots it spans and Program recovers on its own. **The program buffer does
   not help here** — it protects delivery timing for frames that were produced, and these
   frames were never rendered. The monitor-compositor split in
-  `docs/production-realtime-completion-plan.md` (on the PR #419 branch) is what would give G2 its property; the
+  `docs/production-realtime-completion-plan.md` is what would give G2 its property; the
   sustained-stall case must be INVERTED when that lands, not deleted.
 
 ## One destination failing cannot take the show down (beta slice, PR19 — output supervisor)

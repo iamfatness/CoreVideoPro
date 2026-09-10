@@ -929,6 +929,17 @@ TEST(ZoomEngineRuntime, ShutdownBeforeFirstFrameNeverStartsIngest) {
   EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
 }
 
+// ---------------------------------------------------------------------------
+// Subscription churn is MEASURED, not inferred (live-show instrument 2026-09-09).
+//
+// Two hazards produce a real engine-side renderer teardown that looks, on air,
+// exactly like a render-plan rebuild: a source flipping into or out of
+// active-speaker changes its resolution, which is part of the subscription key;
+// and a source pushed out of the requested set is unsubscribed outright. This
+// asserts the ledger names both, per source, with a generation a reader can
+// compare across a take.
+// ---------------------------------------------------------------------------
+
 namespace {
 
 const corevideo::rpc::Json* findChurnSource(const corevideo::rpc::Json& churn,
