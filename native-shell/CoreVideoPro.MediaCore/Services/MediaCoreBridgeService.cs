@@ -539,33 +539,40 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             return;
         }
 
-        try
-        {
-            if (ShouldRefreshZoomRosterWhileCaptureOff())
-            {
-                await GetZoomSnapshotAsync().ConfigureAwait(false);
-                return;
-            }
-
-            await PollSnapshotAsync().ConfigureAwait(false);
-        }
-        catch
-        {
-            // Polling is best-effort; supervisor health events surface hard failures.
-        }
-    }
-
-    private bool ShouldRefreshZoomRosterWhileCaptureOff()
-    {
+        // T1.5 (#432): the core is polled on EVERY tick, Engine on or off. The capture-off
+        // branch used to poll only the roster, which froze the shell's copy of core state
+        // (/snapshot aged, frame counts stopped) until Engine On. See MediaCorePollPolicy.
+        MediaCorePollPlan plan;
         lock (_gate)
         {
-            if (_spinePayloadFactory is not null)
-            {
-                return false;
-            }
+            plan = MediaCorePollPolicy.Plan(_spinePayloadFactory is not null, _lastSnapshot?.MeetingState);
+        }
 
-            var meetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(_lastSnapshot?.MeetingState);
-            return meetingState.Equals("in_meeting", StringComparison.Ordinal);
+        // Core first, roster second: the roster merge keeps the fresh core fields it lands on,
+        // so the state a tick leaves behind carries both. Each half is best-effort on its own,
+        // so a poll skipped for backpressure never costs the roster refresh.
+        if (plan.PollCoreSnapshot)
+        {
+            try
+            {
+                await PollSnapshotAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Polling is best-effort; supervisor health events surface hard failures.
+            }
+        }
+
+        if (plan.RefreshZoomRoster)
+        {
+            try
+            {
+                await GetZoomSnapshotAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Same: the next tick retries.
+            }
         }
     }
 

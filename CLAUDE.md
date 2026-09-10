@@ -75,7 +75,8 @@ they carry real characterization tests (`MagicSceneCoordinatorTests`) — Studio
 is still NOT constructible in tests (field-init `DispatcherQueue.GetForCurrentThread()` + ctor
 hard-`new()`s ~10 services + launches the core; a later DI-seam PR). **PR2 (done):** the
 `IMediaCoreBridge` DI seam + `TransportCoordinator` (`ITransportHost` + `ITransportDispatcher`)
-owning the Engine/Take/Record/Stream async command bodies, in-flight guards, #286 rollback,
+owning the Engine/Take/Record/Stream async command bodies, in-flight guards, #286 rollback
+(scenes + the media selection the Take moved, T1.3),
 backpressure-retry, and sender-proof — constructible + characterization-tested
 (`TransportCoordinatorTests`). Same move-only façade rules: the `[RelayCommand]` objects stay
 generated on StudioViewModel as thin forwarders (XAML + external `NotifyCanExecuteChanged` pokes
@@ -222,6 +223,26 @@ off-thread guards never fired). Confirmed and suspected triggers:
   re-applies a matrix scale (`ApplyPanelTransform`), so the resize-vs-present race cannot
   occur by construction. No dedicated regression soak has confirmed it closed; treat any
   resize-adjacent fail-fast as this until the alpha soak passes.
+- **The post-Exit dispatcher drain on a normal close (T1.7, #457, 2026-09-10).** Here the
+  stack is `DispatcherQueue::DeferInvokeCallback` under
+  `DispatcherQueueController::ShutdownQueue` under `FrameworkApplication::StartDesktop`, on the
+  UI thread, AFTER `shutdown: resources released`. `Application.Current.Exit()` handed the
+  process back to XAML. Its shutdown drain then ran a leftover work item against torn-down XAML,
+  the item returned a failure HRESULT, and CoreMessaging fail-fasted. The failing item was a
+  `DispatcherQueueTimer::TimerCallback` (stowed E_UNEXPECTED) in one dump and a non-managed
+  callback (stowed E_ABORT) in the other. It hit 2 of 10 graceful closes, both after long
+  in-meeting sessions. Nothing aired, but each one costs a 1.1 GB dump, a WER APPCRASH, and a
+  false crash prompt on the next launch. FIXED: after a CLEAN shutdown, `MainWindow.ShutdownAsync`
+  calls `ShutdownCompletion.Complete`. It stops the view model's leftover timers, writes the last
+  log line, and calls `TerminateProcess` on its own process. It never calls
+  `Application.Current.Exit()`. It uses TerminateProcess, not `Environment.Exit`, because
+  `ExitProcess` would still run `DLL_PROCESS_DETACH` in Microsoft.UI.Xaml and CoreMessagingXP.
+  The logs are synchronous, and no ProcessExit handlers exist. A failed or timed-out cleanup
+  keeps the `ApplicationLifecycle.ForceExit` fallback. `PrepareForShutdown` also stops the view
+  model's DispatcherQueueTimers (defence in depth). **Rule: never hand a torn-down shell back to
+  WinUI's shutdown drain.** Unit tests (`ShutdownCompletionTests`) pin the order and the gate.
+  The proof is a scripted close-cycle loop on the real app: zero new
+  `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
 
 Rules of thumb: never replace a bound collection at frame rate (sync in place / diff);
 keep one stable swap chain per surface (program, preview, one multiview);
@@ -1126,6 +1147,29 @@ media asset is now one decoder with one clock, not one per bus.
   promoted one — its current on-air state, so a second rebuild in the same
   Take would be pure waste). This is what keeps an automated Magic Scene Take
   between two non-media scenes from rebuilding `MediaBinGroups` on every cut.
+  **A ROLLED-BACK TAKE RESTORES THE MEDIA SELECTION TOO (T1.3, #430).** The #286
+  rollback (`CaptureTakeRollback`) only ever put the SCENES back. A failed Take
+  kept the selection Promote had moved to a clip that went live. That clip was
+  still marked playing and kept auditioning locally with audio, and the status
+  said it was on Program. Worse, a Program clip X that LEFT on the failed Take
+  had its playing flag cleared. The rollback put X back on air, still rolling,
+  yet the toggle read "Resume Program", and pressing it paused X ON AIR.
+  `TransportCoordinator.TakeAsync` now captures the selection
+  (`ITransportHost.CaptureMediaSelection`) before and after the local mutations.
+  On a SUCCESSFUL scene rollback the pure `TakeMediaSelectionRollback.Resolve`
+  decides what stands: the pre-Take selection, unless the operator moved it
+  while the sync was pending (their choice is kept, like the scene rollback's
+  newer-edits rule); and for a clip on the restored Program, the playing flag
+  and status come from the real on-air state (`IsPlayingOnAir` over the paused
+  set), never from the saved flag. One more case: if the operator picked a clip
+  on the ATTEMPTED Program and the rollback takes it off air, it reads "<name> left
+  Program" and is not playing. `RequestTakeReconciliation` runs right after the scene
+  rollback, before `RestoreMediaSelectionAfterRollback`, so a throwing restore
+  cannot skip it. The restore then rebuilds the bin ONCE. A refused rollback
+  restores nothing. The go-live
+  ledger and the paused set are still deliberately NOT rewound. Tests:
+  `TransportCoordinatorTests.Take_Rollback*` and
+  `Take_RefusedRollbackLeavesTheSelectionAlone`.
   Tests: `native/tests/MediaPlaybackTimelineTest.cpp`
   (`MediaPlaybackTimeline.PauseFreezesElapsedAndResumeContinues`,
   `OwnedMediaFrameSource.PauseAndResumeKeepOneDecoder` /
@@ -1541,6 +1585,42 @@ Capture status line reflects that engine-reported truth ("Capture stopped —
 Zoom recording indicator cleared"), polling briefly until confirmed — never
 claiming stopped on hope. (This section belongs with the engine-teardown rules
 from PR #302 once that lands.)
+
+**Engine off does NOT stop the shell polling the core (T1.5, #432).** The
+bridge's 250 ms poll (`MediaCoreBridgeService.PollLoopAsync`) requests the core
+snapshot on EVERY tick, with Engine on or off. While capture is off in a meeting
+it ALSO refreshes the Zoom roster, because the spine sync that normally carries
+the roster is not running. It used to do only the roster refresh there, and
+`ZoomCaptureSnapshotMerger` carried the old core fields forward. So after a join
+with Engine off, `/snapshot` aged and `nativeProgramFrameCount` froze, and so did
+everything bound to `LastSnapshot` (meters, output health, program buffer). In one
+session that lasted 67 minutes. Operators read it as a core wedge, but Program
+had rendered at 60 Hz the whole time. The decision is `MediaCorePollPolicy`: core
+first, then roster, each best-effort on its own. An empty `media-core-sync` runs
+no tick, but it is not free: the core takes `coreMutex` and builds
+`sessionState()`, and the shell's single sync slot is held for the round trip.
+This is the same per-poll cost as with Engine on. Test: `MediaCoreBridgePollTests`
+(a node fake core; it asserts the poll cadence and a fresh `RawReceivedUtc` with
+Engine off).
+**Consequence, and a rule: A SKIPPED SINGLE SEND MUST RE-ARM ITSELF.** With the
+poll now running while Engine is off, a single-send sync can collide with it and
+be refused with `MediaCoreSyncInFlightException`, meaning it was NOT delivered.
+Three paths used to swallow that because "the periodic sync reapplies". With
+Engine off nothing does: there is no spine sync and the poll is empty. A
+Preview-scene pick could be lost, and the operator could then Take a scene the
+core never composited in Preview. The three paths now re-arm: the Preview-scene
+sync (`QueueProductionSyncRetry`), the multiview layout (its own debounce), and
+the Engine-On production sync. The spine carries only the Preview scene, so the
+Program sync is not repeated either. They use `SingleSendBackpressure.RunAsync`
+(`SingleSendBackpressureTests`, plus
+`TransportCoordinatorTests.ToggleEngine_ASyncSkippedForBackpressureIsReArmedNotAssumed`).
+Never swallow `MediaCoreSyncInFlightException` on the assumption that someone
+else will resend. Same report, second half:
+a launch sync that collided with that poll used to leave EngineStatus reading
+"Media core unavailable - media-core sync in flight; skipped for backpressure"
+until Engine On. `MediaCoreLaunchStatusPolicy` now treats a skipped launch sync
+as backpressure: the core is reported ready and the retry worker delivers the
+sync. Only a real failure reads "unavailable" (`MediaCoreLaunchStatusPolicyTests`).
 
 ## Browser sources (BR-1, 2026-07-13 — render-only URL sources)
 
