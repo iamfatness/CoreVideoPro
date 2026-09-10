@@ -218,6 +218,21 @@ class RenderThread {
   int64_t anchorNs_ = 0;
   int64_t nextSlot_ = 0;
 };
+// A measured baseline is a PRECONDITION, not the property under test: every
+// assertion below is relative to it, so a window degraded by unrelated machine
+// load measures nothing. Retry rather than fail on the first bad window --
+// observed failing 1 run in 15 on an otherwise idle box. A machine that cannot
+// produce one clean window in several attempts genuinely cannot run this test,
+// and that still fails.
+RenderThread::Window measureSettledBaseline(RenderThread& thread) {
+  RenderThread::Window best{};
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    const auto window = thread.measure("baseline", std::chrono::milliseconds(2000));
+    if (window.delivered > best.delivered) best = window;
+    if (best.delivered > 100u) break;
+  }
+  return best;
+}
 
 }  // namespace
 
@@ -230,7 +245,7 @@ TEST(MonitorRenderFaultInjection, AOneOffMonitorStallCostsOnlyTheSlotsItSpansAnd
   // Warm-up: shader compiles, render-target and program-buffer allocation are one-time
   // costs, not the fault under test, and must not land inside a measured window.
   thread.runFor(std::chrono::milliseconds(2000));
-  const auto settled = thread.measure("baseline", std::chrono::milliseconds(2000));
+  const auto settled = measureSettledBaseline(thread);
   ASSERT_TRUE(settled.delivered > 100u) << "the unfaulted baseline itself is not delivering; "
                                         "nothing measured after this would mean anything";
 
@@ -282,7 +297,7 @@ TEST(MonitorRenderFaultInjection, ASustainedMonitorStallCutsProgramDeliveryInPro
   RenderThread thread(*compositor, 3);
 
   thread.runFor(std::chrono::milliseconds(2000));
-  const auto settled = thread.measure("baseline", std::chrono::milliseconds(2000));
+  const auto settled = measureSettledBaseline(thread);
   ASSERT_TRUE(settled.delivered > 100u) << "the unfaulted baseline itself is not delivering";
 
   RenderThread::Window stalled{};
