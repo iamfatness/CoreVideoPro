@@ -16,6 +16,10 @@ This also means **everything after roughly 23:30 was verified without live Zoom 
 
 ---
 
+## After the reboot (07:30)
+
+The machine rebooted after this was written. The take/scene telemetry and the output supervisor were built clean and passed the native suite three times (999/999) before the reboot, but the commit had not gone through. They are now committed as `329e33c` and `ceb334c` and pushed. Nothing is running: the app, the core and the meeting all need starting.
+
 ## Read this first: what needs your eyes
 
 These cannot be closed without a human watching. They are batched so you are not hunting.
@@ -78,7 +82,7 @@ All measured on your real 8-source meeting, not the fake engine.
 | Truthful destination lifecycle | Done. Stop no longer claims completion early. |
 | Fault-injection seams | Done. Device loss, blocked present, blocked monitor render. |
 | Encoder capacity probing | Done. Verified on real hardware tonight. |
-| Output supervisor | **Not started.** Last item. |
+| Output supervisor | Done (`ceb334c`). Restart ladder, health from accepted units, loud give-up. Not exercised against a live RTMP/SRT destination yet. |
 
 ---
 
