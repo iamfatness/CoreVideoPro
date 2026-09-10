@@ -5,6 +5,7 @@
 #include "compositor/TilesLayout.h"
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
+#include "core/AudioControlSourcePolicy.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
@@ -3964,10 +3965,26 @@ rpc::Json MediaCore::audioMixSessionState() const {
   const std::string vstHostActivePlugin = pluginHostClient_.activePlugin();
   const std::string vstHostError = pluginHostClient_.lastError();
 
+  // T1.6: the "media" strip meters the pre-sum of every clip it governs (the
+  // signal its DSP actually processes). The clips keep their own ids in the
+  // mixer session.
+  modules::AudioParticipantMixMetrics mediaPreSumMetric;
+  if (mediaPreSumMetered_) {
+    mediaPreSumMetric.participantId = std::string(kMediaAudioControlSourceId);
+    mediaPreSumMetric.rmsLevel = std::clamp(mediaPreSumRmsLevel_, 0.0, 1.0);
+    mediaPreSumMetric.peakLevel = std::clamp(mediaPreSumPeakLevel_, mediaPreSumMetric.rmsLevel, 1.0);
+    mediaPreSumMetric.inputLevel =
+        clampInt(static_cast<int>(std::lround(mediaPreSumMetric.rmsLevel * 100.0)), 0, 100);
+    mediaPreSumMetric.limiterActive = mediaPreSumMetric.peakLevel >= 0.92;
+  }
+
   for (const auto& channel : audioChannels_) {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
     const modules::AudioParticipantMixMetrics* measured =
         nativeMetric == nativeMetricsByParticipant.end() ? nullptr : &nativeMetric->second;
+    if (mediaPreSumMetered_ && channel.participantId == kMediaAudioControlSourceId) {
+      measured = &mediaPreSumMetric;
+    }
     const bool hasPcm = measured != nullptr;
     const int measuredInputLevel = hasPcm ? measured->inputLevel : 0;
     const int smartGainDb = calculateSmartGainDb(measuredInputLevel);
@@ -6760,50 +6777,73 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // Routed-bus matrix mix over the real PCM into a LOCAL bus map (published later).
   {
     std::vector<modules::RoutedAudioSource> routedSources;
-    routedSources.reserve(work.audioFrames.size());
-    for (const auto& frame : work.audioFrames) {
-      if (frame.pcm.empty() || frame.channels <= 0) {
-        continue;
-      }
-      modules::RoutedAudioSource source;
-      source.sourceId = frame.participantId;
-      source.pcm = &frame.pcm;
-      source.channels = frame.channels;
-      bool hasStrip = false;
+    routedSources.reserve(work.audioFrames.size() + 1);
+    // T1.6 (core/AudioControlSourcePolicy.h): linear scans, no per-tick sets —
+    // the channel and send lists are a console's worth of rows.
+    const auto findStrip = [&work](std::string_view id) -> const ParticipantAudioChannelInput* {
       for (const auto& channel : work.channels) {
-        if (channel.participantId == frame.participantId) {
-          hasStrip = true;
-          source.muted = channel.muted;
-          source.solo = channel.solo;
-          source.pan = channel.pan;
-          source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
-          // Spec 4.4: the strip's insert chain + noise suppression now PROCESS
-          // (previously stored/exported only). Pointer into work.channels,
-          // which outlives the mix call.
-          source.inserts = &channel.pluginInserts;
-          source.insertSettings = &channel.insertSettings;  // C5b params
-          source.dspState = &channelDspStates_[frame.participantId];  // C7c continuity
-          if (debugDir != nullptr) {
-            ::corevideo::core::nativeVerboseLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
-                         frame.participantId.c_str(), static_cast<void*>(source.dspState),
-                         source.dspState->gateEnvelope, source.dspState->gateGain,
-                         source.dspState->gateHoldRemaining);
-          }
-          source.noiseSuppression = channel.noiseSuppression;
-          source.sampleRate = modules_.mixer->monitorBusSampleRate();
-          // A3: sources whose own chain hosts the plugin already carry its
-          // latency; every OTHER source gets the compensating delay.
-          if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
-            bool hostsPlugin = false;
-            for (const auto& insert : channel.pluginInserts) {
-              if (isHostHandledInsertName(insert)) {
-                hostsPlugin = true;
-                break;
-              }
+        if (channel.participantId == id) {
+          return &channel;
+        }
+      }
+      return nullptr;
+    };
+    const auto hasSendFor = [&work](std::string_view id) {
+      for (const auto& send : work.routingSends) {
+        if (send.sourceId == id) {
+          return true;
+        }
+      }
+      return false;
+    };
+    // Builds one routed source through its strip (exact first, then the alias
+    // strip) and the FADER LAW. `sourceId` names the source on the buses.
+    const auto addRoutedSource = [&](const std::string& sourceId, const std::vector<float>* pcm, int channels) {
+      modules::RoutedAudioSource source;
+      source.sourceId = sourceId;
+      source.pcm = pcm;
+      source.channels = channels;
+      const ParticipantAudioChannelInput* strip = findStrip(sourceId);
+      if (strip == nullptr) {
+        const std::string_view controlId = audioControlSourceIdFor(sourceId);
+        if (controlId != sourceId) {
+          strip = findStrip(controlId);
+        }
+      }
+      const bool hasStrip = strip != nullptr;
+      if (hasStrip) {
+        const auto& channel = *strip;
+        source.muted = channel.muted;
+        source.solo = channel.solo;
+        source.pan = channel.pan;
+        source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
+        // Spec 4.4: the strip's insert chain + noise suppression now PROCESS
+        // (previously stored/exported only). Pointer into work.channels,
+        // which outlives the mix call.
+        source.inserts = &channel.pluginInserts;
+        source.insertSettings = &channel.insertSettings;  // C5b params
+        // C7c continuity, keyed by the routed source id (the "media" pre-sum
+        // owns ONE state; per-asset entries never accumulate).
+        source.dspState = &channelDspStates_[sourceId];
+        if (debugDir != nullptr) {
+          ::corevideo::core::nativeVerboseLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
+                       sourceId.c_str(), static_cast<void*>(source.dspState),
+                       source.dspState->gateEnvelope, source.dspState->gateGain,
+                       source.dspState->gateHoldRemaining);
+        }
+        source.noiseSuppression = channel.noiseSuppression;
+        source.sampleRate = modules_.mixer->monitorBusSampleRate();
+        // A3: sources whose own chain hosts the plugin already carry its
+        // latency; every OTHER source gets the compensating delay.
+        if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
+          bool hostsPlugin = false;
+          for (const auto& insert : channel.pluginInserts) {
+            if (isHostHandledInsertName(insert)) {
+              hostsPlugin = true;
+              break;
             }
-            source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
           }
-          break;
+          source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
         }
       }
       // THE FADER LAW (owner rule, 2026-08-09): no audio source reaches ANY bus
@@ -6815,28 +6855,85 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       // callers (validators, scripts) sync no channels and keep unity behavior.
       if (!hasStrip && !work.channels.empty()) {
         static std::map<std::string, std::int64_t> s_lastWarn;
-        auto& warned = s_lastWarn[frame.participantId];
+        auto& warned = s_lastWarn[sourceId];
         const auto warningCount = warned++;
-        if (warningCount == 0) {
-          ::corevideo::core::nativeLogf("[audio] FADER LAW: routed source '%s' has NO channel strip — "
-                       "dropped from the bus mix (add a fader to make it audible)\n",
-                       frame.participantId.c_str());
-        } else if (warningCount % 250 == 0) {  // ~every 5s at 50Hz when detailed diagnostics are enabled
-          ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: routed source '%s' has NO channel strip — "
-                                              "dropped from the bus mix\n",
-                                              frame.participantId.c_str());
+        // "routed" only when a send actually names it: perGuestIso's zoom-mix
+        // is deliberately unrouted, and calling it a dropped routed source
+        // trained readers to ignore this line. Only computed when logging.
+        if (warningCount == 0 || warningCount % 250 == 0) {
+          const char* sourceKind = hasSendFor(sourceId) ? "routed source" : "unrouted source (no sends)";
+          if (warningCount == 0) {
+            ::corevideo::core::nativeLogf("[audio] FADER LAW: %s '%s' has NO channel strip — "
+                         "dropped from the bus mix (add a fader to make it audible)\n",
+                         sourceKind, sourceId.c_str());
+          } else {  // ~every 5s at 50Hz when detailed diagnostics are enabled
+            ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: %s '%s' has NO channel strip — "
+                                                "dropped from the bus mix\n",
+                                                sourceKind, sourceId.c_str());
+          }
         }
-        continue;
+        return;
       }
       // A3: sources with no channel-strip entry still need the compensating
       // delay (they sum into the same buses); give them their persistent DSP
       // state so the delay line survives across ticks.
       if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0 &&
           source.dspState == nullptr) {
-        source.dspState = &channelDspStates_[frame.participantId];
+        source.dspState = &channelDspStates_[sourceId];
         source.alignDelayFrames = vstActiveLatencySamples;
       }
-      routedSources.push_back(source);
+      routedSources.push_back(std::move(source));
+    };
+
+    // T1.6: fold every aliased media clip into ONE "media" source (stereo,
+    // mono upmixed, first two channels of anything wider — the same rule
+    // mixRoutedBuses applies). The strip then runs gate/compressor/inserts/VST
+    // once on the combined signal, and the existing "media" sends route it.
+    size_t preSumFrames = 0;
+    bool preSumActive = false;
+    // A clip with its own strip but no send row of its own is still routed by
+    // the "media" row (below). Empty in every shell-shaped show: no allocation.
+    std::vector<const std::string*> stripOnlyMediaClips;
+    for (const auto& frame : work.audioFrames) {
+      if (frame.pcm.empty() || frame.channels <= 0) {
+        continue;
+      }
+      const bool hasOwnStrip = findStrip(frame.participantId) != nullptr;
+      const bool hasOwnSend = hasSendFor(frame.participantId);
+      if (!joinsMediaAudioPreSum(frame.participantId, hasOwnStrip, hasOwnSend)) {
+        if (hasOwnStrip && !hasOwnSend && isMediaClipAudioSourceId(frame.participantId)) {
+          stripOnlyMediaClips.push_back(&frame.participantId);
+        }
+        addRoutedSource(frame.participantId, &frame.pcm, frame.channels);
+        continue;
+      }
+      const size_t frames = frame.pcm.size() / static_cast<size_t>(frame.channels);
+      if (!preSumActive) {
+        preSumActive = true;
+        mediaPreSumPcm_.assign(frames * 2, 0.0f);  // keeps capacity: no steady-state allocation
+        preSumFrames = frames;
+      } else if (frames > preSumFrames) {
+        mediaPreSumPcm_.resize(frames * 2, 0.0f);
+        preSumFrames = frames;
+      }
+      const size_t channels = static_cast<size_t>(frame.channels);
+      for (size_t index = 0; index < frames; ++index) {
+        const float left = frame.pcm[index * channels];
+        const float right = channels == 1 ? left : frame.pcm[index * channels + 1];
+        mediaPreSumPcm_[index * 2] += left;
+        mediaPreSumPcm_[index * 2 + 1] += right;
+      }
+    }
+    if (preSumActive) {
+      // Input meter for the "media" strip: the summed pre-strip level, the same
+      // pre-fader measurement every other strip reads from its own PCM.
+      results.mediaPreSumMetered = true;
+      results.mediaPreSumRmsLevel =
+          modules::dbfsToLinear(modules::computeRmsDbfs(mediaPreSumPcm_.data(), mediaPreSumPcm_.size()));
+      results.mediaPreSumPeakLevel =
+          modules::dbfsToLinear(modules::computeSamplePeakDbfs(mediaPreSumPcm_.data(), mediaPreSumPcm_.size()));
+      static const std::string kMediaPreSumSourceId(kMediaAudioControlSourceId);
+      addRoutedSource(kMediaPreSumSourceId, &mediaPreSumPcm_, 2);
     }
     if (debugDir != nullptr) {
       const std::string path = std::string(debugDir) + "/tap-structure.txt";
@@ -6860,6 +6957,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     crosspoints.reserve(work.routingSends.size());
     for (const auto& send : work.routingSends) {
       crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
+      if (!stripOnlyMediaClips.empty() && send.sourceId == kMediaAudioControlSourceId) {
+        for (const auto* clipId : stripOnlyMediaClips) {
+          crosspoints.push_back({*clipId, send.busId, modules::dbfsToLinear(send.gainDb)});
+        }
+      }
     }
     // One fail-open bridge hook for both channel and bus chains. A recognized
     // host insert always returns true even when unresolved/loading/failed so
@@ -7373,6 +7475,9 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
   audioMasteringRideDb_ = results.masteringRideDb;
   mixedAudioFrameCount_ = results.mixedFrameCount;
   audioCompGainReductionDbBySource_ = std::move(results.compGainReductionDbBySource);
+  mediaPreSumMetered_ = results.mediaPreSumMetered;
+  mediaPreSumRmsLevel_ = results.mediaPreSumRmsLevel;
+  mediaPreSumPeakLevel_ = results.mediaPreSumPeakLevel;
   if (results.monitorTouched) {
     audioMonitorStatus_ = results.monitorStatus;
     audioMonitorWarning_ = results.monitorWarning;

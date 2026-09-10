@@ -497,6 +497,25 @@ comment at the code site; this is the index.
   unity). Shell: `zoom-mix` — the audible Zoom path — was EXPLICITLY excluded from
   getting a strip (`IsConcreteAudioMixSourceId`), which is why muting every fader
   left audio on master. It has a "Zoom program mix" fader now.
+  **Media clips are governed by the shell's `"media"` strip and sends via a CORE
+  ALIAS (T1.6 / #455, `core/AudioControlSourcePolicy.h`).** Since #408 the decoder
+  labels each clip's PCM `media:<assetId>`, but the shell has ONE "Media playback"
+  row/strip/send set keyed `"media"`; exact-id matching made the FADER LAW drop every
+  clip and no send reached a bus, so media audio was silent on master, stream and
+  every recording while the shell looked fine. The routed-source build now
+  PRE-SUMS every `media:*` clip without its own strip/send into ONE routed source
+  keyed `"media"` (worker-owned scratch, no per-tick allocation), so the Media strip's
+  gate/compressor/inserts/VST run ONCE on the combined signal (a VST insert must never
+  be exchanged once per clip against one host instance), the `"media"` sends route it,
+  and the strip meters/GR-meters the sum. Clips keep their own ids in the mixer
+  session. An exact `media:<assetId>` strip or send keeps that clip separate; a clip
+  with its own send rows does NOT inherit the generic row's other cells. Do NOT fix it by sending
+  per-clip ids from the shell: the routing grid un-routes cells the core did not
+  echo, so the Media row would switch itself off ~2 s later. Proof:
+  `MediaCoreCommand.SceneMediaAudioReachesMasterThroughTheShellMediaStrip` and
+  `node scripts/validate-record-audio.mjs --media` (real MF decoder, AAC 440 Hz clip,
+  judges the recording's decoded audio). The FADER LAW line now says "unrouted
+  source (no sends)" for a strip-less source nothing routes (perGuestIso's zoom-mix).
 - **A throwing DispatcherQueue.TryEnqueue callback fail-fasts the process with NO
   managed log** (`UiDispatch.cs`): three live crashes decoded to ordinary NRE /
   ArgumentOutOfRange inside queued callbacks (stowed 0x80004003 / 0x8000000b at

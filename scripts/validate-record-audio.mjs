@@ -14,10 +14,24 @@
  *   - (when ffprobe is available) the MP4 has video+audio streams with
  *     |start delta| < 50ms and |duration delta| < 200ms.
  *
- * Usage: node ./scripts/validate-record-audio.mjs [--seconds 30] [--keep-artifact]
+ *
+ * --media leg (T1.6 / #455): media-clip audio never reached the audio engine.
+ * The decoder labels each clip's PCM `media:<assetId>` while the shell's strip
+ * and sends say "media"; the core's alias (core/AudioControlSourcePolicy.h)
+ * joins them. This leg proves it end to end with the REAL Media Foundation
+ * decoder: it generates a short H.264 + AAC 440 Hz clip with ffmpeg (temp dir,
+ * deleted afterwards), routes it as a PLAYING fixed media route on Program,
+ * sends the SHELL-SHAPED console (a "media" strip + a "zoom-mix" strip, and
+ * "media" -> master/pgm-l/pgm-r/stream/mon at 0 dB, exactly what
+ * StudioViewModel.EnsureDefaultMediaAudioRoutingSends seeds), records, and
+ * FAILS unless the recording's decoded audio is non-silent AND dominated by
+ * 440 Hz. It never joins Zoom (no zoom-join, no engine is spawned).
+ *
+ * Usage: node ./scripts/validate-record-audio.mjs [--seconds 30] [--keep-artifact] [--media]
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, statSync, rmSync } from "node:fs";
+import { existsSync, statSync, rmSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,12 +47,49 @@ const argValue = (name, fallback) => {
   const index = args.indexOf(`--${name}`);
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
-const recordSeconds = Number(argValue("seconds", 30));
+const mediaLeg = args.includes("--media");
+const recordSeconds = Number(argValue("seconds", mediaLeg ? 10 : 30));
 const keepArtifact = args.includes("--keep-artifact");
 
-if (!existsSync(nativeCore) || !existsSync(fakeEngine)) {
+if (!existsSync(nativeCore) || (!mediaLeg && !existsSync(fakeEngine))) {
   console.error(`Missing ${nativeCore} or ${fakeEngine}. Run scripts/build-native-dev.ps1 first.`);
   process.exit(1);
+}
+
+const findTool = (name) => [name, `C:\\ffmpeg\\bin\\${name}.exe`].find((bin) => {
+  const probe = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 10000 });
+  return !probe.error && probe.status === 0;
+});
+
+// --media: a real clip for the real decoder. Long enough to outlast the
+// recording so the leg never depends on loop behaviour.
+const MEDIA_TONE_HZ = 440;
+const MEDIA_ASSET_ID = "validate-media-tone";
+let mediaTempDir = null;
+let mediaClipPath = null;
+if (mediaLeg) {
+  const ffmpegForClip = findTool("ffmpeg");
+  if (!ffmpegForClip) {
+    console.error("--media needs ffmpeg (PATH or C:\\ffmpeg\\bin\\ffmpeg.exe) to generate the test clip.");
+    process.exit(1);
+  }
+  mediaTempDir = mkdtempSync(join(tmpdir(), "corevideo-validate-media-"));
+  mediaClipPath = join(mediaTempDir, "tone-clip.mp4");
+  const clipSeconds = recordSeconds + 15;
+  const gen = spawnSync(ffmpegForClip, [
+    "-v", "error", "-y",
+    "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30",
+    "-f", "lavfi", "-i", `sine=frequency=${MEDIA_TONE_HZ}:sample_rate=48000`,
+    "-t", String(clipSeconds),
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+    "-shortest", mediaClipPath,
+  ], { encoding: "utf8", timeout: 120000 });
+  if (gen.status !== 0 || !existsSync(mediaClipPath)) {
+    console.error(`ffmpeg could not generate the media clip: ${gen.stderr || gen.error}`);
+    rmSync(mediaTempDir, { recursive: true, force: true });
+    process.exit(1);
+  }
 }
 
 const child = spawn(nativeCore, [], {
@@ -195,6 +246,71 @@ function programPixelVerdict(artifactPath, ffmpegBin) {
   };
 }
 
+// SOUND, not just packets (the --media leg). An audio track full of digital
+// silence carries packets, passes ffprobe and lines up with video — which is
+// exactly what a recording looks like when media PCM is dropped before the bus.
+// Decode the track to mono f32, skip the first second, and require:
+//   * a real level (peak and RMS above silence), and
+//   * that the level is the clip's tone: a Goertzel at the tone frequency must
+//     hold most of the signal's energy (a click, hum or another source cannot).
+function mediaAudioVerdict(artifactPath, ffmpegBin, toneHz) {
+  const sampleRate = 48000;
+  const out = spawnSync(ffmpegBin,
+    ["-v", "error", "-i", artifactPath, "-map", "0:a:0", "-ac", "1", "-ar", String(sampleRate), "-f", "f32le", "-"],
+    { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
+  if (out.status !== 0 || !out.stdout?.length) {
+    return { available: false, pass: false, reason: "could not decode the recording's audio track" };
+  }
+  const buf = out.stdout;
+  const samples = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 4));
+  const durationSeconds = samples.length / sampleRate;
+  const body = samples.subarray(Math.min(samples.length, sampleRate));  // skip startup second
+  if (body.length < sampleRate) {
+    return { available: true, pass: false, durationSeconds, reason: "less than 1s of audio after the startup second" };
+  }
+  let peak = 0;
+  let sumSquares = 0;
+  for (const s of body) {
+    peak = Math.max(peak, Math.abs(s));
+    sumSquares += s * s;
+  }
+  const rms = Math.sqrt(sumSquares / body.length);
+  // Goertzel over 100ms windows: energy at toneHz vs the window's total energy.
+  const windowSize = sampleRate / 10;
+  const coeff = 2 * Math.cos((2 * Math.PI * toneHz) / sampleRate);
+  let toneEnergy = 0;
+  let totalEnergy = 0;
+  for (let start = 0; start + windowSize <= body.length; start += windowSize) {
+    let s1 = 0;
+    let s2 = 0;
+    let windowEnergy = 0;
+    for (let i = start; i < start + windowSize; i += 1) {
+      const s0 = body[i] + coeff * s1 - s2;
+      s2 = s1;
+      s1 = s0;
+      windowEnergy += body[i] * body[i];
+    }
+    const power = s1 * s1 + s2 * s2 - coeff * s1 * s2;   // |X(k)|^2
+    toneEnergy += (2 * power) / windowSize;                // Parseval-scaled
+    totalEnergy += windowEnergy;
+  }
+  const toneShare = totalEnergy > 0 ? toneEnergy / totalEnergy : 0;
+  const MIN_PEAK = 0.03;       // ~-30 dBFS; the clip's sine is ~-18 dBFS
+  const MIN_RMS = 0.01;
+  const MIN_TONE_SHARE = 0.5;
+  const peakDbfs = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+  return {
+    available: true,
+    durationSeconds: Number(durationSeconds.toFixed(2)),
+    peak: Number(peak.toFixed(4)),
+    peakDbfs: Number(peakDbfs.toFixed(1)),
+    rms: Number(rms.toFixed(4)),
+    toneHz,
+    toneShare: Number(toneShare.toFixed(3)),
+    pass: peak >= MIN_PEAK && rms >= MIN_RMS && toneShare >= MIN_TONE_SHARE,
+  };
+}
+
 function ffprobeVerdict(artifactPath) {
   const candidates = ["ffprobe", "C:\\ffmpeg\\bin\\ffprobe.exe"];
   for (const bin of candidates) {
@@ -230,31 +346,69 @@ try {
   if (!handshake) throw new Error("no native-core handshake");
   console.log(`Handshake     : ${handshake.profile?.name ?? "unknown"}`);
 
-  await send("zoom-join", {
-    payload: { meetingNumber: "1234567890", displayName: "record-audio-proof" },
-  });
-  console.log("Joined        : fake engine (deterministic tones)");
-  await sleep(1000);
-
-  let participants = [];
-  for (let attempt = 0; attempt < 15; attempt += 1) {
-    const snapshot = (await send("zoom-snapshot")).snapshot;
-    participants = participantsOf(snapshot);
-    if (participants.length > 0) {
-      await send("zoom-media-spine-sync", {
-        spinePayload: buildSpinePayload(participants),
-        elapsedMs: Date.now() - startedAt,
-      });
-      break;
-    }
+  let sceneAndAudioCommands;
+  if (mediaLeg) {
+    // No Zoom at all: the media clip is the only audio source.
+    console.log(`Media clip    : ${mediaClipPath} (H.264 + AAC ${MEDIA_TONE_HZ} Hz)`);
+    // Shell-shaped channel strip (MediaCoreCommandBuilder.BuildAudioMixCommand).
+    const strip = (participantId) => ({
+      participantId, inputLevel: 0, muted: false, noiseSuppression: false, manualGainDb: 0,
+      pan: 0, solo: false, pluginInserts: [], insertSettings: {},
+    });
+    sceneAndAudioCommands = [
+      {
+        type: "load-scene-graph",
+        sceneId: "record-audio-media-validation",
+        routes: [{
+          routeId: "media-main",
+          mode: "fixed",
+          mediaAssetId: MEDIA_ASSET_ID,
+          mediaAssetName: "Validation tone",
+          mediaAssetKind: "video",
+          mediaAssetPath: mediaClipPath,
+          mediaPlaybackKey: `media:${MEDIA_ASSET_ID}:live:1`,
+          mediaAssetPlaying: true,
+          rect: { x: 0, y: 0, width: 1, height: 1 },
+        }],
+      },
+      // The shell ALWAYS syncs a console, so the FADER LAW is live: a media
+      // source with no governing strip is dropped. This is the shape that
+      // shipped silent.
+      { type: "sync-participant-audio-mix", limiterEnabled: true, channels: [strip("media"), strip("zoom-mix")] },
+      {
+        type: "sync-audio-routing-matrix",
+        sends: ["master", "pgm-l", "pgm-r", "stream", "mon"].map((busId) => ({
+          sourceId: "media", busId, gainDb: 0, busPluginInserts: [],
+        })),
+        busSends: [],
+        monitorBusId: "",
+      },
+    ];
     await sleep(500);
-  }
-  if (participants.length === 0) throw new Error("fake engine did not present a video participant");
-  await sleep(2000);  // audio/video subscriptions + first ring packets
+  } else {
+    await send("zoom-join", {
+      payload: { meetingNumber: "1234567890", displayName: "record-audio-proof" },
+    });
+    console.log("Joined        : fake engine (deterministic tones)");
+    await sleep(1000);
 
-  await send("media-core-sync", {
-    elapsedMs: Date.now() - startedAt,
-    commands: [
+    let participants = [];
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      const snapshot = (await send("zoom-snapshot")).snapshot;
+      participants = participantsOf(snapshot);
+      if (participants.length > 0) {
+        await send("zoom-media-spine-sync", {
+          spinePayload: buildSpinePayload(participants),
+          elapsedMs: Date.now() - startedAt,
+        });
+        break;
+      }
+      await sleep(500);
+    }
+    if (participants.length === 0) throw new Error("fake engine did not present a video participant");
+    await sleep(2000);  // audio/video subscriptions + first ring packets
+
+    sceneAndAudioCommands = [
       {
         type: "load-scene-graph",
         sceneId: "record-audio-validation",
@@ -268,6 +422,13 @@ try {
           { sourceId: "zoom-mix", busId: "stream", gainDb: 0 },
         ],
       },
+    ];
+  }
+
+  await send("media-core-sync", {
+    elapsedMs: Date.now() - startedAt,
+    commands: [
+      ...sceneAndAudioCommands,
       { type: "prepare-encoder-session", preparedAtMs: Date.now() - startedAt, reason: "record-audio warmup" },
       { type: "start-program-output", destinations: ["recording"], isoParticipantIds: [] },
       {
@@ -333,10 +494,22 @@ try {
     if (!verdict.pass) failures.push(`ffprobe A/V check failed: ${JSON.stringify(verdict)}`);
 
     // Does the recording actually SHOW the program? (see programPixelVerdict)
-    const ffmpegBin = ["ffmpeg", "C:\\ffmpeg\\bin\\ffmpeg.exe"].find((bin) => {
-      const probe = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 10000 });
-      return !probe.error && probe.status === 0;
-    });
+    const ffmpegBin = findTool("ffmpeg");
+    if (mediaLeg) {
+      // Does the recording actually CARRY the clip's audio? (see mediaAudioVerdict)
+      if (!ffmpegBin) {
+        failures.push("--media needs ffmpeg to judge the recorded audio");
+      } else {
+        const sound = mediaAudioVerdict(artifactAbsolute, ffmpegBin, MEDIA_TONE_HZ);
+        console.log(`media audio   : ${JSON.stringify(sound)}`);
+        if (!sound.pass) {
+          failures.push(
+            `recorded audio does not carry the media clip ` +
+            `(peak ${sound.peak ?? "n/a"}, rms ${sound.rms ?? "n/a"}, ${MEDIA_TONE_HZ} Hz share ${sound.toneShare ?? "n/a"}` +
+            `${sound.reason ? `, ${sound.reason}` : ""}) — media PCM is not reaching the master bus`);
+        }
+      }
+    }
     if (ffmpegBin) {
       const pixels = programPixelVerdict(artifactAbsolute, ffmpegBin);
       console.log(`pixels        : ${JSON.stringify(pixels)}`);
@@ -366,6 +539,12 @@ try {
   child.kill();
   if (!keepArtifact && artifactAbsolute && existsSync(artifactAbsolute)) {
     try { rmSync(artifactAbsolute); } catch { /* artifact cleanup is best-effort */ }
+  }
+  if (mediaTempDir) {
+    // The core may still hold the clip open for a moment after kill().
+    for (let attempt = 0; attempt < 10 && existsSync(mediaTempDir); attempt += 1) {
+      try { rmSync(mediaTempDir, { recursive: true, force: true }); } catch { await sleep(300); }
+    }
   }
 }
 process.exit(failures.length === 0 ? 0 : 1);
