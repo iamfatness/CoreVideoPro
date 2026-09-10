@@ -4,6 +4,7 @@
 #include "modules/Interfaces.h"
 #include "modules/MediaPlaybackTimeline.h"
 #include "modules/MediaVideoPresentation.h"
+#include "modules/StillMediaFrameCache.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -120,6 +121,12 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty() ||
           (audio && (layer.kind != "media-video" || !layer.mediaAssetPlaying))) continue;
+      // Still-image ROUTE layers are served by MediaCore's StillMediaFrameCache
+      // — the same filter MediaFoundationMediaFrameSourceAdapter applies. A
+      // still on both buses arrives playing (Program) and paused (Preview);
+      // requesting it here would start two dead decoders and call the pair a
+      // playback-identity collision. Background stills keep the decoder path.
+      if (layer.kind == "media-video" && isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath)) continue;
       const auto id = (layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId) + "|" +
           layer.mediaAssetPath + "|" + layer.mediaAssetId + "|" + layer.mediaPlaybackKey + (layer.mediaAssetPlaying ? "|playing" : "|paused") +
           (layer.mediaAssetLoop ? "|loop" : "|once");

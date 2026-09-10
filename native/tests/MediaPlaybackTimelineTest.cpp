@@ -154,6 +154,31 @@ TEST(OwnedMediaFrameSource, TheSameRequestFromTwoBusesStartsOneDecoder) {
   }));
 }
 
+// A still routed on both buses arrives playing on Program and paused on
+// Preview (the shell only rolls Program). Stills are served by
+// StillMediaFrameCache, not by a decoder — the owned source must not start
+// two dead decoder threads for them nor call the pair a collision.
+TEST(OwnedMediaFrameSource, AStillRouteOnBothBusesStartsNoDecoderAndIsNotACollision) {
+  auto gate = std::make_shared<DecodeGate>();
+  std::atomic<int> created{0};
+  OwnedMediaFrameSource source([gate, &created] { ++created; return std::make_unique<TestDecoder>(gate); });
+  auto program = workerLayer();
+  program.mediaAssetId = "logo"; program.sourceId = "media:logo";
+  program.mediaAssetKind = "lower-third"; program.mediaAssetPath = "C:\\assets\\logo.PNG";
+  program.mediaAssetPlaying = true;
+  auto preview = program;
+  preview.mediaAssetPlaying = false;
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  (void)source.pollMediaFrames({program, preview}, now);
+  (void)source.pollMediaAudioFrames({program, preview}, now);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(created.load(), 0);
+  const auto warnings = source.warnings();
+  EXPECT_TRUE(std::none_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+    return w.find("two different playback identities") != std::string::npos;
+  }));
+}
+
 TEST(OwnedMediaFrameSource, TheCapWarningNamesTheAssetItRefused) {
   auto gate = std::make_shared<DecodeGate>();
   OwnedMediaFrameSource source([gate] { return std::make_unique<TestDecoder>(gate); });
@@ -171,11 +196,17 @@ TEST(OwnedMediaFrameSource, TheCapWarningNamesTheAssetItRefused) {
   }
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
   (void)source.pollMediaFrames(layers, now);
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  const auto warnings = source.warnings();
-  const bool named = std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
-    return w.find("Media decoder capacity reached") != std::string::npos && w.find("media:asset-16") != std::string::npos;
-  });
+  // The manager admits asynchronously; poll to a generous deadline instead
+  // of a fixed sleep so a busy box cannot flake this.
+  const auto isNamed = [](const std::vector<std::string>& warnings) {
+    return std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+      return w.find("Media decoder capacity reached") != std::string::npos && w.find("media:asset-16") != std::string::npos;
+    });
+  };
+  bool named = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!(named = isNamed(source.warnings())) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   EXPECT_TRUE(named);
 }
 
