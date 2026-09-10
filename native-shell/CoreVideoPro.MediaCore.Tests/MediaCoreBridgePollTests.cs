@@ -68,19 +68,32 @@ public sealed class MediaCoreBridgePollTests
             var before = await File.ReadAllLinesAsync(trace);
             var syncsBefore = before.Count(line => line == "media-core-sync");
 
-            await Task.Delay(TimeSpan.FromMilliseconds(1750));
+            // The property is "the poll keeps running with Engine off" — the defect polled the core
+            // ZERO times here. Wait for polls against a generous deadline instead of counting them in
+            // a fixed window: a CI runner saw 2 polls in 1.75 s where this machine sees ~7.
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            string[] after;
+            int polls;
+            do
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250));
+                after = await File.ReadAllLinesAsync(trace);
+                polls = after.Count(line => line == "media-core-sync") - syncsBefore;
+            }
+            // The fake traces a request when it RECEIVES it, before the bridge applies the reply,
+            // so also wait for the applied snapshot to carry the advanced frame count.
+            while ((polls < 4 || after.Count(line => line == "zoom-snapshot") < 3 ||
+                    (bridge.LastSnapshot?.ProgramFrameCount ?? 0) < 60) && DateTime.UtcNow < deadline);
 
-            var after = await File.ReadAllLinesAsync(trace);
-            var polls = after.Count(line => line == "media-core-sync") - syncsBefore;
-            // 250 ms cadence over 1.75 s is ~7 polls; 4 leaves room for a busy test machine.
-            Assert.True(polls >= 4, $"expected the core to be polled at its normal cadence, saw {polls} media-core-sync request(s)");
+            Assert.True(polls >= 4, $"expected the core to keep being polled with Engine off, saw {polls} media-core-sync request(s) in 15 s");
             // The roster is still refreshed while capture is off.
             Assert.True(after.Count(line => line == "zoom-snapshot") >= 3);
 
             var snapshot = bridge.LastSnapshot!;
             Assert.Equal("in_meeting", snapshot.MeetingState);
             Assert.NotNull(snapshot.RawReceivedUtc);
-            Assert.True(DateTimeOffset.UtcNow - snapshot.RawReceivedUtc!.Value < TimeSpan.FromSeconds(1),
+            // 2 s = the /snapshot envelope's own "stale" threshold.
+            Assert.True(DateTimeOffset.UtcNow - snapshot.RawReceivedUtc!.Value < TimeSpan.FromSeconds(2),
                 $"the core snapshot is stale: received {snapshot.RawReceivedUtc:O}");
             Assert.True(snapshot.ProgramFrameCount >= 60);
         }
