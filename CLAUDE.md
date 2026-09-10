@@ -223,6 +223,26 @@ off-thread guards never fired). Confirmed and suspected triggers:
   re-applies a matrix scale (`ApplyPanelTransform`), so the resize-vs-present race cannot
   occur by construction. No dedicated regression soak has confirmed it closed; treat any
   resize-adjacent fail-fast as this until the alpha soak passes.
+- **The post-Exit dispatcher drain on a normal close (T1.7, #457, 2026-09-10).** Here the
+  stack is `DispatcherQueue::DeferInvokeCallback` under
+  `DispatcherQueueController::ShutdownQueue` under `FrameworkApplication::StartDesktop`, on the
+  UI thread, AFTER `shutdown: resources released`. `Application.Current.Exit()` handed the
+  process back to XAML. Its shutdown drain then ran a leftover work item against torn-down XAML,
+  the item returned a failure HRESULT, and CoreMessaging fail-fasted. The failing item was a
+  `DispatcherQueueTimer::TimerCallback` (stowed E_UNEXPECTED) in one dump and a non-managed
+  callback (stowed E_ABORT) in the other. It hit 2 of 10 graceful closes, both after long
+  in-meeting sessions. Nothing aired, but each one costs a 1.1 GB dump, a WER APPCRASH, and a
+  false crash prompt on the next launch. FIXED: after a CLEAN shutdown, `MainWindow.ShutdownAsync`
+  calls `ShutdownCompletion.Complete`. It stops the view model's leftover timers, writes the last
+  log line, and calls `TerminateProcess` on its own process. It never calls
+  `Application.Current.Exit()`. It uses TerminateProcess, not `Environment.Exit`, because
+  `ExitProcess` would still run `DLL_PROCESS_DETACH` in Microsoft.UI.Xaml and CoreMessagingXP.
+  The logs are synchronous, and no ProcessExit handlers exist. A failed or timed-out cleanup
+  keeps the `ApplicationLifecycle.ForceExit` fallback. `PrepareForShutdown` also stops the view
+  model's DispatcherQueueTimers (defence in depth). **Rule: never hand a torn-down shell back to
+  WinUI's shutdown drain.** Unit tests (`ShutdownCompletionTests`) pin the order and the gate.
+  The proof is a scripted close-cycle loop on the real app: zero new
+  `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
 
 Rules of thumb: never replace a bound collection at frame rate (sync in place / diff);
 keep one stable swap chain per surface (program, preview, one multiview);

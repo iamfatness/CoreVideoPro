@@ -809,24 +809,30 @@ public sealed partial class MainWindow : Window
                 LaunchLog.WriteException("shutdown: detach closing handler", ex);
             }
 
+            var windowClosed = false;
             try
             {
                 Close();
-                if (cleanupSucceeded)
-                {
-                    // Normal shutdown stays on the UI thread and lets WinUI
-                    // leave its event loop. The watchdog is only a last resort
-                    // if native background resources keep the process alive.
-                    Application.Current.Exit();
-                }
+                windowClosed = true;
             }
             catch (Exception ex)
             {
-                cleanupSucceeded = false;
                 LaunchLog.WriteException("shutdown: Close failed", ex);
             }
 
-            if (!cleanupSucceeded) ApplicationLifecycle.ForceExit();
+            // T1.7 (#457): after a clean shutdown the process is terminated directly. It is
+            // NOT handed back to WinUI with Application.Current.Exit(): XAML's post-Exit
+            // DispatcherQueueController::ShutdownQueue drain ran a leftover callback against
+            // torn-down XAML and fail-fasted (0xc000027b, CoreMessagingXP) on 2 of 10 graceful
+            // closes. Any failure keeps the ForceExit fallback. Why TerminateProcess and not
+            // Environment.Exit: see ShutdownCompletion.
+            ShutdownCompletion.Complete(
+                cleanupSucceeded,
+                windowClosed,
+                stopLeftoverUiTimers: () => ViewModel.StopDispatcherTimersForShutdown(),
+                log: LaunchLog.Write,
+                terminateProcess: ShutdownCompletion.TerminateCurrentProcess,
+                forceExitFallback: () => ApplicationLifecycle.ForceExit());
         }
     }
 

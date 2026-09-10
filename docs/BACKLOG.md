@@ -49,7 +49,6 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T1.4](https://github.com/iamfatness/CoreVideoPro/issues/431) | Multiview/Preview must not halve Program under load: apply the cheap multiview tick-divisor mitigation (proper fix = monitor compositor split, post-beta) | 1 | S |
 | [T1.5](https://github.com/iamfatness/CoreVideoPro/issues/432) | Investigate the ~45 s after a Zoom join with no core snapshots reaching the shell (core busy, recovered on its own) | 2/1 | unsized |
 | [T1.6](https://github.com/iamfatness/CoreVideoPro/issues/455) | Media clip audio never reaches the audio engine (fix in PR #458) | 1/3 | S |
-| [T1.7](https://github.com/iamfatness/CoreVideoPro/issues/457) | Triage: WinUI shell crash dump during a forced stop | 1 | unsized |
 
 ## Tier 2 — first external install
 
@@ -61,6 +60,7 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T2.4](https://github.com/iamfatness/CoreVideoPro/issues/436) | OAuth broker on a stable production domain (monitoring already shipped, #324) | 2 | S |
 | [T2.5](https://github.com/iamfatness/CoreVideoPro/issues/437) | Wire the certificate into the release pipeline when T0.1 lands | 4 | XS |
 | [T2.6](https://github.com/iamfatness/CoreVideoPro/issues/438) | Reconcile `docs/beta-engineering-spec.md` (signed MSIX) with what ships (NSIS installer, #417) | 4 | XS |
+| [T1.7](https://github.com/iamfatness/CoreVideoPro/issues/457) | WinUI shell crash on a graceful close: 0xc000027b in XAML's post-Exit dispatcher drain, after cleanup (2 of 10 closes; false crash prompt on the next launch). (recommended tier 2 by investigation; fixed in this batch) | 1 | S |
 
 ## Tier 3 — first show on a machine we cannot see
 
