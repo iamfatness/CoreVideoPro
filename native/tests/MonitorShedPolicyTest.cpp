@@ -240,6 +240,19 @@ TEST(MonitorShedPolicy, NegativeCostsAreClampedNotRewarded) {
   EXPECT_TRUE(MonitorShedPolicy::overBudgetAt(tick(-100, 30), 1));
 }
 
+TEST(MonitorShedPolicy, TheObservationBehindTheLastTransitionIsKept) {
+  MonitorShedPolicy policy;
+  EXPECT_EQ(policy.lastTransitionObservation().budgetNs, 0) << "nothing before the first transition";
+  const auto programBound = tick(15, 2);  // 17ms at d=1: Program, not the monitors, is the cost
+  feed(policy, programBound, MonitorShedPolicy::kEnterAfterOverBudgetTicks);
+  ASSERT_EQ(policy.divisor(), 2);
+  EXPECT_EQ(policy.lastTransitionObservation().programCostNs, 15 * kMs);
+  EXPECT_EQ(policy.lastTransitionObservation().monitorCycleCostNs, 2 * kMs);
+  feed(policy, healthy(), MonitorShedPolicy::kRecoverAfterHealthyTicks);
+  ASSERT_EQ(policy.divisor(), 1);
+  EXPECT_EQ(policy.lastTransitionObservation().programCostNs, 3 * kMs);
+}
+
 TEST(MonitorShedPolicy, TransitionsHaveLogNames) {
   EXPECT_EQ(std::string(MonitorShedPolicy::transitionName(MonitorShedTransition::Enter)), "enter");
   EXPECT_EQ(std::string(MonitorShedPolicy::transitionName(MonitorShedTransition::StepUp)), "step-up");
@@ -273,6 +286,7 @@ class SlowPreviewCompositor final : public corevideo::modules::ICompositor {
     ++previewRenders;
     std::this_thread::sleep_for(std::chrono::milliseconds(previewSleepMs));
     corevideo::modules::ProgramFrameSharedTexture texture;
+    if (!exportHandle) return {};  // a compositor with no shareable preview texture
     texture.sharedHandleHex = "0x5EED";
     texture.width = 1280;
     texture.height = 720;
@@ -281,6 +295,7 @@ class SlowPreviewCompositor final : public corevideo::modules::ICompositor {
   int programRenders = 0;
   int previewRenders = 0;
   int previewSleepMs = 30;
+  bool exportHandle = true;
 };
 
 corevideo::rpc::Json previewSceneCommand(const std::string& sceneId) {
@@ -361,6 +376,12 @@ TEST(MonitorShedIntegration, ASlowPreviewPassIsShedAndItsIdentityNeverReadsEmpty
   EXPECT_EQ(shed->getNumber("enteredCount"), 1);
   EXPECT_GT(shed->getNumber("shedTicks"), 0);
   EXPECT_EQ(shed->getString("lastReason"), "over-budget");
+  // The observation behind the transition is published, so a monitor-bound shed
+  // (this one: a 30ms preview pass) is distinguishable from a Program-bound one.
+  EXPECT_GE(shed->getNumber("lastTransitionMonitorCycleMs"), 29.0);
+  EXPECT_LT(shed->getNumber("lastTransitionProgramMs"), shed->getNumber("lastTransitionMonitorCycleMs"));
+  EXPECT_GT(shed->getNumber("lastTransitionBudgetMs"), 16.0);
+  EXPECT_LT(shed->getNumber("lastTransitionBudgetMs"), 17.0);
 }
 
 TEST(MonitorShedIntegration, AStructuralPreviewChangeRendersImmediatelyEvenWhileShedding) {
@@ -379,6 +400,24 @@ TEST(MonitorShedIntegration, AStructuralPreviewChangeRendersImmediatelyEvenWhile
     core.renderDisplayTick();
     EXPECT_EQ(rig.compositor->previewRenders, before + 1) << "scene " << scene;
   }
+}
+
+// A compositor that exports no preview handle forces the preview pass on EVERY
+// tick (nothing cached to republish), so shedding cannot touch it. Feeding its
+// cost into the decision would pin the divisor up while shedding nothing.
+TEST(MonitorShedIntegration, APreviewPassThatCannotBeShedNeverDrivesTheDivisor) {
+  auto rig = makeSlowPreviewRig(/*liveWorkers=*/true);
+  rig.compositor->exportHandle = false;
+  auto& core = *rig.core;
+  constexpr int kTicks = 12;
+  for (int i = 0; i < kTicks; ++i) core.renderDisplayTick();
+  EXPECT_EQ(rig.compositor->previewRenders, kTicks) << "an unsheddable pass still runs every tick";
+  const auto state = core.sessionState();
+  const auto* shed = monitorShedNode(state);
+  ASSERT_NE(shed, nullptr);
+  if (shed == nullptr) return;
+  EXPECT_EQ(shed->getNumber("divisor"), 1);
+  EXPECT_EQ(shed->getNumber("enteredCount"), 0);
 }
 
 TEST(MonitorShedIntegration, SyntheticFullTicksNeverFeedThePolicy) {

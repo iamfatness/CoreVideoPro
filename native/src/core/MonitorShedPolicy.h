@@ -9,11 +9,13 @@ namespace corevideo::core {
 // Program `render()`, `renderMultiview()` and `renderPreview()` share ONE render
 // thread and ONE D3D immediate context (MediaCore::renderSyntheticTick). Every
 // millisecond a monitor pass overruns is a millisecond Program is off the GPU.
-// MonitorRenderFaultInjectionTest measured it on the RTX 4090 rig: a sustained
-// 25ms Preview stall took Program from 121 produced / 124 delivered per 2s to
-// 65 / 65 — a Preview monitor that overran by one and a half frame periods cost
-// Program HALF its frames. No buffer depth fixes that: the frames were never
-// rendered.
+// MonitorRenderFaultInjectionTest measured it on the RTX 4090 rig. At the
+// product's 1ms timer resolution a sustained 25ms Preview stall (measured
+// ~25.7ms per pass) took Program from 121 to 77 produced frames per 2s — ~36%
+// lost, close to the 1 - 16.7/25.7 a stall that long predicts. (The originally
+// documented "25ms stall halves Program", 121 -> 65, was taken at the default
+// ~15.6ms timer tick, where that seam actually slept ~31ms.) No buffer depth
+// fixes it: the frames were never rendered.
 //
 // The real fix is a separate monitor compositor (post-beta). This is the beta
 // mitigation: when the tick cannot fit the Program frame budget, run the monitor
@@ -35,6 +37,20 @@ namespace corevideo::core {
 // whether THIS tick happened to run a monitor pass — is what makes the policy
 // stable under its own shedding: a shed tick is cheap, and a naive "this tick was
 // fast" signal would recover straight back into the overload.
+//
+// A PROGRAM-BOUND OR GPU-BOUND OVERLOAD SHEDS MONITORS TOO, and that is
+// intended. The policy only sees CPU-submission time; it cannot tell "Program is
+// expensive" from "the monitors are expensive", and it does not try. D3D
+// submission is asynchronous: GPU work queued by a monitor pass surfaces LATER,
+// inside whichever call next blocks on the device — often Program's own
+// render() or its readback on the following tick — so a GPU-bound monitor wall
+// frequently shows up as Program cost, not monitor cost. Shedding the monitors
+// is the one lever this thread has either way, and it can only give Program
+// time back. If the overload really is Program alone, shedding buys little and
+// the divisor sits at 3 while it lasts: the monitors pay in smoothness, which is
+// the stated priority. The snapshot publishes the programMs / monitorCycleMs
+// that triggered the last transition so the two cases are distinguishable
+// after the fact.
 //
 // Deliberately NOT an input: the render worker's CPU-deadline misses. At d=2 a
 // 25ms preview pass still makes the tick that runs it finish late — that is
@@ -85,19 +101,19 @@ class MonitorShedPolicy {
   // recovery costs Program frames; a late one costs only monitor smoothness.
   static constexpr int kRecoverAfterHealthyTicks = 60;
   // A cadence counts as over budget once its projected load exceeds 90% of the
-  // budget — NOT 100%. The tick that runs a monitor pass overruns its own slot
-  // and finishes late; the cheap ticks after it must absorb that plus every
-  // scheduler, timer and GPU jitter, and a jitter bigger than the slack left
-  // over loses a Program slot outright. Measured on the RTX 4090 rig with the
-  // first cut of this policy at 100%, in a harness running at the DEFAULT
-  // Windows timer resolution (~15.6ms sleep granularity — a deliberately
-  // jittery render thread; the product runs at 1ms): the stall's pass took
-  // 30.4ms against 0.7ms of other work, projected 95% at divisor 2 (<2ms of
-  // slack per 33.3ms cycle), the policy held 2, and Program still lost a third
-  // of its frames (81 produced against 121). 10% headroom sends that load to
-  // divisor 3, where the cycle has a full frame period of slack. At the
-  // product's 1ms resolution the same seam stalls ~25.7ms, projects ~80% at
-  // divisor 2 and holds there (119 of 121 produced).
+  // budget — NOT 100%. This is JITTER HEADROOM. Under shedding the tick that
+  // runs a monitor pass overruns its own slot and finishes late, and the cheap
+  // ticks after it have to absorb that lateness plus every scheduler wake-up,
+  // pacer, driver and GPU-completion jitter the cycle meets; any jitter bigger
+  // than the slack left over loses a Program slot outright, and the cost of a
+  // lost slot (a Program frame) is far higher than the cost of shedding one
+  // level early (monitor smoothness). 10% of a divisor-2 cycle is ~3.3ms and of
+  // a divisor-3 cycle ~5ms — a few times the measured pacer wake-up error.
+  // (First measured while the fault harness still ran at the default ~15.6ms
+  // timer tick, i.e. with far worse jitter than the product: a cycle projected
+  // at 95% held divisor 2 and Program still lost a third of its frames. That
+  // run exaggerates the jitter, so it is the illustration, not the evidence;
+  // the argument above stands at any resolution.)
   static constexpr std::int64_t kShedAboveUtilisationPercent = 90;
   // A tick counts toward recovery only if the load projected at the NEXT LOWER
   // divisor fits in 75% of the budget. Shedding above 90% and recovering only
@@ -134,6 +150,7 @@ class MonitorShedPolicy {
         overStreak_ = 0;
         ++divisor_;
         lastReason_ = "over-budget";
+        lastTransition_ = o;
         if (divisor_ == 2) {
           if (enteredCount_ < kCounterCeiling) ++enteredCount_;
           return MonitorShedTransition::Enter;
@@ -158,6 +175,7 @@ class MonitorShedPolicy {
     healthyStreak_ = 0;
     --divisor_;
     lastReason_ = "recovered";
+    lastTransition_ = o;
     return divisor_ == 1 ? MonitorShedTransition::Exit : MonitorShedTransition::StepDown;
   }
 
@@ -171,6 +189,10 @@ class MonitorShedPolicy {
   [[nodiscard]] std::int64_t shedTicks() const { return shedTicks_; }
   // Why the divisor last changed: "none" | "over-budget" | "recovered".
   [[nodiscard]] const char* lastReason() const { return lastReason_; }
+  // The observation that caused the last divisor change (all zero before the
+  // first). Its programCostNs vs monitorCycleCostNs is what tells a
+  // monitor-bound shed from a Program/GPU-bound one.
+  [[nodiscard]] const MonitorShedObservation& lastTransitionObservation() const { return lastTransition_; }
 
   [[nodiscard]] static const char* transitionName(MonitorShedTransition t) {
     switch (t) {
@@ -195,6 +217,7 @@ class MonitorShedPolicy {
   std::int64_t enteredCount_ = 0;
   std::int64_t shedTicks_ = 0;
   const char* lastReason_ = "none";
+  MonitorShedObservation lastTransition_{};
 };
 
 }  // namespace corevideo::core

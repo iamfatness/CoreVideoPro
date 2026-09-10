@@ -11,10 +11,12 @@
 //   * A one-off monitor stall costs Program only the slots it spans, and Program returns
 //     to its unfaulted rate on its own. The cost is bounded and transient.
 //   * A SUSTAINED monitor stall, driven through the real MediaCore render tick, no
-//     longer halves Program: the T1.4 monitor load-shedding policy
+//     longer takes Program's frames: the T1.4 monitor load-shedding policy
 //     (core/MonitorShedPolicy.h) drops the monitor passes to every 2nd/3rd tick and
-//     Program keeps >= 90% of its unfaulted rate. Before T1.4 the same 25ms Preview
-//     overrun HALVED Program (121 -> 65 produced per 2s). That is a MITIGATION, not
+//     Program keeps >= 90% of its unfaulted rate. Driven raw (no shed), a true 25ms
+//     Preview stall still costs Program ~36% (121 -> 77 produced per 2s, 1ms timer);
+//     the originally documented "halves Program" (121 -> 65) was measured at the
+//     default ~15.6ms timer tick, where the seam really slept ~31ms. That is a MITIGATION, not
 //     isolation: Program render and the monitor passes still share one render thread
 //     and one D3D immediate context, so a stall longer than the shed can absorb still
 //     costs Program frames. The monitor-compositor split in
@@ -459,7 +461,7 @@ TEST(MonitorRenderFaultInjection, ASustainedMonitorStallIsShedAndProgramKeepsIts
   RenderThread::Window stalled{};
   MonitorShedReading duringStall;
   {
-    // 25ms on EVERY preview pass: one and a half frame periods of monitor work, forever.
+    // 25ms on EVERY preview pass: ~1.5 frame periods of monitor work, forever.
     ArmedStall armed(25000, 1000000);
     stalled = thread.measure("sustained-25ms-shed", std::chrono::milliseconds(2000));
     duringStall = readMonitorShed(core);
@@ -477,22 +479,27 @@ TEST(MonitorRenderFaultInjection, ASustainedMonitorStallIsShedAndProgramKeepsIts
                afterRecovery.divisor, afterRecovery.enteredCount, afterRecovery.shedTicks,
                afterRecovery.lastReason.c_str());
 
-  // THE COUPLING ITSELF IS STILL THERE. Driven raw, the same stall still costs Program
-  // well over the 10% the mitigation is allowed to — which is what makes the pair of
-  // measurements an A/B rather than two unrelated numbers. This is the assertion that
-  // must be INVERTED (a sustained monitor stall costs raw Program nothing) when the
-  // monitor-compositor split lands, not deleted.
-  EXPECT_LT(rawStalled.produced * 10, rawSettled.produced * 9)
-      << "raw baseline produced=" << rawSettled.produced << " raw stalled produced=" << rawStalled.produced;
+  // THE COUPLING ITSELF IS STILL THERE — and the bound is tied to the stall, not to the
+  // mitigation's threshold. Every tick of the raw leg carries a ~25.7ms preview pass
+  // (25ms seam + the real composite) against a 16.7ms slot, so Program can complete at
+  // most ~16.7/25.7 = 65% of its slots: an expected loss of ~35%, measured 121 -> 77
+  // produced / 124 -> 77 delivered. Asserting < 75% delivered leaves room for machine
+  // noise while still failing hard if the coupling were ever quietly weakened; the
+  // underrun rise is the same loss seen at the delivery deadline. This pair is what makes
+  // the measurement an A/B rather than two unrelated numbers, and it is the assertion
+  // that must be INVERTED (a sustained monitor stall costs raw Program nothing) when the
+  // monitor-compositor split lands — not deleted.
+  EXPECT_LT(rawStalled.delivered * 100, rawSettled.delivered * 75)
+      << "raw baseline delivered=" << rawSettled.delivered << " raw stalled delivered=" << rawStalled.delivered;
+  EXPECT_GT(rawStalled.underruns, rawSettled.underruns + 30u)
+      << "raw baseline underruns=" << rawSettled.underruns << " raw stalled underruns=" << rawStalled.underruns;
 
-  // WHAT T1.4 NOW GUARANTEES. Before it, on this rig (RTX 4090, 1080p Program +
-  // Preview, 3-frame buffer, default Windows timer resolution):
-  //   baseline           121 produced / 124 delivered /  4 underruns per 2s (~60fps)
-  //   sustained 25ms      65 produced /  65 delivered / 64 underruns per 2s (~32fps)
-  // a Preview compositor overrunning by one and a half frame periods cost Program HALF
-  // its frames, because Program render and the monitor passes share one render thread
-  // and one D3D immediate context and every millisecond of monitor overrun was a
-  // millisecond Program was off the GPU. The shed policy now sees the tick overrun the
+  // WHAT T1.4 NOW GUARANTEES. Program render and the monitor passes share one render
+  // thread and one D3D immediate context, so every millisecond of monitor overrun was a
+  // millisecond Program was off the GPU: the raw leg above loses ~36% at a true 25ms
+  // stall. (The originally documented numbers — 121 / 124 / 4 baseline, 65 / 65 / 64
+  // under "25ms", i.e. HALF — were taken at the default ~15.6ms timer tick, where this
+  // seam actually slept ~31ms per pass.) The shed policy now sees the tick overrun the
   // Program budget, runs the monitor passes on every 2nd/3rd tick, and Program keeps
   // its rate: >= 90% of the unfaulted produced frames, measured the same way.
   // Measured 2026-09-10 on the same rig, 1ms timer resolution, same run:
@@ -509,8 +516,11 @@ TEST(MonitorRenderFaultInjection, ASustainedMonitorStallIsShedAndProgramKeepsIts
   // And it gives the monitors back once the overload is gone.
   EXPECT_EQ(afterRecovery.divisor, 1) << "divisor=" << afterRecovery.divisor;
   EXPECT_EQ(afterRecovery.lastReason, std::string("recovered"));
-  EXPECT_GT(recovered.produced * 10, settled.produced * 9)
-      << "baseline produced=" << settled.produced << " recovered produced=" << recovered.produced;
+  // The recovery window is 3s against a 2s baseline window: scale both to the same
+  // duration before applying the 90% bar (recovered/3 >= 0.9 * settled/2).
+  EXPECT_GT(recovered.produced * 2 * 10, settled.produced * 3 * 9)
+      << "baseline produced=" << settled.produced << " per 2s, recovered produced=" << recovered.produced
+      << " per 3s";
 
   // WHAT IS STILL NOT GUARANTEED — do not read this test as G2 isolation. The shed
   // bounds Program's exposure to ONE monitor pass per 2-3 ticks; a single monitor pass

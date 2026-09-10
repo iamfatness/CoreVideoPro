@@ -838,7 +838,16 @@ rpc::Json MediaCore::sessionState() const {
           {"level", monitorShed_.level()},
           {"enteredCount", static_cast<double>(monitorShed_.enteredCount())},
           {"shedTicks", static_cast<double>(monitorShed_.shedTicks())},
-          {"lastReason", std::string(monitorShed_.lastReason())}}},
+          {"lastReason", std::string(monitorShed_.lastReason())},
+          // The observation that caused the last divisor change: a shed with a
+          // big monitorCycleMs was monitor-bound; one with a big programMs was
+          // Program- or GPU-bound (see MonitorShedPolicy.h — both shed, by design).
+          {"lastTransitionProgramMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().programCostNs) / 1e6},
+          {"lastTransitionMonitorCycleMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().monitorCycleCostNs) / 1e6},
+          {"lastTransitionBudgetMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().budgetNs) / 1e6}}},
       {"audio", rpc::Json::Object{
           {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
           {"observed", audioLastProgressNs > 0},
@@ -6371,8 +6380,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   constexpr int kMultiviewTickDivisor = 1;
   // T1.4 MONITOR LOAD-SHEDDING. Program `render()` and both monitor passes
   // share this thread and one D3D immediate context, so a monitor pass that
-  // overruns takes its time straight out of Program (measured: a sustained
-  // 25ms Preview stall HALVED Program — MonitorRenderFaultInjectionTest).
+  // overruns takes its time straight out of Program (measured, unmitigated: a
+  // sustained 25ms Preview stall cost Program ~36% of its frames, 121 -> 77 per
+  // 2s — MonitorRenderFaultInjectionTest).
   // `kMultiviewTickDivisor` stays the HEALTHY cadence; the policy multiplies
   // it by 1/2/3 when the tick cannot fit the Program frame budget, and the
   // SAME divisor applies to the preview pass below. Program always renders.
@@ -6408,8 +6418,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastMultiviewTiles_ = lastProgramFrame_.multiviewTiles;
     lastMultiviewWidth_ = lastProgramFrame_.multiviewWidth;
     lastMultiviewHeight_ = lastProgramFrame_.multiviewHeight;
-    lastMultiviewPassNs_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - monitorStartTp).count();
+    // A compositor that exports no multiview handle never sets
+    // multiviewStructureEmitted_, so `multiviewDue` forces this pass EVERY tick:
+    // the shed cannot touch it. Its cost is not sheddable and must not drive the
+    // decision (it would pin the divisor up while shedding nothing).
+    const bool multiviewSheddable = !lastMultiviewTexture_.sharedHandleHex.empty() ||
+                                    lastMultiviewTexture_.iosurfaceId != 0;
+    lastMultiviewPassNs_ = multiviewSheddable
+        ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - monitorStartTp).count()
+        : 0;
   } else if (lastMultiviewTexture_.iosurfaceId != 0 ||
              !lastMultiviewTexture_.sharedHandleHex.empty()) {
     // Throttled tick: the program frame is rebuilt every tick, so without this
@@ -6461,8 +6479,15 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastPreviewTexture_ = lastProgramFrame_.previewSharedTexture;
     lastPreviewWidth_ = lastProgramFrame_.previewWidth;
     lastPreviewHeight_ = lastProgramFrame_.previewHeight;
-    lastPreviewPassNs_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - previewStartTp).count();
+    // Same rule as multiview: with no exported handle `!previewCached` forces
+    // the pass on every tick, so it is not sheddable and its cost must not feed
+    // the decision.
+    const bool previewSheddable = !lastPreviewTexture_.sharedHandleHex.empty() ||
+                                  lastPreviewTexture_.iosurfaceId != 0;
+    lastPreviewPassNs_ = previewSheddable
+        ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - previewStartTp).count()
+        : 0;
   } else if (previewActive) {
     // Shed tick: the composite is skipped, its published identity is not —
     // exactly the multiview rule above. Without this the preview handle reads
