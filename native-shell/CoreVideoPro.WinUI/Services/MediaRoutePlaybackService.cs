@@ -7,11 +7,13 @@ public static class MediaRoutePlaybackService
     public sealed record PlaybackSelection(string? MediaAssetId, bool Playing);
     public sealed record SceneRoutePlayback(string MediaPlaybackKey, bool Playing);
 
+    // Operator pause is PER-ASSET state (MediaGoLiveLedger's paused set), never "is it the
+    // current selection": a Program clip plays unless the operator paused THAT clip. Moving the
+    // selection (a Take promoting another asset, a click in the bin) cannot un-pause or pause it.
     public static bool ShouldPlaySceneMediaRoute(
         string mediaAssetId,
         bool isProgramScene,
-        string? selectedMediaAssetId,
-        bool selectedMediaAssetPlaying,
+        IReadOnlyCollection<string> operatorPausedAssetIds,
         IReadOnlyList<SourceRoute> programRoutes)
     {
         if (string.IsNullOrWhiteSpace(mediaAssetId))
@@ -24,9 +26,7 @@ public static class MediaRoutePlaybackService
             return false;
         }
 
-        return string.Equals(mediaAssetId, selectedMediaAssetId, StringComparison.Ordinal)
-            ? selectedMediaAssetPlaying
-            : true;
+        return !operatorPausedAssetIds.Contains(mediaAssetId);
     }
 
     public static bool IsMediaAssetRoutedOnProgram(
@@ -88,15 +88,23 @@ public static class MediaRoutePlaybackService
     // candidates (spec section 2: go-live is the only event a source reacts to): the selected
     // asset wins if it went live, otherwise the first that did. Nothing went live -> null, so a
     // clip that merely STAYED on Program (paused or playing) is left exactly as the operator set it.
-    public static string? ChooseAssetToPromote(IReadOnlyList<string> wentLiveMediaAssetIds, string? selectedMediaAssetId)
+    // `supportsPlayback` filters out stills (MediaAsset.SupportsPlayback): a still going live has
+    // nothing to roll, so it is never promoted into the playback selection.
+    public static string? ChooseAssetToPromote(
+        IReadOnlyList<string> wentLiveMediaAssetIds,
+        string? selectedMediaAssetId,
+        Func<string, bool>? supportsPlayback = null)
     {
+        var candidates = wentLiveMediaAssetIds
+            .Where(id => !string.IsNullOrWhiteSpace(id) && (supportsPlayback is null || supportsPlayback(id)))
+            .ToList();
         if (!string.IsNullOrWhiteSpace(selectedMediaAssetId) &&
-            wentLiveMediaAssetIds.Contains(selectedMediaAssetId, StringComparer.Ordinal))
+            candidates.Contains(selectedMediaAssetId, StringComparer.Ordinal))
         {
             return selectedMediaAssetId;
         }
 
-        return wentLiveMediaAssetIds.FirstOrDefault(id => !string.IsNullOrWhiteSpace(id));
+        return candidates.FirstOrDefault();
     }
 
     // MediaAsset carries no loop flag; a scene background is the only looping kind. Every
@@ -117,18 +125,17 @@ public static class MediaRoutePlaybackService
         string mediaAssetId,
         bool isProgramScene,
         bool loop,
-        string? selectedMediaAssetId,
-        bool selectedMediaAssetPlaying,
+        IReadOnlyCollection<string> operatorPausedAssetIds,
         IReadOnlyList<SourceRoute> programRoutes,
         int goLiveGeneration)
     {
         // A loop is a persistent source: live on every bus, never restarted by a cut.
-        // A clip rolls when it goes live and shows its first frame while cued.
+        // A clip rolls when it goes live and shows its first frame while cued; on Program it
+        // stays paused only if the operator paused THAT clip.
         var playing = loop || ShouldPlaySceneMediaRoute(
             mediaAssetId,
             isProgramScene,
-            selectedMediaAssetId,
-            selectedMediaAssetPlaying,
+            operatorPausedAssetIds,
             programRoutes);
         return new SceneRoutePlayback(BuildSceneMediaPlaybackKey(mediaAssetId, loop, goLiveGeneration), playing);
     }
@@ -140,10 +147,33 @@ public static class MediaRoutePlaybackService
 /// operator presses Play on a Program-routed clip. The generation is baked into the clip's
 /// playback key, so the core opens a fresh decoder (roll from frame 0) exactly then — and a
 /// clip that stays on Program across a Take keeps playing.
+///
+/// It also owns the OPERATOR-PAUSED set: pausing a Program-routed clip adds it, playing it
+/// removes it, and the clip GOING LIVE clears it (a clip entering Program rolls, spec section 2).
+/// Pause is per-asset, so promoting another asset can never un-pause (and cold-restart) it.
 /// </summary>
 public sealed class MediaGoLiveLedger
 {
     private readonly Dictionary<string, int> _generations = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _operatorPaused = new(StringComparer.Ordinal);
+
+    public IReadOnlyCollection<string> OperatorPausedAssetIds => _operatorPaused;
+
+    public bool IsOperatorPaused(string mediaAssetId) => _operatorPaused.Contains(mediaAssetId);
+
+    // Operator paused a Program-routed clip.
+    public void RecordPause(string mediaAssetId)
+    {
+        if (string.IsNullOrWhiteSpace(mediaAssetId)) return;
+        _operatorPaused.Add(mediaAssetId);
+    }
+
+    // Operator played it again.
+    public void RecordPlay(string mediaAssetId)
+    {
+        if (string.IsNullOrWhiteSpace(mediaAssetId)) return;
+        _operatorPaused.Remove(mediaAssetId);
+    }
 
     public int GenerationOf(string mediaAssetId) =>
         _generations.TryGetValue(mediaAssetId, out var generation) ? generation : 0;
@@ -157,6 +187,7 @@ public sealed class MediaGoLiveLedger
         {
             if (before.Contains(assetId)) continue;
             _generations[assetId] = GenerationOf(assetId) + 1;
+            _operatorPaused.Remove(assetId);  // a clip entering Program rolls
             wentLive.Add(assetId);
         }
         return wentLive;

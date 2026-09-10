@@ -18,8 +18,7 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: true,
+            operatorPausedAssetIds: NoPaused,
             programRoutes);
 
         Assert.False(shouldPlay);
@@ -36,8 +35,7 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: true,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: true,
+            operatorPausedAssetIds: NoPaused,
             programRoutes);
 
         Assert.True(shouldPlay);
@@ -54,8 +52,7 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: true,
+            operatorPausedAssetIds: NoPaused,
             programRoutes);
 
         Assert.False(shouldPlay);
@@ -67,15 +64,14 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: true,
+            operatorPausedAssetIds: NoPaused,
             programRoutes: []);
 
         Assert.False(shouldPlay);
     }
 
     [Fact]
-    public void ShouldPlaySceneMediaRoute_RespectsPausedSelectedProgramMedia()
+    public void ShouldPlaySceneMediaRoute_RespectsAnOperatorPausedProgramClip()
     {
         var programRoutes = new[]
         {
@@ -85,15 +81,14 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: true,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: false,
+            operatorPausedAssetIds: new[] { "intro" },
             programRoutes);
 
         Assert.False(shouldPlay);
     }
 
     [Fact]
-    public void ShouldPlaySceneMediaRoute_AutoplaysProgramMediaThatIsNotCurrentSelection()
+    public void ShouldPlaySceneMediaRoute_AutoplaysProgramMediaThatWasNotPaused()
     {
         var programRoutes = new[]
         {
@@ -103,8 +98,7 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: true,
-            selectedMediaAssetId: "bumper",
-            selectedMediaAssetPlaying: false,
+            operatorPausedAssetIds: new[] { "bumper" },
             programRoutes);
 
         Assert.True(shouldPlay);
@@ -287,8 +281,8 @@ public sealed class MediaRoutePlaybackServiceTests
     public void ResolveSceneRoutePlayback_ALoopPlaysOnBothBusesWithOneKey()
     {
         var routes = new[] { MediaRoute("bg") };
-        var program = MediaRoutePlaybackService.ResolveSceneRoutePlayback("bg", isProgramScene: true, loop: true, null, false, routes, 0);
-        var preview = MediaRoutePlaybackService.ResolveSceneRoutePlayback("bg", isProgramScene: false, loop: true, null, false, routes, 0);
+        var program = MediaRoutePlaybackService.ResolveSceneRoutePlayback("bg", isProgramScene: true, loop: true, NoPaused, routes, 0);
+        var preview = MediaRoutePlaybackService.ResolveSceneRoutePlayback("bg", isProgramScene: false, loop: true, NoPaused, routes, 0);
         Assert.True(program.Playing);
         Assert.True(preview.Playing);
         Assert.Equal(program.MediaPlaybackKey, preview.MediaPlaybackKey);
@@ -298,8 +292,8 @@ public sealed class MediaRoutePlaybackServiceTests
     public void ResolveSceneRoutePlayback_AClipIsPausedInPreviewAndRollsOnProgram()
     {
         var routes = new[] { MediaRoute("clip") };
-        var preview = MediaRoutePlaybackService.ResolveSceneRoutePlayback("clip", isProgramScene: false, loop: false, null, false, routes, 1);
-        var program = MediaRoutePlaybackService.ResolveSceneRoutePlayback("clip", isProgramScene: true, loop: false, null, false, routes, 1);
+        var preview = MediaRoutePlaybackService.ResolveSceneRoutePlayback("clip", isProgramScene: false, loop: false, NoPaused, routes, 1);
+        var program = MediaRoutePlaybackService.ResolveSceneRoutePlayback("clip", isProgramScene: true, loop: false, NoPaused, routes, 1);
         Assert.False(preview.Playing);
         Assert.True(program.Playing);
         Assert.Equal("media:clip:live:1", program.MediaPlaybackKey);
@@ -384,6 +378,93 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.Equal("intro:2", duplicate);
         Assert.NotEqual(single, duplicate);
     }
+
+    // ---- Operator pause is per-asset state (final review FR3) -------------------------------
+
+    [Fact]
+    public void APausedProgramClipStaysPausedWhenAnotherAssetGoesLiveAndIsPromoted()
+    {
+        var ledger = new MediaGoLiveLedger();
+        var x = MediaRoute("x");
+        var y = MediaRoute("y");
+        ledger.RecordTake(Array.Empty<SourceRoute>(), new[] { x });
+        ledger.RecordPause("x");
+        var before = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "x", isProgramScene: true, loop: false, ledger.OperatorPausedAssetIds, new[] { x }, ledger.GenerationOf("x"));
+        Assert.False(before.Playing);
+
+        // Y goes live on a Take that leaves X on Program; the shell promotes Y.
+        var wentLive = ledger.RecordTake(new[] { x }, new[] { x, y });
+        Assert.Equal(new[] { "y" }, wentLive);
+        Assert.Equal("y", MediaRoutePlaybackService.ChooseAssetToPromote(wentLive, selectedMediaAssetId: "x"));
+
+        var after = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "x", isProgramScene: true, loop: false, ledger.OperatorPausedAssetIds, new[] { x, y }, ledger.GenerationOf("x"));
+        Assert.False(after.Playing);
+        // Same key AND same playing flag: the core's request key is unchanged, so no cold restart.
+        Assert.Equal(before.MediaPlaybackKey, after.MediaPlaybackKey);
+        var yPlayback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "y", isProgramScene: true, loop: false, ledger.OperatorPausedAssetIds, new[] { x, y }, ledger.GenerationOf("y"));
+        Assert.True(yPlayback.Playing);
+    }
+
+    [Fact]
+    public void APausedProgramClipResumesWhenTheOperatorPlaysIt()
+    {
+        var ledger = new MediaGoLiveLedger();
+        var x = MediaRoute("x");
+        ledger.RecordTake(Array.Empty<SourceRoute>(), new[] { x });
+        ledger.RecordPause("x");
+        Assert.True(ledger.IsOperatorPaused("x"));
+
+        ledger.RecordPlay("x");
+
+        Assert.False(ledger.IsOperatorPaused("x"));
+        Assert.True(MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
+            "x", isProgramScene: true, ledger.OperatorPausedAssetIds, new[] { x }));
+    }
+
+    [Fact]
+    public void APausedClipGoingLiveAgainAfterLeavingProgramClearsThePauseAndRolls()
+    {
+        var ledger = new MediaGoLiveLedger();
+        var x = MediaRoute("x");
+        var none = Array.Empty<SourceRoute>();
+        ledger.RecordTake(none, new[] { x });
+        ledger.RecordPause("x");
+        ledger.RecordTake(new[] { x }, none);  // X leaves Program, still paused
+        Assert.True(ledger.IsOperatorPaused("x"));
+        var generationBefore = ledger.GenerationOf("x");
+
+        Assert.Equal(new[] { "x" }, ledger.RecordTake(none, new[] { x }));  // X goes live again
+
+        Assert.False(ledger.IsOperatorPaused("x"));
+        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "x", isProgramScene: true, loop: false, ledger.OperatorPausedAssetIds, new[] { x }, ledger.GenerationOf("x"));
+        Assert.True(playback.Playing);
+        Assert.Equal(generationBefore + 1, ledger.GenerationOf("x"));  // rolls from frame 0
+    }
+
+    [Fact]
+    public void AStillGoingLiveIsNeverPromoted()
+    {
+        var stills = new HashSet<string>(StringComparer.Ordinal) { "logo" };
+        bool SupportsPlayback(string id) => !stills.Contains(id);
+
+        Assert.Null(MediaRoutePlaybackService.ChooseAssetToPromote(new[] { "logo" }, "logo", SupportsPlayback));
+        Assert.Equal("clip", MediaRoutePlaybackService.ChooseAssetToPromote(new[] { "logo", "clip" }, "logo", SupportsPlayback));
+    }
+
+    [Fact]
+    public void ALoopPlaysOnProgramEvenIfItsIdIsInThePausedSet()
+    {
+        var routes = new[] { MediaRoute("bg") };
+        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "bg", isProgramScene: true, loop: true, new[] { "bg" }, routes, 0);
+        Assert.True(playback.Playing);
+    }
+
+    private static readonly IReadOnlyCollection<string> NoPaused = Array.Empty<string>();
 
     private static SourceRoute MediaRoute(string assetId) =>
         MediaRoute(assetId, $"route-{assetId}");

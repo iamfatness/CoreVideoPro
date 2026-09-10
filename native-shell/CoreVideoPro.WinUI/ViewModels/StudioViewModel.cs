@@ -5924,7 +5924,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetName = asset.Name;
         SelectedMediaAssetPath = asset.FilePath;
         SelectedMediaAssetKind = asset.Kind;
-        SelectedMediaAssetPlaying = false;
+        // Selecting never pauses or plays anything. A clip already on Program reports its real
+        // state (rolling unless the operator paused THAT clip) so the Play/Pause toggle is honest.
+        SelectedMediaAssetPlaying = asset.SupportsPlayback &&
+            MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes()) &&
+            (MediaRoutePlaybackService.IsLoopingAsset(asset) || !_mediaGoLive.IsOperatorPaused(asset.Id));
         MediaPlaybackStatus = $"{asset.Name} is ready to cue";
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
         OnPropertyChanged(nameof(MediaBinGroups));
@@ -6056,9 +6060,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
     {
         // Empty went-live list -> null -> no selection, Playing or status change.
+        // Stills are never promoted (nothing to roll), and promotion changes only the
+        // selection: every other asset's play/pause lives in _mediaGoLive, not here.
         var mediaAssetId = MediaRoutePlaybackService.ChooseAssetToPromote(
             wentLiveMediaAssetIds,
-            SelectedMediaAssetId);
+            SelectedMediaAssetId,
+            id => FindMediaAsset(id)?.SupportsPlayback == true);
         if (string.IsNullOrWhiteSpace(mediaAssetId) ||
             FindMediaAsset(mediaAssetId) is not { } asset)
         {
@@ -6106,11 +6113,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetPath = asset.FilePath;
         SelectedMediaAssetKind = asset.Kind;
         SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
-        // Operator pressed Play on a Program-routed clip: roll it from frame 0.
-        if (SelectedMediaAssetPlaying &&
-            MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes()))
+        if (MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes()))
         {
-            _mediaGoLive.RecordRestart(asset.Id);
+            if (SelectedMediaAssetPlaying)
+            {
+                // Operator pressed Play on a Program-routed clip: un-pause and roll it from frame 0.
+                _mediaGoLive.RecordPlay(asset.Id);
+                _mediaGoLive.RecordRestart(asset.Id);
+            }
+            else if (!MediaRoutePlaybackService.IsLoopingAsset(asset))
+            {
+                // Pause is per-asset state: it holds until the operator plays it or it goes live again.
+                _mediaGoLive.RecordPause(asset.Id);
+            }
         }
 
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
@@ -8915,8 +8930,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 mediaAsset.Id,
                 isProgramScene,
                 loop: MediaRoutePlaybackService.IsLoopingAsset(mediaAsset),
-                SelectedMediaAssetId,
-                SelectedMediaAssetPlaying,
+                _mediaGoLive.OperatorPausedAssetIds,
                 sceneRoutes,
                 _mediaGoLive.GenerationOf(mediaAsset.Id));
         return new MediaCoreSceneRouteWire(
@@ -8944,7 +8958,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MediaAssetKind: mediaAsset?.Kind,
             MediaAssetPath: mediaAsset?.FilePath,
             MediaPlaybackKey: mediaPlayback?.MediaPlaybackKey,
-            MediaAssetPlaying: mediaPlayback?.Playing == true);
+            MediaAssetPlaying: mediaPlayback?.Playing == true,
+            MediaAssetLoop: mediaAsset is not null && MediaRoutePlaybackService.IsLoopingAsset(mediaAsset));
     }
 
     private MediaCoreCaptureAudioSourceWire BuildCaptureAudioSourceWire(CaptureDevice captureDevice)
@@ -11870,8 +11885,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             mediaAssetId,
             isProgramScene,
-            SelectedMediaAssetId,
-            SelectedMediaAssetPlaying,
+            _mediaGoLive.OperatorPausedAssetIds,
             programRoutes);
 
     private IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
@@ -13251,8 +13265,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             asset.Id,
             isProgramScene,
             loop: MediaRoutePlaybackService.IsLoopingAsset(asset),
-            SelectedMediaAssetId,
-            SelectedMediaAssetPlaying,
+            _mediaGoLive.OperatorPausedAssetIds,
             GetResolvedProgramRoutes(),
             _mediaGoLive.GenerationOf(asset.Id));
         var mediaSourceId = ShowInputRosterService.ToMediaSourceId(asset.Id);
