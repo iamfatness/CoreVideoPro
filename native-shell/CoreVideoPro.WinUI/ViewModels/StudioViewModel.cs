@@ -782,9 +782,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
-    // Go-live policy: a clip's playback key advances only when it ENTERS Program (or the
-    // operator restarts it), so a clip already on air survives a Take. Replaces the old
-    // per-Take version that restarted every Program clip on every Take.
+    // Go-live policy: a clip's playback key advances only when it ENTERS Program, so a clip
+    // already on air survives a Take. Replaces the old per-Take version that restarted every
+    // Program clip on every Take. Pause/Play on an already-live clip never advances it (T1.2:
+    // pause is a clock state on the core's one decoder, not a shell-side restart).
     private readonly MediaGoLiveLedger _mediaGoLive = new();
     // ShowInputs roster store + loaded-flag + editor-signature + ISO selection moved to
     // ShowInputsCoordinator (PR3 strangler). The coordinator is constructed in the ctor (it needs
@@ -4076,7 +4077,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // Only clips ENTERING Program roll, and only they are promoted: a clip that stayed on
             // Program keeps the operator's play/pause state (same rule as Take).
             var wentLive = _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
-            if (wentLive.Count > 0) PromoteProgramMediaRouteToPlayback(wentLive);
+            var promoted = wentLive.Count > 0 && PromoteProgramMediaRouteToPlayback(wentLive);
+            // T1.2 task 3 (controller ruling, folded in): a clip that LEFT Program on this
+            // Update also needs its bin row refreshed, but only when the Program media SET
+            // actually changed and Promote did not already rebuild the bin (same fold-in as
+            // TransportCoordinator.TakeAsync — avoids rebuilding on every non-media Update).
+            if (!promoted && !string.Equals(
+                    BuildProgramMediaRouteSignature(previousProgramRoutes),
+                    BuildProgramMediaRouteSignature(GetResolvedProgramRoutes()),
+                    StringComparison.Ordinal))
+            {
+                RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
+            }
         }
 
         if (!string.Equals(scene.Name, trimmed, StringComparison.Ordinal))
@@ -5771,7 +5783,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public static string FormatMediaPlaybackActionLabel(bool isOnProgram, bool playing) =>
         isOnProgram
-            ? playing ? "Pause Program" : "Restart Program"
+            ? playing ? "Pause Program" : "Resume Program"
             : playing ? "Pause audition" : "Audition";
 
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
@@ -5927,8 +5939,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // Selecting never pauses or plays anything. A clip already on Program reports its real
         // state (rolling unless the operator paused THAT clip) so the Play/Pause toggle is honest.
         SelectedMediaAssetPlaying = asset.SupportsPlayback &&
-            MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes()) &&
-            (MediaRoutePlaybackService.IsLoopingAsset(asset) || !_mediaGoLive.IsOperatorPaused(asset.Id));
+            MediaRoutePlaybackService.IsPlayingOnAir(
+                asset.Id,
+                MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes()),
+                MediaRoutePlaybackService.IsLoopingAsset(asset),
+                _mediaGoLive.OperatorPausedAssetIds);
         MediaPlaybackStatus = $"{asset.Name} is ready to cue";
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
         OnPropertyChanged(nameof(MediaBinGroups));
@@ -5965,7 +5980,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (IsMediaAssetPlaying(asset.Id))
+        // Not IsMediaAssetPlaying (real on-air state): a referenced/on-air clip is already
+        // refused above, so this only clears an auditioning (off-Program) selection's local
+        // playing flag before it disappears.
+        if (SelectedMediaAssetPlaying && string.Equals(SelectedMediaAssetId, asset.Id, StringComparison.Ordinal))
         {
             SelectedMediaAssetPlaying = false;
             MediaPlaybackStatus = "No media asset playing";
@@ -6053,11 +6071,55 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
-    public bool IsMediaAssetPlaying(string assetId) =>
-        SelectedMediaAssetPlaying &&
-        string.Equals(SelectedMediaAssetId, assetId, StringComparison.Ordinal);
+    // The real on-air state (T1.2 task 2), not "is it the selection": a rolling Program clip
+    // that is not currently selected still reports playing, so its bin row and tap are honest.
+    public bool IsMediaAssetPlaying(string assetId)
+    {
+        var asset = FindMediaAsset(assetId);
+        if (asset is null || !asset.SupportsPlayback)
+        {
+            return false;
+        }
 
-    private void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
+        return MediaRoutePlaybackService.IsPlayingOnAir(
+            assetId,
+            MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(assetId, GetResolvedProgramRoutes()),
+            MediaRoutePlaybackService.IsLoopingAsset(asset),
+            _mediaGoLive.OperatorPausedAssetIds);
+    }
+
+    // Re-projects the media bin's real on-air playing indicator, and clears the SELECTED
+    // asset's local playing state if it is specifically the one that left Program (the ORed
+    // audition flag in ApplyMediaSelection otherwise keeps reading "playing" forever, since
+    // nothing else ever clears it). The caller (TransportCoordinator.TakeAsync /
+    // StudioViewModel.UpdateScene) only invokes this when the Program media SET changed AND
+    // PromoteProgramMediaRouteToPlayback did not already refresh — see the fold-in note at
+    // those call sites. Operator-event only (Take/Update) — never wired into a frame-rate path
+    // (see CLAUDE.md 0xc000027b rule).
+    private void RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes)
+    {
+        if (MediaRoutePlaybackService.SelectedAssetLeftProgram(
+            SelectedMediaAssetId, previousProgramRoutes, GetResolvedProgramRoutes()))
+        {
+            SelectedMediaAssetPlaying = false;
+            var leftAsset = FindMediaAsset(SelectedMediaAssetId!);
+            MediaPlaybackStatus = leftAsset is not null
+                ? $"{leftAsset.Name} left Program"
+                : "No media asset playing";
+            OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+            OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+            OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
+            OnPropertyChanged(nameof(MediaPlaybackStatus));
+        }
+
+        MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
+        OnPropertyChanged(nameof(MediaBinGroups));
+    }
+
+    // Returns true iff it actually promoted something (and therefore already rebuilt
+    // MediaBinGroups + moved the selection) — callers use this to skip a redundant
+    // RefreshMediaBinPlaybackIndicators call in the same Take.
+    private bool PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
     {
         // Empty went-live list -> null -> no selection, Playing or status change.
         // Stills are never promoted (nothing to roll), and promotion changes only the
@@ -6069,7 +6131,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(mediaAssetId) ||
             FindMediaAsset(mediaAssetId) is not { } asset)
         {
-            return;
+            return false;
         }
 
         SelectedMediaAssetId = asset.Id;
@@ -6090,6 +6152,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
         OnPropertyChanged(nameof(MediaPlaybackStatus));
         RefreshMultiviewGridTiles();
+        return true;
     }
 
     [RelayCommand]
@@ -6106,33 +6169,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        // Re-pressing the asset that is already playing pauses it; otherwise select and play.
+        // Re-pressing the asset that is already playing pauses it (audition/off-Program only);
+        // otherwise select and play. A Program-routed clip goes through the ledger below instead
+        // — it pauses/resumes on its clock and is NEVER restarted from a bin-row tap or the toggle.
         var resumeSameAsset = string.Equals(SelectedMediaAssetId, assetId, StringComparison.Ordinal);
+        var isOnProgram = MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes());
+        var isLooping = MediaRoutePlaybackService.IsLoopingAsset(asset);
+        var tap = MediaRoutePlaybackService.ResolveTap(isOnProgram, isLooping, _mediaGoLive.IsOperatorPaused(asset.Id));
+
         SelectedMediaAssetId = asset.Id;
         SelectedMediaAssetName = asset.Name;
         SelectedMediaAssetPath = asset.FilePath;
         SelectedMediaAssetKind = asset.Kind;
-        SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
-        if (MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes()))
+
+        switch (tap)
         {
-            if (SelectedMediaAssetPlaying)
-            {
-                // Operator pressed Play on a Program-routed clip: un-pause and roll it from frame 0.
-                _mediaGoLive.RecordPlay(asset.Id);
-                _mediaGoLive.RecordRestart(asset.Id);
-            }
-            else if (!MediaRoutePlaybackService.IsLoopingAsset(asset))
-            {
-                // Pause is per-asset state: it holds until the operator plays it or it goes live again.
+            case MediaRoutePlaybackService.MediaTapAction.Pause:
+                // Operator paused a rolling Program clip: it holds its on-air frame, never restarts.
                 _mediaGoLive.RecordPause(asset.Id);
-            }
+                SelectedMediaAssetPlaying = false;
+                break;
+            case MediaRoutePlaybackService.MediaTapAction.Resume:
+                // Operator resumed a paused Program clip from the held frame, never from the top.
+                _mediaGoLive.RecordPlay(asset.Id);
+                SelectedMediaAssetPlaying = true;
+                break;
+            default:
+                SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
+                break;
         }
 
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
 
-        var isOnProgram = MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(
-            asset.Id,
-            GetResolvedProgramRoutes());
         MediaPlaybackStatus = isOnProgram
             ? SelectedMediaAssetPlaying
                 ? $"Playing {asset.Name} on Program"
@@ -12030,8 +12098,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 FilePath = asset.FilePath,
                 FileType = asset.FileType,
                 IsSelected = string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal),
-                IsPlaying = SelectedMediaAssetPlaying &&
-                    string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal)
+                // Real on-air state (T1.2 task 2): a rolling Program clip that is not the current
+                // selection still shows as playing, and tapping its row pauses it. Off-Program
+                // audition playback (not tracked by the ledger) still reads from the local flag.
+                IsPlaying = IsMediaAssetPlaying(asset.Id) ||
+                    (SelectedMediaAssetPlaying && string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal))
             }).ToList()
         }).ToList();
 

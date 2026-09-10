@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -3137,16 +3139,19 @@ TEST(MediaCoreCommand, TheMediaStripCompressesTheSumOfItsClipsInOneChain) {
 }
 
 #if !COREVIDEO_STUB && COREVIDEO_WITH_MF_ENCODER
-TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
-  const auto videoPath = std::filesystem::temp_directory_path() / "corevideo-mf-preview-cue.mp4";
-  std::filesystem::remove(videoPath);
+// A 1 s, 30-frame, 64x64 H.264 MP4 (Media Foundation decodes it natively).
+void writeMfVideoFixture(const std::filesystem::path& path) {
   const auto videoBytes = corevideo::modules::base64Decode(R"(
 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
 )");
-  {
-    std::ofstream output(videoPath, std::ios::binary | std::ios::trunc);
-    output.write(reinterpret_cast<const char*>(videoBytes.data()), static_cast<std::streamsize>(videoBytes.size()));
-  }
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(videoBytes.data()), static_cast<std::streamsize>(videoBytes.size()));
+}
+
+TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
+  const auto videoPath = std::filesystem::temp_directory_path() / "corevideo-mf-preview-cue.mp4";
+  std::filesystem::remove(videoPath);
+  writeMfVideoFixture(videoPath);
 
   auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
   ASSERT_NE(source, nullptr);
@@ -3217,6 +3222,344 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
 
   source.reset(); // Release owned decoder workers before deleting their fixture.
   std::filesystem::remove(wavPath);
+}
+
+namespace {
+int64_t steadyNow100ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+}
+// 48 kHz stereo float WAV whose every sample encodes its own media time:
+// value = (millisecond + 1) / 4096. Coarse on purpose, so any resampler
+// rounding still decodes to the right millisecond.
+void writeTimecodedFloatWav(const std::filesystem::path& path, int seconds) {
+  const uint32_t frames = static_cast<uint32_t>(seconds) * 48000u;
+  const uint32_t dataBytes = frames * 2u * 4u;
+  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+  stream.write("RIFF", 4);
+  writeLe32(stream, 4u + (8u + 18u) + (8u + 4u) + (8u + dataBytes));
+  stream.write("WAVE", 4);
+  stream.write("fmt ", 4);
+  writeLe32(stream, 18);
+  writeLe16(stream, 3);  // WAVE_FORMAT_IEEE_FLOAT
+  writeLe16(stream, 2);
+  writeLe32(stream, 48000);
+  writeLe32(stream, 48000u * 8u);
+  writeLe16(stream, 8);
+  writeLe16(stream, 32);
+  writeLe16(stream, 0);  // cbSize
+  stream.write("fact", 4);
+  writeLe32(stream, 4);
+  writeLe32(stream, frames);
+  stream.write("data", 4);
+  writeLe32(stream, dataBytes);
+  for (uint32_t n = 0; n < frames; ++n) {
+    const float value = static_cast<float>(n / 48u + 1u) / 4096.f;
+    stream.write(reinterpret_cast<const char*>(&value), 4);
+    stream.write(reinterpret_cast<const char*>(&value), 4);
+  }
+}
+int timecodeMs(float sample) { return static_cast<int>(std::lround(sample * 4096.f)) - 1; }
+}  // namespace
+
+// T1.2, end to end through the real Media Foundation decoder: a clip paused
+// mid-roll holds the frame that was on air (never its first frame), and Play
+// continues with the NEXT frame of the same reader — not the top of the clip
+// (frameId 1, a reopened decoder) and not the paused duration later.
+TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndResumeContinues) {
+  const auto videoPath = std::filesystem::temp_directory_path() /
+      ("corevideo-mf-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".mp4");
+  writeMfVideoFixture(videoPath);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{videoPath};
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:pause-clip";
+  layer.mediaAssetId = "pause-clip";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = videoPath.string();
+  layer.mediaPlaybackKey = "media:pause-clip:live:1";
+  layer.mediaAssetPlaying = true;
+
+  int64_t held = -1;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (held < 5 && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty()) held = frames.front().frameId;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(held >= 5);
+  ASSERT_TRUE(held < 25); // Still mid-clip (30 frames), so resume has frames to continue with.
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames.front().frameId, held);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  layer.mediaAssetPlaying = true;
+  int64_t next = held;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (next == held && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty()) next = frames.front().frameId;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(next > held) << "held=" << held << " next=" << next;
+  // 250 ms of pause is ~7 frames at 30 fps: skipping it would land far past
+  // held+2; a reopened decoder would restart at 1.
+  EXPECT_TRUE(next <= held + 2) << "held=" << held << " next=" << next;
+  source.reset(); // Release owned decoder workers before deleting their fixture.
+}
+
+// The audio half: no PCM while paused, and Play resumes from the paused media
+// position (within the 50 ms A/V budget) — not from 0, not after the pause.
+TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePausedPosition) {
+  const auto wavPath = std::filesystem::temp_directory_path() /
+      ("corevideo-mf-pause-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".wav");
+  writeTimecodedFloatWav(wavPath, 3);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{wavPath};
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:pause-audio";
+  layer.mediaAssetId = "pause-audio";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = wavPath.string();
+  layer.mediaPlaybackKey = "media:pause-audio:live:1";
+  layer.mediaAssetPlaying = true;
+  const auto nowMs = [] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  };
+  // MediaCore polls a Program layer on the video path every render tick as
+  // well; that is what keeps the source alive while its audio is paused.
+  const auto poll = [&] {
+    (void)source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    return source->pollMediaAudioFrames({layer}, nowMs());
+  };
+
+  int lastHeardMs = -1;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (lastHeardMs < 300 && std::chrono::steady_clock::now() < deadline) {
+    for (const auto& frame : poll())
+      for (size_t i = frame.pcm.size(); i-- > 0;)
+        if (frame.pcm[i] != 0.f) { lastHeardMs = timecodeMs(frame.pcm[i]); break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(lastHeardMs >= 300);
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    EXPECT_TRUE(poll().empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  layer.mediaAssetPlaying = true;
+  int resumedMs = -1;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (resumedMs < 0 && std::chrono::steady_clock::now() < deadline) {
+    for (const auto& frame : poll()) {
+      for (const auto sample : frame.pcm)
+        if (sample != 0.f) { resumedMs = timecodeMs(sample); break; }
+      if (resumedMs >= 0) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(resumedMs >= 0);
+  EXPECT_TRUE(std::abs(resumedMs - lastHeardMs) <= 50) << "lastHeard=" << lastHeardMs << "ms resumed=" << resumedMs << "ms";
+  source.reset(); // Release owned decoder workers before deleting their fixture.
+}
+
+// ProRes MOVs (Media Foundation has no decoder) run on the FFmpeg fallback,
+// which paces itself with -re and cannot be paused in place: the adapter stops
+// it on Pause and restarts it at the frozen clock position on Play. The clip's
+// luma encodes media time, so the resumed picture proves where it resumed.
+// Opt-in on machines with FFmpeg at C:\ffmpeg\bin (it generates the fixture).
+TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPositionNotTheTop) {
+  const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
+  std::error_code missing;
+  if (!std::filesystem::exists(ffmpegDir / "ffmpeg.exe", missing)) {
+    // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+    std::fprintf(stderr, "[  SKIPPED ] MediaFoundationMediaFrameSource.AnFfmpegDecodedClipResumesFromThePausedPositionNotTheTop"
+                         " (ffmpeg absent at C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
+  const auto dir = std::filesystem::temp_directory_path() /
+      ("corevideo-ffmpeg-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(dir);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{dir};
+  const auto clip = dir / "ramp.mov";
+  // Luma = 16 + 50 * t (limited range): 0.0 s -> 16, 4.0 s -> 216.
+  const auto command = "\"\"" + (ffmpegDir / "ffmpeg.exe").string() +
+      "\" -hide_banner -loglevel error -y -f lavfi -i \"color=c=black:s=64x64:r=30:d=4,format=yuv444p,"
+      "geq=lum='min(235,16+T*50)':cb=128:cr=128\" -c:v prores_ks -profile:v 0 \"" + clip.string() + "\"\"";
+  ASSERT_EQ(std::system(command.c_str()), 0);
+  const char* previousDir = std::getenv("COREVIDEO_FFMPEG_BIN_DIR");
+  const std::string restore = previousDir ? previousDir : "";
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+  struct RestoreEnv { std::string value; ~RestoreEnv() { _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", value.c_str()); } } restoreEnv{restore};
+
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:prores";
+  layer.mediaAssetId = "prores";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = clip.string();
+  layer.mediaPlaybackKey = "media:prores:live:1";
+  layer.mediaAssetPlaying = true;
+  // Seconds of media time, read back from the frame's centre luma.
+  const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
+    const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
+    const double full = (*frame.pixels)[centre + 1];            // G of BGRA, full range.
+    return (full * 219.0 / 255.0) / 50.0;                         // Back to limited, then to t.
+  };
+
+  corevideo::modules::VideoFrame held;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while ((!held.hasPixels() || mediaSeconds(held) < 0.6) && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().hasPixels()) held = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(held.hasPixels());
+  const double heldSeconds = mediaSeconds(held);
+  std::fprintf(stderr, "[ffmpeg-pause] decoder=%s held frame=%lld t=%.3fs\n",
+               held.pixelWidth == 1920 ? "ffmpeg" : "media-foundation", static_cast<long long>(held.frameId), heldSeconds);
+  ASSERT_TRUE(heldSeconds >= 0.6 && heldSeconds < 2.5);
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames.front().frameId, held.frameId);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  layer.mediaAssetPlaying = true;
+  corevideo::modules::VideoFrame resumed;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+  while (!resumed.hasPixels() && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().frameId != held.frameId) resumed = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(resumed.hasPixels());
+  const double resumedSeconds = mediaSeconds(resumed);
+  std::fprintf(stderr, "[ffmpeg-pause] resumed frame=%lld t=%.3fs\n", static_cast<long long>(resumed.frameId), resumedSeconds);
+  EXPECT_TRUE(resumed.frameId > held.frameId);
+  // Not the top (t~0) and not the 1.5 s pause later. The FFmpeg path may land
+  // up to its own start-up lag ahead of the held picture, where the shared
+  // clock (and the audio) actually are.
+  EXPECT_TRUE(resumedSeconds >= heldSeconds - 0.1) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  EXPECT_TRUE(resumedSeconds <= heldSeconds + 0.7) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  source.reset();
+}
+
+// If the FFmpeg restart on Play FAILS (FFmpeg briefly unavailable), the clip
+// holds its paused frame, says so, and retries at the clock position; it must
+// never fall back to a fresh open, which would roll the clip from the top.
+TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop) {
+  const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
+  std::error_code missing;
+  if (!std::filesystem::exists(ffmpegDir / "ffmpeg.exe", missing)) {
+    std::fprintf(stderr, "[  SKIPPED ] MediaFoundationMediaFrameSource.AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop"
+                         " (ffmpeg absent at C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
+  const auto dir = std::filesystem::temp_directory_path() /
+      ("corevideo-ffmpeg-resume-fail-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(dir);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{dir};
+  const auto clip = dir / "ramp.mov";
+  // 8 s, luma = 16 + 25 * t (limited range): long enough to land a late retry.
+  const auto command = "\"\"" + (ffmpegDir / "ffmpeg.exe").string() +
+      "\" -hide_banner -loglevel error -y -f lavfi -i \"color=c=black:s=64x64:r=30:d=8,format=yuv444p,"
+      "geq=lum='min(235,16+T*25)':cb=128:cr=128\" -c:v prores_ks -profile:v 0 \"" + clip.string() + "\"\"";
+  ASSERT_EQ(std::system(command.c_str()), 0);
+  struct SavedEnv {
+    std::string name, value;
+    explicit SavedEnv(const char* n) : name(n) { const char* v = std::getenv(n); value = v ? v : ""; }
+    ~SavedEnv() { _putenv_s(name.c_str(), value.c_str()); }
+  } savedDir{"COREVIDEO_FFMPEG_BIN_DIR"}, savedAltDir{"FFMPEG_BIN_DIR"}, savedPath{"PATH"};
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:prores-retry";
+  layer.mediaAssetId = "prores-retry";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = clip.string();
+  layer.mediaPlaybackKey = "media:prores-retry:live:1";
+  layer.mediaAssetPlaying = true;
+  const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
+    const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
+    return ((*frame.pixels)[centre + 1] * 219.0 / 255.0) / 25.0;
+  };
+
+  corevideo::modules::VideoFrame held;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while ((!held.hasPixels() || mediaSeconds(held) < 0.6) && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().hasPixels()) held = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(held.hasPixels());
+  ASSERT_TRUE(held.pixelWidth == 1920); // This test is about the FFmpeg path.
+  const double heldSeconds = mediaSeconds(held);
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  // FFmpeg disappears exactly as the operator presses Play.
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", (dir / "no-ffmpeg-here").string().c_str());
+  _putenv_s("FFMPEG_BIN_DIR", "");
+  _putenv_s("PATH", "C:\\Windows\\System32");
+  layer.mediaAssetPlaying = true;
+  bool warned = false;
+  const auto outageEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+  while (std::chrono::steady_clock::now() < outageEnd) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames.front().frameId, held.frameId); // Holds the paused frame; nothing from the top.
+    for (const auto& warning : source->warnings())
+      warned = warned || warning.find("could not resume after a pause") != std::string::npos;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(warned);
+
+  // FFmpeg is back: the next retry must land at the clock position.
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+  _putenv_s("PATH", savedPath.value.c_str());
+  corevideo::modules::VideoFrame resumed;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while (!resumed.hasPixels() && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().frameId != held.frameId) resumed = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(resumed.hasPixels());
+  const double resumedSeconds = mediaSeconds(resumed);
+  std::fprintf(stderr, "[ffmpeg-resume-retry] held t=%.3fs resumed t=%.3fs\n", heldSeconds, resumedSeconds);
+  EXPECT_TRUE(resumed.frameId > held.frameId);
+  // Never the top of the clip; at or after the paused picture (the clock kept
+  // running during the outage, so a late retry lands later, not earlier).
+  EXPECT_TRUE(resumedSeconds >= heldSeconds - 0.1) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  EXPECT_TRUE(resumedSeconds <= heldSeconds + 4.0) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  source.reset();
 }
 #endif
 

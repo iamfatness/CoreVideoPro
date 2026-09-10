@@ -44,6 +44,23 @@ public static class MediaRoutePlaybackService
             string.Equals(routeMediaAssetId, mediaAssetId, StringComparison.Ordinal));
     }
 
+    // True iff the SELECTED asset specifically was on Program before this Take/Update and is
+    // not on Program after it (T1.2 task 3, controller ruling: the selected clip must stop
+    // reading "playing" the moment it leaves Program, not stay stuck showing its last state).
+    public static bool SelectedAssetLeftProgram(
+        string? selectedMediaAssetId,
+        IReadOnlyList<SourceRoute> previousProgramRoutes,
+        IReadOnlyList<SourceRoute> currentProgramRoutes)
+    {
+        if (string.IsNullOrWhiteSpace(selectedMediaAssetId))
+        {
+            return false;
+        }
+
+        return IsMediaAssetRoutedOnProgram(selectedMediaAssetId, previousProgramRoutes) &&
+            !IsMediaAssetRoutedOnProgram(selectedMediaAssetId, currentProgramRoutes);
+    }
+
     public static string? ResolveProgramAutoplayAssetId(
         string? selectedMediaAssetId,
         IReadOnlyList<SourceRoute> programRoutes)
@@ -114,11 +131,52 @@ public static class MediaRoutePlaybackService
 
     // A loop is a persistent source: one key on every bus, never restarted by a cut.
     // A clip's key carries its go-live generation, so it changes ONLY when the clip
-    // enters Program (or the operator restarts it) — never on a Take that leaves it on air.
+    // enters Program — never on a Take that leaves it on air, and never from Pause/Play
+    // (pause is a clock state on the core's decoder, not a shell-side restart, T1.2).
     public static string BuildSceneMediaPlaybackKey(string mediaAssetId, bool loop, int goLiveGeneration)
     {
         var id = string.IsNullOrWhiteSpace(mediaAssetId) ? "unknown" : mediaAssetId.Trim();
         return loop ? $"media:{id}" : $"media:{id}:live:{Math.Max(0, goLiveGeneration)}";
+    }
+
+    // What a bin-row tap or the transport toggle does to a clip: Select (move the selection,
+    // audition play/pause off-Program) or Pause/Resume it on its clock, never a restart. A
+    // looping asset (kind "background") is always playing and can't be usefully paused via the
+    // ledger, so a tap on one is a Select too (matches "not on Program" — the toggle logic there
+    // is preserved for both).
+    public enum MediaTapAction
+    {
+        Select,
+        Pause,
+        Resume
+    }
+
+    public static MediaTapAction ResolveTap(bool isOnProgram, bool isLooping, bool isOperatorPaused)
+    {
+        if (!isOnProgram || isLooping)
+        {
+            return MediaTapAction.Select;
+        }
+
+        return isOperatorPaused ? MediaTapAction.Resume : MediaTapAction.Pause;
+    }
+
+    // The real on-air state of a media asset: routed on Program AND (looping OR not paused by
+    // the operator). Unlike ShouldPlaySceneMediaRoute this takes the already-resolved
+    // "is it on Program" boolean rather than a route list, so a caller that already has it
+    // (StudioViewModel almost always does) never resolves routes twice.
+    public static bool IsPlayingOnAir(
+        string mediaAssetId,
+        bool isOnProgram,
+        bool isLooping,
+        IReadOnlyCollection<string> operatorPausedAssetIds)
+    {
+        if (string.IsNullOrWhiteSpace(mediaAssetId) || !isOnProgram)
+        {
+            return false;
+        }
+
+        return isLooping || !operatorPausedAssetIds.Contains(mediaAssetId);
     }
 
     public static SceneRoutePlayback ResolveSceneRoutePlayback(
@@ -143,14 +201,15 @@ public static class MediaRoutePlaybackService
 
 /// <summary>
 /// The go-live policy's memory: asset id -> generation. A generation advances ONLY when the
-/// asset ENTERS Program (was not routed on Program before a Take/Update, is after) or when the
-/// operator presses Play on a Program-routed clip. The generation is baked into the clip's
-/// playback key, so the core opens a fresh decoder (roll from frame 0) exactly then — and a
-/// clip that stays on Program across a Take keeps playing.
+/// asset ENTERS Program (was not routed on Program before a Take/Update, is after). The
+/// generation is baked into the clip's playback key, so the core opens a fresh decoder (roll
+/// from frame 0) exactly then — and a clip that stays on Program across a Take keeps playing.
+/// Pause/Play on an already-live clip never touches the generation: pause is a clock state on
+/// the core's one decoder (T1.2), not a shell-side restart.
 ///
 /// It also owns the OPERATOR-PAUSED set: pausing a Program-routed clip adds it, playing it
 /// removes it, and the clip GOING LIVE clears it (a clip entering Program rolls, spec section 2).
-/// Pause is per-asset, so promoting another asset can never un-pause (and cold-restart) it.
+/// Pause is per-asset, so promoting another asset can never un-pause it.
 /// </summary>
 public sealed class MediaGoLiveLedger
 {
@@ -191,13 +250,6 @@ public sealed class MediaGoLiveLedger
             wentLive.Add(assetId);
         }
         return wentLive;
-    }
-
-    // Operator pressed Play on a program-routed clip: roll from 0.
-    public void RecordRestart(string mediaAssetId)
-    {
-        if (string.IsNullOrWhiteSpace(mediaAssetId)) return;
-        _generations[mediaAssetId] = GenerationOf(mediaAssetId) + 1;
     }
 
     private static HashSet<string> ProgramMediaAssetIds(IReadOnlyList<SourceRoute> routes)

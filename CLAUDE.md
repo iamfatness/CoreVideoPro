@@ -998,9 +998,9 @@ media asset is now one decoder with one clock, not one per bus.
   plays under `media:<id>:live:<n>` — paused on first frame while only in
   Preview, rolling from 0 with audio on only when it actually GOES LIVE. `n` is
   the `MediaGoLiveLedger` generation for that asset, which advances only when
-  the asset enters Program for the first time or the operator explicitly presses
-  Play on a Program-routed clip — never on every Take, so a clip already playing
-  on Program stays rolling across an unrelated cut. `ChooseAssetToPromote` /
+  the asset enters Program for the first time — never on every Take, and never
+  from Pause/Play on an already-live clip (pause is a clock state, below) — so a
+  clip already playing on Program stays rolling across an unrelated cut. `ChooseAssetToPromote` /
   `ITransportHost.RecordProgramMediaGoLive` runs promotion only for the assets
   that actually went live, and never for a still (`SupportsPlayback` filter).
   **Operator pause is PER-ASSET state, not "is it the selection":**
@@ -1008,10 +1008,83 @@ media asset is now one decoder with one clock, not one per bus.
   adds it, playing it removes it, the clip GOING LIVE clears it — and
   `ShouldPlaySceneMediaRoute` / `ResolveSceneRoutePlayback` read that set (loops
   always play). Promotion only moves the selection, so a paused clip that stays
-  on Program stays paused when another asset goes live (before this, promoting Y
-  un-paused X and, because `playing` is part of the decoder's request key,
-  cold-restarted it). Selecting a Program clip in the bin reports its real state
-  instead of pausing it.
+  on Program stays paused when another asset goes live. Selecting a Program clip
+  in the bin reports its real state instead of pausing it.
+- **PAUSE IS A CLOCK STATE, NOT A NEW DECODER (T1.2, 2026-09-10).** `playing` used
+  to be part of the decoder's identity in two places — the owned source's request
+  key and the MF adapter's playback identity — so promoting another asset (or a
+  bin-row tap) that flipped a clip's `playing` flag opened a fresh decoder: Pause
+  cut to the clip's first frame, Play restarted it from 0. **Both identities now
+  EXCLUDE `playing`.** `MediaPlaybackTimeline::configure` only resets (new epoch,
+  `++generation`) on an identity change; a playing→paused transition freezes
+  elapsed time at its current value, and paused→playing resumes from exactly
+  that value (the epoch shifts by the paused duration). A paused clip HOLDS its
+  on-air frame (same `frameId`, no read) rather than showing a poster; audio
+  emits nothing while paused (not even silence) and resumes at the clock
+  position — `MediaAudioWindows` keeps 200 ms of decoded-ahead history so the
+  windows that would otherwise become a silent hole at the pause point are
+  replayed instead of dropped, and resume re-times the already-prepared frames
+  by the paused duration rather than snapping them to "now". The FFmpeg fallback
+  path (ProRes, which cannot pause a running process in place) is stopped on
+  Pause and restarted AT THE FROZEN CLOCK POSITION on Play — never from the top
+  — with frame ids kept rising; a restart that fails keeps the resume pending
+  and retries at the clock position on a bounded ladder (250 ms, 500 ms, 1 s,
+  2 s, give up after 5 attempts), holding the paused frame and warning every
+  poll, and a fresh operator Pause re-arms a resume that gave up (the FFmpeg
+  tests self-skip with a `[ SKIPPED ]` stderr line, not a silent pass, when
+  `C:\ffmpeg\bin` is absent from the build machine). In
+  `MediaCore::renderSyntheticTick`, Program's media layers are gathered BEFORE
+  Preview's are appended — Program-first ordering is what keeps Program
+  authoritative when a shared source id (same clip on both buses) arrives
+  paused on Preview: the Program request always wins the one shared clock
+  (`OwnedMediaFrameSource::requests()` lets the FIRST request for a key win).
+  **Restart from the top happens ONLY via the go-live generation**
+  (`media:<id>:live:<n>` advancing) — never from Pause, Play or a bin-row tap.
+  The Preview cue poster exception above (a paused, non-still `media-video`
+  layer keeps its own `preview:` key) is unchanged by this — it is a genuinely
+  different playback position from Program's rolling copy, not the same clip's
+  pause/resume.
+  **The shell surfaces the real on-air state, not "is it the selection"**
+  (`MediaRoutePlaybackService.IsPlayingOnAir` / `ResolveTap`): the media bin
+  row shows a rolling Program clip as playing even when it is not the current
+  selection (`ApplyMediaSelection` calls `IsMediaAssetPlaying` per row), and
+  tapping that row pauses it via the ledger (`RecordPause`/`RecordPlay`) —
+  `PlayMediaAsset` no longer restarts anything, and `MediaGoLiveLedger` no
+  longer even HAS a `RecordRestart` method (deleted as dead code once its one
+  caller was removed). **The transport toggle (`MediaPlaybackButtonLabel`,
+  "Pause Program"/"Resume Program"/"Audition") still only reflects the
+  SELECTED asset** — `FormatMediaPlaybackActionLabel` reads
+  `SelectedMediaAssetPlaying`, not the tapped bin row's id, so it does not (yet)
+  show an unselected rolling clip's state; only the bin row does. A tap on a
+  looping asset (kind `background`) is always just a selection
+  (`MediaTapAction.Select`) — a loop is always playing and has no useful ledger
+  pause state. `TransportCoordinator.TakeAsync` (and
+  `StudioViewModel.UpdateScene`) also calls
+  `ITransportHost.RefreshMediaBinPlaybackIndicators` so a clip that LEAVES
+  Program on a Take stops reading "playing" — `PromoteProgramMediaRouteToPlayback`
+  only rebuilds the bin when something ENTERED — and it clears
+  `SelectedMediaAssetPlaying` when the SELECTED clip itself is the one that
+  left, so the transport toggle cannot keep reading "Pause Program" for a clip
+  no longer on air. **It is called CONDITIONALLY, not on every Take** (folded
+  in from a review pass): only when the Program media SET actually changed
+  (`StudioViewModel.BuildProgramMediaRouteSignature` before vs after) AND
+  `PromoteProgramMediaRouteToPlayback` did NOT already run (that call's own
+  `ApplyMediaSelection` rebuild already gives every row — not just the
+  promoted one — its current on-air state, so a second rebuild in the same
+  Take would be pure waste). This is what keeps an automated Magic Scene Take
+  between two non-media scenes from rebuilding `MediaBinGroups` on every cut.
+  Tests: `native/tests/MediaPlaybackTimelineTest.cpp`
+  (`MediaPlaybackTimeline.PauseFreezesElapsedAndResumeContinues`,
+  `OwnedMediaFrameSource.PauseAndResumeKeepOneDecoder` /
+  `PauseHoldsTheOnAirFrame` / `NoAudioWhilePausedAndAudioResumes`),
+  `native/tests/MediaCoreCommandTest.cpp`
+  (`AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop`), and
+  `MediaRoutePlaybackServiceTests` (`ResolveTap_*`, `IsPlayingOnAir_*`,
+  `SelectedAssetLeftProgram_*`) / `TransportCoordinatorTests`
+  (`Take_RefreshesTheMediaBinWhenAClipLeavesProgramWithNothingGoingLive`,
+  `Take_DoesNotDoubleRefreshWhenPromoteAlreadyRebuiltTheBin`,
+  `Take_DoesNotRefreshTheMediaBinWhenTheProgramMediaSetIsUnchanged`) on the
+  shell side.
 - **KNOWN GAP: a clip going live still cold-starts.** The Preview cue poster
   (`preview:media:<id>`) and the rolling Program source (`media:<id>`) are
   different decoders, so a clip entering Program opens a fresh one: a placeholder

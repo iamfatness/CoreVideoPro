@@ -224,7 +224,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     void ITransportHost.CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesToScene(sceneId);
 
-    void ITransportHost.PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds) =>
+    bool ITransportHost.PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds) =>
         PromoteProgramMediaRouteToPlayback(wentLiveMediaAssetIds);
 
     void ITransportHost.RefreshPreviewRoutingState() => RefreshPreviewRoutingState();
@@ -236,6 +236,9 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     // Take may really have gone to air, and reusing its old key could resume a stale decoder.
     IReadOnlyList<string> ITransportHost.RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
         _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
+
+    void ITransportHost.RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
+        RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
 
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task ITransportHost.EnsureMediaCoreRunningAsync(string startingStatus) =>

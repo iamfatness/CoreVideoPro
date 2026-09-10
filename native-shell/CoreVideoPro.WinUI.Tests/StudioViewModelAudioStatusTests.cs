@@ -2401,7 +2401,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Theory]
     [InlineData(false, false, "Audition")]
     [InlineData(false, true, "Pause audition")]
-    [InlineData(true, false, "Restart Program")]
+    [InlineData(true, false, "Resume Program")]
     [InlineData(true, true, "Pause Program")]
     public void FormatMediaPlaybackActionLabel_UsesCurrentBus(
         bool isOnProgram,

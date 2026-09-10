@@ -26,6 +26,7 @@
 #include <deque>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -175,10 +176,10 @@ std::string mediaFrameSourceId(const CompositorRenderPlanLayer& layer) {
   return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
 }
 
+// Playing/paused is deliberately NOT part of the playback identity (T1.2): a
+// pause is a state of the clip's clock, so it must never open a new reader.
 std::string mediaLayerPlaybackKey(const CompositorRenderPlanLayer& layer) {
-  return layer.mediaPlaybackKey.empty()
-             ? layer.mediaAssetId + ":" + (layer.mediaAssetPlaying ? "playing" : "paused")
-             : layer.mediaPlaybackKey;
+  return layer.mediaPlaybackKey.empty() ? layer.mediaAssetId : layer.mediaPlaybackKey;
 }
 
 std::string mediaLayerStateKey(const CompositorRenderPlanLayer& layer) {
@@ -224,12 +225,16 @@ class FfmpegVideoDecoder {
   FfmpegVideoDecoder(const FfmpegVideoDecoder&) = delete;
   FfmpegVideoDecoder& operator=(const FfmpegVideoDecoder&) = delete;
 
+  // `start100ns` > 0 seeks the input before decoding (resume after a pause:
+  // FFmpeg paces itself with -re and cannot be paused, so a paused clip's
+  // decoder is stopped and a new one starts at the frozen clock position).
   static std::unique_ptr<FfmpegVideoDecoder> start(const std::string& path,
                                                    bool posterFrame,
                                                    bool loop,
-                                                   std::string& error) {
+                                                   std::string& error,
+                                                   int64_t start100ns = 0) {
     auto decoder = std::unique_ptr<FfmpegVideoDecoder>(new FfmpegVideoDecoder());
-    if (!decoder->launch(path, posterFrame, loop, error)) {
+    if (!decoder->launch(path, posterFrame, loop, start100ns, error)) {
       return nullptr;
     }
     return decoder;
@@ -247,7 +252,7 @@ class FfmpegVideoDecoder {
  private:
   FfmpegVideoDecoder() = default;
 
-  bool launch(const std::string& path, bool posterFrame, bool loop, std::string& error) {
+  bool launch(const std::string& path, bool posterFrame, bool loop, int64_t start100ns, std::string& error) {
     const auto executable = ffmpegExecutablePath();
     if (executable.empty()) {
       error = "FFmpeg was not found in the configured runtime or PATH.";
@@ -278,9 +283,18 @@ class FfmpegVideoDecoder {
     const std::wstring filter =
         L"scale=1920:1080:force_original_aspect_ratio=decrease,"
         L"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black";
+    std::wstring seek;
+    if (start100ns > 0) {
+      // Integer formatting: a float printf is locale-dependent and a decimal
+      // comma would hand FFmpeg an unparseable position.
+      const long long ms = static_cast<long long>(start100ns / 10000);
+      wchar_t seconds[48]{};
+      swprintf(seconds, 48, L" -ss %lld.%03lld", ms / 1000, ms % 1000);
+      seek = seconds;
+    }
     std::wstring command = quoteWindowsArgument(executable) +
         L" -nostdin -hide_banner -loglevel error" +
-        (loop && !posterFrame ? L" -stream_loop -1" : L"") +
+        (loop && !posterFrame ? L" -stream_loop -1" : L"") + seek +
         L" -re -i " + quoteWindowsArgument(widenUtf8(path)) +
         L" -map 0:v:0 -an -sn -dn -vf " + quoteWindowsArgument(filter) +
         (posterFrame ? L" -frames:v 1" : L"") +
@@ -439,6 +453,14 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
 
   void setMediaWakeCallback(std::function<void()> callback) override { mediaWake_ = std::move(callback); }
 
+  void syncMediaClock(const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
+    for (const auto& layer : layers) {
+      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
+      if (layer.kind == "media-video" && isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath)) continue;
+      (void)stateFor(layer, nowMs); // Configures the clock with the layer's play state at nowMs.
+    }
+  }
+
   std::vector<ScheduledMediaVideo> prefetchMediaVideo(
       const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
     prefetchingVideo_ = true;
@@ -523,6 +545,18 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     ComPtrLite<IMFSourceReader> reader;
     std::unique_ptr<FfmpegVideoDecoder> ffmpegVideo;
     std::int64_t ffmpegPublishedFrameId = 0;
+    // Published FFmpeg frame ids are base + the decoder's own count, so a
+    // decoder restarted after a pause (or after a poster) keeps ids rising.
+    std::int64_t ffmpegFrameIdBase = 0;
+    bool ffmpegPoster = false;          // The running FFmpeg decoder emits exactly one frame.
+    bool ffmpegResumePending = false;   // Stopped for a pause; restart at the clock position on Play.
+    // A failed resume RETRIES at the clock position (bounded, loud) and never
+    // falls back to a fresh open, which would restart the clip from the top.
+    int ffmpegResumeAttempts = 0;
+    int64_t ffmpegResumeNextMs = 0;
+    bool ffmpegResumeGaveUp = false;
+    std::string ffmpegResumeError;
+    int64_t mediaDuration100ns = 0;     // From Media Foundation's container parse, when it had one.
     std::string videoDecoderError;
     ComPtrLite<MediaReadCallback> audioCallback;
     ComPtrLite<IMFSourceReader> audioReader;
@@ -546,10 +580,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     if (state.audioReader) state.audioReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
   }
 
+  // The identity is path + playback key + loop mode, never play state: a new
+  // identity (a go-live generation) is a new reader from 0; a pause or resume
+  // is carried by the SAME clock (MediaPlaybackTimeline) on every call.
   AssetState& stateFor(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
     const auto key = mediaFrameSourceId(layer);
     const auto identity = normalizeMediaPath(layer.mediaAssetPath) + "|" + mediaLayerPlaybackKey(layer) +
-        (layer.mediaAssetPlaying ? "|playing" : "|paused") + (layer.mediaAssetLoop ? "|loop" : "|once");
+        (layer.mediaAssetLoop ? "|loop" : "|once");
     auto& state = states_[key];
     if (state.generationIdentity != identity) {
       cancelReaders(state);
@@ -557,7 +594,23 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       state.generationIdentity = identity;
       state.path = normalizeMediaPath(layer.mediaAssetPath);
       state.loop = layer.mediaAssetLoop;
-      state.clock.configure(identity, layer.mediaAssetPlaying, timestampMs * 10000);
+    }
+    state.clock.configure(identity, layer.mediaAssetPlaying, timestampMs * 10000);
+    // FFmpeg paces itself (-re) and would keep decoding through a pause, so a
+    // paused clip that is holding a frame stops it; Play restarts it at the
+    // frozen clock position (decodeLayer). Media Foundation readers are pulled
+    // one sample at a time and simply stop being read.
+    if (!layer.mediaAssetPlaying && state.wasPlaying && state.ffmpegVideo && !state.ffmpegPoster &&
+        state.lastFrame.hasPixels()) {
+      state.ffmpegVideo = {};
+      state.ffmpegResumePending = true;
+    }
+    // A fresh operator Pause (then Play) re-arms a resume that had given up.
+    if (!layer.mediaAssetPlaying && state.ffmpegResumePending) {
+      state.ffmpegResumeAttempts = 0;
+      state.ffmpegResumeNextMs = 0;
+      state.ffmpegResumeGaveUp = false;
+      state.ffmpegResumeError.clear();
     }
     return state;
   }
@@ -586,19 +639,32 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       frame.timestampMs = timestampMs;
       return true;
     }
-    if (!layer.mediaAssetPlaying) {
-      if (state.playbackKey != playbackKey) {
-        state.reader = {};
-        state.ffmpegVideo = {};
-        state.ffmpegPublishedFrameId = 0;
-        state.ended = false;
-        state.frameId = 0;
-        state.lastFrame = {};
-      }
+    if (state.playbackKey != playbackKey) {
+      // Belt and braces: stateFor already reset the state for a new identity.
+      state.reader = {};
+      state.ffmpegVideo = {};
+      state.ffmpegPublishedFrameId = 0;
+      state.ffmpegResumePending = false;
+      state.ended = false;
+      state.frameId = 0;
+      state.lastFrame = {};
+      state.presentedFrame = {};
       state.wasPlaying = false;
-      state.playbackKey = playbackKey;
-      // A Preview cue is intentionally paused, but it must still display a
-      // real poster frame. Decode exactly one frame and retain it until Take.
+    }
+    state.playbackKey = playbackKey;
+    if (!layer.mediaAssetPlaying) {
+      // PAUSED AFTER IT ROLLED: hold the frame on air and read nothing. The
+      // reader stays where it is, so Play continues with the next frame.
+      const VideoFrame& held = state.presentedFrame.hasPixels() ? state.presentedFrame : state.lastFrame;
+      if (state.wasPlaying && held.hasPixels()) {
+        frame = held;
+        frame.participantId = frameSourceId;
+        frame.timestampMs = timestampMs;
+        return true;
+      }
+      // NEVER PLAYED (a Preview cue poster): it is intentionally paused, but
+      // it must still display a real poster frame. Decode exactly one frame
+      // and retain it until Take.
       if (!state.lastFrame.hasPixels()) {
         if (!state.reader && !state.ffmpegVideo &&
             !openVideoReader(path, state, true, layer.mediaAssetLoop)) {
@@ -616,15 +682,64 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       frame.timestampMs = timestampMs;
       return frame.hasPixels();
     }
-    if (!state.wasPlaying || state.playbackKey != playbackKey) {
-      state.reader = {};
+    // PLAYING. A Media Foundation reader simply continues — from the poster
+    // frame of a cue that is now rolling, or from the frame held by a pause —
+    // and the clock's frozen elapsed time keeps the due-times aligned. A
+    // one-frame FFmpeg poster decoder cannot continue, and a paused FFmpeg
+    // decoder was stopped; both restart (the latter at the clock position).
+    if (state.ffmpegVideo && state.ffmpegPoster) {
       state.ffmpegVideo = {};
-      state.ffmpegPublishedFrameId = 0;
       state.ended = false;
-      state.frameId = 0;
+    }
+    if (state.ffmpegResumePending && !state.ffmpegVideo && !state.reader) {
+      // Bounded retry ladder (250 ms -> 500 ms -> 1 s -> 2 s, give up after 5
+      // attempts). Each attempt seeks to the clock's CURRENT position: the
+      // clock resumed from the paused position, so a late restart lands where
+      // the audio is, and never at 0. Until one succeeds the paused frame is
+      // held and a fresh open (which would start from the top) is never tried.
+      static constexpr int64_t kResumeRetryMs[] = {250, 500, 1000, 2000};
+      static constexpr int kMaxResumeAttempts = 5;
+      if (!state.ffmpegResumeGaveUp && timestampMs >= state.ffmpegResumeNextMs) {
+        int64_t position = state.clock.elapsed100ns(timestampMs * 10000);
+        if (layer.mediaAssetLoop && state.mediaDuration100ns > 0) position %= state.mediaDuration100ns;
+        std::string fallbackError;
+        state.ffmpegFrameIdBase = state.lastFrame.hasPixels() ? state.lastFrame.frameId : 0;
+        state.ffmpegPublishedFrameId = 0;
+        state.ended = false;
+        state.ffmpegPoster = false;
+        state.ffmpegVideo = FfmpegVideoDecoder::start(path, false, layer.mediaAssetLoop, fallbackError, position);
+        ++state.ffmpegResumeAttempts;
+        if (state.ffmpegVideo) {
+          state.ffmpegResumePending = false;
+          state.ffmpegResumeAttempts = 0;
+          state.ffmpegResumeError.clear();
+        } else {
+          state.ffmpegResumeError = fallbackError;
+          state.ffmpegResumeGaveUp = state.ffmpegResumeAttempts >= kMaxResumeAttempts;
+          if (!state.ffmpegResumeGaveUp)
+            state.ffmpegResumeNextMs = timestampMs + kResumeRetryMs[(std::min)(state.ffmpegResumeAttempts, 4) - 1];
+          ::corevideo::core::nativeLogf(
+              "[media-playback] source=%s FFmpeg resume attempt %d/%d at %.3fs failed: %s%s\n",
+              frameSourceId.c_str(), state.ffmpegResumeAttempts, kMaxResumeAttempts,
+              static_cast<double>(position) / 10000000.0, fallbackError.c_str(),
+              state.ffmpegResumeGaveUp ? " - GAVE UP, holding the paused frame" : " - retrying at the clock position");
+        }
+      }
+      if (!state.ffmpegVideo) {
+        // Loud every poll while it lasts (the decoder warnings are rebuilt per poll).
+        warnings_.push_back("Media asset " + layer.mediaAssetId + " could not resume after a pause" +
+                            (state.ffmpegResumeGaveUp ? " (gave up after " + std::to_string(state.ffmpegResumeAttempts) +
+                                                            " attempts; holding the paused frame, pause and play to retry)"
+                                                      : " (retrying at the clock position)") +
+                            (state.ffmpegResumeError.empty() ? "." : ": " + state.ffmpegResumeError));
+        if (!state.lastFrame.hasPixels()) return false;
+        frame = state.lastFrame; // Keep holding the paused frame; never restart from the top.
+        frame.participantId = frameSourceId;
+        frame.timestampMs = timestampMs;
+        return true;
+      }
     }
     state.wasPlaying = true;
-    state.playbackKey = playbackKey;
     if (!state.reader && !state.ffmpegVideo &&
         !openVideoReader(path, state, false, layer.mediaAssetLoop)) {
       warnings_.push_back("Media asset " + layer.mediaAssetId +
@@ -687,6 +802,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
 
   AudioFrame decodeLayerAudio(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
     AudioFrame frame;
+    // A paused clip emits no PCM. Returning before stateFor also keeps an
+    // audio-slot timestamp (which runs ahead of now) from ever becoming the
+    // instant the clock froze; the video path/syncMediaClock owns that.
+    // On resume the clock's frozen elapsed time is where audio continues:
+    // audioWindows seeks back to it (replaying from its short history the
+    // windows that were decoded ahead but dropped unheard at the pause).
+    if (!layer.mediaAssetPlaying) return frame;
     const std::string frameSourceId = mediaFrameSourceId(layer);
     auto& state = stateFor(layer, timestampMs);
     const auto path = normalizeMediaPath(layer.mediaAssetPath);
@@ -747,6 +869,16 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
           SUCCEEDED(attributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, state.videoCallback.get())) &&
           SUCCEEDED(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE)) &&
           SUCCEEDED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), attributes.get(), state.reader.put()))) {
+        // The container usually parses even when no MF decoder exists for the
+        // codec (ProRes); keep its duration so an FFmpeg-decoded loop can
+        // resume a pause at the right point inside the clip.
+        PROPVARIANT duration;
+        PropVariantInit(&duration);
+        if (SUCCEEDED(state.reader->GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &duration)) &&
+            duration.vt == VT_UI8) {
+          state.mediaDuration100ns = static_cast<int64_t>(duration.uhVal.QuadPart);
+        }
+        PropVariantClear(&duration);
         ComPtrLite<IMFMediaType> mediaType;
         if (SUCCEEDED(MFCreateMediaType(mediaType.put())) &&
             SUCCEEDED(mediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) &&
@@ -760,6 +892,9 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     }
 
     std::string fallbackError;
+    state.ffmpegFrameIdBase = state.lastFrame.hasPixels() ? state.lastFrame.frameId : 0;
+    state.ffmpegPublishedFrameId = 0;
+    state.ffmpegPoster = posterFrame;
     state.ffmpegVideo = FfmpegVideoDecoder::start(path, posterFrame, loop, fallbackError);
     if (!state.ffmpegVideo) {
       state.videoDecoderError += " FFmpeg fallback failed: " + fallbackError;
@@ -842,7 +977,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       decoded.pixelWidth = decoded.width;
       decoded.pixelHeight = decoded.height;
       decoded.pixelStride = decoded.width * 4;
-      decoded.frameId = decodedFrameId;
+      decoded.frameId = state.ffmpegFrameIdBase + decodedFrameId;
       decoded.pixels = std::move(pixels);
       state.lastFrame = std::move(decoded);
       state.ffmpegPublishedFrameId = decodedFrameId;

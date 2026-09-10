@@ -37,17 +37,19 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T0.2](https://github.com/iamfatness/CoreVideoPro/issues/424) | Get the Zoom SDK redistribution answer | 4 | Builds already bundle the SDK from a private URL; practice is ahead of a legal answer that was never recorded (`docs/zoom-windows-sdk-packaging.md:27`). |
 | [T0.3](https://github.com/iamfatness/CoreVideoPro/issues/425) | Acquire 2-3 reference machines (mid-tier GPU, hybrid-graphics laptop, AMD GPU) | 1 | Everything is proven on one RTX 4090. Lead time. |
 | [T0.4](https://github.com/iamfatness/CoreVideoPro/issues/426) | Pick the tester feedback channel | 3 | `docs/beta-tester-guide.md` names none. |
-| [T0.5](https://github.com/iamfatness/CoreVideoPro/issues/427) | Rule on the open handoff decisions: 1500 ms tile staleness; monitor isolation mitigation; the unexplained 18.6 fps recording | 1/2 | From `docs/overnight-handoff-2026-09-10.md` (#419 branch). Auto-take is ruled by T1.1. |
+| [T0.5](https://github.com/iamfatness/CoreVideoPro/issues/427) | Rule on the open handoff decisions: 1500 ms tile staleness; monitor isolation mitigation; the unexplained 18.6 fps recording | 1/2 | From `docs/overnight-handoff-2026-09-10.md` (#419 branch). Auto-take (T1.1) is closed, not reproduced — no longer an open ruling here. |
 
 ## Tier 1 — show-stoppers on any machine
 
 | ID | Item | Clause | Size |
 |---|---|---|---|
-| [T1.1](https://github.com/iamfatness/CoreVideoPro/issues/428) | Auto-take must not fire while automation is off (observed ~1/s on 2026-09-10; uncommanded on-air cuts) | 1 | S |
-| [T1.2](https://github.com/iamfatness/CoreVideoPro/issues/429) | Tapping the bin row of a rolling-but-unselected Program clip restarts it on air (row state follows the selection, not playback) | 1 | S |
+| [T1.1](https://github.com/iamfatness/CoreVideoPro/issues/428) | ~~Auto-take must not fire while automation is off (observed ~1/s on 2026-09-10; uncommanded on-air cuts)~~ — **Closed — not reproduced (#428)** | 1 | S |
+| [T1.2](https://github.com/iamfatness/CoreVideoPro/issues/429) | Pause/Play on a Program clip restarts it: make pause a clock state on one decoder (incl. bin-row tap) | 1 | M |
 | [T1.3](https://github.com/iamfatness/CoreVideoPro/issues/430) | A rolled-back Take must also undo media go-live state (generation bump, pause-clear) | 1 | S |
 | [T1.4](https://github.com/iamfatness/CoreVideoPro/issues/431) | Multiview/Preview must not halve Program under load: apply the cheap multiview tick-divisor mitigation (proper fix = monitor compositor split, post-beta) | 1 | S |
 | [T1.5](https://github.com/iamfatness/CoreVideoPro/issues/432) | Investigate the ~45 s after a Zoom join with no core snapshots reaching the shell (core busy, recovered on its own) | 2/1 | unsized |
+| [T1.6](https://github.com/iamfatness/CoreVideoPro/issues/455) | Media clip audio never reaches the audio engine (fix in PR #458) | 1/3 | S |
+| [T1.7](https://github.com/iamfatness/CoreVideoPro/issues/457) | Triage: WinUI shell crash dump during a forced stop | 1 | unsized |
 
 ## Tier 2 — first external install
 
@@ -87,6 +89,7 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T5.3](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip entering Program cold-starts with a placeholder flash (hand the warmed cue decoder to Program) | 3 | M |
 | [T5.4](https://github.com/iamfatness/CoreVideoPro/issues/450) | OHG: redesign on screens first, integrate into existing tabs; cheap parity gaps (preview tally, gallery order, black/bars/FTB, on-air clock, nameplates) | 3 | L |
 | [T5.5](https://github.com/iamfatness/CoreVideoPro/issues/451) | The scene canvas editor shows live GPU video (redesign, not a whitelist) | 3 | L |
+| [T5.6](https://github.com/iamfatness/CoreVideoPro/issues/456) | In and Out points for media playback (lower priority) | 3 | M |
 
 ## Housekeeping
 

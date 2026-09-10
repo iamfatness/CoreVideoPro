@@ -1,5 +1,6 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.ViewModels;
 
 namespace CoreVideoPro.WinUI.ViewModels.Transport;
 
@@ -155,7 +156,21 @@ public sealed class TransportCoordinator
                 }
                 var wentLive = _host.RecordProgramMediaGoLive(previousProgramRoutes);
                 // Go-live is the only event a source reacts to: promote only what entered Program.
-                if (wentLive.Count > 0) _host.PromoteProgramMediaRouteToPlayback(wentLive);
+                var promoted = wentLive.Count > 0 && _host.PromoteProgramMediaRouteToPlayback(wentLive);
+                // T1.2 task 3 (controller ruling, folded in): a clip that LEFT Program on this
+                // Take also needs its bin row refreshed (and the SELECTED asset's local playing
+                // flag cleared if it is the one that left) — but only when the Program media SET
+                // actually changed, and only when Promote did NOT already rebuild the bin. This
+                // is what keeps an automated Magic Scene Take between two non-media scenes from
+                // rebuilding MediaBinGroups on every cut, and avoids a double rebuild the Take a
+                // clip DOES go live on.
+                if (!promoted && !string.Equals(
+                        StudioViewModel.BuildProgramMediaRouteSignature(previousProgramRoutes),
+                        StudioViewModel.BuildProgramMediaRouteSignature(_host.GetResolvedProgramRoutes()),
+                        StringComparison.Ordinal))
+                {
+                    _host.RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
+                }
                 _host.RefreshPreviewRoutingState();
             }
             finally { _host.EndTakeMutation(); }
