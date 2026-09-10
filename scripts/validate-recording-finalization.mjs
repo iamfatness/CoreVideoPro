@@ -59,7 +59,9 @@ function send(type, extra = {}) {
 function observe(nextSnapshot) {
   snapshot = nextSnapshot;
   const lifecycle = snapshot?.recording?.lifecycle;
-  if (lifecycle && evidence.states.at(-1)?.state !== lifecycle.state) evidence.states.push({ at: Date.now(), ...lifecycle });
+  if (lifecycle && evidence.states.at(-1)?.state !== lifecycle.state)
+    evidence.states.push({ at: Date.now(), ...lifecycle, status: snapshot?.recording?.status,
+      writerStatus: snapshot?.recording?.writerStatus, active: snapshot?.recording?.active });
   if (lifecycle?.state === 'failed' || lifecycle?.state === 'interrupted') throw new Error(`Writer failed: ${JSON.stringify(lifecycle)}`);
   return lifecycle;
 }
@@ -84,13 +86,24 @@ try {
       filenamePrefix: 'program', format: 'mp4', quality: 'high', isoParticipantIds: [] },
   ]);
   const startDeadline = Date.now() + 15000;
-  while (snapshot?.recording?.lifecycle?.state !== 'live' && Date.now() < startDeadline) { await sleep(100); await sync(); }
-  if (snapshot?.recording?.lifecycle?.state !== 'live') throw new Error('Recording never became verified live');
+  // `producing` requires FRESH writer progress, so reaching it is evidence the
+  // writer is actually muxing — not that a Start command was accepted.
+  while (snapshot?.recording?.lifecycle?.state !== 'producing' && Date.now() < startDeadline) { await sleep(100); await sync(); }
+  if (snapshot?.recording?.lifecycle?.state !== 'producing') throw new Error('Recording never became verified producing');
   const sessionId = snapshot.recording.lifecycle.sessionId;
   const liveUntil = Date.now() + 6000;
   while (Date.now() < liveUntil) { await sleep(200); await sync(); }
   evidence.liveRecording = snapshot.recording;
   await sync([{ type: 'stop-recording-session', reason: 'Generated recording proof complete' }]);
+  // PR22: what Stop itself reported, in the SAME reply that acknowledged it. This
+  // used to read status 'stopped' while the FIFO barrier was still draining.
+  evidence.stopAcknowledgement = {
+    state: snapshot?.recording?.lifecycle?.state, health: snapshot?.recording?.lifecycle?.health,
+    finalized: snapshot?.recording?.lifecycle?.finalized, status: snapshot?.recording?.status,
+    writerStatus: snapshot?.recording?.writerStatus, active: snapshot?.recording?.active };
+  if (evidence.stopAcknowledgement.state === 'completed' || evidence.stopAcknowledgement.finalized === true ||
+      evidence.stopAcknowledgement.status === 'stopped')
+    throw new Error(`Stop claimed completion before finalization: ${JSON.stringify(evidence.stopAcknowledgement)}`);
   const finalizeDeadline = Date.now() + 20000;
   while (snapshot?.recording?.lifecycle?.state !== 'completed' && Date.now() < finalizeDeadline) { await sleep(100); await sync(); }
   const lifecycle = snapshot?.recording?.lifecycle;
@@ -146,7 +159,7 @@ try {
   await writeFile(join(outputDir, 'core-stderr.log'), stderr);
   await writeFile(join(outputDir, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n');
 }
-console.log(JSON.stringify({ status: evidence.status, failure: evidence.failure, evidence: join(outputDir, 'evidence.json'),
+console.log(JSON.stringify({ status: evidence.status, failure: evidence.failure, stopAcknowledgement: evidence.stopAcknowledgement, evidence: join(outputDir, 'evidence.json'),
   artifact: evidence.artifact, states: evidence.states.map(state => state.state), avDurationDifferenceSeconds: evidence.avDurationDifferenceSeconds,
   effectiveVideoFps: evidence.effectiveVideoFps, encoderQueueDroppedVideoFrames: evidence.encoderQueueDroppedVideoFrames,
   recordingStartupDroppedVideoFrames: evidence.recordingStartupDroppedVideoFrames,

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -607,6 +608,14 @@ struct OutputSender {
   std::string sendArtifactPath;
   int64_t sendBytesWritten = 0;
   std::string runtimeDetail;
+  // PR22: every destination carries a lifecycle and a terminal outcome. Before
+  // this an RTMP/SRT/NDI stream that died mid-show had NOTHING an operator or a
+  // support bundle could read as a state — only free-text adapter status
+  // strings that no consumer agreed on. Recording had per-stream outcomes;
+  // senders had none. Populated centrally by MediaCore from the pure
+  // core::SenderLifecyclePolicy, so the three adapters keep exactly one status
+  // machine each instead of gaining a second.
+  std::optional<contracts::OutputLifecycle> lifecycle;
 };
 
 struct OutputSenderSession {

@@ -2220,8 +2220,19 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
 }
 
 void MediaCore::stopRecordingSession(const rpc::Json& command) {
-  recordingStatus_ = "stopped";
-  recordingWriterStatus_ = "stopped";
+  // STOP DOES NOT CLAIM COMPLETION. This used to assign "stopped" here, before
+  // encoder->stopRecording() had even been called — so the RPC returned, and the
+  // operator was told the recording had finished, while the FIFO barrier was
+  // still draining and the moov atom had not been written. The truth lived only
+  // in recording.lifecycle, and the two fields disagreed for the whole finalize
+  // window. What Stop reports now is that stopping has BEGUN; the terminal state
+  // arrives from the writer thread when the barrier has drained and finalization
+  // has actually succeeded or failed (AsyncEncoderSink::writerLoop). The RPC
+  // still does not block — the asynchronous finalization is correct, and
+  // scripts/validate-recording-finalization.mjs proves it completes with the
+  // core alive. Only the lying status field is fixed.
+  recordingStatus_ = "stopping";
+  recordingWriterStatus_ = "finalizing";
   recordingWarning_ = command.getString("reason", "");
   {
     // Encoder module mutation: guard against the audio/output worker's
@@ -4418,6 +4429,63 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
   return encoderState;
 }
 
+// PR22: a destination's state and terminal outcome, decided purely.
+//
+// The adapters (RTMP/SRT/NDI) publish cumulative counters and a status string.
+// "Is it still producing?" is a question about TIME, which none of them track,
+// so the freshness evidence is remembered here and the DECISION is delegated to
+// core::SenderLifecyclePolicy — the same rule the recording writer obeys, with
+// the same declared staleness budget. A stream that dies mid-show therefore
+// decays out of `producing` on its own instead of reporting the last status the
+// adapter happened to write.
+contracts::OutputLifecycle MediaCore::evaluateSenderLifecycle(
+    const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const {
+  const std::string key = sender.senderId.empty() ? sender.destination : sender.senderId;
+  auto& evidence = senderLifecycles_[key];
+  const int64_t sent = sender.framesSent + sender.audioFramesSent;
+  if (sent > evidence.lastFramesSent) {
+    evidence.lastFramesSent = sent;
+    evidence.lastProgressMs = nowMs;
+    evidence.everProduced = true;
+  } else if (sent < evidence.lastFramesSent) {
+    // A restarted sender resets its counters; that is a new run, not progress.
+    evidence.lastFramesSent = sent;
+    evidence.everProduced = sent > 0;
+    evidence.lastProgressMs = sent > 0 ? nowMs : 0;
+  }
+  core::SenderObservation observation;
+  observation.status = sender.status;
+  observation.destinationHealth = sender.destinationHealth;
+  observation.desiredActive = desiredActive;
+  observation.framesSent = sent;
+  observation.everProduced = evidence.everProduced;
+  observation.lastProgressMs = evidence.lastProgressMs;
+  observation.nowMs = nowMs;
+  observation.hasError = !sender.lastError.empty();
+  const auto decision = core::SenderLifecyclePolicy::evaluate(observation);
+  contracts::OutputLifecycle lifecycle;
+  lifecycle.sessionId = key.empty() ? std::string("output-sender") : key;
+  lifecycle.desiredActive = desiredActive;
+  lifecycle.state = decision.state;
+  lifecycle.health = decision.health;
+  lifecycle.finalized = core::SenderLifecyclePolicy::finalizedFor(decision, evidence.everProduced);
+  // The error field is diagnostic context for a state that is already bad. It is
+  // NOT attached to a healthy destination: `lastError` is sticky history, and a
+  // producing stream carrying an old string would read as broken in a bundle.
+  if (decision.state == "failed" && !sender.lastError.empty()) {
+    lifecycle.error = sender.lastError;
+  } else if (decision.state == "interrupted") {
+    lifecycle.error = sender.lastError.empty()
+                          ? std::string("Destination stopped producing without being asked to stop")
+                          : "Destination stopped producing without being asked to stop: " + sender.lastError;
+  } else if (decision.state == "failed" && !sender.warning.empty()) {
+    lifecycle.error = sender.warning;
+  }
+  if (core::OutputLifecyclePolicy::isTerminal(decision.state)) evidence.terminal = lifecycle;
+  else if (decision.state == "idle" && evidence.terminal) return *evidence.terminal;
+  return lifecycle;
+}
+
 rpc::Json MediaCore::outputSenderSessionState() const {
   // outputSender->session() is mutated by the worker's outputSender->sync; guard it.
   modules::OutputSenderSession senderSession;
@@ -4425,8 +4493,14 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     senderSession = modules_.outputSender->session();
   }
+  const int64_t senderNowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
   rpc::Json::Array senders;
   for (const auto& sender : senderSession.senders) {
+    const bool desiredActive =
+        std::find(outputDestinations_.begin(), outputDestinations_.end(), sender.destination) !=
+        outputDestinations_.end();
+    const auto lifecycle = evaluateSenderLifecycle(sender, desiredActive, senderNowMs);
     rpc::Json::Object senderJson{
         {"senderId", sender.senderId},
         {"destination", sender.destination},
@@ -4465,6 +4539,7 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     if (!sender.runtimeDetail.empty()) {
       senderJson.emplace("runtimeDetail", sender.runtimeDetail);
     }
+    senderJson.emplace("lifecycle", contracts::toJson(lifecycle));
     senders.emplace_back(std::move(senderJson));
   }
 
@@ -4490,6 +4565,17 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
     return nullptr;
   }
 
+  // The published status is DERIVED from the observed lifecycle whenever the
+  // sink reports one, so `recording.status` and `recording.lifecycle` can never
+  // disagree again. recordingStatus_ remains the internal desired-state gate
+  // (it is what the render gather and the idempotent-start dedup read); it is
+  // not, and never was, evidence of what the writer is doing.
+  const std::string publishedStatus =
+      session.lifecycle ? publishedRecordingStatus(session.lifecycle->state, session.lifecycle->health)
+                        : recordingStatus_;
+  const std::string publishedWriterStatus =
+      session.lifecycle ? publishedRecordingWriterStatus(session.lifecycle->state)
+                        : recordingWriterStatus_;
   const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
   const int64_t programFramesWritten = session.recordingVideoFrameCount;
   int64_t isoFramesWritten = 0;
@@ -4525,7 +4611,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       rpc::Json::Object{
           {"kind", "program"},
           {"path", programPath},
-          {"status", recordingWriterStatus_},
+          {"status", publishedWriterStatus},
           {"expectedFrames", static_cast<double>(programFramesWritten)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
           {"durationMs", durationMs},
@@ -4551,7 +4637,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"participantId", iso.sourceId},
           {"displayName", iso.displayName},
           {"path", iso.path},
-          {"status", iso.warning.empty() ? recordingWriterStatus_ : std::string("warning")},
+          {"status", iso.warning.empty() ? publishedWriterStatus : std::string("warning")},
           {"readiness", iso.trackOpen ? "ready" : "missing"},
           {"framesWritten", static_cast<double>(iso.videoFrameCount)},
           {"durationMs", durationMs},
@@ -4594,10 +4680,10 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
 
   rpc::Json::Object recording{
       {"sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_},
-      {"active", session.lifecycle ? session.lifecycle->state == "live" :
+      {"active", session.lifecycle ? session.lifecycle->state == "producing" :
                  recordingStatus_ == "recording" || recordingStatus_ == "warning"},
-      {"status", recordingStatus_},
-      {"writerStatus", recordingWriterStatus_},
+      {"status", publishedStatus},
+      {"writerStatus", publishedWriterStatus},
       {"startedAtMs", recordingStartedAtMs_},
       {"elapsedMs", durationMs},
       {"targetFolder", recordingTargetFolder_},

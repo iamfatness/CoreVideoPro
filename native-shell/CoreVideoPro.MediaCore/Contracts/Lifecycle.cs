@@ -53,7 +53,7 @@ public static class OutputLifecycleContract {
     var hasDesiredActive = value.TryGetProperty("desiredActive", out var desiredActive);
     if (!hasDesiredActive || !((desiredActive.ValueKind == JsonValueKind.True || desiredActive.ValueKind == JsonValueKind.False))) return false;
     var hasState = value.TryGetProperty("state", out var state);
-    if (!hasState || !(state.ValueKind == JsonValueKind.String && (state.GetString() == "idle" || state.GetString() == "starting" || state.GetString() == "live" || state.GetString() == "stopping" || state.GetString() == "finalizing" || state.GetString() == "completed" || state.GetString() == "failed" || state.GetString() == "interrupted"))) return false;
+    if (!hasState || !(state.ValueKind == JsonValueKind.String && (state.GetString() == "idle" || state.GetString() == "requested" || state.GetString() == "preparing" || state.GetString() == "producing" || state.GetString() == "starting" || state.GetString() == "live" || state.GetString() == "stopping" || state.GetString() == "finalizing" || state.GetString() == "completed" || state.GetString() == "failed" || state.GetString() == "interrupted"))) return false;
     var hasHealth = value.TryGetProperty("health", out var health);
     if (!hasHealth || !(health.ValueKind == JsonValueKind.String && (health.GetString() == "unknown" || health.GetString() == "healthy" || health.GetString() == "degraded" || health.GetString() == "failed"))) return false;
     var hasFinalized = value.TryGetProperty("finalized", out var finalized);

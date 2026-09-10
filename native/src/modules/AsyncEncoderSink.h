@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/OutputLifecyclePolicy.h"
 #include "modules/Interfaces.h"
 
 #include <atomic>
@@ -115,6 +116,10 @@ class AsyncEncoderSink final : public IEncoderSink {
   // landed in droppedVideo and made a fail-closed judge report a false red.
   // Reported, never hidden.
   [[nodiscard]] uint64_t startupDroppedVideoFrames() const;
+  // Freshness budget behind `producing` (see core/OutputLifecyclePolicy.h). The
+  // default is the qualification policy's declared encoder staleness; tests
+  // shorten it so a wedged writer can be proven to decay without a real sleep.
+  void setProducingStaleMsForTest(int64_t staleMs);
   // Block until every item enqueued so far has been applied by the writer, or
   // `timeout` elapses. Returns true if fully drained. Lets tests observe the
   // deterministic post-drain session() without sleeping on wall-clock guesses.
@@ -231,6 +236,16 @@ class AsyncEncoderSink final : public IEncoderSink {
     bool videoStartupPhase = false;
 
     std::atomic<bool> active{false};
+    // Evidence behind the `producing` state, published as atomics so session()
+    // can re-decide freshness at READ time without touching queueMutex — which
+    // is exactly what makes a WEDGED writer observable: a writer blocked inside
+    // the wrapped sink applies no further items, so a snapshot that only ever
+    // changed on an applied item would report the last good state forever.
+    std::atomic<bool> startApplied{false};
+    std::atomic<bool> everProgressed{false};
+    std::atomic<int64_t> lastProgressAtMs{0};
+    std::atomic<bool> degradedWarning{false};
+    std::atomic<int64_t> producingStaleMs{::corevideo::core::kProducingProgressStaleMs};
     std::atomic<uint64_t> droppedVideo{0};
     std::atomic<uint64_t> droppedAudio{0};
     std::atomic<uint64_t> startupDroppedVideo{0};
@@ -250,6 +265,9 @@ class AsyncEncoderSink final : public IEncoderSink {
   // Wait until the writer has applied the item with seq >= `seq`, or `timeout`.
   bool waitApplied(uint64_t seq, std::chrono::milliseconds timeout);
   static void writerLoop(std::shared_ptr<State> state);
+  // Re-decide an ACTIVE lifecycle against the clock. Pure decision delegated to
+  // core::OutputLifecyclePolicy; this only supplies the observed evidence.
+  static void refreshActiveLifecycle(const State& state, contracts::OutputLifecycle& lifecycle);
 
   Options options_;
   std::shared_ptr<State> state_;

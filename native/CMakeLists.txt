@@ -612,6 +612,7 @@ if(BUILD_TESTING)
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
+    tests/OutputLifecyclePolicyTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp
