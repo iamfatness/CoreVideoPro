@@ -347,7 +347,7 @@ TEST(StillMediaFrameCache, VideoMediaRoutesStayOffTheStillPath) {
   EXPECT_TRUE(mediaCore.stillMediaCacheForTest()->collectFrames(100).empty());
 }
 
-TEST(StillMediaFrameCache, PreviewSceneStillRoutesAreDecodedToo) {
+TEST(StillMediaFrameCache, APreviewStillRouteSharesTheProgramKey) {
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   auto decoder = std::make_unique<FakeStillDecoder>();
   auto* fake = decoder.get();
@@ -374,9 +374,27 @@ TEST(StillMediaFrameCache, PreviewSceneStillRoutesAreDecodedToo) {
   EXPECT_EQ(fake->decodeCount, 1);
   const auto frames = mediaCore.stillMediaCacheForTest()->collectFrames(100);
   ASSERT_EQ(frames.size(), 1u);
-  // Preview has a distinct source namespace so it can hold a cue frame while
-  // Program independently plays the same asset.
-  EXPECT_EQ(frames[0].participantId, "preview:media:logo-9");
+  // A still has no playback position, so Preview and Program address the SAME
+  // key (persistent-sources spec §2): a preview-only still route is `media:`.
+  EXPECT_EQ(frames[0].participantId, "media:logo-9");
+}
+
+// The same still on BOTH buses is one cache entry: one decode, one frame.
+TEST(StillMediaFrameCache, AStillOnBothBusesIsOneEntry) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  auto decoder = std::make_unique<FakeStillDecoder>();
+  auto* fake = decoder.get();
+  mediaCore.setStillImageDecoderForTest(std::move(decoder));
+
+  auto preview = stillRouteScene("pvw-bug", "logo-3", "lower-third", "C:\\assets\\logo.png");
+  preview["type"] = "set-preview-scene";
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      stillRouteScene("pgm-bug", "logo-3", "lower-third", "C:\\assets\\logo.png"), preview});
+  ASSERT_TRUE(mediaCore.stillMediaCacheForTest()->waitForIdle(5000));
+  EXPECT_EQ(fake->decodeCount, 1);
+  const auto frames = mediaCore.stillMediaCacheForTest()->collectFrames(100);
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].participantId, "media:logo-3");
 }
 
 #if defined(_WIN32)

@@ -2222,8 +2222,11 @@ void MediaCore::syncStillMediaDesired() {
                          modules::normalizeMediaAssetPath(route.mediaAssetPath)});
     }
   };
+  // One key per still on both buses (persistent-sources spec §2): a still has
+  // no playback position, so Preview and Program share `media:<asset>`. The
+  // cache keeps the first request per key, so a still on both buses is ONE entry.
   addRoutes(sceneRoutes_, "media:");
-  addRoutes(previewSceneRoutes_, "preview:media:");
+  addRoutes(previewSceneRoutes_, "media:");
   stillMediaCache_->setDesired(std::move(desired));
 }
 
@@ -5225,14 +5228,19 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
                                       previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
                                       previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
                                       videoFrames, previewTilesLayer_);
-  // Program and Preview may hold the same asset at different playback positions.
-  // Give Preview its own frame-source namespace so its held cue frame cannot be
-  // replaced by Program's moving decoder (or vice versa).
+  // PERSISTENT SOURCES (spec 2026-09-10 §2): Preview and Program address the
+  // SAME media source. A looping background or a still that is on both buses is
+  // one decoder with one clock, so a Take cannot restart it. The single case
+  // that keeps a Preview-only namespace is a PAUSED CLIP CUE: its poster frame
+  // is a different playback position from Program's rolling copy, and the two
+  // must not replace each other in the frame set.
   for (auto& layer : plan.layers) {
-    if (!layer.mediaAssetId.empty()) {
-      const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
-      layer.sourceId = "preview:" + sourceId;
-    }
+    if (layer.mediaAssetId.empty()) continue;
+    const bool pausedClipCue = layer.kind == "media-video" && !layer.mediaAssetPlaying &&
+                               !modules::isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath);
+    if (!pausedClipCue) continue;
+    const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+    layer.sourceId = "preview:" + sourceId;
   }
   return plan;
 }

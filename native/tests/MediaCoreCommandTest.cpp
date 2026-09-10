@@ -4119,7 +4119,7 @@ TEST(MediaCoreCommand, KeepsSceneBackgroundAndProgramMediaRouteFrameSourcesDisti
                              {"mediaAssetName", "Intro"},
                              {"mediaAssetKind", "video"},
                              {"mediaAssetPath", "C:\\media\\intro.mp4"},
-                             {"mediaPlaybackKey", "program-take:8:media:clip-intro"},
+                             {"mediaPlaybackKey", "media:clip-intro"},
                              {"mediaAssetPlaying", true},
                              {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
                          },
@@ -4127,12 +4127,14 @@ TEST(MediaCoreCommand, KeepsSceneBackgroundAndProgramMediaRouteFrameSourcesDisti
       },
   });
 
+  // A loop source and a clip source over the same file are two sources by kind
+  // (persistent-sources spec §2), so they stay distinct.
   ASSERT_TRUE(mediaFramesPtr->seenSourceIds.size() == 2u);
   EXPECT_EQ(mediaFramesPtr->seenSourceIds[0], "background:clip-intro");
   EXPECT_EQ(mediaFramesPtr->seenSourceIds[1], "media:clip-intro");
   ASSERT_TRUE(mediaFramesPtr->seenPlaybackKeys.size() == 2u);
   EXPECT_TRUE(mediaFramesPtr->seenPlaybackKeys[0].empty());
-  EXPECT_EQ(mediaFramesPtr->seenPlaybackKeys[1], "program-take:8:media:clip-intro");
+  EXPECT_EQ(mediaFramesPtr->seenPlaybackKeys[1], "media:clip-intro");
   ASSERT_TRUE(mediaFramesPtr->seenLoops.size() == 2u);
   EXPECT_TRUE(mediaFramesPtr->seenLoops[0]);
   EXPECT_FALSE(mediaFramesPtr->seenLoops[1]);
@@ -4928,4 +4930,59 @@ TEST(MediaCoreCommand, PartialSyncMissingASourceHoldsItsRoutesAndChannel) {
     }
     EXPECT_TRUE(!masterHasAudio);  // media-playback has no PCM; pcm-speaker adopted-removed
   }
+}
+
+// PERSISTENT SOURCES (spec 2026-09-10 §2): Preview and Program address the SAME
+// media source, so a Take cannot cold-start the background it cuts to.
+TEST(MediaCoreCommand, ALoopingBackgroundHasOneFrameSourceIdOnBothBuses) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  auto* mediaFramesPtr = mediaFrames.get();
+  modules.mediaFrames = std::move(mediaFrames);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto background = corevideo::rpc::Json::Object{
+      {"mediaAssetId", "bg-loop"}, {"mediaAssetName", "Loop"}, {"mediaAssetKind", "video"},
+      {"mediaAssetPath", "C:\\media\\loop.mp4"}, {"playing", true}};
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "pgm"},
+                                   {"background", background}, {"routes", corevideo::rpc::Json::Array{}}},
+      corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
+                                   {"background", background}, {"routes", corevideo::rpc::Json::Array{}}},
+  });
+  mediaCore.renderDisplayTick();
+
+  // Program and Preview both asked for the SAME source id: one decoder, one clock.
+  std::vector<std::string> ids = mediaFramesPtr->seenSourceIds;
+  ASSERT_EQ(ids.size(), 2u);
+  EXPECT_EQ(ids[0], "background:bg-loop");
+  EXPECT_EQ(ids[1], "background:bg-loop");
+}
+
+TEST(MediaCoreCommand, APausedClipCueInPreviewKeepsItsOwnPosterSource) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  auto* mediaFramesPtr = mediaFrames.get();
+  modules.mediaFrames = std::move(mediaFrames);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto clipRoute = [](bool playing) {
+    return corevideo::rpc::Json::Object{
+        {"routeId", "clip"}, {"mode", "fixed"}, {"mediaAssetId", "clip-1"}, {"mediaAssetName", "Clip"},
+        {"mediaAssetKind", "video"}, {"mediaAssetPath", "C:\\media\\clip.mp4"},
+        {"mediaPlaybackKey", "media:clip-1"}, {"mediaAssetPlaying", playing},
+        {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}};
+  };
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "pgm"},
+                                   {"routes", corevideo::rpc::Json::Array{clipRoute(true)}}},
+      corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
+                                   {"routes", corevideo::rpc::Json::Array{clipRoute(false)}}},
+  });
+  mediaCore.renderDisplayTick();
+
+  std::vector<std::string> ids = mediaFramesPtr->seenSourceIds;
+  ASSERT_EQ(ids.size(), 2u);
+  EXPECT_EQ(ids[0], "media:clip-1");
+  EXPECT_EQ(ids[1], "preview:media:clip-1");  // the ONE case a second position is legitimate
 }

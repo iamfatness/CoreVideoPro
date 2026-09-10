@@ -384,9 +384,10 @@ class ColdStartMediaFrameSource final : public corevideo::modules::IMediaFrameSo
   std::map<std::string, std::int64_t> frameIds;
 };
 
-corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId) {
+corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId,
+                                     const char* type = "load-scene-graph") {
   return corevideo::rpc::Json::Object{
-      {"type", "load-scene-graph"},
+      {"type", type},
       {"sceneId", sceneId},
       {"background", corevideo::rpc::Json::Object{
           {"mediaAssetId", assetId}, {"mediaAssetName", "bg"}, {"mediaAssetKind", "video"},
@@ -580,10 +581,9 @@ TEST(TakeRecord, AZoomGuestWhoKeptRunningAcrossTheTakeIsACut) {
 // A Take promotes Preview: a guest the operator was watching on Preview is a
 // source "before" the take even though Program never showed it.
 //
-// Deliberately a Zoom guest, not a media background: until slice-1 Task 3,
-// buildPreviewCompositorRenderPlan renames Preview MEDIA layers to
-// `preview:<id>` — a separate decoder — so a background on Preview is honestly
-// NOT the source Program cuts to. Zoom layers carry no bus prefix.
+// A Zoom guest here; the media-background twin of this test is
+// ABackgroundTakenFromPreviewIsAlreadyRunningOnProgram below (slice-1 Task 3
+// removed the `preview:` rename that used to make it a separate decoder).
 TEST(TakeRecord, ASourceSeenOnPreviewBeforeTheTakeIsJudgedAsShared) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
@@ -608,6 +608,39 @@ TEST(TakeRecord, ASourceSeenOnPreviewBeforeTheTakeIsJudgedAsShared) {
   ASSERT_EQ(sources.size(), 1u);
   EXPECT_EQ(sources[0].getString("sourceId"), "7");
   EXPECT_EQ(take.getString("verdict"), "cut");
+}
+
+// The owner's report, end to end: a media background cued on Preview is the
+// SAME decoder Program cuts to, so it is already running on the first program
+// tick. With the old `preview:` rename, Program cold-started a second decoder
+// here (no frame on the first tick -> sourceMissing -> rebuilt).
+TEST(TakeRecord, ABackgroundTakenFromPreviewIsAlreadyRunningOnProgram) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  modules.mediaFrames = std::make_unique<ColdStartMediaFrameSource>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      emptyScene("scene-a"), backgroundScene("scene-b", "bg-1", "set-preview-scene")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      backgroundScene("scene-b", "bg-1"), emptyScene("scene-a", "set-preview-scene")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "cut");
+  EXPECT_FALSE(take.get("sourceMissing")->asBool(true));
+  bool found = false;
+  for (const auto& source : take.get("sources")->asArray()) {
+    if (source.getString("sourceId") != "background:bg-1") continue;
+    found = true;
+    EXPECT_FALSE(source.get("restarted")->asBool(true));
+  }
+  EXPECT_TRUE(found) << "sources[] did not name background:bg-1";
 }
 
 // "Expected a frame" means RUNNING at arm time, not ever observed: a guest whose
