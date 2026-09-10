@@ -621,6 +621,18 @@ comment at the code site; this is the index.
   A compositor rate below 60 means the machine never produced 60; a compositor at 60
   with a lower video-out/encoder/muxed rate means the loss is downstream.
   `MIN_RECORDED_FPS_RATIO` is unchanged.
+- **`MonitorRenderFaultInjection.*` are TIMING MEASUREMENTS on a real GPU, not unit
+  tests.** They drive the real compositor on the real 60Hz production timeline and every
+  assertion is relative to an unfaulted baseline window measured moments earlier. That
+  baseline is a PRECONDITION, so `measureSettledBaseline` retries up to four windows
+  before giving up — but sustained contention (another build, a soak, a second test run)
+  can starve every attempt, and then the test fails for machine load rather than for the
+  property under test. Observed failing this way while an A/B soak had the box.
+  **Run them on a quiet machine**, and exclude them with
+  `corevideo-native-tests.exe --gtest_filter=-MonitorRenderFaultInjection.*` when the box
+  is busy. Same posture `mac-show-drill.py` already carries: a shared or loaded machine
+  cannot gate a timing property at any threshold. Do NOT "fix" a load failure by widening
+  the margin — that trades a flaky test for one that asserts nothing.
 - **The Wave 0 snapshot judge finally has a producer:**
   `node scripts/qa/collect-runtime-snapshots.mjs --out capture.json [--seconds N]
   [--interval-ms N] [--load N] [--recording]` runs its own core over stdio, samples
