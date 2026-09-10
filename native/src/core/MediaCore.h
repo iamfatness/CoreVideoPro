@@ -235,6 +235,11 @@ class MediaCore {
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
 
+  // Test seam: the last program frame this core rendered (whatever the stub
+  // compositor filled `preview` with). Same law as setStillImageDecoderForTest
+  // — nothing outside native/tests/ calls it.
+  [[nodiscard]] const modules::ProgramFrame& lastProgramFrameForTest() const { return lastProgramFrame_; }
+
   // T1: the PROGRAM-bus tiles wall parsed off the load-scene-graph command,
   // and the scene validation warnings a bad/unrecognised value gets recorded
   // into (loud, never silent — see parseTilesLayer in MediaCore.cpp).

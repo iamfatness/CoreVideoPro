@@ -1,0 +1,176 @@
+// Task 6 (persistent-sources slice 1): pixel continuity across a Take — a
+// probe that cannot be fooled by counters. Earlier tasks made Preview and
+// Program address the SAME media source id (`background:<asset>`), so a
+// background already running on Preview is already running when Program
+// takes it. This test proves it at the PIXEL level: it reads
+// `ProgramFrame::preview` (the CPU thumbnail the stub compositor fills) and
+// asserts every program frame from the FIRST tick after a Take carries the
+// background's real luma — never one tick of the cold-start placeholder.
+//
+// Controller ruling (amends the task-6 brief): the brief's synchronous fake +
+// program-only scenario would pass even with the old bug (it never exercises
+// Preview). This test instead models the real async decoder
+// (`OwnedMediaFrameSource`): no frame on a source id's FIRST poll, a flat
+// mid-grey frame on every later poll. The background is cued on PREVIEW
+// first (warming that decoder), then Taken onto Program — the exact shape of
+// the live-show defect fixed by the `preview:` rename removal in
+// `MediaCore::buildPreviewCompositorRenderPlan`.
+
+#include "core/MediaCore.h"
+#include "modules/Interfaces.h"
+#include "rpc/Json.h"
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace {
+
+using corevideo::core::MediaCore;
+
+// The default stub zoom module (RealZoomCaptureSource wrapping
+// SyntheticZoomCaptureSource) always hands back two synthetic "no meeting
+// joined" placeholder frames — a deliberate fallback slate so the UI stays
+// renderable with no meeting. With no scene routes and no wall, MediaCore's
+// `buildRenderPlanForScene` then paints one full-canvas layer per such frame
+// OVER the media background (the "no routes -> show whatever frames
+// arrived" legacy fallback), which would corrupt the very luma this test
+// measures. This test is about the media-background decoder only, so the
+// Zoom side stays silent.
+class NoZoomCaptureSource final : public corevideo::modules::IZoomCaptureSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override { return {}; }
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
+};
+
+// The default stub capture device (FakeCaptureDevice) ships one pre-connected
+// device ("decklink-1") that polls a real test-pattern frame every tick, which
+// the same legacy fallback above would also paint over the background. No
+// enumerated devices here, so nothing is ever connected.
+class NoCaptureDevice final : public corevideo::modules::ICaptureDevice {
+ public:
+  std::vector<corevideo::modules::CaptureDeviceInfo> enumerate() const override { return {}; }
+  std::vector<corevideo::modules::CaptureDeviceInfo> selectInput(const std::string&, const std::string&) override { return {}; }
+  std::vector<corevideo::modules::CaptureDeviceInfo> setAudioSyncOffset(const std::string&, int) override { return {}; }
+  std::vector<corevideo::modules::CaptureDeviceInfo> connect(const std::string&) override { return {}; }
+};
+
+// Emulates the real async decoder's cold start: the first time a given
+// source id is polled it has no frame yet (still opening); every later poll
+// delivers a flat mid-grey (0x80 BGRA) 64x36 frame on that source's own
+// advancing frameId clock.
+class ColdStartGreyMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
+      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+    std::vector<corevideo::modules::VideoFrame> frames;
+    for (const auto& layer : layers) {
+      if (layer.mediaAssetId.empty()) continue;
+      const std::string sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+      if (polled_.insert(sourceId).second) continue;  // first poll: still opening, no frame yet
+      corevideo::modules::VideoFrame frame;
+      frame.participantId = sourceId;
+      frame.width = frame.pixelWidth = frame.naturalWidth = 64;
+      frame.height = frame.pixelHeight = frame.naturalHeight = 36;
+      frame.pixelStride = 64 * 4;
+      frame.timestampMs = timestampMs;
+      frame.frameId = ++frameIds_[sourceId];
+      // BGRA, 0x80 on every color channel, fully OPAQUE (alpha 0xff) — a real
+      // decoded frame carries no meaningful alpha, and the preview blend is a
+      // straight src-over (blendPixelBgra): a non-opaque source alpha blends
+      // toward whatever the preview canvas already held, which would corrupt
+      // the very luma this test measures.
+      auto pixels = std::make_shared<std::vector<std::uint8_t>>(
+          static_cast<std::size_t>(64) * static_cast<std::size_t>(36) * 4u, 0x80);
+      for (std::size_t i = 3; i < pixels->size(); i += 4) (*pixels)[i] = 0xff;
+      frame.pixels = std::move(pixels);
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
+
+ private:
+  std::set<std::string> polled_;
+  std::map<std::string, std::int64_t> frameIds_;
+};
+
+// Mean luma (BT.601-ish weights, matching the rest of this test suite) over
+// `ProgramFrame::preview` — the 320x180 CPU BGRA thumbnail the stub
+// compositor (`CpuNoopCompositor`) fills via `fillSyntheticProgramFramePreview`
+// every tick. Returns -1 when the compositor left it empty (nothing to judge).
+double meanLuma(const corevideo::modules::ProgramFrame& frame) {
+  const auto& px = frame.preview.bgra;
+  if (px.empty()) return -1.0;
+  double sum = 0;
+  std::size_t n = 0;
+  for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
+    sum += 0.114 * px[i] + 0.587 * px[i + 1] + 0.299 * px[i + 2];
+    ++n;
+  }
+  return n ? sum / n : -1.0;
+}
+
+corevideo::rpc::Json sceneWithBackground(const char* sceneId, const char* type) {
+  return corevideo::rpc::Json::Object{
+      {"type", type},
+      {"sceneId", sceneId},
+      {"background", corevideo::rpc::Json::Object{
+          {"mediaAssetId", "bg"}, {"mediaAssetName", "bg"}, {"mediaAssetKind", "video"},
+          {"mediaAssetPath", "C:\\media\\bg.mp4"}, {"playing", true}}},
+      {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+corevideo::rpc::Json sceneWithNoBackground(const char* sceneId, const char* type) {
+  return corevideo::rpc::Json::Object{
+      {"type", type}, {"sceneId", sceneId}, {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+}  // namespace
+
+TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaFrames = std::make_unique<ColdStartGreyMediaFrameSource>();
+  modules.zoom = std::make_unique<NoZoomCaptureSource>();
+  modules.captureDevice = std::make_unique<NoCaptureDevice>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // Program: scene-a, no background, empty routes.
+  // Preview: scene-b, background "bg" (video, playing).
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      sceneWithNoBackground("scene-a", "load-scene-graph"),
+      sceneWithBackground("scene-b", "set-preview-scene")});
+  for (int i = 0; i < 10; ++i) core.renderDisplayTick();
+
+  // Take: Program becomes scene-b (same background); Preview becomes scene-a.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      sceneWithBackground("scene-b", "load-scene-graph"),
+      sceneWithNoBackground("scene-a", "set-preview-scene")});
+
+  // Expected luma is computed from the grey fill itself (0x80 on every
+  // channel -> weights sum to 1.0 -> luma 128), not from a pre-take sample —
+  // the whole point is that the take must not restart the decoder.
+  constexpr double kExpectedGreyLuma = 0.114 * 0x80 + 0.587 * 0x80 + 0.299 * 0x80;
+  // Tolerance tightened from the brief's 2.0 to 1.0. Measured: the cold-start
+  // placeholder for THIS source id (colorFromParticipantId("media:bg"), which
+  // always draws r/g/b independently in [72,199]) happens to land at luma
+  // 129.649 — inside a 2.0 tolerance, so the probe would silently pass on the
+  // very defect it exists to catch. 1.0 preserves a wide margin around the
+  // real grey fill's exact, deterministic 128.0 (proven bit-exact across 10
+  // ticks on the fixed tree) while still failing on that placeholder. See the
+  // RED-proof evidence in task-6-report.md.
+  constexpr double kLumaTolerance = 1.0;
+
+  for (int tick = 0; tick < 10; ++tick) {
+    core.renderDisplayTick();
+    const double luma = meanLuma(core.lastProgramFrameForTest());
+    ASSERT_GT(luma, 0.0) << "tick " << tick << " after the take: preview was empty";
+    EXPECT_NEAR(luma, kExpectedGreyLuma, kLumaTolerance) << "tick " << tick << " after the take";
+  }
+}
