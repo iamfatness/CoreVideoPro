@@ -5,6 +5,7 @@
 #include "compositor/TilesLayout.h"
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
+#include "core/AudioControlSourcePolicy.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
@@ -3964,10 +3965,37 @@ rpc::Json MediaCore::audioMixSessionState() const {
   const std::string vstHostActivePlugin = pluginHostClient_.activePlugin();
   const std::string vstHostError = pluginHostClient_.lastError();
 
+  // T1.6: a strip that governs aliased sources (the shell's "media" strip over
+  // every `media:<assetId>` clip without a strip of its own) meters the loudest
+  // of them. The clips keep their own ids in the mixer session.
+  std::set<std::string> stripIds;
+  for (const auto& channel : audioChannels_) {
+    stripIds.insert(channel.participantId);
+  }
+  std::map<std::string, const modules::AudioParticipantMixMetrics*> aliasedMetricByStrip;
+  for (const auto& [participantId, metric] : nativeMetricsByParticipant) {
+    if (stripIds.count(participantId) != 0) {
+      continue;
+    }
+    const std::string controlId = audioControlSourceIdFor(participantId);
+    if (controlId == participantId || stripIds.count(controlId) == 0) {
+      continue;
+    }
+    auto& loudest = aliasedMetricByStrip[controlId];
+    if (loudest == nullptr || metric.peakLevel > loudest->peakLevel) {
+      loudest = &metric;
+    }
+  }
+
   for (const auto& channel : audioChannels_) {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
     const modules::AudioParticipantMixMetrics* measured =
         nativeMetric == nativeMetricsByParticipant.end() ? nullptr : &nativeMetric->second;
+    if (measured == nullptr) {
+      if (const auto aliased = aliasedMetricByStrip.find(channel.participantId); aliased != aliasedMetricByStrip.end()) {
+        measured = aliased->second;
+      }
+    }
     const bool hasPcm = measured != nullptr;
     const int measuredInputLevel = hasPcm ? measured->inputLevel : 0;
     const int smartGainDb = calculateSmartGainDb(measuredInputLevel);
@@ -6761,6 +6789,15 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   {
     std::vector<modules::RoutedAudioSource> routedSources;
     routedSources.reserve(work.audioFrames.size());
+    // T1.6: every source's strip and sends are resolved through
+    // AudioControlSourcePolicy — the shell's "media" strip/sends govern each
+    // `media:<assetId>` clip unless that clip has an exact strip/send of its own.
+    std::set<std::string> sendSourceIds;
+    for (const auto& send : work.routingSends) {
+      sendSourceIds.insert(send.sourceId);
+    }
+    // Governing send id -> the concrete sources it routes on its behalf.
+    std::map<std::string, std::vector<std::string>> aliasedSendSources;
     for (const auto& frame : work.audioFrames) {
       if (frame.pcm.empty() || frame.channels <= 0) {
         continue;
@@ -6769,43 +6806,64 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       source.sourceId = frame.participantId;
       source.pcm = &frame.pcm;
       source.channels = frame.channels;
-      bool hasStrip = false;
+      // Exact strip first; the alias strip only when the source has none.
+      const ParticipantAudioChannelInput* strip = nullptr;
       for (const auto& channel : work.channels) {
         if (channel.participantId == frame.participantId) {
-          hasStrip = true;
-          source.muted = channel.muted;
-          source.solo = channel.solo;
-          source.pan = channel.pan;
-          source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
-          // Spec 4.4: the strip's insert chain + noise suppression now PROCESS
-          // (previously stored/exported only). Pointer into work.channels,
-          // which outlives the mix call.
-          source.inserts = &channel.pluginInserts;
-          source.insertSettings = &channel.insertSettings;  // C5b params
-          source.dspState = &channelDspStates_[frame.participantId];  // C7c continuity
-          if (debugDir != nullptr) {
-            ::corevideo::core::nativeVerboseLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
-                         frame.participantId.c_str(), static_cast<void*>(source.dspState),
-                         source.dspState->gateEnvelope, source.dspState->gateGain,
-                         source.dspState->gateHoldRemaining);
-          }
-          source.noiseSuppression = channel.noiseSuppression;
-          source.sampleRate = modules_.mixer->monitorBusSampleRate();
-          // A3: sources whose own chain hosts the plugin already carry its
-          // latency; every OTHER source gets the compensating delay.
-          if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
-            bool hostsPlugin = false;
-            for (const auto& insert : channel.pluginInserts) {
-              if (isHostHandledInsertName(insert)) {
-                hostsPlugin = true;
-                break;
-              }
-            }
-            source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
-          }
+          strip = &channel;
           break;
         }
       }
+      if (strip == nullptr) {
+        const std::string controlId = audioControlSourceIdFor(frame.participantId);
+        if (controlId != frame.participantId) {
+          for (const auto& channel : work.channels) {
+            if (channel.participantId == controlId) {
+              strip = &channel;
+              break;
+            }
+          }
+        }
+      }
+      const bool hasStrip = strip != nullptr;
+      if (hasStrip) {
+        const auto& channel = *strip;
+        source.muted = channel.muted;
+        source.solo = channel.solo;
+        source.pan = channel.pan;
+        source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
+        // Spec 4.4: the strip's insert chain + noise suppression now PROCESS
+        // (previously stored/exported only). Pointer into work.channels,
+        // which outlives the mix call.
+        source.inserts = &channel.pluginInserts;
+        source.insertSettings = &channel.insertSettings;  // C5b params
+        // C7c continuity. Keyed by the CONCRETE source id even when the strip
+        // is an alias: two clips under one "media" strip keep separate
+        // gate/slew/delay state.
+        source.dspState = &channelDspStates_[frame.participantId];
+        if (debugDir != nullptr) {
+          ::corevideo::core::nativeVerboseLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
+                       frame.participantId.c_str(), static_cast<void*>(source.dspState),
+                       source.dspState->gateEnvelope, source.dspState->gateGain,
+                       source.dspState->gateHoldRemaining);
+        }
+        source.noiseSuppression = channel.noiseSuppression;
+        source.sampleRate = modules_.mixer->monitorBusSampleRate();
+        // A3: sources whose own chain hosts the plugin already carry its
+        // latency; every OTHER source gets the compensating delay.
+        if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
+          bool hostsPlugin = false;
+          for (const auto& insert : channel.pluginInserts) {
+            if (isHostHandledInsertName(insert)) {
+              hostsPlugin = true;
+              break;
+            }
+          }
+          source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
+        }
+      }
+      const std::string sendSourceId = routingSendSourceIdFor(frame.participantId, sendSourceIds);
+      const bool routed = sendSourceIds.count(sendSourceId) != 0;
       // THE FADER LAW (owner rule, 2026-08-09): no audio source reaches ANY bus
       // without a fader. A routed source with no channel strip used to sum into
       // master unmuted at unity — which is why "mute everything" did not silence
@@ -6817,16 +6875,23 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         static std::map<std::string, std::int64_t> s_lastWarn;
         auto& warned = s_lastWarn[frame.participantId];
         const auto warningCount = warned++;
+        // "routed" only when a send actually names it (directly or via its
+        // alias): perGuestIso's zoom-mix is deliberately unrouted, and calling
+        // it a dropped routed source trained readers to ignore this line.
+        const char* sourceKind = routed ? "routed source" : "unrouted source (no sends)";
         if (warningCount == 0) {
-          ::corevideo::core::nativeLogf("[audio] FADER LAW: routed source '%s' has NO channel strip — "
+          ::corevideo::core::nativeLogf("[audio] FADER LAW: %s '%s' has NO channel strip — "
                        "dropped from the bus mix (add a fader to make it audible)\n",
-                       frame.participantId.c_str());
+                       sourceKind, frame.participantId.c_str());
         } else if (warningCount % 250 == 0) {  // ~every 5s at 50Hz when detailed diagnostics are enabled
-          ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: routed source '%s' has NO channel strip — "
+          ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: %s '%s' has NO channel strip — "
                                               "dropped from the bus mix\n",
-                                              frame.participantId.c_str());
+                                              sourceKind, frame.participantId.c_str());
         }
         continue;
+      }
+      if (sendSourceId != frame.participantId) {
+        aliasedSendSources[sendSourceId].push_back(frame.participantId);
       }
       // A3: sources with no channel-strip entry still need the compensating
       // delay (they sum into the same buses); give them their persistent DSP
@@ -6859,7 +6924,15 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     std::vector<modules::RoutedAudioCrosspoint> crosspoints;
     crosspoints.reserve(work.routingSends.size());
     for (const auto& send : work.routingSends) {
-      crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
+      const double gainLinear = modules::dbfsToLinear(send.gainDb);
+      crosspoints.push_back({send.sourceId, send.busId, gainLinear});
+      // T1.6: a "media" send also routes each `media:<assetId>` clip that has
+      // no send of its own, at the same bus and gain.
+      if (const auto aliased = aliasedSendSources.find(send.sourceId); aliased != aliasedSendSources.end()) {
+        for (const auto& concreteSourceId : aliased->second) {
+          crosspoints.push_back({concreteSourceId, send.busId, gainLinear});
+        }
+      }
     }
     // One fail-open bridge hook for both channel and bus chains. A recognized
     // host insert always returns true even when unresolved/loading/failed so
