@@ -57,6 +57,7 @@
     "test:production-qualification": "node --test scripts/qa/production-qualification.test.mjs scripts/qa/runtime-snapshot-qualification.test.mjs",
     "test:release-evidence": "node --test scripts/tests/release-evidence.test.mjs",
     "test:show-engine-drill-judge": "node --test scripts/validate-show-engine-judge.test.mjs",
+    "test:take-verdict-judge": "node --test scripts/qa/take-verdict-judge.test.mjs",
     "contract:generate": "node contracts/generate.mjs",
     "contract:check": "node contracts/generate.mjs --check"
   },
