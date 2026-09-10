@@ -1,3 +1,4 @@
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
@@ -318,7 +319,7 @@ public sealed class TransportCoordinatorTests
         await coordinator.TakeAsync();
         Assert.Equal(new[] { "interview", "interview", "interview" }, host.SyncedProgramIds);
         Assert.Equal("intro", host.PreviewSceneId);
-        Assert.Equal(1, host.TakeVersionIncrements);
+        Assert.Equal(1, host.GoLiveRecords);
         Assert.Equal(0, host.RollbackCount);
         Assert.Equal("Program updated", host.OutputStatus);
     }
@@ -458,9 +459,29 @@ public sealed class TransportCoordinatorTests
         Assert.Equal("interview", host.ActiveSceneId);          // preview promoted to program
         Assert.Equal("intro", host.PreviewSceneId);             // old program swapped back to preview
         Assert.Equal(1, host.PromoteCallCount);
-        Assert.Equal(1, host.TakeVersionIncrements);
+        Assert.Equal(1, host.GoLiveRecords);
         Assert.Equal("Program updated", host.OutputStatus);
         Assert.Equal(1, host.SyncCallCount);
+    }
+
+    [Fact]
+    public async Task Take_RecordsGoLiveAgainstTheProgramRoutesFromBeforeTheSwap()
+    {
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        var introRoutes = new List<SourceRoute>
+        {
+            new() { Id = "route-clip", Mode = SourceRouteMode.Fixed, ParticipantId = ShowInputRosterService.ToMediaSourceId("clip") }
+        };
+        host.ProgramRoutesByScene["intro"] = introRoutes;
+        host.ProgramRoutesByScene["interview"] = [];
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal("interview", host.ActiveSceneId);
+        Assert.Equal(1, host.GoLiveRecords);
+        Assert.Same(introRoutes, host.LastPreviousProgramRoutes);
     }
 
     [Fact]
@@ -574,7 +595,12 @@ public sealed class TransportCoordinatorTests
 
         public int PromoteCallCount { get; private set; }
 
-        public int TakeVersionIncrements { get; private set; }
+        public int GoLiveRecords { get; private set; }
+
+        public IReadOnlyList<SourceRoute>? LastPreviousProgramRoutes { get; private set; }
+
+        // Program routes per scene id; GetResolvedProgramRoutes answers for ActiveSceneId.
+        public Dictionary<string, IReadOnlyList<SourceRoute>> ProgramRoutesByScene { get; } = new(StringComparer.Ordinal);
 
         public int CopyPreviewRoutesCallCount { get; private set; }
 
@@ -609,7 +635,14 @@ public sealed class TransportCoordinatorTests
 
         public void RefreshPreviewRoutingState() { }
 
-        public void IncrementProgramMediaPlaybackTakeVersion() => TakeVersionIncrements++;
+        public IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
+            ProgramRoutesByScene.TryGetValue(ActiveSceneId ?? string.Empty, out var routes) ? routes : [];
+
+        public void RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes)
+        {
+            GoLiveRecords++;
+            LastPreviousProgramRoutes = previousProgramRoutes;
+        }
 
         public Task EnsureMediaCoreRunningAsync(string startingStatus) => Task.CompletedTask;
 

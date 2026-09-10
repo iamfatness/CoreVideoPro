@@ -213,106 +213,75 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void BuildSceneMediaPlaybackKey_KeepsPreviewKeyStableAndPaused()
+    public void BuildSceneMediaPlaybackKey_ALoopHasNoGeneration()
     {
-        var first = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey("intro", isProgramScene: false, programTakeVersion: 1);
-        var second = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey("intro", isProgramScene: false, programTakeVersion: 2);
-
-        Assert.Equal("preview:media:intro", first);
-        Assert.Equal(first, second);
+        Assert.Equal("media:bg", MediaRoutePlaybackService.BuildSceneMediaPlaybackKey("bg", loop: true, goLiveGeneration: 7));
     }
 
     [Fact]
-    public void BuildSceneMediaPlaybackKey_ChangesProgramKeyPerTake()
+    public void BuildSceneMediaPlaybackKey_AClipCarriesItsGoLiveGeneration()
     {
-        var first = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey("intro", isProgramScene: true, programTakeVersion: 1);
-        var second = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey("intro", isProgramScene: true, programTakeVersion: 2);
-
-        Assert.Equal("program-take:1:media:intro", first);
-        Assert.Equal("program-take:2:media:intro", second);
-        Assert.NotEqual(first, second);
-    }
-
-    [Fact]
-    public void BuildSceneMediaPlaybackKey_UsesProgramTakeKeyWhenProgramMediaIsPaused()
-    {
-        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
-            "intro",
-            isProgramScene: true,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: false,
-            programRoutes: [MediaRoute("intro")]);
-
-        var key = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
-            "intro",
-            isProgramScene: true,
-            programTakeVersion: 7);
-
-        Assert.False(shouldPlay);
-        Assert.Equal("program-take:7:media:intro", key);
+        Assert.Equal("media:clip:live:3", MediaRoutePlaybackService.BuildSceneMediaPlaybackKey("clip", loop: false, goLiveGeneration: 3));
     }
 
     [Theory]
-    [InlineData("intro", true, true)]
-    [InlineData("intro", false, false)]
-    [InlineData("bumper", true, false)]
-    [InlineData("", true, false)]
-    public void ShouldAdvanceProgramPlaybackKey_OnlyAdvancesWhenStartingProgramRoutedMedia(
-        string mediaAssetId,
-        bool startingPlayback,
-        bool expected)
+    [InlineData("background", true)]
+    [InlineData("Background", true)]
+    [InlineData("video", false)]
+    [InlineData("lower-third", false)]
+    public void IsLoopingAsset_OnlySceneBackgroundsLoop(string kind, bool expected)
     {
-        var shouldAdvance = MediaRoutePlaybackService.ShouldAdvanceProgramPlaybackKey(
-            mediaAssetId,
-            startingPlayback,
-            [MediaRoute("intro")]);
-
-        Assert.Equal(expected, shouldAdvance);
+        var asset = new MediaAsset { Id = "a", Name = "A", Kind = kind };
+        Assert.Equal(expected, MediaRoutePlaybackService.IsLoopingAsset(asset));
     }
 
     [Fact]
-    public void ResolveSceneRoutePlayback_KeepsPreviewMediaPausedWithStablePreviewKey()
+    public void GoLiveLedger_AdvancesOnlyWhenAnAssetEntersProgram()
     {
-        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
-            "intro",
-            isProgramScene: false,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: true,
-            programRoutes: [MediaRoute("intro")],
-            programTakeVersion: 4);
-
-        Assert.False(playback.Playing);
-        Assert.Equal("preview:media:intro", playback.MediaPlaybackKey);
+        var ledger = new MediaGoLiveLedger();
+        var clip = MediaRoute("clip");
+        var none = Array.Empty<SourceRoute>();
+        Assert.Equal(new[] { "clip" }, ledger.RecordTake(none, new[] { clip }));
+        Assert.Equal(1, ledger.GenerationOf("clip"));
+        // A second Take with the clip STILL on Program does not restart it.
+        Assert.Empty(ledger.RecordTake(new[] { clip }, new[] { clip }));
+        Assert.Equal(1, ledger.GenerationOf("clip"));
+        // Leaving and re-entering Program rolls it again.
+        Assert.Empty(ledger.RecordTake(new[] { clip }, none));
+        Assert.Equal(new[] { "clip" }, ledger.RecordTake(none, new[] { clip }));
+        Assert.Equal(2, ledger.GenerationOf("clip"));
     }
 
     [Fact]
-    public void ResolveSceneRoutePlayback_AutoplaysProgramMediaWithTakeVersionKey()
+    public void GoLiveLedger_OperatorRestartAdvancesTheGeneration()
     {
-        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
-            "intro",
-            isProgramScene: true,
-            selectedMediaAssetId: "bumper",
-            selectedMediaAssetPlaying: false,
-            programRoutes: [MediaRoute("intro")],
-            programTakeVersion: 4);
-
-        Assert.True(playback.Playing);
-        Assert.Equal("program-take:4:media:intro", playback.MediaPlaybackKey);
+        var ledger = new MediaGoLiveLedger();
+        ledger.RecordTake(Array.Empty<SourceRoute>(), new[] { MediaRoute("clip") });
+        ledger.RecordRestart("clip");
+        Assert.Equal(2, ledger.GenerationOf("clip"));
     }
 
     [Fact]
-    public void ResolveSceneRoutePlayback_KeepsPausedSelectedProgramMediaOnProgramKey()
+    public void ResolveSceneRoutePlayback_ALoopPlaysOnBothBusesWithOneKey()
     {
-        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
-            "intro",
-            isProgramScene: true,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: false,
-            programRoutes: [MediaRoute("intro")],
-            programTakeVersion: 4);
+        var routes = new[] { MediaRoute("bg") };
+        var program = MediaRoutePlaybackService.ResolveSceneRoutePlayback("bg", isProgramScene: true, loop: true, null, false, routes, 0);
+        var preview = MediaRoutePlaybackService.ResolveSceneRoutePlayback("bg", isProgramScene: false, loop: true, null, false, routes, 0);
+        Assert.True(program.Playing);
+        Assert.True(preview.Playing);
+        Assert.Equal(program.MediaPlaybackKey, preview.MediaPlaybackKey);
+    }
 
-        Assert.False(playback.Playing);
-        Assert.Equal("program-take:4:media:intro", playback.MediaPlaybackKey);
+    [Fact]
+    public void ResolveSceneRoutePlayback_AClipIsPausedInPreviewAndRollsOnProgram()
+    {
+        var routes = new[] { MediaRoute("clip") };
+        var preview = MediaRoutePlaybackService.ResolveSceneRoutePlayback("clip", isProgramScene: false, loop: false, null, false, routes, 1);
+        var program = MediaRoutePlaybackService.ResolveSceneRoutePlayback("clip", isProgramScene: true, loop: false, null, false, routes, 1);
+        Assert.False(preview.Playing);
+        Assert.True(program.Playing);
+        Assert.Equal("media:clip:live:1", program.MediaPlaybackKey);
+        Assert.Equal("media:clip:live:1", preview.MediaPlaybackKey);
     }
 
     [Fact]

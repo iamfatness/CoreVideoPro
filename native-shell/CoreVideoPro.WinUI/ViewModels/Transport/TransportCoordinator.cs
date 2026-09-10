@@ -141,6 +141,8 @@ public sealed class TransportCoordinator
             }
 
             var sealRollback = _host.CaptureTakeRollback();
+            // Captured before the swap/copy: the go-live policy compares before vs after.
+            var previousProgramRoutes = _host.GetResolvedProgramRoutes();
             _host.BeginTakeMutation();
             try
             {
@@ -151,7 +153,7 @@ public sealed class TransportCoordinator
                     _host.ActiveSceneId = takenSceneId;
                     _host.PreviewSceneId = previousProgramSceneId;
                 }
-                _host.IncrementProgramMediaPlaybackTakeVersion();
+                _host.RecordProgramMediaGoLive(previousProgramRoutes);
                 _host.PromoteProgramMediaRouteToPlayback();
                 _host.RefreshPreviewRoutingState();
             }

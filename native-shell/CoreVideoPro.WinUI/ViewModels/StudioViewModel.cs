@@ -782,7 +782,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
-    private int _programMediaPlaybackTakeVersion;
+    // Go-live policy: a clip's playback key advances only when it ENTERS Program (or the
+    // operator restarts it), so a clip already on air survives a Take. Replaces the old
+    // per-Take version that restarted every Program clip on every Take.
+    private readonly MediaGoLiveLedger _mediaGoLive = new();
     // ShowInputs roster store + loaded-flag + editor-signature + ISO selection moved to
     // ShowInputsCoordinator (PR3 strangler). The coordinator is constructed in the ctor (it needs
     // `this` as its IShowInputsHost) before the first LoadShowInputRoster/InitializeShowInputEditors.
@@ -4053,6 +4056,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var previousProgramMediaRoutes = updatesProgramScene
             ? BuildProgramMediaRouteSignature(GetMutableRoutes(scene.Id))
             : string.Empty;
+        // Snapshot the resolved route LIST (not just the signature) before
+        // CopyPreviewRoutesToScene rewrites it: the go-live ledger compares before vs after,
+        // resolved exactly as the Take path does (a Show Input slot can resolve to media).
+        var previousProgramRoutes = updatesProgramScene
+            ? GetResolvedProgramRoutes()
+            : [];
         var duplicate = _scenes.FirstOrDefault(item =>
             !string.Equals(item.Id, scene.Id, StringComparison.Ordinal) &&
             string.Equals(item.Name, trimmed, StringComparison.OrdinalIgnoreCase));
@@ -4065,10 +4074,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         CopyPreviewRoutesToScene(scene.Id);
+        if (updatesProgramScene)
+        {
+            // Idempotent for an unchanged media set: only clips ENTERING Program roll.
+            _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
+        }
+
         if (updatesProgramScene &&
             !string.Equals(previousProgramMediaRoutes, BuildProgramMediaRouteSignature(GetMutableRoutes(scene.Id)), StringComparison.Ordinal))
         {
-            _programMediaPlaybackTakeVersion++;
             PromoteProgramMediaRouteToPlayback();
         }
 
@@ -6099,12 +6113,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetPath = asset.FilePath;
         SelectedMediaAssetKind = asset.Kind;
         SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
-        if (MediaRoutePlaybackService.ShouldAdvanceProgramPlaybackKey(
-                asset.Id,
-                SelectedMediaAssetPlaying,
-                GetResolvedProgramRoutes()))
+        // Operator pressed Play on a Program-routed clip: roll it from frame 0.
+        if (SelectedMediaAssetPlaying &&
+            MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(asset.Id, GetResolvedProgramRoutes()))
         {
-            _programMediaPlaybackTakeVersion++;
+            _mediaGoLive.RecordRestart(asset.Id);
         }
 
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
@@ -8736,8 +8749,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? null
             : MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
                 selectedMediaAsset.Id,
-                isProgramScene: MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(selectedMediaAsset.Id, resolvedProgramRoutes),
-                _programMediaPlaybackTakeVersion);
+                loop: MediaRoutePlaybackService.IsLoopingAsset(selectedMediaAsset),
+                _mediaGoLive.GenerationOf(selectedMediaAsset.Id));
 
         var canvasProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264");
         // The ordered Show Input roster that drives the core-composited GPU multiview. Built from
@@ -8908,10 +8921,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : MediaRoutePlaybackService.ResolveSceneRoutePlayback(
                 mediaAsset.Id,
                 isProgramScene,
+                loop: MediaRoutePlaybackService.IsLoopingAsset(mediaAsset),
                 SelectedMediaAssetId,
                 SelectedMediaAssetPlaying,
                 sceneRoutes,
-                _programMediaPlaybackTakeVersion);
+                _mediaGoLive.GenerationOf(mediaAsset.Id));
         return new MediaCoreSceneRouteWire(
             route.Id,
             SceneRoutingService.ModeToWire(route.Mode),
@@ -13243,10 +13257,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
             asset.Id,
             isProgramScene,
+            loop: MediaRoutePlaybackService.IsLoopingAsset(asset),
             SelectedMediaAssetId,
             SelectedMediaAssetPlaying,
             GetResolvedProgramRoutes(),
-            _programMediaPlaybackTakeVersion);
+            _mediaGoLive.GenerationOf(asset.Id));
         var mediaSourceId = ShowInputRosterService.ToMediaSourceId(asset.Id);
         var surfaceKey = isProgramScene ? $"program:{mediaSourceId}" : $"preview:{mediaSourceId}";
         return new ParticipantSurfaceTile

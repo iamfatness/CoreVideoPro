@@ -2540,12 +2540,12 @@ public sealed class StudioViewModelAudioStatusTests
             MediaAssetName = "Intro Sting",
             MediaAssetKind = "stinger",
             MediaAssetPath = @"C:\media\intro.mp4",
-            MediaPlaybackKey = "program-take:3:media:clip-intro",
+            MediaPlaybackKey = "media:clip-intro:live:3",
             Playing = true,
-            Summary = "Playing Intro Sting with key program-take:3:media:clip-intro."
+            Summary = "Playing Intro Sting with key media:clip-intro:live:3."
         });
 
-        Assert.Equal("Native: Intro Sting playing; key program-take:3:media:clip-intro.", status);
+        Assert.Equal("Native: Intro Sting playing; key media:clip-intro:live:3.", status);
     }
 
     [Fact]

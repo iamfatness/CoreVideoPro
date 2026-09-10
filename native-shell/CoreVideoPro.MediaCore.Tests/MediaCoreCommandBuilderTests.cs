@@ -181,7 +181,7 @@ public sealed class MediaCoreCommandBuilderTests
                     MediaAssetName: "Intro Sting",
                     MediaAssetKind: "stinger",
                     MediaAssetPath: @"C:\media\intro.mp4",
-                    MediaPlaybackKey: "program-take:2:media:clip-intro",
+                    MediaPlaybackKey: "media:clip-intro:live:2",
                     MediaAssetPlaying: true)
             ],
             Participants = Participants
@@ -197,7 +197,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Intro Sting", route.GetProperty("mediaAssetName").GetString());
         Assert.Equal("stinger", route.GetProperty("mediaAssetKind").GetString());
         Assert.Equal(@"C:\media\intro.mp4", route.GetProperty("mediaAssetPath").GetString());
-        Assert.Equal("program-take:2:media:clip-intro", route.GetProperty("mediaPlaybackKey").GetString());
+        Assert.Equal("media:clip-intro:live:2", route.GetProperty("mediaPlaybackKey").GetString());
         Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
     }
 
@@ -763,7 +763,7 @@ public sealed class MediaCoreCommandBuilderTests
             SelectedMediaAssetName = "Intro Sting",
             SelectedMediaAssetKind = "stinger",
             SelectedMediaAssetPath = @"C:\media\intro.mp4",
-            SelectedMediaPlaybackKey = "program-take:3:media:clip-intro",
+            SelectedMediaPlaybackKey = "media:clip-intro:live:3",
             SelectedMediaAssetPlaying = true
         });
 
@@ -772,7 +772,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Intro Sting", GetString(playback, "mediaAssetName"));
         Assert.Equal("stinger", GetString(playback, "mediaAssetKind"));
         Assert.Equal(@"C:\media\intro.mp4", GetString(playback, "mediaAssetPath"));
-        Assert.Equal("program-take:3:media:clip-intro", GetString(playback, "mediaPlaybackKey"));
+        Assert.Equal("media:clip-intro:live:3", GetString(playback, "mediaPlaybackKey"));
         Assert.NotNull(playback.ExtensionData);
         Assert.True(playback.ExtensionData!["playing"].GetBoolean());
     }
