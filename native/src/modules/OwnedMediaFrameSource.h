@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <stdexcept>
 #include <cstdio>
@@ -38,6 +39,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     std::vector<VideoFrame> result;
     std::lock_guard<std::mutex> lock(mutex_);
     videoRequests_ = requests(layers);
+    rebuildCollisionWarnings();
     for (const auto& [id, layer] : videoRequests_) {
       const auto found = entries_.find(id); if (found == entries_.end()) continue;
       std::lock_guard<std::mutex> entryLock(found->second->mutex);
@@ -54,6 +56,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     std::vector<AudioFrame> result;
     std::lock_guard<std::mutex> lock(mutex_);
     audioRequests_ = requests(layers, true);
+    rebuildCollisionWarnings();
     for (auto it = audioNextTime_.begin(); it != audioNextTime_.end();) {
       if (!audioRequests_.count(it->first)) it = audioNextTime_.erase(it); else ++it;
     }
@@ -90,6 +93,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
   std::vector<std::string> warnings() const override {
     std::lock_guard<std::mutex> lock(mutex_);
     auto result = warnings_;
+    result.insert(result.end(), collisionWarnings_.begin(), collisionWarnings_.end());
     for (const auto& [id, entry] : entries_) {
       std::lock_guard<std::mutex> entryLock(entry->mutex);
       result.insert(result.end(), entry->warnings.begin(), entry->warnings.end());
@@ -122,6 +126,32 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
       result[id] = layer;
     }
     return result;
+  }
+  // Called under mutex_ whenever videoRequests_ or audioRequests_ is
+  // refreshed. Two DIFFERENT request keys sharing one effective source id
+  // mean two decoders would publish under one frame id — loud, not silent.
+  // Rebuilt from BOTH maps every time (never cleared by manage(), which owns
+  // warnings_ only) so the warning survives until the collision clears.
+  void rebuildCollisionWarnings() {
+    std::map<std::string, std::set<std::string>> keysBySource;
+    auto collect = [&](const Requests& reqs) {
+      for (const auto& [key, layer] : reqs) {
+        const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+        keysBySource[sourceId].insert(key);
+      }
+    };
+    collect(videoRequests_); collect(audioRequests_);
+    collisionWarnings_.clear();
+    for (const auto& [sourceId, keys] : keysBySource) {
+      if (keys.size() <= 1) continue;
+      collisionWarnings_.push_back("Media source " + sourceId +
+          " is requested with two different playback identities; two decoders will publish under one id.");
+      if (collisionWarningsLogged_.insert(sourceId).second) {
+        ::corevideo::core::nativeLogf(
+            "[media-playback] source=%s requested with two different playback identities; two decoders will publish under one id.\n",
+            sourceId.c_str());
+      }
+    }
   }
   void run(const std::shared_ptr<Entry>& entry) {
     try {
@@ -208,7 +238,11 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
         for (const auto& [id, layer] : desired) {
           auto found = entries_.find(id);
           if (found == entries_.end()) {
-            if (entries_.size() + retired.size() >= 16) { warnings_.push_back("Media decoder capacity reached (16 active/retiring assets)."); continue; }
+            if (entries_.size() + retired.size() >= 16) {
+              warnings_.push_back("Media decoder capacity reached (16 active/retiring assets); not starting " +
+                                  (layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId) + ".");
+              continue;
+            }
             auto entry = std::make_shared<Entry>(); entry->layer = layer;
             if (audioNextTime_.count(id)) entry->audioNextTime = audioNextTime_.at(id).nextTimeMs();
             found = entries_.emplace(id, entry).first;
@@ -247,6 +281,8 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
   std::map<std::string, MediaAudioDemandClock> audioNextTime_;
   std::map<std::string, std::shared_ptr<Entry>> entries_;
   std::vector<std::string> warnings_;
+  std::vector<std::string> collisionWarnings_;
+  std::set<std::string> collisionWarningsLogged_;
   std::thread manager_;
 };
 } // namespace corevideo::modules

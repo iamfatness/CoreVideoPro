@@ -1,5 +1,7 @@
 #include "modules/MediaPlaybackTimeline.h"
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <atomic>
 using namespace corevideo::modules;
 TEST(MediaPlaybackTimeline, VideoUsesPtsAcrossRepeatedAndIrregularPolls) {
   MediaPlaybackTimeline clock;
@@ -132,6 +134,65 @@ TEST(OwnedMediaFrameSource, AudioPrefetchIsBoundedAndDecoderStopsOnDestruction) 
     if (!frames.empty()) EXPECT_EQ(frames.front().sampleCount, 960);
   }
   EXPECT_EQ(gate->destroyed.load(), 1);
+}
+
+TEST(OwnedMediaFrameSource, TheSameRequestFromTwoBusesStartsOneDecoder) {
+  auto gate = std::make_shared<DecodeGate>();
+  std::atomic<int> created{0};
+  OwnedMediaFrameSource source([gate, &created] { ++created; return std::make_unique<TestDecoder>(gate); });
+  auto program = workerLayer();      // sourceId media:test, playing, same path/key
+  auto preview = workerLayer();
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  (void)source.pollMediaFrames({program, preview}, now);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (created.load() == 0 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_EQ(created.load(), 1);
+  const auto warnings = source.warnings();
+  EXPECT_TRUE(std::none_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+    return w.find("two different playback identities") != std::string::npos;
+  }));
+}
+
+TEST(OwnedMediaFrameSource, TheCapWarningNamesTheAssetItRefused) {
+  auto gate = std::make_shared<DecodeGate>();
+  OwnedMediaFrameSource source([gate] { return std::make_unique<TestDecoder>(gate); });
+  std::vector<CompositorRenderPlanLayer> layers;
+  // Zero-padded ids so the request map's lexicographic key order (it is a
+  // std::map<std::string, ...>) matches admission order 0..16 — an
+  // unpadded "asset-16" would sort ahead of "asset-9" and never be the one
+  // refused, which is not the property this test is pinning.
+  for (int i = 0; i < 17; ++i) {
+    auto layer = workerLayer();
+    char id[16]; std::snprintf(id, sizeof(id), "asset-%02d", i);
+    layer.mediaAssetId = id;
+    layer.sourceId = "media:" + layer.mediaAssetId;
+    layers.push_back(layer);
+  }
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  (void)source.pollMediaFrames(layers, now);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  const auto warnings = source.warnings();
+  const bool named = std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+    return w.find("Media decoder capacity reached") != std::string::npos && w.find("media:asset-16") != std::string::npos;
+  });
+  EXPECT_TRUE(named);
+}
+
+TEST(OwnedMediaFrameSource, TwoPlaybackIdentitiesForOneSourceIdAreLoud) {
+  auto gate = std::make_shared<DecodeGate>();
+  OwnedMediaFrameSource source([gate] { return std::make_unique<TestDecoder>(gate); });
+  auto playing = workerLayer();
+  auto paused = workerLayer();
+  paused.mediaAssetPlaying = false;
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  (void)source.pollMediaFrames({playing, paused}, now);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const auto warnings = source.warnings();
+  const bool found = std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+    return w.find("two different playback identities") != std::string::npos && w.find("media:test") != std::string::npos;
+  });
+  EXPECT_TRUE(found);
 }
 
 TEST(MediaAudioDemandClock, JitterKeepsAnchorAndInterruptedPollSkipsExpiredWindows) {
