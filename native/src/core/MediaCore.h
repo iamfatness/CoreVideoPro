@@ -3,6 +3,7 @@
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/Director.h"
+#include "core/MonitorShedPolicy.h"
 #include "core/OutputLifecyclePolicy.h"
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
@@ -1211,6 +1212,22 @@ class MediaCore {
   std::vector<modules::MultiviewTileRect> lastMultiviewTiles_;
   int lastMultiviewWidth_ = 0;
   int lastMultiviewHeight_ = 0;
+  // T1.4 monitor load-shedding (core/MonitorShedPolicy.h). Program always
+  // renders; under sustained overload the multiview + preview passes run on
+  // every 2nd / 3rd tick. Mutated only by the render tick, read by
+  // sessionState — both under coreMutex, so plain fields.
+  MonitorShedPolicy monitorShed_;
+  // Most recent measured CPU-submission cost of each monitor pass, refreshed
+  // only on ticks where that pass actually ran (0 when the pass is not
+  // configured). Their sum is the policy's monitorCycleCostNs.
+  int64_t lastMultiviewPassNs_ = 0;
+  int64_t lastPreviewPassNs_ = 0;
+  // Published preview identity, held across shed ticks — the same reason as
+  // lastMultiviewTexture_ above: the program frame is rebuilt every tick, and a
+  // skipped composite must never publish an EMPTY preview handle.
+  modules::ProgramFrameSharedTexture lastPreviewTexture_;
+  int lastPreviewWidth_ = 0;
+  int lastPreviewHeight_ = 0;
   std::vector<rpc::Json> pendingMultiviewSharedTextureEvents_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
