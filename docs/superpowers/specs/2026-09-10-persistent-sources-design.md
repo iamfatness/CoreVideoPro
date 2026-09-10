@@ -139,19 +139,31 @@ contract, never deleted:
 
 Each slice ships independently and is verified by section 4.
 
-1. **Instruments + media as persistent sources. Shipped 2026-09-10, commits
-   `e9cf013..2a18f61`.** Generation counters in the Take record
-   (`core/SourceContinuityLedger.h`, `core/TakeRecordPolicy.h`); pixel probe
-   (`ProgramPixelContinuityTest.cpp`); one player per media asset
+1. **Instruments + media as persistent sources. Implemented on branch
+   `codex/persistent-sources` (`e9cf013..7826c7c` plus the docs commit that
+   carries this line), unmerged, live soak not yet run.** Generation counters in
+   the Take record (`core/SourceContinuityLedger.h`, `core/TakeRecordPolicy.h`);
+   pixel probe (`ProgramPixelContinuityTest.cpp`); one player per media asset
    (`OwnedMediaFrameSource`, `buildPreviewCompositorRenderPlan`); go-live policy
-   (`MediaGoLiveLedger`, `MediaRoutePlaybackService`/`TransportCoordinator`);
-   removed the `preview:` namespace and per-Take keys (kept only for a paused
-   clip-cue poster); still-image keys unified. Fixes the background flash and
-   clip restarts. Known gaps, carried to later slices:
-   - Pausing a scene BACKGROUND (the "Pause" label on `SceneBackground.IsPlaying`)
-     still flips `playing` and resets its decoder via
-     `MediaPlaybackTimeline::configure` — an operator transport action, not a
-     cut, first item for slice 3.
+   (`MediaGoLiveLedger`, `MediaRoutePlaybackService`/`TransportCoordinator`) with
+   operator pause as per-asset state (the ledger's paused set — promoting another
+   asset can never un-pause a clip); the route wire carries the loop flag
+   (`mediaAssetLoop`); route stills skip the decoder path (served only by
+   `StillMediaFrameCache`); removed the `preview:` namespace and per-Take keys
+   (kept only for a paused clip-cue poster); still-image keys unified. Fixes the
+   background flash and clip restarts. Known gaps, carried to later slices:
+   - **A clip going live still cold-starts.** The Preview cue poster
+     (`preview:media:<id>`, paused) and the rolling Program source (`media:<id>`)
+     are different decoders, so a clip entering Program opens a fresh decoder:
+     the placeholder slab shows for a few ticks and its take record honestly
+     reads `rebuilt` with `missingSources=[media:<id>]`. The fix — hand the
+     warmed cue decoder to Program — belongs to a later slice.
+   - Scene backgrounds cannot be paused today: the shell hard-codes
+     `Playing: true` on the background wire (`StudioViewModel.BuildSceneBackgroundWire`).
+     A future pause path would collide the same way stills did (the `playing`
+     flag is part of the decoder's request key, so a paused copy on one bus and
+     a playing copy on the other are two decoders under one id) and must be
+     designed with that in mind.
    - A route slot reassigned onto Program records no go-live.
    - The Tiles wall animator is still per bus (slice 2, not this slice).
    - Transitions still fade per layer (slice 3).
