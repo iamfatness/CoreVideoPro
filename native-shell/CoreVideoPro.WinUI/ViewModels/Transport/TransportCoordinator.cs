@@ -1,5 +1,6 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
 
 namespace CoreVideoPro.WinUI.ViewModels.Transport;
@@ -97,10 +98,12 @@ public sealed class TransportCoordinator
                 catch (MediaCoreSyncInFlightException)
                 {
                     // Transient backpressure: another sync was already running when
-                    // the operator flipped Engine On. Capture is enabled and the
-                    // spine/periodic sync will apply the active scene shortly — this
-                    // is NOT a toggle failure, so keep capture on.
+                    // the operator flipped Engine On. This is NOT a toggle failure, so
+                    // keep capture on. But the skipped sync was not delivered, and the
+                    // spine carries only the PREVIEW scene, so re-arm the production
+                    // sync explicitly (T1.5 review: nothing else repeats it).
                     _host.EngineStatus = $"Engine on — {_bridge.ProfileSummary}";
+                    _host.QueueProductionSyncRetry("engine-on");
                 }
                 _host.RefreshSurfaceBindings();
                 _host.RefreshTransportState();
@@ -109,8 +112,10 @@ public sealed class TransportCoordinator
         }
         catch (MediaCoreSyncInFlightException)
         {
-            // Backpressure during toggle — non-fatal; leave capture enabled.
+            // Backpressure during toggle — non-fatal; leave capture enabled, and re-arm
+            // the skipped sync (it was not delivered).
             _host.EngineStatus = "Engine starting…";
+            _host.QueueProductionSyncRetry("engine-toggle");
             _host.RefreshTransportState();
             _host.NotifyRecordingCommandCanExecuteChanged();
         }
@@ -179,7 +184,9 @@ public sealed class TransportCoordinator
             finally { _host.EndTakeMutation(); }
             var rollbackScenes = sealRollback();
             var selectionAfterTake = _host.CaptureMediaSelection();
-            bool rollback() => RollBackTake(rollbackScenes, selectionBeforeTake, selectionAfterTake);
+            // A copy: the host may hand back a list the scene rollback later refills in place.
+            var attemptedProgramRoutes = _host.GetResolvedProgramRoutes().ToList();
+            bool rollback() => RollBackTake(rollbackScenes, selectionBeforeTake, selectionAfterTake, attemptedProgramRoutes);
 
             if (!_bridge.Running)
             {
@@ -229,20 +236,24 @@ public sealed class TransportCoordinator
     private bool RollBackTake(
         Func<bool> rollbackScenes,
         MediaSelectionState selectionBeforeTake,
-        MediaSelectionState selectionAfterTake)
+        MediaSelectionState selectionAfterTake,
+        IReadOnlyList<SourceRoute> attemptedProgramRoutes)
     {
         if (!rollbackScenes())
         {
             return false;
         }
 
+        // Reconciliation first: the restored scenes must reach the core even if the
+        // selection restore below throws.
+        _host.RequestTakeReconciliation();
         _host.RestoreMediaSelectionAfterRollback(TakeMediaSelectionRollback.Resolve(
             selectionBeforeTake,
             selectionAfterTake,
             _host.CaptureMediaSelection(),
+            attemptedProgramRoutes,
             _host.GetResolvedProgramRoutes(),
             _host.OperatorPausedMediaAssetIds));
-        _host.RequestTakeReconciliation();
         return true;
     }
 

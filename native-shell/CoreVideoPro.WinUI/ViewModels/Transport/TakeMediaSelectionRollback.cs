@@ -40,6 +40,10 @@ public sealed record MediaSelectionState(
 /// <item>A clip on the restored Program then takes its playing flag and status from its real on-air
 /// state (routed, and looping or not operator-paused). A saved flag is never trusted for it.
 /// Audition playback off Program is local state, so it keeps the saved value.</item>
+/// <item>One exception: the operator picked a clip on the attempted Program while the sync was
+/// pending, and the rollback takes it off Program. That clip LEFT Program, so it gets the same
+/// treatment as <c>RefreshMediaBinPlaybackIndicators</c>: not playing, "&lt;name&gt; left
+/// Program". Its "... on Program" status and on-air playing flag are no longer true.</item>
 /// </list>
 /// The go-live ledger and the paused set are deliberately NOT rewound (see
 /// <c>StudioViewModel.Transport.cs</c>): a clip that rolled on an unconfirmed Take may really have
@@ -51,10 +55,12 @@ public static class TakeMediaSelectionRollback
         MediaSelectionState beforeTake,
         MediaSelectionState afterTake,
         MediaSelectionState current,
+        IReadOnlyList<SourceRoute> attemptedProgramRoutes,
         IReadOnlyList<SourceRoute> restoredProgramRoutes,
         IReadOnlyCollection<string> operatorPausedAssetIds)
     {
-        var target = current == afterTake ? beforeTake : current;
+        var operatorMovedIt = current != afterTake;
+        var target = operatorMovedIt ? current : beforeTake;
         if (string.IsNullOrWhiteSpace(target.AssetId) || !target.SupportsPlayback)
         {
             return target;
@@ -62,7 +68,14 @@ public static class TakeMediaSelectionRollback
 
         if (!MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(target.AssetId, restoredProgramRoutes))
         {
-            return target;
+            // The pre-Take selection's status was written against the pre-Take Program, which is
+            // the restored one, so it still holds. An operator pick made against the attempted
+            // Program does not if the rollback took it off air.
+            return operatorMovedIt &&
+                MediaRoutePlaybackService.SelectedAssetLeftProgram(
+                    target.AssetId, attemptedProgramRoutes, restoredProgramRoutes)
+                ? target with { Playing = false, Status = $"{target.Name} left Program" }
+                : target;
         }
 
         var playing = MediaRoutePlaybackService.IsPlayingOnAir(

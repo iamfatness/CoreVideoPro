@@ -3639,8 +3639,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         // Push the newly-selected PREVIEW scene graph to the core so it composites the
         // multi-layer preview bus (mirrors how program scene changes sync). Discrete user
-        // action, so a single sync — no flood. Backpressure is transient (the periodic sync
-        // reapplies), so swallow the in-flight signal.
+        // action, so a single sync — no flood. A skip for backpressure re-arms through the
+        // production-sync retry worker (see SyncPreviewSceneChangeAsync).
         if (_bridge.Running && _bridge.Profile is not null && _takeMutationDepth == 0)
         {
             LaunchLog.WriteVerbose($"scene-selection phase=sync-start scene={value}");
@@ -3677,22 +3677,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }, "scene-selection.restore");
     }
 
-    private async Task SyncPreviewSceneChangeAsync()
-    {
-        try
-        {
-            await SyncActiveSceneAsync("preview-scene-change").ConfigureAwait(false);
-        }
-        catch (MediaCoreSyncInFlightException)
-        {
-            // Another sync was already running; the preview scene will be applied by the
-            // next sync (or the continuous periodic sync). Not a failure.
-        }
-        catch (Exception ex)
-        {
-            LaunchLog.WriteException("preview-scene sync failed", ex);
-        }
-    }
+    // A skip for backpressure is NOT delivered, and with Engine off nothing repeats the preview
+    // scene (no spine sync; the core poll is empty). Re-arm through the production-sync retry
+    // worker, or the operator can Take a scene the core never composited in Preview (T1.5 review).
+    private Task SyncPreviewSceneChangeAsync() =>
+        SingleSendBackpressure.RunAsync(
+            () => SyncActiveSceneAsync("preview-scene-change"),
+            onSkipped: () => QueueProductionSyncRetry("preview-scene-change"),
+            onFailed: ex => LaunchLog.WriteException("preview-scene sync failed", ex));
 
     partial void OnSelectedParticipantIdChanged(string? value)
     {
@@ -14285,6 +14277,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var canvas = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264");
         _pendingMultiviewLayoutCommand = MediaCoreCommandBuilder.BuildMultiviewLayoutCommand(
             sources, canvas.Width, canvas.Height, grid.Columns, grid.Rows);
+        ArmMultiviewLayoutSend();
+    }
+
+    // UI thread only. One-shot debounce; also the backpressure re-arm for a skipped send.
+    private void ArmMultiviewLayoutSend()
+    {
+        if (_shutdownPrepared || _pendingMultiviewLayoutCommand is null)
+        {
+            return;
+        }
 
         if (_multiviewLayoutTimer is null)
         {
@@ -14304,17 +14306,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        try
-        {
-            // Standalone sync — does NOT apply the response snapshot, so it can't re-trigger the
-            // production-sync path (no loop).
-            await _bridge.SyncAsync([command]).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Backpressure/transient — drop the cached signature so the next structural change retries.
-            _lastSentMultiviewLayoutSignature = "";
-        }
+        // Standalone sync — does NOT apply the response snapshot, so it can't re-trigger the
+        // production-sync path (no loop). A skip for backpressure re-arms the debounce: with
+        // Engine off no spine sync repeats the layout, so "the next structural change retries"
+        // could mean never (T1.5 review). A real failure keeps the old handling: drop the cached
+        // signature so the next structural change retries.
+        await SingleSendBackpressure.RunAsync(
+            () => _bridge.SyncAsync([command]),
+            onSkipped: () => RunOnUiThread(ArmMultiviewLayoutSend),
+            onFailed: _ => _lastSentMultiviewLayoutSignature = "").ConfigureAwait(false);
     }
 
     private bool _loggedMultiviewTexture;

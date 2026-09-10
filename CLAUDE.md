@@ -1108,8 +1108,12 @@ media asset is now one decoder with one clock, not one per bus.
   while the sync was pending (their choice is kept, like the scene rollback's
   newer-edits rule); and for a clip on the restored Program, the playing flag
   and status come from the real on-air state (`IsPlayingOnAir` over the paused
-  set), never from the saved flag. `RestoreMediaSelectionAfterRollback` then
-  rebuilds the bin ONCE. A refused rollback restores nothing. The go-live
+  set), never from the saved flag. One more case: if the operator picked a clip
+  on the ATTEMPTED Program and the rollback takes it off air, it reads "<name> left
+  Program" and is not playing. `RequestTakeReconciliation` runs right after the scene
+  rollback, before `RestoreMediaSelectionAfterRollback`, so a throwing restore
+  cannot skip it. The restore then rebuilds the bin ONCE. A refused rollback
+  restores nothing. The go-live
   ledger and the paused set are still deliberately NOT rewound. Tests:
   `TransportCoordinatorTests.Take_Rollback*` and
   `Take_RefusedRollbackLeavesTheSelectionAlone`.
@@ -1539,10 +1543,26 @@ with Engine off, `/snapshot` aged and `nativeProgramFrameCount` froze, and so di
 everything bound to `LastSnapshot` (meters, output health, program buffer). In one
 session that lasted 67 minutes. Operators read it as a core wedge, but Program
 had rendered at 60 Hz the whole time. The decision is `MediaCorePollPolicy`: core
-first, then roster, each best-effort on its own. An empty `media-core-sync`
-returns the published snapshot without a tick, so the poll costs the core
-nothing. Test: `MediaCoreBridgePollTests` (a node fake core; it asserts the poll
-cadence and a fresh `RawReceivedUtc` with Engine off). Same report, second half:
+first, then roster, each best-effort on its own. An empty `media-core-sync` runs
+no tick, but it is not free: the core takes `coreMutex` and builds
+`sessionState()`, and the shell's single sync slot is held for the round trip.
+This is the same per-poll cost as with Engine on. Test: `MediaCoreBridgePollTests`
+(a node fake core; it asserts the poll cadence and a fresh `RawReceivedUtc` with
+Engine off).
+**Consequence, and a rule: A SKIPPED SINGLE SEND MUST RE-ARM ITSELF.** With the
+poll now running while Engine is off, a single-send sync can collide with it and
+be refused with `MediaCoreSyncInFlightException`, meaning it was NOT delivered.
+Three paths used to swallow that because "the periodic sync reapplies". With
+Engine off nothing does: there is no spine sync and the poll is empty. A
+Preview-scene pick could be lost, and the operator could then Take a scene the
+core never composited in Preview. The three paths now re-arm: the Preview-scene
+sync (`QueueProductionSyncRetry`), the multiview layout (its own debounce), and
+the Engine-On production sync. The spine carries only the Preview scene, so the
+Program sync is not repeated either. They use `SingleSendBackpressure.RunAsync`
+(`SingleSendBackpressureTests`, plus
+`TransportCoordinatorTests.ToggleEngine_ASyncSkippedForBackpressureIsReArmedNotAssumed`).
+Never swallow `MediaCoreSyncInFlightException` on the assumption that someone
+else will resend. Same report, second half:
 a launch sync that collided with that poll used to leave EngineStatus reading
 "Media core unavailable - media-core sync in flight; skipped for backpressure"
 until Engine On. `MediaCoreLaunchStatusPolicy` now treats a skipped launch sync

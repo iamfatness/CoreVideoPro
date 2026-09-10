@@ -70,6 +70,10 @@ public interface ITransportHost
     void EndTakeMutation();
     void RequestTakeReconciliation();
 
+    // Re-arms a production sync that was skipped for backpressure through the retry worker.
+    // A skipped sync was NOT delivered, and with Engine off nothing else repeats it.
+    void QueueProductionSyncRetry(string reason);
+
     void CopyPreviewRoutesToScene(string sceneId);
 
     // Hands a clip that WENT LIVE to the playback selection (and plays it). An empty list is a

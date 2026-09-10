@@ -722,6 +722,62 @@ public sealed class TransportCoordinatorTests
     }
 
     [Fact]
+    public async Task Take_RollbackGivesAnOperatorPickThatLeftProgramOffProgramWording()
+    {
+        // While the sync was pending the operator selected clip Z, which was on the ATTEMPTED
+        // Program (rolling, "Playing Z on Program"). The rollback takes Z off Program, so it
+        // must read as having left Program: not playing, and not "... on Program".
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [];
+        host.ProgramRoutesByScene["interview"] = [ClipRoute("y"), ClipRoute("z")];
+        host.Selection = FakeTransportHost.Clip("bed", playing: false, "BED is ready to cue");
+        host.DuringSync = () => host.Selection = FakeTransportHost.Clip("z", playing: true, "Playing Z on Program");
+        host.SyncThrows = new InvalidOperationException("native rejected scene");
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal("z", host.Selection.AssetId);                // the operator's pick is kept
+        Assert.False(host.Selection.Playing);
+        Assert.Equal("Z left Program", host.Selection.Status);
+        Assert.Equal("Audition", host.ToggleLabel);
+    }
+
+    [Fact]
+    public async Task Take_AThrowingSelectionRestoreStillRequestsReconciliation()
+    {
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [];
+        host.ProgramRoutesByScene["interview"] = [ClipRoute("y")];
+        host.RestoreThrows = true;
+        host.SyncThrows = new InvalidOperationException("native rejected scene");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.TakeAsync());
+
+        Assert.Equal("intro", host.ActiveSceneId);                // scenes were restored
+        Assert.Equal(1, host.ReconciliationRequests);             // and still sent to the core
+    }
+
+    [Fact]
+    public async Task ToggleEngine_ASyncSkippedForBackpressureIsReArmedNotAssumed()
+    {
+        // The spine carries only the Preview scene, so a skipped Engine-On production sync is
+        // not repeated by anything else: it must be queued for the retry worker.
+        var (coordinator, bridge, host) = Build();
+        host.ZoomCaptureSubscribed = false;
+        bridge.Running = true;
+        host.SyncFailuresRemaining = 1;
+
+        await coordinator.ToggleEngineAsync();
+
+        Assert.True(host.ZoomCaptureSubscribed);                  // still not a toggle failure
+        Assert.Equal(new[] { "engine-on" }, host.QueuedSyncRetries);
+    }
+
+    [Fact]
     public async Task Take_SuccessDoesNotTouchTheSelectionAfterwards()
     {
         var (coordinator, _, host) = Build();
@@ -912,12 +968,21 @@ public sealed class TransportCoordinatorTests
         public void RestoreMediaSelectionAfterRollback(MediaSelectionState selection)
         {
             RestoreSelectionCallCount++;
+            if (RestoreThrows) throw new InvalidOperationException("bin rebuild failed");
             Selection = selection;
         }
 
         public void BeginTakeMutation() { }
         public void EndTakeMutation() { }
-        public void RequestTakeReconciliation() { }
+        public void RequestTakeReconciliation() => ReconciliationRequests++;
+
+        public int ReconciliationRequests { get; private set; }
+
+        public List<string> QueuedSyncRetries { get; } = [];
+
+        public void QueueProductionSyncRetry(string reason) => QueuedSyncRetries.Add(reason);
+
+        public bool RestoreThrows { get; set; }
 
         public void CopyPreviewRoutesToScene(string sceneId)
         {

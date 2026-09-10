@@ -167,6 +167,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     void ITransportHost.BeginTakeMutation() => _takeMutationDepth++;
     void ITransportHost.EndTakeMutation() => _takeMutationDepth--;
     void ITransportHost.RequestTakeReconciliation() => QueueProductionSyncRetry("take-rollback");
+    void ITransportHost.QueueProductionSyncRetry(string reason) => QueueProductionSyncRetry(reason);
 
     // Capture originals now, then seal ownership after the local Take mutations.
     // A rollback must not erase edits made while the media-core reply was pending.

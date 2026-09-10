@@ -14,10 +14,13 @@ public readonly record struct MediaCorePollPlan(bool PollCoreSnapshot, bool Refr
 /// On, 67 minutes in one live session. An operator reading the frozen state saw it as a core
 /// wedge.
 ///
-/// Polling the core is cheap and has no side effects. An empty <c>media-core-sync</c> returns
-/// the core's already-published snapshot without running a tick (CLAUDE.md, Phase 2 audio
-/// notes). The roster refresh is still needed while capture is off, because nothing else
-/// brings the roster: the spine sync, which carries it while Engine is on, is not running.
+/// Polling the core with Engine off costs the same as it already does every 250 ms with Engine
+/// on. An empty <c>media-core-sync</c> runs no tick (CLAUDE.md, Phase 2 audio notes), but it is not
+/// free: the core takes <c>coreMutex</c> and builds <c>sessionState()</c>, and the shell's single
+/// sync slot is held for the round trip. A single-send sync that collides with the poll is
+/// therefore skipped for backpressure, and must re-arm itself (<c>SingleSendBackpressure</c>). The
+/// roster refresh is still needed while capture is off, because nothing else brings the roster:
+/// the spine sync, which carries it while Engine is on, is not running.
 /// </summary>
 public static class MediaCorePollPolicy
 {
