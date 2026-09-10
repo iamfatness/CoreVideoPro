@@ -868,3 +868,91 @@ TEST(ZoomEngineRuntime, ShutdownBeforeFirstFrameNeverStartsIngest) {
   EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestRunning(runtime));
   EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
 }
+
+TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+
+    // 301 is the active speaker (1080P); 302 is an ordinary wall member (720P).
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "active-speaker"),
+                                subscriptionRequest("302", "participant-video", "program"),
+                            }),
+                            10.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      EXPECT_TRUE(churn.get("engine")->asBool(false));
+      EXPECT_EQ(churn.getNumber("totalChurn"), 0);  // starting is not churning
+      const auto* speaker = findChurnSource(churn, "participant-video-301-camera");
+      ASSERT_NE(speaker, nullptr);
+      EXPECT_EQ(speaker->getNumber("generation"), 1);
+      EXPECT_EQ(speaker->getNumber("churn"), 0);
+      EXPECT_EQ(speaker->getString("lastReason"), "initial");
+      EXPECT_EQ(speaker->getNumber("resolution"), 2);  // 1080P
+      EXPECT_TRUE(speaker->get("subscribed")->asBool(false));
+      const auto* member = findChurnSource(churn, "participant-video-302-camera");
+      ASSERT_NE(member, nullptr);
+      EXPECT_EQ(member->getNumber("resolution"), 1);  // 720P
+    }
+
+    // The active speaker changes. 301's uuid is unchanged — the purpose is
+    // deliberately not in it — but its RESOLUTION is, so it is re-subscribed.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "program"),
+                                subscriptionRequest("302", "participant-video", "active-speaker"),
+                            }),
+                            20.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      EXPECT_EQ(churn.getNumber("totalChurn"), 2);
+      EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 2);
+      const auto* speaker = findChurnSource(churn, "participant-video-301-camera");
+      ASSERT_NE(speaker, nullptr);
+      EXPECT_EQ(speaker->getNumber("generation"), 2);
+      EXPECT_EQ(speaker->getNumber("churn"), 1);
+      EXPECT_EQ(speaker->getString("lastReason"), "resolution-change");
+      EXPECT_EQ(speaker->getNumber("resolution"), 1);
+      EXPECT_EQ(speaker->getNumber("lastChangeMs"), 20.0);
+    }
+
+    // 302 falls out of the requested set entirely — the cap-reordering shape.
+    // Its ledger SURVIVES the unsubscribe: a record erased with the subscription
+    // could not answer the question it exists for.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "program"),
+                            }),
+                            30.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      const auto* dropped = findChurnSource(churn, "participant-video-302-camera");
+      ASSERT_NE(dropped, nullptr);
+      EXPECT_FALSE(dropped->get("subscribed")->asBool(true));
+      EXPECT_EQ(dropped->getNumber("generation"), 3);
+      EXPECT_EQ(dropped->getNumber("churn"), 2);
+      // No roster in this harness, so the retire reads as a departure; the
+      // cap-eviction/departure split itself is pinned by the policy test.
+      EXPECT_EQ(dropped->getString("lastReason"), "departure");
+      EXPECT_EQ(churn.getNumber("subscribedCount"), 1);
+      EXPECT_EQ(churn.getNumber("sourceCount"), 2);
+    }
+
+    // Coming back is churn too, and the generation keeps advancing.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "program"),
+                                subscriptionRequest("302", "participant-video", "program"),
+                            }),
+                            40.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
+      const auto* back = findChurnSource(churn, "participant-video-302-camera");
+      ASSERT_NE(back, nullptr);
+      EXPECT_TRUE(back->get("subscribed")->asBool(false));
+      EXPECT_EQ(back->getNumber("generation"), 4);
+      EXPECT_EQ(back->getString("lastReason"), "resubscribe");
+    }
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}

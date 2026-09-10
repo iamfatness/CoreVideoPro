@@ -151,6 +151,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     closeAudioStreamsLocked();
   closeVideoStreamsLocked();
     sentSubscriptions_.clear();  // a fresh join must re-subscribe from scratch
+    resetSubscriptionChurnLocked();
   }
 }
 
@@ -314,6 +315,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   closeAudioStreamsLocked();
   closeVideoStreamsLocked();
   sentSubscriptions_.clear();  // a rejoin must re-subscribe from scratch
+  resetSubscriptionChurnLocked();
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
 }
@@ -335,6 +337,7 @@ rpc::Json ZoomEngineRuntime::stopCapture() {
   // so a fresh capture-on re-sends every subscribe instead of assuming the old
   // ones survived (they did not).
   sentSubscriptions_.clear();
+  resetSubscriptionChurnLocked();
   return rawCaptureSnapshotLocked();
 }
 
@@ -411,6 +414,31 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       desired[command.sourceUuid] = subscriptionKey;
 
       const auto existing = sentSubscriptions_.find(command.sourceUuid);
+      // Classify BEFORE the dedup short-circuit, so a source that stayed put is
+      // recorded as such and a resolution flip is recorded as the teardown it is.
+      {
+        auto& ledger = subscriptionChurn_[command.sourceUuid];
+        const auto change = ZoomSubscriptionChurnPolicy::classifySubscribe({
+            existing != sentSubscriptions_.end(),
+            existing != sentSubscriptions_.end() ? existing->second : -1,
+            subscriptionKey,
+            ledger.generation > 0,
+        });
+        ledger.participantId = participantId;
+        ledger.kind = kind;
+        ledger.purpose = purpose;
+        ledger.resolution = subscriptionKey;
+        ledger.subscribed = true;
+        if (ZoomSubscriptionChurnPolicy::advancesGeneration(change)) {
+          ++ledger.generation;
+          ledger.lastReason = ZoomSubscriptionChurnPolicy::reason(change);
+          ledger.lastChangeMs = elapsedMs;
+          if (ZoomSubscriptionChurnPolicy::countsAsChurn(change)) {
+            ++ledger.churn;
+            subscriptionChurnTotal_.fetch_add(1, std::memory_order_relaxed);
+          }
+        }
+      }
       if (existing != sentSubscriptions_.end() && existing->second == subscriptionKey) {
         continue;  // already subscribed at this resolution — don't re-send
       }
@@ -437,6 +465,28 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
     std::set<std::string> retiredVideoParticipants;
     for (auto it = sentSubscriptions_.begin(); it != sentSubscriptions_.end();) {
       if (desired.find(it->first) == desired.end()) {
+        // Record WHY this source stopped being subscribed. A participant still
+        // in the meeting whose subscription went away was pushed out of the
+        // requested set (the cap-reordering hazard); one that is gone from the
+        // roster simply left. The two look identical downstream — frames stop —
+        // and only this distinction separates a product defect from a departure.
+        if (auto ledger = subscriptionChurn_.find(it->first); ledger != subscriptionChurn_.end()) {
+          std::uint32_t numericId = 0;
+          bool numeric = false;
+          try {
+            numericId = static_cast<std::uint32_t>(std::stoul(ledger->second.participantId));
+            numeric = true;
+          } catch (...) {
+          }
+          const auto change = ZoomSubscriptionChurnPolicy::classifyRetire(
+              numeric && state_.hasParticipant(numericId));
+          ledger->second.subscribed = false;
+          ++ledger->second.generation;
+          ledger->second.lastReason = ZoomSubscriptionChurnPolicy::reason(change);
+          ledger->second.lastChangeMs = elapsedMs;
+          ++ledger->second.churn;
+          subscriptionChurnTotal_.fetch_add(1, std::memory_order_relaxed);
+        }
         const auto stream = videoStreams_.find(it->first);
         if (stream != videoStreams_.end()) {
           retiredVideoParticipants.insert(std::to_string(stream->second.participantId));
@@ -658,6 +708,7 @@ bool ZoomEngineRuntime::ensureStarted(const std::function<bool()>& cancelled) {
     generationAtStart = processGeneration_;
     purgeQueuedEngineSendsLocked("engine restart");
     sentSubscriptions_.clear();
+    resetSubscriptionChurnLocked();
     mediaStarted_ = false;
     client = std::make_shared<ZoomEngineProcessClient>();
     executablePath = config_.executablePath;
@@ -899,6 +950,7 @@ void ZoomEngineRuntime::installEngineProcessForTest(std::shared_ptr<ZoomEnginePr
   ++processGeneration_;
   purgeQueuedEngineSendsLocked("engine restart");
   sentSubscriptions_.clear();
+  resetSubscriptionChurnLocked();
   mediaStarted_ = false;
   process_ = std::move(process);
   initialized_ = true;
@@ -914,6 +966,44 @@ std::uint64_t ZoomEngineRuntime::droppedEngineSendCountForTest() const {
   return droppedEngineSends_.load();
 }
 
+void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
+  subscriptionChurn_.clear();
+  subscriptionChurnTotal_.store(0, std::memory_order_relaxed);
+}
+
+rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  rpc::Json::Array sources;
+  std::uint64_t resolutionChanges = 0, evictions = 0, departures = 0, subscribed = 0;
+  for (const auto& [sourceUuid, entry] : subscriptionChurn_) {
+    if (entry.subscribed) ++subscribed;
+    if (entry.lastReason == "resolution-change") ++resolutionChanges;
+    if (entry.lastReason == "cap-eviction") ++evictions;
+    if (entry.lastReason == "departure") ++departures;
+    sources.emplace_back(rpc::Json::Object{
+        {"sourceUuid", sourceUuid},
+        {"participantId", entry.participantId},
+        {"kind", entry.kind},
+        {"purpose", entry.purpose},
+        {"resolution", entry.resolution},
+        {"subscribed", entry.subscribed},
+        {"generation", static_cast<double>(entry.generation)},
+        {"churn", static_cast<double>(entry.churn)},
+        {"lastReason", entry.lastReason},
+        {"lastChangeMs", entry.lastChangeMs},
+    });
+  }
+  return rpc::Json::Object{
+      {"engine", true},
+      {"sourceCount", static_cast<double>(subscriptionChurn_.size())},
+      {"subscribedCount", static_cast<double>(subscribed)},
+      {"totalChurn", static_cast<double>(subscriptionChurnTotal_.load(std::memory_order_relaxed))},
+      {"lastResolutionChanges", static_cast<double>(resolutionChanges)},
+      {"lastCapEvictions", static_cast<double>(evictions)},
+      {"lastDepartures", static_cast<double>(departures)},
+      {"sources", sources},
+  };
+}
 rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
   ++fallbackTick_;
   state_.advanceActiveSpeaker(monotonicMs());

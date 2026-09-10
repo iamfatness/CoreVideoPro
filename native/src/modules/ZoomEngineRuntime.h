@@ -4,6 +4,7 @@
 #include "modules/ZoomEngineClient.h"
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
+#include "modules/ZoomSubscriptionChurnPolicy.h"
 #include "rpc/Json.h"
 #include <atomic>
 #include <chrono>
@@ -40,6 +41,17 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json stopCapture();
   [[nodiscard]] rpc::Json snapshot();
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
+  // Per-source subscription churn: a generation that increments on every real
+  // re-subscribe, a cumulative churn count, and the reason for the last change.
+  // Always an object, whether or not an engine is running (a node that appears
+  // only once something interesting happens is absent in exactly the case worth
+  // detecting). Takes mutex_; call it from a snapshot boundary, never per frame.
+  [[nodiscard]] rpc::Json subscriptionChurnState();
+  // Lock-free total across every source, for the per-take delta. Cheap enough
+  // to read on the render tick.
+  [[nodiscard]] std::uint64_t subscriptionChurnTotal() const {
+    return subscriptionChurnTotal_.load(std::memory_order_relaxed);
+  }
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
   // Returns the latest decoded BGRA frame per participant, carrying real pixels,
   // WITHOUT consuming the pending stdout/event queue (drainFrameEvents) that
@@ -66,6 +78,9 @@ class ZoomEngineRuntime {
 
  private:
   friend struct ZoomEngineRuntimeTestAccess;
+  // A new engine process, join or capture cycle starts a new subscription set;
+  // the ledger describes THAT set, so it is cleared with the dedup map.
+  void resetSubscriptionChurnLocked();
   // Terminal lifecycle transition, serialized with incoming events and worker creation.
   void beginShutdown();
   bool shuttingDown_ = false;  // guarded by mutex_
@@ -158,6 +173,9 @@ class ZoomEngineRuntime {
   std::thread sender_;
   bool senderRunning_ = false;  // guarded by sendMutex_
   std::atomic<std::uint64_t> droppedEngineSends_{0};
+  // Mirror of the summed per-source churn counts, so the render tick can take a
+  // delta across a take without touching mutex_.
+  std::atomic<std::uint64_t> subscriptionChurnTotal_{0};
   // Operator opted in to raw capture (Studio "Engine On"). Raw recording /
   // recording-rights request only starts once this is set, so it no longer
   // fires automatically on meeting join.
@@ -173,6 +191,23 @@ class ZoomEngineRuntime {
   // leave/rejoin AND whenever a new engine process is installed
   // (ensureStarted), so a restarted engine is re-subscribed from scratch.
   std::map<std::string, int> sentSubscriptions_;
+  // SUBSCRIPTION CHURN LEDGER (live-show instrument, 2026-09-09).
+  //
+  // Survives an unsubscribe on purpose: the question worth answering is "was
+  // this source torn down and rebuilt", and a ledger that is erased along with
+  // the subscription cannot answer it. Keyed by sourceUuid, like the dedup map
+  // above, and cleared exactly where that map is (leave / rejoin / a new engine
+  // process), because those genuinely start a new engine's subscription set.
+  struct SubscriptionChurn {
+    std::string participantId, kind, purpose;
+    int resolution = -1;             // last requested key (-1 = audio, no resolution)
+    bool subscribed = false;         // currently in sentSubscriptions_
+    std::uint64_t generation = 0;    // ++ on every real (re)subscribe or teardown
+    std::uint64_t churn = 0;         // cumulative DISRUPTIVE changes (excl. initial)
+    std::string lastReason = "initial";
+    double lastChangeMs = -1.0;
+  };
+  std::map<std::string, SubscriptionChurn> subscriptionChurn_;
   int fallbackTick_ = 0;
   std::chrono::steady_clock::time_point startedAt_;
   std::vector<rpc::Json> pendingFrameEvents_;
