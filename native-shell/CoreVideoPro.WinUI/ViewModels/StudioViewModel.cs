@@ -14085,7 +14085,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try { dispose(); }
             catch (Exception error) { LaunchLog.WriteException($"shutdown: {name}", error); }
         }
-        DisposeResource("media core stop", ForceShutdownMediaCore);
+        // App exit (T1.8): let the core exit on its own after stdin closes, then kill-tree.
+        DisposeResource("media core stop", () => ForceShutdownMediaCore(ShutdownBudget.CoreExitGrace));
         DisposeResource("surfaces", _surfaces.Dispose);
         DisposeResource("capture reader", _captureFrameReader.Dispose);
         DisposeResource("capture discovery", _captureDiscovery.Dispose);
@@ -14097,15 +14098,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         LaunchLog.Write("shutdown: studio view model disposed");
     }
 
-    private void ForceShutdownMediaCore()
+    // exitGrace > 0 only on the normal app-exit path (DisposeAsync): the core gets that long to
+    // exit on its own after stdin closes before the kill-tree. The failure fallback
+    // (ForceStopMediaCoreAsync, 1 s budget) keeps the immediate kill.
+    private void ForceShutdownMediaCore() => ForceShutdownMediaCore(TimeSpan.Zero);
+
+    private void ForceShutdownMediaCore(TimeSpan exitGrace)
     {
         try
         {
             _bridge.ConfigureZoomSpineSync(null);
             if (_bridge.Running)
             {
-                LaunchLog.Write("shutdown: stopping media core");
-                _bridge.Stop();
+                if (exitGrace > TimeSpan.Zero)
+                {
+                    LaunchLog.Write($"shutdown: stopping media core (closing stdin, up to {exitGrace.TotalMilliseconds:0}ms to exit on its own)");
+                    var outcome = _bridge.StopForAppExit(exitGrace);
+                    LaunchLog.Write(outcome == MediaCoreExitOutcome.Killed
+                        ? $"shutdown: media core did not exit within {exitGrace.TotalMilliseconds:0}ms; process tree killed"
+                        : "shutdown: media core exited on its own");
+                }
+                else
+                {
+                    LaunchLog.Write("shutdown: stopping media core");
+                    _bridge.Stop();
+                }
             }
         }
         catch (Exception ex)

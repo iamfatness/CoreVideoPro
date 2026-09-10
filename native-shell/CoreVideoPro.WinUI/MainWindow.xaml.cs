@@ -17,8 +17,9 @@ namespace CoreVideoPro.WinUI;
 
 public sealed partial class MainWindow : Window
 {
-    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan ShutdownWatchdog = TimeSpan.FromSeconds(6);
+    // The whole close budget (and the core's exit grace inside it) lives in ShutdownBudget.
+    private static readonly TimeSpan ShutdownTimeout = ShutdownBudget.ShutdownTimeout;
+    private static readonly TimeSpan ShutdownWatchdog = ShutdownBudget.ShutdownWatchdog;
     private static readonly TimeSpan ResourceMonitorInterval = TimeSpan.FromMilliseconds(750);
 
     private readonly AppWindow _appWindow;
@@ -45,6 +46,9 @@ public sealed partial class MainWindow : Window
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
     private bool _allowWindowClose;
+    // T1.8: true while the "Stop outputs and close?" dialog is open or the outputs are finishing.
+    // A close request then is ignored (not a force-exit); the finishing wait is bounded (15 s).
+    private bool _closeGuardActive;
     // App releases its window reference on Closed; the fallback must outlive it.
     private static System.Threading.Timer? _shutdownWatchdogTimer;
 
@@ -728,6 +732,40 @@ public sealed partial class MainWindow : Window
 
         args.Cancel = true;
 
+        // T1.8 (#461): a second close while the stop-outputs dialog is open (or while the
+        // outputs are finishing after "Stop and close") is ignored, not a force-exit. A
+        // force-exit here is exactly what cuts the recording off.
+        if (_closeGuardActive)
+        {
+            LaunchLog.Write("shutdown: close requested while the close guard is active — ignored");
+            return;
+        }
+
+        if (!_shutdownStarted)
+        {
+            var decision = CloseGuardDecision.Nothing;
+            try
+            {
+                decision = ViewModel.EvaluateCloseGuard();
+            }
+            catch (Exception ex)
+            {
+                LaunchLog.WriteException("shutdown: close guard evaluation failed; using the existing shutdown path", ex);
+            }
+
+            if (decision.ShouldAsk)
+            {
+                _closeGuardActive = true;
+                _ = AskBeforeClosingAsync(decision);
+                return;
+            }
+        }
+
+        BeginShutdown();
+    }
+
+    private void BeginShutdown()
+    {
         if (_shutdownStarted)
         {
             LaunchLog.Write("shutdown: close requested while cleanup is in progress — forcing exit");
@@ -738,6 +776,64 @@ public sealed partial class MainWindow : Window
         _shutdownStarted = true;
         LaunchLog.Write("shutdown: close requested");
         _ = ShutdownAsync();
+    }
+
+    // T1.8 (#461): closing while recording or streaming asks first (owner decision: option 1).
+    // "Keep running" (the default button, and Esc) changes nothing. "Stop and close" stops the
+    // outputs through the transport, waits (bounded) for the core to report the files finished,
+    // then runs the unchanged ShutdownAsync. Runs on the UI thread; every exception is logged and
+    // falls back to the existing shutdown path, so this can never hang the close or throw into a
+    // UI callback.
+    private async Task AskBeforeClosingAsync(CloseGuardDecision decision)
+    {
+        try
+        {
+            LaunchLog.Write($"shutdown: close requested while live ({decision.Description}); asking the operator");
+            var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
+            {
+                XamlRoot = Content.XamlRoot,
+                Title = CloseGuardPolicy.DialogTitle,
+                Content = new Microsoft.UI.Xaml.Controls.TextBlock
+                {
+                    Text = CloseGuardPolicy.DialogBody(decision),
+                    TextWrapping = TextWrapping.Wrap
+                },
+                PrimaryButtonText = CloseGuardPolicy.StopAndCloseButton,
+                CloseButtonText = CloseGuardPolicy.KeepRunningButton,
+                DefaultButton = Microsoft.UI.Xaml.Controls.ContentDialogButton.Close
+            };
+            if (Application.Current.Resources.TryGetValue("DefaultContentDialogStyle", out var style) && style is Style dialogStyle)
+            {
+                dialog.Style = dialogStyle;
+            }
+
+            var result = await dialog.ShowAsync();
+            if (result != Microsoft.UI.Xaml.Controls.ContentDialogResult.Primary)
+            {
+                LaunchLog.Write("shutdown: operator chose Keep running; the app stays open");
+                _closeGuardActive = false;
+                return;
+            }
+
+            LaunchLog.Write("shutdown: operator chose Stop and close");
+            var outcome = await ViewModel.StopOutputsForCloseAsync();
+            LaunchLog.Write($"shutdown: outputs before close: {outcome}");
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("shutdown: close guard failed; using the existing shutdown path", ex);
+        }
+
+        _closeGuardActive = false;
+        try
+        {
+            if (!_shutdownStarted) BeginShutdown();
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("shutdown: starting shutdown after the close guard failed; forcing exit", ex);
+            ApplicationLifecycle.ForceExit();
+        }
     }
 
     private async Task ShutdownAsync()

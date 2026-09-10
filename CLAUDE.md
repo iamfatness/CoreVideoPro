@@ -241,6 +241,8 @@ off-thread guards never fired). Confirmed and suspected triggers:
   keeps the `ApplicationLifecycle.ForceExit` fallback. `PrepareForShutdown` also stops the view
   model's DispatcherQueueTimers (defence in depth). **Rule: never hand a torn-down shell back to
   WinUI's shutdown drain.** Unit tests (`ShutdownCompletionTests`) pin the order and the gate.
+  (T1.8 put a close guard in FRONT of this path — see "Engine teardown order": closing while
+  recording/streaming asks first and finishes the files before `ShutdownAsync` starts.)
   The proof is a scripted close-cycle loop on the real app: zero new
   `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
 
@@ -1254,6 +1256,34 @@ renderers before stopping raw data with a callback in flight. Hard rules:
 - **Shell: stop off the UI thread.** `_bridge.Stop()` is a kill-tree +
   `WaitForExit(1500)` under the supervisor gate — it always rides `Task.Run`
   (both leave-meeting in `SettingsViewModel` and app-exit in `MainWindow`).
+- **App close never cuts a recording off unasked (T1.8, #461, 2026-09-10).** Closing used to
+  kill-tree the core with no stop sent, so the Program moov atom, every ISO writer and any
+  RTMP/SRT egress died mid-write (unplayable show file). Now, in order:
+  1. `MainWindow.OnAppWindowClosing` asks `CloseGuardPolicy` (pure, tested) first. Recording or
+     streaming live — shell flags OR the core lifecycle, and `stopping`/`finalizing` COUNT as live;
+     absent lifecycle trusts the shell flag; the virtual camera alone never asks — opens a
+     ContentDialog "Stop outputs and close?" with **Stop and close** / **Keep running** (the
+     default). A second close while it is open, or while outputs finish, is ignored (not a
+     force-exit). Any exception logs and falls back to the old shutdown path.
+  2. **Stop and close** → `OutputShutdownCoordinator`: sends the EXISTING transport stops
+     (`SetRecordingAsync(false)` / `SetStreamingAsync(false)`, not awaited — they can hold for
+     30 s on a busy core), then polls snapshots until the recording lifecycle and every sender are
+     terminal/idle (evidence, never the stop ack), re-sending a stop that has not landed at most
+     once a second. Bounded at 15 s; on timeout it logs `shutdown: outputs did not finish within
+     15s — closing anyway` and proceeds. Only THEN does the unchanged `ShutdownAsync` run, so the
+     15 s is outside the 5 s / 6 s watchdog budget.
+  3. **App-exit core stop only** (`StudioViewModel.DisposeAsync` → `MediaCoreBridgeService.StopForAppExit`):
+     close stdin — the core's quit signal: JsonRpcServer's reader hits EOF, the loop breaks, all
+     workers join, `main` returns and MediaCore's destructors run — wait up to
+     `ShutdownBudget.CoreExitGrace` (2 s) for it to exit, THEN the old kill-tree. While it exits,
+     the supervisor keeps DRAINING the retired core's stdout (`_drainOnlyProcess`), because the
+     core's writer thread flushes before it can join — stop reading and a full pipe wedges the
+     exit (`MediaCoreAppExitStopTests` proves it: the test fails with the drain removed). 2 s +
+     the 1.5 s kill wait must fit the 5 s `ShutdownTimeout` (`ShutdownBudgetTests`). Leave-meeting,
+     respawn and the post-failure `ForceStopMediaCoreAsync` keep the immediate kill.
+  **Remaining gap:** the Zoom engine still does not get the Leave → `stop_raw_media` order on app
+  close — `~ZoomEngineRuntime` terminates it (same as the kill-tree did). The recording is
+  protected by step 2 regardless.
 - **Never delete the vcam SHM file in `stop()`** — same hard rule as the
   virtual-camera section below; stop only unmaps/closes handles, the writer
   re-opens IN PLACE on the next start.
