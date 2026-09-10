@@ -1,4 +1,5 @@
 using CoreVideoPro.Control;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.ShowEngine;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
@@ -14,7 +15,7 @@ namespace CoreVideoPro.WinUI.Services;
 /// it would trip the documented CoreMessagingXP 0xc000027b fail-fast. Feedback is pushed (debounced)
 /// on relevant <see cref="INotifyPropertyChanged"/> changes. This is the only place the control
 /// layer meets WinUI; the OSC/HTTP transports never see the ViewModel.</summary>
-public sealed class StudioControlSurface : IControlSurface, IDisposable
+public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObserver, IDisposable
 {
     private static readonly TimeSpan FeedbackDebounce = TimeSpan.FromMilliseconds(150);
 
@@ -575,6 +576,24 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         }, _vm.NativeControlSnapshot);
 
         return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapterSlot.Current?.ShadowLastCommand);
+    }
+
+    /// <summary>Serves the media core's own snapshot to read-only transports (GET /snapshot).
+    ///
+    /// This is a plain read of the reference the bridge already publishes on its existing sync
+    /// cadence — no core round-trip, no UI-thread marshal, no lock the render path takes. The
+    /// snapshot record is immutable, so handing out the reference cannot race a publication: a
+    /// concurrent publish swaps in a new record and this caller keeps the one it read.
+    ///
+    /// Redaction is not optional here — <see cref="CoreSnapshotObserver.Observe"/> is the only
+    /// way the raw text reaches the control layer.</summary>
+    public NativeSnapshotObservation GetNativeSnapshot()
+    {
+        var observation = CoreSnapshotObserver.Observe(_vm.NativeControlSnapshot);
+        return new NativeSnapshotObservation(
+            observation.Json,
+            observation.ReceivedUtc,
+            observation.UnavailableReason);
     }
 
     private static readonly ShowEngineHealth StoppedHealth =

@@ -847,6 +847,35 @@ public sealed record NativeMediaCoreStateSnapshot
     /// operator-facing source diagnostics instead of being collapsed into only
     /// aggregate frame counters.</summary>
     public IReadOnlyList<ZoomMediaSpineSubscription> ZoomSubscriptions { get; init; } = [];
+
+    /// <summary>The core's OWN session-state JSON for this tick, exactly as it arrived on the
+    /// wire (after the recording-lifecycle validation rewrite, which is the same text the typed
+    /// properties above were bound from).
+    ///
+    /// This record binds only the nodes the shell consumes; the core publishes many more
+    /// (encoderEvidence, realtimeEvidence, programBuffer, tiles, multiviewer, browserSources,
+    /// captureDevices, recording streams, takeTransition, ...) and deserialization silently drops
+    /// every one of them. Retaining the text is what lets an observer see what the core said
+    /// instead of what the shell found interesting — without a second core or an extra
+    /// round-trip to the running one.
+    ///
+    /// In-process only: <see cref="JsonIgnore"/> keeps it out of every serialization of this
+    /// record (support bundle, crash report, control state), so it cannot leak by accident. It is
+    /// UNREDACTED here; redaction happens once, at the observation boundary
+    /// (<see cref="Services.CoreSnapshotObserver"/>), so the per-tick sync path pays nothing.
+    ///
+    /// Snapshots synthesized or merged by the shell (Zoom capture / spine merges, generation
+    /// fences) carry the ORIGINAL text and <see cref="RawReceivedUtc"/> forward untouched — the
+    /// timestamp is what tells a consumer the core evidence is older than the merged record.
+    /// </summary>
+    [JsonIgnore]
+    public string? RawJson { get; init; }
+
+    /// <summary>When the shell received <see cref="RawJson"/> from the core. The shell's own
+    /// receipt time, not the core's clock: a consumer subtracts it from its request time to
+    /// separate snapshot age from request age.</summary>
+    [JsonIgnore]
+    public DateTimeOffset? RawReceivedUtc { get; init; }
 }
 
 public sealed class NativeMediaCoreValidation
