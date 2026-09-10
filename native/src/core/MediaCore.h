@@ -430,6 +430,7 @@ class MediaCore {
     std::string mediaAssetPath;
     std::string mediaPlaybackKey;
     bool mediaAssetPlaying = false;
+    bool mediaAssetLoop = false;
     float rectX = 0.f;
     float rectY = 0.f;
     float rectWidth = 0.f;
@@ -704,7 +705,7 @@ class MediaCore {
     std::string operationId, mode;
     std::int64_t revision = 0;
     std::vector<std::string> fromLayerIds, toLayerIds;
-    // FRAME source ids (layer.sourceId, else participantId) of the outgoing
+    // FRAME source ids (layer.participantId, else sourceId — frameKeyForLayer) of the outgoing
     // Program plan UNION the outgoing Preview plan — a Take promotes Preview,
     // so that is where the operator last saw the incoming sources — and their
     // SourceContinuityLedger state at arm time.

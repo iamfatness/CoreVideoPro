@@ -425,9 +425,13 @@ class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
       corevideo::modules::VideoFrame frame;
       frame.participantId = participantId;
       frame.width = frame.height = 2;
+      frame.frameId = ++frameIds[participantId];
+      if (metadataOnly.count(participantId) > 0) {  // roster entry: no pixels, no I420
+        frames.push_back(std::move(frame));
+        continue;
+      }
       frame.i420Width = frame.i420Height = 2;
       frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
-      frame.frameId = ++frameIds[participantId];
       frames.push_back(std::move(frame));
     }
     return frames;
@@ -436,6 +440,7 @@ class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
   void restart(const std::string& participantId) { frameIds[participantId] = 0; }
   std::vector<std::string> participants{"7"};
   std::set<std::string> paused;
+  std::set<std::string> metadataOnly;
   std::map<std::string, std::int64_t> frameIds;
 };
 
@@ -695,6 +700,34 @@ TEST(TakeRecord, AZoomGuestRunningAtTheTakeWithNoFirstFrameIsMissing) {
   const auto& take = records[1];
   EXPECT_EQ(take.getString("verdict"), "rebuilt");
   EXPECT_TRUE(arrayContains(take.get("missingSources"), "7"));
+}
+
+// A metadata-only frame (a Zoom roster entry with no pixels and no I420) puts
+// nothing on air: it must not count as the guest "having a frame" on the first
+// program tick, nor keep the guest's continuity alive.
+TEST(TakeRecord, AMetadataOnlyZoomFrameDoesNotCountAsHavingAFrame) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto zoom = std::make_unique<CountingZoomSource>();
+  auto* zoomPtr = zoom.get();
+  modules.zoom = std::move(zoom);
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
+  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-b", "7")});
+  zoomPtr->metadataOnly.insert("7");  // video torn down on the take; the roster entry remains
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_EQ(records.size(), 2u);
+  const auto& take = records[1];
+  EXPECT_EQ(take.getString("verdict"), "rebuilt");
+  EXPECT_TRUE(take.get("sourceMissing")->asBool(false));
+  EXPECT_TRUE(arrayContains(take.get("missingSources"), "7"))
+      << "a content-less roster frame was counted as the guest having a frame";
 }
 
 // ---------------------------------------------------------------------------

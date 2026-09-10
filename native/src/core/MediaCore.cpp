@@ -2053,8 +2053,11 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
         before != record.continuityBefore.end() && before->second.lastSeenTick >= runningSinceTick;
     const bool expected = !layer.mediaAssetId.empty() || runningAtArm;
     if (!expected) continue;
-    const bool hasFrame = std::any_of(frames.begin(), frames.end(),
-                                      [&](const auto& frame) { return frame.participantId == id; });
+    // Content only: a metadata-only frame (a Zoom roster entry with no
+    // pixels and no I420) puts nothing on air, so it is not "a frame".
+    const bool hasFrame = std::any_of(frames.begin(), frames.end(), [&](const auto& frame) {
+      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+    });
     if (!hasFrame) missing.push_back(id);
   }
   record.verdict = TakeRecordPolicy::evaluate(record.observation);
@@ -2132,6 +2135,8 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.mediaAssetPath = route.getString("mediaAssetPath");
       state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
       state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
+      // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
+      state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       const rpc::Json* rect = route.get("rect");
       if (rect && rect->isObject()) {
@@ -3333,6 +3338,8 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.mediaAssetPath = route.getString("mediaAssetPath");
       state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
       state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
+      // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
+      state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       if (const rpc::Json* rect = route.get("rect"); rect && rect->isObject()) {
         state.rectX = static_cast<float>(rect->getNumber("x", 0.0));
@@ -3360,7 +3367,9 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
         state.routeId = "preview-route-" + std::to_string(routeIndex);
       }
       signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
-                   state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.fitMode + ":" +
+                   state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
+                   state.mediaPlaybackKey + ":" + (state.mediaAssetPlaying ? "p" : "s") +
+                   (state.mediaAssetLoop ? "l" : "o") + ":" + state.fitMode + ":" +
                    std::to_string(state.rectX) + "," + std::to_string(state.rectY) + "," +
                    std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "," +
                    std::to_string(state.opacity) + "|";
@@ -5365,6 +5374,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.mediaAssetPath = route.mediaAssetPath;
         layer.mediaPlaybackKey = route.mediaPlaybackKey;
         layer.mediaAssetPlaying = route.mediaAssetPlaying;
+        layer.mediaAssetLoop = route.mediaAssetLoop;
       }
       if (route.hasRect) {
         layer.rect = {route.rectX, route.rectY, route.rectWidth, route.rectHeight};
@@ -6214,6 +6224,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // about to draw is observed on every tick it is drawn. Strings and ints only.
   ++renderTickCounter_;
   for (const auto& frame : videoFrames) {
+    // A metadata-only frame (Zoom roster entry: no pixels, no I420) is not
+    // evidence the source is running — observing it would keep a dead
+    // source "continuous" and count it as having had a frame.
+    if (!frame.hasPixels() && !frame.hasI420()) continue;
     sourceContinuity_.observe(frame.participantId, frame.frameId, renderTickCounter_);
   }
   sourceContinuity_.endTick(renderTickCounter_);

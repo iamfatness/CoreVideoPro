@@ -4986,3 +4986,53 @@ TEST(MediaCoreCommand, APausedClipCueInPreviewKeepsItsOwnPosterSource) {
   EXPECT_EQ(ids[0], "media:clip-1");
   EXPECT_EQ(ids[1], "preview:media:clip-1");  // the ONE case a second position is legitimate
 }
+
+// The shell's route "loop" flag (MediaRoutePlaybackService.IsLoopingAsset)
+// must reach the media source on BOTH buses — without it a looping route asset
+// plays once and freezes on its last frame. A preview re-send that only flips
+// the loop flag must be applied, not deduped away by the preview signature.
+TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  auto* mediaFramesPtr = mediaFrames.get();
+  modules.mediaFrames = std::move(mediaFrames);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto loopRoute = [](const char* assetId, bool loop) {
+    return corevideo::rpc::Json::Object{
+        {"routeId", std::string("r-") + assetId}, {"mode", "fixed"}, {"mediaAssetId", assetId},
+        {"mediaAssetName", "Loop"}, {"mediaAssetKind", "background"},
+        {"mediaAssetPath", std::string("C:\\media\\") + assetId + ".mp4"},
+        {"mediaPlaybackKey", std::string("media:") + assetId}, {"mediaAssetPlaying", true},
+        {"mediaAssetLoop", loop},
+        {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}};
+  };
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "pgm"},
+                                   {"routes", corevideo::rpc::Json::Array{loopRoute("bg-loop", true)}}},
+      corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
+                                   {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", false)}}},
+  });
+  mediaCore.renderDisplayTick();
+  {
+    const auto& ids = mediaFramesPtr->seenSourceIds;
+    const auto& loops = mediaFramesPtr->seenLoops;
+    ASSERT_EQ(ids.size(), 2u);
+    ASSERT_EQ(loops.size(), 2u);
+    for (size_t i = 0; i < ids.size(); ++i) {
+      if (ids[i] == "media:bg-loop") EXPECT_TRUE(loops[i]) << "Program route lost its loop flag";
+      if (ids[i] == "media:pv-loop") EXPECT_FALSE(loops[i]);
+    }
+  }
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
+                                   {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", true)}}},
+  });
+  mediaCore.renderDisplayTick();
+  bool previewLoops = false;
+  for (size_t i = 0; i < mediaFramesPtr->seenSourceIds.size(); ++i) {
+    if (mediaFramesPtr->seenSourceIds[i] == "media:pv-loop") previewLoops = mediaFramesPtr->seenLoops[i];
+  }
+  EXPECT_TRUE(previewLoops) << "a loop-only change to the preview scene was not applied";
+}
