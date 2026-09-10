@@ -6,6 +6,16 @@ Everything below is committed and pushed unless it says otherwise.
 
 ---
 
+## Before anything else: the meeting ended
+
+**Zoom meeting `8916561023` ("CVP Soak") is down.** The app had to be closed and rebuilt to land the observability work, and the app was the meeting's only host, so closing it ended the meeting. Two rejoin attempts authenticated fine (`auth_ok`, jwt and zak both set) and then waited forever on a meeting that no longer exists.
+
+**Start the meeting again before item 1 below.** The app is up and healthy on `127.0.0.1:8011`, syncing, with the real core, real GPU compositing and the render/audio/video-output workers running — it just has no Zoom sources in it. Nothing needs changing; `/snapshot` will show the sources as soon as the meeting is back.
+
+This also means **everything after roughly 23:30 was verified without live Zoom sources.** Where that matters, it is called out.
+
+---
+
 ## Read this first: what needs your eyes
 
 These cannot be closed without a human watching. They are batched so you are not hunting.
@@ -15,6 +25,20 @@ These cannot be closed without a human watching. They are batched so you are not
 | 1 | **Watch a gallery cut to program.** Cue a Tiles scene to Preview, let it settle, Take. | Two fixes landed for this tonight. My instruments can prove the layers were emitted continuously; they cannot tell me the cut *looked* seamless. You caught the background refresh when my measurements saw nothing. |
 | 2 | **Watch the same cut with the background as a live source.** | The live background had a separate bug from the tiles. Fixed, unverified visually. |
 | 3 | **If either still refreshes**, say so and stop there. | A third contributor is already identified and instrumented: the take can churn Zoom subscriptions. The telemetry to see it landed tonight. |
+
+---
+
+## New: you can now watch the core directly
+
+`GET http://127.0.0.1:8011/snapshot` serves the core's own `sessionState` verbatim — **49 nodes**, including `realtimeEvidence` (per-worker progress ages, completed slots, skipped slots, deadline misses, `audioLostSamples`), `encoderEvidence` (queue depth, oldest queued age, dropped video/audio, per-ISO fidelity), `programBuffer` (underruns, overflows, gpuNotReady, occupancy), `recording`, `tiles`, `multiviewer`, `sourceAuthority`.
+
+Until tonight the shell forwarded **ten hand-picked fields** out of that document and dropped the rest. Every measurement I fumbled during your show failed for want of this.
+
+It is behind the same auth as every other endpoint (loopback open, LAN hard-refuses without `COREVIDEO_CONTROL_TOKEN`), redacts fail-closed, and reports its own staleness rather than implying freshness — one call during a wedged sync correctly reported `ageMs: 127998, stale: true`, which is exactly the condition that used to be invisible.
+
+Two things it proved about itself worth keeping: it refused to serve a synthesized record that had not come from a real core sync, and it caught a genuine redaction bug — the existing log redactor's rtmp rule is greedy over non-whitespace, so run over JSON as text it silently swallows the closing quote and merges the following fields. It now walks the document tree instead.
+
+**Per-layer geometry is still not available.** Rect, fit mode, opacity and fill colour live on the render plan inside the core and never reach the wire. The `tiles` node does publish a rect per member. Layer `order` is now exposed on `/state`, which answers "was the background layer continuous across the cut".
 
 ---
 
