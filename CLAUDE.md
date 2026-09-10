@@ -709,10 +709,71 @@ measurement rather than from the product.
   where `sentSubscriptions_` is (leave / rejoin / a new engine process).
   **The churn itself is NOT fixed. Do not fix it until the instrument has shown
   how often it actually fires on a real show.**
+- **PER-SOURCE CONTINUITY IS PART OF THE VERDICT (slice 1 of the persistent-sources
+  redesign, 2026-09-10).** The wall-only verdict above missed the owner's actual
+  case: a Tiles gallery whose foreground AND media background are on both Preview
+  and Program re-rendered on every cut, and the take record still said `cut`,
+  because nothing was watching the SOURCES a shared scene depends on.
+  `core/SourceContinuityLedger.h` observes every render tick over `videoFrames`
+  (keyed by `frame.participantId`) and bumps a per-source `generation` whenever a
+  frameId regresses (a decoder reopened) or a source reappears after
+  `absentTicksBeforeRestart` (30 ticks, 500 ms at 60 Hz) — a cold start. The take
+  record now carries `sources[]` ({sourceId, generationBefore, generationAfter,
+  frameIdBefore, frameIdAfter, restarted}) for every source shared by the outgoing
+  Program+Preview plans and the incoming one, plus `restartedSources` and
+  `missingSources` (a source the take brought on air with no frame on its first
+  program tick, judged only when a frame was EXPECTED — a media layer, or a
+  source that was running within the ledger's own restart window when the take
+  was armed). Any restart or missing source forces `verdict=rebuilt`, even when
+  the wall itself cut cleanly. Extends the existing rule "a peek is not an
+  observation" one step further: **a counter that only counts submits is not
+  continuity** — the ledger has to watch frameId actually advance across the
+  take, not just that something arrived.
 
 Tests: `native/tests/RenderedSceneAttributionTest.cpp` (the attribution defect
-red/green, the policies, and the take record end to end) and
+red/green, the policies, and the take record end to end),
+`native/tests/SourceContinuityLedgerTest.cpp`, and
 `ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
+
+## Media is a persistent source (slice 1, 2026-09-10)
+
+Slice 1 of `docs/superpowers/specs/2026-09-10-persistent-sources-design.md`: a
+media asset is now one decoder with one clock, not one per bus.
+
+- **Same source id on both buses.** `buildPreviewCompositorRenderPlan` no longer
+  renames every Preview media layer to `preview:<id>` — Program and Preview
+  address the SAME `media:<assetId>` source, so `OwnedMediaFrameSource` runs one
+  decoder and one `StillMediaFrameCache` entry for a background or still shared
+  by both scenes, and a Take cannot restart it. **The one exception:** a paused,
+  non-still `media-video` layer (a clip cue poster) still gets `preview:` —
+  its paused poster frame is a different playback position from Program's rolling
+  copy, and the two must never replace each other in the frame set.
+- **Loop vs clip go-live policy** (shell, `MediaRoutePlaybackService` /
+  `TransportCoordinator` / `StudioViewModel`). A looping background asset (kind
+  "background") plays under key `media:<id>` on both buses, identical to Program,
+  matching §2 of the spec ("nothing" on go-live for loops). A clip (non-loop)
+  plays under `media:<id>:live:<n>` — paused on first frame while only in
+  Preview, rolling from 0 with audio on only when it actually GOES LIVE. `n` is
+  the `MediaGoLiveLedger` generation for that asset, which advances only when
+  the asset enters Program for the first time or the operator explicitly presses
+  Play on a Program-routed clip — never on every Take, so a clip already playing
+  on Program stays rolling across an unrelated cut. `ChooseAssetToPromote` /
+  `ITransportHost.RecordProgramMediaGoLive` runs promotion only for the assets
+  that actually went live; a paused clip that stays on Program stays paused.
+- **The 16-decoder cap warning names the refused source** (`OwnedMediaFrameSource`)
+  instead of just stating the count, and a loud, once-per-id `[media-playback]`
+  warning fires when two different playback identities request one source id —
+  now a real risk once media sources outlive buses (spec §5 risk called out
+  up front).
+
+Tests: `native/tests/MediaCoreCommandTest.cpp` (media identity across buses),
+`native/tests/MediaPlaybackTimelineTest.cpp` (`OwnedMediaFrameSource.*`),
+`native/tests/ProgramPixelContinuityTest.cpp` (dark 0x10 fill placed outside the
+placeholder colour range — fails against the old per-bus rename),
+`MediaRoutePlaybackServiceTests` / `TransportCoordinatorTests` (shell), and
+`scripts/qa/take-verdict-judge.test.mjs`. Not yet run: `scripts/qa/live-meeting-soak.mjs
+--takes N` against a real meeting.
+
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
   "layer boxes show live video inconsistently". `VideoSurfaceHost` attaches a

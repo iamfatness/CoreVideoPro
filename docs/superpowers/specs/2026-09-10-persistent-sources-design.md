@@ -139,10 +139,25 @@ contract, never deleted:
 
 Each slice ships independently and is verified by section 4.
 
-1. **Instruments + media as persistent sources.** Generation counters in the Take
-   record; pixel probe; one player per media asset; go-live policy; remove the
-   `preview:` namespace and per-Take keys; still-image keys unified. Fixes the
-   background flash and clip restarts.
+1. **Instruments + media as persistent sources. Shipped 2026-09-10, commits
+   `e9cf013..2a18f61`.** Generation counters in the Take record
+   (`core/SourceContinuityLedger.h`, `core/TakeRecordPolicy.h`); pixel probe
+   (`ProgramPixelContinuityTest.cpp`); one player per media asset
+   (`OwnedMediaFrameSource`, `buildPreviewCompositorRenderPlan`); go-live policy
+   (`MediaGoLiveLedger`, `MediaRoutePlaybackService`/`TransportCoordinator`);
+   removed the `preview:` namespace and per-Take keys (kept only for a paused
+   clip-cue poster); still-image keys unified. Fixes the background flash and
+   clip restarts. Known gaps, carried to later slices:
+   - Pausing a scene BACKGROUND (the "Pause" label on `SceneBackground.IsPlaying`)
+     still flips `playing` and resets its decoder via
+     `MediaPlaybackTimeline::configure` — an operator transport action, not a
+     cut, first item for slice 3.
+   - A route slot reassigned onto Program records no go-live.
+   - The Tiles wall animator is still per bus (slice 2, not this slice).
+   - Transitions still fade per layer (slice 3).
+   - Metal/CPU parity is untouched (slice 4).
+   - `scripts/qa/live-meeting-soak.mjs --takes N` has not yet been run against a
+     real meeting.
 2. **Tiles wall as a persistent source.** One animator per wall, one offscreen
    texture, buses sample it; hand-off/hand-back code deleted. Integrated-GPU
    budget gate lands here (`MonitorRenderFaultInjection` on a quiet machine, plus
