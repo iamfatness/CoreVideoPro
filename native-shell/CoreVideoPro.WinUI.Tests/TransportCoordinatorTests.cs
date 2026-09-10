@@ -552,11 +552,11 @@ public sealed class TransportCoordinatorTests
     }
 
     [Fact]
-    public async Task Take_RefreshesTheMediaBinPlaybackIndicatorsEvenWhenNothingWentLive()
+    public async Task Take_RefreshesTheMediaBinWhenAClipLeavesProgramWithNothingGoingLive()
     {
         // A clip that LEFT Program on this Take must stop showing "playing" in the bin, but it
-        // never appears in wentLive (only entries are promoted) -- so this refresh must be
-        // unconditional, not gated on PromoteCallCount.
+        // never appears in wentLive (only entries are promoted) -- so this refresh cannot be
+        // gated on PromoteCallCount alone; it fires because the Program media SET changed.
         var (coordinator, _, host) = Build();
         host.ActiveSceneId = "intro";
         host.PreviewSceneId = "interview";
@@ -567,11 +567,15 @@ public sealed class TransportCoordinatorTests
 
         Assert.Equal(0, host.PromoteCallCount);
         Assert.Equal(1, host.RefreshMediaBinPlaybackIndicatorsCallCount);
+        Assert.Same(host.ProgramRoutesByScene["intro"], host.LastRefreshPreviousProgramRoutes);
     }
 
     [Fact]
-    public async Task Take_RefreshesTheMediaBinPlaybackIndicatorsWhenSomethingDidGoLiveToo()
+    public async Task Take_DoesNotDoubleRefreshWhenPromoteAlreadyRebuiltTheBin()
     {
+        // Promote's own rebuild (ApplyMediaSelection over every asset) already gives every bin
+        // row its current on-air state, so a Take that also promotes something must NOT pay for
+        // a second bin rebuild.
         var (coordinator, _, host) = Build();
         host.ActiveSceneId = "intro";
         host.PreviewSceneId = "interview";
@@ -581,7 +585,24 @@ public sealed class TransportCoordinatorTests
         await coordinator.TakeAsync();
 
         Assert.Equal(1, host.PromoteCallCount);
-        Assert.Equal(1, host.RefreshMediaBinPlaybackIndicatorsCallCount);
+        Assert.Equal(0, host.RefreshMediaBinPlaybackIndicatorsCallCount);
+    }
+
+    [Fact]
+    public async Task Take_DoesNotRefreshTheMediaBinWhenTheProgramMediaSetIsUnchanged()
+    {
+        // An automated Magic Scene Take between two scenes that share the exact same Program
+        // media (or carry none at all) must not rebuild MediaBinGroups every cut.
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [ClipRoute("clip")];
+        host.ProgramRoutesByScene["interview"] = [ClipRoute("clip")];   // same clip, still on Program
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal(0, host.PromoteCallCount);
+        Assert.Equal(0, host.RefreshMediaBinPlaybackIndicatorsCallCount);
     }
 
     private static SourceRoute ClipRoute(string assetId) =>
@@ -734,15 +755,22 @@ public sealed class TransportCoordinatorTests
             if (DraftRoutesByScene.TryGetValue(sceneId, out var draft)) ProgramRoutesByScene[sceneId] = draft;
         }
 
-        public void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
+        public bool PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
         {
             PromoteCallCount++;
             LastPromoted = wentLiveMediaAssetIds;
+            return true;
         }
 
         public void RefreshPreviewRoutingState() { }
 
-        public void RefreshMediaBinPlaybackIndicators() => RefreshMediaBinPlaybackIndicatorsCallCount++;
+        public IReadOnlyList<SourceRoute>? LastRefreshPreviousProgramRoutes { get; private set; }
+
+        public void RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes)
+        {
+            RefreshMediaBinPlaybackIndicatorsCallCount++;
+            LastRefreshPreviousProgramRoutes = previousProgramRoutes;
+        }
 
         public IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
             ProgramRoutesByScene.TryGetValue(ActiveSceneId ?? string.Empty, out var routes) ? routes : [];

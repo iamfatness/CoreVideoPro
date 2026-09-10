@@ -269,15 +269,6 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void GoLiveLedger_OperatorRestartAdvancesTheGeneration()
-    {
-        var ledger = new MediaGoLiveLedger();
-        ledger.RecordTake(Array.Empty<SourceRoute>(), new[] { MediaRoute("clip") });
-        ledger.RecordRestart("clip");
-        Assert.Equal(2, ledger.GenerationOf("clip"));
-    }
-
-    [Fact]
     public void ResolveSceneRoutePlayback_ALoopPlaysOnBothBusesWithOneKey()
     {
         var routes = new[] { MediaRoute("bg") };
@@ -516,6 +507,49 @@ public sealed class MediaRoutePlaybackServiceTests
     public void IsPlayingOnAir_FalseWhenNotOnProgram()
     {
         Assert.False(MediaRoutePlaybackService.IsPlayingOnAir("clip", isOnProgram: false, isLooping: false, NoPaused));
+    }
+
+    // ---- SelectedAssetLeftProgram (T1.2 task 3, controller ruling) -----------------------
+
+    [Fact]
+    public void SelectedAssetLeftProgram_TrueWhenTheSelectedClipWasOnProgramAndIsNotNow()
+    {
+        var before = new[] { MediaRoute("clip") };
+        var after = Array.Empty<SourceRoute>();
+        Assert.True(MediaRoutePlaybackService.SelectedAssetLeftProgram("clip", before, after));
+    }
+
+    [Fact]
+    public void SelectedAssetLeftProgram_FalseWhenTheSelectedClipStaysOnProgram()
+    {
+        var routes = new[] { MediaRoute("clip") };
+        Assert.False(MediaRoutePlaybackService.SelectedAssetLeftProgram("clip", routes, routes));
+    }
+
+    [Fact]
+    public void SelectedAssetLeftProgram_FalseWhenTheSelectedAssetWasNeverOnProgram()
+    {
+        var before = Array.Empty<SourceRoute>();
+        var after = Array.Empty<SourceRoute>();
+        Assert.False(MediaRoutePlaybackService.SelectedAssetLeftProgram("clip", before, after));
+    }
+
+    [Fact]
+    public void SelectedAssetLeftProgram_FalseWhenADifferentClipLeftProgram()
+    {
+        // Only the SELECTED asset's departure matters here -- an unselected clip leaving
+        // Program is handled by the bin-row refresh, not this per-selection clearing check.
+        var before = new[] { MediaRoute("clip"), MediaRoute("other") };
+        var after = new[] { MediaRoute("clip") };
+        Assert.False(MediaRoutePlaybackService.SelectedAssetLeftProgram("clip", before, after));
+    }
+
+    [Fact]
+    public void SelectedAssetLeftProgram_FalseWhenNoAssetIsSelected()
+    {
+        var before = new[] { MediaRoute("clip") };
+        var after = Array.Empty<SourceRoute>();
+        Assert.False(MediaRoutePlaybackService.SelectedAssetLeftProgram(null, before, after));
     }
 
     [Fact]

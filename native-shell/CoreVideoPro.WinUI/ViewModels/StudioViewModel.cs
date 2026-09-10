@@ -782,9 +782,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
-    // Go-live policy: a clip's playback key advances only when it ENTERS Program (or the
-    // operator restarts it), so a clip already on air survives a Take. Replaces the old
-    // per-Take version that restarted every Program clip on every Take.
+    // Go-live policy: a clip's playback key advances only when it ENTERS Program, so a clip
+    // already on air survives a Take. Replaces the old per-Take version that restarted every
+    // Program clip on every Take. Pause/Play on an already-live clip never advances it (T1.2:
+    // pause is a clock state on the core's one decoder, not a shell-side restart).
     private readonly MediaGoLiveLedger _mediaGoLive = new();
     // ShowInputs roster store + loaded-flag + editor-signature + ISO selection moved to
     // ShowInputsCoordinator (PR3 strangler). The coordinator is constructed in the ctor (it needs
@@ -4076,10 +4077,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // Only clips ENTERING Program roll, and only they are promoted: a clip that stayed on
             // Program keeps the operator's play/pause state (same rule as Take).
             var wentLive = _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
-            if (wentLive.Count > 0) PromoteProgramMediaRouteToPlayback(wentLive);
-            // Unconditional (T1.2 task 3): a clip that LEFT Program on this Update also needs
-            // its bin row refreshed, not just one that entered.
-            RefreshMediaBinPlaybackIndicators();
+            var promoted = wentLive.Count > 0 && PromoteProgramMediaRouteToPlayback(wentLive);
+            // T1.2 task 3 (controller ruling, folded in): a clip that LEFT Program on this
+            // Update also needs its bin row refreshed, but only when the Program media SET
+            // actually changed and Promote did not already rebuild the bin (same fold-in as
+            // TransportCoordinator.TakeAsync — avoids rebuilding on every non-media Update).
+            if (!promoted && !string.Equals(
+                    BuildProgramMediaRouteSignature(previousProgramRoutes),
+                    BuildProgramMediaRouteSignature(GetResolvedProgramRoutes()),
+                    StringComparison.Ordinal))
+            {
+                RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
+            }
         }
 
         if (!string.Equals(scene.Name, trimmed, StringComparison.Ordinal))
@@ -5774,7 +5783,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public static string FormatMediaPlaybackActionLabel(bool isOnProgram, bool playing) =>
         isOnProgram
-            ? playing ? "Pause Program" : "Restart Program"
+            ? playing ? "Pause Program" : "Resume Program"
             : playing ? "Pause audition" : "Audition";
 
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
@@ -6079,18 +6088,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _mediaGoLive.OperatorPausedAssetIds);
     }
 
-    // Re-projects the media bin's real on-air playing indicator. Unlike
-    // PromoteProgramMediaRouteToPlayback (which only fires when something went live), this must
-    // run on EVERY Take/Update that touches Program routes, because a clip that LEFT Program
-    // needs its bin row to stop reading "playing" too. Operator-event only (Take/Update) —
-    // never wired into a frame-rate path (see CLAUDE.md 0xc000027b rule).
-    private void RefreshMediaBinPlaybackIndicators()
+    // Re-projects the media bin's real on-air playing indicator, and clears the SELECTED
+    // asset's local playing state if it is specifically the one that left Program (the ORed
+    // audition flag in ApplyMediaSelection otherwise keeps reading "playing" forever, since
+    // nothing else ever clears it). The caller (TransportCoordinator.TakeAsync /
+    // StudioViewModel.UpdateScene) only invokes this when the Program media SET changed AND
+    // PromoteProgramMediaRouteToPlayback did not already refresh — see the fold-in note at
+    // those call sites. Operator-event only (Take/Update) — never wired into a frame-rate path
+    // (see CLAUDE.md 0xc000027b rule).
+    private void RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes)
     {
+        if (MediaRoutePlaybackService.SelectedAssetLeftProgram(
+            SelectedMediaAssetId, previousProgramRoutes, GetResolvedProgramRoutes()))
+        {
+            SelectedMediaAssetPlaying = false;
+            var leftAsset = FindMediaAsset(SelectedMediaAssetId!);
+            MediaPlaybackStatus = leftAsset is not null
+                ? $"{leftAsset.Name} left Program"
+                : "No media asset playing";
+            OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+            OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+            OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
+            OnPropertyChanged(nameof(MediaPlaybackStatus));
+        }
+
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
         OnPropertyChanged(nameof(MediaBinGroups));
     }
 
-    private void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
+    // Returns true iff it actually promoted something (and therefore already rebuilt
+    // MediaBinGroups + moved the selection) — callers use this to skip a redundant
+    // RefreshMediaBinPlaybackIndicators call in the same Take.
+    private bool PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)
     {
         // Empty went-live list -> null -> no selection, Playing or status change.
         // Stills are never promoted (nothing to roll), and promotion changes only the
@@ -6102,7 +6131,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(mediaAssetId) ||
             FindMediaAsset(mediaAssetId) is not { } asset)
         {
-            return;
+            return false;
         }
 
         SelectedMediaAssetId = asset.Id;
@@ -6123,6 +6152,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
         OnPropertyChanged(nameof(MediaPlaybackStatus));
         RefreshMultiviewGridTiles();
+        return true;
     }
 
     [RelayCommand]

@@ -73,8 +73,10 @@ public interface ITransportHost
     void CopyPreviewRoutesToScene(string sceneId);
 
     // Hands a clip that WENT LIVE to the playback selection (and plays it). An empty list is a
-    // no-op: a clip that stayed on Program is never un-paused by a Take.
-    void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds);
+    // no-op: a clip that stayed on Program is never un-paused by a Take. Returns true iff it
+    // actually promoted something (and therefore already rebuilt MediaBinGroups) — callers use
+    // this to avoid a redundant RefreshMediaBinPlaybackIndicators call in the same Take.
+    bool PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds);
 
     void RefreshPreviewRoutingState();
 
@@ -86,12 +88,16 @@ public interface ITransportHost
     // Returns the media asset ids that went live (entered Program) on this Take.
     IReadOnlyList<string> RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes);
 
-    // Re-projects the media bin's real on-air playing indicator (T1.2 task 3, controller
-    // ruling). Called unconditionally after RecordProgramMediaGoLive on every Take, even when
-    // nothing went live: a clip that LEFT Program on this Take must stop showing "playing" in
-    // the bin, and PromoteProgramMediaRouteToPlayback only refreshes when something entered.
-    // An operator event, never a frame-rate path.
-    void RefreshMediaBinPlaybackIndicators();
+    // Re-projects the media bin's real on-air playing indicator, and clears the SELECTED
+    // asset's local playing flag/status if IT is the one that left Program (T1.2 task 3,
+    // controller ruling). Called after RecordProgramMediaGoLive only when the caller has
+    // decided a refresh is actually needed (the Program media SET changed AND
+    // PromoteProgramMediaRouteToPlayback did not already refresh) — never unconditionally, so
+    // an automated Magic Scene Take between two non-media scenes does not rebuild the bin on
+    // every cut. `previousProgramRoutes` is the pre-swap snapshot TakeAsync/UpdateScene already
+    // captured, needed to tell whether the SELECTED asset specifically was on Program before
+    // and is not after. An operator event, never a frame-rate path.
+    void RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes);
 
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task EnsureMediaCoreRunningAsync(string startingStatus);

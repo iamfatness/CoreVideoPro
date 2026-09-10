@@ -37,7 +37,7 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T0.2](https://github.com/iamfatness/CoreVideoPro/issues/424) | Get the Zoom SDK redistribution answer | 4 | Builds already bundle the SDK from a private URL; practice is ahead of a legal answer that was never recorded (`docs/zoom-windows-sdk-packaging.md:27`). |
 | [T0.3](https://github.com/iamfatness/CoreVideoPro/issues/425) | Acquire 2-3 reference machines (mid-tier GPU, hybrid-graphics laptop, AMD GPU) | 1 | Everything is proven on one RTX 4090. Lead time. |
 | [T0.4](https://github.com/iamfatness/CoreVideoPro/issues/426) | Pick the tester feedback channel | 3 | `docs/beta-tester-guide.md` names none. |
-| [T0.5](https://github.com/iamfatness/CoreVideoPro/issues/427) | Rule on the open handoff decisions: 1500 ms tile staleness; monitor isolation mitigation; the unexplained 18.6 fps recording | 1/2 | From `docs/overnight-handoff-2026-09-10.md` (#419 branch). Auto-take is ruled by T1.1. |
+| [T0.5](https://github.com/iamfatness/CoreVideoPro/issues/427) | Rule on the open handoff decisions: 1500 ms tile staleness; monitor isolation mitigation; the unexplained 18.6 fps recording | 1/2 | From `docs/overnight-handoff-2026-09-10.md` (#419 branch). Auto-take (T1.1) is closed, not reproduced — no longer an open ruling here. |
 
 ## Tier 1 — show-stoppers on any machine
 
