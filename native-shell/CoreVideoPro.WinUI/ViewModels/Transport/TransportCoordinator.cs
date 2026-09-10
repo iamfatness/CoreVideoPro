@@ -156,6 +156,9 @@ public sealed class TransportCoordinator
                 var wentLive = _host.RecordProgramMediaGoLive(previousProgramRoutes);
                 // Go-live is the only event a source reacts to: promote only what entered Program.
                 if (wentLive.Count > 0) _host.PromoteProgramMediaRouteToPlayback(wentLive);
+                // Unconditional (T1.2 task 3, controller ruling): a clip that LEFT Program on
+                // this Take also needs its bin row refreshed, not just one that entered.
+                _host.RefreshMediaBinPlaybackIndicators();
                 _host.RefreshPreviewRoutingState();
             }
             finally { _host.EndTakeMutation(); }

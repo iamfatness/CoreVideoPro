@@ -4077,6 +4077,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // Program keeps the operator's play/pause state (same rule as Take).
             var wentLive = _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
             if (wentLive.Count > 0) PromoteProgramMediaRouteToPlayback(wentLive);
+            // Unconditional (T1.2 task 3): a clip that LEFT Program on this Update also needs
+            // its bin row refreshed, not just one that entered.
+            RefreshMediaBinPlaybackIndicators();
         }
 
         if (!string.Equals(scene.Name, trimmed, StringComparison.Ordinal))
@@ -6074,6 +6077,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(assetId, GetResolvedProgramRoutes()),
             MediaRoutePlaybackService.IsLoopingAsset(asset),
             _mediaGoLive.OperatorPausedAssetIds);
+    }
+
+    // Re-projects the media bin's real on-air playing indicator. Unlike
+    // PromoteProgramMediaRouteToPlayback (which only fires when something went live), this must
+    // run on EVERY Take/Update that touches Program routes, because a clip that LEFT Program
+    // needs its bin row to stop reading "playing" too. Operator-event only (Take/Update) —
+    // never wired into a frame-rate path (see CLAUDE.md 0xc000027b rule).
+    private void RefreshMediaBinPlaybackIndicators()
+    {
+        MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
+        OnPropertyChanged(nameof(MediaBinGroups));
     }
 
     private void PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds)

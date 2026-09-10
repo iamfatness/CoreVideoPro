@@ -86,6 +86,13 @@ public interface ITransportHost
     // Returns the media asset ids that went live (entered Program) on this Take.
     IReadOnlyList<string> RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes);
 
+    // Re-projects the media bin's real on-air playing indicator (T1.2 task 3, controller
+    // ruling). Called unconditionally after RecordProgramMediaGoLive on every Take, even when
+    // nothing went live: a clip that LEFT Program on this Take must stop showing "playing" in
+    // the bin, and PromoteProgramMediaRouteToPlayback only refreshes when something entered.
+    // An operator event, never a frame-rate path.
+    void RefreshMediaBinPlaybackIndicators();
+
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task EnsureMediaCoreRunningAsync(string startingStatus);
 

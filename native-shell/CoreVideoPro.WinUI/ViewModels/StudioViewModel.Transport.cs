@@ -237,6 +237,8 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     IReadOnlyList<string> ITransportHost.RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
         _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
 
+    void ITransportHost.RefreshMediaBinPlaybackIndicators() => RefreshMediaBinPlaybackIndicators();
+
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task ITransportHost.EnsureMediaCoreRunningAsync(string startingStatus) =>
         EnsureMediaCoreRunningAsync(startingStatus);

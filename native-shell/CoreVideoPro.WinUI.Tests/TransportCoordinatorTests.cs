@@ -551,6 +551,39 @@ public sealed class TransportCoordinatorTests
         Assert.Equal(new[] { "sting" }, host.LastPromoted);
     }
 
+    [Fact]
+    public async Task Take_RefreshesTheMediaBinPlaybackIndicatorsEvenWhenNothingWentLive()
+    {
+        // A clip that LEFT Program on this Take must stop showing "playing" in the bin, but it
+        // never appears in wentLive (only entries are promoted) -- so this refresh must be
+        // unconditional, not gated on PromoteCallCount.
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [ClipRoute("clip")];
+        host.ProgramRoutesByScene["interview"] = [];               // clip leaves Program on this Take
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal(0, host.PromoteCallCount);
+        Assert.Equal(1, host.RefreshMediaBinPlaybackIndicatorsCallCount);
+    }
+
+    [Fact]
+    public async Task Take_RefreshesTheMediaBinPlaybackIndicatorsWhenSomethingDidGoLiveToo()
+    {
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [ClipRoute("bed")];
+        host.ProgramRoutesByScene["interview"] = [ClipRoute("bed"), ClipRoute("sting")];
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal(1, host.PromoteCallCount);
+        Assert.Equal(1, host.RefreshMediaBinPlaybackIndicatorsCallCount);
+    }
+
     private static SourceRoute ClipRoute(string assetId) =>
         new() { Id = $"route-{assetId}", Mode = SourceRouteMode.Fixed, ParticipantId = ShowInputRosterService.ToMediaSourceId(assetId) };
 
@@ -649,6 +682,8 @@ public sealed class TransportCoordinatorTests
 
         public int PromoteCallCount { get; private set; }
 
+        public int RefreshMediaBinPlaybackIndicatorsCallCount { get; private set; }
+
         public int GoLiveRecords { get; private set; }
 
         public IReadOnlyList<SourceRoute>? LastPreviousProgramRoutes { get; private set; }
@@ -706,6 +741,8 @@ public sealed class TransportCoordinatorTests
         }
 
         public void RefreshPreviewRoutingState() { }
+
+        public void RefreshMediaBinPlaybackIndicators() => RefreshMediaBinPlaybackIndicatorsCallCount++;
 
         public IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
             ProgramRoutesByScene.TryGetValue(ActiveSceneId ?? string.Empty, out var routes) ? routes : [];
