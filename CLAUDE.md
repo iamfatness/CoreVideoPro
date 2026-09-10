@@ -699,7 +699,7 @@ measurement rather than from the product.
   (re)subscribe or teardown, a cumulative `churn` count, and the REASON
   (`resolution-change` / `cap-eviction` / `departure` / `resubscribe`), decided by
   the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
-  `sessionState().zoomSubscriptions` (engine:false with empty arrays when there is
+  `sessionState().zoomSubscriptionChurn` (engine:false with empty arrays when there is
   no engine — the multiviewer-node rule). Two things it is built to catch:
   resolution is part of the subscription key and is `purpose == "active-speaker"
   ? 1080P : 720P`, so an active-speaker flip is a genuine engine-side renderer
