@@ -18,6 +18,14 @@ public static class ZoomMediaSpinePayloadBuilder
     // might grant.
     public const int DefaultMaxVideoSubscriptions = 10;
 
+    /// <summary>
+    /// Synthetic Zoom user id for the meeting-mix subscription. Must be numeric
+    /// (the native spine skips a non-numeric id) and must not be a roster guest
+    /// (#465: keying mix at <c>participants[0]</c> aliased isolate PCM for that
+    /// guest onto the mix target, so their ISO strip measured digital silence).
+    /// </summary>
+    public const string MeetingMixParticipantId = "0";
+
     public sealed record BuildInput
     {
         public IReadOnlyList<MediaCoreParticipantWire> Participants { get; init; } = [];
@@ -304,9 +312,12 @@ public static class ZoomMediaSpinePayloadBuilder
             // its lifetime depend on an active-speaker video subscription.
             // Deliberately NOT narrowed to the source set: it is the programMix-mode
             // path (Zoom's own mix), and is left unrouted in perGuestIso mode.
+            // Keyed at a synthetic id, not participants[0]: mix subscribe is
+            // Zoom's mixed callback (no user id), and sharing a guest's id made
+            // that guest's isolate strip silent (#465).
             subscriptions.Add(new Dictionary<string, object?>
             {
-                ["participantId"] = participants[0]["sdkUserId"]?.ToString() ?? string.Empty,
+                ["participantId"] = MeetingMixParticipantId,
                 ["kind"] = "meeting-audio",
                 ["purpose"] = "program",
                 ["priority"] = 0

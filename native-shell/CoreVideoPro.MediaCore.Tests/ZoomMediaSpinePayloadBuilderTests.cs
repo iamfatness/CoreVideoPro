@@ -169,8 +169,23 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
         // The Zoom meeting mix (programMix mode) is untouched by the source rule.
         var subscriptions = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["subscriptions"]);
         var mix = Assert.Single(subscriptions, subscription => subscription["kind"]?.ToString() == "meeting-audio");
-        Assert.Equal(Host, mix["participantId"]);
+        Assert.Equal("0", mix["participantId"]);
         Assert.Equal("program", mix["purpose"]);
+    }
+
+    // #465 live: Jamal (roster[0], 16778240) talks, isolate is subscribed and the
+    // engine writes one-way frames, but the mixer strip is digital silence.
+    // Meeting-mix was keyed to participants[0], so Zoom's mixed subscribe used
+    // his user id. Key the mix at a synthetic id that is not a guest.
+    [Fact]
+    public void MeetingMixIsNotKeyedToTheFirstRosterParticipant()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(LiveInput(speaker: Host));
+        var subscriptions = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["subscriptions"]);
+        var mix = Assert.Single(subscriptions, subscription => subscription["kind"]?.ToString() == "meeting-audio");
+        Assert.Equal("0", mix["participantId"]);
+        foreach (var guest in new[] { Host, ProgramGuest, PreviewGuest, Alexander })
+            Assert.NotEqual(guest, mix["participantId"]);
     }
 
     [Fact]
@@ -500,7 +515,7 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
         var baseline = Signature(ZoomMediaSpinePayloadBuilder.Build(Input("a")));
         Assert.Equal(baseline, Signature(ZoomMediaSpinePayloadBuilder.Build(Input("b"))));
         Assert.Equal(baseline, Signature(ZoomMediaSpinePayloadBuilder.Build(Input("c"))));
-        Assert.DoesNotContain(":program|", baseline.Replace("meeting-audio:a:program|", ""));
+        Assert.DoesNotContain(":program|", baseline.Replace("meeting-audio:0:program|", ""));
         Assert.DoesNotContain(":preview", baseline);
     }
 

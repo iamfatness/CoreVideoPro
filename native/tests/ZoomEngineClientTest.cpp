@@ -122,6 +122,17 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   EXPECT_EQ(audio->kind, corevideo::modules::ZoomEngineEventKind::Audio);
   EXPECT_EQ(audio->byteLength, 960u);
 
+  // #465: mix is keyed at synthetic id 0. Parsing must keep participant_id 0
+  // (uintField returns 0 for both missing and zero; ingest distinguishes mix
+  // by sourceUuid, so the parsed id has to survive).
+  const auto mix = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"audio","source_uuid":"meeting-audio-0-program","participant_id":0,"byte_len":960})");
+  ASSERT_TRUE(mix.has_value());
+  EXPECT_EQ(mix->kind, corevideo::modules::ZoomEngineEventKind::Audio);
+  EXPECT_EQ(mix->sourceUuid, "meeting-audio-0-program");
+  EXPECT_EQ(mix->participantId, 0u);
+  EXPECT_EQ(mix->byteLength, 960u);
+
   const auto participants = corevideo::modules::parseZoomEngineEvent(
       R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia \"Host\"","has_video":true,"is_talking":true,"is_muted":false,"is_sharing_screen":true},{"id":77,"name":"David Chen","has_video":false,"is_talking":false,"is_muted":true,"is_sharing_screen":false}]})");
   ASSERT_TRUE(participants.has_value());
