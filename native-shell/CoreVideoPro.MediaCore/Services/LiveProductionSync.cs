@@ -517,7 +517,13 @@ public static class LiveProductionSync
         return $"Breakout room changed to {roomLabel} — turn engine off before switching rooms.";
     }
 
-    private static string NormalizeFeedHealthLabel(RawParticipantEvent participant)
+    /// <summary>
+    /// The feed-health label for a raw participant: "video-off" when the camera is off, else the
+    /// network-quality label. Public so the spine payload's live-roster path uses the SAME
+    /// mapping (#478: it used to pass raw NetworkQuality, so a camera-off guest read as
+    /// video-on and was handed a video subscription).
+    /// </summary>
+    public static string NormalizeFeedHealthLabel(RawParticipantEvent participant)
     {
         if (participant.VideoOn == false)
         {

@@ -8611,7 +8611,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     participant.Muted == true,
                     participant.SharingScreen == true,
                     participant.AudioLevel ?? 0,
-                    participant.NetworkQuality ?? "live"))
+                    // #478: VideoOn must reach the spine, or a camera-off guest reads as live
+                    // and spends a capped video subscription on no frames.
+                    LiveProductionSync.NormalizeFeedHealthLabel(participant)))
                 .ToList();
         }
 
@@ -8644,6 +8646,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SdkRuntimeReady = !Settings.SdkIsBlocked,
                 ProgramSceneRoutes = syncContext.SceneRoutes,
                 PreviewSceneRoutes = syncContext.PreviewSceneRoutes,
+                // #478 plumbing only; the video budget rule is ZoomVideoSubscriptionPolicy.
+                ProgramTilesLayer = syncContext.TilesLayer,
+                PreviewTilesLayer = syncContext.PreviewTilesLayer,
+                IsoParticipantIds = syncContext.RecordingTargets.IsoParticipantIds,
                 Multiview = multiview
             });
     }

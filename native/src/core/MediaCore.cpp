@@ -1975,6 +1975,7 @@ rpc::Json MediaCore::zoomSubscriptionChurnState() const {
       {"totalChurn", 0.0},
       {"lastResolutionChanges", 0.0},
       {"lastCapEvictions", 0.0},
+      {"lastUnrouted", 0.0},
       {"lastDepartures", 0.0},
       {"sources", rpc::Json::Array{}},
   };

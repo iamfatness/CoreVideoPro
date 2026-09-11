@@ -738,22 +738,60 @@ comment at the code site; this is the index.
   frozen feed still DELIVERS with a held frameId; `pause()` is the harsher
   no-frame case) and `AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated`.
   Both fail without the gate change.
-  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTS AND THIS FIX CANNOT TOUCH IT.**
-  `ZoomMediaSpinePayloadBuilder` assigns each video subscription a `purpose`
-  (active-speaker, then program routes, then preview routes, then roster order)
-  and caps the list at `maxVideoSubscriptions`. The core keys its
-  re-subscribe dedup on RESOLUTION, and resolution is `purpose == "active-speaker"
-  ? 1080P : 720P` — so a source flipping into or out of active-speaker is
-  re-subscribed at a new resolution, tearing down and rebuilding its engine
-  renderer. And because a Tiles scene serialises an EMPTY route list, a take
-  reorders the candidate list, which can push a source past the cap and
-  unsubscribe it outright. Either produces a real frame gap on the background
-  source, which reads exactly like this defect. The subscription UUID itself is
-  fine (`participant-video-<pid>-camera`, purpose deliberately excluded, so
-  Preview -> Program promotion alone never tears it down). UNPROVEN without a
-  live meeting: which of the two the owner is watching, and whether Zoom
-  re-subscribe churn on the taken members adds a third redraw.
-  **Both are now INSTRUMENTED, not fixed** (2026-09-10, see the next section).
+  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTED; BOTH HALVES ARE NOW FIXED (#478,
+  2026-09-11).** It was: `ZoomMediaSpinePayloadBuilder` ordered video candidates
+  active-speaker, program routes, preview routes, then EVERY participant in roster
+  order, capped at `maxVideoSubscriptions`; and the core picked resolution as
+  `purpose == "active-speaker" ? 1080P : 720P`, with resolution in the dedup key.
+  So every speaker change rebuilt two engine renderers, a Tiles scene's EMPTY
+  route list reordered the list on a take, and camera-OFF early joiners took the
+  cap ahead of a late wall guest (live, 12-person meeting: Alexander, slot 2,
+  `subscribed:false`, generation 14, froze whenever he left Preview/Program; three
+  camera-off non-wall guests held live subscriptions; `totalChurn` 53->59 in 20 s
+  with the owner seeing Tiles "flashing"). Now:
+  **(1) ONLY SOURCES ARE SUBSCRIBED (owner rule: "Why are you grabbing sources I
+  don't have routed to the multiviewer?").** `MediaCore/Services/ZoomSourceSetPolicy.cs`
+  is the ONE pure decision of who is a source, in budget order: Program routes ->
+  Program Tiles members (+ Zoom wall background) -> Preview routes -> Preview Tiles
+  members -> in-show wall slots in slot order -> ISO-armed guests (only while
+  "Program + ISOs" is on). No roster fill, anywhere. VIDEO = camera-on sources,
+  capped; AUDIO (`participant-audio`, purpose "mix") = every source including
+  camera-off ones (a wall guest with the camera off can still speak), uncapped —
+  owner ruling "sources only": a non-source is NOT subscribed and is inaudible in
+  Program (the hardware-switcher model). `meeting-audio` (the programMix path) is
+  unchanged. The active speaker is not a tier: talking grants nothing; the
+  directed speaker is a source only through a follow-speaker (`active-speaker`
+  mode) route, while their camera is on, and never moves anyone's budget position.
+  `StudioViewModel.BuildSpinePayload` only plumbs the Tiles layers + ISO ids in, and
+  now maps the live roster's `VideoOn` into health (it used to pass raw
+  NetworkQuality, so every camera-off guest read as video-on).
+  **(2) RESOLUTION IS A STABLE TIER.** `native/src/modules/ZoomSubscriptionResolutionPolicy.h`:
+  fixed Program/Preview routes (`participant-video` + purpose program/preview) and
+  screen share 1080P, every other purpose (program-tiles, preview-tiles, multiview,
+  iso, active-speaker) 720P, so it moves only on a cue/Take, never on who talks.
+  In-place `setRawDataResolution` was REJECTED: the SDK header only declares it
+  (`h/rawdata/rawdata_renderer_interface.h:50`), the engine only ever calls it
+  before `subscribe()` (`engine-video.cpp:70`), and a silent no-op on a live
+  renderer cannot be ruled out without a live meeting. And a DOWNGRADE IS NEVER
+  SENT: the engine already keeps a live renderer on a lower request
+  (`video_subscribe_noop_existing`), so the core keeps the higher key too — a
+  renderer is raised at most once per subscription. The macOS shell (kind "video",
+  purpose "program" for all) is deliberately untouched by the tier.
+  **(3) LOUD.** A camera-on source the cap leaves out goes in the payload's
+  `videoSubscriptionShortfall` + `warnings`, and its multiview tile label reads
+  "<name> · no video: subscription limit (10)". The subscription UUID is still
+  `participant-video-<pid>-camera` (purpose excluded, so a Take never tears it
+  down). Tests: `ZoomMediaSpinePayloadBuilderTests.LiveCase478_*` (the 12-person
+  live case, red on the old builder), `ANonSourceCameraOnParticipantGetsNeitherVideoNorAudio`,
+  `ACameraOffWallGuestGetsAudioButNoVideo`, `AnIsoOnlyGuestGetsBothVideoAndAudio`;
+  native `ZoomEngineRuntime.AnActiveSpeakerFlipCausesNoTeardown` (red on the old
+  rule), `ZoomSubscriptionResolutionPolicyRules.*`.
+  **Costs, by the owner's rule:** an unrouted guest now has NO frames and NO audio
+  anywhere — the scene canvas editor for a scene on neither bus, a follow-speaker
+  route whose new speaker is not on the wall (cold subscribe at the cut), and a
+  Tiles guest who turns their camera off (dropped from the members, so from the
+  source set, unless also on the wall) are all affected. The mixer still lists every
+  participant; wiring it to `ZoomSourceSetPolicy` is a follow-up (#481 overlaps).
 
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
@@ -988,18 +1026,26 @@ measurement rather than from the product.
 - **SUBSCRIPTION CHURN IS MEASURED PER SOURCE.** `ZoomEngineRuntime` keeps a
   ledger keyed by sourceUuid — a `generation` that increments on every real
   (re)subscribe or teardown, a cumulative `churn` count, and the REASON
-  (`resolution-change` / `cap-eviction` / `departure` / `resubscribe`), decided by
-  the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
+  (`resolution-change` / `cap-eviction` / `unrouted` / `departure` / `resubscribe`),
+  decided by the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
   `sessionState().zoomSubscriptionChurn` (engine:false with empty arrays when there is
-  no engine — the multiviewer-node rule). Two things it is built to catch:
-  resolution is part of the subscription key and is `purpose == "active-speaker"
-  ? 1080P : 720P`, so an active-speaker flip is a genuine engine-side renderer
-  teardown; and a source dropped from the requested set is unsubscribed outright.
-  **The ledger deliberately SURVIVES the unsubscribe** — a record erased with the
-  subscription cannot answer the question it exists for — and is cleared only
-  where `sentSubscriptions_` is (leave / rejoin / a new engine process).
-  **The churn itself is NOT fixed. Do not fix it until the instrument has shown
-  how often it actually fires on a real show.**
+  no engine — the multiviewer-node rule). Two things it was built to catch:
+  resolution is part of the subscription key, so a raised resolution is a genuine
+  engine-side renderer teardown; and a source dropped from the requested set is
+  unsubscribed outright. **The ledger deliberately SURVIVES the unsubscribe** — a
+  record erased with the subscription cannot answer the question it exists for —
+  and is cleared only where `sentSubscriptions_` is (leave / rejoin / a new engine
+  process). **The instrument did its job and the churn is now FIXED (#478,
+  2026-09-11)**: on a real 12-person show it fired several times a minute
+  (`totalChurn` 53->59 in 20 s). See "A SECOND, ENGINE-SIDE CONTRIBUTOR" above:
+  resolution is a stable tier (an active-speaker flip sends nothing and moves no
+  generation), a downgrade is never sent (so a `resolution-change` now means a
+  guest's renderer was RAISED on a cue, at most once per subscription), and the
+  shell subscribes only sources. Because most drops are now an operator
+  un-routing a guest, a retire is `cap-eviction` ONLY when the shell's
+  `videoSubscriptionShortfall` names that participant, else `unrouted`
+  (`lastUnrouted` alongside `lastCapEvictions`) — without that split every
+  ordinary un-route would read as the cap defect.
 - **PER-SOURCE CONTINUITY IS PART OF THE VERDICT (slice 1 of the persistent-sources
   redesign, 2026-09-10).** The wall-only verdict above missed the owner's actual
   case: a Tiles gallery whose foreground AND media background are on both Preview

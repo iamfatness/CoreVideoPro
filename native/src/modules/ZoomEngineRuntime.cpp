@@ -5,6 +5,7 @@
 #include "engine-ipc.h"
 #include "modules/LumaRangeProbe.h"
 #include "modules/ProgramFramePreview.h"
+#include "modules/ZoomSubscriptionResolutionPolicy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -394,26 +395,29 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
         command.sourceUuid = kind + "-" + participantId + "-" + purpose;
       }
       command.mode = kind == "screen-share" ? "screenshare" : "";
-      // Resolution by purpose (0=360P, 1=720P, 2=1080P). TARGET is 1080p60 for EVERY
-      // participant (product spec). But N concurrent 1080P raw subscriptions overloaded
-      // the Zoom SDK (corevideo-zoom-engine ntdll 0xc000000d) and the CPU I420->BGRA path.
-      // INTERIM until the GPU pipeline lands (GPU I420->BGRA + zero-copy composite, which
-      // removes the CPU bottleneck and lets us pull all feeds at full res): the
-      // active-speaker + screen share get 1080P (the program/feature candidate the user
-      // explicitly wants full res), other multiview participants get 720P. The engine
-      // downgrades further on per-feed failure.
-      if (kind == "screen-share" || purpose == "active-speaker") {
-        command.resolution = 2;  // 1080P
-      } else {
-        command.resolution = 1;  // 720P interim (target 1080P via the GPU pipeline)
-      }
+      const auto existing = sentSubscriptions_.find(command.sourceUuid);
+      // Resolution (0=360P, 1=720P, 2=1080P) by a STABLE tier: fixed Program/Preview
+      // routes and screen share at 1080P, everything else 720P — see
+      // ZoomSubscriptionResolutionPolicy.h (#478). It used to be 1080P for
+      // purpose=="active-speaker", so every speaker change rebuilt two renderers.
+      // TARGET is still 1080p60 for EVERY participant (product spec); N concurrent
+      // 1080P raw subscriptions overloaded the Zoom SDK (ntdll 0xc000000d) and the
+      // CPU I420->BGRA path, so the rest stay 720P until the GPU pipeline removes that
+      // bottleneck. The engine downgrades further on per-feed failure.
       // Audio subscriptions have no resolution concept; key them at -1 so a video
       // and an audio subscription for the same source don't alias.
       const bool isAudioSubscription = kind == "participant-audio" || kind == "meeting-audio";
+      const int requestedResolution = ZoomSubscriptionResolutionPolicy::requestedResolution(kind, purpose);
+      // Never send a downgrade: the engine keeps a live renderer at its resolution
+      // (video_subscribe_noop_existing), so the key must too, or the ledger books a
+      // teardown that did not happen.
+      command.resolution = ZoomSubscriptionResolutionPolicy::effectiveKey(
+          existing != sentSubscriptions_.end() && !isAudioSubscription,
+          existing != sentSubscriptions_.end() ? existing->second : -1,
+          requestedResolution);
       const int subscriptionKey = isAudioSubscription ? -1 : command.resolution;
       desired[command.sourceUuid] = subscriptionKey;
 
-      const auto existing = sentSubscriptions_.find(command.sourceUuid);
       // Classify BEFORE the dedup short-circuit, so a source that stayed put is
       // recorded as such and a resolution flip is recorded as the teardown it is.
       {
@@ -460,6 +464,18 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       sentSubscriptions_[command.sourceUuid] = subscriptionKey;
     }
 
+    // The participants the shell's video budget left out (#478). A retire is a cap
+    // eviction only for these; any other in-meeting drop is an operator un-route.
+    std::set<std::string> overBudgetParticipants;
+    if (const rpc::Json* shortfall = payload.get("videoSubscriptionShortfall");
+        shortfall && shortfall->isArray()) {
+      for (const auto& entry : shortfall->asArray()) {
+        if (entry.isObject()) {
+          overBudgetParticipants.insert(entry.getString("participantId"));
+        }
+      }
+    }
+
     // Unsubscribe sources that were active but are no longer requested (participant
     // left / dropped from the show), then forget them.
     std::set<std::string> retiredVideoParticipants;
@@ -479,7 +495,9 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
           } catch (...) {
           }
           const auto change = ZoomSubscriptionChurnPolicy::classifyRetire(
-              numeric && state_.hasParticipant(numericId));
+              numeric && state_.hasParticipant(numericId),
+              ledger->second.kind == "participant-video" &&
+                  overBudgetParticipants.count(ledger->second.participantId) > 0);
           ledger->second.subscribed = false;
           ++ledger->second.generation;
           ledger->second.lastReason = ZoomSubscriptionChurnPolicy::reason(change);
@@ -974,11 +992,12 @@ void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
 rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
   std::lock_guard<std::mutex> lock(mutex_);
   rpc::Json::Array sources;
-  std::uint64_t resolutionChanges = 0, evictions = 0, departures = 0, subscribed = 0;
+  std::uint64_t resolutionChanges = 0, evictions = 0, unrouted = 0, departures = 0, subscribed = 0;
   for (const auto& [sourceUuid, entry] : subscriptionChurn_) {
     if (entry.subscribed) ++subscribed;
     if (entry.lastReason == "resolution-change") ++resolutionChanges;
     if (entry.lastReason == "cap-eviction") ++evictions;
+    if (entry.lastReason == "unrouted") ++unrouted;
     if (entry.lastReason == "departure") ++departures;
     sources.emplace_back(rpc::Json::Object{
         {"sourceUuid", sourceUuid},
@@ -1000,6 +1019,7 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
       {"totalChurn", static_cast<double>(subscriptionChurnTotal_.load(std::memory_order_relaxed))},
       {"lastResolutionChanges", static_cast<double>(resolutionChanges)},
       {"lastCapEvictions", static_cast<double>(evictions)},
+      {"lastUnrouted", static_cast<double>(unrouted)},
       {"lastDepartures", static_cast<double>(departures)},
       {"sources", sources},
   };
