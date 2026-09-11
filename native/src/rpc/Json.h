@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -10,15 +11,20 @@ namespace corevideo::rpc {
 
 class Json {
  public:
+  struct Number {
+    double value{};
+    std::string lexeme;  // Present for parsed JSON; preserves validation evidence.
+  };
   using Array = std::vector<Json>;
   using Object = std::map<std::string, Json>;
-  using Value = std::variant<std::nullptr_t, bool, double, std::string, Array, Object>;
+  using Value = std::variant<std::nullptr_t, bool, double, Number, std::string, Array, Object>;
 
   Json();
   Json(std::nullptr_t);
   Json(bool value);
   Json(int value);
   Json(double value);
+  Json(Number value);
   Json(const char* value);
   Json(std::string value);
   Json(Array value);
@@ -33,6 +39,7 @@ class Json {
 
   [[nodiscard]] bool asBool(bool fallback = false) const;
   [[nodiscard]] double asNumber(double fallback = 0) const;
+  [[nodiscard]] std::optional<std::string_view> numberLexeme() const;
   [[nodiscard]] const std::string& asString() const;
   [[nodiscard]] const Array& asArray() const;
   [[nodiscard]] const Object& asObject() const;

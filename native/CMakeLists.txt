@@ -65,6 +65,26 @@ add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/core/ShowStateOwner.cpp
+  src/core/ShowPlanGenerator.cpp
+  src/core/ShowPreparationTransaction.cpp
+  src/core/AtomicTakeCoordinator.cpp
+  src/core/AtomicTakeJsonCodec.cpp
+  src/core/AtomicTakeRpcAdapter.cpp
+  src/core/SceneVersionStore.cpp
+  src/core/SceneVersionShadow.cpp
+  src/core/ProgramRenderWorker.cpp
+  src/core/SourceFrameLease.cpp
+  src/core/DeliveredProgramPacket.cpp
+  src/core/ProgramPacketPlayout.cpp
+  src/core/SourceRegistry.cpp
+  src/core/ZoomSourceAuthorityAdapter.cpp
+  src/core/ZoomRuntimeAuthorityBridge.cpp
+  src/core/AuthorityShadow.cpp
+  src/core/LegacyShowCommandProjector.cpp
+  src/core/DesiredShowCheckpoint.cpp
+  src/core/LegacyCaptureLedger.cpp
+  src/core/ShowClock.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
   src/modules/OutputDestinationSupervisor.cpp
@@ -640,6 +660,26 @@ if(BUILD_TESTING)
     tests/AnchoredFrameDeadlineTrackerTest.cpp
     tests/ProgramAudioDelayTest.cpp
     tests/ProgramPlayoutTimelineTest.cpp
+    tests/ShowStateOwnerTest.cpp
+    tests/ShowPlanGeneratorTest.cpp
+    tests/ShowPreparationTransactionTest.cpp
+    tests/AtomicTakeCoordinatorTest.cpp
+    tests/AtomicTakeJsonCodecTest.cpp
+    tests/AtomicTakeRpcAdapterTest.cpp
+    tests/SceneVersionStoreTest.cpp
+    tests/SceneVersionShadowTest.cpp
+    tests/ProgramRenderWorkerTest.cpp
+    tests/SourceFrameLeaseTest.cpp
+    tests/ProgramPacketPlayoutTest.cpp
+    tests/ShadowExactSourceFramesTest.cpp
+    tests/SourceRegistryTest.cpp
+    tests/ZoomSourceAuthorityAdapterTest.cpp
+    tests/ZoomRuntimeAuthorityBridgeTest.cpp
+    tests/AuthorityShadowTest.cpp
+    tests/LegacyShowCommandProjectorTest.cpp
+    tests/DesiredShowCheckpointTest.cpp
+    tests/LegacyCaptureLedgerTest.cpp
+    tests/ShowClockTest.cpp
     tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
     tests/MediaCoreCommandTest.cpp

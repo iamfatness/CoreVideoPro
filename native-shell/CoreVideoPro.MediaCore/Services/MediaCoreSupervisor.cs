@@ -80,7 +80,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<MediaCoreHealth>? HealthChanged;
     public event Action<string>? StatusChanged;
     public event Action<NativeMediaCoreProfile>? ProfileChanged;
-    public event Action<RawCaptureSnapshot>? ZoomRecovered;
+    public event Action<RawCaptureSnapshot, int>? ZoomRecovered;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
@@ -1351,10 +1351,10 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             if (_stopped || !ReferenceEquals(_process, sender)) return;
             SpawnChild();
         }
-        _ = RecoverChildAsync();
+        _ = RecoverChildAsync(health.RestartCount);
     }
 
-    private async Task RecoverChildAsync()
+    private async Task RecoverChildAsync(int recoveryGeneration)
     {
         try
         {
@@ -1438,7 +1438,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 }
             }
 
-            ZoomRecovered?.Invoke(snapshot);
+            lock (_gate)
+            {
+                if (_stopped || _restarts != recoveryGeneration || !_processAlive) return;
+            }
+            ZoomRecovered?.Invoke(snapshot, recoveryGeneration);
             StatusChanged?.Invoke(rawCapturePaused
                 ? "Media core and Zoom recovered — capture remains paused"
                 : "Media core and Zoom recovered");

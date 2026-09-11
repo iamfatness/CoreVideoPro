@@ -1,4 +1,5 @@
 #include "modules/ZoomEngineRuntime.h"
+#include "modules/RealZoomCaptureSource.h"
 
 #include "modules/ZoomEngineProcess.h"
 
@@ -25,6 +26,38 @@
 
 namespace {
 
+TEST(ZoomEngineRuntime, AuthoritySnapshotSeparatesTransientSourcesAndNeverInventsDurablePeople) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  ZoomEngineEvent roster;
+  roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{7, "Same name", true, false, false, true},
+                         {8, "Same name", true, false, false, false}};
+  runtime.applyEngineEventForTest(roster);
+  const auto first = runtime.authorityObservation();
+  ASSERT_EQ(first.sources.size(), 4U);
+  EXPECT_EQ(first, runtime.authorityObservation());
+  EXPECT_FALSE(first.sources[0].durablePersonId.has_value());
+  EXPECT_FALSE(first.sources[0].subscriptionObserved.has_value());
+  EXPECT_FALSE(first.sources[0].publication.has_value());
+  EXPECT_TRUE(first.sources[0].instanceId != first.sources[1].instanceId);
+  EXPECT_TRUE(first.sources[0].instanceId != first.sources[2].instanceId);
+  // No intervening snapshot: off/on fences publications while preserving the
+  // provider identity used by fixed routes.
+  roster.participants[0].hasVideo = false;
+  runtime.applyEngineEventForTest(roster);
+  roster.participants[0].hasVideo = true;
+  runtime.applyEngineEventForTest(roster);
+  const auto resumed = runtime.authorityObservation();
+  EXPECT_EQ(resumed.sources[0].generation, first.sources[0].generation);
+  EXPECT_EQ(resumed.sources[0].instanceId, first.sources[0].instanceId);
+  EXPECT_EQ(resumed.sources[1].instanceId, first.sources[1].instanceId);
+  runtime.applyEngineEventForTest({ZoomEngineEventKind::Left});
+  EXPECT_TRUE(runtime.authorityObservation().sources.empty());
+  runtime.applyEngineEventForTest(roster);
+  EXPECT_TRUE(runtime.authorityObservation().sources[0].instanceId != resumed.sources[0].instanceId);
+}
+
 void setEnv(const char* name, const char* value) {
 #if defined(_WIN32)
   _putenv_s(name, value);
@@ -40,6 +73,12 @@ void unsetEnv(const char* name) {
   unsetenv(name);
 #endif
 }
+
+struct ScopedEnvironment final {
+  ScopedEnvironment(const char* key, const char* value) : key_(key) { setEnv(key, value); }
+  ~ScopedEnvironment() { unsetEnv(key_.c_str()); }
+  std::string key_;
+};
 
 // Fake engine process client for the phase 2 increment 3 sender-thread tests:
 // records every line handed to sendLine (in order), can block sends on a latch
@@ -647,6 +686,27 @@ TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined)
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {
+  static void reloadCredentials(ZoomEngineRuntime& runtime) {
+    runtime.applyJoinCredentialsFromPayload(rpc::Json::Object{});
+  }
+  static rpc::Json capture(ZoomEngineRuntime& runtime, bool invalidate = false) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    if (invalidate) runtime.authorityObservation_.valid = false;
+    return runtime.rawCaptureSnapshotLocked();
+  }
+
+  static rpc::Json spine(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    return runtime.spineSnapshotLocked(rpc::Json::Object{}, 0.0);
+  }
+
+  static void useCanonicalCameraKey(ZoomEngineRuntime& runtime, bool share = false) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    auto node = runtime.videoStreams_.extract("test-camera");
+    node.key() = share ? "screen-share-42-share" : "participant-video-42-camera";
+    runtime.videoStreams_.insert(std::move(node));
+    runtime.refreshAuthorityObservationLocked();
+  }
   static void installVideoRegion(ZoomEngineRuntime& runtime, std::shared_ptr<void> region,
                                  std::uint32_t width = 4, std::uint32_t height = 4) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
@@ -869,6 +929,17 @@ TEST(ZoomEngineRuntime, ShutdownBeforeFirstFrameNeverStartsIngest) {
   EXPECT_FALSE(ZoomEngineRuntimeTestAccess::ingestJoinable(runtime));
 }
 
+// ---------------------------------------------------------------------------
+// Subscription churn is MEASURED, not inferred (live-show instrument 2026-09-09).
+//
+// Two hazards produce a real engine-side renderer teardown that looks, on air,
+// exactly like a render-plan rebuild: a source flipping into or out of
+// active-speaker changes its resolution, which is part of the subscription key;
+// and a source pushed out of the requested set is unsubscribed outright. This
+// asserts the ledger names both, per source, with a generation a reader can
+// compare across a take.
+// ---------------------------------------------------------------------------
+
 namespace {
 
 const corevideo::rpc::Json* findChurnSource(const corevideo::rpc::Json& churn,
@@ -970,4 +1041,194 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
     }
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, AuthoritySnapshotFencesHelperReplacementBeforeNewRoster) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  ZoomEngineEvent roster;
+  roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{7, "", true}};
+  runtime.applyEngineEventForTest(roster);
+  const auto old = runtime.authorityObservation();
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  const auto replaced = runtime.authorityObservation();
+  EXPECT_TRUE(replaced.sources.empty());
+  EXPECT_TRUE(replaced.processEpoch != old.processEpoch);
+  EXPECT_TRUE(replaced.processGeneration > old.processGeneration);
+  runtime.applyEngineEventForTest(roster);
+  const auto fresh = runtime.authorityObservation();
+  ASSERT_EQ(fresh.sources.size(), 2U);
+  EXPECT_TRUE(fresh.sources[0].instanceId != old.sources[0].instanceId);
+  EXPECT_FALSE(fresh.sources[0].publication.has_value());
+  EXPECT_EQ(fresh, runtime.authorityObservation());
+}
+
+TEST(ZoomEngineRuntime, AuthorityPublicationComesFromCopiedStreamAndRejectsOffOnInFlightProof) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  ZoomEngineEvent roster;
+  roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{42, "", true, false, false, true}};
+  runtime.applyEngineEventForTest(roster);
+  auto region = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(region));
+  ZoomEngineRuntimeTestAccess::useCanonicalCameraKey(runtime);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  auto first = runtime.authorityObservation();
+  ASSERT_TRUE(first.sources[0].publication.has_value());
+  const auto firstFrames = runtime.latestDecodedVideoFrames(100);
+  ASSERT_EQ(firstFrames.size(), 1U);
+  ASSERT_TRUE(firstFrames[0].exactSourceEvidence);
+  const auto originalEvidence = firstFrames[0].exactSourceEvidence;
+  EXPECT_EQ(originalEvidence->payload.get(), firstFrames[0].i420.get());
+  EXPECT_EQ(originalEvidence->identity.instanceId, first.sources[0].instanceId);
+  EXPECT_EQ(originalEvidence->identity.processEpoch, first.processEpoch);
+  EXPECT_EQ(originalEvidence->publicationSequence, first.sources[0].publication->sequence);
+  EXPECT_EQ(originalEvidence->kind, SourceFrameEvidence::Kind::Camera);
+  RealZoomCaptureSource captureTransport;
+  captureTransport.ingestVideoFrame(firstFrames[0]);
+  ASSERT_EQ(captureTransport.pollVideoFrames().size(), 1U);
+  EXPECT_EQ(captureTransport.pollVideoFrames()[0].exactSourceEvidence.get(), originalEvidence.get());
+  EXPECT_FALSE(first.sources[1].publication.has_value());
+  EXPECT_EQ(first.sources[0].publication->width, 4U);
+  EXPECT_TRUE(first.sources[0].publication->observedNs > 0);
+  EXPECT_FALSE(first.sources[0].publication->fpsNumerator.has_value());
+  region->setHeader(4, 4, 4);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime, {}, [&] {
+    roster.participants[0].hasVideo = false;
+    runtime.applyEngineEventForTest(roster);
+    roster.participants[0].hasVideo = true;
+    runtime.applyEngineEventForTest(roster);
+  });
+  EXPECT_FALSE(runtime.authorityObservation().sources[0].publication.has_value());
+  const auto invalidatedFrames = runtime.latestDecodedVideoFrames(101);
+  ASSERT_EQ(invalidatedFrames.size(), 1U);
+  EXPECT_FALSE(invalidatedFrames[0].exactSourceEvidence);
+  region->setHeader(6, 4, 4);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  auto resumed = runtime.authorityObservation();
+  ASSERT_TRUE(resumed.sources[0].publication.has_value());
+  const auto resumedFrames = runtime.latestDecodedVideoFrames(102);
+  ASSERT_EQ(resumedFrames.size(), 1U);
+  ASSERT_TRUE(resumedFrames[0].exactSourceEvidence);
+  EXPECT_EQ(resumedFrames[0].exactSourceEvidence->identity.instanceId, originalEvidence->identity.instanceId);
+  EXPECT_TRUE(resumedFrames[0].exactSourceEvidence->publicationFence > originalEvidence->publicationFence);
+  EXPECT_TRUE(resumed.sources[0].publication->sequence > first.sources[0].publication->sequence);
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  const auto retired = runtime.latestDecodedVideoFrames(103);
+  for (const auto& frame : retired) EXPECT_FALSE(frame.exactSourceEvidence);
+}
+
+TEST(ZoomEngineRuntime, CaptureEnvelopePreservesExactAuthorityAndEmptyInvalidDistinction) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  ZoomEngineEvent roster;
+  roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{42, "private display label", true, false, false, true}};
+  runtime.applyEngineEventForTest(roster);
+  const auto capture = ZoomEngineRuntimeTestAccess::capture(runtime);
+  const auto* catalog = capture.get("sourceAuthority");
+  ASSERT_TRUE(catalog != nullptr);
+  ASSERT_TRUE(catalog->get("valid")->asBool());
+  const auto observation = runtime.authorityObservation();
+  EXPECT_EQ(catalog->getString("processEpoch"), observation.processEpoch);
+  EXPECT_EQ(catalog->getNumber("sequence"), static_cast<double>(observation.sequence));
+  const auto& sources = catalog->get("sources")->asArray();
+  ASSERT_EQ(sources.size(), 2U);
+  for (std::size_t i = 0; i < sources.size(); ++i) {
+    EXPECT_EQ(sources[i].getString("sourceId"), observation.sources[i].sourceId);
+    EXPECT_EQ(sources[i].getString("instanceId"), observation.sources[i].instanceId);
+    EXPECT_EQ(sources[i].getNumber("generation"), static_cast<double>(observation.sources[i].generation));
+    EXPECT_EQ(sources[i].getString("participantId"), capture.get("participants")->asArray()[0].getString("userId"));
+    EXPECT_TRUE(sources[i].get("personId") == nullptr);
+    EXPECT_TRUE(sources[i].get("displayName") == nullptr);
+  }
+  EXPECT_EQ(sources[0].getString("kind"), "camera");
+  EXPECT_EQ(sources[1].getString("kind"), "share");
+  const auto spine = ZoomEngineRuntimeTestAccess::spine(runtime);
+  const auto* spineCatalog = spine.get("sourceAuthority");
+  ASSERT_TRUE(spineCatalog != nullptr);
+  EXPECT_EQ(spineCatalog->getString("processEpoch"), catalog->getString("processEpoch"));
+  EXPECT_EQ(spineCatalog->getNumber("sequence"), catalog->getNumber("sequence"));
+  ASSERT_EQ(spineCatalog->get("sources")->asArray().size(), sources.size());
+  EXPECT_EQ(spineCatalog->get("sources")->asArray()[0].getString("instanceId"),
+            sources[0].getString("instanceId"));
+  roster.participants.clear();
+  runtime.applyEngineEventForTest(roster);
+  const auto empty = ZoomEngineRuntimeTestAccess::capture(runtime);
+  EXPECT_TRUE(empty.get("sourceAuthority")->get("valid")->asBool());
+  EXPECT_TRUE(empty.get("sourceAuthority")->get("sources")->asArray().empty());
+  const auto invalid = ZoomEngineRuntimeTestAccess::capture(runtime, true);
+  EXPECT_FALSE(invalid.get("sourceAuthority")->get("valid")->asBool());
+  EXPECT_TRUE(invalid.get("sourceAuthority")->get("sources")->asArray().empty());
+}
+
+TEST(ZoomEngineRuntime, ExactSourceShadowIsDisabledAtStartupAndRetainsNoFrames) {
+  using namespace corevideo::modules;
+  ScopedEnvironment exactSourceShadow("COREVIDEO_EXACT_SOURCE_SHADOW", "0");
+  ZoomEngineRuntime runtime;
+  setEnv("COREVIDEO_EXACT_SOURCE_SHADOW", "1");
+  ZoomEngineRuntimeTestAccess::reloadCredentials(runtime);
+  ZoomEngineEvent roster; roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{42, "", true, false, false, true}};
+  runtime.applyEngineEventForTest(roster);
+  auto camera = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(camera));
+  ZoomEngineRuntimeTestAccess::useCanonicalCameraKey(runtime);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  const auto frames = runtime.latestDecodedVideoFrames(10);
+  ASSERT_EQ(frames.size(), 1U); ASSERT_TRUE(frames[0].exactSourceEvidence);
+  const auto& evidence = *frames[0].exactSourceEvidence;
+  const corevideo::core::ExactRouteSourceRef reference{evidence.identity.sourceId,
+      evidence.identity.instanceId, evidence.identity.processEpoch, "camera",
+      static_cast<uint64_t>(evidence.identity.generation)};
+  EXPECT_EQ(runtime.shadowExactSourceFrame(reference, 0).status,
+      corevideo::core::ShadowExactSourceFrames::Status::Missing);
+  EXPECT_FALSE(runtime.shadowExactSourceFrame(reference, 0).frame);
+}
+
+TEST(ZoomEngineRuntime, ProducerCameraAndShareEvidenceRemainDistinctForTheSameParticipant) {
+  using namespace corevideo::modules;
+  ScopedEnvironment exactSourceShadow("COREVIDEO_EXACT_SOURCE_SHADOW", "1");
+  ZoomEngineRuntime runtime;
+  ZoomEngineEvent roster; roster.kind = ZoomEngineEventKind::Participants;
+  roster.participants = {{42, "", true, false, false, true}};
+  runtime.applyEngineEventForTest(roster);
+  auto camera = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(camera));
+  ZoomEngineRuntimeTestAccess::useCanonicalCameraKey(runtime);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  const auto held = runtime.latestDecodedVideoFrames(10);
+  ASSERT_EQ(held.size(), 1U); ASSERT_TRUE(held[0].exactSourceEvidence);
+  auto share = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(share));
+  ZoomEngineRuntimeTestAccess::useCanonicalCameraKey(runtime, true);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  const auto current = runtime.latestDecodedVideoFrames(11);
+  ASSERT_EQ(current.size(), 1U); ASSERT_TRUE(current[0].exactSourceEvidence);
+  EXPECT_EQ(held[0].exactSourceEvidence->kind, SourceFrameEvidence::Kind::Camera);
+  EXPECT_EQ(current[0].exactSourceEvidence->kind, SourceFrameEvidence::Kind::Share);
+  EXPECT_TRUE(held[0].exactSourceEvidence->identity.instanceId != current[0].exactSourceEvidence->identity.instanceId);
+  EXPECT_TRUE(held[0].exactSourceEvidence->payload.get() != current[0].exactSourceEvidence->payload.get());
+  const auto exactRef = [](const auto& evidence, const char* kind) {
+    return corevideo::core::ExactRouteSourceRef{evidence.identity.sourceId, evidence.identity.instanceId,
+        evidence.identity.processEpoch, kind, static_cast<uint64_t>(evidence.identity.generation)};
+  };
+  const auto cameraRef = exactRef(*held[0].exactSourceEvidence, "camera");
+  const auto shareRef = exactRef(*current[0].exactSourceEvidence, "share");
+  const auto retainedCamera = runtime.shadowExactSourceFrame(cameraRef, 0);
+  const auto retainedShare = runtime.shadowExactSourceFrame(shareRef, 0);
+  ASSERT_TRUE(retainedCamera.frame); ASSERT_TRUE(retainedShare.frame);
+  EXPECT_EQ(retainedCamera.frame->i420, held[0].i420);
+  EXPECT_EQ(retainedShare.frame->i420, current[0].i420);
+  roster.participants[0].hasVideo = false;
+  runtime.applyEngineEventForTest(roster);
+  roster.participants[0].hasVideo = true;
+  runtime.applyEngineEventForTest(roster);
+  EXPECT_FALSE(runtime.shadowExactSourceFrame(cameraRef, 0).frame);
+  EXPECT_TRUE(runtime.shadowExactSourceFrame(shareRef, 0).frame);
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  EXPECT_FALSE(runtime.shadowExactSourceFrame(shareRef, 0).frame);
 }

@@ -869,6 +869,9 @@ rpc::Json MediaCore::sessionState() const {
           {"workTotalNs", static_cast<double>(videoOutputWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
           {"workMaximumNs", static_cast<double>(videoOutputWorkerWorkMaximumNs_.load(std::memory_order_relaxed))}}}});
   const auto zoomCapture = zoomSnapshot();
+  if (const auto* authority = zoomCapture.get("sourceAuthority")) {
+    state.emplace("sourceAuthority", *authority);
+  }
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
   }
@@ -2147,6 +2150,12 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode");
       state.participantId = route.getString("participantId");
+      state.exactSource = parseExactRouteSource(route);
+      if (state.exactSource) {
+        sceneValidationWarnings_.push_back(state.exactSource->reference
+            ? "Exact source route is missing frame-bound identity; its slot remains empty."
+            : "Exact source route reference is invalid; its slot remains empty.");
+      }
       state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
@@ -3350,6 +3359,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode", "fixed");
       state.participantId = route.getString("participantId");
+      state.exactSource = parseExactRouteSource(route);
       state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
@@ -3385,6 +3395,10 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       }
       if (state.routeId.empty()) {
         state.routeId = "preview-route-" + std::to_string(routeIndex);
+      }
+      if (const auto* exact = route.get("exactSourceRef")) {
+        const auto encoded = exact->stringify();
+        signature += "exact:" + std::to_string(encoded.size()) + ":" + encoded;
       }
       signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
                    state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
@@ -5398,12 +5412,20 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       const auto fallbackParticipantId = videoLayerIndex < static_cast<int>(videoFrames.size())
           ? std::optional<std::string_view>(videoFrames[static_cast<size_t>(videoLayerIndex)].participantId) : std::nullopt;
       const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
-          route.captureDeviceId, route.participantId, fallbackParticipantId});
+          route.captureDeviceId, route.participantId, fallbackParticipantId,
+          route.exactSource ? &*route.exactSource : nullptr, nullptr});
+      // No producer currently attaches an exact source token to VideoFrame.
+      // Explicit paint also prevents the compositor's empty-plan fallback.
+      if (binding.status == RouteSourceBinding::Status::Missing ||
+          binding.status == RouteSourceBinding::Status::Rejected) {
+        layer.hasFillColor = true;
+        layer.fillColor = "#000000";
+      }
       layer.kind = binding.kind;
       layer.sourceId = binding.sourceId;
       layer.participantId = binding.participantId;
       layer.order = videoLayerIndex;
-      if (!route.mediaAssetId.empty() && !route.mediaAssetPath.empty()) {
+      if (!route.exactSource && !route.mediaAssetId.empty() && !route.mediaAssetPath.empty()) {
         layer.mediaAssetId = route.mediaAssetId;
         layer.mediaAssetName = route.mediaAssetName;
         layer.mediaAssetKind = route.mediaAssetKind;
@@ -5865,25 +5887,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     markStage(s_subFetchUs, 0);
     for (const auto& frame : decoded) {
-      if (frame.hasI420()) {
-        // GPU path: carry the raw I420 planes through to the compositor, which
-        // converts to RGB in-shader (no CPU per-pixel I420->BGRA convert).
-        realZoom->ingestI420Frame(
-            frame.participantId,
-            frame.i420,  // zero-copy: share the decoded buffer, don't memcpy it
-            frame.i420Width,
-            frame.i420Height,
-            frame.frameId,
-            frame.timestampMs);
-      } else if (frame.hasPixels()) {
-        realZoom->ingestFrame(
-            frame.participantId,
-            frame.pixels->data(),
-            frame.pixelWidth,
-            frame.pixelHeight,
-            frame.frameId,
-            frame.timestampMs);
-      }
+      realZoom->ingestVideoFrame(frame);
     }
     // Split the per-frame store calls from the destruction of `decoded` (which
     // releases each shared I420 buffer) so a long tap says which one it is.

@@ -799,6 +799,9 @@ class MetalCompositor final : public ICompositor {
         }
         if (compositorLayerIsOverlay(layer.plan)) {
           layer.color = 0xff2a3548;
+        } else if (layer.plan.kind == "missing-source") {
+          // Exact-reference failures are explicit empty slots, never positional frames.
+          layer.color = 0xff000000;
         } else if (!layer.plan.participantId.empty()) {
           layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
           layer.frame = frameForParticipant(frames, layer.plan.participantId);

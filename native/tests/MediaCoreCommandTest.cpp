@@ -5669,3 +5669,64 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
   }
   EXPECT_TRUE(previewLoops) << "a loop-only change to the preview scene was not applied";
 }
+
+TEST(MediaCoreCommand, ExactSourceRefNeverFallsBackToLegacyParticipantCaptureOrMedia) {
+  using J = corevideo::rpc::Json;
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  core.enableAudioOutputWorker();
+  const auto exact = *J::parse(R"({"sourceId":"provider-camera","instanceId":"instance","processEpoch":"epoch","generation":1,"kind":"camera"})");
+  for (const auto& reference : std::vector<J>{exact, J(), J::Object{}}) {
+    (void)core.applyCommands(J::Array{J::Object{{"type", "load-scene-graph"}, {"sceneId", "exact"},
+      {"routes", J::Array{
+        J::Object{{"routeId", "exact-slot"}, {"mode", "capture-input"}, {"participantId", "42"},
+                  {"captureDeviceId", "device"}, {"mediaAssetId", "clip"}, {"mediaAssetPath", "clip.mp4"}, {"exactSourceRef", reference}},
+        J::Object{{"routeId", "legacy-slot"}, {"mode", "fixed"}, {"participantId", "43"}}}}}});
+    core.renderDisplayTick();
+    const auto state = core.sessionState();
+    const auto& sources = state.get("programFrame")->get("videoSources")->asArray();
+    ASSERT_EQ(sources.size(), 1U);
+    EXPECT_EQ(sources[0].getString("layerId"), "route:legacy-slot");
+    EXPECT_EQ(sources[0].getString("sourceId"), "zoom:43");
+  }
+}
+
+TEST(MediaCoreCommand, AllExactMissingSlotsRemainAnExplicitBlackPlanDespiteParticipantPixels) {
+  using namespace corevideo::modules; using J = corevideo::rpc::Json;
+  class Probe final : public ICompositor {
+   public:
+    explicit Probe(std::unique_ptr<ICompositor> value) : inner(std::move(value)) {}
+    std::string rendererName() const override { return "exact-source-test"; }
+    ProgramFrame render(const CompositorRenderPlan& plan, const std::vector<VideoFrame>& frames) override {
+      if (plan.sceneId != "exact-only") return inner->render(plan, frames);
+      captured = plan;
+      VideoFrame unrelated; unrelated.participantId = "42";
+      unrelated.width = unrelated.pixelWidth = 2; unrelated.height = unrelated.pixelHeight = 2;
+      unrelated.pixelStride = 8;
+      unrelated.pixels = std::make_shared<const std::vector<uint8_t>>(16, 255);
+      rendered = inner->render(plan, {unrelated}); return rendered;
+    }
+    CompositorRenderPlan captured; ProgramFrame rendered;
+    std::unique_ptr<ICompositor> inner;
+  };
+  auto modules = createStubModules();
+  auto compositor = std::make_unique<Probe>(std::move(modules.compositor)); auto* probe = compositor.get();
+  modules.compositor = std::move(compositor);
+  corevideo::core::MediaCore core(std::move(modules)); core.enableAudioOutputWorker();
+  const auto exact = *J::parse(R"({"sourceId":"provider-camera","instanceId":"instance","processEpoch":"epoch","generation":1,"kind":"camera"})");
+  (void)core.applyCommands(J::Array{J::Object{{"type", "load-scene-graph"}, {"sceneId", "exact-only"},
+    {"routes", J::Array{J::Object{{"routeId", "slot"}, {"mode", "fixed"}, {"participantId", "42"}, {"exactSourceRef", exact}}}}}});
+  core.renderDisplayTick();
+  ASSERT_EQ(probe->captured.layers.size(), 1U);
+  EXPECT_EQ(probe->captured.layers[0].kind, "missing-source");
+  EXPECT_TRUE(probe->captured.layers[0].hasFillColor);
+  EXPECT_TRUE(probe->captured.layers[0].participantId.empty());
+  EXPECT_TRUE(probe->captured.layers[0].sourceId.empty());
+  ASSERT_TRUE(probe->rendered.preview.bgra.size() >= 4);
+  const auto center = static_cast<size_t>(
+      (probe->rendered.preview.height / 2 * probe->rendered.preview.width +
+       probe->rendered.preview.width / 2) * 4);
+  ASSERT_TRUE(center + 2 < probe->rendered.preview.bgra.size());
+  EXPECT_EQ(probe->rendered.preview.bgra[center], 0);
+  EXPECT_EQ(probe->rendered.preview.bgra[center + 1], 0);
+  EXPECT_EQ(probe->rendered.preview.bgra[center + 2], 0);
+}

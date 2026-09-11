@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <set>
 #include <thread>
+#include <random>
 
 namespace corevideo::modules {
 namespace {
@@ -69,6 +70,8 @@ constexpr double kFrameStaleAfterMs = 1000.0;
 }  // namespace
 
 ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {
+  std::random_device entropy;
+  for (int i = 0; i < 4; ++i) authorityRuntimeEpoch_ += std::to_string(entropy()) + "-";
   // Frame sync is ON by default (owner decision 2026-08-06: behave like a
   // hardware switcher input). COREVIDEO_FRAME_SYNC=0 trades the smoothness back
   // for one frame of latency — keep it working, it is the A/B control.
@@ -117,6 +120,7 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
   config.appPrivilegeToken = envString("COREVIDEO_ZOOM_APP_PRIVILEGE_TOKEN");
   config.connectTimeoutMs = envInt("COREVIDEO_ZOOM_ENGINE_CONNECT_TIMEOUT_MS", config.connectTimeoutMs);
   config.joinWaitMs = envInt("COREVIDEO_ZOOM_JOIN_WAIT_MS", config.joinWaitMs);
+  config.exactSourceShadowEnabled = envInt("COREVIDEO_EXACT_SOURCE_SHADOW", 0) == 1;
   return config;
 }
 
@@ -127,7 +131,9 @@ bool ZoomEngineRuntime::configured() const {
 
 void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload) {
   std::lock_guard<std::mutex> lock(mutex_);
+  const bool exactSourceShadowEnabled = config_.exactSourceShadowEnabled;
   config_ = loadConfig();
+  config_.exactSourceShadowEnabled = exactSourceShadowEnabled;
   const auto payloadJwt = payload.getString("sdkJwt");
   const auto payloadZak = payload.getString("userZak");
   if (!payloadJwt.empty()) {
@@ -143,6 +149,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
       enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
     }
     state_.reset();
+    refreshAuthorityObservationLocked();
     initialized_ = false;
     mediaStarted_ = false;
     latestDecodedFrames_.clear();
@@ -178,6 +185,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     process_.reset();
     initialized_ = false;
     state_.reset();
+    refreshAuthorityObservationLocked();
     restartBeforeJoin_ = false;
   }
   if (cancelled && cancelled()) return nullptr;
@@ -308,6 +316,7 @@ rpc::Json ZoomEngineRuntime::leave() {
     enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
   }
   state_.reset();
+  refreshAuthorityObservationLocked();
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
   frameSync_.clear();
@@ -656,6 +665,20 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.i420Width = decoded.width;
     frame.i420Height = decoded.height;
     frame.frameId = decoded.frameId;
+    frame.exactSourceEvidence = decoded.exactSourceEvidence;
+    if (frame.exactSourceEvidence) {
+      const auto& evidence = *frame.exactSourceEvidence;
+      const auto stream = videoStreams_.find(evidence.identity.sourceId);
+      const auto source = std::find_if(authorityObservation_.sources.begin(), authorityObservation_.sources.end(),
+          [&](const auto& item) { return item.sourceId == evidence.identity.sourceId && item.available &&
+              item.instanceId == evidence.identity.instanceId && static_cast<int64_t>(item.generation) == evidence.identity.generation; });
+      if (!authorityObservation_.valid || restartBeforeJoin_ || shuttingDown_ ||
+          authorityObservation_.processGeneration != processGeneration_ ||
+          evidence.identity.processEpoch != authorityObservation_.processEpoch ||
+          source == authorityObservation_.sources.end() || stream == videoStreams_.end() ||
+          stream->second.authorityPublicationFence != evidence.publicationFence)
+        frame.exactSourceEvidence.reset();
+    }
     frames.push_back(std::move(frame));
   }
 
@@ -788,6 +811,10 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<s
     return;
   }
   state_.apply(event);
+  if (event.kind == ZoomEngineEventKind::Participants)
+    authorityRosterProcessGeneration_ = processGeneration_;
+  if (event.kind == ZoomEngineEventKind::Participants || event.kind == ZoomEngineEventKind::Left)
+    refreshAuthorityObservationLocked();
   if (event.kind == ZoomEngineEventKind::Joined) {
     // Only auto-start raw media on join if the operator already enabled capture
     // (Engine On). Otherwise wait — syncSpine starts it when startCapture is set.
@@ -804,6 +831,123 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<s
 }
 
 void ZoomEngineRuntime::applyEngineEventForTest(const ZoomEngineEvent& event) { applyEvent(event); }
+
+ZoomEngineRuntime::AuthorityObservation ZoomEngineRuntime::authorityObservation() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  refreshAuthorityObservationLocked();
+  return authorityObservation_;
+}
+
+ZoomEngineRuntime::ShadowAuthorityCheckpoint ZoomEngineRuntime::shadowAuthorityCheckpoint() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  refreshAuthorityObservationLocked();
+  if (!authorityObservation_.valid) shadowExactFrames_.reconcile("", 0, {});
+  return {authorityObservation_, shadowExactFrames_.checkpoint()};
+}
+
+core::ShadowExactSourceFrames::Result ZoomEngineRuntime::shadowExactSourceFrame(
+    const core::ExactRouteSourceRef& reference, int64_t freshAfterNs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!config_.exactSourceShadowEnabled)
+    return {core::ShadowExactSourceFrames::Status::Missing, {}};
+  refreshAuthorityObservationLocked();
+  if (!authorityObservation_.valid) shadowExactFrames_.reconcile("", 0, {});
+  return shadowExactFrames_.resolve(reference, freshAfterNs);
+}
+
+void ZoomEngineRuntime::refreshAuthorityObservationLocked() {
+  constexpr uint64_t limit = 9007199254740991ULL;
+  if (!authorityObservation_.valid) return; // Terminal, never reuse identities.
+  AuthorityObservation next;
+  next.processGeneration = processGeneration_;
+  next.processEpoch = authorityRuntimeEpoch_ + std::to_string(processGeneration_);
+  next.sequence = authorityObservation_.sequence;
+  const bool sameEpoch = next.processEpoch == authorityObservation_.processEpoch;
+  const auto roster = state_.snapshot();
+  if (roster.participants.size() > 4096 || processGeneration_ > limit) {
+    authorityObservation_.valid = false;
+    authorityObservation_.sources.clear();
+    return;
+  }
+  std::map<std::string, const AuthoritySource*> previous;
+  for (const auto& source : authorityObservation_.sources) previous.emplace(source.sourceId, &source);
+  next.sources.reserve(roster.participants.size() * 2);
+  if (authorityRosterProcessGeneration_ == processGeneration_ && !restartBeforeJoin_ && !shuttingDown_) {
+    for (const auto& participant : roster.participants) {
+      if (participant.id == 0) {
+        authorityObservation_.valid = false;
+        authorityObservation_.sources.clear();
+        return;
+      }
+      for (const auto kind : {AuthoritySource::Kind::Camera, AuthoritySource::Kind::Share}) {
+        AuthoritySource source;
+        source.participantId = participant.id;
+        source.kind = kind;
+        source.sourceId = (kind == AuthoritySource::Kind::Camera ? "participant-video-" : "screen-share-") +
+            std::to_string(participant.id) + (kind == AuthoritySource::Kind::Camera ? "-camera" : "-share");
+        source.available = kind == AuthoritySource::Kind::Camera ? participant.hasVideo : participant.isSharingScreen;
+        const auto found = previous.find(source.sourceId);
+        const auto old = found == previous.end() ? nullptr : found->second;
+        const bool replacement = !sameEpoch || !old;
+        const bool availabilityChanged = old && old->available != source.available;
+        if (replacement) {
+          if (nextAuthorityInstance_ == limit) {
+            authorityObservation_.valid = false;
+            authorityObservation_.sources.clear();
+            return;
+          }
+          source.generation = ++nextAuthorityInstance_;
+          source.instanceId = next.processEpoch + ":" + std::to_string(source.generation);
+        } else {
+          source.generation = old->generation;
+          source.instanceId = old->instanceId;
+        }
+        source.subscriptionRequested = captureRequested_ && sentSubscriptions_.contains(source.sourceId);
+        source.publicationFence = old && sameEpoch ? old->publicationFence : 0;
+        auto stream = videoStreams_.find(source.sourceId);
+        const bool streamChanged = stream != videoStreams_.end()
+            ? stream->second.authorityIncarnation != source.generation
+            : old && old->publication.has_value();
+        if (replacement || availabilityChanged || streamChanged) {
+          if (source.publicationFence == limit) {
+            authorityObservation_.valid = false;
+            authorityObservation_.sources.clear();
+            return;
+          }
+          ++source.publicationFence;
+        }
+        if (stream != videoStreams_.end()) {
+          if (replacement || availabilityChanged || streamChanged) {
+            stream->second.authorityPublication.reset();
+          }
+          stream->second.authorityPublicationFence = source.publicationFence;
+          if (!source.available) stream->second.authorityPublication.reset();
+          stream->second.authorityIncarnation = source.generation;
+          if (source.available) source.publication = stream->second.authorityPublication;
+        }
+        next.sources.push_back(std::move(source));
+      }
+    }
+  }
+  if (next == authorityObservation_) return;
+  if (next.sequence == limit) {
+    authorityObservation_.valid = false;
+    authorityObservation_.sources.clear();
+    return;
+  }
+  ++next.sequence;
+  authorityObservation_ = std::move(next);
+  if (config_.exactSourceShadowEnabled) {
+    std::vector<core::ShadowExactSourceFrames::CurrentSource> current;
+    current.reserve(authorityObservation_.sources.size());
+    for (const auto& source : authorityObservation_.sources) {
+      current.push_back({{source.sourceId, source.instanceId, authorityObservation_.processEpoch,
+          source.kind == AuthoritySource::Kind::Camera ? "camera" : "share", source.generation},
+          source.publicationFence, source.available});
+    }
+    shadowExactFrames_.reconcile(authorityObservation_.processEpoch, authorityObservation_.sequence, std::move(current));
+  }
+}
 
 void ZoomEngineRuntime::stopReader() {
   std::shared_ptr<ZoomEngineProcessClient> process;
@@ -1004,7 +1148,27 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
       {"sources", sources},
   };
 }
+
+rpc::Json ZoomEngineRuntime::sourceAuthorityJsonLocked() const {
+  rpc::Json::Array authoritySources;
+  if (authorityObservation_.valid) for (const auto& source : authorityObservation_.sources) {
+    authoritySources.emplace_back(rpc::Json::Object{
+        {"participantId", participantIdString(source.participantId)},
+        {"kind", source.kind == AuthoritySource::Kind::Camera ? "camera" : "share"},
+        {"sourceId", source.sourceId}, {"instanceId", source.instanceId},
+        {"processEpoch", authorityObservation_.processEpoch},
+        {"generation", static_cast<double>(source.generation)}, {"available", source.available}});
+  }
+  return rpc::Json::Object{
+      {"version", 1}, {"valid", authorityObservation_.valid},
+      {"processEpoch", authorityObservation_.processEpoch},
+      {"sequence", static_cast<double>(authorityObservation_.sequence)},
+      {"sources", std::move(authoritySources)}};
+}
+
 rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
+  // Refresh metadata under the same runtime lock as the roster projection.
+  refreshAuthorityObservationLocked();
   ++fallbackTick_;
   state_.advanceActiveSpeaker(monotonicMs());
   const auto snapshot = state_.snapshot();
@@ -1022,8 +1186,8 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
         {"networkQuality", "good"},
     });
   }
-
   rpc::Json::Object result{
+      {"sourceAuthority", sourceAuthorityJsonLocked()},
       {"meetingState", snapshot.meetingState == "in-meeting" ? "in_meeting" : snapshot.meetingState},
       {"participants", participants},
       {"tick", fallbackTick_},
@@ -1041,6 +1205,10 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
 }
 
 rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, double elapsedMs) {
+  // Spine sync is another authoritative snapshot boundary. Publish the exact
+  // catalog here as well so a later spine refresh cannot erase or resurrect
+  // identities observed by the raw capture snapshot.
+  refreshAuthorityObservationLocked();
   state_.advanceActiveSpeaker(monotonicMs());
   const auto runtime = state_.snapshot();
   rpc::Json::Array subscriptions;
@@ -1078,6 +1246,7 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
   }
 
   return rpc::Json::Object{
+      {"sourceAuthority", sourceAuthorityJsonLocked()},
       {"meetingState", runtime.meetingState},
       {"sdkVersion", "zoom-engine"},
       {"rawMediaActive", runtime.rawMediaActive},
@@ -1128,12 +1297,16 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   // (zoom-media-spine-sync queueWait 3.7s in soak run 10).
   auto& ref = videoStreams_[event.sourceUuid];
   if (ref.width != event.width || ref.height != event.height) {
+    ref.authorityPublication.reset();
+    // Invalidate old format leases without changing the durable source incarnation.
+    ref.authorityIncarnation = 0;
     ref.regionOpaque.reset();  // shared_ptr deleter closes the mapping
     ref.lastSequence = 0;
   }
   ref.participantId = event.participantId;
   ref.width = event.width;
   ref.height = event.height;
+  refreshAuthorityObservationLocked();
   ensureVideoIngestThreadLocked();
 }
 
@@ -1176,6 +1349,8 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     bool buildThumbnail = false;
     bool probeLumaRange = false;
     std::uint64_t generation = 0;
+    std::uint64_t authorityIncarnation = 0;
+    std::uint64_t authorityPublicationFence = 0;
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -1219,7 +1394,8 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
       const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
                                   nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_});
+                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.authorityIncarnation,
+                      ref.authorityPublicationFence});
     }
   }
 
@@ -1301,7 +1477,12 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
                    result.lumaRange.sampled);
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
-                            std::move(result.i420Shared), result.observedAt);
+                            std::move(result.i420Shared), result.observedAt,
+                            result.job.authorityIncarnation == stream->second.authorityIncarnation &&
+                            result.job.authorityPublicationFence == stream->second.authorityPublicationFence);
+    if (result.job.authorityIncarnation != stream->second.authorityIncarnation ||
+        result.job.authorityPublicationFence != stream->second.authorityPublicationFence)
+      stream->second.authorityPublication.reset();
     ++videoPublishedSinceLog_;
   }
   const auto now = std::chrono::steady_clock::now();
@@ -1317,7 +1498,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
 void ZoomEngineRuntime::publishVideoFrameLocked(
     const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
     std::shared_ptr<const std::vector<std::uint8_t>> i420,
-    std::chrono::steady_clock::time_point observedAt) {
+    std::chrono::steady_clock::time_point observedAt, bool authorityCopyCurrent) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs());
 
@@ -1325,15 +1506,55 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
   // the stdout/event queue below that feeds the WinUI multiview tiles.
   if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && i420 &&
       !i420->empty()) {
+    // Per-stream proof avoids the legacy participant-keyed camera/share cache collision.
+    AuthorityPublication proof;
+    if (nextAuthorityPublication_ == 9007199254740991ULL) {
+      authorityObservation_.valid = false;
+      authorityObservation_.sources.clear();
+    } else {
+      ++nextAuthorityPublication_;
+    }
+    proof.sequence = nextAuthorityPublication_;
+    proof.observedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(observedAt.time_since_epoch()).count();
+    proof.width = frame.i420Width;
+    proof.height = frame.i420Height;
+    ref.authorityPublication = std::move(proof);
     DecodedFrame& decoded = latestDecodedFrames_[frame.participantId];
     ++slotPublished_;
 
     DecodedFrame incoming;
+    if (authorityCopyCurrent && authorityObservation_.valid &&
+        authorityObservation_.processGeneration == processGeneration_ && !restartBeforeJoin_ && !shuttingDown_) {
+      const auto source = std::find_if(authorityObservation_.sources.begin(), authorityObservation_.sources.end(),
+          [&](const auto& item) { return item.sourceId == uuid && item.available &&
+              item.participantId == ref.participantId && item.generation == ref.authorityIncarnation; });
+      if (source != authorityObservation_.sources.end()) {
+        SourceFrameEvidence evidence;
+        evidence.identity = {source->sourceId, source->instanceId, authorityObservation_.processEpoch,
+            static_cast<int64_t>(source->generation)};
+        evidence.kind = source->kind == AuthoritySource::Kind::Camera ? SourceFrameEvidence::Kind::Camera : SourceFrameEvidence::Kind::Share;
+        evidence.publicationSequence = ref.authorityPublication->sequence;
+        evidence.publicationFence = ref.authorityPublicationFence;
+        evidence.observedNs = ref.authorityPublication->observedNs;
+        evidence.payload = i420;
+        incoming.exactSourceEvidence = std::make_shared<const SourceFrameEvidence>(std::move(evidence));
+      }
+    }
     incoming.i420 = std::move(i420);
     incoming.observedAt = observedAt;
     incoming.width = static_cast<int>(frame.i420Width);
     incoming.height = static_cast<int>(frame.i420Height);
     incoming.frameId = static_cast<std::int64_t>(frame.frameId);
+    if (config_.exactSourceShadowEnabled && incoming.exactSourceEvidence) {
+      VideoFrame retained;
+      retained.participantId = frame.participantId;
+      retained.width = retained.i420Width = incoming.width;
+      retained.height = retained.i420Height = incoming.height;
+      retained.i420 = incoming.i420;
+      retained.frameId = incoming.frameId;
+      retained.exactSourceEvidence = incoming.exactSourceEvidence;
+      shadowExactFrames_.publish(retained);
+    }
 
     if (frameSyncEnabled_) {
       // Queue behind whatever is already waiting — never jump the line, or a
