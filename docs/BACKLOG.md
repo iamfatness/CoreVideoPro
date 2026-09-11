@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Re-ranked 2026-09-11 (owner: "Your rank makes sense"):** #449 up to T1.11; new T1.12 #475, T1.13 #473; T2.7-T2.10 (#474, #469, #466, #468); T3.5-T3.7 (#476, #465, #470).
+
 **This is the single ordered list of work.** Owner-approved 2026-09-10. It supersedes the
 scoreboards in `docs/beta-plan.md` (§2) and the status claims in `docs/FOCUS_PLAN.md`,
 which are kept for their rationale, not their checkboxes. Every item has a GitHub issue
@@ -52,6 +54,9 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T1.8](https://github.com/iamfatness/CoreVideoPro/issues/461) | Closing the app while recording kills the recording unfinalized (and skips the Zoom leave order) — **fix in this branch** (`codex/t1-8-close-guard`): close while recording/streaming asks "Stop outputs and close?", Stop and close (also taken when the dialog cannot be shown) waits ≤15 s for the close-request sessions to report finished, on evidence bound to the stop (fresh `RawReceivedUtc`, session id, core generation); the app-exit core stop closes stdin and gives the core 2 s to exit on its own before the kill-tree, then sweeps surviving descendants. Streams are stopped before recording (a record stop sent while streaming restarts the encoder and erases the recording lifecycle — core defect filed separately). Remaining: the pre-merge live checklist (not yet run; must include record+stream), and the Zoom engine is still terminated by the core, not taken through Leave → stop_raw_media | 1 | M |
 | [T1.9](https://github.com/iamfatness/CoreVideoPro/issues/463) | Multiview sources 9 and 10 not clickable / undecorated (overlay capped PGM+PVW+sources at 10 total) | 1 | S |
 | [T1.10](https://github.com/iamfatness/CoreVideoPro/issues/471) | Meters and all core state freeze for the session: the 250 ms poll dies when startup calls race (fix in this branch) | 1 | S |
+| [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame, on air (owner saw it live 2026-09-10). Step 1: hold the outgoing picture until the clip's first real frame; step 2: hand the warmed Preview decoder to Program. Moved up from T5.3 | 1/3 | S then M |
+| [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s while CoreVideo sits in the waiting room; forward the waiting states, log meeting status, leave on give-up | 1/2 | S |
+| [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (placeholder on air, nothing logged); the dev launch of the same code does | 1/2 | S-M |
 
 ## Tier 2 — first external install
 
@@ -64,6 +69,10 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T2.5](https://github.com/iamfatness/CoreVideoPro/issues/437) | Wire the certificate into the release pipeline when T0.1 lands | 4 | XS |
 | [T2.6](https://github.com/iamfatness/CoreVideoPro/issues/438) | Reconcile `docs/beta-engineering-spec.md` (signed MSIX) with what ships (NSIS installer, #417) | 4 | XS |
 | [T1.7](https://github.com/iamfatness/CoreVideoPro/issues/457) | WinUI shell crash on a graceful close: 0xc000027b in XAML's post-Exit dispatcher drain, after cleanup (2 of 10 closes; false crash prompt on the next launch). (recommended tier 2 by investigation; fixed in this batch) | 1 | S |
+| [T2.7](https://github.com/iamfatness/CoreVideoPro/issues/474) | Installer: one `CoreVideo Pro` shortcut that always opens the newest beta; uninstall removes the first-run FFmpeg runtime; an install with no registry key can still be removed | 4 | S |
+| [T2.8](https://github.com/iamfatness/CoreVideoPro/issues/469) | The default recording folder is relative, so recordings land inside the install folder (at risk on uninstall/upgrade); resolve to a user folder and show the absolute path | 1/4 | S |
+| [T2.9](https://github.com/iamfatness/CoreVideoPro/issues/466) | Core: stopping Record while a stream stays up (or a stream start) erases the recording lifecycle, so status reads "stopping" forever with no completed/failed | 2 | M |
+| [T2.10](https://github.com/iamfatness/CoreVideoPro/issues/468) | RTMP sender keeps `status: live` / `destinationHealth: ok` while its destination is unreachable | 2 | S |
 
 ## Tier 3 — first show on a machine we cannot see
 
@@ -73,6 +82,9 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T3.2](https://github.com/iamfatness/CoreVideoPro/issues/440) | Friendly message when the WebView2 runtime is missing (browser host exits 3; the shell shows a stalled source) | 3 | S |
 | [T3.3](https://github.com/iamfatness/CoreVideoPro/issues/441) | First-run wizard — screens first, owner markup, then code (the OHG lesson) | 3 | M |
 | [T3.4](https://github.com/iamfatness/CoreVideoPro/issues/442) | Hardware sweeps on T0.3 machines: integrated GPU, audio devices (USB/Bluetooth, unplug mid-show), cheap UVC webcams | 1 | M |
+| [T3.5](https://github.com/iamfatness/CoreVideoPro/issues/476) | Colour fields need a colour picker (Tiles border/glow/background, layer colour, caption text); keep the hex box beside it | 3 | S |
+| [T3.6](https://github.com/iamfatness/CoreVideoPro/issues/465) | One guest's per-guest audio distorted while the meeting mix is clean (investigate: +6 dB strips + noise suppression on every guest, stem quality) | 3 | unsized |
+| [T3.7](https://github.com/iamfatness/CoreVideoPro/issues/470) | ISOs armed with Engine off write nothing and give no warning | 2/3 | S |
 
 ## Tier 4 — release gates
 
@@ -89,7 +101,7 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 |---|---|---|---|
 | [T5.1](https://github.com/iamfatness/CoreVideoPro/issues/447) | Reconcile persistent sources with the rearch: which #419 foundations slices 2-3 build on (likely `SourceRegistry`, atomic Take, `DeliveredProgramPacket`) | 3 | S |
 | [T5.2](https://github.com/iamfatness/CoreVideoPro/issues/448) | Tiles wall stops re-animating on the cut (persistent-sources slice 2, on T5.1) | 3 | M-L |
-| [T5.3](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip entering Program cold-starts with a placeholder flash (hand the warmed cue decoder to Program) | 3 | M |
+| ~~T5.3~~ | ~~A clip entering Program cold-starts with a placeholder flash~~ — **moved to T1.11** (owner, 2026-09-11) | | |
 | [T5.4](https://github.com/iamfatness/CoreVideoPro/issues/450) | OHG: redesign on screens first, integrate into existing tabs; cheap parity gaps (preview tally, gallery order, black/bars/FTB, on-air clock, nameplates) | 3 | L |
 | [T5.5](https://github.com/iamfatness/CoreVideoPro/issues/451) | The scene canvas editor shows live GPU video (redesign, not a whitelist) | 3 | L |
 | [T5.6](https://github.com/iamfatness/CoreVideoPro/issues/456) | In and Out points for media playback (lower priority) | 3 | M |
