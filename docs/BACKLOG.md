@@ -1,6 +1,6 @@
 # CoreVideo Pro — ranked backlog
 
-**Re-ranked 2026-09-11 (owner: "Your rank makes sense"):** #449 up to T1.11; new T1.12 #475, T1.13 #473; T2.7-T2.10 (#474, #469, #466, #468); T3.5-T3.7 (#476, #465, #470).
+**Refined 2026-09-11 (after the first real meeting; see Tier 1 order).** Earlier today (owner: "Your rank makes sense"): #449 up to T1.11; new T1.12 #475, T1.13 #473; T2.7-T2.10 (#474, #469, #466, #468); T3.5-T3.7 (#476, #465, #470).
 
 **This is the single ordered list of work.** Owner-approved 2026-09-10. It supersedes the
 scoreboards in `docs/beta-plan.md` (§2) and the status claims in `docs/FOCUS_PLAN.md`,
@@ -43,20 +43,36 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 
 ## Tier 1 — show-stoppers on any machine
 
-| ID | Item | Clause | Size |
-|---|---|---|---|
-| [T1.1](https://github.com/iamfatness/CoreVideoPro/issues/428) | ~~Auto-take must not fire while automation is off (observed ~1/s on 2026-09-10; uncommanded on-air cuts)~~ — **Closed — not reproduced (#428)** | 1 | S |
-| [T1.2](https://github.com/iamfatness/CoreVideoPro/issues/429) | Pause/Play on a Program clip restarts it: make pause a clock state on one decoder (incl. bin-row tap) | 1 | M |
-| [T1.3](https://github.com/iamfatness/CoreVideoPro/issues/430) | A rolled-back Take restores the media selection (ledger unchanged by design) | 1 | S |
-| [T1.4](https://github.com/iamfatness/CoreVideoPro/issues/431) | Multiview/Preview must not halve Program under load: apply the cheap multiview tick-divisor mitigation (proper fix = monitor compositor split, post-beta) | 1 | S |
-| [T1.5](https://github.com/iamfatness/CoreVideoPro/issues/432) | While Engine is off, the shell stops polling the core: frozen core state and a stale launch-time warning | 2/1 | unsized |
-| [T1.6](https://github.com/iamfatness/CoreVideoPro/issues/455) | Media clip audio never reaches the audio engine (fix in PR #458) | 1/3 | S |
-| [T1.8](https://github.com/iamfatness/CoreVideoPro/issues/461) | Closing the app while recording kills the recording unfinalized (and skips the Zoom leave order) — **fix in this branch** (`codex/t1-8-close-guard`): close while recording/streaming asks "Stop outputs and close?", Stop and close (also taken when the dialog cannot be shown) waits ≤15 s for the close-request sessions to report finished, on evidence bound to the stop (fresh `RawReceivedUtc`, session id, core generation); the app-exit core stop closes stdin and gives the core 2 s to exit on its own before the kill-tree, then sweeps surviving descendants. Streams are stopped before recording (a record stop sent while streaming restarts the encoder and erases the recording lifecycle — core defect filed separately). Remaining: the pre-merge live checklist (not yet run; must include record+stream), and the Zoom engine is still terminated by the core, not taken through Leave → stop_raw_media | 1 | M |
-| [T1.9](https://github.com/iamfatness/CoreVideoPro/issues/463) | Multiview sources 9 and 10 not clickable / undecorated (overlay capped PGM+PVW+sources at 10 total) | 1 | S |
-| [T1.10](https://github.com/iamfatness/CoreVideoPro/issues/471) | Meters and all core state freeze for the session: the 250 ms poll dies when startup calls race (fix in this branch) | 1 | S |
-| [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame, on air (owner saw it live 2026-09-10). Step 1: hold the outgoing picture until the clip's first real frame; step 2: hand the warmed Preview decoder to Program. Moved up from T5.3 | 1/3 | S then M |
-| [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s while CoreVideo sits in the waiting room; forward the waiting states, log meeting status, leave on give-up | 1/2 | S |
-| [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (placeholder on air, nothing logged); the dev launch of the same code does | 1/2 | S-M |
+**Open, in the order to work them.** Ranked 2026-09-11 after the first real multi-guest meeting.
+The owner's top priority is core functionality: Zoom sources and audio.
+
+| Order | ID | Item | Clause | Size |
+|---|---|---|---|---|
+| 1 | [T1.14](https://github.com/iamfatness/CoreVideoPro/issues/480) | Scene layer sources wipe themselves every few seconds (the source dropdown's list refresh writes a blank as an operator pick, `SourcesPage.xaml.cs:153`), then the core's positional fallback shows a RANDOM guest (`RouteSourcePolicy.h`). Shell guard first, then the core "empty route = blank" sentinel | 1 | S + M |
+| 2 | [T1.15](https://github.com/iamfatness/CoreVideoPro/issues/465) | The first roster participant's isolated audio never arrives (channel silent while talking; the meeting-mix subscription is keyed to the same participant). Needs ONE Extra-logs diagnostic run first (engine `debug` audio events), then the fix | 1 | unsized |
+| 3 | [T1.16](https://github.com/iamfatness/CoreVideoPro/issues/485) | Mixer shows only sources (follow-up to #484; non-sources show dead strips) | 3 | S |
+| 4 | [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles manual slots / "never show" are saved by Zoom's per-session user ID, so they go stale or hit the wrong person next meeting; key on stable identity, clear stale entries. Audit the Show Input roster for the same issue | 1/3 | M |
+| 5 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. Step 1: hold the outgoing picture until the first real frame; step 2: hand over the warmed decoder | 1/3 | S then M |
+| 6 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s; forward the waiting states, always log meeting status, leave on give-up | 1/2 | S |
+| 7 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does) | 1/2 | S-M |
+
+**Done** (verified by tests; the live check is noted where one ran):
+
+| ID | Item | Closed by |
+|---|---|---|
+| [T1.1](https://github.com/iamfatness/CoreVideoPro/issues/428) | Auto-take while automation is off | Not reproduced; closed |
+| [T1.2](https://github.com/iamfatness/CoreVideoPro/issues/429) | Pause/Play restarted a Program clip | #459 (live-checked) |
+| [T1.3](https://github.com/iamfatness/CoreVideoPro/issues/430) | Rolled-back Take leaves the media selection | #462 |
+| [T1.4](https://github.com/iamfatness/CoreVideoPro/issues/431) | Monitors halve Program under load (monitor shedding) | #460 |
+| [T1.5](https://github.com/iamfatness/CoreVideoPro/issues/432) | Engine-off: shell stops polling the core | #462 |
+| [T1.6](https://github.com/iamfatness/CoreVideoPro/issues/455) | Media clip audio never reaches the engine | #458 (live-checked) |
+| [T1.8](https://github.com/iamfatness/CoreVideoPro/issues/461) | Close while recording kills the recording | #467 (8-step live checklist passed) |
+| [T1.9](https://github.com/iamfatness/CoreVideoPro/issues/463) | Multiview sources 9/10 not clickable | #464 (not yet re-checked live by the owner) |
+| [T1.10](https://github.com/iamfatness/CoreVideoPro/issues/471) | Poll start/stop race freezes meters for a session | #472 (diagnosed from a dump) |
+| [#478](https://github.com/iamfatness/CoreVideoPro/issues/478) | Zoom: wall guests starved, video-off/unrouted feeds, talk-driven flashing → **sources-only feeds**, stable resolution tiers | #484 (live A/B: talk churn 4→0; unroute drops video+audio) |
+| [#481](https://github.com/iamfatness/CoreVideoPro/issues/481) | App muted guests on its own; meters hid talkers → **A1-only mute**, pre-mute meters, ZOOM MUTED badge | #483 |
+
+Shipped in beta-2026-09-11-404602b (installed on the owner's machine 2026-09-11).
 
 ## Tier 2 — first external install
 
