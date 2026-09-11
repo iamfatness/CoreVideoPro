@@ -17,8 +17,9 @@ namespace CoreVideoPro.WinUI;
 
 public sealed partial class MainWindow : Window
 {
-    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan ShutdownWatchdog = TimeSpan.FromSeconds(6);
+    // The whole close budget (and the core's exit grace inside it) lives in ShutdownBudget.
+    private static readonly TimeSpan ShutdownTimeout = ShutdownBudget.ShutdownTimeout;
+    private static readonly TimeSpan ShutdownWatchdog = ShutdownBudget.ShutdownWatchdog;
     private static readonly TimeSpan ResourceMonitorInterval = TimeSpan.FromMilliseconds(750);
 
     private readonly AppWindow _appWindow;
@@ -45,6 +46,8 @@ public sealed partial class MainWindow : Window
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
     private bool _allowWindowClose;
+    // T1.8: the close guard (ask while outputs are live, finish the files, then close).
+    private readonly CloseGuardFlow _closeGuard;
     // App releases its window reference on Closed; the fallback must outlive it.
     private static System.Threading.Timer? _shutdownWatchdogTimer;
 
@@ -71,6 +74,7 @@ public sealed partial class MainWindow : Window
         WindowChromeService.Apply(this, _appWindow, extendTitleBar: true);
         Activated += OnWindowActivated;
         RootContent.Loaded += OnRootContentLoaded;
+        _closeGuard = CreateCloseGuard();
         _appWindow.Closing += OnAppWindowClosing;
         Closed += OnWindowClosed;
 
@@ -728,6 +732,48 @@ public sealed partial class MainWindow : Window
 
         args.Cancel = true;
 
+        // T1.8 (#461): the close guard decides first. CloseGuardFlow (tested) asks while outputs
+        // are live, ignores a second close while it is active (never a force-exit — that is what
+        // cuts the recording off), and on a dialog failure still finishes the files before closing.
+        CloseRequestHandling handling;
+        try
+        {
+            handling = _closeGuard.HandleCloseRequest(_shutdownStarted);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("shutdown: close guard failed; using the existing shutdown path", ex);
+            handling = CloseRequestHandling.Proceed;
+        }
+
+        if (handling == CloseRequestHandling.Proceed)
+        {
+            BeginShutdown();
+        }
+    }
+
+    private CloseGuardFlow CreateCloseGuard() => new(
+        evaluate: () => ViewModel.EvaluateCloseGuard(),
+        ask: AskStopOutputsAsync,
+        stopOutputs: decision => ViewModel.StopOutputsForCloseAsync(decision),
+        beginShutdown: () =>
+        {
+            try
+            {
+                if (!_shutdownStarted) BeginShutdown();
+            }
+            catch (Exception ex)
+            {
+                LaunchLog.WriteException("shutdown: starting shutdown after the close guard failed; forcing exit", ex);
+                ApplicationLifecycle.ForceExit();
+            }
+        },
+        bringToFront: BringToFrontForCloseGuard,
+        log: LaunchLog.Write,
+        logException: (message, error) => LaunchLog.WriteException(message, error));
+
+    private void BeginShutdown()
+    {
         if (_shutdownStarted)
         {
             LaunchLog.Write("shutdown: close requested while cleanup is in progress — forcing exit");
@@ -738,6 +784,54 @@ public sealed partial class MainWindow : Window
         _shutdownStarted = true;
         LaunchLog.Write("shutdown: close requested");
         _ = ShutdownAsync();
+    }
+
+    // Restore a minimized window gently (never move/resize a SwapChainPanel window) and activate
+    // it, so the dialog is never shown where the operator cannot see it.
+    private void BringToFrontForCloseGuard()
+    {
+        if (_appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
+        {
+            presenter.Restore();
+        }
+
+        Activate();
+    }
+
+    // "Stop outputs and close?" — returns true for "Stop and close". Throws when it cannot be shown;
+    // CloseGuardFlow then takes the Stop-and-close path, never the old kill path.
+    private async Task<bool> AskStopOutputsAsync(CloseGuardDecision decision)
+    {
+        // Let the AppWindow.Closing callback return before a modal dialog opens.
+        await Task.Yield();
+        var xamlRoot = Content?.XamlRoot
+                       ?? throw new InvalidOperationException("The window has no XamlRoot to host the dialog.");
+        var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
+        {
+            XamlRoot = xamlRoot,
+            Title = CloseGuardPolicy.DialogTitle,
+            Content = new Microsoft.UI.Xaml.Controls.TextBlock
+            {
+                Text = CloseGuardPolicy.DialogBody(decision),
+                TextWrapping = TextWrapping.Wrap
+            },
+            PrimaryButtonText = CloseGuardPolicy.StopAndCloseButton,
+            CloseButtonText = CloseGuardPolicy.KeepRunningButton,
+            DefaultButton = Microsoft.UI.Xaml.Controls.ContentDialogButton.Close
+        };
+        if (Application.Current.Resources.TryGetValue("DefaultContentDialogStyle", out var style) && style is Style dialogStyle)
+        {
+            dialog.Style = dialogStyle;
+        }
+
+        var result = await dialog.ShowAsync();
+        if (result == Microsoft.UI.Xaml.Controls.ContentDialogResult.Primary)
+        {
+            LaunchLog.Write("shutdown: operator chose Stop and close");
+            return true;
+        }
+
+        return false;
     }
 
     private async Task ShutdownAsync()

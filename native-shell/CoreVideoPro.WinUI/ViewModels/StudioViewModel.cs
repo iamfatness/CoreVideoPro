@@ -1623,7 +1623,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // Recording rights can be requested in a breakout room without capture running,
     // so recording only requires being in a meeting (NOT an active capture subscription).
-    public bool CanToggleRecording => Settings.IsInMeeting && !_transportCoordinator.RecordingToggleInFlight;
+    public bool CanToggleRecording => Settings.IsInMeeting && !_transportCoordinator.RecordingToggleInFlight && !_outputsClosing;
 
     public string CaptureEngineHint => CanToggleCapture
         ? "Turn the CoreVideo engine on or off for this Zoom meeting."
@@ -4153,7 +4153,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand(CanExecute = nameof(CanToggleRecording))]
     private Task ToggleRecordingAsync() => _transportCoordinator.ToggleRecordingAsync();
 
-    private bool CanToggleStreaming() => !_transportCoordinator.StreamToggleInFlight;
+    private bool CanToggleStreaming() => !_transportCoordinator.StreamToggleInFlight && !_outputsClosing;
 
     // Streaming orchestration (validate → arm → health/sender proof → rollback → backpressure
     // retry) lives in TransportCoordinator.ToggleStreamingAsync (PR2 strangler). This stays the
@@ -14085,7 +14085,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try { dispose(); }
             catch (Exception error) { LaunchLog.WriteException($"shutdown: {name}", error); }
         }
-        DisposeResource("media core stop", ForceShutdownMediaCore);
+        // App exit (T1.8): let the core exit on its own after stdin closes, then kill-tree.
+        DisposeResource("media core stop", () => ForceShutdownMediaCore(ShutdownBudget.CoreExitGrace));
+        // Measured, not assumed: the headroom the core's exit grace leaves inside ShutdownTimeout.
+        var afterCoreStop = Stopwatch.StartNew();
         DisposeResource("surfaces", _surfaces.Dispose);
         DisposeResource("capture reader", _captureFrameReader.Dispose);
         DisposeResource("capture discovery", _captureDiscovery.Dispose);
@@ -14094,18 +14097,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         DisposeResource("OAuth coordinator", _zoomOAuthCoordinator.Dispose);
         try { await _bridge.DisposeAsync().ConfigureAwait(false); }
         catch (Exception error) { LaunchLog.WriteException("shutdown: bridge dispose", error); }
-        LaunchLog.Write("shutdown: studio view model disposed");
+        LaunchLog.Write($"shutdown: studio view model disposed (disposal after the core stop took {afterCoreStop.ElapsedMilliseconds}ms)");
     }
 
-    private void ForceShutdownMediaCore()
+    // exitGrace > 0 only on the normal app-exit path (DisposeAsync): the core gets that long to
+    // exit on its own after stdin closes before the kill-tree. The failure fallback
+    // (ForceStopMediaCoreAsync, 1 s budget) keeps the immediate kill.
+    private void ForceShutdownMediaCore() => ForceShutdownMediaCore(TimeSpan.Zero);
+
+    private void ForceShutdownMediaCore(TimeSpan exitGrace)
     {
         try
         {
             _bridge.ConfigureZoomSpineSync(null);
             if (_bridge.Running)
             {
-                LaunchLog.Write("shutdown: stopping media core");
-                _bridge.Stop();
+                if (exitGrace > TimeSpan.Zero)
+                {
+                    LaunchLog.Write($"shutdown: stopping media core (closing stdin, up to {exitGrace.TotalMilliseconds:0}ms to exit on its own)");
+                    var outcome = _bridge.StopForAppExit(exitGrace);
+                    LaunchLog.Write(outcome == MediaCoreExitOutcome.Killed
+                        ? $"shutdown: media core did not exit within {exitGrace.TotalMilliseconds:0}ms; process tree killed"
+                        : "shutdown: media core exited on its own");
+                }
+                else
+                {
+                    LaunchLog.Write("shutdown: stopping media core");
+                    _bridge.Stop();
+                }
             }
         }
         catch (Exception ex)

@@ -81,11 +81,23 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         return profile;
     }
 
-    public void Stop()
+    public void Stop() => StopCore(() => _supervisor.Stop());
+
+    /// <summary>App-exit stop only (T1.8, #461): close the core's stdin, give it
+    /// <paramref name="exitGrace"/> to exit on its own, then kill the tree. See
+    /// <see cref="MediaCoreSupervisor.StopForAppExit"/>. Leave-meeting and respawn use <see cref="Stop"/>.</summary>
+    public MediaCoreExitOutcome StopForAppExit(TimeSpan exitGrace)
+    {
+        var outcome = MediaCoreExitOutcome.NotRunning;
+        StopCore(() => outcome = _supervisor.StopForAppExit(exitGrace));
+        return outcome;
+    }
+
+    private void StopCore(Action stopSupervisor)
     {
         StopPolling();
         ConfigureZoomSpineSync(null);
-        _supervisor.Stop();
+        stopSupervisor();
         lock (_gate)
         {
             _lastSnapshot = null;
