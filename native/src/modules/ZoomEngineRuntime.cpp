@@ -1458,7 +1458,10 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   //    mixer row and routing without depending on any video subscription.
   const bool isIso = event.sourceUuid.rfind("participant-audio-", 0) == 0;
   const bool isMix = event.sourceUuid.rfind("meeting-audio-", 0) == 0;
-  if (event.participantId == 0 || event.byteLength == 0 || (!isIso && !isMix)) {
+  // Mix is keyed at synthetic participant id 0 (#465): Zoom's mixed callback
+  // has no user id, and dropping pid==0 left zoom-mix with no PCM. Isolate
+  // still requires a real Zoom user id.
+  if (event.byteLength == 0 || (!isIso && !isMix) || (event.participantId == 0 && !isMix)) {
     return;
   }
 
@@ -1467,9 +1470,10 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   // held open - the per-event open/drain/close cycle lost hundreds of
   // packets per source at 500 events/s (soak-measured).
   if (isMix && event.sourceUuid != mixStreamUuid_) {
-    // ONE live mix stream at a time: a roster-anchor change can briefly leave
-    // two meeting-audio targets alive while the subscribe/unsubscribe commands
-    // cross the engine pipe. Never interleave them into zoom-mix.
+    // ONE live mix stream at a time. Production now keys mix at a stable
+    // synthetic id, so roster order no longer churns the uuid; handover still
+    // applies if the uuid ever changes while commands cross the engine pipe.
+    // Never interleave two mix rings into zoom-mix.
     // draining into pendingAudio_["zoom-mix"] interleave two different
     // signals packet-by-packet (soak run 11: phase chaos at every packet
     // seam). Speaker changes hand the mix over sequentially instead.

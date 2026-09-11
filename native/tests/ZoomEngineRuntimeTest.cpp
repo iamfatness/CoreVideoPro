@@ -249,15 +249,17 @@ TEST(ZoomEngineRuntime, MeetingMixUsesDedicatedNonIsolatedAudioSubscription) {
     corevideo::modules::ZoomEngineRuntime runtime;
     runtime.installEngineProcessForTest(fake);
 
+    // Production keys the mix at synthetic id 0 (#465): not a roster guest, so
+    // isolate PCM for participants[0] is not aliased onto the mix target.
     const auto payload = spinePayload(corevideo::rpc::Json::Array{
-        subscriptionRequest("101", "meeting-audio", "program"),
+        subscriptionRequest("0", "meeting-audio", "program"),
     });
     EXPECT_FALSE(runtime.syncSpine(payload, 0.0).isNull());
 
     ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
     const auto lines = fake->sentLines();
     ASSERT_EQ(lines.size(), 1u);
-    EXPECT_NE(lines[0].find("meeting-audio-101-program"), std::string::npos);
+    EXPECT_NE(lines[0].find("meeting-audio-0-program"), std::string::npos);
     EXPECT_NE(lines[0].find("subscribe_audio"), std::string::npos);
     EXPECT_EQ(lines[0].find("isolate_audio"), std::string::npos);
   }
@@ -597,6 +599,66 @@ TEST(ZoomEngineRuntime, IngestsDedicatedMeetingMixPcmAsZoomMix) {
   event.command = "audio";
   event.sourceUuid = sourceUuid;
   event.participantId = 4242;
+  event.byteLength = byteLength;
+  runtime.applyEngineEventForTest(event);
+
+  const auto frames = runtime.pollCompositorAudioFrames(100);
+  const auto found = std::find_if(frames.begin(), frames.end(), [](const corevideo::modules::AudioFrame& frame) {
+    return frame.participantId == "zoom-mix";
+  });
+  ASSERT_TRUE(found != frames.end());
+  EXPECT_EQ(found->sampleRate, 48000);
+  EXPECT_EQ(found->channels, 1);
+  ASSERT_EQ(found->pcm.size(), 4u);
+  EXPECT_EQ(found->pcm[0], 0.25f);
+  EXPECT_EQ(found->pcm[1], -0.25f);
+  EXPECT_EQ(found->pcm[2], 0.5f);
+  EXPECT_EQ(found->pcm[3], -0.5f);
+
+  shm_region_destroy(region);
+}
+
+// #465: Zoom's mixed-audio pipe event carries participant_id 0 when the mix is
+// keyed at the synthetic id (not a roster guest). Ingest used to drop pid==0,
+// so the mixer never saw zoom-mix PCM after the identity change.
+TEST(ZoomEngineRuntime, IngestsDedicatedMeetingMixPcmWhenParticipantIdIsZero) {
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  corevideo::modules::ZoomEngineRuntime runtime;
+
+  const std::string sourceUuid =
+      "meeting-audio-0-program-cvp-test-" + std::to_string(
+#if defined(_WIN32)
+          static_cast<unsigned long>(::GetCurrentProcessId())
+#else
+          static_cast<unsigned long>(::getpid())
+#endif
+      );
+  const std::vector<std::int16_t> samples{8192, -8192, 16384, -16384};
+  const auto byteLength = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
+  ShmRegion region{};
+  ASSERT_TRUE(shm_region_create(
+      region,
+      corevideo::modules::zoomEngineAudioSharedMemoryName(sourceUuid),
+      corevideo::modules::zoomEngineAudioRingByteSize()));
+
+  auto* header = static_cast<ShmAudioRingHeader*>(region.ptr);
+  header->magic = kAudioRingMagic;
+  header->slot_count = kAudioRingSlots;
+  header->slot_payload = kAudioRingSlotPayload;
+  auto* slotBase = static_cast<char*>(region.ptr) + sizeof(ShmAudioRingHeader);
+  auto* slot = reinterpret_cast<ShmAudioRingSlot*>(slotBase);
+  slot->sample_rate = 48000;
+  slot->channels = 1;
+  slot->byte_len = byteLength;
+  std::memcpy(slotBase + sizeof(ShmAudioRingSlot), samples.data(), byteLength);
+  slot->seq = 2u;
+  header->write_counter = 1u;
+
+  corevideo::modules::ZoomEngineEvent event;
+  event.kind = corevideo::modules::ZoomEngineEventKind::Audio;
+  event.command = "audio";
+  event.sourceUuid = sourceUuid;
+  event.participantId = 0;
   event.byteLength = byteLength;
   runtime.applyEngineEventForTest(event);
 
