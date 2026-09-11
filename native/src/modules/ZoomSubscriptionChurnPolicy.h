@@ -40,6 +40,7 @@ struct ZoomSubscriptionChurnPolicy {
     Resubscribe,   // subscribed again after having been dropped earlier
     CapEviction,   // dropped by the video budget while still in the meeting
     Unrouted,      // dropped because it stopped being a source (operator un-routed it)
+    VideoOff,      // video dropped because the participant turned the camera off
     Departure,     // dropped because the participant left
   };
 
@@ -59,9 +60,15 @@ struct ZoomSubscriptionChurnPolicy {
   }
 
   // `overBudget`: the shell's videoSubscriptionShortfall names this participant.
-  [[nodiscard]] static Change classifyRetire(bool participantStillInMeeting, bool overBudget) {
+  // `cameraOff`: a VIDEO subscription whose participant's camera is now off (the
+  // engine roster's has_video). The shell drops camera-off sources from video.
+  [[nodiscard]] static Change classifyRetire(bool participantStillInMeeting, bool overBudget,
+                                             bool cameraOff = false) {
     if (!participantStillInMeeting) {
       return Change::Departure;
+    }
+    if (cameraOff) {
+      return Change::VideoOff;
     }
     return overBudget ? Change::CapEviction : Change::Unrouted;
   }
@@ -71,6 +78,7 @@ struct ZoomSubscriptionChurnPolicy {
   [[nodiscard]] static bool countsAsChurn(Change change) {
     return change == Change::Resolution || change == Change::Resubscribe ||
            change == Change::CapEviction || change == Change::Unrouted ||
+           change == Change::VideoOff ||
            change == Change::Departure;
   }
 
@@ -88,6 +96,7 @@ struct ZoomSubscriptionChurnPolicy {
       case Change::Resubscribe: return "resubscribe";
       case Change::CapEviction: return "cap-eviction";
       case Change::Unrouted: return "unrouted";
+      case Change::VideoOff: return "video-off";
       case Change::Departure: return "departure";
     }
     return "none";

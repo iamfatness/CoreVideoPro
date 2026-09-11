@@ -319,6 +319,27 @@ public sealed class MagicSceneCoordinatorTests
         Assert.Equal("intro", host.PreviewSceneId);
     }
 
+    [Fact]
+    public void AutomationCuesPreviewAtTheStartOfTheHoldSoTheTargetWarmsBeforeTheTake()
+    {
+        // #478 R5: only sources are subscribed, so a scene's guests have no feed until the
+        // scene is on a bus. Cueing at the Take (the old behaviour) cut Program to a cold
+        // subscription; cueing when the hold STARTS gives the whole hold to warm it.
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 30;
+        coordinator.Recommendation = Recommendation("interview", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal(0, host.TakeAsyncCallCount);
+        Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
+        Assert.StartsWith("Holding", coordinator.AutomationLastAction);
+    }
+
     private sealed class FakeAutomationTimer : IAutomationTimer
     {
         public bool IsRunning { get; private set; }

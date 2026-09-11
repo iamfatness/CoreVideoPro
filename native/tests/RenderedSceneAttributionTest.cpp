@@ -761,6 +761,12 @@ TEST(ZoomSubscriptionChurnPolicyRules, ResolutionCapEvictionAndDepartureAreDisti
   EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(false, true), Change::Departure);
   EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(false, false), Change::Departure);
   EXPECT_TRUE(ZoomSubscriptionChurnPolicy::countsAsChurn(Change::Unrouted));
+  // A camera that went off is its own reason (R6), whatever the budget said, and a
+  // departure still wins over everything.
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(true, false, true), Change::VideoOff);
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(true, true, true), Change::VideoOff);
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(false, false, true), Change::Departure);
+  EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::VideoOff)), "video-off");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Unrouted)), "unrouted");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::CapEviction)), "cap-eviction");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Departure)), "departure");

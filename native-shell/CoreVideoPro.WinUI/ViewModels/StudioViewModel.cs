@@ -8589,6 +8589,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
         };
 
+    // #478 R3: Tiles members stay AUDIO sources while their scene stays on its bus.
+    private readonly TilesAudioSourceLatch _tilesAudioLatch = new();
+
     private Dictionary<string, object?> BuildSpinePayload()
     {
         var syncContext = BuildProductionSyncContext();
@@ -8646,10 +8649,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SdkRuntimeReady = !Settings.SdkIsBlocked,
                 ProgramSceneRoutes = syncContext.SceneRoutes,
                 PreviewSceneRoutes = syncContext.PreviewSceneRoutes,
-                // #478 plumbing only; the video budget rule is ZoomVideoSubscriptionPolicy.
+                // #478 plumbing only; the source-set rule is ZoomSourceSetPolicy.
                 ProgramTilesLayer = syncContext.TilesLayer,
                 PreviewTilesLayer = syncContext.PreviewTilesLayer,
                 IsoParticipantIds = syncContext.RecordingTargets.IsoParticipantIds,
+                StickyAudioParticipantIds = _tilesAudioLatch.Observe(
+                    syncContext.ActiveSceneId,
+                    syncContext.TilesLayer,
+                    syncContext.PreviewSceneId,
+                    syncContext.PreviewTilesLayer,
+                    participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal)),
                 Multiview = multiview
             });
     }

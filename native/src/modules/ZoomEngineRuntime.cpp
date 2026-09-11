@@ -366,11 +366,28 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
   if (captureRequested_) {
     (void)ensureMediaStartedLocked();
   }
+  // #478 R1: the shell names its SOURCES (routes, Tiles members of a scene on a
+  // bus, in-show wall slots, ISO guests). The speaker director follows the talker
+  // only among them. A non-source never has a subscription, so it could never
+  // pass the director's fresh-frame gate and would otherwise deadlock it. An
+  // absent key (older shell) leaves every roster participant eligible.
+  if (const rpc::Json* sources = payload.get("sourceParticipantIds"); sources && sources->isArray()) {
+    std::vector<std::uint32_t> sourceIds;
+    for (const auto& entry : sources->asArray()) {
+      try {
+        sourceIds.push_back(static_cast<std::uint32_t>(std::stoul(entry.asString())));
+      } catch (...) {
+      }
+    }
+    state_.setSpeakerSources(true, std::move(sourceIds), monotonicMs());
+  }
   const rpc::Json* subscriptions = payload.get("subscriptions");
   if (process_ && process_->running() && subscriptions && subscriptions->isArray()) {
     // Build THIS tick's desired subscription set, sending a subscribe command ONLY
     // for new or resolution-changed entries (not every tick — see sentSubscriptions_).
     std::map<std::string, int> desired;
+    // The 1080P concurrency cap is applied in the payload's (budget) order.
+    ZoomSubscriptionResolutionPolicy::Budget fullResolution;
     for (const auto& request : subscriptions->asArray()) {
       const auto participantId = request.getString("participantId");
       if (participantId.empty()) {
@@ -396,25 +413,19 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       }
       command.mode = kind == "screen-share" ? "screenshare" : "";
       const auto existing = sentSubscriptions_.find(command.sourceUuid);
-      // Resolution (0=360P, 1=720P, 2=1080P) by a STABLE tier: fixed Program/Preview
-      // routes and screen share at 1080P, everything else 720P — see
+      // Resolution (0=360P, 1=720P, 2=1080P) by a STABLE tier: bus ROUTES and screen
+      // share at 1080P (capped), Tiles / wall / ISO at 720P, no ratchet. See
       // ZoomSubscriptionResolutionPolicy.h (#478). It used to be 1080P for
       // purpose=="active-speaker", so every speaker change rebuilt two renderers.
       // TARGET is still 1080p60 for EVERY participant (product spec); N concurrent
-      // 1080P raw subscriptions overloaded the Zoom SDK (ntdll 0xc000000d) and the
-      // CPU I420->BGRA path, so the rest stay 720P until the GPU pipeline removes that
-      // bottleneck. The engine downgrades further on per-feed failure.
+      // 1080P raw subscriptions overloaded the Zoom SDK (ntdll 0xc000000d), so the
+      // rest stay 720P until that is proven otherwise. The engine downgrades further
+      // on per-feed failure.
       // Audio subscriptions have no resolution concept; key them at -1 so a video
       // and an audio subscription for the same source don't alias.
       const bool isAudioSubscription = kind == "participant-audio" || kind == "meeting-audio";
-      const int requestedResolution = ZoomSubscriptionResolutionPolicy::requestedResolution(kind, purpose);
-      // Never send a downgrade: the engine keeps a live renderer at its resolution
-      // (video_subscribe_noop_existing), so the key must too, or the ledger books a
-      // teardown that did not happen.
-      command.resolution = ZoomSubscriptionResolutionPolicy::effectiveKey(
-          existing != sentSubscriptions_.end() && !isAudioSubscription,
-          existing != sentSubscriptions_.end() ? existing->second : -1,
-          requestedResolution);
+      command.resolution = isAudioSubscription ? ZoomSubscriptionResolutionPolicy::k720P
+                                               : fullResolution.resolve(kind, purpose);
       const int subscriptionKey = isAudioSubscription ? -1 : command.resolution;
       desired[command.sourceUuid] = subscriptionKey;
 
@@ -464,8 +475,11 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       sentSubscriptions_[command.sourceUuid] = subscriptionKey;
     }
 
+    fullResolutionDemoted_ = fullResolution.demoted();
+
     // The participants the shell's video budget left out (#478). A retire is a cap
-    // eviction only for these; any other in-meeting drop is an operator un-route.
+    // eviction only for these; a camera that went off is `video-off`; any other
+    // in-meeting drop is an operator un-route.
     std::set<std::string> overBudgetParticipants;
     if (const rpc::Json* shortfall = payload.get("videoSubscriptionShortfall");
         shortfall && shortfall->isArray()) {
@@ -494,10 +508,12 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
             numeric = true;
           } catch (...) {
           }
+          const bool isVideo = ledger->second.kind == "participant-video";
+          const bool inMeeting = numeric && state_.hasParticipant(numericId);
           const auto change = ZoomSubscriptionChurnPolicy::classifyRetire(
-              numeric && state_.hasParticipant(numericId),
-              ledger->second.kind == "participant-video" &&
-                  overBudgetParticipants.count(ledger->second.participantId) > 0);
+              inMeeting,
+              isVideo && overBudgetParticipants.count(ledger->second.participantId) > 0,
+              isVideo && inMeeting && !state_.participantHasVideo(numericId));
           ledger->second.subscribed = false;
           ++ledger->second.generation;
           ledger->second.lastReason = ZoomSubscriptionChurnPolicy::reason(change);
@@ -984,7 +1000,16 @@ std::uint64_t ZoomEngineRuntime::droppedEngineSendCountForTest() const {
   return droppedEngineSends_.load();
 }
 
+std::string ZoomEngineRuntime::directedSpeakerId() {
+  if (!configured()) {
+    return {};
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  return state_.directedSpeakerIdString();
+}
+
 void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
+  fullResolutionDemoted_ = 0;
   subscriptionChurn_.clear();
   subscriptionChurnTotal_.store(0, std::memory_order_relaxed);
 }
@@ -992,12 +1017,14 @@ void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
 rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
   std::lock_guard<std::mutex> lock(mutex_);
   rpc::Json::Array sources;
-  std::uint64_t resolutionChanges = 0, evictions = 0, unrouted = 0, departures = 0, subscribed = 0;
+  std::uint64_t resolutionChanges = 0, evictions = 0, unrouted = 0, videoOff = 0, departures = 0,
+                subscribed = 0;
   for (const auto& [sourceUuid, entry] : subscriptionChurn_) {
     if (entry.subscribed) ++subscribed;
     if (entry.lastReason == "resolution-change") ++resolutionChanges;
     if (entry.lastReason == "cap-eviction") ++evictions;
     if (entry.lastReason == "unrouted") ++unrouted;
+    if (entry.lastReason == "video-off") ++videoOff;
     if (entry.lastReason == "departure") ++departures;
     sources.emplace_back(rpc::Json::Object{
         {"sourceUuid", sourceUuid},
@@ -1020,6 +1047,10 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
       {"lastResolutionChanges", static_cast<double>(resolutionChanges)},
       {"lastCapEvictions", static_cast<double>(evictions)},
       {"lastUnrouted", static_cast<double>(unrouted)},
+      {"lastVideoOff", static_cast<double>(videoOff)},
+      {"fullResolutionCap",
+       static_cast<double>(ZoomSubscriptionResolutionPolicy::kMaxConcurrentFullResolutionCameras)},
+      {"fullResolutionDemoted", static_cast<double>(fullResolutionDemoted_)},
       {"lastDepartures", static_cast<double>(departures)},
       {"sources", sources},
   };

@@ -55,6 +55,12 @@ public static class ZoomMediaSpinePayloadBuilder
         public IReadOnlyList<string> IsoParticipantIds { get; init; } = [];
 
         /// <summary>
+        /// Bare Zoom ids latched by <see cref="TilesAudioSourceLatch"/>: Tiles members of a scene
+        /// still on its bus, kept as AUDIO sources after their camera goes off (#478 R3).
+        /// </summary>
+        public IReadOnlyList<string> StickyAudioParticipantIds { get; init; } = [];
+
+        /// <summary>
         /// Ordered Show Input roster that drives the core-composited GPU multiview. Delivered on
         /// this frequent, reliable channel (the production sync only carries it on scene publishes,
         /// which almost never re-run). Null leaves the multiview untouched.
@@ -81,6 +87,7 @@ public static class ZoomMediaSpinePayloadBuilder
             ProgramTiles = input.ProgramTilesLayer,
             PreviewRoutes = input.PreviewSceneRoutes,
             PreviewTiles = input.PreviewTilesLayer,
+            StickyAudioParticipantIds = input.StickyAudioParticipantIds,
             WallSources = input.Multiview?.Sources ?? [],
             IsoParticipantIds = input.IsoParticipantIds
         });
@@ -124,6 +131,10 @@ public static class ZoomMediaSpinePayloadBuilder
             ["blocked"] = blocked,
             ["warnings"] = warnings,
             ["summary"] = summary,
+            // The core's speaker director follows the talker ONLY among these (#478 R1): a
+            // non-source never has a subscription, so it could never pass the director's
+            // fresh-frame gate and would deadlock speaker-following.
+            ["sourceParticipantIds"] = ZoomSourceSetPolicy.SpeakerCandidateIds(sources).ToList(),
             // Structured twin of the warning above, for tests and the support bundle.
             ["videoSubscriptionShortfall"] = videoDecision.OverBudget
                 .Select(candidate => new Dictionary<string, object?>

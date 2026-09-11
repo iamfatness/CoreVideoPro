@@ -121,6 +121,8 @@ class MediaCore {
   // the engine command rides ZoomEngineRuntime's sender thread.
   [[nodiscard]] rpc::Json stopZoomCapture();
   [[nodiscard]] rpc::Json zoomSnapshot() const;
+  // #478 R2: who a follow-speaker (`active-speaker`) route shows. See the .cpp.
+  [[nodiscard]] std::string directedSpeakerForRoutes() const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
@@ -908,6 +910,9 @@ class MediaCore {
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
+  // The last speaker a follow-speaker route was bound to (held while none is
+  // directed). Written only from plan builds, which run under coreMutex.
+  mutable std::string lastDirectedSpeakerId_;
   std::string zoomDisplayName_ = "Guest Producer";
   std::string breakoutRoomId_ = "main";
   std::string breakoutRoomName_ = "Main room";

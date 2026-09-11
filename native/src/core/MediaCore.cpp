@@ -561,6 +561,22 @@ rpc::Json MediaCore::stopZoomCapture() {
   return zoomSnapshot();
 }
 
+std::string MediaCore::directedSpeakerForRoutes() const {
+  // #478 R2: a follow-speaker route shows the DIRECTED speaker (the director's
+  // choice among the shell's sources), and HOLDS the last one it directed while
+  // nobody is directed, rather than falling back to a positional source.
+  std::string current;
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    current = zoomEngineRuntime_->directedSpeakerId();
+  } else if (zoomJoined_) {
+    current = zoomSnapshot().getString("activeSpeakerId");
+  }
+  if (!current.empty()) {
+    lastDirectedSpeakerId_ = current;
+  }
+  return lastDirectedSpeakerId_;
+}
+
 rpc::Json MediaCore::zoomSnapshot() const {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->snapshot();
@@ -1976,6 +1992,9 @@ rpc::Json MediaCore::zoomSubscriptionChurnState() const {
       {"lastResolutionChanges", 0.0},
       {"lastCapEvictions", 0.0},
       {"lastUnrouted", 0.0},
+      {"lastVideoOff", 0.0},
+      {"fullResolutionCap", 0.0},
+      {"fullResolutionDemoted", 0.0},
       {"lastDepartures", 0.0},
       {"sources", rpc::Json::Array{}},
   };
@@ -5393,13 +5412,19 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   }
   if (!sceneRoutes.empty()) {
     renderPlan.layers.reserve(static_cast<size_t>(sceneRoutes.size() + overlayCount));
+    // Resolved once per plan, and only when a follow-speaker route needs it.
+    const bool hasFollowSpeakerRoute = std::any_of(sceneRoutes.begin(), sceneRoutes.end(), [](const auto& route) {
+      return route.mode == "active-speaker" && route.participantId.empty() &&
+             route.captureDeviceId.empty() && route.mediaAssetId.empty();
+    });
+    const std::string directedSpeaker = hasFollowSpeakerRoute ? directedSpeakerForRoutes() : std::string{};
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
       const auto fallbackParticipantId = videoLayerIndex < static_cast<int>(videoFrames.size())
           ? std::optional<std::string_view>(videoFrames[static_cast<size_t>(videoLayerIndex)].participantId) : std::nullopt;
       const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
-          route.captureDeviceId, route.participantId, fallbackParticipantId});
+          route.captureDeviceId, route.participantId, fallbackParticipantId, directedSpeaker});
       layer.kind = binding.kind;
       layer.sourceId = binding.sourceId;
       layer.participantId = binding.participantId;

@@ -4,9 +4,9 @@ namespace CoreVideoPro.MediaCore.Services;
 
 /// <summary>
 /// THE SOURCE SET: which Zoom participants are sources of the show, in budget order, with the
-/// <c>purpose</c> each is subscribed under. It is the one decision both the raw VIDEO and the
-/// per-participant AUDIO subscription lists are built from (and the one the mixer is meant to
-/// read later, to list only source channels). Pure: no UI, no I/O.
+/// <c>purpose</c> each is subscribed under. It is the one decision the raw VIDEO list, the
+/// per-participant AUDIO list and the core's speaker director are all built from (and the one
+/// the mixer is meant to read later, to list only source channels). Pure: no UI, no I/O.
 ///
 /// <para><b>Only sources that are sources (owner rule, #478, 2026-09-11).</b> "Why are you
 /// grabbing sources I don't have routed to the multiviewer? … Wasting bandwidth and resources on
@@ -14,37 +14,44 @@ namespace CoreVideoPro.MediaCore.Services;
 /// model: nothing is on air unless it is an input. The complete set, in budget order:</para>
 /// <list type="number">
 /// <item>Program scene routes</item>
+/// <item>Preview scene routes</item>
 /// <item>Program Tiles wall members (+ a Zoom wall background). A Tiles scene serialises an
 /// EMPTY route list, so these must be added explicitly.</item>
-/// <item>Preview scene routes</item>
 /// <item>Preview Tiles wall members (+ background)</item>
 /// <item>The multiview wall: in-show Show Input slots, in slot order</item>
 /// <item>Participants armed for ISO recording (only while "Program + ISOs" is on)</item>
+/// <item>Sticky Tiles audio members (see below): audio only, and only when no tier above
+/// already lists them</item>
 /// </list>
-/// <para>There is NO roster-order fill. The old builder appended every participant in roster
-/// order, so early joiners with their camera OFF took the capped video budget ahead of a wall
-/// guest who joined late (live: Alexander, slot 2, froze whenever he was not in
-/// Preview/Program), and every participant held an audio subscription.</para>
+/// <para>Fixed bus ROUTES come before Tiles members (fix round 1, review finding 8): an eligible
+/// Tiles gallery can list every camera-on guest (MaxTiles up to 64), and must never push the
+/// operator's explicitly cued Preview guest past the budget. There is NO roster-order fill: the
+/// old builder appended every participant, so camera-OFF early joiners took the capped budget
+/// ahead of a wall guest who joined late (live: Alexander, slot 2).</para>
 ///
 /// <para><b>Video vs audio.</b> A camera-OFF source is still a source: it keeps its AUDIO
 /// subscription (a wall guest with the camera off can still speak) but never spends VIDEO
-/// budget, because it produces no frames. It is picked up for video on the next spine sync
-/// (every 500 ms) once the camera comes on. Only video is capped.</para>
+/// budget; it is picked up for video on the next spine sync (every 500 ms) once the camera
+/// comes on. Only video is capped. <b>Tiles audio is sticky (controller ruling R3):</b> a Tiles
+/// member of a scene on a bus stays an audio source while that scene stays on that bus, even
+/// after the membership policy drops them for turning their camera off — otherwise a panelist
+/// fixing a light goes silent on air mid-sentence. The latch is
+/// <see cref="TilesAudioSourceLatch"/>; a never-on-camera participant never becomes a member,
+/// so never becomes audible this way.</para>
 ///
-/// <para><b>The active speaker is not a tier.</b> Talking grants nothing. The directed speaker
-/// is a source only through a route whose mode is <c>active-speaker</c> (a follow-speaker
-/// route), and only while their camera is on (the same rule
-/// <c>SceneRoutingService.ResolveRouteParticipant</c> uses to pick who that route shows). It is
-/// subscribed at the 720p <c>active-speaker</c> purpose, because the person behind a follow route
-/// changes with whoever talks and a 1080p purpose there would re-subscribe on every speaker
-/// change. Being the speaker never moves anyone's place in the budget either: a moving order is
-/// exactly what used to push the last guest past the cap on each flip.</para>
+/// <para><b>The active speaker is not a tier, and never grants a feed (R1).</b> The core's
+/// speaker director follows the talker only AMONG these sources (the payload names them in
+/// <c>sourceParticipantIds</c>), so the directed speaker is always already a source. A
+/// follow-speaker (<c>active-speaker</c> mode) route therefore adds nobody and moves nobody's
+/// budget position; it only gives the directed speaker the bus purpose (<c>program</c> /
+/// <c>preview</c>, the 1080p tier) for as long as they are directed.</para>
 ///
-/// <para><b>Purpose is a STABLE tier, not a position.</b> A participant holding a FIXED Program
-/// route gets <c>program</c>, else a FIXED Preview route <c>preview</c> (both 1080p in the core,
+/// <para><b>Purpose is a STABLE tier, not a position.</b> A participant holding a Program route
+/// gets <c>program</c>, else a Preview route <c>preview</c> (both 1080p in the core,
 /// <c>native/src/modules/ZoomSubscriptionResolutionPolicy.h</c>); anything else takes the
 /// purpose of the first tier that lists it (all 720p). So purpose, and with it resolution,
-/// moves only on a Take or a cue, never on who is talking.</para>
+/// moves only on a Take or a cue — or, for a follow-speaker route only, on a change of directed
+/// speaker.</para>
 /// </summary>
 public static class ZoomSourceSetPolicy
 {
@@ -52,9 +59,9 @@ public static class ZoomSourceSetPolicy
     public const string PreviewPurpose = "preview";
     public const string ProgramTilesPurpose = "program-tiles";
     public const string PreviewTilesPurpose = "preview-tiles";
+    public const string TilesAudioPurpose = "tiles-audio";
     public const string MultiviewPurpose = "multiview";
     public const string IsoPurpose = "iso";
-    public const string FollowSpeakerPurpose = "active-speaker";
 
     private const string ZoomSourcePrefix = "zoom:";
     private const string FollowSpeakerRouteMode = "active-speaker";
@@ -69,12 +76,15 @@ public static class ZoomSourceSetPolicy
         public MediaCoreTilesLayerWire? ProgramTiles { get; init; }
         public IReadOnlyList<MediaCoreSceneRouteWire> PreviewRoutes { get; init; } = [];
         public MediaCoreTilesLayerWire? PreviewTiles { get; init; }
+        /// <summary>Bare Zoom ids latched as Tiles members of a scene still on its bus (R3).</summary>
+        public IReadOnlyList<string> StickyAudioParticipantIds { get; init; } = [];
         /// <summary>The in-show multiview wall sources (any kind; only Zoom ones count).</summary>
         public IReadOnlyList<MediaCoreMultiviewSourceWire> WallSources { get; init; } = [];
         /// <summary>Bare Zoom participant ids armed for ISO recording.</summary>
         public IReadOnlyList<string> IsoParticipantIds { get; init; } = [];
     }
 
+    /// <param name="VideoOn">False for a camera-off source AND for a sticky audio-only one.</param>
     public sealed record Source(string ParticipantId, string Purpose, bool VideoOn);
 
     /// <param name="Subscribed">Camera-on sources within the budget, in budget order.</param>
@@ -95,19 +105,21 @@ public static class ZoomSourceSetPolicy
             }
 
             videoOn[participant.Id] = participant.VideoOn;
-            if (participant.IsDirectedSpeaker && directedSpeaker is null)
+            // The first directed participant WITH video — the same pick
+            // SceneRoutingService.ResolveRouteParticipant makes for a follow route.
+            if (participant.IsDirectedSpeaker && participant.VideoOn && directedSpeaker is null)
             {
                 directedSpeaker = participant.Id;
             }
         }
 
-        var fixedProgram = FixedRouteParticipants(input.ProgramRoutes);
-        var fixedPreview = FixedRouteParticipants(input.PreviewRoutes);
+        var onProgramRoute = RouteParticipants(input.ProgramRoutes, directedSpeaker);
+        var onPreviewRoute = RouteParticipants(input.PreviewRoutes, directedSpeaker);
 
         var sources = new List<Source>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        void Add(string? participantId, string tierPurpose)
+        void Add(string? participantId, string tierPurpose, bool audioOnly = false)
         {
             if (string.IsNullOrWhiteSpace(participantId) ||
                 !videoOn.TryGetValue(participantId, out var on) ||
@@ -116,27 +128,22 @@ public static class ZoomSourceSetPolicy
                 return;
             }
 
-            var purpose = fixedProgram.Contains(participantId) ? ProgramPurpose
-                : fixedPreview.Contains(participantId) ? PreviewPurpose
+            var purpose = onProgramRoute.Contains(participantId) ? ProgramPurpose
+                : onPreviewRoute.Contains(participantId) ? PreviewPurpose
                 : tierPurpose;
-            sources.Add(new Source(participantId, purpose, on));
+            sources.Add(new Source(participantId, purpose, on && !audioOnly));
         }
 
-        void AddRoutes(IReadOnlyList<MediaCoreSceneRouteWire> routes, string fixedPurpose)
+        void AddFixedRoutes(IReadOnlyList<MediaCoreSceneRouteWire> routes, string purpose)
         {
             foreach (var route in routes)
             {
-                if (IsFollowSpeakerRoute(route))
+                // A follow-speaker route adds nobody: its directed speaker is already a
+                // source (the director picks only among sources) and is listed where their
+                // own tier puts them, with this bus's purpose.
+                if (!IsFollowSpeakerRoute(route))
                 {
-                    // A follow route shows the speaker only while their camera is on.
-                    if (directedSpeaker is not null && videoOn[directedSpeaker])
-                    {
-                        Add(directedSpeaker, FollowSpeakerPurpose);
-                    }
-                }
-                else
-                {
-                    Add(BareZoomId(route.ParticipantId), fixedPurpose);
+                    Add(BareZoomId(route.ParticipantId), purpose);
                 }
             }
         }
@@ -157,9 +164,9 @@ public static class ZoomSourceSetPolicy
             Add(ZoomMemberId(tiles.BackgroundSourceId), purpose);
         }
 
-        AddRoutes(input.ProgramRoutes, ProgramPurpose);
+        AddFixedRoutes(input.ProgramRoutes, ProgramPurpose);
+        AddFixedRoutes(input.PreviewRoutes, PreviewPurpose);
         AddTiles(input.ProgramTiles, ProgramTilesPurpose);
-        AddRoutes(input.PreviewRoutes, PreviewPurpose);
         AddTiles(input.PreviewTiles, PreviewTilesPurpose);
         foreach (var source in input.WallSources
                      .Select((source, index) => (source, index))
@@ -178,6 +185,13 @@ public static class ZoomSourceSetPolicy
             Add(BareZoomId(participantId), IsoPurpose);
         }
 
+        // LAST, so every real tier above wins: a sticky id that is also on the wall or ISO
+        // keeps its video there. Only a latched member with no other tier is audio-only.
+        foreach (var participantId in input.StickyAudioParticipantIds)
+        {
+            Add(BareZoomId(participantId), TilesAudioPurpose, audioOnly: true);
+        }
+
         return sources;
     }
 
@@ -193,18 +207,43 @@ public static class ZoomSourceSetPolicy
     public static IReadOnlyList<string> AudioParticipantIds(IReadOnlyList<Source> sources) =>
         sources.Select(source => source.ParticipantId).ToList();
 
+    /// <summary>
+    /// The ids the core's speaker director may follow (R1). The same set as audio: every source,
+    /// camera on or off (the director itself requires video before it directs anyone).
+    /// </summary>
+    public static IReadOnlyList<string> SpeakerCandidateIds(IReadOnlyList<Source> sources) =>
+        sources.Select(source => source.ParticipantId).ToList();
+
     private static bool IsFollowSpeakerRoute(MediaCoreSceneRouteWire route) =>
         string.IsNullOrWhiteSpace(route.ParticipantId) &&
         string.IsNullOrWhiteSpace(route.CaptureDeviceId) &&
         string.IsNullOrWhiteSpace(route.MediaAssetId) &&
         string.Equals(route.Mode, FollowSpeakerRouteMode, StringComparison.Ordinal);
 
-    private static HashSet<string> FixedRouteParticipants(IReadOnlyList<MediaCoreSceneRouteWire> routes) =>
-        routes
-            .Where(route => !IsFollowSpeakerRoute(route))
-            .Select(route => BareZoomId(route.ParticipantId))
-            .OfType<string>()
-            .ToHashSet(StringComparer.Ordinal);
+    /// <summary>Who holds a route on this bus: every fixed route's guest, plus the directed
+    /// speaker when the bus carries a follow-speaker route.</summary>
+    private static HashSet<string> RouteParticipants(
+        IReadOnlyList<MediaCoreSceneRouteWire> routes,
+        string? directedSpeaker)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var route in routes)
+        {
+            if (IsFollowSpeakerRoute(route))
+            {
+                if (directedSpeaker is not null)
+                {
+                    ids.Add(directedSpeaker);
+                }
+            }
+            else if (BareZoomId(route.ParticipantId) is { } participantId)
+            {
+                ids.Add(participantId);
+            }
+        }
+
+        return ids;
+    }
 
     /// <summary>A route/wall/ISO id: bare Zoom id, or "zoom:"-qualified. Other schemes
     /// (capture:, media:) are not Zoom participants.</summary>
@@ -224,7 +263,7 @@ public static class ZoomSourceSetPolicy
     }
 
     /// <summary>A Tiles member is always scheme-qualified (TilesLayerPayloadBuilder.QualifySourceId).</summary>
-    private static string? ZoomMemberId(string? member) =>
+    internal static string? ZoomMemberId(string? member) =>
         member is { Length: > 0 } && member.StartsWith(ZoomSourcePrefix, StringComparison.Ordinal)
             ? member[ZoomSourcePrefix.Length..]
             : null;

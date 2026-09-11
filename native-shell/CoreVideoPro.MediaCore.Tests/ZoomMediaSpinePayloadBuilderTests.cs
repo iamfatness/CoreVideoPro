@@ -355,24 +355,155 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
     }
 
     [Fact]
-    public void AFollowSpeakerRouteSubscribesTheSpeakerAtAStableTierButOnlyWhileTheirCameraIsOn()
+    public void AFollowSpeakerRouteNeverGrantsAFeedItOnlyGivesTheDirectedSourceTheBusTier()
     {
-        static ZoomMediaSpinePayloadBuilder.BuildInput Input(bool speakerVideoOn) => new()
+        // R1: the core directs only among sources, so a follow route adds nobody. The directed
+        // speaker, already a source, takes this bus's purpose (the 1080p tier) where they sit.
+        static ZoomMediaSpinePayloadBuilder.BuildInput Input(string speaker) => new()
         {
             EngineRunning = true,
-            Participants = [Guest("w1", "Wall"), Guest("s", "Speaker", videoOn: speakerVideoOn, speaker: true)],
+            Participants =
+            [
+                Guest("w1", "Wall 1", speaker: speaker == "w1"),
+                Guest("w2", "Wall 2", speaker: speaker == "w2"),
+                Guest("x", "Not a source", speaker: speaker == "x")
+            ],
             ProgramSceneRoutes = [Route(null, mode: "active-speaker")],
-            Multiview = Wall((0, "w1"))
+            Multiview = Wall((0, "w1"), (1, "w2"))
         };
 
-        var on = Video(ZoomMediaSpinePayloadBuilder.Build(Input(speakerVideoOn: true)));
-        Assert.Equal(["s", "w1"], on.Select(Pid).ToArray());
-        // 720p tier: a follow route's participant changes with whoever talks, so a 1080p
-        // purpose here would re-subscribe on every speaker change.
-        Assert.Equal("active-speaker", Purpose(on[0]));
+        var w2Talking = Video(ZoomMediaSpinePayloadBuilder.Build(Input("w2")));
+        Assert.Equal(["w1", "w2"], w2Talking.Select(Pid).ToArray());
+        Assert.Equal(["multiview", "program"], w2Talking.Select(Purpose).ToArray());
 
-        var off = Video(ZoomMediaSpinePayloadBuilder.Build(Input(speakerVideoOn: false)));
-        Assert.Equal(["w1"], off.Select(Pid).ToArray());
+        // A non-source talking (the core would never direct them, but the shell must not trust
+        // that): nobody gains a feed and nobody's purpose moves.
+        var xTalking = ZoomMediaSpinePayloadBuilder.Build(Input("x"));
+        Assert.Equal(["w1", "w2"], Video(xTalking).Select(Pid).ToArray());
+        Assert.Equal(["multiview", "multiview"], Video(xTalking).Select(Purpose).ToArray());
+        Assert.DoesNotContain("x", Audio(xTalking));
+    }
+
+    [Fact]
+    public void AFollowRouteAtTheCapNeverMovesTheSetOrItsOrderWhenTheSpeakerChanges()
+    {
+        // Review finding 3: a follow route used to INSERT the speaker at tier 1, so at the cap a
+        // speaker change evicted the last wall slot (a cap eviction that flipped with talk).
+        var guests = Enumerable.Range(0, 11).Select(index => $"g{index}").ToList();
+        ZoomMediaSpinePayloadBuilder.BuildInput Input(string speaker) => new()
+        {
+            EngineRunning = true,
+            MaxVideoSubscriptions = 10,
+            Participants = guests.Select(id => Guest(id, id, speaker: id == speaker)).ToList(),
+            ProgramSceneRoutes = [Route(null, mode: "active-speaker")],
+            Multiview = Wall(guests.Select((id, slot) => (slot, id)).ToArray())
+        };
+
+        var baseline = Video(ZoomMediaSpinePayloadBuilder.Build(Input("g1"))).Select(Pid).ToArray();
+        Assert.Equal(guests.Take(10).ToArray(), baseline);
+        foreach (var speaker in new[] { "g0", "g5", "g9", "g10" })
+        {
+            var payload = ZoomMediaSpinePayloadBuilder.Build(Input(speaker));
+            Assert.Equal(baseline, Video(payload).Select(Pid).ToArray());
+            Assert.Equal("g10", Assert.Single(Shortfall(payload))["participantId"]);
+        }
+    }
+
+    [Fact]
+    public void ThePayloadNamesTheSourcesTheCoreMayFollowAndNobodyElse()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(LiveInput(speaker: Host));
+        var sources = Assert.IsAssignableFrom<IReadOnlyList<string>>(payload["sourceParticipantIds"]);
+        Assert.Equal(
+            [ProgramGuest, PreviewGuest, Alexander, "16793600", "16794624", "16795648", "16796672"],
+            sources.ToArray());
+        Assert.DoesNotContain(Host, sources);
+        Assert.DoesNotContain(OffWallCameraOn, sources);
+    }
+
+    [Fact]
+    public void APreviewRouteOutranksAProgramGalleryAtTheCap()
+    {
+        // Review finding 8: an eligible Tiles gallery can list every camera-on guest; the
+        // operator's explicitly cued Preview guest must never be the one the cap drops.
+        var members = Enumerable.Range(0, 12).Select(index => $"t{index}").ToList();
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            MaxVideoSubscriptions = 10,
+            Participants = [.. members.Select(id => Guest(id, id)), Guest("cued", "Cued")],
+            ProgramTilesLayer = Tiles(members.Select(id => $"zoom:{id}").ToList()),
+            PreviewSceneRoutes = [Route("cued")]
+        });
+
+        var video = Video(payload);
+        Assert.Equal("cued", Pid(video[0]));
+        Assert.Equal("preview", Purpose(video[0]));
+        Assert.DoesNotContain("cued", Shortfall(payload).Select(entry => entry["participantId"]?.ToString()));
+    }
+
+    [Fact]
+    public void AWallGuestInAnotherBreakoutRoomIsNotASource()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            SelectedBreakoutRoomId = "main",
+            Participants =
+            [
+                Guest("here", "Here"),
+                new MediaCoreParticipantWire("away", "Away", "guest", "room-2", "Room 2", false, false, false, 0, "live")
+            ],
+            Multiview = Wall((0, "here"), (1, "away"))
+        });
+
+        Assert.Equal(["here"], Video(payload).Select(Pid).ToArray());
+        Assert.Equal(["here"], Audio(payload).ToArray());
+    }
+
+    [Fact]
+    public void SpotlightRoutesCountWhenTheyNameAGuestAndAddNobodyWhenTheyDoNot()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            Participants = [Guest("named", "Named"), Guest("other", "Other")],
+            ProgramSceneRoutes = [Route("named", mode: "spotlight"), Route(null, mode: "spotlight")]
+        });
+
+        var video = Video(payload);
+        Assert.Equal(["named"], video.Select(Pid).ToArray());
+        Assert.Equal("program", Purpose(video[0]));
+    }
+
+    [Fact]
+    public void ACameraOffIsoGuestGetsAudioButNoVideo()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            Participants = [Guest("iso", "ISO", videoOn: false)],
+            IsoParticipantIds = ["iso"]
+        });
+
+        Assert.Empty(Video(payload));
+        Assert.Equal(["iso"], Audio(payload).ToArray());
+    }
+
+    [Fact]
+    public void AStickyLatchedTilesMemberIsAnAudioOnlySourceUnlessAnotherTierListsThem()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            Participants = [Guest("latched", "Latched", videoOn: false), Guest("walled", "Walled")],
+            StickyAudioParticipantIds = ["latched", "walled"],
+            Multiview = Wall((0, "walled"))
+        });
+
+        Assert.Equal(["walled"], Video(payload).Select(Pid).ToArray());
+        Assert.Equal("multiview", Purpose(Video(payload)[0]));
+        Assert.Equal(["walled", "latched"], Audio(payload).ToArray());
     }
 
     [Fact]

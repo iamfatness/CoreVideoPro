@@ -738,60 +738,99 @@ comment at the code site; this is the index.
   frozen feed still DELIVERS with a held frameId; `pause()` is the harsher
   no-frame case) and `AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated`.
   Both fail without the gate change.
-  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTED; BOTH HALVES ARE NOW FIXED (#478,
-  2026-09-11).** It was: `ZoomMediaSpinePayloadBuilder` ordered video candidates
-  active-speaker, program routes, preview routes, then EVERY participant in roster
-  order, capped at `maxVideoSubscriptions`; and the core picked resolution as
-  `purpose == "active-speaker" ? 1080P : 720P`, with resolution in the dedup key.
-  So every speaker change rebuilt two engine renderers, a Tiles scene's EMPTY
-  route list reordered the list on a take, and camera-OFF early joiners took the
-  cap ahead of a late wall guest (live, 12-person meeting: Alexander, slot 2,
+  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTED; IT IS FIXED (#478, 2026-09-11,
+  plus fix round 1).** It was: `ZoomMediaSpinePayloadBuilder` ordered video
+  candidates active-speaker, program routes, preview routes, then EVERY participant
+  in roster order, capped at `maxVideoSubscriptions`; and the core picked resolution
+  as `purpose == "active-speaker" ? 1080P : 720P`, with resolution in the dedup key.
+  So every speaker change rebuilt two engine renderers, a Tiles scene's EMPTY route
+  list reordered the list on a take, and camera-OFF early joiners took the cap ahead
+  of a late wall guest (live, 12-person meeting: Alexander, slot 2,
   `subscribed:false`, generation 14, froze whenever he left Preview/Program; three
   camera-off non-wall guests held live subscriptions; `totalChurn` 53->59 in 20 s
   with the owner seeing Tiles "flashing"). Now:
   **(1) ONLY SOURCES ARE SUBSCRIBED (owner rule: "Why are you grabbing sources I
   don't have routed to the multiviewer?").** `MediaCore/Services/ZoomSourceSetPolicy.cs`
   is the ONE pure decision of who is a source, in budget order: Program routes ->
-  Program Tiles members (+ Zoom wall background) -> Preview routes -> Preview Tiles
+  Preview routes -> Program Tiles members (+ Zoom wall background) -> Preview Tiles
   members -> in-show wall slots in slot order -> ISO-armed guests (only while
-  "Program + ISOs" is on). No roster fill, anywhere. VIDEO = camera-on sources,
-  capped; AUDIO (`participant-audio`, purpose "mix") = every source including
-  camera-off ones (a wall guest with the camera off can still speak), uncapped —
-  owner ruling "sources only": a non-source is NOT subscribed and is inaudible in
-  Program (the hardware-switcher model). `meeting-audio` (the programMix path) is
-  unchanged. The active speaker is not a tier: talking grants nothing; the
-  directed speaker is a source only through a follow-speaker (`active-speaker`
-  mode) route, while their camera is on, and never moves anyone's budget position.
-  `StudioViewModel.BuildSpinePayload` only plumbs the Tiles layers + ISO ids in, and
-  now maps the live roster's `VideoOn` into health (it used to pass raw
+  "Program + ISOs" is on) -> sticky Tiles audio members. Fixed bus ROUTES outrank
+  Tiles members because an eligible gallery can list every camera-on guest and must
+  never push the cued Preview guest past the cap. No roster fill, anywhere. VIDEO =
+  camera-on sources, capped at 10; AUDIO (`participant-audio`, purpose "mix") = every
+  source including camera-off ones, uncapped (owner ruling "sources only": a
+  non-source is NOT subscribed and is inaudible in Program, the hardware-switcher
+  model); `meeting-audio` (the programMix path) is unchanged. **Tiles audio is
+  sticky** (`TilesAudioSourceLatch`): a Tiles member of a scene on a bus stays an
+  audio source until that bus's scene changes or they leave the meeting, so a
+  panelist who turns their camera off (the membership policy drops them) keeps
+  talking on air; a never-on-camera participant is never a member, so never audible.
+  `StudioViewModel.BuildSpinePayload` only plumbs the Tiles layers, ISO ids and the
+  latch in, and maps the live roster's `VideoOn` into health (it used to pass raw
   NetworkQuality, so every camera-off guest read as video-on).
-  **(2) RESOLUTION IS A STABLE TIER.** `native/src/modules/ZoomSubscriptionResolutionPolicy.h`:
-  fixed Program/Preview routes (`participant-video` + purpose program/preview) and
-  screen share 1080P, every other purpose (program-tiles, preview-tiles, multiview,
-  iso, active-speaker) 720P, so it moves only on a cue/Take, never on who talks.
-  In-place `setRawDataResolution` was REJECTED: the SDK header only declares it
-  (`h/rawdata/rawdata_renderer_interface.h:50`), the engine only ever calls it
-  before `subscribe()` (`engine-video.cpp:70`), and a silent no-op on a live
-  renderer cannot be ruled out without a live meeting. And a DOWNGRADE IS NEVER
-  SENT: the engine already keeps a live renderer on a lower request
-  (`video_subscribe_noop_existing`), so the core keeps the higher key too — a
-  renderer is raised at most once per subscription. The macOS shell (kind "video",
-  purpose "program" for all) is deliberately untouched by the tier.
-  **(3) LOUD.** A camera-on source the cap leaves out goes in the payload's
-  `videoSubscriptionShortfall` + `warnings`, and its multiview tile label reads
-  "<name> · no video: subscription limit (10)". The subscription UUID is still
-  `participant-video-<pid>-camera` (purpose excluded, so a Take never tears it
-  down). Tests: `ZoomMediaSpinePayloadBuilderTests.LiveCase478_*` (the 12-person
-  live case, red on the old builder), `ANonSourceCameraOnParticipantGetsNeitherVideoNorAudio`,
-  `ACameraOffWallGuestGetsAudioButNoVideo`, `AnIsoOnlyGuestGetsBothVideoAndAudio`;
-  native `ZoomEngineRuntime.AnActiveSpeakerFlipCausesNoTeardown` (red on the old
-  rule), `ZoomSubscriptionResolutionPolicyRules.*`.
-  **Costs, by the owner's rule:** an unrouted guest now has NO frames and NO audio
-  anywhere — the scene canvas editor for a scene on neither bus, a follow-speaker
-  route whose new speaker is not on the wall (cold subscribe at the cut), and a
-  Tiles guest who turns their camera off (dropped from the members, so from the
-  source set, unless also on the wall) are all affected. The mixer still lists every
-  participant; wiring it to `ZoomSourceSetPolicy` is a follow-up (#481 overlaps).
+  **(2) THE SPEAKER DIRECTOR FOLLOWS ONLY SOURCES** (`ZoomActiveSpeakerDirector::setSourceFilter`,
+  fed from the payload's `sourceParticipantIds`). Without this, sources-only
+  DEADLOCKED speaker-following: the director only promotes a challenger with fresh
+  frames, a non-source never has a subscription, and the meeting's first talker
+  (vacancy fill, no freshness check) held the directed slot for the whole show. A
+  non-source who talks is ignored for direction; an incumbent that stops being a
+  source is released. A follow-speaker (`active-speaker` mode) route therefore adds
+  nobody and moves nobody's budget position; it only gives the directed speaker the
+  bus purpose. **And the core now RENDERS a follow route as the directed speaker**
+  (`RouteSourcePolicy` `directedSpeakerParticipantId`, `MediaCore::directedSpeakerForRoutes`,
+  holding the last directed speaker while nobody is directed). It used to take the
+  positional fallback `videoFrames[routeIndex]`, ordered by subscription uuid, so a
+  speaker scene showed the lowest-pid source. The positional fallback still exists for
+  `fixed`/`none` routes with no ids (an emptied OHG box) and now indexes the
+  sources-only frame list.
+  **(3) RESOLUTION IS A STABLE TIER, CAPPED, NO RATCHET.**
+  `native/src/modules/ZoomSubscriptionResolutionPolicy.h`: bus ROUTES (purpose
+  program/preview, including a follow route's directed speaker) and screen share at
+  1080P; Tiles, wall and ISO at 720P. At most
+  `kMaxConcurrentFullResolutionCameras` (4) cameras at 1080P, granted in payload order
+  (Program routes first); the rest get 720P and `zoomSubscriptionChurn.fullResolutionDemoted`
+  counts them. The number comes from commit bd3caf29: SIX concurrent 1080P raw
+  subscriptions crashed the SDK subprocess (0xc000000d), and everything since shipped
+  with ONE camera at 1080P. A guest who leaves the buses DROPS BACK to 720P: the engine
+  used to ignore a lower request (`video_subscribe_noop_existing`), which over a show
+  ratcheted every rotated guest to 1080P; it now rebuilds when the source is the
+  renderer's only target (`zoom-engine/shared/engine-resolution-policy.h`). In-place
+  `setRawDataResolution` was REJECTED: the SDK header only declares it
+  (`h/rawdata/rawdata_renderer_interface.h:50`) and the engine only ever calls it
+  before `subscribe()` (`engine-video.cpp:70`). **The unavoidable on-air
+  re-subscribe (a cue raises, leaving a bus drops, a follow route's speaker change
+  raises one guest and drops another) is HIDDEN by holding the last frame:**
+  `ZoomEngineRuntime::latestDecodedFrames_` is erased only when a source is RETIRED,
+  so across a same-uuid re-subscribe the compositor keeps drawing the last decoded
+  frame. A route layer holds it until the rebuilt renderer delivers (no staleness
+  gate on routes — same as any stalled feed); a Tiles tile holds it for
+  `kTilesStaleFrameMs` (1500 ms) and is then dropped from the wall until frames
+  return. Pinned by `ZoomEngineRuntime.AResolutionReSubscribeKeepsTheSourcesLastFrameForTheCompositor`.
+  **(4) LOUD, BUT MULTIVIEW-ONLY.** A camera-on source the cap leaves out goes in the
+  payload's `videoSubscriptionShortfall` + `warnings`, and its multiview tile label
+  reads "<name> · no video: subscription limit (10)". That label is the ONLY place a
+  guest's tile carries text: Program/Preview/Tiles are composited pixels. The
+  subscription UUID is still `participant-video-<pid>-camera` (purpose excluded).
+  Tests: `ZoomMediaSpinePayloadBuilderTests` (`LiveCase478_*`, the follow-route,
+  at-the-cap, preview-outranks-gallery, sticky and breakout cases),
+  `TilesAudioSourceLatchTests`, `MagicSceneCoordinatorTests.AutomationCuesPreviewAtTheStartOfTheHold…`;
+  native `ZoomEngineRuntime.AnActiveSpeakerFlipCausesNoTeardown`,
+  `ACueRaisesOnceTheTakeSendsNothingAndLeavingTheBusDropsBack`,
+  `TheFullResolutionCapDemotesTheRoutesPastItAndSaysSo`,
+  `ANonSourceWhoTalksFirstIsReleasedAndNeverDirected`,
+  `ZoomEngineRuntimeState.DirectsOnlyAmongSourcesAndReleasesANonSourceIncumbent`,
+  `TilesRenderPlan.AFollowSpeakerRouteShowsTheDirectedSpeakerNotTheFirstFrame`,
+  `RouteSourcePolicy.AFollowSpeakerRouteBindsTheDirectedSpeakerNeverAPositionalSource`,
+  `EngineResolutionPolicy.*`.
+  **Costs, by the owner's rule (expected, not defects):** an unrouted guest has NO
+  frames and NO audio anywhere — the Show Input / source pickers and the scene canvas
+  editor show "Waiting" for them (roster thumbnails come only from subscribed
+  streams), a non-source's mixer strip reads `waiting-for-pcm` (the mixer still lists
+  every participant; wiring it to `ZoomSourceSetPolicy` is a follow-up after #481),
+  and a scene built only on a follow-speaker route with nobody on the wall has no
+  speaker to follow. Magic Scene now cues Preview at the START of its hold so the
+  target warms before the auto-Take (a direct operator cut to a non-source still
+  subscribes cold).
 
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
@@ -1039,13 +1078,14 @@ measurement rather than from the product.
   2026-09-11)**: on a real 12-person show it fired several times a minute
   (`totalChurn` 53->59 in 20 s). See "A SECOND, ENGINE-SIDE CONTRIBUTOR" above:
   resolution is a stable tier (an active-speaker flip sends nothing and moves no
-  generation), a downgrade is never sent (so a `resolution-change` now means a
-  guest's renderer was RAISED on a cue, at most once per subscription), and the
-  shell subscribes only sources. Because most drops are now an operator
-  un-routing a guest, a retire is `cap-eviction` ONLY when the shell's
-  `videoSubscriptionShortfall` names that participant, else `unrouted`
-  (`lastUnrouted` alongside `lastCapEvictions`) — without that split every
-  ordinary un-route would read as the cap defect.
+  generation unless a follow-speaker route is on a bus), and the shell subscribes
+  only sources. A `resolution-change` now means a guest was cued onto or left a bus
+  (both directions: there is no ratchet). Retire reasons are split so the ledger
+  cannot blame the cap for ordinary events: `cap-eviction` ONLY when the shell's
+  `videoSubscriptionShortfall` names that participant, `video-off` when the engine
+  roster says their camera went off, else `unrouted` (an operator un-route); the
+  node carries `lastCapEvictions` / `lastVideoOff` / `lastUnrouted`, plus
+  `fullResolutionCap` / `fullResolutionDemoted` for the 1080P cap.
 - **PER-SOURCE CONTINUITY IS PART OF THE VERDICT (slice 1 of the persistent-sources
   redesign, 2026-09-10).** The wall-only verdict above missed the owner's actual
   case: a Tiles gallery whose foreground AND media background are on both Preview
@@ -1677,8 +1717,10 @@ its judgement logic is unit-tested offline by `npm run test:show-engine-drill-ju
   PREVIOUS guest on air. `OhgRouteSlotWriter` clears participant/role/spotlight on every route it
   writes; the test is the contract.
 - **An "empty" OHG box is not guaranteed BLANK yet.** The C++ core's positional fallback
-  (`native/src/core/RouteSourcePolicy.h`) makes a route with no participant/capture/media id
-  inherit `videoFrames[routeIndex]` — so a cleared box can composite an arbitrary decoded guest.
+  (`native/src/core/RouteSourcePolicy.h`) makes a `fixed`/`none` route with no
+  participant/capture/media id inherit `videoFrames[routeIndex]` (since #478 an
+  `active-speaker` route binds the directed speaker instead, and the frame list holds
+  only sources) — so a cleared box can composite an arbitrary decoded guest.
   Fixing it needs a route-contract sentinel in the core and is **not** Plan 7a scope. Until then,
   clearing a box is "not the previous guest", not "blank". Do not assert blankness in a drill.
 

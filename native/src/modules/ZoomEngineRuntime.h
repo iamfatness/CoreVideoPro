@@ -52,6 +52,10 @@ class ZoomEngineRuntime {
   [[nodiscard]] std::uint64_t subscriptionChurnTotal() const {
     return subscriptionChurnTotal_.load(std::memory_order_relaxed);
   }
+  // The DIRECTED speaker (the speaker director's choice among sources), "" when
+  // none. Cheap: one lock, no snapshot build. Read on the render tick by the
+  // follow-speaker route binding (#478 R2).
+  [[nodiscard]] std::string directedSpeakerId();
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
   // Returns the latest decoded BGRA frame per participant, carrying real pixels,
   // WITHOUT consuming the pending stdout/event queue (drainFrameEvents) that
@@ -176,6 +180,9 @@ class ZoomEngineRuntime {
   // Mirror of the summed per-source churn counts, so the render tick can take a
   // delta across a take without touching mutex_.
   std::atomic<std::uint64_t> subscriptionChurnTotal_{0};
+  // Bus routes the last spine payload asked for at 1080P but the concurrency cap
+  // held at 720P (#478 R4). Guarded by mutex_.
+  int fullResolutionDemoted_ = 0;
   // Operator opted in to raw capture (Studio "Engine On"). Raw recording /
   // recording-rights request only starts once this is set, so it no longer
   // fires automatically on meeting join.

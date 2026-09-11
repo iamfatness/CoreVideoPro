@@ -13,6 +13,18 @@ namespace corevideo::modules {
 // and the incumbent is guaranteed holdMs on air. The incumbent deliberately
 // survives mute/video-off and short roster gaps: those are common during a real
 // meeting and should not cut Program to black.
+//
+// SOURCES ONLY (#478, controller ruling R1, 2026-09-11). The shell subscribes
+// video and audio only for SOURCES (routes, Tiles members of a scene on a bus,
+// in-show wall slots, ISO guests — ZoomSourceSetPolicy.cs) and names them in the
+// spine payload's `sourceParticipantIds`. The director then follows the talker
+// only AMONG those sources. That is not a preference, it is what keeps the
+// freshness gate below from deadlocking: a non-source never has a subscription,
+// so it never has a fresh frame, so it could never be promoted — while the first
+// talker of the meeting (vacancy fill, no freshness check) would sit on the
+// directed slot for the whole show. A non-source who talks is simply ignored for
+// direction; an incumbent that stops being a source is released. With no filter
+// set (older shells, the stub) every roster participant stays eligible.
 class ZoomActiveSpeakerDirector {
  public:
   void configure(std::uint32_t sensitivityMs, std::uint32_t holdMs,
@@ -29,6 +41,16 @@ class ZoomActiveSpeakerDirector {
         std::unique(excludedParticipantIds.begin(), excludedParticipantIds.end()),
         excludedParticipantIds.end());
     excludedParticipantIds_ = std::move(excludedParticipantIds);
+  }
+
+  // `active == false` lifts the filter (every roster participant eligible).
+  void setSourceFilter(bool active, std::vector<std::uint32_t> sourceParticipantIds) {
+    sourceFilterActive_ = active;
+    std::sort(sourceParticipantIds.begin(), sourceParticipantIds.end());
+    sourceParticipantIds.erase(
+        std::unique(sourceParticipantIds.begin(), sourceParticipantIds.end()),
+        sourceParticipantIds.end());
+    sourceParticipantIds_ = std::move(sourceParticipantIds);
   }
 
   bool updateRoster(const std::vector<ZoomEngineParticipant>& roster,
@@ -79,6 +101,8 @@ class ZoomActiveSpeakerDirector {
     candidateSpeakerId_ = 0;
     candidateSinceMs_ = 0;
     lastSwitchMs_ = 0;
+    sourceParticipantIds_.clear();
+    sourceFilterActive_ = false;
   }
 
   [[nodiscard]] std::uint32_t directedSpeakerId() const { return directedSpeakerId_; }
@@ -107,13 +131,18 @@ class ZoomActiveSpeakerDirector {
                               excludedParticipantIds_.end(), id);
   }
 
+  [[nodiscard]] bool isSource(std::uint32_t id) const {
+    return !sourceFilterActive_ ||
+           std::binary_search(sourceParticipantIds_.begin(), sourceParticipantIds_.end(), id);
+  }
+
   [[nodiscard]] bool inRoster(std::uint32_t id) const {
     return std::any_of(roster_.begin(), roster_.end(),
                        [id](const auto& participant) { return participant.id == id; });
   }
 
   [[nodiscard]] bool participantAllowed(std::uint32_t id) const {
-    if (id == 0 || excluded(id)) {
+    if (id == 0 || excluded(id) || !isSource(id)) {
       return false;
     }
     const auto found = std::find_if(roster_.begin(), roster_.end(),
@@ -141,7 +170,7 @@ class ZoomActiveSpeakerDirector {
       directedMissingSinceMs_ = 0;
       return;
     }
-    if (excluded(directedSpeakerId_)) {
+    if (excluded(directedSpeakerId_) || !isSource(directedSpeakerId_)) {
       directedSpeakerId_ = 0;
       directedMissingSinceMs_ = 0;
       return;
@@ -183,6 +212,8 @@ class ZoomActiveSpeakerDirector {
   std::vector<ZoomEngineParticipant> roster_;
   std::vector<std::uint32_t> excludedParticipantIds_;
   std::vector<std::uint32_t> freshFrameParticipantIds_;
+  std::vector<std::uint32_t> sourceParticipantIds_;
+  bool sourceFilterActive_ = false;
   std::uint32_t rawSpeakerId_ = 0;
   std::uint32_t directedSpeakerId_ = 0;
   std::uint32_t candidateSpeakerId_ = 0;
