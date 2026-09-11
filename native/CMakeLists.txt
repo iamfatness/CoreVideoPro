@@ -616,6 +616,7 @@ if(BUILD_TESTING)
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
+    tests/EmptyRouteBlankTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
     tests/MonitorShedPolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp

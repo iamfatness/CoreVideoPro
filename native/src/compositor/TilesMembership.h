@@ -81,8 +81,8 @@ inline std::vector<std::string> admitTilesMembers(
 // colorFromParticipantId() placeholder (D3D11CompositorAdapter::resolveLayers),
 // i.e. an arbitrary colour slab painted OVER the wall background — worse than
 // the pop this fixes. The layer also always carries a non-empty participantId,
-// so core::resolveRouteSource's positional fallback (RouteSourcePolicy.h, the
-// "empty route inherits videoFrames[index]" hazard) is unreachable from here.
+// so a sourceless route cannot be invented here (#480: empty routes render
+// BLANK, never videoFrames[index]).
 inline bool tilesBackgroundSourceIsDrawable(const std::string& sourceId,
                                             const std::vector<TilesMemberFrameAge>& ages) {
   if (sourceId.empty()) {

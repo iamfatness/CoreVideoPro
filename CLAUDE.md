@@ -869,9 +869,9 @@ comment at the code site; this is the index.
   by `ZoomEngineRuntime::speakerEpoch()` (moves on join, leave, Engine off and every
   new engine process), so a reused Zoom id from the last meeting is never bound. It
   used to take the positional fallback `videoFrames[routeIndex]` (uuid order), so a
-  speaker scene showed the lowest-pid source. The positional fallback still exists for
-  `fixed`/`none` routes with no ids (an emptied OHG box) and now indexes the
-  sources-only frame list.
+  speaker scene showed the lowest-pid source. #480 removed that fallback for every
+  mode: a route with no source id renders BLANK (transparent fill), including an
+  emptied OHG box.
   **(3) RESOLUTION IS A STABLE TIER, CAPPED, NO RATCHET.**
   `native/src/modules/ZoomSubscriptionResolutionPolicy.h`: FIXED bus routes (purpose
   program/preview) and screen share at 1080P; Tiles, wall, ISO and a follow route's
@@ -1818,13 +1818,13 @@ its judgement logic is unit-tested offline by `npm run test:show-engine-drill-ju
   the previous guest's participant id on the route — so cueing a look with an empty box put the
   PREVIOUS guest on air. `OhgRouteSlotWriter` clears participant/role/spotlight on every route it
   writes; the test is the contract.
-- **An "empty" OHG box is not guaranteed BLANK yet.** The C++ core's positional fallback
-  (`native/src/core/RouteSourcePolicy.h`) makes a `fixed`/`none` route with no
-  participant/capture/media id inherit `videoFrames[routeIndex]` (since #478 an
-  `active-speaker` route binds the directed speaker instead, and the frame list holds
-  only sources) — so a cleared box can composite an arbitrary decoded guest.
-  Fixing it needs a route-contract sentinel in the core and is **not** Plan 7a scope. Until then,
-  clearing a box is "not the previous guest", not "blank". Do not assert blankness in a drill.
+- **An empty route renders BLANK (#480).** `RouteSourcePolicy` never inherits
+  `videoFrames[routeIndex]`. A `fixed`/`none` route with no participant/capture/media
+  id (and a follow-speaker route with nobody directed) binds nothing; the compositor
+  paints a transparent fill instead of the default grey or a random guest. The shell
+  may only change a scene layer's source on an operator gesture — a ComboBox list
+  refresh that lands on the blank placeholder is ignored (`LayerSourceSelectionPolicy`,
+  log `by=operator` / `by=refresh-ignored`).
 
 ## Zoom capture on/off (engine raw-media stop — 2026-07-19)
 
