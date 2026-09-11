@@ -1357,9 +1357,9 @@
                                             <!-- #481: lets the A1 tell "muted in Zoom" apart from their own
                                                  console mute - MuteStateLabel already distinguishes the two in
                                                  the meter tooltip; this makes it visible without a hover.
-                                                 9px/bold (review: 7px was unreadable); #F5BE45 on #0B1016
+                                                 10px/bold (owner asked 10-11px; 7px was unreadable); #F5BE45 on #0B1016
                                                  measures ~11:1 contrast, well over the small-text AA floor. -->
-                                            <TextBlock Text="ZOOM MUTED" FontSize="9" FontWeight="Bold"
+                                            <TextBlock Text="ZOOM MUTED" FontSize="10" FontWeight="Bold"
                                                        CharacterSpacing="20"
                                                        Foreground="#F5BE45"
                                                        HorizontalAlignment="Center"
