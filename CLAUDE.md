@@ -1657,6 +1657,25 @@ Zoom recording indicator cleared"), polling briefly until confirmed — never
 claiming stopped on hope. (This section belongs with the engine-teardown rules
 from PR #302 once that lands.)
 
+**THE POLL CAN DIE SILENTLY IF START/STOP RACE — they are atomic now (2026-09-10, live on
+beta-2026-09-10-5a24225).** Owner: "Audio meters aren't showing live data… If I slide a channel it
+updates." `/snapshot` aged to 130 s+ while the core rendered at 58 fps. Evidence chain, all from
+the running shell with no input touched: `dotnet-trace` showed no poll work at all (only the spine
+sync and command replies), a 10 s exception trace showed ZERO exceptions (so polls were not failing,
+they were not happening), and a `dotnet-dump` + `dumpasync` showed NO pending poll. Reading the
+bridge object out of the dump settled it: the one live poll timer was armed with generation **17**
+while `SingleFlightTimerWork` was at **20**, so every tick returned at the generation check. Cause:
+`EnsureMediaCoreRunningAsync` is built to be called by several startup edits at once, each reaches
+`StartAsync` → `StartPolling`, and start/stop were three unsynchronised steps (reset, dispose,
+assign) — a stop reset the generation and disposed the newest timer, then an older start still in
+flight installed ITS timer. Only operator commands (a fader, a source pick) carried fresh state
+after that, for the whole session. T1.5's launch retries made the interleaving far more likely.
+`StartPolling`/`StopPolling` now run under one leaf lock (`_pollTimerGate`), so the installed timer
+always carries the current generation. Test: `MediaCoreBridgePollTimerRaceTests` — 8 threads x
+1000 rounds of concurrent start/stop; it fails 3/3 runs with the lock removed. **Diagnostic
+lesson:** when a periodic loop "stops", check its generation guard against its timer in a dump
+before theorising — a no-op tick leaves no trace in logs, CPU samples, or exceptions.
+
 **Engine off does NOT stop the shell polling the core (T1.5, #432).** The
 bridge's 250 ms poll (`MediaCoreBridgeService.PollLoopAsync`) requests the core
 snapshot on EVERY tick, with Engine on or off. While capture is off in a meeting

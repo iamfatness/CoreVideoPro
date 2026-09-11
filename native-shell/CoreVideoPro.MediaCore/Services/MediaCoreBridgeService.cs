@@ -7,6 +7,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private readonly MediaCoreSupervisor _supervisor;
     private readonly object _gate = new();
     private Timer? _pollTimer;
+    private long _pollTimerGeneration;
+    // Leaf lock: guards only the poll timer + its generation. Never taken with _gate held.
+    private readonly object _pollTimerGate = new();
     private Timer? _spineSyncTimer;
     private readonly SingleFlightTimerWork _pollWork = new();
     private readonly SingleFlightTimerWork _spineWork = new();
@@ -484,23 +487,39 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             : detail;
     }
 
-    private void StartPolling()
+    // Start and stop are ATOMIC (one lock) so the installed timer always carries the runner's
+    // current generation. Several startup edits reach StartAsync -> StartPolling at once
+    // (EnsureMediaCoreRunningAsync is built to be called concurrently), and the unlocked version
+    // interleaved: a stop reset the generation and disposed the newest timer, then an older start
+    // still in flight installed ITS timer. That timer's generation was stale, so every tick was a
+    // silent no-op and the shell's copy of core state froze for the whole session (meters, output
+    // health, /snapshot) — seen live 2026-09-10 on beta-2026-09-10-5a24225 (dump: timer gen 17,
+    // runner gen 20). A disposed timer's already-queued callback is harmless: its generation is stale.
+    internal void StartPolling()
     {
-        StopPolling();
-        var generation = _pollWork.Reset();
-        _pollTimer = new Timer(
-            _ => _ = _pollWork.RunAsync(generation, PollLoopAsync),
-            null,
-            TimeSpan.FromMilliseconds(250),
-            TimeSpan.FromMilliseconds(250));
+        lock (_pollTimerGate)
+        {
+            _pollTimer?.Dispose();
+            var generation = _pollWork.Reset();
+            _pollTimerGeneration = generation;
+            _pollTimer = new Timer(
+                _ => _ = _pollWork.RunAsync(generation, PollLoopAsync),
+                null,
+                TimeSpan.FromMilliseconds(250),
+                TimeSpan.FromMilliseconds(250));
+        }
+
         StartSpineSync();
     }
 
-    private void StopPolling()
+    internal void StopPolling()
     {
-        _pollWork.Reset();
-        _pollTimer?.Dispose();
-        _pollTimer = null;
+        lock (_pollTimerGate)
+        {
+            _pollWork.Reset();
+            _pollTimer?.Dispose();
+            _pollTimer = null;
+        }
     }
 
     private void StartSpineSync()
@@ -542,6 +561,19 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         }
         retired?.Cancel();
         retired?.Dispose();
+    }
+
+    /// <summary>Test probe: the installed poll timer was armed with the runner's CURRENT generation.
+    /// When false, every tick is a silent no-op and the shell's copy of core state freezes.</summary>
+    internal bool PollTimerIsCurrent
+    {
+        get
+        {
+            lock (_pollTimerGate)
+            {
+                return _pollTimer is not null && _pollTimerGeneration == _pollWork.CurrentGeneration;
+            }
+        }
     }
 
     private async Task PollLoopAsync()

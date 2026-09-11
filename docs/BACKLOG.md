@@ -63,6 +63,7 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 | [T2.5](https://github.com/iamfatness/CoreVideoPro/issues/437) | Wire the certificate into the release pipeline when T0.1 lands | 4 | XS |
 | [T2.6](https://github.com/iamfatness/CoreVideoPro/issues/438) | Reconcile `docs/beta-engineering-spec.md` (signed MSIX) with what ships (NSIS installer, #417) | 4 | XS |
 | [T1.7](https://github.com/iamfatness/CoreVideoPro/issues/457) | WinUI shell crash on a graceful close: 0xc000027b in XAML's post-Exit dispatcher drain, after cleanup (2 of 10 closes; false crash prompt on the next launch). (recommended tier 2 by investigation; fixed in this batch) | 1 | S |
+| [T1.10](https://github.com/iamfatness/CoreVideoPro/issues/471) | Meters and all core state freeze for the session: the 250 ms poll dies when startup calls race (fix in this branch) | 1 | S |
 
 ## Tier 3 — first show on a machine we cannot see
 
