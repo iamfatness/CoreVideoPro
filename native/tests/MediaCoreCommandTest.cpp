@@ -1965,6 +1965,41 @@ TEST(MediaCoreCommand, MutedPcmChannelPublishesSilentOutputMeters) {
   EXPECT_EQ(participant->get("peakDbfs")->asNumber(), -120.0);
 }
 
+// #481: a muted strip still has PCM arriving. The output meters correctly
+// read silence (nothing reaches a bus), but the A1 needs to see the guest is
+// talking, so the pre-mute INPUT meters must keep reporting real levels.
+TEST(MediaCoreCommand, MutedPcmChannelStillPublishesLiveInputMeters) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"channels",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"participantId", "pcm-speaker"},
+               {"inputLevel", 0},
+               {"muted", true},
+           },
+       }},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  const auto* participant = findParticipantMix(*mix, "pcm-speaker");
+  ASSERT_NE(participant, nullptr);
+  EXPECT_TRUE(participant->get("muted")->asBool());
+  // Output meters stay honest: silent.
+  EXPECT_EQ(participant->get("rmsDbfs")->asNumber(), -120.0);
+  EXPECT_EQ(participant->get("peakDbfs")->asNumber(), -120.0);
+  // Input meters, measured before mute/fader, still show the real signal.
+  ASSERT_NE(participant->get("inputRmsDbfs"), nullptr);
+  ASSERT_NE(participant->get("inputPeakDbfs"), nullptr);
+  EXPECT_TRUE(participant->get("inputRmsDbfs")->asNumber() > -20.0);
+  EXPECT_TRUE(participant->get("inputPeakDbfs")->asNumber() > -10.0);
+}
+
 TEST(AudioDsp, BoundsFramesAndTracksInternalBridgeFaultMetrics) {
   corevideo::modules::AudioFrame frame;
   frame.participantId = "host";

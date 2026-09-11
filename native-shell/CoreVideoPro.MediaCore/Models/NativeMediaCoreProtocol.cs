@@ -445,6 +445,11 @@ public sealed class NativeMediaCoreParticipantAudioChannel
     public double GainDb { get; init; }
     public double RmsDbfs { get; init; } = -60;
     public double PeakDbfs { get; init; } = -60;
+    // #481: PRE-MUTE input meters (measured before mute/fader in the core).
+    // RmsDbfs/PeakDbfs above are the honest OUTPUT meters and read silence
+    // when muted by design - these let the A1 see a muted guest is talking.
+    public double InputRmsDbfs { get; init; } = -60;
+    public double InputPeakDbfs { get; init; } = -60;
     // C7b: live compressor gain reduction in dB (0 = idle/not engaged).
     public double GainReductionDb { get; init; }
     public double? ManualGainDb { get; init; }

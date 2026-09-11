@@ -8518,10 +8518,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     // Suppression is operator-only: preserve the prior choice.
                     NoiseSuppression = prior?.NoiseSuppression ?? false,
                     SourceMuted = sourceMuted,
-                    Muted = prior?.Muted ?? nativeChannel.Muted,
+                    Muted = ResolveMergedChannelMute(prior),
                     Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
                     Lufs = nativeChannel.RmsDbfs,
                     TruePeakDb = nativeChannel.PeakDbfs,
+                    InputLufs = nativeChannel.InputRmsDbfs,
+                    InputTruePeakDb = nativeChannel.InputPeakDbfs,
                     GainReductionDb = nativeChannel.GainReductionDb,
                     PluginInserts = prior?.PluginInserts.ToList() ??
                         nativeChannel.PluginInserts.Select(insert => insert.Name).ToList(),
@@ -8568,6 +8570,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// <summary>Workspace cells dim when there is nothing to edit (Grid has no IsEnabled).</summary>
     public double WorkspaceEnabledOpacity => HasSelectedAudioChannel ? 1.0 : 0.45;
 
+    /// <summary>
+    /// #481: THE A1's MUTE IS ONLY EVER SET BY THE A1. A channel that has no
+    /// `prior` in this session's map — because it is brand new, or because it
+    /// only just got PCM — starts UNMUTED, full stop. Never seed it from the
+    /// core's `nativeChannel.Muted` (that is the core's EFFECTIVE mute, which
+    /// folds in the Zoom mute — see `ResolveEffectiveAudioMute`) and never from
+    /// any other derived value. A live meeting proved the bug: Courtney and Guy
+    /// were unmuted in Zoom and talking, but their channels appeared for the
+    /// first time already Zoom-muted, that got copied into `Muted`, `prior`
+    /// preserved it forever, and the A1's console showed nobody muted while
+    /// three guests were silently gated off every bus.
+    ///
+    /// Explicit policy decision: a Zoom mute is surfaced ONLY as `SourceMuted`
+    /// (see `sourceMuted` above / the "muted in Zoom" strip indicator) and never
+    /// changes this field. `BuildAudioMixChannelWire` still ORs `SourceMuted`
+    /// into the EFFECTIVE mute it sends to the core (`ResolveEffectiveAudioMute`),
+    /// so a Zoom-muted guest is still gated out of the program mix — which is
+    /// harmless, since Zoom sends no audio while muted anyway — but that gating
+    /// is recomputed fresh every wire build, never latched into the A1's own
+    /// `Muted` state.
+    /// </summary>
+    public static bool ResolveMergedChannelMute(ParticipantAudioMix? prior) => prior?.Muted ?? false;
+
     public static ParticipantAudioMix BuildWaitingForPcmAudioMixChannel(
         string sourceId,
         ParticipantAudioMix? prior) =>
@@ -8581,10 +8606,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Solo = prior?.Solo ?? false,
             NoiseSuppression = prior?.NoiseSuppression ?? false,
             SourceMuted = prior?.SourceMuted ?? false,
-            Muted = prior?.Muted ?? false,
+            Muted = ResolveMergedChannelMute(prior),
             Status = "waiting-for-pcm",
             Lufs = -120,
             TruePeakDb = -120,
+            InputLufs = -120,
+            InputTruePeakDb = -120,
             PluginInserts = prior?.PluginInserts.ToList() ?? [],
             InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
         };
@@ -10746,12 +10773,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Name = participant.Name,
                     Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
                     OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
-                    MeterLevel = AudioMeterScale.ToLevel(mix.TruePeakDb, mix.Muted || mix.SourceMuted),
+                    MeterLevel = AudioMeterScale.ResolveChannelMeterLevel(
+                        mix.TruePeakDb, mix.InputTruePeakDb, mix.Muted || mix.SourceMuted),
+                    MeterShowsInputWhileMuted = mix.Muted || mix.SourceMuted,
                     ManualGainDb = NormalizeMixerGain(mix.ManualGainDb),
                     Pan = NormalizeMixerPan(mix.Pan),
                     Lufs = NormalizeMeterDb(mix.Lufs),
                     TruePeakDb = NormalizeMeterDb(mix.TruePeakDb),
                     Muted = mix.Muted,
+                    SourceMuted = mix.SourceMuted,
                     EffectiveMuted = mix.Muted || mix.SourceMuted,
                     IsSolo = mix.Solo,
                     GainLabel = $"{(NormalizeMixerGain(mix.ManualGainDb) > 0 ? "+" : "")}{NormalizeMixerGain(mix.ManualGainDb):0.0} dB",
@@ -10827,12 +10857,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Name = participant.Name,
             Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
             OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
-            MeterLevel = AudioMeterScale.ToLevel(truePeak, mix.Muted || mix.SourceMuted),
+            MeterLevel = AudioMeterScale.ResolveChannelMeterLevel(
+                truePeak, NormalizeMeterDb(mix.InputTruePeakDb), mix.Muted || mix.SourceMuted),
+            MeterShowsInputWhileMuted = mix.Muted || mix.SourceMuted,
             ManualGainDb = gain,
             Pan = pan,
             Lufs = lufs,
             TruePeakDb = truePeak,
             Muted = mix.Muted,
+            SourceMuted = mix.SourceMuted,
             EffectiveMuted = mix.Muted || mix.SourceMuted,
             IsSolo = mix.Solo,
             GainLabel = $"{(gain > 0 ? "+" : "")}{gain:0.0} dB",
@@ -10872,7 +10905,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         target.Lufs = source.Lufs;
         target.TruePeakDb = source.TruePeakDb;
         target.Muted = source.Muted;
+        target.SourceMuted = source.SourceMuted;
         target.EffectiveMuted = source.EffectiveMuted;
+        target.MeterShowsInputWhileMuted = source.MeterShowsInputWhileMuted;
         target.IsSolo = source.IsSolo;
         target.GainLabel = source.GainLabel;
         target.PanLabel = source.PanLabel;

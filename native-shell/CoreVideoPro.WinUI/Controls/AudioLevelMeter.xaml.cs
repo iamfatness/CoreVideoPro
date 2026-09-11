@@ -42,10 +42,25 @@ public sealed partial class AudioLevelMeter : UserControl
             typeof(AudioLevelMeter),
             new PropertyMetadata(false, OnMeterPropertyChanged));
 
+    // #481: while muted, a channel meter can still be told to show the PRE-MUTE
+    // input level (so the A1 sees a muted guest talking) instead of the usual
+    // hard-zero. When this is set, IsMuted no longer zeroes the bar; it only
+    // switches the fill to a visually distinct dim color so the strip still
+    // reads as muted at a glance.
+    public static readonly DependencyProperty ShowLevelWhileMutedProperty =
+        DependencyProperty.Register(
+            nameof(ShowLevelWhileMuted),
+            typeof(bool),
+            typeof(AudioLevelMeter),
+            new PropertyMetadata(false, OnMutedPropertyChanged));
+
     private static readonly SolidColorBrush DimBrush = new(Windows.UI.Color.FromArgb(255, 21, 30, 34));
     private static readonly SolidColorBrush GreenBrush = new(Windows.UI.Color.FromArgb(255, 46, 210, 116));
     private static readonly SolidColorBrush YellowBrush = new(Windows.UI.Color.FromArgb(255, 245, 190, 69));
     private static readonly SolidColorBrush RedBrush = new(Windows.UI.Color.FromArgb(255, 237, 76, 68));
+    // Dimmed blue-gray: distinguishes "muted, but this is the input level" from
+    // a normal live green/yellow/red bar at the same height.
+    private static readonly SolidColorBrush MutedInputBrush = new(Windows.UI.Color.FromArgb(255, 92, 122, 145));
 
     // Console meter ballistics (audio overhaul spec 4.4): the snapshot delivers
     // INSTANTANEOUS per-tick levels, and the audio quanta vary per tick, so a
@@ -109,6 +124,12 @@ public sealed partial class AudioLevelMeter : UserControl
         set => SetValue(ShowDbfsScaleProperty, value);
     }
 
+    public bool ShowLevelWhileMuted
+    {
+        get => (bool)GetValue(ShowLevelWhileMutedProperty);
+        set => SetValue(ShowLevelWhileMutedProperty, value);
+    }
+
     private static void OnLevelPropertyChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
     {
         if (dependencyObject is AudioLevelMeter meter)
@@ -132,7 +153,7 @@ public sealed partial class AudioLevelMeter : UserControl
             return;
         }
 
-        if (meter.IsMuted)
+        if (meter.IsMuted && !meter.ShowLevelWhileMuted)
         {
             // Mute is a routing discontinuity, not a release-ballistics event.
             // Drop both the live bar and peak hold immediately so the console
@@ -148,12 +169,15 @@ public sealed partial class AudioLevelMeter : UserControl
             return;
         }
 
+        // #481: muted but showing the pre-mute input level - keep ballistics
+        // running off Level like a normal (unmuted) meter; RenderSegments picks
+        // the dim color because IsMuted is still true.
         meter.OnLevelChanged();
     }
 
     private void OnLevelChanged()
     {
-        var target = IsMuted ? 0 : Math.Clamp(Level, 0, 100);
+        var target = IsMuted && !ShowLevelWhileMuted ? 0 : Math.Clamp(Level, 0, 100);
         if (target >= _displayedLevel)
         {
             _displayedLevel = target;  // instant attack
@@ -203,7 +227,7 @@ public sealed partial class AudioLevelMeter : UserControl
 
     private void DecayTick()
     {
-        var target = IsMuted ? 0 : Math.Clamp(Level, 0, 100);
+        var target = IsMuted && !ShowLevelWhileMuted ? 0 : Math.Clamp(Level, 0, 100);
         var changed = false;
 
         if (_displayedLevel > target)
@@ -309,7 +333,9 @@ public sealed partial class AudioLevelMeter : UserControl
                 Width = IsVertical ? 14 : segMain,
                 Height = IsVertical ? segMain : 10,
                 CornerRadius = new CornerRadius(1.5),
-                Background = isActive || isPeakHold ? BrushFor(normalized) : DimBrush
+                Background = isActive || isPeakHold
+                    ? (IsMuted && ShowLevelWhileMuted ? MutedInputBrush : BrushFor(normalized))
+                    : DimBrush
             });
         }
 

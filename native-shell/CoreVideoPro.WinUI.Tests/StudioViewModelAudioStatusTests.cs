@@ -21,6 +21,83 @@ public sealed class StudioViewModelAudioStatusTests
         bool expected) =>
         Assert.Equal(expected, StudioViewModel.ResolveEffectiveAudioMute(sourceMuted, mixMuted));
 
+    // #481: THE A1's MUTE IS ONLY EVER SET BY THE A1. A channel with no prior
+    // (first appearance in this session) must always start unmuted, no matter
+    // what the core's EFFECTIVE mute (nativeChannel.Muted, which folds in the
+    // Zoom mute) was on that first snapshot.
+    [Fact]
+    public void ResolveMergedChannelMute_NewChannelStartsUnmutedEvenIfGuestWasZoomMutedOnArrival()
+    {
+        // No prior at all - the channel has never appeared in this session.
+        Assert.False(StudioViewModel.ResolveMergedChannelMute(null));
+    }
+
+    [Fact]
+    public void ResolveMergedChannelMute_ZoomMuteNeverLatchesIntoA1Mute()
+    {
+        // A channel that arrived while the guest was Zoom-muted, and stayed
+        // that way (SourceMuted = true), but the A1 never touched Muted.
+        var priorZoomMutedOnly = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,
+            Muted = false,
+        };
+
+        Assert.False(StudioViewModel.ResolveMergedChannelMute(priorZoomMutedOnly));
+    }
+
+    [Fact]
+    public void ResolveMergedChannelMute_A1MuteSurvivesRebuilds()
+    {
+        var priorA1Muted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = false,
+            Muted = true,
+        };
+
+        Assert.True(StudioViewModel.ResolveMergedChannelMute(priorA1Muted));
+    }
+
+    [Fact]
+    public void ResolveMergedChannelMute_A1UnmuteSurvivesRebuilds()
+    {
+        var priorA1Unmuted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,  // still Zoom-muted...
+            Muted = false,       // ...but the A1 explicitly unmuted the strip.
+        };
+
+        Assert.False(StudioViewModel.ResolveMergedChannelMute(priorA1Unmuted));
+    }
+
+    [Theory]
+    [InlineData(-60, -20, false, -60)]
+    [InlineData(-60, -20, true, -20)]
+    [InlineData(-6, -6, false, -6)]
+    public void ResolveChannelMeterLevel_ShowsInputMeterOnlyWhileMuted(
+        double outputTruePeakDb,
+        double inputTruePeakDb,
+        bool effectiveMuted,
+        double expectedSourceDb) =>
+        Assert.Equal(
+            AudioMeterScale.ToLevel(expectedSourceDb),
+            AudioMeterScale.ResolveChannelMeterLevel(outputTruePeakDb, inputTruePeakDb, effectiveMuted));
+
     [Fact]
     public void FormatAudioMixerFailureStatus_PreservesLoadFailureDetail()
     {
