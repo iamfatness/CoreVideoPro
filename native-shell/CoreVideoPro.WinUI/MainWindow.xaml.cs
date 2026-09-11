@@ -46,9 +46,8 @@ public sealed partial class MainWindow : Window
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
     private bool _allowWindowClose;
-    // T1.8: true while the "Stop outputs and close?" dialog is open or the outputs are finishing.
-    // A close request then is ignored (not a force-exit); the finishing wait is bounded (15 s).
-    private bool _closeGuardActive;
+    // T1.8: the close guard (ask while outputs are live, finish the files, then close).
+    private readonly CloseGuardFlow _closeGuard;
     // App releases its window reference on Closed; the fallback must outlive it.
     private static System.Threading.Timer? _shutdownWatchdogTimer;
 
@@ -75,6 +74,7 @@ public sealed partial class MainWindow : Window
         WindowChromeService.Apply(this, _appWindow, extendTitleBar: true);
         Activated += OnWindowActivated;
         RootContent.Loaded += OnRootContentLoaded;
+        _closeGuard = CreateCloseGuard();
         _appWindow.Closing += OnAppWindowClosing;
         Closed += OnWindowClosed;
 
@@ -732,37 +732,45 @@ public sealed partial class MainWindow : Window
 
         args.Cancel = true;
 
-        // T1.8 (#461): a second close while the stop-outputs dialog is open (or while the
-        // outputs are finishing after "Stop and close") is ignored, not a force-exit. A
-        // force-exit here is exactly what cuts the recording off.
-        if (_closeGuardActive)
+        // T1.8 (#461): the close guard decides first. CloseGuardFlow (tested) asks while outputs
+        // are live, ignores a second close while it is active (never a force-exit — that is what
+        // cuts the recording off), and on a dialog failure still finishes the files before closing.
+        CloseRequestHandling handling;
+        try
         {
-            LaunchLog.Write("shutdown: close requested while the close guard is active — ignored");
-            return;
+            handling = _closeGuard.HandleCloseRequest(_shutdownStarted);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.WriteException("shutdown: close guard failed; using the existing shutdown path", ex);
+            handling = CloseRequestHandling.Proceed;
         }
 
-        if (!_shutdownStarted)
+        if (handling == CloseRequestHandling.Proceed)
         {
-            var decision = CloseGuardDecision.Nothing;
+            BeginShutdown();
+        }
+    }
+
+    private CloseGuardFlow CreateCloseGuard() => new(
+        evaluate: () => ViewModel.EvaluateCloseGuard(),
+        ask: AskStopOutputsAsync,
+        stopOutputs: decision => ViewModel.StopOutputsForCloseAsync(decision),
+        beginShutdown: () =>
+        {
             try
             {
-                decision = ViewModel.EvaluateCloseGuard();
+                if (!_shutdownStarted) BeginShutdown();
             }
             catch (Exception ex)
             {
-                LaunchLog.WriteException("shutdown: close guard evaluation failed; using the existing shutdown path", ex);
+                LaunchLog.WriteException("shutdown: starting shutdown after the close guard failed; forcing exit", ex);
+                ApplicationLifecycle.ForceExit();
             }
-
-            if (decision.ShouldAsk)
-            {
-                _closeGuardActive = true;
-                _ = AskBeforeClosingAsync(decision);
-                return;
-            }
-        }
-
-        BeginShutdown();
-    }
+        },
+        bringToFront: BringToFrontForCloseGuard,
+        log: LaunchLog.Write,
+        logException: (message, error) => LaunchLog.WriteException(message, error));
 
     private void BeginShutdown()
     {
@@ -778,62 +786,52 @@ public sealed partial class MainWindow : Window
         _ = ShutdownAsync();
     }
 
-    // T1.8 (#461): closing while recording or streaming asks first (owner decision: option 1).
-    // "Keep running" (the default button, and Esc) changes nothing. "Stop and close" stops the
-    // outputs through the transport, waits (bounded) for the core to report the files finished,
-    // then runs the unchanged ShutdownAsync. Runs on the UI thread; every exception is logged and
-    // falls back to the existing shutdown path, so this can never hang the close or throw into a
-    // UI callback.
-    private async Task AskBeforeClosingAsync(CloseGuardDecision decision)
+    // Restore a minimized window gently (never move/resize a SwapChainPanel window) and activate
+    // it, so the dialog is never shown where the operator cannot see it.
+    private void BringToFrontForCloseGuard()
     {
-        try
+        if (_appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
         {
-            LaunchLog.Write($"shutdown: close requested while live ({decision.Description}); asking the operator");
-            var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
-            {
-                XamlRoot = Content.XamlRoot,
-                Title = CloseGuardPolicy.DialogTitle,
-                Content = new Microsoft.UI.Xaml.Controls.TextBlock
-                {
-                    Text = CloseGuardPolicy.DialogBody(decision),
-                    TextWrapping = TextWrapping.Wrap
-                },
-                PrimaryButtonText = CloseGuardPolicy.StopAndCloseButton,
-                CloseButtonText = CloseGuardPolicy.KeepRunningButton,
-                DefaultButton = Microsoft.UI.Xaml.Controls.ContentDialogButton.Close
-            };
-            if (Application.Current.Resources.TryGetValue("DefaultContentDialogStyle", out var style) && style is Style dialogStyle)
-            {
-                dialog.Style = dialogStyle;
-            }
+            presenter.Restore();
+        }
 
-            var result = await dialog.ShowAsync();
-            if (result != Microsoft.UI.Xaml.Controls.ContentDialogResult.Primary)
-            {
-                LaunchLog.Write("shutdown: operator chose Keep running; the app stays open");
-                _closeGuardActive = false;
-                return;
-            }
+        Activate();
+    }
 
+    // "Stop outputs and close?" — returns true for "Stop and close". Throws when it cannot be shown;
+    // CloseGuardFlow then takes the Stop-and-close path, never the old kill path.
+    private async Task<bool> AskStopOutputsAsync(CloseGuardDecision decision)
+    {
+        // Let the AppWindow.Closing callback return before a modal dialog opens.
+        await Task.Yield();
+        var xamlRoot = Content?.XamlRoot
+                       ?? throw new InvalidOperationException("The window has no XamlRoot to host the dialog.");
+        var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
+        {
+            XamlRoot = xamlRoot,
+            Title = CloseGuardPolicy.DialogTitle,
+            Content = new Microsoft.UI.Xaml.Controls.TextBlock
+            {
+                Text = CloseGuardPolicy.DialogBody(decision),
+                TextWrapping = TextWrapping.Wrap
+            },
+            PrimaryButtonText = CloseGuardPolicy.StopAndCloseButton,
+            CloseButtonText = CloseGuardPolicy.KeepRunningButton,
+            DefaultButton = Microsoft.UI.Xaml.Controls.ContentDialogButton.Close
+        };
+        if (Application.Current.Resources.TryGetValue("DefaultContentDialogStyle", out var style) && style is Style dialogStyle)
+        {
+            dialog.Style = dialogStyle;
+        }
+
+        var result = await dialog.ShowAsync();
+        if (result == Microsoft.UI.Xaml.Controls.ContentDialogResult.Primary)
+        {
             LaunchLog.Write("shutdown: operator chose Stop and close");
-            var outcome = await ViewModel.StopOutputsForCloseAsync();
-            LaunchLog.Write($"shutdown: outputs before close: {outcome}");
-        }
-        catch (Exception ex)
-        {
-            LaunchLog.WriteException("shutdown: close guard failed; using the existing shutdown path", ex);
+            return true;
         }
 
-        _closeGuardActive = false;
-        try
-        {
-            if (!_shutdownStarted) BeginShutdown();
-        }
-        catch (Exception ex)
-        {
-            LaunchLog.WriteException("shutdown: starting shutdown after the close guard failed; forcing exit", ex);
-            ApplicationLifecycle.ForceExit();
-        }
+        return false;
     }
 
     private async Task ShutdownAsync()

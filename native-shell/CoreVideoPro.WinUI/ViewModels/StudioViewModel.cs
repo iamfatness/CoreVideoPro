@@ -1623,7 +1623,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // Recording rights can be requested in a breakout room without capture running,
     // so recording only requires being in a meeting (NOT an active capture subscription).
-    public bool CanToggleRecording => Settings.IsInMeeting && !_transportCoordinator.RecordingToggleInFlight;
+    public bool CanToggleRecording => Settings.IsInMeeting && !_transportCoordinator.RecordingToggleInFlight && !_outputsClosing;
 
     public string CaptureEngineHint => CanToggleCapture
         ? "Turn the CoreVideo engine on or off for this Zoom meeting."
@@ -4153,7 +4153,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand(CanExecute = nameof(CanToggleRecording))]
     private Task ToggleRecordingAsync() => _transportCoordinator.ToggleRecordingAsync();
 
-    private bool CanToggleStreaming() => !_transportCoordinator.StreamToggleInFlight;
+    private bool CanToggleStreaming() => !_transportCoordinator.StreamToggleInFlight && !_outputsClosing;
 
     // Streaming orchestration (validate → arm → health/sender proof → rollback → backpressure
     // retry) lives in TransportCoordinator.ToggleStreamingAsync (PR2 strangler). This stays the
@@ -14087,6 +14087,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         // App exit (T1.8): let the core exit on its own after stdin closes, then kill-tree.
         DisposeResource("media core stop", () => ForceShutdownMediaCore(ShutdownBudget.CoreExitGrace));
+        // Measured, not assumed: the headroom the core's exit grace leaves inside ShutdownTimeout.
+        var afterCoreStop = Stopwatch.StartNew();
         DisposeResource("surfaces", _surfaces.Dispose);
         DisposeResource("capture reader", _captureFrameReader.Dispose);
         DisposeResource("capture discovery", _captureDiscovery.Dispose);
@@ -14095,7 +14097,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         DisposeResource("OAuth coordinator", _zoomOAuthCoordinator.Dispose);
         try { await _bridge.DisposeAsync().ConfigureAwait(false); }
         catch (Exception error) { LaunchLog.WriteException("shutdown: bridge dispose", error); }
-        LaunchLog.Write("shutdown: studio view model disposed");
+        LaunchLog.Write($"shutdown: studio view model disposed (disposal after the core stop took {afterCoreStop.ElapsedMilliseconds}ms)");
     }
 
     // exitGrace > 0 only on the normal app-exit path (DisposeAsync): the core gets that long to

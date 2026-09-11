@@ -5,17 +5,21 @@ namespace CoreVideoPro.WinUI.Services;
 
 internal enum OutputShutdownOutcome
 {
-    /// <summary>Nothing was recording or streaming when the stop began, so nothing was sent.</summary>
+    /// <summary>Nothing was recording or streaming, at the close request or now: nothing was sent.</summary>
     NothingLive,
 
-    /// <summary>The core reported every destination completed / idle.</summary>
+    /// <summary>The core reported every baseline destination completed / idle, for this stop.</summary>
     Finished,
 
-    /// <summary>Everything stopped, but a destination ended failed or interrupted.</summary>
+    /// <summary>Everything stopped, but a baseline destination ended failed or interrupted.</summary>
     FinishedWithFailure,
 
-    /// <summary>The core is gone, so there is nothing left to wait for.</summary>
+    /// <summary>The core is not running, so there is nothing left that can be saved.</summary>
     CoreUnavailable,
+
+    /// <summary>The core died and was respawned during the wait: the files it was writing were
+    /// interrupted with it, and the new core's state says nothing about them.</summary>
+    CoreRestarted,
 
     /// <summary>The outputs did not finish within <see cref="OutputShutdownCoordinator.FinishTimeout"/>.</summary>
     TimedOut
@@ -23,18 +27,31 @@ internal enum OutputShutdownOutcome
 
 /// <summary>
 /// "Stop and close" (T1.8, #461): stop recording and streaming through the EXISTING transport
-/// commands, then wait for the core to say the files are finished before the app shuts the core
-/// down. The evidence is the destination lifecycle in the core's snapshots
-/// (<see cref="CloseGuardPolicy.EvaluateSettled"/>) — a stop acknowledgement is not evidence, because
-/// the core's Stop reports that stopping has BEGUN, and the moov atom is written later, on the
-/// writer thread. The wait is bounded by <see cref="FinishTimeout"/>; on timeout it logs loudly and
-/// lets the close proceed (never a hang).
+/// commands, then wait for the core to say THOSE files are finished before the app shuts the core
+/// down. Bounded by <see cref="FinishTimeout"/>; on timeout it logs loudly and lets the close
+/// proceed (never a hang).
+///
+/// <para><b>Evidence, and why each rule exists (fix round 1).</b></para>
+/// <list type="bullet">
+/// <item><b>Freshness by <c>RawReceivedUtc</c>.</b> Only a snapshot the shell RECEIVED after the
+/// last moment the stop was still pending (intent set, or a Record/Stream command in flight) is
+/// evidence. A snapshot that left the core before the stop landed can carry a stale
+/// <c>completed</c>. The coordinator reads the bridge's <c>LastSnapshot</c> (refreshed every
+/// 250 ms by its poll) and never issues its own syncs, so it cannot compete with the stop for the
+/// supervisor's single sync slot.</item>
+/// <item><b>Session binding.</b> <see cref="CloseGuardPolicy.EvaluateSettled"/> accepts a
+/// terminal state only for the recording session / senders in the <see cref="OutputStopBaseline"/>
+/// captured at the close request; an absent node is pending.</item>
+/// <item><b>Core generation.</b> A changed restart count means a respawned core answered; its
+/// <c>idle</c> is not the old file's completion, so the wait ends at once as
+/// <see cref="OutputShutdownOutcome.CoreRestarted"/>, logged as an interrupted recording. A core
+/// that is simply gone ends it as <see cref="OutputShutdownOutcome.CoreUnavailable"/>: nothing more
+/// can be saved.</item>
+/// </list>
 ///
 /// <para><b>Threading.</b> Construct and call it on the UI thread. The transport stop commands write
-/// bound properties before their first await, and every await here resumes on the caller's context
-/// (no ConfigureAwait(false)), so a re-sent stop also runs on the UI thread (the 0xc000027b rule).</para>
-///
-/// <para>Every dependency is injected (the stop commands, the snapshot poll, the clock, the delay)
+/// bound properties before their first await, and every await here resumes on the caller's context,
+/// so a re-sent stop also runs on the UI thread (the 0xc000027b rule). Every dependency is injected
 /// so the whole wait is testable without a core or a window.</para>
 /// </summary>
 internal sealed class OutputShutdownCoordinator
@@ -42,10 +59,11 @@ internal sealed class OutputShutdownCoordinator
     /// <summary>The longest the app waits for recording / streams to finish before closing anyway.</summary>
     internal static readonly TimeSpan FinishTimeout = TimeSpan.FromSeconds(15);
 
+    /// <summary>How often the wait re-reads the bridge's latest snapshot (the bridge polls at 250 ms).</summary>
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
-    // A stop that has not landed (a toggle was in flight, so the transport ignored ours) is re-sent
-    // at most this often. The transport's own in-flight guards keep re-sends from piling up.
+    // A stop that has not landed is re-sent at most this often. The transport's own in-flight
+    // guards keep re-sends from piling up.
     internal static readonly TimeSpan StopResendInterval = TimeSpan.FromSeconds(1);
 
     internal const string ProgressFinishingRecording = "Finishing the recording before closing…";
@@ -54,38 +72,37 @@ internal sealed class OutputShutdownCoordinator
     private readonly Func<CloseGuardInput> _readState;
     private readonly Func<Task> _stopRecording;
     private readonly Func<Task> _stopStreaming;
-    private readonly Func<CancellationToken, Task<NativeMediaCoreStateSnapshot?>> _pollSnapshot;
     private readonly Action<string> _reportProgress;
     private readonly Action<string> _log;
     private readonly Func<TimeSpan> _elapsed;
+    private readonly Func<DateTimeOffset> _utcNow;
     private readonly Func<TimeSpan, Task> _delay;
     private readonly TimeSpan _timeout;
 
-    /// <param name="readState">The shell's flags + latest snapshot (for "was anything live?").</param>
+    /// <param name="readState">The shell's flags, in-flight guards, core generation and the bridge's
+    /// latest snapshot. Read once per tick; never triggers a core round trip.</param>
     /// <param name="stopRecording">The existing transport stop (SetRecordingAsync(false)).</param>
     /// <param name="stopStreaming">The existing transport stop (SetStreamingAsync(false)).</param>
-    /// <param name="pollSnapshot">A fresh core snapshot; null or <see cref="InvalidOperationException"/>
-    /// when the core is not running.</param>
     /// <param name="reportProgress">Writes the operator-visible status line.</param>
     /// <param name="log">The launch log.</param>
     /// <param name="elapsed">Monotonic time since construction; defaults to a Stopwatch.</param>
-    /// <param name="delay">Waits between polls; defaults to Task.Delay.</param>
+    /// <param name="utcNow">The clock <c>RawReceivedUtc</c> is compared against; defaults to UtcNow.</param>
+    /// <param name="delay">Waits between ticks; defaults to Task.Delay.</param>
     /// <param name="timeout">Defaults to <see cref="FinishTimeout"/>.</param>
     internal OutputShutdownCoordinator(
         Func<CloseGuardInput> readState,
         Func<Task> stopRecording,
         Func<Task> stopStreaming,
-        Func<CancellationToken, Task<NativeMediaCoreStateSnapshot?>> pollSnapshot,
         Action<string> reportProgress,
         Action<string> log,
         Func<TimeSpan>? elapsed = null,
+        Func<DateTimeOffset>? utcNow = null,
         Func<TimeSpan, Task>? delay = null,
         TimeSpan? timeout = null)
     {
         _readState = readState;
         _stopRecording = stopRecording;
         _stopStreaming = stopStreaming;
-        _pollSnapshot = pollSnapshot;
         _reportProgress = reportProgress;
         _log = log;
         if (elapsed is null)
@@ -95,58 +112,67 @@ internal sealed class OutputShutdownCoordinator
         }
 
         _elapsed = elapsed;
+        _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _delay = delay ?? (interval => Task.Delay(interval));
         _timeout = timeout ?? FinishTimeout;
     }
 
-    internal async Task<OutputShutdownOutcome> StopAndWaitAsync()
+    private static bool IntentPending(CloseGuardInput state) =>
+        state.RecordingRequested || state.StreamingRequested || state.RecordingToggleInFlight || state.StreamToggleInFlight;
+
+    /// <param name="closeRequest">The decision taken when the close was requested; its baseline
+    /// names the sessions this stop must see finish. Null: take the baseline now.</param>
+    internal async Task<OutputShutdownOutcome> StopAndWaitAsync(CloseGuardDecision? closeRequest = null)
     {
-        var decision = CloseGuardPolicy.Evaluate(_readState());
-        if (!decision.ShouldAsk)
+        var atStop = _readState();
+        var decisionNow = CloseGuardPolicy.Evaluate(atStop);
+        if (!decisionNow.ShouldAsk && closeRequest?.ShouldAsk != true)
         {
             _log("shutdown: no recording or stream is live; nothing to finish before closing");
             return OutputShutdownOutcome.NothingLive;
         }
 
+        var baseline = closeRequest is { ShouldAsk: true }
+            ? CloseGuardPolicy.Merge(closeRequest.Baseline, decisionNow.Baseline)
+            : decisionNow.Baseline;
+        var description = decisionNow.ShouldAsk ? decisionNow.Description : closeRequest!.Description;
+
+        if (CoreGone(atStop, baseline) is { } gone)
+        {
+            return gone;
+        }
+
         var started = _elapsed();
         var deadline = started + _timeout;
-        _log($"shutdown: stopping outputs before close ({decision.Description}); waiting up to {_timeout.TotalSeconds:0}s for them to finish");
-        TryReportProgress(decision.RecordingActive ? ProgressFinishingRecording : ProgressStoppingStreams);
+        _log($"shutdown: stopping outputs before close ({description}); waiting up to {_timeout.TotalSeconds:0}s for them to finish " +
+             $"(evidence: snapshots received after the stop, recording session {baseline.RecordingSessionId ?? "none"}, " +
+             $"{baseline.Senders.Count} sender(s), core generation {baseline.CoreGeneration})");
+        TryReportProgress(baseline.RecordingExpected ? ProgressFinishingRecording : ProgressStoppingStreams);
 
-        SendStops(decision.RecordingActive, decision.StreamingActive, "stop");
+        SendStops(decisionNow.RecordingActive, decisionNow.StreamingActive, "stop");
         var lastStopSentAt = _elapsed();
+        // Only a snapshot received after this instant can be this stop's evidence. It moves forward
+        // every tick the stop is still pending (intent set or a command in flight).
+        var evidenceFloor = _utcNow();
 
         var lastDetail = string.Empty;
         while (true)
         {
-            NativeMediaCoreStateSnapshot? snapshot;
-            var pollBound = deadline - _elapsed();
-            using var pollCancellation = pollBound > TimeSpan.Zero
-                ? new CancellationTokenSource(pollBound)
-                : new CancellationTokenSource();
-            try
+            var state = _readState();
+            if (CoreGone(state, baseline) is { } goneNow)
             {
-                snapshot = await _pollSnapshot(pollCancellation.Token).ConfigureAwait(true);
-            }
-            catch (InvalidOperationException ex) when (!_readState().CoreRunning)
-            {
-                _log($"shutdown: media core is not running while outputs finish ({ex.Message}); closing");
-                return OutputShutdownOutcome.CoreUnavailable;
-            }
-            catch (Exception ex)
-            {
-                // Transient (sync in flight, a slow response): keep waiting inside the bound.
-                _log($"shutdown: snapshot poll while outputs finish failed ({ex.GetType().Name}: {ex.Message}); retrying");
-                snapshot = null;
+                return goneNow;
             }
 
-            if (snapshot is null && !_readState().CoreRunning)
+            if (IntentPending(state))
             {
-                _log("shutdown: media core is not running while outputs finish; closing");
-                return OutputShutdownOutcome.CoreUnavailable;
+                evidenceFloor = _utcNow();
             }
 
-            var settled = CloseGuardPolicy.EvaluateSettled(snapshot);
+            var snapshot = state.Snapshot is { RawReceivedUtc: { } received } candidate && received > evidenceFloor
+                ? candidate
+                : null;
+            var settled = CloseGuardPolicy.EvaluateSettled(snapshot, baseline, state);
             var waitedMs = (_elapsed() - started).TotalMilliseconds;
             switch (settled.State)
             {
@@ -173,14 +199,33 @@ internal sealed class OutputShutdownCoordinator
 
             if (settled.StopNotYetLanded && now - lastStopSentAt >= StopResendInterval)
             {
-                var current = CloseGuardPolicy.Evaluate(_readState());
-                SendStops(current.RecordingActive, current.StreamingActive, "re-send stop");
+                var current = CloseGuardPolicy.Evaluate(state);
+                SendStops(current.RecordingActive || state.RecordingRequested, current.StreamingActive || state.StreamingRequested, "re-send stop");
                 lastStopSentAt = _elapsed();
+                evidenceFloor = _utcNow();
             }
 
             var remaining = deadline - _elapsed();
             await _delay(remaining < PollInterval && remaining > TimeSpan.Zero ? remaining : PollInterval).ConfigureAwait(true);
         }
+    }
+
+    private OutputShutdownOutcome? CoreGone(CloseGuardInput state, OutputStopBaseline baseline)
+    {
+        if (state.CoreGeneration != baseline.CoreGeneration)
+        {
+            _log($"shutdown: MEDIA CORE RESTARTED while outputs were finishing (generation {baseline.CoreGeneration} -> {state.CoreGeneration}); " +
+                 "the recording was interrupted with the old core and nothing more can be saved; closing");
+            return OutputShutdownOutcome.CoreRestarted;
+        }
+
+        if (!state.CoreRunning)
+        {
+            _log("shutdown: MEDIA CORE IS NOT RUNNING while outputs were finishing; nothing more can be saved; closing");
+            return OutputShutdownOutcome.CoreUnavailable;
+        }
+
+        return null;
     }
 
     // Starts the stops and does NOT await them. The transport's stop can hold its command for a

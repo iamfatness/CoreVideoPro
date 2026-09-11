@@ -38,8 +38,9 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     internal Task SetRecordingAsync(bool requested) => _transportCoordinator.SetRecordingAsync(requested);
     internal Task SetStreamingAsync(bool requested) => _transportCoordinator.SetStreamingAsync(requested);
-    internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || Settings.IsInMeeting);
-    internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight;
+    // T1.8: while "Stop and close" finishes the outputs, a START is refused (a stop is still allowed).
+    internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || (Settings.IsInMeeting && !_outputsClosing));
+    internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight && (!requested || !_outputsClosing);
 
     // Called only on the UI thread, including the capture-independent polling path.
     private void ApplyOutputLifecyclePatch(LiveProductionSync.StudioLiveProductionPatch patch)

@@ -12,18 +12,19 @@ namespace CoreVideoPro.WinUI.Tests;
 /// </summary>
 public sealed class CloseGuardPolicyTests
 {
-    internal static OutputLifecycle Lifecycle(string state, string health = "healthy") => new()
+    internal static OutputLifecycle Lifecycle(string state, string health = "healthy", string session = "session-1") => new()
     {
-        SessionId = "session-1",
+        SessionId = session,
         DesiredActive = state is not ("stopping" or "finalizing" or "completed" or "idle"),
         State = state,
         Health = health,
         Finalized = state == "completed"
     };
 
-    internal static NativeMediaCoreRecordingSession Recording(string? lifecycleState, bool active = false, string status = "idle") => new()
+    internal static NativeMediaCoreRecordingSession Recording(
+        string? lifecycleState, bool active = false, string status = "idle", string session = "session-1") => new()
     {
-        Lifecycle = lifecycleState is null ? null : Lifecycle(lifecycleState),
+        Lifecycle = lifecycleState is null ? null : Lifecycle(lifecycleState, session: session),
         SessionId = "session-1",
         Active = active,
         Status = status,
@@ -56,14 +57,18 @@ public sealed class CloseGuardPolicyTests
         }
     };
 
-    private static CloseGuardInput Input(
+    internal static CloseGuardInput Input(
         NativeMediaCoreStateSnapshot? snapshot = null,
         bool coreRunning = true,
         bool recordingRequested = false,
         bool recording = false,
         bool streamingRequested = false,
-        bool streaming = false) =>
-        new(coreRunning, recordingRequested, recording, streamingRequested, streaming, snapshot);
+        bool streaming = false,
+        bool recordingInFlight = false,
+        bool streamInFlight = false,
+        long generation = 0) =>
+        new(coreRunning, recordingRequested, recording, streamingRequested, streaming, snapshot,
+            recordingInFlight, streamInFlight, generation);
 
     [Fact]
     public void NothingLiveDoesNotAsk()
@@ -123,7 +128,9 @@ public sealed class CloseGuardPolicyTests
     {
         Assert.True(CloseGuardPolicy.Evaluate(Input(Snapshot(Recording(null)), recordingRequested: true)).ShouldAsk);
         Assert.True(CloseGuardPolicy.Evaluate(Input(snapshot: null, recording: true)).ShouldAsk);
-        Assert.False(CloseGuardPolicy.Evaluate(Input(Snapshot(Recording(null, active: true, status: "recording")))).ShouldAsk);
+        // Fix round 1 (finding 10): an older core with no lifecycle that says it IS recording is
+        // core evidence too; either source saying live is enough.
+        Assert.True(CloseGuardPolicy.Evaluate(Input(Snapshot(Recording(null, active: true, status: "recording")))).ShouldAsk);
     }
 
     [Fact]
@@ -204,16 +211,38 @@ public sealed class CloseGuardPolicyTests
         Assert.Equal("Closing now would cut the recording off before it's saved.", CloseGuardPolicy.DialogConsequence);
     }
 
+    // --- "finished" is tied to THIS stop (fix round 1, finding 1) ---
+
+    private static OutputStopBaseline BaselineOf(CloseGuardInput atClose) => CloseGuardPolicy.Evaluate(atClose).Baseline;
+
+    private static readonly CloseGuardInput Quiet = Input();
+
     [Fact]
     public void SettledNeedsEvidence()
     {
-        Assert.Equal(OutputSettleState.Pending, CloseGuardPolicy.EvaluateSettled(null).State);
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
+
+        Assert.Equal(OutputSettleState.Pending, CloseGuardPolicy.EvaluateSettled(null, baseline, Quiet).State);
     }
 
     [Fact]
-    public void SettledWhenRecordingCompletedAndSendersStopped()
+    public void BaselineNamesTheLiveSessionAndSenders()
     {
-        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed"), Sender("rtmp://a", "completed")));
+        var baseline = BaselineOf(Input(
+            Snapshot(Recording("producing", session: "rec-7"), Sender("rtmp://a", "producing"), Sender("rtmp://old", "completed")),
+            recordingRequested: true, streamingRequested: true, generation: 3));
+
+        Assert.Equal("rec-7", baseline.RecordingSessionId);
+        Assert.Equal(["rtmp://a"], baseline.Senders.Keys);
+        Assert.Equal(3, baseline.CoreGeneration);
+    }
+
+    [Fact]
+    public void SettledWhenTheBaselineSessionCompletedAndSendersStopped()
+    {
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing"), Sender("rtmp://a", "producing")), recordingRequested: true, streamingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed"), Sender("rtmp://a", "completed")), baseline, Quiet);
 
         Assert.Equal(OutputSettleState.Settled, result.State);
     }
@@ -221,7 +250,9 @@ public sealed class CloseGuardPolicyTests
     [Fact]
     public void FinalizingIsPendingButTheStopHasLanded()
     {
-        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("finalizing")));
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("finalizing")), baseline, Quiet);
 
         Assert.Equal(OutputSettleState.Pending, result.State);
         Assert.False(result.StopNotYetLanded);
@@ -230,7 +261,9 @@ public sealed class CloseGuardPolicyTests
     [Fact]
     public void ProducingIsPendingAndTheStopHasNotLanded()
     {
-        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed"), Sender("rtmp://a", "producing")));
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing"), Sender("rtmp://a", "producing")), recordingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed"), Sender("rtmp://a", "producing")), baseline, Quiet);
 
         Assert.Equal(OutputSettleState.Pending, result.State);
         Assert.True(result.StopNotYetLanded);
@@ -239,20 +272,133 @@ public sealed class CloseGuardPolicyTests
     [Theory]
     [InlineData("failed")]
     [InlineData("interrupted")]
-    public void FailedDestinationSettlesWithFailure(string state)
+    public void AFailedBaselineSessionSettlesWithFailure(string state)
     {
-        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording(state)));
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording(state)), baseline, Quiet);
 
         Assert.Equal(OutputSettleState.SettledWithFailure, result.State);
     }
 
     [Fact]
+    public void IntentStillSetIsPendingEvenOverATerminalSnapshot()
+    {
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
+
+        var requested = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed")), baseline, Input(recordingRequested: true));
+        var inFlight = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed")), baseline, Input(recordingInFlight: true));
+
+        Assert.Equal(OutputSettleState.Pending, requested.State);
+        Assert.True(requested.StopNotYetLanded);
+        Assert.Equal(OutputSettleState.Pending, inFlight.State);
+    }
+
+    [Fact]
+    public void StartInFlightWithAPreviousCompletedStaysPendingUntilTheNewSessionCompletes()
+    {
+        // The operator pressed Record, the start is still in flight, and the snapshot still shows
+        // the PREVIOUS session completed. That completion is history, not this stop's evidence.
+        var atClose = Input(Snapshot(Recording("completed", session: "old")), recordingRequested: true, recordingInFlight: true);
+        var baseline = BaselineOf(atClose);
+        Assert.Null(baseline.RecordingSessionId);
+        Assert.Equal("old", baseline.StaleRecordingSessionId);
+
+        // Start still in flight: pending, whatever the snapshot says.
+        Assert.Equal(OutputSettleState.Pending,
+            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed", session: "old")), baseline, Input(recordingRequested: true, recordingInFlight: true)).State);
+        // The start landed: the new session runs, so the stop has not landed.
+        var running = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("producing", session: "new")), baseline, Quiet);
+        Assert.Equal(OutputSettleState.Pending, running.State);
+        Assert.True(running.StopNotYetLanded);
+        // Finalizing, then completed.
+        Assert.Equal(OutputSettleState.Pending,
+            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("finalizing", session: "new")), baseline, Quiet).State);
+        Assert.Equal(OutputSettleState.Settled,
+            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed", session: "new")), baseline, Quiet).State);
+    }
+
+    [Fact]
+    public void AnAbsentRecordingNodeIsPendingNeverFinished()
+    {
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(recording: null), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Pending, result.State);
+        Assert.Contains("no recording evidence", result.Detail);
+    }
+
+    [Fact]
+    public void AnAbsentBaselineSenderIsPendingNeverFinished()
+    {
+        var baseline = BaselineOf(Input(Snapshot(null, Sender("rtmp://a", "producing")), streamingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Pending, result.State);
+        Assert.Contains("no evidence for rtmp://a", result.Detail);
+    }
+
+    [Fact]
+    public void ARecordingFromAnotherSessionIsNotThisStopsEvidence()
+    {
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing", session: "rec-1")), recordingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("idle", session: "rec-2")), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Pending, result.State);
+    }
+
+    [Fact]
+    public void AnOldFailureDoesNotYieldFinishedWithFailureForAStreamOnlyStop()
+    {
+        // The recording failed an hour ago; only streaming was live at the close.
+        var baseline = BaselineOf(Input(Snapshot(Recording("failed", session: "hour-ago"), Sender("rtmp://a", "producing")), streamingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("failed", session: "hour-ago"), Sender("rtmp://a", "completed")), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Settled, result.State);
+    }
+
+    [Fact]
+    public void AStreamStartedDuringTheWaitKeepsItPending()
+    {
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed"), Sender("srt://new", "producing")), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Pending, result.State);
+        Assert.True(result.StopNotYetLanded);
+    }
+
+    [Fact]
     public void LegacyRecordingWithoutLifecycleSettlesWhenInactive()
     {
+        var baseline = BaselineOf(Input(Snapshot(Recording(null, active: true, status: "recording"))));
+        Assert.True(baseline.LegacyRecording);
+
         Assert.Equal(OutputSettleState.Pending,
-            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording(null, active: true, status: "recording"))).State);
+            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording(null, active: true, status: "recording")), baseline, Quiet).State);
+        Assert.Equal(OutputSettleState.Pending,
+            CloseGuardPolicy.EvaluateSettled(Snapshot(recording: null), baseline, Quiet).State);
         Assert.Equal(OutputSettleState.Settled,
-            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording(null, active: false, status: "stopped"))).State);
+            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording(null, active: false, status: "stopped")), baseline, Quiet).State);
+    }
+
+    [Fact]
+    public void MergeKeepsTheCloseRequestGenerationAndWidensSenders()
+    {
+        var atClose = BaselineOf(Input(Snapshot(Recording("producing", session: "rec-1")), recordingRequested: true, generation: 2));
+        var atStop = BaselineOf(Input(Snapshot(Recording("producing", session: "rec-1"), Sender("rtmp://late", "producing")),
+            recordingRequested: true, streamingRequested: true, generation: 2));
+
+        var merged = CloseGuardPolicy.Merge(atClose, atStop);
+
+        Assert.Equal(2, merged.CoreGeneration);
+        Assert.Equal("rec-1", merged.RecordingSessionId);
+        Assert.True(merged.StreamingExpected);
+        Assert.Contains("rtmp://late", merged.Senders.Keys);
     }
 }
 
@@ -268,6 +414,9 @@ public sealed class ShutdownBudgetTests
         // rest of the view-model disposal before the 5 s timeout.
         Assert.True(ShutdownBudget.CoreStopWorstCase + TimeSpan.FromSeconds(1) <= ShutdownBudget.ShutdownTimeout);
         Assert.True(ShutdownBudget.ShutdownTimeout < ShutdownBudget.ShutdownWatchdog);
+        // The clean-exit path's stderr drain never costs more than the kill path it replaces.
+        Assert.True(ShutdownBudget.CoreExitGrace + TimeSpan.FromMilliseconds(MediaCoreSupervisor.StderrDrainMilliseconds)
+                    <= ShutdownBudget.CoreStopWorstCase);
     }
 
     [Fact]
