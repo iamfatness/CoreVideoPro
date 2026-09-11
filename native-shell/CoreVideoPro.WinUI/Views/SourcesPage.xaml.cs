@@ -163,14 +163,10 @@ public sealed partial class SourcesPage : UserControl
     {
         if (sender is not ComboBox { Tag: SceneCanvasLayerViewModel layer } combo)
             return;
-        CommitLayerSourceCombo(combo, operatorGesture: true);
-        // SelectionChanged can fire after close. Keep the operator flag until
-        // the next tick so that close is not mistaken for an ItemsSource rebuild.
-        UiDispatch.Enqueue(
-            DispatcherQueue,
-            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
-            layer.EndOperatorSourcePick,
-            "layer-source.end-operator-pick");
+        // Selection has settled; SelectedItem is the pick. End the gesture
+        // now so a later ItemsSource rebuild cannot ride the operator flag.
+        CommitLayerSourceCombo(combo, operatorGesture: true, added: null);
+        layer.EndOperatorSourcePick();
     }
 
     private void OnLayerSourceSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -179,25 +175,26 @@ public sealed partial class SourcesPage : UserControl
         // A list rebuild adds the blank placeholder; that is not an operator pick.
         if (sender is not ComboBox { Tag: SceneCanvasLayerViewModel layer } combo)
             return;
+        var added = e.AddedItems.Count == 1 ? e.AddedItems[0] as RouteSelectOption : null;
         if (layer.IsOperatorPickingSource)
         {
-            CommitLayerSourceCombo(combo, operatorGesture: true);
+            CommitLayerSourceCombo(combo, operatorGesture: true, added);
             return;
         }
 
-        var incoming = e.AddedItems.Count == 1 && e.AddedItems[0] is RouteSelectOption option
-            ? option.Value
-            : combo.SelectedValue as string;
         LaunchLog.Write(LayerSourceSelectionPolicy.FormatLog(
-            layer.LayerIndex, incoming, LayerSourceSelectionPolicy.RefreshIgnoredCause));
+            layer.LayerIndex, added?.Value ?? combo.SelectedValue as string,
+            LayerSourceSelectionPolicy.RefreshIgnoredCause));
         RestoreLayerSourceCombo(combo);
     }
 
-    private void CommitLayerSourceCombo(ComboBox combo, bool operatorGesture)
+    private void CommitLayerSourceCombo(ComboBox combo, bool operatorGesture, RouteSelectOption? added)
     {
         if (combo.Tag is not SceneCanvasLayerViewModel layer)
             return;
-        var option = combo.SelectedItem as RouteSelectOption;
+        var option = added;
+        if (option is null && combo.SelectedItem is RouteSelectOption selected)
+            option = selected;
         if (option is null && combo.SelectedValue is string value)
             option = layer.ParticipantOptions.FirstOrDefault(item => item.Value == value);
         if (layer.TryCommitSourceOption(option, operatorGesture))

@@ -182,6 +182,42 @@ public sealed class SceneCanvasSourceSelectionTests
     }
 
     [Fact]
+    public void AListRebuildDuringAnOperatorPickDoesNotWriteABlank()
+    {
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 1,
+            Kind = ShowInputKind.ZoomParticipant,
+            ParticipantId = "jamal",
+            InShow = true
+        };
+        var route = new SourceRoute
+        {
+            Id = "layer",
+            Mode = SourceRouteMode.Fixed,
+            ShowInputSlotNumber = 1,
+            ParticipantId = "jamal"
+        };
+        var layer = new SceneCanvasLayerViewModel(0, route, Participants, [], [slot], [], _ => { });
+        var optionsBefore = layer.ParticipantOptions;
+        layer.BeginOperatorSourcePick();
+        layer.SyncFromRoute(
+            route,
+            [.. Participants, new Participant { Id = "new", Name = "New guest" }],
+            [],
+            [slot],
+            []);
+        // The open picker keeps its list; replacing it would select the blank row.
+        Assert.Same(optionsBefore, layer.ParticipantOptions);
+        Assert.Equal("input-01", layer.ParticipantId);
+        Assert.Equal(1, route.ShowInputSlotNumber);
+        layer.EndOperatorSourcePick();
+        Assert.Contains(layer.ParticipantOptions, option => option.Value == "new");
+        Assert.Equal("input-01", layer.ParticipantId);
+        Assert.Equal(1, route.ShowInputSlotNumber);
+    }
+
+    [Fact]
     public void AnOperatorCanClearALayerSourceToBlank()
     {
         var slot = new ShowInputSlot

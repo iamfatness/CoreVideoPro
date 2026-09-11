@@ -39,7 +39,7 @@ TEST(RouteSourcePolicy, ScreenShareRetainsFrameKind) {
 }
 
 TEST(RouteSourcePolicy, AnUnassignedRouteBindsNothingNeverAPositionalGuest) {
-  for (const auto* mode : {"fixed", "none"}) {
+  for (const auto* mode : {"fixed", "none", "capture-input", "screen-share"}) {
     const auto binding = resolveRouteSource({mode, {}, {}, {}, {}});
     EXPECT_TRUE(binding.sourceId.empty()) << mode;
     EXPECT_TRUE(binding.participantId.empty()) << mode;
