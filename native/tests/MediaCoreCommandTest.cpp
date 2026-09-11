@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <chrono>
 #include <set>
@@ -5023,6 +5024,62 @@ TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPrev
     }
   }
   EXPECT_TRUE(sawPvw) << "expected a pvw-role tile in a pgmPvw layout";
+}
+
+// #478 N4: a cued Preview (or Program) guest the shell's video budget left out has no
+// wall tile to carry a label, so the shell sends the notice with the layout and the
+// core puts it on the PVW / PGM cell. The overlay draws "PREVIEW · <notice>". An empty
+// notice clears it. Skips without a D3D11 device (the event needs the GPU composite).
+TEST(MediaCoreMultiview, TheBusCellsCarryTheShellsSubscriptionLimitNotice) {
+  auto gpuCompositor = corevideo::modules::createD3D11Compositor();
+  if (!gpuCompositor) {
+    std::fprintf(stderr, "[multiview-validation] skipped: no D3D11 GPU compositor in this environment.\n");
+    return;
+  }
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::move(gpuCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "configure-multiviewer"},
+      {"layoutMode", "pgmPvwTop"},
+      {"tileCount", 4},
+  });
+
+  const auto layout = [](const std::string& previewNotice) {
+    return corevideo::rpc::Json::Object{
+        {"type", "set-multiview-layout"},
+        {"canvasWidth", 1920},
+        {"canvasHeight", 1080},
+        {"programNotice", ""},
+        {"previewNotice", previewNotice},
+        {"sources", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+            {"sourceId", "zoom:alice"}, {"kind", "zoom"}, {"participantId", "alice"},
+            {"slot", 0}, {"label", "Alice"}}}},
+    };
+  };
+  // One drain per layout change: the tiles event is emitted on STRUCTURAL change only.
+  const auto busLabels = [&]() {
+    std::map<std::string, std::string> labels;
+    mediaCore.renderDisplayTick();
+    const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+    EXPECT_FALSE(events.empty());
+    if (events.empty()) return labels;
+    const auto* tiles = events.back().get("tiles");
+    if (!tiles || !tiles->isArray()) return labels;
+    for (const auto& tile : tiles->asArray()) {
+      labels[tile.getString("role")] = tile.getString("label");
+    }
+    return labels;
+  };
+
+  (void)mediaCore.applyCommand(layout("no video: Cued guest (subscription limit 10)"));
+  auto labels = busLabels();
+  EXPECT_EQ(labels["pvw"], "Preview Â· no video: Cued guest (subscription limit 10)");
+  EXPECT_EQ(labels["pgm"], "Program");
+
+  (void)mediaCore.applyCommand(layout(""));
+  labels = busLabels();
+  EXPECT_EQ(labels["pvw"], "Preview");
 }
 
 TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {

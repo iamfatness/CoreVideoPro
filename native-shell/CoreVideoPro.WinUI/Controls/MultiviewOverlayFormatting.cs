@@ -30,15 +30,32 @@ public static class MultiviewOverlayFormatting
 
         if (IsRole(tile.Role, "pgm"))
         {
-            return "PROGRAM";
+            return WithBusNotice("PROGRAM", tile.Label);
         }
 
         if (IsRole(tile.Role, "pvw"))
         {
-            return "PREVIEW";
+            return WithBusNotice("PREVIEW", tile.Label);
         }
 
         return tile.Label ?? string.Empty;
+    }
+
+    /// <summary>
+    /// #478 N4: the core appends the bus's subscription-limit notice to the PGM/PVW cell label
+    /// as "Program · &lt;notice&gt;" / "Preview · &lt;notice&gt;". Keep the canonical caption and
+    /// carry the notice after it, so a cued guest the video budget left out is named on the
+    /// cell instead of the cell silently showing a placeholder.
+    /// </summary>
+    private static string WithBusNotice(string caption, string? label)
+    {
+        const string separator = " \u00b7 ";
+        if (label is { Length: > 0 } && label.IndexOf(separator, StringComparison.Ordinal) is var index and >= 0)
+        {
+            return caption + separator + label[(index + separator.Length)..];
+        }
+
+        return caption;
     }
 
     /// <summary>

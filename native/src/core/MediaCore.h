@@ -5,6 +5,7 @@
 #include "core/Director.h"
 #include "core/MonitorShedPolicy.h"
 #include "core/OutputLifecyclePolicy.h"
+#include "core/FollowSpeakerHold.h"
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
@@ -121,8 +122,9 @@ class MediaCore {
   // the engine command rides ZoomEngineRuntime's sender thread.
   [[nodiscard]] rpc::Json stopZoomCapture();
   [[nodiscard]] rpc::Json zoomSnapshot() const;
-  // #478 R2: who a follow-speaker (`active-speaker`) route shows. See the .cpp.
-  [[nodiscard]] std::string directedSpeakerForRoutes() const;
+  // #478 R2/N2: who a follow-speaker (`active-speaker`) route shows this tick —
+  // frame-validated, "" for nobody. See the .cpp and core/FollowSpeakerHold.h.
+  [[nodiscard]] std::string followSpeakerForRoutes(const std::vector<modules::VideoFrame>& videoFrames) const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
@@ -910,9 +912,11 @@ class MediaCore {
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
-  // The last speaker a follow-speaker route was bound to (held while none is
-  // directed). Written only from plan builds, which run under coreMutex.
-  mutable std::string lastDirectedSpeakerId_;
+  // Recently directed speakers for follow-speaker routes, scoped to one meeting
+  // (#478 N2). Written only from plan builds, which run under coreMutex.
+  mutable FollowSpeakerHold followSpeakerHold_;
+  // Moves on every stub join/leave, standing in for the engine's speaker epoch.
+  std::uint64_t zoomStubEpoch_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
   std::string breakoutRoomId_ = "main";
   std::string breakoutRoomName_ = "Main room";
@@ -1207,6 +1211,10 @@ class MediaCore {
   // applyMultiviewLayout every tick; this lets it cheaply skip the clear/rebuild +
   // structural-emit reset when the layout has not actually changed.
   std::string multiviewLayoutSignature_;
+  // #478 N4: the shell's "no video: subscription limit" notices for the PGM / PVW
+  // cells (a bus source the video budget left out). Empty = nothing to say.
+  std::string multiviewProgramNotice_;
+  std::string multiviewPreviewNotice_;
   // Structural signature of the last emitted multiview event, so the event is
   // emitted only on structural change (and once at cold start).
   uint32_t lastMultiviewStructureSignature_ = 0;

@@ -56,6 +56,12 @@ class ZoomEngineRuntime {
   // none. Cheap: one lock, no snapshot build. Read on the render tick by the
   // follow-speaker route binding (#478 R2).
   [[nodiscard]] std::string directedSpeakerId();
+  // Moves whenever the meeting session changes under the core: join, leave,
+  // Engine off (stopCapture) and every new engine process. A follow-speaker
+  // route forgets its speaker history when it moves (#478 N2). Lock-free.
+  [[nodiscard]] std::uint64_t speakerEpoch() const {
+    return speakerEpoch_.load(std::memory_order_relaxed);
+  }
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
   // Returns the latest decoded BGRA frame per participant, carrying real pixels,
   // WITHOUT consuming the pending stdout/event queue (drainFrameEvents) that
@@ -183,6 +189,7 @@ class ZoomEngineRuntime {
   // Bus routes the last spine payload asked for at 1080P but the concurrency cap
   // held at 720P (#478 R4). Guarded by mutex_.
   int fullResolutionDemoted_ = 0;
+  std::atomic<std::uint64_t> speakerEpoch_{0};
   // Operator opted in to raw capture (Studio "Engine On"). Raw recording /
   // recording-rights request only starts once this is set, so it no longer
   // fires automatically on meeting join.

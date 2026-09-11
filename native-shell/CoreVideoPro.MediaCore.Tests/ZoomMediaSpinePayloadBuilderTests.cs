@@ -355,10 +355,10 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
     }
 
     [Fact]
-    public void AFollowSpeakerRouteNeverGrantsAFeedItOnlyGivesTheDirectedSourceTheBusTier()
+    public void AFollowSpeakerRouteGrantsNoFeedAndNoPurpose()
     {
-        // R1: the core directs only among sources, so a follow route adds nobody. The directed
-        // speaker, already a source, takes this bus's purpose (the 1080p tier) where they sit.
+        // R1 + N1: the core directs only among sources, so a follow route adds nobody, and it
+        // grants NO purpose: the directed speaker keeps the tier (and resolution) they hold.
         static ZoomMediaSpinePayloadBuilder.BuildInput Input(string speaker) => new()
         {
             EngineRunning = true,
@@ -374,7 +374,7 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
 
         var w2Talking = Video(ZoomMediaSpinePayloadBuilder.Build(Input("w2")));
         Assert.Equal(["w1", "w2"], w2Talking.Select(Pid).ToArray());
-        Assert.Equal(["multiview", "program"], w2Talking.Select(Purpose).ToArray());
+        Assert.Equal(["multiview", "multiview"], w2Talking.Select(Purpose).ToArray());
 
         // A non-source talking (the core would never direct them, but the shell must not trust
         // that): nobody gains a feed and nobody's purpose moves.
@@ -422,24 +422,86 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
     }
 
     [Fact]
-    public void APreviewRouteOutranksAProgramGalleryAtTheCap()
+    public void AtTheCapCueingPreviewNeverTakesVideoFromAProgramGalleryMember()
     {
-        // Review finding 8: an eligible Tiles gallery can list every camera-on guest; the
-        // operator's explicitly cued Preview guest must never be the one the cap drops.
-        var members = Enumerable.Range(0, 12).Select(index => $"t{index}").ToList();
-        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        // N4: PROGRAM FIRST. The re-review withdrew round 1's "Preview routes outrank Program
+        // Tiles": it spent on-air pixels on an off-air cue. The cued guest is the one left out,
+        // and the PVW cell says so.
+        var members = Enumerable.Range(0, 10).Select(index => $"t{index}").ToList();
+        ZoomMediaSpinePayloadBuilder.BuildInput Input(bool cued) => new()
         {
             EngineRunning = true,
             MaxVideoSubscriptions = 10,
-            Participants = [.. members.Select(id => Guest(id, id)), Guest("cued", "Cued")],
+            Participants = [.. members.Select(id => Guest(id, id)), Guest("cued", "Cued guest")],
             ProgramTilesLayer = Tiles(members.Select(id => $"zoom:{id}").ToList()),
-            PreviewSceneRoutes = [Route("cued")]
-        });
+            PreviewSceneRoutes = cued ? [Route("cued")] : [],
+            Multiview = Wall((0, "t0"))
+        };
 
-        var video = Video(payload);
-        Assert.Equal("cued", Pid(video[0]));
-        Assert.Equal("preview", Purpose(video[0]));
-        Assert.DoesNotContain("cued", Shortfall(payload).Select(entry => entry["participantId"]?.ToString()));
+        var before = Video(ZoomMediaSpinePayloadBuilder.Build(Input(cued: false)));
+        var afterPayload = ZoomMediaSpinePayloadBuilder.Build(Input(cued: true));
+        var after = Video(afterPayload);
+        Assert.Equal(
+            before.Select(entry => $"{Pid(entry)}:{Purpose(entry)}").ToArray(),
+            after.Select(entry => $"{Pid(entry)}:{Purpose(entry)}").ToArray());
+        Assert.DoesNotContain("cued", after.Select(Pid));
+        Assert.Equal("cued", Assert.Single(Shortfall(afterPayload))["participantId"]);
+
+        var multiview = Assert.IsType<Dictionary<string, object?>>(afterPayload["multiview"]);
+        Assert.Equal("no video: Cued guest (subscription limit 10)", multiview["previewNotice"]);
+        Assert.Equal("", multiview["programNotice"]);
+    }
+
+    [Fact]
+    public void CueingAFourBoxLookOnPreviewNeverDemotesOrUnsubscribesAProgramSource()
+    {
+        // N3/N4: Program's routes come first in the payload, so the core's 1080P cap (granted in
+        // payload order) is spent on Program before any cued Preview look.
+        ZoomMediaSpinePayloadBuilder.BuildInput Input(bool cued) => new()
+        {
+            EngineRunning = true,
+            MaxVideoSubscriptions = 10,
+            Participants = Enumerable.Range(0, 8).Select(index => Guest($"g{index}", $"Guest {index}")).ToList(),
+            ProgramSceneRoutes = [Route("g0"), Route("g1"), Route("g2"), Route("g3")],
+            PreviewSceneRoutes = cued ? [Route("g4"), Route("g5"), Route("g6"), Route("g7")] : []
+        };
+
+        var before = Video(ZoomMediaSpinePayloadBuilder.Build(Input(cued: false)));
+        var after = Video(ZoomMediaSpinePayloadBuilder.Build(Input(cued: true)));
+        Assert.Equal(["g0", "g1", "g2", "g3"], before.Select(Pid).ToArray());
+        // Program's four keep their place (first) and their purpose; the cue only appends.
+        Assert.Equal(before.Select(entry => $"{Pid(entry)}:{Purpose(entry)}").ToArray(),
+            after.Take(4).Select(entry => $"{Pid(entry)}:{Purpose(entry)}").ToArray());
+        Assert.Equal(["g4", "g5", "g6", "g7"], after.Skip(4).Select(Pid).ToArray());
+    }
+
+    [Theory]
+    [InlineData(true)]   // Program Tiles + a PREVIEW follow route (the round-1 worst case)
+    [InlineData(false)]  // a PROGRAM follow route
+    public void ASpeakerFlipUnderAFollowRouteChangesNoSubscriptionAtAll(bool previewFollowRoute)
+    {
+        // N1: talking must never cause a subscribe line. The whole subscription list — video
+        // AND audio, ids, kinds and purposes — is identical whoever is talking.
+        var members = new[] { "a", "b", "c" };
+        ZoomMediaSpinePayloadBuilder.BuildInput Input(string speaker) => new()
+        {
+            EngineRunning = true,
+            Participants = members.Select(id => Guest(id, id, speaker: id == speaker)).ToList(),
+            ProgramTilesLayer = previewFollowRoute ? Tiles(members.Select(id => $"zoom:{id}").ToList()) : null,
+            ProgramSceneRoutes = previewFollowRoute ? [] : [Route(null, mode: "active-speaker")],
+            PreviewSceneRoutes = previewFollowRoute ? [Route(null, mode: "active-speaker")] : [],
+            Multiview = Wall((0, "a"), (1, "b"), (2, "c"))
+        };
+
+        static string Signature(Dictionary<string, object?> payload) => string.Join("|",
+            Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(payload["subscriptions"])
+                .Select(entry => $"{entry["kind"]}:{entry["participantId"]}:{entry["purpose"]}"));
+
+        var baseline = Signature(ZoomMediaSpinePayloadBuilder.Build(Input("a")));
+        Assert.Equal(baseline, Signature(ZoomMediaSpinePayloadBuilder.Build(Input("b"))));
+        Assert.Equal(baseline, Signature(ZoomMediaSpinePayloadBuilder.Build(Input("c"))));
+        Assert.DoesNotContain(":program|", baseline.Replace("meeting-audio:a:program|", ""));
+        Assert.DoesNotContain(":preview", baseline);
     }
 
     [Fact]

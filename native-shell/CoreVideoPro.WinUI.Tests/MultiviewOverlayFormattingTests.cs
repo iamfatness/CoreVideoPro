@@ -24,6 +24,16 @@ public sealed class MultiviewOverlayFormattingTests
     }
 
     [Fact]
+    public void ResolveLabel_BusCellCarriesTheCoresSubscriptionLimitNotice()
+    {
+        // #478 N4: a cued Preview guest the video budget left out is named on the PVW cell.
+        var preview = new MultiviewTile { Role = "pvw", Label = "Preview · no video: Cued guest (subscription limit 10)" };
+        Assert.Equal("PREVIEW · no video: Cued guest (subscription limit 10)", MultiviewOverlayFormatting.ResolveLabel(preview));
+        var program = new MultiviewTile { Role = "pgm", Label = "Program · no video: A (subscription limit 10)" };
+        Assert.Equal("PROGRAM · no video: A (subscription limit 10)", MultiviewOverlayFormatting.ResolveLabel(program));
+    }
+
+    [Fact]
     public void ResolveLabel_SourceRole_UsesCoreLabel()
     {
         var tile = new MultiviewTile { Role = "source", Label = "Camera 2" };

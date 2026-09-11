@@ -28,11 +28,12 @@ namespace corevideo::modules {
 // THE TIER (R4): the shell stamps a purpose that does not depend on who is talking
 // (ZoomSourceSetPolicy.cs), and
 //   * screen share                                        -> 1080P
-//   * camera video, purpose program / preview (a ROUTE on a bus,
-//     including the directed speaker of a follow-speaker route)  -> 1080P, capped
+//   * camera video, purpose program / preview (a FIXED route on a bus) -> 1080P, capped
 //   * program-tiles, preview-tiles, multiview, iso         -> 720P
-// so the resolution moves only on a Take, a cue, or (for a follow-speaker route
-// only) a change of directed speaker. There is NO ratchet: a guest who leaves
+// so the resolution moves only on a Take or a cue — NEVER on who is talking. A
+// follow-speaker route grants no purpose (fix round 2, N1): its speaker keeps their
+// own tier, so a follow-speaker shot is 720P until an in-place resolution change is
+// proven on a live renderer. There is NO ratchet: a guest who leaves
 // Program/Preview goes back to 720P, and the engine now honours that downgrade
 // (it used to keep a live renderer at its old, higher resolution forever, which
 // over a show put every rotated guest at 1080P — the N x 1080P overload below).

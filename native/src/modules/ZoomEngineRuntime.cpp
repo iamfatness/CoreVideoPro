@@ -162,6 +162,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   }
 
   if (cancelled && cancelled()) return nullptr;
+  speakerEpoch_.fetch_add(1, std::memory_order_relaxed);  // a join is a new meeting
   bool restart;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1009,6 +1010,9 @@ std::string ZoomEngineRuntime::directedSpeakerId() {
 }
 
 void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
+  // Every path that resets the subscription set is a meeting-session boundary
+  // (join, leave, Engine off, a new engine process): forget speaker history.
+  speakerEpoch_.fetch_add(1, std::memory_order_relaxed);
   fullResolutionDemoted_ = 0;
   subscriptionChurn_.clear();
   subscriptionChurnTotal_.store(0, std::memory_order_relaxed);

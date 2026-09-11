@@ -1324,3 +1324,21 @@ TEST(ZoomEngineRuntime, ACameraTurningOffIsLedgeredAsVideoOffNotUnrouted) {
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
+
+TEST(ZoomEngineRuntime, TheSpeakerEpochMovesOnLeaveAndEngineOff) {
+  // #478 N2: a follow-speaker route forgets its held speaker when this moves, so a
+  // reused Zoom user id in the next meeting is never bound from the last one.
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const auto start = runtime.speakerEpoch();
+    (void)runtime.stopCapture();  // Engine off
+    const auto afterEngineOff = runtime.speakerEpoch();
+    EXPECT_NE(afterEngineOff, start);
+    (void)runtime.leave();
+    EXPECT_NE(runtime.speakerEpoch(), afterEngineOff);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}

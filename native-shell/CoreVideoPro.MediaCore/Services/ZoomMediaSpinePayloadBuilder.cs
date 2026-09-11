@@ -163,13 +163,37 @@ public static class ZoomMediaSpinePayloadBuilder
             var unsubscribedWallGuests = videoDecision.OverBudget
                 .Select(candidate => candidate.ParticipantId)
                 .ToHashSet(StringComparer.Ordinal);
-            payload["multiview"] = BuildMultiviewPayload(
+            var multiviewPayload = BuildMultiviewPayload(
                 multiview,
                 unsubscribedWallGuests,
                 input.MaxVideoSubscriptions);
+            // #478 N4: a BUS source the budget left out (typically a cued Preview guest who is
+            // not on the wall) has no wall tile to carry the label, so the PGM/PVW cell names
+            // them. Always present (empty = nothing to say) so a notice CLEARS when it resolves.
+            multiviewPayload["programNotice"] = BusNotice(
+                participants, videoDecision.OverBudget, ZoomSourceSetPolicy.IsProgramPurpose, input.MaxVideoSubscriptions);
+            multiviewPayload["previewNotice"] = BusNotice(
+                participants, videoDecision.OverBudget, ZoomSourceSetPolicy.IsPreviewPurpose, input.MaxVideoSubscriptions);
+            payload["multiview"] = multiviewPayload;
         }
 
         return payload;
+    }
+
+    /// <summary>"no video: A, B (subscription limit 10)" for the over-budget sources on a bus, or "".</summary>
+    public static string BusNotice(
+        IReadOnlyList<Dictionary<string, object?>> participants,
+        IReadOnlyList<ZoomSourceSetPolicy.Source> overBudget,
+        Func<string, bool> onBus,
+        int maxVideoSubscriptions)
+    {
+        var names = overBudget
+            .Where(source => onBus(source.Purpose))
+            .Select(source => DisplayName(participants, source.ParticipantId))
+            .ToList();
+        return names.Count == 0
+            ? string.Empty
+            : $"no video: {string.Join(", ", names)} (subscription limit {maxVideoSubscriptions})";
     }
 
     /// <summary>

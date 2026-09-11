@@ -8654,6 +8654,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 PreviewTilesLayer = syncContext.PreviewTilesLayer,
                 IsoParticipantIds = syncContext.RecordingTargets.IsoParticipantIds,
                 StickyAudioParticipantIds = _tilesAudioLatch.Observe(
+                    nativeSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true,
                     syncContext.ActiveSceneId,
                     syncContext.TilesLayer,
                     syncContext.PreviewSceneId,
@@ -10255,6 +10256,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void UnsubscribeZoomCapture(string status)
     {
         _bridge.ConfigureZoomSpineSync(null);
+        _tilesAudioLatch.Clear();  // #478 N5: Engine off ends the latch's meeting session
         _surfaces.SetZoomCaptureSubscribed(false);
         ZoomCaptureSubscribed = false;
         EngineStatus = status;

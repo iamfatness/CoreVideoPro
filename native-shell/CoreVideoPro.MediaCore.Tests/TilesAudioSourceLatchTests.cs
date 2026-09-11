@@ -29,7 +29,7 @@ public sealed class TilesAudioSourceLatchTests
                 new MediaCoreParticipantWire("b", "B", "guest", "main", "Main", false, false, false, 0, "live")
             ],
             ProgramTilesLayer = wall,
-            StickyAudioParticipantIds = latch.Observe("gallery", wall, null, null, Everyone)
+            StickyAudioParticipantIds = latch.Observe(true, "gallery", wall, null, null, Everyone)
         };
 
         // Camera on: a is a member of the Program gallery.
@@ -44,18 +44,52 @@ public sealed class TilesAudioSourceLatchTests
     }
 
     [Fact]
-    public void TheLatchClearsWhenTheSceneLeavesTheBusOrTheGuestLeavesTheMeeting()
+    public void TheLatchClearsWhenTheSceneLeavesBothBusesOrTheGuestLeavesTheMeeting()
     {
         var latch = new TilesAudioSourceLatch();
-        Assert.Equal(["a", "b"], latch.Observe("gallery", Wall("gallery", "a", "b"), null, null, Everyone));
+        Assert.Equal(["a", "b"], latch.Observe(true, "gallery", Wall("gallery", "a", "b"), null, null, Everyone));
         // a's camera goes off: still latched.
-        Assert.Equal(["a", "b"], latch.Observe("gallery", Wall("gallery", "b"), null, null, Everyone));
+        Assert.Equal(["a", "b"], latch.Observe(true, "gallery", Wall("gallery", "b"), null, null, Everyone));
         // b leaves the meeting.
-        Assert.Equal(["a"], latch.Observe("gallery", Wall("gallery"), null, null, new HashSet<string> { "a" }));
-        // A Take puts a different scene on Program: the latch starts over.
-        Assert.Equal(["c"], latch.Observe("other", Wall("other", "c"), null, null, Everyone));
+        Assert.Equal(["a"], latch.Observe(true, "gallery", Wall("gallery"), null, null, new HashSet<string> { "a" }));
+        // A different scene is on Program and "gallery" is on neither bus: forgotten.
+        Assert.Equal(["c"], latch.Observe(true, "other", Wall("other", "c"), null, null, Everyone));
         // A non-Tiles scene on Program: nothing latched.
-        Assert.Empty(latch.Observe("routes", null, null, null, Everyone));
+        Assert.Empty(latch.Observe(true, "routes", null, null, null, Everyone));
+    }
+
+    [Fact]
+    public void ATakeThatSwapsTheBusesKeepsACameraOffPanelistAudibleAsTheirGalleryGoesToAir()
+    {
+        // N5: keyed by SCENE. Gallery B is cued on Preview; panelist m turns their camera off
+        // (the membership policy drops them); the Take swaps B onto Program.
+        var latch = new TilesAudioSourceLatch();
+        var everyone = new HashSet<string> { "m", "x", "y" };
+        latch.Observe(true, "A", Wall("A", "x"), "B", Wall("B", "m", "y"), everyone);
+        Assert.Contains("m", latch.Observe(true, "A", Wall("A", "x"), "B", Wall("B", "y"), everyone));
+
+        var afterTake = latch.Observe(true, "B", Wall("B", "y"), "A", Wall("A", "x"), everyone);
+        Assert.Contains("m", afterTake);
+    }
+
+    [Fact]
+    public void LeavingTheMeetingOrEngineOffForgetsEverySoAReusedIdIsNotAudible()
+    {
+        // N5: Zoom reuses per-meeting user ids. A latch that outlived the meeting would make a
+        // DIFFERENT person of the next meeting audible.
+        var latch = new TilesAudioSourceLatch();
+        latch.Observe(true, "gallery", Wall("gallery", "a"), null, null, Everyone);
+        Assert.Contains("a", latch.Observe(true, "gallery", Wall("gallery"), null, null, Everyone));
+
+        // Leave (the spine sees no meeting): cleared.
+        Assert.Empty(latch.Observe(false, "gallery", Wall("gallery"), null, null, Everyone));
+        // Next meeting, same scene on the bus, "a" is a reused id and NOT a member: not audible.
+        Assert.Empty(latch.Observe(true, "gallery", Wall("gallery"), null, null, Everyone));
+
+        // Engine off (the spine stops, so it cannot observe the leave): Clear().
+        latch.Observe(true, "gallery", Wall("gallery", "b"), null, null, Everyone);
+        latch.Clear();
+        Assert.Empty(latch.Observe(true, "gallery", Wall("gallery"), null, null, Everyone));
     }
 
     [Fact]
@@ -64,7 +98,7 @@ public sealed class TilesAudioSourceLatchTests
         // Eligible membership filters video-off, so a comms line that never turns a camera on is
         // never a member, never latched, never a source.
         var latch = new TilesAudioSourceLatch();
-        var sticky = latch.Observe("gallery", Wall("gallery", "a"), null, null, Everyone);
+        var sticky = latch.Observe(true, "gallery", Wall("gallery", "a"), null, null, Everyone);
         Assert.DoesNotContain("comms", sticky);
 
         var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
@@ -82,12 +116,13 @@ public sealed class TilesAudioSourceLatchTests
     }
 
     [Fact]
-    public void EachBusLatchesItsOwnScene()
+    public void EachSceneOnABusKeepsItsOwnLatch()
     {
         var latch = new TilesAudioSourceLatch();
-        Assert.Equal(["a", "b"], latch.Observe("pgm", Wall("pgm", "a"), "pvw", Wall("pvw", "b"), Everyone));
-        // Preview is re-cued to another scene; Program's latch is untouched.
-        Assert.Equal(["a", "c"], latch.Observe("pgm", Wall("pgm"), "pvw2", Wall("pvw2", "c"), Everyone));
+        Assert.Equal(["a", "b"], latch.Observe(true, "pgm", Wall("pgm", "a"), "pvw", Wall("pvw", "b"), Everyone));
+        // Preview is re-cued to another scene: "pvw" is on neither bus and is forgotten;
+        // Program's scene is untouched.
+        Assert.Equal(["a", "c"], latch.Observe(true, "pgm", Wall("pgm"), "pvw2", Wall("pvw2", "c"), Everyone));
     }
 
     private static List<string> VideoIds(Dictionary<string, object?> payload) => Ids(payload, "participant-video");
