@@ -21,6 +21,7 @@ public static class LiveProductionSync
         public bool IsMuted { get; init; }
         public int AudioLevel { get; init; }
         public string HealthLabel { get; init; } = "live";
+        public string? PersistentId { get; init; }
     }
 
     public sealed record LiveProductionSyncContext
@@ -158,7 +159,10 @@ public static class LiveProductionSync
                     IsScreenSharing = participant.SharingScreen == true,
                     IsMuted = participant.Muted == true,
                     AudioLevel = audioLevel,
-                    HealthLabel = healthLabel
+                    HealthLabel = healthLabel,
+                    PersistentId = string.IsNullOrWhiteSpace(participant.PersistentId)
+                        ? null
+                        : participant.PersistentId.Trim()
                 };
             })
             .ToList();

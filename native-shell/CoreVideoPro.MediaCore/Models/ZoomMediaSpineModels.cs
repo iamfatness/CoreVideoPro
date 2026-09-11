@@ -4,6 +4,7 @@ public sealed class ZoomMediaSpineParticipant
 {
     public string SdkUserId { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
+    public string? PersistentId { get; init; }
     public string Role { get; init; } = "guest";
     public bool VideoOn { get; init; } = true;
     public bool Muted { get; init; }

@@ -205,6 +205,7 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
       event.participants.push_back({
           uintField(participant, "id"),
           participant.getString("name"),
+          participant.getString("persistent_id"),
           boolField(participant, "has_video"),
           boolField(participant, "is_talking"),
           boolField(participant, "is_muted"),

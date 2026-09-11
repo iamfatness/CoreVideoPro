@@ -293,6 +293,7 @@ public sealed class RawParticipantEvent
 {
     public required string UserId { get; init; }
     public required string DisplayName { get; init; }
+    public string? PersistentId { get; init; }
     public string? Role { get; init; }
     public string? Title { get; init; }
     public string? BreakoutRoomId { get; init; }

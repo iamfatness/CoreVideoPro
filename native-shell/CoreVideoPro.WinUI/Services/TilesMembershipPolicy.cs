@@ -14,10 +14,23 @@ public static class TilesMembershipPolicy
     public static IReadOnlyList<string> Resolve(
         DynamicGallerySettings settings,
         IReadOnlyList<string> eligible,
-        IReadOnlyCollection<string>? routed = null)
+        IReadOnlyCollection<string>? routed = null,
+        IReadOnlyList<TilesIdentityPolicy.Person>? roster = null,
+        string? currentMeetingId = null)
     {
         var mode = NormalizeMode(settings.MembershipMode);
-        var excluded = new HashSet<string>(settings.ExcludedSourceIds ?? [], StringComparer.Ordinal);
+        var excluded = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var key in settings.ExcludedSourceIds ?? [])
+        {
+            var live = roster is null
+                ? key
+                : TilesIdentityPolicy.ResolveLiveSourceId(key, roster, currentMeetingId, settings.BoundMeetingId);
+            if (!string.IsNullOrEmpty(live))
+            {
+                excluded.Add(live);
+            }
+        }
+
         var available = eligible.Where(id => !string.IsNullOrWhiteSpace(id) && !excluded.Contains(id)).Distinct(StringComparer.Ordinal).ToList();
         if (mode == "routed")
         {
@@ -27,7 +40,10 @@ public static class TilesMembershipPolicy
         var present = new HashSet<string>(available, StringComparer.Ordinal);
         var slots = new string?[Math.Clamp(settings.MaxTiles, 1, 64)];
         var used = new HashSet<string>(StringComparer.Ordinal);
-        var manual = settings.ManualSlots ?? [];
+        var manual = (settings.ManualSlots ?? []).Select(id =>
+            roster is null
+                ? id
+                : TilesIdentityPolicy.ResolveLiveSourceId(id, roster, currentMeetingId, settings.BoundMeetingId)).ToList();
         if (mode == "manual")
         {
             // Keep slot positions even when a source is absent. Native manual

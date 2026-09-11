@@ -449,6 +449,7 @@ static const char *meeting_fail_name(int code)
 struct ParticipantInfo {
     uint32_t user_id = 0;
     std::string display_name;
+    std::string persistent_id;
     bool has_video = false;
     bool is_talking = false;
     bool is_muted = false;
@@ -487,6 +488,12 @@ static ParticipantInfo user_to_info(ZoomSDKUserInfo *u)
     if (!u) return info;
     info.user_id      = [u getUserID];
     info.display_name = to_utf8([u getUserName]);
+    if ([u respondsToSelector:@selector(getPersistentId)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        info.persistent_id = to_utf8((NSString *)[u performSelector:@selector(getPersistentId)]);
+#pragma clang diagnostic pop
+    }
     info.has_video    = [u isVideoOn] ? true : false;
     info.is_talking   = [u isTalking] ? true : false;
 
@@ -536,6 +543,7 @@ static void send_roster()
         if (i) msg += ",";
         msg += R"({"id":)" + std::to_string(p.user_id) +
             R"(,"name":")" + json_escape(p.display_name) +
+            R"(","persistent_id":")" + json_escape(p.persistent_id) +
             R"(","has_video":)" + (p.has_video ? "true" : "false") +
             R"(,"is_talking":)" + (p.is_talking ? "true" : "false") +
             R"(,"is_muted":)" + (p.is_muted ? "true" : "false") +

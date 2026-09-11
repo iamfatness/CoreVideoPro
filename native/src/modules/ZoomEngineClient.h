@@ -37,6 +37,7 @@ struct ZoomEngineSubscribeCommand {
 struct ZoomEngineParticipant {
   std::uint32_t id = 0;
   std::string displayName;
+  std::string persistentId;
   bool hasVideo = false;
   bool isTalking = false;
   bool isMuted = false;

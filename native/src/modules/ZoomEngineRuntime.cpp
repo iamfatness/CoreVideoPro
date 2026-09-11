@@ -1068,6 +1068,7 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
     participants.emplace_back(rpc::Json::Object{
         {"userId", participantIdString(participant.id)},
         {"displayName", participant.displayName.empty() ? "Zoom User " + participantIdString(participant.id) : participant.displayName},
+        {"persistentId", participant.persistentId},
         {"role", "Guest"},
         {"muted", participant.isMuted},
         {"videoOn", participant.hasVideo},

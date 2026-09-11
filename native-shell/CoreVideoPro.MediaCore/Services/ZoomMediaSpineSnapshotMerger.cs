@@ -62,6 +62,7 @@ public static class ZoomMediaSpineSnapshotMerger
                 {
                     UserId = participant.SdkUserId,
                     DisplayName = participant.DisplayName,
+                    PersistentId = participant.PersistentId,
                     Role = participant.Role,
                     Muted = participant.Muted,
                     VideoOn = participant.VideoOn,

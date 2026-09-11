@@ -24,7 +24,9 @@ public static class TilesLayerPayloadBuilder
     public static TilesLayerPayload? Build(
         Scene scene,
         IReadOnlyList<Participant> roomVideoParticipants,
-        IReadOnlyCollection<string>? routedSourceIds = null)
+        IReadOnlyCollection<string>? routedSourceIds = null,
+        IReadOnlyList<Participant>? identityRoster = null,
+        string? meetingId = null)
     {
         if (scene.DynamicGallery is not { } settings)
         {
@@ -39,7 +41,10 @@ public static class TilesLayerPayloadBuilder
             .Select(participant => QualifySourceId(participant.Id))
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        var members = TilesMembershipPolicy.Resolve(settings, eligible, routedSourceIds);
+        var roster = (identityRoster ?? roomVideoParticipants)
+            .Select(TilesIdentityPolicy.FromParticipant)
+            .ToList();
+        var members = TilesMembershipPolicy.Resolve(settings, eligible, routedSourceIds, roster, meetingId);
 
         return new TilesLayerPayload(
             LayerId: $"tiles:{scene.Id}",

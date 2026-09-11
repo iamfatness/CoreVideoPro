@@ -134,7 +134,7 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   EXPECT_EQ(mix->byteLength, 960u);
 
   const auto participants = corevideo::modules::parseZoomEngineEvent(
-      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia \"Host\"","has_video":true,"is_talking":true,"is_muted":false,"is_sharing_screen":true},{"id":77,"name":"David Chen","has_video":false,"is_talking":false,"is_muted":true,"is_sharing_screen":false}]})");
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia \"Host\"","persistent_id":"host-pid","has_video":true,"is_talking":true,"is_muted":false,"is_sharing_screen":true},{"id":77,"name":"David Chen","has_video":false,"is_talking":false,"is_muted":true,"is_sharing_screen":false}]})");
   ASSERT_TRUE(participants.has_value());
   EXPECT_EQ(participants->kind, corevideo::modules::ZoomEngineEventKind::Participants);
   EXPECT_EQ(participants->activeSpeakerId, 42u);
@@ -142,6 +142,7 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   ASSERT_TRUE(participants->participants.size() == 2u);
   EXPECT_EQ(participants->participants[0].id, 42u);
   EXPECT_EQ(participants->participants[0].displayName, "Sophia \"Host\"");
+  EXPECT_EQ(participants->participants[0].persistentId, "host-pid");
   EXPECT_TRUE(participants->participants[0].hasVideo);
   EXPECT_TRUE(participants->participants[0].isTalking);
   EXPECT_FALSE(participants->participants[0].isMuted);

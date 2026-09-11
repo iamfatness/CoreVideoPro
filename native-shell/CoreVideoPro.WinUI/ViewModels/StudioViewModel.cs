@@ -12972,7 +12972,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
             .Select(sourceId => sourceId!)
             .ToHashSet(StringComparer.Ordinal);
-        var payload = TilesLayerPayloadBuilder.Build(scene, RoomVideoParticipants, routedSourceIds);
+        var payload = TilesLayerPayloadBuilder.Build(
+            scene, RoomVideoParticipants, routedSourceIds, RoomParticipantsForInputs, CurrentTilesMeetingId());
         if (payload is null)
         {
             return null;

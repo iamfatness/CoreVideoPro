@@ -10,6 +10,7 @@ public static class ParticipantMapper
         {
             Id = context.Id,
             Name = context.Name,
+            PersistentId = context.PersistentId,
             Title = context.Title,
             Role = ParseRole(context.RoleLabel),
             BreakoutRoomId = context.BreakoutRoomId,
