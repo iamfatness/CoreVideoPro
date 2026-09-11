@@ -575,8 +575,10 @@ std::string MediaCore::followSpeakerForRoutes(const std::vector<modules::VideoFr
   std::string current;
   std::uint64_t epoch = 0;
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    current = zoomEngineRuntime_->directedSpeakerId();
+    // L3: the EPOCH first. join() runs off coreMutex; reading the id first could record
+    // the previous meeting's speaker under the new meeting's epoch.
     epoch = zoomEngineRuntime_->speakerEpoch();
+    current = zoomEngineRuntime_->directedSpeakerId();
   } else {
     // N6: the stub's speaker is a constant; never build a whole stub snapshot per tick.
     current = zoomJoined_ ? kStubActiveSpeakerId : "";
@@ -5442,7 +5444,14 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       return route.mode == "active-speaker" && route.participantId.empty() &&
              route.captureDeviceId.empty() && route.mediaAssetId.empty();
     });
-    const std::string directedSpeaker = hasFollowSpeakerRoute ? followSpeakerForRoutes(videoFrames) : std::string{};
+    // L1: only a tick that HAS frames can bind anyone (the binding is frame-validated),
+    // so a frameless plan build — the audio worker's `buildCompositorRenderPlan({})`,
+    // `sessionState`, `armTakeRecord` — skips the lookup and never takes
+    // ZoomEngineRuntime::mutex_ under coreMutex for nothing (the audio gather was
+    // cleaned of exactly that pattern). With no frames the layer renders empty anyway.
+    const std::string directedSpeaker = hasFollowSpeakerRoute && !videoFrames.empty()
+                                            ? followSpeakerForRoutes(videoFrames)
+                                            : std::string{};
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;

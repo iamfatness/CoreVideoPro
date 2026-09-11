@@ -12,6 +12,18 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 {
     private const int UiUpdateIntervalMs = 16;
 
+    /// <summary>
+    /// The structural identity of a multiview layout: the ordered tiles' slot, source, rect AND
+    /// label. A change in any of them is a structural change that must reach the overlay
+    /// (#478 L4: without the label, a "no video: subscription limit" notice on a PGM/PVW cell or
+    /// a wall tile reached <c>MultiviewTileRects</c> only when something else refreshed).
+    /// </summary>
+    public static string MultiviewLayoutSignature(IReadOnlyList<MultiviewTile> tiles) =>
+        string.Join(
+            "|",
+            tiles.Select(tile =>
+                $"{tile.Slot}:{tile.SourceId}:{tile.X:F3},{tile.Y:F3},{tile.W:F3},{tile.H:F3}:{tile.Label}"));
+
     private readonly object _gate = new();
     private readonly Dictionary<string, FrameRateTracker> _trackers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VideoSurfaceState> _participantSurfaces = new(StringComparer.Ordinal);
@@ -771,11 +783,11 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         };
 
         // Build a compact signature of the layout so the overlay/bindings only rebuild on a
-        // STRUCTURAL change (handle, size, or the ordered tile identities + rects).
-        var layoutSignature = string.Join(
-            "|",
-            multiview.Tiles.Select(tile =>
-                $"{tile.Slot}:{tile.SourceId}:{tile.X:F3},{tile.Y:F3},{tile.W:F3},{tile.H:F3}"));
+        // STRUCTURAL change (handle, size, or the ordered tile identities + rects + labels).
+        // The LABEL is part of it (#478 L4): the core only changes a label on a structural
+        // emit (a subscription-limit notice on a PGM/PVW cell or a wall tile), so a
+        // label-only change is still structural cadence, never frame rate.
+        var layoutSignature = MultiviewLayoutSignature(multiview.Tiles);
         var signature = $"{handle.NtHandle:X}:{texture.Width}x{texture.Height}:{layoutSignature}";
 
         bool structuralChange;

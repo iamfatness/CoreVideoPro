@@ -116,6 +116,19 @@ public sealed class TilesAudioSourceLatchTests
     }
 
     [Fact]
+    public void AnUnknownMeetingStateTickNeverWipesTheLatch()
+    {
+        // #478 L5: a tick with no (or a synthesized) snapshot must not read as "left the
+        // meeting": a camera-off panelist cannot be re-latched until their camera returns.
+        var latch = new TilesAudioSourceLatch();
+        latch.Observe(true, "gallery", Wall("gallery", "a", "b"), null, null, Everyone);
+        Assert.Equal(["a", "b"], latch.Observe(null, "gallery", Wall("gallery", "b"), null, null, Everyone));
+        Assert.Equal(["a", "b"], latch.Observe(true, "gallery", Wall("gallery", "b"), null, null, Everyone));
+        // A KNOWN "not in a meeting" still clears.
+        Assert.Empty(latch.Observe(false, "gallery", Wall("gallery", "b"), null, null, Everyone));
+    }
+
+    [Fact]
     public void EachSceneOnABusKeepsItsOwnLatch()
     {
         var latch = new TilesAudioSourceLatch();

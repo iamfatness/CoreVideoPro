@@ -768,7 +768,8 @@ comment at the code site; this is the index.
   source while their scene is on EITHER bus, so a panelist who turns their camera off
   (the membership policy drops them) keeps talking on air — including across the Take
   that swaps their gallery from Preview to Program. It forgets a scene on neither bus,
-  a participant who leaves, and EVERYTHING outside a meeting or on Engine off (Zoom
+  a participant who leaves, and EVERYTHING on a KNOWN "not in a meeting" or on Engine
+  off — a tick whose meeting state is UNKNOWN (no/synthesized snapshot) never clears it (Zoom
   reuses per-meeting user ids; a latch that outlived the meeting would make a different
   person audible). A never-on-camera participant is never a member, so never audible.
   `StudioViewModel.BuildSpinePayload` only plumbs the Tiles layers, ISO ids and the
@@ -829,7 +830,10 @@ comment at the code site; this is the index.
   reads "<name> · no video: subscription limit (10)". A BUS source with no wall tile
   (a cued Preview guest) is named on the PGM / PVW cell instead: the multiview layout
   carries `programNotice` / `previewNotice`, the core appends it to the cell label and
-  the overlay draws "PREVIEW · no video: <names> (subscription limit 10)". The
+  the overlay draws "PREVIEW · no video: <names> (subscription limit 10)" (the tile LABEL
+  is part of `VideoSurfaceCoordinator.MultiviewLayoutSignature`, so a label-only change
+  reaches the overlay; the production sync's plain layout still blinks it for up to one
+  spine tick after a user action). The
   multiview is the ONLY place a tile carries text: Program/Preview/Tiles are composited
   pixels. The
   subscription UUID is still `participant-video-<pid>-camera` (purpose excluded).

@@ -35,11 +35,15 @@ public sealed class TilesAudioSourceLatch
 
     /// <summary>
     /// Records this payload's Tiles members for the scenes on both buses and returns every
-    /// latched member (bare Zoom ids) of a scene still on a bus who is still present. Outside a
-    /// meeting it clears everything and returns nothing.
+    /// latched member (bare Zoom ids) of a scene still on a bus who is still present.
+    /// <paramref name="inMeeting"/> is TRI-STATE (#478 L5): <c>false</c> is a KNOWN "not in a
+    /// meeting" and clears everything; <c>null</c> means the meeting state is UNKNOWN this tick
+    /// (no snapshot yet, a synthesized one) and leaves the latch exactly as it is — one such tick
+    /// must never wipe it, because a camera-off panelist cannot be re-latched until their
+    /// camera returns.
     /// </summary>
     public IReadOnlyList<string> Observe(
-        bool inMeeting,
+        bool? inMeeting,
         string? programSceneId,
         MediaCoreTilesLayerWire? programTiles,
         string? previewSceneId,
@@ -48,10 +52,15 @@ public sealed class TilesAudioSourceLatch
     {
         lock (_gate)
         {
-            if (!inMeeting)
+            if (inMeeting == false)
             {
                 _scenes.Clear();
                 return [];
+            }
+
+            if (inMeeting is null)
+            {
+                return Snapshot();
             }
 
             var present = presentParticipantIds as IReadOnlySet<string>
@@ -91,21 +100,27 @@ public sealed class TilesAudioSourceLatch
                 }
             }
 
-            var result = new List<string>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var (_, members) in _scenes)
+            return Snapshot();
+        }
+    }
+
+    // Caller holds _gate.
+    private List<string> Snapshot()
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (_, members) in _scenes)
+        {
+            foreach (var id in members)
             {
-                foreach (var id in members)
+                if (seen.Add(id))
                 {
-                    if (seen.Add(id))
-                    {
-                        result.Add(id);
-                    }
+                    result.Add(id);
                 }
             }
-
-            return result;
         }
+
+        return result;
     }
 
     /// <summary>Forget everything: the meeting session ended (Engine off, leave).</summary>

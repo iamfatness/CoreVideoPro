@@ -8653,8 +8653,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ProgramTilesLayer = syncContext.TilesLayer,
                 PreviewTilesLayer = syncContext.PreviewTilesLayer,
                 IsoParticipantIds = syncContext.RecordingTargets.IsoParticipantIds,
+                // #478 L5: tri-state — an absent meeting state is UNKNOWN, never "left".
                 StickyAudioParticipantIds = _tilesAudioLatch.Observe(
-                    nativeSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true,
+                    nativeSnapshot?.MeetingState is { Length: > 0 } meetingState
+                        ? meetingState.Equals("in_meeting", StringComparison.Ordinal)
+                        : null,
                     syncContext.ActiveSceneId,
                     syncContext.TilesLayer,
                     syncContext.PreviewSceneId,
