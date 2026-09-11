@@ -1356,12 +1356,14 @@
                                                        FontWeight="SemiBold" HorizontalAlignment="Center" />
                                             <!-- #481: lets the A1 tell "muted in Zoom" apart from their own
                                                  console mute - MuteStateLabel already distinguishes the two in
-                                                 the meter tooltip; this makes it visible without a hover. -->
-                                            <TextBlock Text="ZOOM MUTED" FontSize="7" FontWeight="Bold"
+                                                 the meter tooltip; this makes it visible without a hover.
+                                                 9px/bold (review: 7px was unreadable); #F5BE45 on #0B1016
+                                                 measures ~11:1 contrast, well over the small-text AA floor. -->
+                                            <TextBlock Text="ZOOM MUTED" FontSize="9" FontWeight="Bold"
                                                        CharacterSpacing="20"
                                                        Foreground="#F5BE45"
                                                        HorizontalAlignment="Center"
-                                                       Visibility="{x:Bind SourceMutedVisibility, Mode=OneWay}"
+                                                       Visibility="{x:Bind SourceMuted, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                        AutomationProperties.Name="{x:Bind ZoomMutedIndicatorAutomationName, Mode=OneWay}" />
                                         </StackPanel>
 

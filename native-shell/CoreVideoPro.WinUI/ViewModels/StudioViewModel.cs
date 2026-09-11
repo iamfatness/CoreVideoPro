@@ -8500,35 +8500,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 existing.TryGetValue(nativeChannel.ParticipantId, out var prior);
-                var sourceMuted = RoomParticipantsForInputs.FirstOrDefault(participant =>
-                    string.Equals(participant.Id, nativeChannel.ParticipantId, StringComparison.Ordinal))?.IsMuted ??
-                    prior?.SourceMuted ?? false;
-                var channel = new ParticipantAudioMix
-                {
-                    ParticipantId = nativeChannel.ParticipantId,
-                    OutputLevel = Math.Clamp(nativeChannel.OutputLevel, 0, 100),
-                    GainDb = nativeChannel.GainDb,
-                    ManualGainDb = prior?.ManualGainDb ?? nativeChannel.ManualGainDb ?? 0,
-                    Pan = prior?.Pan ?? nativeChannel.Pan ?? 0,
-                    Solo = prior?.Solo ?? nativeChannel.Solo,
-                    // Zoom-garble fix: nativeChannel.NoiseSuppression is the ANALYZER
-                    // heuristic (telemetry), not an operator setting - echoing it
-                    // into the row made the core run the NS gate on Zoom sources,
-                    // flickering per tick (attack-from-silence at every block seam).
-                    // Suppression is operator-only: preserve the prior choice.
-                    NoiseSuppression = prior?.NoiseSuppression ?? false,
-                    SourceMuted = sourceMuted,
-                    Muted = ResolveMergedChannelMute(prior),
-                    Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
-                    Lufs = nativeChannel.RmsDbfs,
-                    TruePeakDb = nativeChannel.PeakDbfs,
-                    InputLufs = nativeChannel.InputRmsDbfs,
-                    InputTruePeakDb = nativeChannel.InputPeakDbfs,
-                    GainReductionDb = nativeChannel.GainReductionDb,
-                    PluginInserts = prior?.PluginInserts.ToList() ??
-                        nativeChannel.PluginInserts.Select(insert => insert.Name).ToList(),
-                    InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
-                };
+                // #481 finding 2: a miss here is NOT evidence of a Zoom mute - a guest
+                // whose roster entry briefly disappears (or never matched) must not
+                // keep gating on whatever SourceMuted last happened to be. false, never
+                // prior?.SourceMuted.
+                var rosterParticipant = RoomParticipantsForInputs.FirstOrDefault(participant =>
+                    string.Equals(participant.Id, nativeChannel.ParticipantId, StringComparison.Ordinal));
+                var sourceMuted = rosterParticipant?.IsMuted ?? false;
+                var channel = MergeNativeAudioChannel(nativeChannel, prior, sourceMuted);
 
                 mergedById[channel.ParticipantId] = channel;
             }
@@ -8592,6 +8571,47 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// `Muted` state.
     /// </summary>
     public static bool ResolveMergedChannelMute(ParticipantAudioMix? prior) => prior?.Muted ?? false;
+
+    /// <summary>
+    /// #481 review round 1: the WHOLE native-channel merge, extracted as one pure
+    /// static function so a regression that reaches back into `nativeChannel.Muted`
+    /// (or any other derived value) for `Muted` fails a test that actually
+    /// constructs a `NativeMediaCoreParticipantAudioChannel` and drives it through
+    /// two rebuilds - the shape `ResolveMergedChannelMute(prior)` alone could not
+    /// express, because it never saw the native channel or the Zoom mute at all.
+    /// `sourceMuted` is resolved by the caller (roster lookup - see the comment at
+    /// the call site) and passed in, never re-derived here.
+    /// </summary>
+    public static ParticipantAudioMix MergeNativeAudioChannel(
+        NativeMediaCoreParticipantAudioChannel nativeChannel,
+        ParticipantAudioMix? prior,
+        bool sourceMuted) =>
+        new()
+        {
+            ParticipantId = nativeChannel.ParticipantId,
+            OutputLevel = Math.Clamp(nativeChannel.OutputLevel, 0, 100),
+            GainDb = nativeChannel.GainDb,
+            ManualGainDb = prior?.ManualGainDb ?? nativeChannel.ManualGainDb ?? 0,
+            Pan = prior?.Pan ?? nativeChannel.Pan ?? 0,
+            Solo = prior?.Solo ?? nativeChannel.Solo,
+            // Zoom-garble fix: nativeChannel.NoiseSuppression is the ANALYZER
+            // heuristic (telemetry), not an operator setting - echoing it
+            // into the row made the core run the NS gate on Zoom sources,
+            // flickering per tick (attack-from-silence at every block seam).
+            // Suppression is operator-only: preserve the prior choice.
+            NoiseSuppression = prior?.NoiseSuppression ?? false,
+            SourceMuted = sourceMuted,
+            Muted = ResolveMergedChannelMute(prior),
+            Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
+            Lufs = nativeChannel.RmsDbfs,
+            TruePeakDb = nativeChannel.PeakDbfs,
+            InputLufs = nativeChannel.InputRmsDbfs,
+            InputTruePeakDb = nativeChannel.InputPeakDbfs,
+            GainReductionDb = nativeChannel.GainReductionDb,
+            PluginInserts = prior?.PluginInserts.ToList() ??
+                nativeChannel.PluginInserts.Select(insert => insert.Name).ToList(),
+            InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
+        };
 
     public static ParticipantAudioMix BuildWaitingForPcmAudioMixChannel(
         string sourceId,
@@ -9332,10 +9352,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         participantsById.TryGetValue(sourceId, out var participant);
 
         var manualGain = NormalizeMixerGain(mix?.ManualGainDb ?? 0);
+        // #481 finding 2: a roster miss here is NOT evidence of a Zoom mute - fall
+        // back to false, never to mix?.SourceMuted (which would read as carrying a
+        // stale value forward, even though in practice it is this tick's already-
+        // fixed field; false keeps this site correct independently of that).
         return new MediaCoreAudioMixChannelWire(
             sourceId,
             Math.Clamp(participant?.AudioLevel ?? mix?.OutputLevel ?? 0, 0, 100),
-            ResolveEffectiveAudioMute(participant?.IsMuted ?? mix?.SourceMuted, mix?.Muted),
+            ResolveEffectiveAudioMute(participant?.IsMuted ?? false, mix?.Muted),
             mix?.NoiseSuppression ?? false,
             Math.Abs(manualGain) < 0.05 ? null : manualGain,
             NormalizeMixerPan(mix?.Pan ?? 0),

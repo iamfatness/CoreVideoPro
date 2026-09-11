@@ -1,6 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
-using Microsoft.UI.Xaml;
 
 namespace CoreVideoPro.WinUI.Models;
 
@@ -727,6 +726,8 @@ public sealed class AudioParticipantRow : ObservableObject
     public bool Muted { get => _muted; set => SetProperty(ref _muted, value); }
     // #481: the Zoom mute, kept distinct from the A1's own Muted so the strip
     // can show a "muted in Zoom" indicator separate from the console mute.
+    // Review round 1 (advisory): plain bool, no Visibility here - the model stays
+    // XAML-free; AudioPage.xaml converts it with the existing {StaticResource BoolToVis}.
     public bool SourceMuted
     {
         get => _sourceMuted;
@@ -734,7 +735,6 @@ public sealed class AudioParticipantRow : ObservableObject
         {
             if (SetProperty(ref _sourceMuted, value))
             {
-                OnPropertyChanged(nameof(SourceMutedVisibility));
                 OnPropertyChanged(nameof(ZoomMutedIndicatorAutomationName));
             }
         }
@@ -744,9 +744,6 @@ public sealed class AudioParticipantRow : ObservableObject
     // is muted). The view dims the meter fill in this state so it stays visibly
     // distinct from a live, unmuted meter at the same level.
     public bool MeterShowsInputWhileMuted { get => _meterShowsInputWhileMuted; set => SetProperty(ref _meterShowsInputWhileMuted, value); }
-    // #481: visible "muted in Zoom" badge, separate from the A1's own mute
-    // button state - lets the A1 tell the two apart without hovering the meter.
-    public Visibility SourceMutedVisibility => SourceMuted ? Visibility.Visible : Visibility.Collapsed;
     public string ZoomMutedIndicatorAutomationName => $"{Name} is muted in Zoom";
     public bool IsSolo { get => _isSolo; set => SetProperty(ref _isSolo, value); }
     public string GainLabel { get => _gainLabel; set => SetProperty(ref _gainLabel, value); }

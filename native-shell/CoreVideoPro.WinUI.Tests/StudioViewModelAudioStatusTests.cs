@@ -85,6 +85,126 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.False(StudioViewModel.ResolveMergedChannelMute(priorA1Unmuted));
     }
 
+    // #481 review round 1 (MAJOR finding): ResolveMergedChannelMute(prior) alone
+    // takes no native channel and no Zoom mute, so a regression that restores
+    // `?? nativeChannel.Muted` at the call site could not fail any test above -
+    // they never construct a native channel at all. These drive the WHOLE merge
+    // (StudioViewModel.MergeNativeAudioChannel) through the exact live sequence
+    // from the #481 meeting: a channel arrives while the guest is Zoom-muted
+    // (the core echoes that as its EFFECTIVE nativeChannel.Muted), then the guest
+    // unmutes in Zoom before the core's next wire catches up.
+    private static NativeMediaCoreParticipantAudioChannel NativeChannel(bool muted) => new()
+    {
+        ParticipantId = "guest-1",
+        Status = "native-pcm",
+        Muted = muted,
+    };
+
+    [Fact]
+    public void MergeNativeAudioChannel_Rebuild1_ArrivesZoomMutedButA1MuteStaysFalse()
+    {
+        // The core's FIRST wire for this guest: EFFECTIVE mute (Zoom mute folded
+        // in) reads true, there is no prior, and the roster agrees the guest is
+        // Zoom-muted right now.
+        var result = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), prior: null, sourceMuted: true);
+
+        Assert.False(result.Muted);
+        Assert.True(result.SourceMuted);
+    }
+
+    [Fact]
+    public void MergeNativeAudioChannel_Rebuild2_GuestUnmutesInZoomBeforeCoreWireCatchesUp_ChannelGoesLive()
+    {
+        var rebuild1 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), prior: null, sourceMuted: true);
+
+        // The guest unmutes in Zoom - the ROSTER already reflects it - but the
+        // core has not sent a fresh wire yet, so nativeChannel.Muted is STILL true
+        // (the stale echo of the old effective mute). This is exactly the shape
+        // that would fool `prior?.Muted ?? nativeChannel.Muted`.
+        var rebuild2 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), prior: rebuild1, sourceMuted: false);
+
+        Assert.False(rebuild2.Muted);
+        Assert.False(rebuild2.SourceMuted);
+        Assert.False(StudioViewModel.ResolveEffectiveAudioMute(rebuild2.SourceMuted, rebuild2.Muted));
+    }
+
+    [Fact]
+    public void MergeNativeAudioChannel_A1MuteSurvivesTwoRebuilds()
+    {
+        var priorA1Muted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = false,
+            Muted = true,
+        };
+
+        // Two rebuilds, each reporting a DIFFERENT native/Zoom state - none of it
+        // should move the A1's own mute.
+        var rebuild1 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: false), priorA1Muted, sourceMuted: false);
+        Assert.True(rebuild1.Muted);
+
+        var rebuild2 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), rebuild1, sourceMuted: true);
+        Assert.True(rebuild2.Muted);
+    }
+
+    [Fact]
+    public void MergeNativeAudioChannel_A1UnmuteSurvivesTwoRebuilds()
+    {
+        var priorA1Unmuted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,   // still Zoom-muted...
+            Muted = false,        // ...but the A1 explicitly unmuted the strip.
+        };
+
+        var rebuild1 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), priorA1Unmuted, sourceMuted: true);
+        Assert.False(rebuild1.Muted);
+
+        var rebuild2 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), rebuild1, sourceMuted: false);
+        Assert.False(rebuild2.Muted);
+    }
+
+    // #481 review round 1 (MINOR finding): SourceMuted must never carry a Zoom
+    // mute forward from `prior` on its own - the caller resolves it fresh from
+    // the roster every rebuild (false on a roster miss, never `prior.SourceMuted`),
+    // and MergeNativeAudioChannel must honor exactly whatever it is handed.
+    [Fact]
+    public void MergeNativeAudioChannel_SourceMutedNeverCarriesForwardFromPrior()
+    {
+        var priorZoomMuted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,
+            Muted = false,
+        };
+
+        // Simulates a roster-miss rebuild: the caller resolves sourceMuted to
+        // false (unknown is not evidence of a mute), independent of prior.
+        var result = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: false), priorZoomMuted, sourceMuted: false);
+
+        Assert.False(result.SourceMuted);
+    }
+
     [Theory]
     [InlineData(-60, -20, false, -60)]
     [InlineData(-60, -20, true, -20)]
