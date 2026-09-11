@@ -65,7 +65,7 @@ public sealed class MediaCoreBridgePollTests
             // Joined, Engine never turned on: no spine payload factory is configured.
             await bridge.GetZoomSnapshotAsync();
             Assert.Equal("in_meeting", bridge.LastSnapshot?.MeetingState);
-            var before = await File.ReadAllLinesAsync(trace);
+            var before = await ReadTraceLinesAsync(trace);
             var syncsBefore = before.Count(line => line == "media-core-sync");
 
             // The property is "the poll keeps running with Engine off" — the defect polled the core
@@ -77,7 +77,7 @@ public sealed class MediaCoreBridgePollTests
             do
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(250));
-                after = await File.ReadAllLinesAsync(trace);
+                after = await ReadTraceLinesAsync(trace);
                 polls = after.Count(line => line == "media-core-sync") - syncsBefore;
             }
             // The fake traces a request when it RECEIVES it, before the bridge applies the reply,
@@ -97,6 +97,31 @@ public sealed class MediaCoreBridgePollTests
                 $"the core snapshot is stale: received {snapshot.RawReceivedUtc:O}");
             Assert.True(snapshot.ProgramFrameCount >= 60);
         }
-        finally { Directory.Delete(directory, recursive: true); }
+        finally
+        {
+            try { Directory.Delete(directory, recursive: true); }
+            catch (IOException) { /* node may still hold the trace until process teardown */ }
+        }
+    }
+
+    // File.ReadAllLinesAsync uses FileShare.Read; the fake core appends with
+    // fs.appendFileSync. On Windows that races as IOException "used by another process".
+    private static async Task<string[]> ReadTraceLinesAsync(string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await using var stream = new FileStream(
+                    path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                var text = await reader.ReadToEndAsync();
+                return text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+            }
+            catch (IOException) when (attempt < 8)
+            {
+                await Task.Delay(50);
+            }
+        }
     }
 }

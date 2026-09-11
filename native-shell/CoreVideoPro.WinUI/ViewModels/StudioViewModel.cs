@@ -959,6 +959,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // the reference; readers capture the reference once and enumerate a list that
     // is never subsequently mutated. `volatile` orders the publish.
     private volatile List<ParticipantAudioMix> _audioMixChannels = [];
+    // A1 settings for Zoom guests who left the source set this meeting (#485).
+    // Reference-swap only: this rebuild runs on background sync threads.
+    private volatile Dictionary<string, ParticipantAudioMix> _audioMixChannelSettings = new(StringComparer.Ordinal);
+    private IReadOnlyList<string> _stickyAudioParticipantIds = [];
+    private IReadOnlySet<string> _zoomAudioSourceIds = new HashSet<string>(StringComparer.Ordinal);
 
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
@@ -8480,11 +8485,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LaunchLog.Write($"audio-mix: {nullCount} NULL channel(s) in _audioMixChannels " +
                             $"(thread={Environment.CurrentManagedThreadId}, dispatcherAccess={_dispatcher.HasThreadAccess}) — dropped; find the writer");
         }
-        var existing = channelsSnapshot
-            .Where(channel => channel is not null && !string.IsNullOrWhiteSpace(channel.ParticipantId))
-            .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
-        var merged = ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing).ToList();
+        var existing = new Dictionary<string, ParticipantAudioMix>(_audioMixChannelSettings, StringComparer.Ordinal);
+        foreach (var channel in channelsSnapshot.Where(channel =>
+                     channel is not null && !string.IsNullOrWhiteSpace(channel.ParticipantId)))
+        {
+            existing[channel.ParticipantId] = channel;
+        }
+        var merged = ProductionStateHelper.BuildAudioMixChannels(
+            RoomParticipantsForInputs, existing, _zoomAudioSourceIds).ToList();
         var mergedById = merged
             .Where(channel => !string.IsNullOrWhiteSpace(channel.ParticipantId))
             .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
@@ -8494,7 +8502,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             foreach (var nativeChannel in nativeAudio.Participants)
             {
-                if (string.IsNullOrWhiteSpace(nativeChannel.ParticipantId))
+                if (string.IsNullOrWhiteSpace(nativeChannel.ParticipantId) ||
+                    !MixerChannelSetPolicy.DisplayOnMixer(nativeChannel.ParticipantId, _zoomAudioSourceIds))
                 {
                     continue;
                 }
@@ -8525,6 +8534,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         // Atomic publish (see the field comment): a fully built list, one swap.
+        _audioMixChannelSettings = RememberMixerChannelSettings(_audioMixChannelSettings, mergedById.Values);
         _audioMixChannels = mergedById.Values.ToList();
 
         // C7d (owner: workspace controls silently dead): the processing
@@ -8582,6 +8592,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// `sourceMuted` is resolved by the caller (roster lookup - see the comment at
     /// the call site) and passed in, never re-derived here.
     /// </summary>
+    public static Dictionary<string, ParticipantAudioMix> RememberMixerChannelSettings(
+        IReadOnlyDictionary<string, ParticipantAudioMix> remembered,
+        IEnumerable<ParticipantAudioMix> displayed)
+    {
+        var next = new Dictionary<string, ParticipantAudioMix>(remembered, StringComparer.Ordinal);
+        foreach (var channel in displayed)
+        {
+            if (!string.IsNullOrWhiteSpace(channel.ParticipantId))
+            {
+                next[channel.ParticipantId] = channel;
+            }
+        }
+
+        return next;
+    }
+
     public static ParticipantAudioMix MergeNativeAudioChannel(
         NativeMediaCoreParticipantAudioChannel nativeChannel,
         ParticipantAudioMix? prior,
@@ -8681,7 +8707,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 syncContext.MultiviewSources)
             : null;
 
-        return ZoomMediaSpinePayloadBuilder.Build(
+        var payload = ZoomMediaSpinePayloadBuilder.Build(
             new ZoomMediaSpinePayloadBuilder.BuildInput
             {
                 Participants = participants,
@@ -8701,17 +8727,53 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 PreviewTilesLayer = syncContext.PreviewTilesLayer,
                 IsoParticipantIds = syncContext.RecordingTargets.IsoParticipantIds,
                 // #478 L5: tri-state — an absent meeting state is UNKNOWN, never "left".
-                StickyAudioParticipantIds = _tilesAudioLatch.Observe(
-                    nativeSnapshot?.MeetingState is { Length: > 0 } meetingState
-                        ? meetingState.Equals("in_meeting", StringComparison.Ordinal)
-                        : null,
+                // One Observe per payload, with the in-room roster (camera on or off).
+                StickyAudioParticipantIds = ObserveStickyAudioParticipantIds(
+                    nativeSnapshot,
                     syncContext.ActiveSceneId,
                     syncContext.TilesLayer,
                     syncContext.PreviewSceneId,
                     syncContext.PreviewTilesLayer,
-                    participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal)),
+                    participants.Select(participant => participant.Id)),
                 Multiview = multiview
             });
+        if (payload.TryGetValue("sourceParticipantIds", out var rawIds) && rawIds is IEnumerable<string> sourceIds)
+        {
+            _zoomAudioSourceIds = sourceIds.ToHashSet(StringComparer.Ordinal);
+        }
+
+        RefreshAudioMixChannels();
+        return payload;
+    }
+
+    private IReadOnlyList<string> ObserveStickyAudioParticipantIds(
+        NativeMediaCoreStateSnapshot? nativeSnapshot,
+        string? programSceneId,
+        MediaCoreTilesLayerWire? programTiles,
+        string? previewSceneId,
+        MediaCoreTilesLayerWire? previewTiles,
+        IEnumerable<string> presentParticipantIds)
+    {
+        var inMeeting = nativeSnapshot?.MeetingState is { Length: > 0 } meetingState
+            ? meetingState.Equals("in_meeting", StringComparison.Ordinal)
+            : (bool?)null;
+        var sticky = _tilesAudioLatch.Observe(
+            inMeeting,
+            programSceneId,
+            programTiles,
+            previewSceneId,
+            previewTiles,
+            presentParticipantIds as IReadOnlyCollection<string>
+                ?? presentParticipantIds.ToHashSet(StringComparer.Ordinal));
+        _stickyAudioParticipantIds = sticky;
+        return sticky;
+    }
+
+    private void ResetMixerMeetingSession()
+    {
+        _stickyAudioParticipantIds = [];
+        _zoomAudioSourceIds = new HashSet<string>(StringComparer.Ordinal);
+        _audioMixChannelSettings = new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal);
     }
 
     private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
@@ -8884,9 +8946,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             })
             .ToList();
 
-        RefreshAudioMixChannels();
-        var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
-
         var isoTargets = BuildIsoSourceTargets();
 
         var playbackSelection = MediaRoutePlaybackService.ResolvePlaybackSelection(
@@ -8924,6 +8983,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets);
         ShowInputWarning = unresolvedInputs.Count == 0 ? null : string.Join(" ", unresolvedInputs);
 
+        var tilesLayer = BuildTilesLayerWire(ProgramScene);
+        var previewTilesLayer = BuildTilesLayerWire(PreviewScene);
+        var inMeeting = _bridge.LastSnapshot?.MeetingState is { Length: > 0 } meetingState
+            ? meetingState.Equals("in_meeting", StringComparison.Ordinal)
+            : (bool?)null;
+        if (inMeeting == false)
+        {
+            ResetMixerMeetingSession();
+        }
+        else
+        {
+            // Do not Observe here: RoomVideoParticipants (this method's `participants`)
+            // drops camera-off guests, and Observe would treat that as "left the meeting".
+            // Spine is the single Observe site, with the full in-room roster.
+            _zoomAudioSourceIds = ZoomSourceSetPolicy.AudioParticipantIds(
+                ZoomSourceSetPolicy.Resolve(new ZoomSourceSetPolicy.Input
+                {
+                    Participants = RoomParticipantsForInputs
+                        .Select(participant => new ZoomSourceSetPolicy.ParticipantState(
+                            participant.Id,
+                            participant.Health != FeedHealth.VideoOff,
+                            participant.IsActiveSpeaker))
+                        .ToList(),
+                    ProgramRoutes = sceneRoutes,
+                    ProgramTiles = tilesLayer,
+                    PreviewRoutes = previewSceneRoutes,
+                    PreviewTiles = previewTilesLayer,
+                    StickyAudioParticipantIds = _stickyAudioParticipantIds,
+                    WallSources = multiviewSources,
+                    IsoParticipantIds = isoTargets.ParticipantIds
+                })).ToHashSet(StringComparer.Ordinal);
+        }
+
+        RefreshAudioMixChannels();
+        var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
+
         return new MediaCoreProductionSyncContext
         {
             ActiveSceneId = ActiveSceneId,
@@ -8934,11 +9029,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // owns layout. Built from the SAME ProgramScene/PreviewScene + roster the
             // route wires above are resolved from, so the wall and the rest of the
             // scene-sync command agree on which scene/roster generation they carry.
-            TilesLayer = BuildTilesLayerWire(ProgramScene),
+            TilesLayer = tilesLayer,
             PreviewSceneId = PreviewSceneId,
             PreviewSceneRoutes = previewSceneRoutes,
             PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId),
-            PreviewTilesLayer = BuildTilesLayerWire(PreviewScene),
+            PreviewTilesLayer = previewTilesLayer,
             PreviewColorGrade = new MediaCoreColorGradeWire(
                 ColorGrade.Lut,
                 ColorGrade.Exposure,
@@ -9129,7 +9224,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Where(mix => !string.IsNullOrWhiteSpace(mix.ParticipantId))
             .GroupBy(mix => mix.ParticipantId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
-        var participantsById = RoomVideoParticipants
+        var participantsById = RoomParticipantsForInputs
             .Where(participant => !string.IsNullOrWhiteSpace(participant.Id))
             .GroupBy(participant => participant.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
@@ -9144,7 +9239,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         IReadOnlyList<MediaCoreAudioRoutingSendWire>? audioRoutingSends = null)
     {
         var sourceIds = new List<string>();
-        sourceIds.AddRange(RoomVideoParticipants.Select(participant => participant.Id));
+        sourceIds.AddRange(_zoomAudioSourceIds);
         sourceIds.AddRange(_audioMixChannels.Where(channel => channel is not null).Select(channel => channel.ParticipantId));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(PreviewSceneRoutes));
         sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(ProgramSceneRoutes));
@@ -9185,6 +9280,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         return sourceIds
             .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
+            .Where(sourceId => MixerChannelSetPolicy.DisplayOnMixer(sourceId, _zoomAudioSourceIds))
             .Distinct(StringComparer.Ordinal)
             .ToList();
     }
@@ -10311,6 +10407,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _bridge.ConfigureZoomSpineSync(null);
         _tilesAudioLatch.Clear();  // #478 N5: Engine off ends the latch's meeting session
+        _stickyAudioParticipantIds = [];
+        _zoomAudioSourceIds = new HashSet<string>(StringComparer.Ordinal);
         _surfaces.SetZoomCaptureSubscribed(false);
         ZoomCaptureSubscribed = false;
         EngineStatus = status;
@@ -10591,6 +10689,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ClearLiveProductionParticipants()
     {
         RoomVideoParticipants = [];
+        RoomParticipantsForInputs = [];
+        ResetMixerMeetingSession();
         CurrentRoomLabel = "No meeting";
         MultiviewTiles = [];
         OnPropertyChanged(nameof(RoomVideoParticipants));
@@ -10790,7 +10890,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void RefreshAudioParticipantRows()
     {
         RefreshAudioMixChannels();
-        var participantsById = RoomVideoParticipants
+        var participantsById = RoomParticipantsForInputs
             .Where(participant => !string.IsNullOrWhiteSpace(participant.Id))
             .GroupBy(participant => participant.Id, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
