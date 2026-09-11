@@ -147,16 +147,83 @@ public sealed partial class SourcesPage : UserControl
     private void OnCanvasPresetRequested(object? sender, string preset) =>
         ViewModel?.ApplyCanvasPreset(preset);
 
+    private void OnLayerSourceComboLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is ComboBox combo)
+            RestoreLayerSourceCombo(combo);
+    }
+
+    private void OnLayerSourceDropDownOpened(object sender, object e)
+    {
+        if (sender is ComboBox { Tag: SceneCanvasLayerViewModel layer })
+            layer.BeginOperatorSourcePick();
+    }
+
+    private void OnLayerSourceDropDownClosed(object sender, object e)
+    {
+        if (sender is not ComboBox { Tag: SceneCanvasLayerViewModel layer } combo)
+            return;
+        CommitLayerSourceCombo(combo, operatorGesture: true);
+        // SelectionChanged can fire after close. Keep the operator flag until
+        // the next tick so that close is not mistaken for an ItemsSource rebuild.
+        UiDispatch.Enqueue(
+            DispatcherQueue,
+            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            layer.EndOperatorSourcePick,
+            "layer-source.end-operator-pick");
+    }
+
     private void OnLayerSourceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // SelectionChanged's added item is authoritative. SelectedValue can
-        // still contain the previous value while WinUI updates the selection;
-        // x:Bind's template owner is explicit rather than inferred DataContext.
-        if (sender is ComboBox { Tag: SceneCanvasLayerViewModel layer } &&
-            e.AddedItems.Count == 1 && e.AddedItems[0] is RouteSelectOption option)
+        // Tag (x:Bind), not DataContext — null inside the ItemsRepeater.
+        // A list rebuild adds the blank placeholder; that is not an operator pick.
+        if (sender is not ComboBox { Tag: SceneCanvasLayerViewModel layer } combo)
+            return;
+        if (layer.IsOperatorPickingSource)
         {
-            if (layer.TrySelectSourceOption(option))
-                LaunchLog.Write($"scene source selected: layer={layer.LayerIndex} source={option.Value}");
+            CommitLayerSourceCombo(combo, operatorGesture: true);
+            return;
+        }
+
+        var incoming = e.AddedItems.Count == 1 && e.AddedItems[0] is RouteSelectOption option
+            ? option.Value
+            : combo.SelectedValue as string;
+        LaunchLog.Write(LayerSourceSelectionPolicy.FormatLog(
+            layer.LayerIndex, incoming, LayerSourceSelectionPolicy.RefreshIgnoredCause));
+        RestoreLayerSourceCombo(combo);
+    }
+
+    private void CommitLayerSourceCombo(ComboBox combo, bool operatorGesture)
+    {
+        if (combo.Tag is not SceneCanvasLayerViewModel layer)
+            return;
+        var option = combo.SelectedItem as RouteSelectOption;
+        if (option is null && combo.SelectedValue is string value)
+            option = layer.ParticipantOptions.FirstOrDefault(item => item.Value == value);
+        if (layer.TryCommitSourceOption(option, operatorGesture))
+        {
+            LaunchLog.Write(LayerSourceSelectionPolicy.FormatLog(
+                layer.LayerIndex, option?.Value, LayerSourceSelectionPolicy.OperatorCause));
+        }
+    }
+
+    private void RestoreLayerSourceCombo(ComboBox combo)
+    {
+        if (combo.Tag is not SceneCanvasLayerViewModel layer)
+            return;
+        try
+        {
+            combo.SelectionChanged -= OnLayerSourceSelectionChanged;
+            var value = layer.ParticipantId ?? string.Empty;
+            if (layer.ParticipantOptions.Any(option => option.Value == value))
+                combo.SelectedValue = value;
+            combo.SelectionChanged += OnLayerSourceSelectionChanged;
+        }
+        catch (Exception ex)
+        {
+            combo.SelectionChanged -= OnLayerSourceSelectionChanged;
+            combo.SelectionChanged += OnLayerSourceSelectionChanged;
+            LaunchLog.Write($"scene source selection skipped ({ex.GetType().Name}: {ex.Message})");
         }
     }
 

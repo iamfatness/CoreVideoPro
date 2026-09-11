@@ -5465,10 +5465,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
-      const auto fallbackParticipantId = videoLayerIndex < static_cast<int>(videoFrames.size())
-          ? std::optional<std::string_view>(videoFrames[static_cast<size_t>(videoLayerIndex)].participantId) : std::nullopt;
       const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
-          route.captureDeviceId, route.participantId, fallbackParticipantId, directedSpeaker});
+          route.captureDeviceId, route.participantId, directedSpeaker});
       layer.kind = binding.kind;
       layer.sourceId = binding.sourceId;
       layer.participantId = binding.participantId;
@@ -5504,12 +5502,11 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.colorGrade = route.colorGrade;
       layer.hasChromaKey = route.hasChromaKey;
       layer.chromaKey = route.chromaKey;
-      if (route.mode == "active-speaker" && route.participantId.empty() && route.captureDeviceId.empty() &&
-          route.mediaAssetId.empty() && binding.participantId.empty()) {
-        // #478 N2: a follow-speaker route with no speaker that has a frame this
-        // tick renders EMPTY: a fully transparent fill. An unbound layer would
-        // paint the default grey, a bound-but-frameless one a colour slab, and
-        // the positional fallback a random source — all on Program.
+      if (binding.sourceId.empty() && binding.participantId.empty() && route.mediaAssetId.empty()) {
+        // #480: a route with no source renders BLANK — a fully transparent fill.
+        // An unbound layer would paint the default grey, a bound-but-frameless
+        // one a colour slab, and the old positional fallback a random source,
+        // all on Program. Follow-speaker with nobody directed lands here too.
         layer.hasFillColor = true;
         layer.fillColor = "#00000000";
         layer.opacity = 0.f;
@@ -5638,8 +5635,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     //
     // Nothing is fabricated: hasFrame is false for a source that never arrived
     // or has departed, so those keep today's behaviour exactly, and the layer
-    // below always carries a non-empty participantId so RouteSourcePolicy's
-    // positional fallback stays unreachable.
+    // below always carries a non-empty participantId so a sourceless route
+    // cannot be invented here (#480 made empty routes render BLANK).
     // Regression tests: TilesRenderPlan.AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat,
     // ABackgroundSourceThatNeverArrivedIsNeverFabricated,
     // ADepartedBackgroundSourceIsReleasedNotHeld.

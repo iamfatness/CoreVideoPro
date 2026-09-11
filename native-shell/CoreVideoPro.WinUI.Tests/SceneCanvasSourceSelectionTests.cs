@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Xunit;
 
@@ -140,6 +141,79 @@ public sealed class SceneCanvasSourceSelectionTests
         Assert.Equal(1, changes);
         Assert.False(layer.TrySelectSourceOption(null));
         Assert.Equal(1, changes);
+    }
+
+    // #480 live case: the source dropdown's list refresh writes a blank as an
+    // operator pick (SourcesPage.OnLayerSourceSelectionChanged). Only an
+    // operator gesture may change a layer's source.
+    [Fact]
+    public void RebuildingSourceOptionsDoesNotWriteABlankAsAnOperatorPick()
+    {
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 1,
+            Kind = ShowInputKind.ZoomParticipant,
+            ParticipantId = "jamal",
+            InShow = true
+        };
+        var route = new SourceRoute
+        {
+            Id = "layer",
+            Mode = SourceRouteMode.Fixed,
+            ShowInputSlotNumber = 1,
+            ParticipantId = "jamal"
+        };
+        var layer = new SceneCanvasLayerViewModel(0, route, Participants, [], [slot], [], _ => { });
+        Assert.Equal("input-01", layer.ParticipantId);
+
+        // Roster refresh rebuilds the option list. WinUI then fires
+        // SelectionChanged with the blank placeholder as the added item.
+        layer.SyncFromRoute(
+            route,
+            [.. Participants, new Participant { Id = "new", Name = "New guest" }],
+            [],
+            [slot],
+            []);
+        var blank = layer.ParticipantOptions.Single(option => option.Value == "");
+        Assert.False(layer.TryCommitSourceOption(blank, operatorGesture: false));
+        Assert.Equal("input-01", layer.ParticipantId);
+        Assert.Equal(1, route.ShowInputSlotNumber);
+        Assert.Equal("jamal", route.ParticipantId);
+    }
+
+    [Fact]
+    public void AnOperatorCanClearALayerSourceToBlank()
+    {
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 1,
+            Kind = ShowInputKind.ZoomParticipant,
+            ParticipantId = "jamal",
+            InShow = true
+        };
+        var route = new SourceRoute
+        {
+            Id = "layer",
+            Mode = SourceRouteMode.Fixed,
+            ShowInputSlotNumber = 1,
+            ParticipantId = "jamal"
+        };
+        var layer = new SceneCanvasLayerViewModel(0, route, Participants, [], [slot], [], _ => { });
+        var blank = layer.ParticipantOptions.Single(option => option.Value == "");
+        Assert.True(layer.TryCommitSourceOption(blank, operatorGesture: true));
+        Assert.Equal(string.Empty, layer.ParticipantId);
+        Assert.Null(route.ShowInputSlotNumber);
+    }
+
+    [Fact]
+    public void RefreshLogLineNamesTheCauseTheWaySlotWritesDo()
+    {
+        Assert.Equal(
+            "scene source selected: layer=0 source= by=refresh-ignored",
+            LayerSourceSelectionPolicy.FormatLog(0, "", LayerSourceSelectionPolicy.RefreshIgnoredCause));
+        Assert.Equal(
+            "scene source selected: layer=1 source=input-01 by=operator",
+            LayerSourceSelectionPolicy.FormatLog(1, "input-01", LayerSourceSelectionPolicy.OperatorCause));
     }
 
 }

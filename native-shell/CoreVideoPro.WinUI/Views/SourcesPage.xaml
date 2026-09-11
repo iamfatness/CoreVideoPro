@@ -388,7 +388,9 @@
                                                     <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                                     <ComboBox Tag="{x:Bind}"
                                                               ItemsSource="{x:Bind ParticipantOptions, Mode=OneWay}"
-                                                              SelectedValue="{x:Bind ParticipantId, Mode=OneWay}"
+                                                              Loaded="OnLayerSourceComboLoaded"
+                                                              DropDownOpened="OnLayerSourceDropDownOpened"
+                                                              DropDownClosed="OnLayerSourceDropDownClosed"
                                                               SelectionChanged="OnLayerSourceSelectionChanged"
                                                               SelectedValuePath="Value"
                                                               DisplayMemberPath="Label"
