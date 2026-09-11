@@ -1286,9 +1286,26 @@ renderers before stopping raw data with a callback in flight. Hard rules:
      node never read as finished); **core generation** — the supervisor restart count; a change means
      a respawned core answered, so the wait ends at once as `CoreRestarted` ("the recording was
      interrupted with the old core and nothing more can be saved"), and a core that is gone ends it
-     as `CoreUnavailable`. Bounded at 15 s; on timeout it logs `shutdown: outputs did not finish
-     within 15s — closing anyway` and proceeds. Only THEN does the unchanged `ShutdownAsync` run,
-     so the 15 s is outside the 5 s / 6 s watchdog budget.
+     as `CoreUnavailable`. The generation baseline is re-armed when the stop is actually SENT: a
+     core that respawned while the dialog was open is logged as having lost the old files, and
+     whatever the NEW core is doing is still stopped and waited for (fix round 2). Bounded at
+     15 s; on timeout it logs `shutdown: outputs did not finish within 15s — closing anyway` and
+     proceeds. Only THEN does the unchanged `ShutdownAsync` run, so the 15 s is outside the
+     5 s / 6 s watchdog budget.
+     **STREAMS ARE STOPPED BEFORE RECORDING, and the order is load-bearing** (fix round 2). Each
+     transport stop builds its sync payload inline from the current flags. A recording stop sent
+     while Streaming is still desired carries `start-program-output{rtmp…}`, which the core
+     treats as unowned (`recordingStatus_` is "stopping") and answers with `encoder->start`: the
+     sink generation bumps, the recording lifecycle is ERASED, and the finalized file never
+     reports `completed` — so record+stream always ran to the 15 s bound. Pinned by
+     `OutputShutdownCoordinatorTests.StreamsAreStoppedBeforeRecording…` and
+     `RecordAndStreamTogetherFinishesInsteadOfTimingOut` (both fail with the order swapped). The
+     core defect itself (a non-recording Start erasing a finalizing recording's lifecycle — it
+     also leaves `recording.status` "stopping" whenever an operator stops Record while Stream
+     stays up) is filed separately and NOT fixed here. Two more evidence rules: `interrupted` is
+     NOT terminal (the core's `isTerminal` is completed|failed; a stalled writer is still open),
+     and a sender only counts as finished when its ADAPTER reads `stopped`/`failed` — the core
+     reports `idle`, or re-serves an older run's terminal state, while the adapter is still live.
   3. **App-exit core stop only** (`StudioViewModel.DisposeAsync` → `MediaCoreBridgeService.StopForAppExit`):
      snapshot the core's descendants (`ProcessTreeSnapshot`, pid + start time), close stdin — the
      core's quit signal: JsonRpcServer's reader hits EOF, the loop breaks, all workers join, `main`

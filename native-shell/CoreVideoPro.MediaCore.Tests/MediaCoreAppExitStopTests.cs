@@ -247,7 +247,8 @@ public sealed class MediaCoreAppExitStopTests
             await Task.Run(supervisor.Stop).WaitAsync(HangGuard);
 
             await child.WaitForExitAsync().WaitAsync(HangGuard);
-            await appExit.WaitAsync(HangGuard);
+            // Fix round 2 (N4): the grace thread reports the kill, never "exited on its own".
+            Assert.Equal(MediaCoreExitOutcome.Killed, await appExit.WaitAsync(HangGuard));
             Assert.DoesNotContain("exit:", await File.ReadAllTextAsync(trace));
         }
         finally

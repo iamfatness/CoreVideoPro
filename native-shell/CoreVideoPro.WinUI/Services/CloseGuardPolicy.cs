@@ -125,11 +125,15 @@ internal static class CloseGuardPolicy
     /// <summary>Stop has begun but the file / stream is not finished yet.</summary>
     internal static bool IsStoppingState(string? state) => state is "stopping" or "finalizing";
 
-    internal static bool IsFailureState(string? state) => state is "failed" or "interrupted";
+    internal static bool IsFailureState(string? state) => state is "failed";
 
-    /// <summary>Terminal or never started: nothing left that closing could corrupt.</summary>
+    /// <summary>Terminal or never started: nothing left that closing could corrupt. Mirrors the
+    /// core's <c>OutputLifecyclePolicy::isTerminal</c> (completed | failed) plus idle. NOT
+    /// <c>interrupted</c> (fix round 2, N5): that is the core's "stalled, may recover" state — the
+    /// writer is still open, so closing still corrupts it, and a baseline must treat it as the
+    /// live session so its later <c>failed</c> is reported, not filed as stale history.</summary>
     internal static bool IsSettledState(string? state) =>
-        state is "completed" or "failed" or "interrupted" or "idle";
+        state is "completed" or "failed" or "idle";
 
     // An unknown state string is not evidence of anything finished, so it counts as live.
     private static bool IsLiveState(string? state) => state is not null && !IsSettledState(state);
@@ -138,6 +142,12 @@ internal static class CloseGuardPolicy
     // or is about to be, going out.
     private static bool IsLegacySenderActive(NativeMediaCoreOutputSender sender) =>
         sender.Status is "live" or "warning" or "starting";
+
+    // The adapter's own end states (RtmpOutputSenderAdapter / NdiOutputSenderAdapter publish
+    // `stopped` after a stop and `failed` on a failure; SenderLifecyclePolicy maps them to
+    // completed / failed).
+    private static bool IsSenderAdapterDone(NativeMediaCoreOutputSender sender) =>
+        sender.Status is "stopped" or "failed";
 
     private static bool IsSenderLive(NativeMediaCoreOutputSender sender) =>
         sender.Lifecycle is { } lifecycle ? IsLiveState(lifecycle.State) : IsLegacySenderActive(sender);
@@ -401,9 +411,16 @@ internal static class CloseGuardPolicy
                     pending.Add($"{sender.Destination} {lifecycle.State}");
                     stopNotLanded |= IsRunningState(lifecycle.State);
                 }
-                else if (IsFailureState(lifecycle.State))
+                else if (!IsSenderAdapterDone(sender))
                 {
-                    failed.Add($"{sender.Destination} {lifecycle.State}");
+                    // Fix round 2 (N3): once the stop lands the core reports `idle` (or re-serves
+                    // an OLDER run's terminal state) while the adapter is still `live`. Only the
+                    // adapter's own `stopped` / `failed` says this run has actually ended.
+                    pending.Add($"{sender.Destination} adapter still {sender.Status}");
+                }
+                else if (IsFailureState(lifecycle.State) || sender.Status == "failed")
+                {
+                    failed.Add($"{sender.Destination} failed");
                 }
             }
             else if (IsLegacySenderActive(sender))

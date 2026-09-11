@@ -36,11 +36,14 @@ public sealed class CloseGuardPolicyTests
         ProgramPath = "C:\\rec\\show.mp4"
     };
 
-    internal static NativeMediaCoreOutputSender Sender(string destination, string? lifecycleState, string status = "live") => new()
+    // The adapter status follows the lifecycle the way the core derives it: `stopped` -> completed,
+    // `failed` -> failed; anything running is `live`. Pass an explicit status to model the window
+    // where the lifecycle reads settled but the adapter has not stopped yet (fix round 2, N3).
+    internal static NativeMediaCoreOutputSender Sender(string destination, string? lifecycleState, string? status = null) => new()
     {
         SenderId = destination,
         Destination = destination,
-        Status = status,
+        Status = status ?? lifecycleState switch { "completed" => "stopped", "failed" => "failed", _ => "live" },
         Lifecycle = lifecycleState is null ? null : Lifecycle(lifecycleState)
     };
 
@@ -108,6 +111,7 @@ public sealed class CloseGuardPolicyTests
     [InlineData("preparing")]
     [InlineData("starting")]
     [InlineData("live")]
+    [InlineData("interrupted")] // the core's "stalled, may recover": the writer is still open (N5)
     public void EveryPreTerminalRecordingStateAsks(string state)
     {
         Assert.True(CloseGuardPolicy.Evaluate(Input(Snapshot(Recording(state)))).ShouldAsk);
@@ -116,7 +120,6 @@ public sealed class CloseGuardPolicyTests
     [Theory]
     [InlineData("completed")]
     [InlineData("failed")]
-    [InlineData("interrupted")]
     [InlineData("idle")]
     public void TerminalOrIdleRecordingWithNoFlagsDoesNotAsk(string state)
     {
@@ -269,16 +272,48 @@ public sealed class CloseGuardPolicyTests
         Assert.True(result.StopNotYetLanded);
     }
 
-    [Theory]
-    [InlineData("failed")]
-    [InlineData("interrupted")]
-    public void AFailedBaselineSessionSettlesWithFailure(string state)
+    [Fact]
+    public void AFailedBaselineSessionSettlesWithFailure()
     {
         var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
 
-        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording(state)), baseline, Quiet);
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("failed")), baseline, Quiet);
 
         Assert.Equal(OutputSettleState.SettledWithFailure, result.State);
+    }
+
+    [Fact]
+    public void AnInterruptedRecordingIsNotFinishedAndItsLaterFailureIsReported()
+    {
+        // Fix round 2 (N5): `interrupted` is the core's stalled-but-open state, not terminal. A
+        // recording stalled at the close request is the LIVE baseline session, so a later
+        // `failed` is this stop's result, never suppressed as stale history.
+        var baseline = BaselineOf(Input(Snapshot(Recording("interrupted", session: "stalled"))));
+        Assert.Equal("stalled", baseline.RecordingSessionId);
+        Assert.Null(baseline.StaleRecordingSessionId);
+
+        Assert.Equal(OutputSettleState.Pending,
+            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("interrupted", session: "stalled")), baseline, Quiet).State);
+        Assert.Equal(OutputSettleState.SettledWithFailure,
+            CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("failed", session: "stalled")), baseline, Quiet).State);
+    }
+
+    [Fact]
+    public void ASenderIsNotFinishedUntilItsAdapterHasStopped()
+    {
+        // Fix round 2 (N3): once the stop lands the core reports `idle` while the adapter is
+        // still live, and can re-serve an OLDER run's terminal state. Neither is this stop's end.
+        var baseline = BaselineOf(Input(Snapshot(null, Sender("rtmp://a", "producing")), streamingRequested: true));
+
+        var idleButLive = CloseGuardPolicy.EvaluateSettled(Snapshot(null, Sender("rtmp://a", "idle", status: "live")), baseline, Quiet);
+        var staleFailureButLive = CloseGuardPolicy.EvaluateSettled(Snapshot(null, Sender("rtmp://a", "failed", status: "live")), baseline, Quiet);
+        var stopped = CloseGuardPolicy.EvaluateSettled(Snapshot(null, Sender("rtmp://a", "completed", status: "stopped")), baseline, Quiet);
+        var failed = CloseGuardPolicy.EvaluateSettled(Snapshot(null, Sender("rtmp://a", "failed", status: "failed")), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Pending, idleButLive.State);
+        Assert.Equal(OutputSettleState.Pending, staleFailureButLive.State);
+        Assert.Equal(OutputSettleState.Settled, stopped.State);
+        Assert.Equal(OutputSettleState.SettledWithFailure, failed.State);
     }
 
     [Fact]

@@ -32,6 +32,8 @@ public sealed class OutputShutdownCoordinatorTests
         public int RecordingStops;
         public int StreamingStops;
         public Action? OnRecordingStop;
+        public Action? OnStreamingStop;
+        public readonly List<string> StopOrder = [];
         public readonly List<string> Log = [];
         public readonly List<string> Progress = [];
 
@@ -52,6 +54,7 @@ public sealed class OutputShutdownCoordinatorTests
             stopRecording: () =>
             {
                 RecordingStops++;
+                StopOrder.Add("recording");
                 if (RecordingInFlight || IgnoreRecordingStops-- > 0)
                 {
                     return Task.CompletedTask; // the transport ignores a stop while a toggle is in flight
@@ -61,7 +64,14 @@ public sealed class OutputShutdownCoordinatorTests
                 OnRecordingStop?.Invoke();
                 return Task.CompletedTask;
             },
-            stopStreaming: () => { StreamingStops++; StreamingRequested = false; return Task.CompletedTask; },
+            stopStreaming: () =>
+            {
+                StreamingStops++;
+                StopOrder.Add("stream");
+                StreamingRequested = false;
+                OnStreamingStop?.Invoke();
+                return Task.CompletedTask;
+            },
             reportProgress: Progress.Add,
             log: Log.Add,
             elapsed: () => Now,
@@ -276,6 +286,95 @@ public sealed class OutputShutdownCoordinatorTests
         Assert.Equal(OutputShutdownOutcome.CoreUnavailable, outcome);
         Assert.Equal(TimeSpan.Zero, rig.Now);
         Assert.Contains(rig.Log, line => line.Contains("nothing more can be saved", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StreamsAreStoppedBeforeRecordingOnTheFirstSendAndOnEveryReSend()
+    {
+        // Fix round 2 (N1): the order is load-bearing (see OutputShutdownCoordinator.SendStops).
+        var rig = new Rig { RecordingRequested = true, StreamingRequested = true, IgnoreRecordingStops = 1 }
+            .WithPreStop(Snapshot(Recording("producing"), Sender("rtmp://a", "producing")));
+        // The ignored recording stop keeps intent set, so there is a re-send; re-arm the stream
+        // intent before it so that re-send carries both stops.
+        rig.OnTick = tick => { if (tick == 3) rig.StreamingRequested = true; };
+
+        await rig.Build().StopAndWaitAsync(CloseRequest(rig));
+
+        Assert.True(rig.StopOrder.Count >= 4, string.Join(",", rig.StopOrder));
+        Assert.Equal(["stream", "recording", "stream", "recording"], rig.StopOrder.Take(4));
+    }
+
+    [Fact]
+    public async Task RecordAndStreamTogetherFinishesInsteadOfTimingOut()
+    {
+        // Fix round 2 (N1), modelled end to end. The rig plays the core's real behaviour: if the
+        // recording stop's batch goes out while Streaming is still desired, it carries a
+        // start-program-output that restarts the encoder and ERASES the recording's lifecycle
+        // (MediaCore.cpp:2363-2370, AsyncEncoderSink.cpp:117-132) — the recording node then has
+        // no lifecycle and never reports completed. In the right order it finalizes normally.
+        var rig = new Rig { RecordingRequested = true, StreamingRequested = true }
+            .WithPreStop(Snapshot(Recording("producing"), Sender("rtmp://a", "producing")));
+        var recordingStopped = false;
+        var recordingLifecycleErased = false;
+        var streamStopped = false;
+        var ticksSinceRecordingStop = 0;
+        rig.OnRecordingStop = () =>
+        {
+            recordingStopped = true;
+            recordingLifecycleErased = rig.StreamingRequested; // stop batch built with Streaming=true
+        };
+        rig.OnStreamingStop = () => streamStopped = true;
+        rig.OnTick = _ =>
+        {
+            if (recordingStopped) ticksSinceRecordingStop++;
+            var recording = !recordingStopped
+                ? Recording("producing")
+                : recordingLifecycleErased
+                    ? Recording(null, active: false, status: "stopping")
+                    : ticksSinceRecordingStop < 3 ? Recording("finalizing") : Recording("completed");
+            var sender = streamStopped ? Sender("rtmp://a", "completed") : Sender("rtmp://a", "producing");
+            rig.Current = Snapshot(recording, sender) with { RawReceivedUtc = rig.UtcNow };
+        };
+
+        var outcome = await rig.Build().StopAndWaitAsync(CloseRequest(rig));
+
+        Assert.False(recordingLifecycleErased, "the recording stop went out while streaming was still desired");
+        Assert.Equal(OutputShutdownOutcome.Finished, outcome);
+        Assert.True(rig.Now < OutputShutdownCoordinator.FinishTimeout, $"ran to {rig.Now}");
+    }
+
+    [Fact]
+    public async Task ACoreRespawnedWhileTheDialogWasOpenStillHasItsOutputsStopped()
+    {
+        // Fix round 2 (N2): the generation baseline is armed when the stop is SENT. The old core's
+        // file is gone (logged), but the new core is recording again and must be finished too.
+        var rig = new Rig { RecordingRequested = true }.WithPreStop(Snapshot(Recording("producing", session: "old-core")));
+        var closeRequest = CloseRequest(rig);
+        rig.Generation = 1;
+        rig.Current = Snapshot(Recording("producing", session: "new-core")) with { RawReceivedUtc = Epoch - TimeSpan.FromMilliseconds(1) };
+        rig.Next.Enqueue(Snapshot(Recording("finalizing", session: "new-core")));
+        rig.Next.Enqueue(Snapshot(Recording("completed", session: "new-core")));
+
+        var outcome = await rig.Build().StopAndWaitAsync(closeRequest);
+
+        Assert.Equal(OutputShutdownOutcome.Finished, outcome);
+        Assert.Equal(1, rig.RecordingStops);
+        Assert.Contains(rig.Log, line => line.Contains("MEDIA CORE RESTARTED while the close prompt was open", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ACoreRespawnedWhileTheDialogWasOpenWithNothingLiveNowIsInterrupted()
+    {
+        var rig = new Rig { RecordingRequested = true }.WithPreStop(Snapshot(Recording("producing", session: "old-core")));
+        var closeRequest = CloseRequest(rig);
+        rig.Generation = 1;
+        rig.RecordingRequested = false;
+        rig.Current = Snapshot(Recording("idle", session: "fresh")) with { RawReceivedUtc = Epoch };
+
+        var outcome = await rig.Build().StopAndWaitAsync(closeRequest);
+
+        Assert.Equal(OutputShutdownOutcome.CoreRestarted, outcome);
+        Assert.Equal(0, rig.RecordingStops);
     }
 
     [Fact]

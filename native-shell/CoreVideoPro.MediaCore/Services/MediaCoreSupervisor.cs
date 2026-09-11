@@ -46,6 +46,9 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     // T1.8: a core retired by StopForAppExit whose stdout is still drained (and discarded)
     // until it exits, so its writer thread never blocks on a full pipe during the exit grace.
     private Process? _drainOnlyProcess;
+    // T1.8 fix round 2 (N4): a retiring core that a concurrent plain Stop() killed. The grace thread
+    // checks it so a kill is never logged as "exited on its own".
+    private Process? _retiringKilledByStop;
     private readonly Dictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
     private Timer? _frameDrainTimer;
     private readonly SingleFlightTimerWork _frameDrainWork = new();
@@ -204,33 +207,52 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 // A plain Stop while another stop is still inside its app-exit grace (the shell's
                 // shutdown-timeout fallback): the retiring core must not outlive the app.
                 retiring = _drainOnlyProcess;
+                // Marked BEFORE the kill, so the grace thread cannot wake on the exit and miss it.
+                if (retiring is not null) _retiringKilledByStop = retiring;
             }
         }
 
-        if (retiring is not null)
+        if (retiring is not null && !KillRetiringChild(retiring))
         {
-            KillRetiringChild(retiring);
+            lock (_gate)
+            {
+                // It had already exited on its own: not our kill.
+                if (ReferenceEquals(_retiringKilledByStop, retiring)) _retiringKilledByStop = null;
+            }
         }
 
         if (process is not null) process.Exited -= OnChildExited;
         MediaCoreExitOutcome outcome;
+        var killedConcurrently = false;
         try
         {
-            outcome = DisposeChild(process, stdin, exitGrace);
+            outcome = DisposeChild(process, stdin, exitGrace, KilledByConcurrentStop);
         }
         finally
         {
             lock (_gate)
             {
                 if (process is not null && ReferenceEquals(_drainOnlyProcess, process)) _drainOnlyProcess = null;
+                if (process is not null && ReferenceEquals(_retiringKilledByStop, process))
+                {
+                    killedConcurrently = true;
+                    _retiringKilledByStop = null;
+                }
             }
+        }
+
+        if (killedConcurrently)
+        {
+            outcome = MediaCoreExitOutcome.Killed;
         }
 
         if (exitGrace > TimeSpan.Zero && process is not null)
         {
-            WriteCoreLog(outcome == MediaCoreExitOutcome.Killed
-                ? $"[bridge] app exit: media core did not exit within {exitGrace.TotalMilliseconds:0}ms of stdin closing; killed the process tree"
-                : "[bridge] app exit: media core exited on its own after stdin closed");
+            WriteCoreLog(killedConcurrently
+                ? "[bridge] app exit: media core was killed by a concurrent stop during its exit grace"
+                : outcome == MediaCoreExitOutcome.Killed
+                    ? $"[bridge] app exit: media core did not exit within {exitGrace.TotalMilliseconds:0}ms of stdin closing; killed the process tree"
+                    : "[bridge] app exit: media core exited on its own after stdin closed");
         }
 
         RaiseHealth();
@@ -238,17 +260,28 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         return outcome;
     }
 
-    private static void KillRetiringChild(Process retiring)
+    private bool KilledByConcurrentStop(Process process)
+    {
+        lock (_gate)
+        {
+            return ReferenceEquals(_retiringKilledByStop, process);
+        }
+    }
+
+    /// <summary>Returns false when the retiring core had already exited (nothing was killed).</summary>
+    private static bool KillRetiringChild(Process retiring)
     {
         try
         {
-            if (retiring.HasExited) return;
+            if (retiring.HasExited) return false;
             retiring.Kill(entireProcessTree: true);
             WriteCoreLog("[bridge] stop: killed a retiring media core that was still inside its app-exit grace");
+            return true;
         }
         catch
         {
             // Best effort: the grace thread may have seen it exit and disposed it.
+            return false;
         }
     }
 
@@ -1615,7 +1648,11 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     /// last lines (finalize / teardown warnings) reach media-core.log before the reader is closed.</summary>
     public const int StderrDrainMilliseconds = 250;
 
-    private static MediaCoreExitOutcome DisposeChild(Process? process, StreamWriter? stdin, TimeSpan exitGrace = default)
+    private static MediaCoreExitOutcome DisposeChild(
+        Process? process,
+        StreamWriter? stdin,
+        TimeSpan exitGrace = default,
+        Func<Process, bool>? killedByConcurrentStop = null)
     {
         // App exit only: remember the core's descendants BEFORE it starts tearing down, so any that
         // survive its clean exit (a child with no kill-on-close job and no stopping destructor) can
@@ -1650,7 +1687,13 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 }
             }
 
-            if (!exitedInGrace)
+            if (exitedInGrace && killedByConcurrentStop?.Invoke(process) == true)
+            {
+                // It "exited" inside the grace because a concurrent Stop() killed it: say so, and
+                // skip the clean-exit stderr drain and descendant sweep (the tree kill did that).
+                outcome = MediaCoreExitOutcome.Killed;
+            }
+            else if (!exitedInGrace)
             {
                 outcome = MediaCoreExitOutcome.Killed;
                 try

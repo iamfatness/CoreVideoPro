@@ -137,6 +137,25 @@ internal sealed class OutputShutdownCoordinator
             : decisionNow.Baseline;
         var description = decisionNow.ShouldAsk ? decisionNow.Description : closeRequest!.Description;
 
+        // Fix round 2 (N2): the "same core" baseline is armed when the stop is actually SENT. A
+        // core that respawned while the dialog was open took the old files with it (logged), but
+        // the new core may already be recording again (the shell re-arms its desired state), and
+        // that output must be stopped and waited for too — never left to the exit kill.
+        if (atStop.CoreRunning &&
+            closeRequest is { ShouldAsk: true } &&
+            atStop.CoreGeneration != closeRequest.Baseline.CoreGeneration)
+        {
+            _log($"shutdown: MEDIA CORE RESTARTED while the close prompt was open (generation {closeRequest.Baseline.CoreGeneration} -> {atStop.CoreGeneration}); " +
+                 "the old core's recording was interrupted and nothing more can be saved for it; stopping what the new core is doing");
+            if (!decisionNow.ShouldAsk)
+            {
+                return OutputShutdownOutcome.CoreRestarted;
+            }
+
+            baseline = decisionNow.Baseline;
+            description = decisionNow.Description;
+        }
+
         if (CoreGone(atStop, baseline) is { } gone)
         {
             return gone;
@@ -232,11 +251,25 @@ internal sealed class OutputShutdownCoordinator
     // long time (a busy core retries its sync for up to 30 s), and only the core's lifecycle is
     // evidence anyway, so the wait loop above is the one bounded place that waits. The synchronous
     // part of each command (the desired-state write) runs right here, on the caller's thread.
-    // Each stop is independent: a throwing recording stop must not skip the stream stop.
+    // Each stop is independent: a throwing stop must not skip the other one.
+    //
+    // ORDER MATTERS — STREAMS FIRST, THEN RECORDING (fix round 2, N1). Each transport stop builds
+    // its sync payload synchronously, inline, from the CURRENT desired flags. If the recording
+    // stop ran first, its batch would carry Recording=false while Streaming was still true:
+    // `stop-recording-session` then `start-program-output{rtmp…}`. The core's startProgramOutput
+    // no longer sees the encoder as owned by a recording (`recordingStatus_` is "stopping"), so it
+    // calls encoder->start([rtmp…]); that bumps the sink generation and resets its snapshot with
+    // NO recording lifecycle, and the old-generation stop barrier finalizes the file but never
+    // publishes `completed` (AsyncEncoderSink.cpp:117-132, :659; MediaCore.cpp:2363-2370). The
+    // shell then waits the full 15 s for evidence that can never arrive. Stopping the streams
+    // first means the stream stop's batch still carries Recording=true (no encoder restart), and
+    // the recording stop's batch carries both flags false (no start-program-output at all). The
+    // underlying core defect (a non-recording Start erasing a finalizing recording's lifecycle)
+    // is filed separately; this ordering is the shell-side mitigation.
     private void SendStops(bool recording, bool streaming, string reason)
     {
-        if (recording) StartStop(_stopRecording, $"recording {reason}");
         if (streaming) StartStop(_stopStreaming, $"stream {reason}");
+        if (recording) StartStop(_stopRecording, $"recording {reason}");
     }
 
     private void StartStop(Func<Task> stop, string what)
