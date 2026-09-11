@@ -275,6 +275,7 @@
                                     <StackPanel Orientation="Horizontal" Spacing="8">
                                         <Button Content="Never show" Command="{x:Bind ViewModel.ExcludeGalleryMemberCommand}" />
                                         <Button Content="Allow" Command="{x:Bind ViewModel.AllowGalleryMemberCommand}" />
+                                        <Button Content="Clear stale entries" Command="{x:Bind ViewModel.ClearStaleGalleryEntriesCommand}" />
                                     </StackPanel>
                                     <TextBlock Text="{x:Bind ViewModel.GalleryMembershipSummary, Mode=OneWay}" TextWrapping="WrapWholeWords" FontSize="10" />
                                     <TextBox Header="Tiles background color" Text="{x:Bind ViewModel.GalleryBackgroundColor, Mode=TwoWay}" />

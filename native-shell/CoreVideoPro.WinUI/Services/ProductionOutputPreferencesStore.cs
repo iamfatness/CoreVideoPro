@@ -230,6 +230,7 @@ public sealed class PersistedDynamicGallerySettings
     public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
+    public string? BoundMeetingId { get; set; }
     public bool AutoFill { get; set; } = true;
     public string? MembershipMode { get; set; }
     public int MaxTiles { get; set; } = 16;

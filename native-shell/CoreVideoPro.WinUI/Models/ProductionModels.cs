@@ -39,6 +39,8 @@ public sealed class Participant
 {
     public string Id { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
+    /// <summary>Zoom SDK persistent id when the engine provided one (#479). Empty for non-Zoom.</summary>
+    public string? PersistentId { get; init; }
     public string Title { get; init; } = string.Empty;
     public ParticipantRole Role { get; init; }
     public string BreakoutRoomId { get; init; } = string.Empty;
@@ -103,6 +105,8 @@ public sealed class DynamicGallerySettings
     public string MembershipMode { get; set; } = "eligible";
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
+    /// <summary>Meeting number the Zoom identities were saved in. Legacy session ids are only valid in this meeting.</summary>
+    public string? BoundMeetingId { get; set; }
     public int MaxTiles { get; set; } = 16;
     public string TileAspect { get; set; } = "16:9";
     public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
@@ -128,6 +132,7 @@ public sealed class DynamicGallerySettings
         Overrides = Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
         ManualSlots = [.. ManualSlots],
         ExcludedSourceIds = [.. ExcludedSourceIds],
+        BoundMeetingId = BoundMeetingId,
         MaxTiles = MaxTiles,
         TileAspect = TileAspect,
         CustomAspectRatio = CustomAspectRatio,

@@ -422,6 +422,7 @@ static bool is_valid_source_uuid(const std::string &uuid)
 struct ParticipantInfo {
     uint32_t user_id = 0;
     std::string display_name;
+    std::string persistent_id;
     bool has_video = false;
     bool is_talking = false;
     bool is_muted = false;
@@ -589,6 +590,7 @@ private:
         if (!u) return info;
         info.user_id = u->GetUserID();
         info.display_name = zchar_to_utf8(u->GetUserName());
+        info.persistent_id = zchar_to_utf8(u->GetPersistentId());
         info.has_video = u->IsVideoOn();
         info.is_talking = u->IsTalking();
         info.is_muted = u->IsAudioMuted();
@@ -638,6 +640,7 @@ private:
             if (i) msg += ",";
             msg += R"({"id":)" + std::to_string(p.user_id) +
                 R"(,"name":")" + json_escape(p.display_name) +
+                R"(","persistent_id":")" + json_escape(p.persistent_id) +
                 R"(","has_video":)" + (p.has_video ? "true" : "false") +
                 R"(,"is_talking":)" + (p.is_talking ? "true" : "false") +
                 R"(,"is_muted":)" + (p.is_muted ? "true" : "false") +

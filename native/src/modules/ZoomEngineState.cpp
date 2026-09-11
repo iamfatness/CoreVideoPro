@@ -283,6 +283,7 @@ rpc::Json::Array ZoomEngineRuntimeState::participantsJson() const {
     result.emplace_back(rpc::Json::Object{
         {"sdkUserId", participantIdString(id)},
         {"displayName", participant.displayName},
+        {"persistentId", participant.persistentId},
         {"role", "guest"},
         {"videoOn", participant.hasVideo},
         {"muted", participant.isMuted},

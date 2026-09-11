@@ -48,8 +48,7 @@ The owner's top priority is core functionality: Zoom sources and audio.
 
 | Order | ID | Item | Clause | Size |
 |---|---|---|---|---|
-| 1 | [T1.16](https://github.com/iamfatness/CoreVideoPro/issues/485) | Mixer shows only sources (follow-up to #484; non-sources show dead strips) | 3 | S |
-| 2 | [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles manual slots / "never show" are saved by Zoom's per-session user ID, so they go stale or hit the wrong person next meeting; key on stable identity, clear stale entries. Audit the Show Input roster for the same issue | 1/3 | M |
+| 1 | [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles manual slots / "never show" are saved by Zoom's per-session user ID, so they go stale or hit the wrong person next meeting; key on stable identity, clear stale entries. Audit the Show Input roster for the same issue | 1/3 | M |
 | 3 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. Step 1: hold the outgoing picture until the first real frame; step 2: hand over the warmed decoder | 1/3 | S then M |
 | 4 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s; forward the waiting states, always log meeting status, leave on give-up | 1/2 | S |
 | 5 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does) | 1/2 | S-M |
@@ -71,6 +70,7 @@ The owner's top priority is core functionality: Zoom sources and audio.
 | [#481](https://github.com/iamfatness/CoreVideoPro/issues/481) | App muted guests on its own; meters hid talkers → **A1-only mute**, pre-mute meters, ZOOM MUTED badge | #483 |
 | [T1.14](https://github.com/iamfatness/CoreVideoPro/issues/480) | Scene layer sources wipe themselves, then a random guest | #487 (tests; live check with the batch beta) |
 | [T1.15](https://github.com/iamfatness/CoreVideoPro/issues/465) | First roster participant's isolated audio silent (mix keyed to `participants[0]`) | #488 (tests; live check with the batch beta) |
+| [T1.16](https://github.com/iamfatness/CoreVideoPro/issues/485) | Mixer shows only sources | #489 (tests; live check with the batch beta) |
 
 Shipped in beta-2026-09-11-404602b (installed on the owner's machine 2026-09-11).
 
