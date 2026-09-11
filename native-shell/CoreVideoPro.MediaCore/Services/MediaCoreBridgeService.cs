@@ -549,10 +549,14 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     private void StopSpineSync()
     {
-        _spineWork.Reset();
         CancellationTokenSource? retired;
         lock (_gate)
         {
+            // Retire the generation INSIDE the same lock StartSpineSync installs under, so stop is
+            // one atomic step (the poll timer's start/stop race, #471). Outside it, a concurrent
+            // start could take the "already running" path against a timer whose generation had
+            // just gone stale.
+            _spineWork.Reset();
             _spineSyncTimer?.Dispose();
             _spineSyncTimer = null;
             retired = _spineFactoryCancellation;
@@ -565,6 +569,18 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     /// <summary>Test probe: the installed poll timer was armed with the runner's CURRENT generation.
     /// When false, every tick is a silent no-op and the shell's copy of core state freezes.</summary>
+    /// <summary>Test probe: stopped (no timer), or armed with the current generation — never a stale timer.</summary>
+    internal bool PollTimerStateIsConsistent
+    {
+        get
+        {
+            lock (_pollTimerGate)
+            {
+                return _pollTimer is null || _pollTimerGeneration == _pollWork.CurrentGeneration;
+            }
+        }
+    }
+
     internal bool PollTimerIsCurrent
     {
         get

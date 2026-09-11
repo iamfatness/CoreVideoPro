@@ -13,7 +13,7 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class MediaCoreBridgePollTimerRaceTests
 {
     [Fact]
-    public async Task ConcurrentStartsAndStopsAlwaysLeaveTheLatestStartArmedWithTheCurrentGeneration()
+    public async Task ConcurrentStartsAndStopsNeverLeaveAStaleTimerInstalled()
     {
         await using var bridge = new MediaCoreBridgeService(new MediaCoreSupervisor(new MediaCoreSupervisorOptions()));
 
@@ -29,9 +29,10 @@ public sealed class MediaCoreBridgePollTimerRaceTests
             go.Set();
             await Task.WhenAll(workers);
 
-            // Whatever the interleaving, a final start must leave a live, current poll.
-            bridge.StartPolling();
-            Assert.True(bridge.PollTimerIsCurrent, $"round {round}: the installed poll timer carries a stale generation, so the poll is dead");
+            // Asserted straight after the storm, with no tidy-up call in between: whichever call
+            // was last, the result is either stopped or a timer armed with the CURRENT generation —
+            // never a stale timer that ticks as a silent no-op.
+            Assert.True(bridge.PollTimerStateIsConsistent, $"round {round}: a stale poll timer is installed, so the poll is dead");
         }
     }
 
