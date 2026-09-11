@@ -385,6 +385,115 @@ TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
 // through the production tick and reads the plan the compositor was actually
 // handed, so both halves of "leaves the ordinary route plan untouched" are
 // genuinely asserted.
+// #478 R2 (review finding 2): the core used to bind a follow-speaker route to
+// videoFrames[routeIndex] — ordered by subscription uuid, not by who is talking — so
+// a full-screen speaker scene showed whichever source sorted first. It now binds the
+// DIRECTED speaker. The stub Zoom session directs "operator-1"; the frame gather
+// lists "guest-1" FIRST, so the old positional binding shows the wrong person.
+namespace {
+class TwoGuestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+ public:
+  TwoGuestZoomSource() = default;
+  explicit TwoGuestZoomSource(std::vector<std::string> ids) : ids_(std::move(ids)) {}
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+    std::vector<corevideo::modules::VideoFrame> frames;
+    for (const auto& participantId : ids_) {
+      corevideo::modules::VideoFrame frame;
+      frame.participantId = participantId;
+      frame.width = frame.height = frame.i420Width = frame.i420Height = 2;
+      frame.frameId = ++frameId_;
+      frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
+
+ private:
+  std::vector<std::string> ids_{"guest-1", "operator-1"};
+  std::int64_t frameId_ = 0;
+};
+
+corevideo::rpc::Json::Array followSpeakerScene() {
+  return corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"load-scene-graph"}},
+          {"sceneId", corevideo::rpc::Json{"speaker"}},
+          {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{
+              corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"routeId", corevideo::rpc::Json{"follow"}},
+                  {"mode", corevideo::rpc::Json{"active-speaker"}}}}}}}}}};
+}
+
+void expectEmptyFollowLayer(const corevideo::modules::CompositorRenderPlan& plan) {
+  const auto* layer = findLayer(plan, "route:follow");
+  ASSERT_NE(layer, nullptr) << "the layer must still exist (an empty plan is NOT 'draw nothing')";
+  EXPECT_TRUE(layer->participantId.empty()) << "bound '" << layer->participantId << "'";
+  EXPECT_TRUE(layer->sourceId.empty());
+  EXPECT_TRUE(layer->hasFillColor);
+  EXPECT_EQ(layer->fillColor, "#00000000");
+  EXPECT_EQ(layer->opacity, 0.f);
+}
+}  // namespace
+
+// #478 N2: the directed speaker has NO frame this tick (they left, or were dropped
+// from the sources mid-talk and their video retired). Binding them painted the
+// colorFromParticipantId slab on Program; the positional fallback would show a
+// random source. The layer renders EMPTY instead.
+TEST(TilesRenderPlan, AFollowSpeakerRouteWhoseSpeakerHasNoFrameRendersEmptyNotASlab) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  modules.zoom = std::make_unique<TwoGuestZoomSource>(std::vector<std::string>{"guest-1"});
+  MediaCore core(std::move(modules));
+  (void)core.joinZoom(corevideo::rpc::Json::Object{});  // directs "operator-1", who has no frame
+
+  (void)core.applyCommands(followSpeakerScene());
+  core.renderDisplayTick();
+  expectEmptyFollowLayer(compositor->lastPlan);
+}
+
+// #478 N2: leaving the meeting forgets the held speaker, even when a frame under the
+// same id is still in the gather (Zoom reuses per-meeting user ids).
+TEST(TilesRenderPlan, LeavingTheMeetingForgetsTheFollowRoutesHeldSpeaker) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  modules.zoom = std::make_unique<TwoGuestZoomSource>();
+  MediaCore core(std::move(modules));
+  (void)core.joinZoom(corevideo::rpc::Json::Object{});
+  (void)core.applyCommands(followSpeakerScene());
+  core.renderDisplayTick();
+  const auto* bound = findLayer(compositor->lastPlan, "route:follow");
+  ASSERT_NE(bound, nullptr);
+  ASSERT_EQ(bound->participantId, "operator-1");
+
+  (void)core.leaveZoom();
+  core.renderDisplayTick();
+  expectEmptyFollowLayer(compositor->lastPlan);
+}
+
+TEST(TilesRenderPlan, AFollowSpeakerRouteShowsTheDirectedSpeakerNotTheFirstFrame) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  modules.zoom = std::make_unique<TwoGuestZoomSource>();
+  MediaCore core(std::move(modules));
+  (void)core.joinZoom(corevideo::rpc::Json::Object{});
+  ASSERT_EQ(core.zoomSnapshot().getString("activeSpeakerId"), "operator-1");
+
+  (void)core.applyCommands(followSpeakerScene());
+  core.renderDisplayTick();
+
+  const auto* layer = findLayer(compositor->lastPlan, "route:follow");
+  ASSERT_NE(layer, nullptr);
+  EXPECT_EQ(layer->participantId, "operator-1");
+  EXPECT_EQ(layer->sourceId, "zoom:operator-1");
+}
+
 TEST(TilesRenderPlan, NoTilesLayerLeavesTheOrdinaryRoutePlanUntouched) {
   auto modules = corevideo::modules::createStubModules();
   auto ownedCompositor = std::make_unique<RecordingCompositor>();

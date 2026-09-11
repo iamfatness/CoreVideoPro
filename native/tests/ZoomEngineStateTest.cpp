@@ -75,6 +75,33 @@ TEST(ZoomEngineRuntimeState, DebouncesActiveSpeakerAndHonorsIncumbentHold) {
   EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
 }
 
+// #478 R1: the director follows the talker only among the shell's SOURCES.
+TEST(ZoomEngineRuntimeState, DirectsOnlyAmongSourcesAndReleasesANonSourceIncumbent) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  // 42 (not a source) talks first and fills the vacancy; 77 is on the wall.
+  state.apply(eventFrom(
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Host","has_video":true,"is_talking":true,"is_muted":false},{"id":77,"name":"Guest","has_video":true,"is_talking":false,"is_muted":false}]})"), 1'000);
+  ASSERT_EQ(state.snapshot().activeSpeakerId, "42");
+
+  state.setSpeakerSources(true, {77}, 1'100);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "");  // a non-source incumbent is released
+
+  // 42 keeps talking: never directed again.
+  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":42})"), 1'200);
+  state.advanceActiveSpeaker(10'000);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "");
+
+  // The source talks: directed (vacancy, so no hold to wait out).
+  state.recordFrameIngestSuccess("participant-video-77-camera", 77, 1280, 720, 1, 10'001.0);
+  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":77})"), 10'002);
+  state.advanceActiveSpeaker(10'003);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
+
+  // Lifting the filter restores the old rule.
+  state.setSpeakerSources(false, {}, 10'004);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
+}
+
 TEST(ZoomEngineRuntimeState, RetainsIncumbentUntilChallengerHasAFreshFrame) {
   corevideo::modules::ZoomEngineRuntimeState state;
   const auto roster = eventFrom(

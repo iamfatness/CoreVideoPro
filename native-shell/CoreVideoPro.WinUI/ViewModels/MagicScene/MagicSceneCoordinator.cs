@@ -107,7 +107,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     {
         if (ProductionMode != ProductionMode.SetAndForget) return;
         ProductionMode = ProductionMode.Manual;
-        _host.CommandStatus = "Automation paused — operator selected preview";
+        _host.CommandStatus = "Automation paused ï¿½ operator selected preview";
     }
 
     private void CuePreview(string sceneId)
@@ -253,6 +253,11 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         {
             _pendingSceneId = targetSceneId;
             _pendingSince = now;
+            // #478 R5: cue Preview at the START of the hold, not at the Take. Only sources are
+            // subscribed now, so a guest who is not already on the wall has no feed until their
+            // scene is on a bus; cueing it here lets the whole hold warm the subscription (the
+            // spine syncs every 500 ms) instead of cutting Program to a cold source.
+            CuePreview(targetSceneId);
             AutomationLastAction = $"Holding {RecommendedSceneName} for {AutomationSwitchDelaySeconds:0}s before switching";
             return;
         }
@@ -298,7 +303,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             if (!_host.IsMediaCoreRunning || !string.Equals(_host.ActiveSceneId, targetSceneId, StringComparison.Ordinal))
             {
                 ProductionMode = ProductionMode.Manual;
-                AutomationLastAction = "Automation paused — Take did not reach program";
+                AutomationLastAction = "Automation paused ï¿½ Take did not reach program";
                 return;
             }
             var sceneName = _host.Scenes.FirstOrDefault(scene => scene.Id == targetSceneId)?.Name ?? targetSceneId;
@@ -309,7 +314,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             if (generation == _modeGeneration)
             {
                 ProductionMode = ProductionMode.Manual;
-                AutomationLastAction = $"Automation paused — Take failed: {ex.Message}";
+                AutomationLastAction = $"Automation paused ï¿½ Take failed: {ex.Message}";
                 _host.CommandStatus = AutomationLastAction;
             }
         }

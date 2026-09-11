@@ -8636,6 +8636,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
         };
 
+    // #478 R3: Tiles members stay AUDIO sources while their scene stays on its bus.
+    private readonly TilesAudioSourceLatch _tilesAudioLatch = new();
+
     private Dictionary<string, object?> BuildSpinePayload()
     {
         var syncContext = BuildProductionSyncContext();
@@ -8658,7 +8661,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     participant.Muted == true,
                     participant.SharingScreen == true,
                     participant.AudioLevel ?? 0,
-                    participant.NetworkQuality ?? "live"))
+                    // #478: VideoOn must reach the spine, or a camera-off guest reads as live
+                    // and spends a capped video subscription on no frames.
+                    LiveProductionSync.NormalizeFeedHealthLabel(participant)))
                 .ToList();
         }
 
@@ -8691,6 +8696,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SdkRuntimeReady = !Settings.SdkIsBlocked,
                 ProgramSceneRoutes = syncContext.SceneRoutes,
                 PreviewSceneRoutes = syncContext.PreviewSceneRoutes,
+                // #478 plumbing only; the source-set rule is ZoomSourceSetPolicy.
+                ProgramTilesLayer = syncContext.TilesLayer,
+                PreviewTilesLayer = syncContext.PreviewTilesLayer,
+                IsoParticipantIds = syncContext.RecordingTargets.IsoParticipantIds,
+                // #478 L5: tri-state — an absent meeting state is UNKNOWN, never "left".
+                StickyAudioParticipantIds = _tilesAudioLatch.Observe(
+                    nativeSnapshot?.MeetingState is { Length: > 0 } meetingState
+                        ? meetingState.Equals("in_meeting", StringComparison.Ordinal)
+                        : null,
+                    syncContext.ActiveSceneId,
+                    syncContext.TilesLayer,
+                    syncContext.PreviewSceneId,
+                    syncContext.PreviewTilesLayer,
+                    participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal)),
                 Multiview = multiview
             });
     }
@@ -10291,6 +10310,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void UnsubscribeZoomCapture(string status)
     {
         _bridge.ConfigureZoomSpineSync(null);
+        _tilesAudioLatch.Clear();  // #478 N5: Engine off ends the latch's meeting session
         _surfaces.SetZoomCaptureSubscribed(false);
         ZoomCaptureSubscribed = false;
         EngineStatus = status;

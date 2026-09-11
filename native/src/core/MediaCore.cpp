@@ -45,6 +45,8 @@ namespace corevideo::core {
 namespace {
 
 constexpr int64_t kStaleCaptureAudioAgeMs = 1000;
+// The stub Zoom session's (constant) directed speaker.
+constexpr const char* kStubActiveSpeakerId = "operator-1";
 
 rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   rpc::Json::Array result;
@@ -533,6 +535,7 @@ rpc::Json MediaCore::joinZoom(const rpc::Json& payload, const std::function<bool
   }
 
   zoomJoined_ = true;
+  ++zoomStubEpoch_;
   const std::string displayName = payload.getString("displayName", zoomDisplayName_);
   if (!displayName.empty()) {
     zoomDisplayName_ = displayName;
@@ -547,6 +550,7 @@ rpc::Json MediaCore::leaveZoom() {
   }
 
   zoomJoined_ = false;
+  ++zoomStubEpoch_;
   ++zoomSnapshotTick_;
   return zoomSnapshot();
 }
@@ -559,6 +563,33 @@ rpc::Json MediaCore::stopZoomCapture() {
   // Stub path: capture-off is NOT a leave — the meeting stays joined.
   ++zoomSnapshotTick_;
   return zoomSnapshot();
+}
+
+std::string MediaCore::followSpeakerForRoutes(const std::vector<modules::VideoFrame>& videoFrames) const {
+  // #478 R2 + N2: a follow-speaker route shows the DIRECTED speaker (the
+  // director's choice among the shell's sources) ONLY if they have a content
+  // frame this tick; otherwise the most recent previously directed speaker who
+  // does; otherwise nobody (the caller renders the layer empty). The history is
+  // forgotten when the engine's speaker epoch moves (join, leave, Engine off, a
+  // new engine process). See core/FollowSpeakerHold.h.
+  std::string current;
+  std::uint64_t epoch = 0;
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    // L3: the EPOCH first. join() runs off coreMutex; reading the id first could record
+    // the previous meeting's speaker under the new meeting's epoch.
+    epoch = zoomEngineRuntime_->speakerEpoch();
+    current = zoomEngineRuntime_->directedSpeakerId();
+  } else {
+    // N6: the stub's speaker is a constant; never build a whole stub snapshot per tick.
+    current = zoomJoined_ ? kStubActiveSpeakerId : "";
+    epoch = zoomStubEpoch_;
+  }
+  followSpeakerHold_.observe(epoch, current);
+  return followSpeakerHold_.pick([&videoFrames](const std::string& id) {
+    return std::any_of(videoFrames.begin(), videoFrames.end(), [&id](const modules::VideoFrame& frame) {
+      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+    });
+  });
 }
 
 rpc::Json MediaCore::zoomSnapshot() const {
@@ -579,7 +610,7 @@ rpc::Json MediaCore::zoomSnapshot() const {
 
   return rpc::Json::Object{
       {"meetingState", "in_meeting"},
-      {"activeSpeakerId", "operator-1"},
+      {"activeSpeakerId", kStubActiveSpeakerId},
       {"caption", ""},
       {"readiness", zoomReadinessState()},
       {"evidence", zoomEvidenceState()},
@@ -1663,7 +1694,7 @@ rpc::Json MediaCore::zoomEvidenceState() const {
       {"participantCount", zoomJoined_ ? 2 : 0},
       {"videoFeeds", zoomJoined_ ? 2 : 0},
       {"audioFeeds", zoomJoined_ ? 2 : 0},
-      {"activeSpeakerId", zoomJoined_ ? "operator-1" : ""},
+      {"activeSpeakerId", zoomJoined_ ? kStubActiveSpeakerId : ""},
       {"snapshotTick", zoomSnapshotTick_},
   };
 }
@@ -1975,6 +2006,10 @@ rpc::Json MediaCore::zoomSubscriptionChurnState() const {
       {"totalChurn", 0.0},
       {"lastResolutionChanges", 0.0},
       {"lastCapEvictions", 0.0},
+      {"lastUnrouted", 0.0},
+      {"lastVideoOff", 0.0},
+      {"fullResolutionCap", 0.0},
+      {"fullResolutionDemoted", 0.0},
       {"lastDepartures", 0.0},
       {"sources", rpc::Json::Array{}},
   };
@@ -3301,6 +3336,12 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
     }
   }
 
+  // #478 N4: the PGM/PVW cells carry the bus's subscription-limit notice. They
+  // ride the layout signature, so a notice appearing or clearing is applied once.
+  const std::string programNotice = layout.getString("programNotice");
+  const std::string previewNotice = layout.getString("previewNotice");
+  signature += "#pgm:" + programNotice + "#pvw:" + previewNotice;
+
   if (signature == multiviewLayoutSignature_) {
     // Unchanged layout â€” do NOT churn multiviewSources_ or reset the structural-emit flag.
     return false;
@@ -3308,6 +3349,8 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
 
   multiviewLayoutSignature_ = std::move(signature);
   multiviewSources_ = std::move(parsed);
+  multiviewProgramNotice_ = programNotice;
+  multiviewPreviewNotice_ = previewNotice;
   multiviewCanvasWidth_ = resolvedWidth;
   multiviewCanvasHeight_ = resolvedHeight;
   // A layout change is a structural change; force the next render's event emit.
@@ -3710,7 +3753,10 @@ std::vector<modules::MultiviewTileRect> MediaCore::buildMultiviewTiles(const std
     modules::MultiviewTileRect pgm;
     pgm.role = "pgm";
     pgm.tally = "pgm";
-    pgm.label = "Program";
+    // " \xC2\xB7 " is a UTF-8 middle dot, spelled as bytes so it never depends on
+    // the compiler's execution character set.
+    pgm.label = multiviewProgramNotice_.empty() ? std::string("Program")
+                                                : "Program \xC2\xB7 " + multiviewProgramNotice_;
     pgm.slot = -2;
     assignRect(pgm, layout.programCell);
     tiles.push_back(std::move(pgm));
@@ -3718,7 +3764,8 @@ std::vector<modules::MultiviewTileRect> MediaCore::buildMultiviewTiles(const std
     modules::MultiviewTileRect pvw;
     pvw.role = "pvw";
     pvw.tally = "pvw";
-    pvw.label = "Preview";
+    pvw.label = multiviewPreviewNotice_.empty() ? std::string("Preview")
+                                                : "Preview \xC2\xB7 " + multiviewPreviewNotice_;
     pvw.slot = -1;
     // The PVW cell renders the live preview composite (buildMultiviewRenderPlan),
     // not a specific roster source, so it carries no pinned sourceId/participantId
@@ -5402,13 +5449,26 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   }
   if (!sceneRoutes.empty()) {
     renderPlan.layers.reserve(static_cast<size_t>(sceneRoutes.size() + overlayCount));
+    // Resolved once per plan, and only when a follow-speaker route needs it.
+    const bool hasFollowSpeakerRoute = std::any_of(sceneRoutes.begin(), sceneRoutes.end(), [](const auto& route) {
+      return route.mode == "active-speaker" && route.participantId.empty() &&
+             route.captureDeviceId.empty() && route.mediaAssetId.empty();
+    });
+    // L1: only a tick that HAS frames can bind anyone (the binding is frame-validated),
+    // so a frameless plan build — the audio worker's `buildCompositorRenderPlan({})`,
+    // `sessionState`, `armTakeRecord` — skips the lookup and never takes
+    // ZoomEngineRuntime::mutex_ under coreMutex for nothing (the audio gather was
+    // cleaned of exactly that pattern). With no frames the layer renders empty anyway.
+    const std::string directedSpeaker = hasFollowSpeakerRoute && !videoFrames.empty()
+                                            ? followSpeakerForRoutes(videoFrames)
+                                            : std::string{};
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
       const auto fallbackParticipantId = videoLayerIndex < static_cast<int>(videoFrames.size())
           ? std::optional<std::string_view>(videoFrames[static_cast<size_t>(videoLayerIndex)].participantId) : std::nullopt;
       const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
-          route.captureDeviceId, route.participantId, fallbackParticipantId});
+          route.captureDeviceId, route.participantId, fallbackParticipantId, directedSpeaker});
       layer.kind = binding.kind;
       layer.sourceId = binding.sourceId;
       layer.participantId = binding.participantId;
@@ -5444,6 +5504,16 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.colorGrade = route.colorGrade;
       layer.hasChromaKey = route.hasChromaKey;
       layer.chromaKey = route.chromaKey;
+      if (route.mode == "active-speaker" && route.participantId.empty() && route.captureDeviceId.empty() &&
+          route.mediaAssetId.empty() && binding.participantId.empty()) {
+        // #478 N2: a follow-speaker route with no speaker that has a frame this
+        // tick renders EMPTY: a fully transparent fill. An unbound layer would
+        // paint the default grey, a bound-but-frameless one a colour slab, and
+        // the positional fallback a random source — all on Program.
+        layer.hasFillColor = true;
+        layer.fillColor = "#00000000";
+        layer.opacity = 0.f;
+      }
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }

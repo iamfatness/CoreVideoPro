@@ -1,6 +1,9 @@
 #include "modules/ZoomEngineRuntime.h"
 
 #include "modules/ZoomEngineProcess.h"
+#include "modules/ZoomSubscriptionResolutionPolicy.h"
+
+#include "engine-resolution-policy.h"
 
 #include "engine-ipc.h"
 
@@ -17,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -891,9 +895,9 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
     corevideo::modules::ZoomEngineRuntime runtime;
     runtime.installEngineProcessForTest(fake);
 
-    // 301 is the active speaker (1080P); 302 is an ordinary wall member (720P).
+    // 301 is on the wall (720P); 302 is the fixed Program route (1080P).
     (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
-                                subscriptionRequest("301", "participant-video", "active-speaker"),
+                                subscriptionRequest("301", "participant-video", "multiview"),
                                 subscriptionRequest("302", "participant-video", "program"),
                             }),
                             10.0);
@@ -901,36 +905,53 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
       const auto churn = runtime.subscriptionChurnState();
       EXPECT_TRUE(churn.get("engine")->asBool(false));
       EXPECT_EQ(churn.getNumber("totalChurn"), 0);  // starting is not churning
-      const auto* speaker = findChurnSource(churn, "participant-video-301-camera");
-      ASSERT_NE(speaker, nullptr);
-      EXPECT_EQ(speaker->getNumber("generation"), 1);
-      EXPECT_EQ(speaker->getNumber("churn"), 0);
-      EXPECT_EQ(speaker->getString("lastReason"), "initial");
-      EXPECT_EQ(speaker->getNumber("resolution"), 2);  // 1080P
-      EXPECT_TRUE(speaker->get("subscribed")->asBool(false));
-      const auto* member = findChurnSource(churn, "participant-video-302-camera");
-      ASSERT_NE(member, nullptr);
-      EXPECT_EQ(member->getNumber("resolution"), 1);  // 720P
+      const auto* wall = findChurnSource(churn, "participant-video-301-camera");
+      ASSERT_NE(wall, nullptr);
+      EXPECT_EQ(wall->getNumber("generation"), 1);
+      EXPECT_EQ(wall->getNumber("churn"), 0);
+      EXPECT_EQ(wall->getString("lastReason"), "initial");
+      EXPECT_EQ(wall->getNumber("resolution"), 1);  // 720P
+      EXPECT_TRUE(wall->get("subscribed")->asBool(false));
+      const auto* program = findChurnSource(churn, "participant-video-302-camera");
+      ASSERT_NE(program, nullptr);
+      EXPECT_EQ(program->getNumber("resolution"), 2);  // 1080P
     }
 
-    // The active speaker changes. 301's uuid is unchanged — the purpose is
-    // deliberately not in it — but its RESOLUTION is, so it is re-subscribed.
+    // 301 is cued to Preview: the one resolution change a guest can see, on a cue,
+    // raising its renderer to the 1080P bus tier. Named as the teardown it is.
     (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
-                                subscriptionRequest("301", "participant-video", "program"),
-                                subscriptionRequest("302", "participant-video", "active-speaker"),
+                                subscriptionRequest("301", "participant-video", "preview"),
+                                subscriptionRequest("302", "participant-video", "program"),
                             }),
                             20.0);
     {
       const auto churn = runtime.subscriptionChurnState();
+      EXPECT_EQ(churn.getNumber("totalChurn"), 1);
+      EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 1);
+      const auto* cued = findChurnSource(churn, "participant-video-301-camera");
+      ASSERT_NE(cued, nullptr);
+      EXPECT_EQ(cued->getNumber("generation"), 2);
+      EXPECT_EQ(cued->getNumber("churn"), 1);
+      EXPECT_EQ(cued->getString("lastReason"), "resolution-change");
+      EXPECT_EQ(cued->getNumber("resolution"), 2);
+      EXPECT_EQ(cued->getNumber("lastChangeMs"), 20.0);
+    }
+
+    // Uncued back to the wall: NO RATCHET (#478 R4). It goes back to 720P, the
+    // engine now honours the downgrade, and the ledger names it.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("301", "participant-video", "multiview"),
+                                subscriptionRequest("302", "participant-video", "program"),
+                            }),
+                            25.0);
+    {
+      const auto churn = runtime.subscriptionChurnState();
       EXPECT_EQ(churn.getNumber("totalChurn"), 2);
-      EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 2);
-      const auto* speaker = findChurnSource(churn, "participant-video-301-camera");
-      ASSERT_NE(speaker, nullptr);
-      EXPECT_EQ(speaker->getNumber("generation"), 2);
-      EXPECT_EQ(speaker->getNumber("churn"), 1);
-      EXPECT_EQ(speaker->getString("lastReason"), "resolution-change");
-      EXPECT_EQ(speaker->getNumber("resolution"), 1);
-      EXPECT_EQ(speaker->getNumber("lastChangeMs"), 20.0);
+      const auto* uncued = findChurnSource(churn, "participant-video-301-camera");
+      ASSERT_NE(uncued, nullptr);
+      EXPECT_EQ(uncued->getNumber("generation"), 3);
+      EXPECT_EQ(uncued->getNumber("resolution"), 1);
+      EXPECT_EQ(uncued->getString("lastReason"), "resolution-change");
     }
 
     // 302 falls out of the requested set entirely — the cap-reordering shape.
@@ -945,10 +966,11 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
       const auto* dropped = findChurnSource(churn, "participant-video-302-camera");
       ASSERT_NE(dropped, nullptr);
       EXPECT_FALSE(dropped->get("subscribed")->asBool(true));
-      EXPECT_EQ(dropped->getNumber("generation"), 3);
-      EXPECT_EQ(dropped->getNumber("churn"), 2);
+      EXPECT_EQ(dropped->getNumber("generation"), 2);
+      EXPECT_EQ(dropped->getNumber("churn"), 1);
       // No roster in this harness, so the retire reads as a departure; the
-      // cap-eviction/departure split itself is pinned by the policy test.
+      // cap-eviction/unrouted/departure split is pinned by the policy test and
+      // ARetireIsACapEvictionOnlyWhenTheShellNamesItAShortfall.
       EXPECT_EQ(dropped->getString("lastReason"), "departure");
       EXPECT_EQ(churn.getNumber("subscribedCount"), 1);
       EXPECT_EQ(churn.getNumber("sourceCount"), 2);
@@ -965,9 +987,358 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
       const auto* back = findChurnSource(churn, "participant-video-302-camera");
       ASSERT_NE(back, nullptr);
       EXPECT_TRUE(back->get("subscribed")->asBool(false));
-      EXPECT_EQ(back->getNumber("generation"), 4);
+      EXPECT_EQ(back->getNumber("generation"), 3);
       EXPECT_EQ(back->getString("lastReason"), "resubscribe");
     }
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+// ---------------------------------------------------------------------------
+// #478 (live 2026-09-11): an active-speaker flip rebuilt two engine renderers,
+// because resolution was `purpose == "active-speaker" ? 1080P : 720P` and
+// resolution is part of the subscription key. The tier is now stable.
+// ---------------------------------------------------------------------------
+
+TEST(ZoomSubscriptionResolutionPolicyRules, ResolutionIsAStableTierNotWhoIsTalking) {
+  using Policy = corevideo::modules::ZoomSubscriptionResolutionPolicy;
+  // Fixed bus routes and screen share: full resolution.
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "program"), Policy::k1080P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "preview"), Policy::k1080P);
+  EXPECT_EQ(Policy::requestedResolution("screen-share", "program"), Policy::k1080P);
+  EXPECT_EQ(Policy::requestedResolution("screen-share", ""), Policy::k1080P);
+  // Everything else, INCLUDING active-speaker (a follow-speaker route): 720P, so
+  // a change of speaker can never move a key.
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "active-speaker"), Policy::k720P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "multiview"), Policy::k720P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "program-tiles"), Policy::k720P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "preview-tiles"), Policy::k720P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "iso"), Policy::k720P);
+  // The macOS shell's kind "video"/purpose "program" for every assigned guest is
+  // NOT promoted to N x 1080P.
+  EXPECT_EQ(Policy::requestedResolution("video", "program"), Policy::k720P);
+
+  // Tiles members are 720P (R4): they share the wall with everyone else.
+  EXPECT_FALSE(Policy::wantsFullResolution("participant-video", "program-tiles"));
+}
+
+TEST(ZoomSubscriptionResolutionPolicyRules, FullResolutionIsCappedInPayloadOrder) {
+  using Policy = corevideo::modules::ZoomSubscriptionResolutionPolicy;
+  Policy::Budget budget;
+  // The shell orders Program routes before Preview routes, so the cap spends 1080P on
+  // Program first.
+  for (int i = 0; i < Policy::kMaxConcurrentFullResolutionCameras; ++i) {
+    EXPECT_EQ(budget.resolve("participant-video", i % 2 == 0 ? "program" : "preview"), Policy::k1080P);
+  }
+  EXPECT_EQ(budget.resolve("participant-video", "preview"), Policy::k720P);
+  EXPECT_EQ(budget.resolve("participant-video", "multiview"), Policy::k720P);
+  // A screen share is never demoted and never spends the camera budget.
+  EXPECT_EQ(budget.resolve("screen-share", "program"), Policy::k1080P);
+  EXPECT_EQ(budget.granted(), Policy::kMaxConcurrentFullResolutionCameras);
+  EXPECT_EQ(budget.demoted(), 1);
+}
+
+TEST(EngineResolutionPolicy, ALowerRequestRebuildsOnlyWhenNoOtherTargetNeedsTheHigherOne) {
+  // Raising always rebuilt. Lowering used to be a no-op forever (the ratchet that put
+  // every rotated guest at 1080P); now it rebuilds when this is the renderer's only target.
+  EXPECT_TRUE(video_resolution_needs_rebuild(2, 1, 0));
+  EXPECT_TRUE(video_resolution_needs_rebuild(2, 1, 3));
+  EXPECT_TRUE(video_resolution_needs_rebuild(1, 2, 0));
+  EXPECT_FALSE(video_resolution_needs_rebuild(1, 2, 1));
+  EXPECT_FALSE(video_resolution_needs_rebuild(1, 1, 0));
+  EXPECT_FALSE(video_resolution_needs_rebuild(2, 2, 0));
+}
+
+TEST(ZoomEngineRuntime, AnActiveSpeakerFlipCausesNoTeardown) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+
+    // The exact shape the pre-#478 shell sent: the talker first as
+    // "active-speaker", everyone else on the wall.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("401", "participant-video", "active-speaker"),
+                                subscriptionRequest("402", "participant-video", "multiview"),
+                            }),
+                            10.0);
+    ASSERT_TRUE(fake->waitForSentLines(2, std::chrono::milliseconds(5000)));
+
+    // 402 starts talking.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("402", "participant-video", "active-speaker"),
+                                subscriptionRequest("401", "participant-video", "multiview"),
+                            }),
+                            20.0);
+    // And back again.
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("401", "participant-video", "active-speaker"),
+                                subscriptionRequest("402", "participant-video", "multiview"),
+                            }),
+                            30.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Nothing re-sent, nothing torn down, no generation moved.
+    EXPECT_EQ(fake->sentLines().size(), 2u);
+    const auto churn = runtime.subscriptionChurnState();
+    EXPECT_EQ(churn.getNumber("totalChurn"), 0);
+    EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 0);
+    for (const char* uuid : {"participant-video-401-camera", "participant-video-402-camera"}) {
+      const auto* source = findChurnSource(churn, uuid);
+      ASSERT_NE(source, nullptr) << uuid;
+      EXPECT_EQ(source->getNumber("generation"), 1) << uuid;
+      EXPECT_EQ(source->getNumber("resolution"), 1) << uuid;
+      EXPECT_EQ(source->getString("lastReason"), "initial") << uuid;
+    }
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, ARetireIsACapEvictionOnlyWhenTheShellNamesItAShortfall) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+
+    corevideo::modules::ZoomEngineEvent roster;
+    roster.kind = corevideo::modules::ZoomEngineEventKind::Participants;
+    for (const std::uint32_t id : {501u, 502u}) {
+      corevideo::modules::ZoomEngineParticipant participant;
+      participant.id = id;
+      participant.displayName = "Guest " + std::to_string(id);
+      participant.hasVideo = true;
+      roster.participants.push_back(participant);
+    }
+    runtime.applyEngineEventForTest(roster);
+
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("501", "participant-video", "multiview"),
+                                subscriptionRequest("502", "participant-video", "multiview"),
+                                subscriptionRequest("502", "participant-audio", "mix"),
+                            }),
+                            10.0);
+
+    // 501 is pushed out by the budget (the shell names it); 502 is un-routed
+    // by the operator — its video AND its audio go, and neither is the cap.
+    const corevideo::rpc::Json payload = corevideo::rpc::Json::Object{
+        {"startCapture", false},
+        {"subscriptions", corevideo::rpc::Json::Array{}},
+        {"videoSubscriptionShortfall",
+         corevideo::rpc::Json::Array{
+             corevideo::rpc::Json::Object{{"participantId", "501"}, {"purpose", "multiview"}},
+         }},
+    };
+    (void)runtime.syncSpine(payload, 20.0);
+
+    const auto churn = runtime.subscriptionChurnState();
+    const auto* evicted = findChurnSource(churn, "participant-video-501-camera");
+    ASSERT_NE(evicted, nullptr);
+    EXPECT_EQ(evicted->getString("lastReason"), "cap-eviction");
+    const auto* unroutedVideo = findChurnSource(churn, "participant-video-502-camera");
+    ASSERT_NE(unroutedVideo, nullptr);
+    EXPECT_EQ(unroutedVideo->getString("lastReason"), "unrouted");
+    const auto* unroutedAudio = findChurnSource(churn, "participant-audio-502-mix");
+    ASSERT_NE(unroutedAudio, nullptr);
+    EXPECT_EQ(unroutedAudio->getString("lastReason"), "unrouted");
+    EXPECT_EQ(churn.getNumber("lastCapEvictions"), 1);
+    EXPECT_EQ(churn.getNumber("lastUnrouted"), 2);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+// ---------------------------------------------------------------------------
+// #478 fix round 1.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+double sentResolution(const std::string& line) {
+  const auto parsed = corevideo::rpc::Json::parse(line);
+  if (!parsed || !parsed->get("resolution")) return -1;
+  return parsed->get("resolution")->asNumber();
+}
+
+corevideo::modules::ZoomEngineEvent rosterEvent(
+    std::initializer_list<std::tuple<std::uint32_t, bool, bool>> people) {
+  corevideo::modules::ZoomEngineEvent roster;
+  roster.kind = corevideo::modules::ZoomEngineEventKind::Participants;
+  for (const auto& [id, hasVideo, talking] : people) {
+    corevideo::modules::ZoomEngineParticipant participant;
+    participant.id = id;
+    participant.displayName = "Guest " + std::to_string(id);
+    participant.hasVideo = hasVideo;
+    participant.isTalking = talking;
+    roster.participants.push_back(participant);
+  }
+  return roster;
+}
+
+}  // namespace
+
+TEST(ZoomEngineRuntime, ACueRaisesOnceTheTakeSendsNothingAndLeavingTheBusDropsBack) {
+  // R4: Tiles 720P -> cued to Preview 1080P (raise, off air) -> taken to Program
+  // (same tier: nothing) -> back on the wall only (drop back to 720P: no ratchet).
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const char* purposes[] = {"program-tiles", "preview", "program", "multiview"};
+    double elapsed = 10.0;
+    for (const char* purpose : purposes) {
+      (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                  subscriptionRequest("701", "participant-video", purpose)}),
+                              elapsed);
+      elapsed += 10.0;
+    }
+    ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto lines = fake->sentLines();
+    ASSERT_EQ(lines.size(), 3u);  // initial, raise, drop — the Take sent nothing
+    EXPECT_EQ(sentResolution(lines[0]), 1);
+    EXPECT_EQ(sentResolution(lines[1]), 2);
+    EXPECT_EQ(sentResolution(lines[2]), 1);
+    const auto churn = runtime.subscriptionChurnState();
+    EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 1);
+    EXPECT_EQ(churn.getNumber("totalChurn"), 2);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, TheFullResolutionCapDemotesTheRoutesPastItAndSaysSo) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    corevideo::rpc::Json::Array requests;
+    const int routes = corevideo::modules::ZoomSubscriptionResolutionPolicy::kMaxConcurrentFullResolutionCameras + 1;
+    for (int i = 0; i < routes; ++i) {
+      requests.push_back(subscriptionRequest(std::to_string(800 + i).c_str(), "participant-video",
+                                             i % 2 == 0 ? "program" : "preview"));
+    }
+    (void)runtime.syncSpine(spinePayload(std::move(requests)), 10.0);
+    ASSERT_TRUE(fake->waitForSentLines(static_cast<std::size_t>(routes), std::chrono::milliseconds(5000)));
+    const auto lines = fake->sentLines();
+    for (int i = 0; i < routes - 1; ++i) {
+      EXPECT_EQ(sentResolution(lines[static_cast<std::size_t>(i)]), 2) << i;
+    }
+    EXPECT_EQ(sentResolution(lines.back()), 1);
+    const auto churn = runtime.subscriptionChurnState();
+    EXPECT_EQ(churn.getNumber("fullResolutionDemoted"), 1);
+    EXPECT_EQ(churn.getNumber("fullResolutionCap"),
+              corevideo::modules::ZoomSubscriptionResolutionPolicy::kMaxConcurrentFullResolutionCameras);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, AResolutionReSubscribeKeepsTheSourcesLastFrameForTheCompositor) {
+  using namespace corevideo::modules;
+  // R4 "hide the re-subscribe": the core keeps the last decoded frame of a source
+  // across a resolution change (only a RETIRE erases it), so the compositor keeps
+  // drawing it until the rebuilt renderer delivers. Contrast
+  // UnsubscribeRetiresHeldFrameAndFrameSyncQueue above.
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const std::string sourceUuid = "participant-video-42-camera";
+    ZoomEngineRuntimeTestAccess::seedSubscribedVideoCaches(runtime, sourceUuid, 42);  // at 720P
+
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("42", "participant-video", "program")}),
+                            10.0);
+    ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
+    EXPECT_EQ(sentResolution(fake->sentLines().front()), 2);  // re-subscribed at 1080P
+    EXPECT_TRUE(ZoomEngineRuntimeTestAccess::hasVideoCaches(runtime, sourceUuid, 42));
+    EXPECT_EQ(ZoomEngineRuntimeTestAccess::decodedCount(runtime), 1u);
+    const auto churn = runtime.subscriptionChurnState();
+    const auto* source = findChurnSource(churn, sourceUuid);
+    ASSERT_NE(source, nullptr);
+    EXPECT_EQ(source->getString("lastReason"), "resolution-change");
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, ANonSourceWhoTalksFirstIsReleasedAndNeverDirected) {
+  // Review finding 1 (Critical) / R1: under "sources only" a non-source never has a
+  // subscription, so the director's fresh-frame gate could never promote anyone past
+  // the first talker it filled the vacancy with. The director now follows only the
+  // sources the shell names.
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    // 901 (the unrouted host) talks first; 902 is on the wall.
+    runtime.applyEngineEventForTest(rosterEvent({{901, true, true}, {902, true, false}}));
+    ASSERT_EQ(runtime.directedSpeakerId(), "901");  // no filter yet: the old behaviour
+
+    const corevideo::rpc::Json payload = corevideo::rpc::Json::Object{
+        {"startCapture", false},
+        {"subscriptions", corevideo::rpc::Json::Array{
+            subscriptionRequest("902", "participant-video", "multiview")}},
+        {"sourceParticipantIds", corevideo::rpc::Json::Array{corevideo::rpc::Json{"902"}}},
+    };
+    (void)runtime.syncSpine(payload, 10.0);
+    EXPECT_EQ(runtime.directedSpeakerId(), "");  // released: 901 is not a source
+
+    // 901 keeps talking: still never directed.
+    runtime.applyEngineEventForTest(rosterEvent({{901, true, true}, {902, true, false}}));
+    (void)runtime.syncSpine(payload, 20.0);
+    EXPECT_NE(runtime.directedSpeakerId(), "901");
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, ACameraTurningOffIsLedgeredAsVideoOffNotUnrouted) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    runtime.applyEngineEventForTest(rosterEvent({{601, true, false}}));
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("601", "participant-video", "multiview"),
+                                subscriptionRequest("601", "participant-audio", "mix")}),
+                            10.0);
+
+    // The camera goes off: the shell drops the video (keeps the audio: still a source).
+    runtime.applyEngineEventForTest(rosterEvent({{601, false, false}}));
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+                                subscriptionRequest("601", "participant-audio", "mix")}),
+                            20.0);
+
+    const auto churn = runtime.subscriptionChurnState();
+    const auto* video = findChurnSource(churn, "participant-video-601-camera");
+    ASSERT_NE(video, nullptr);
+    EXPECT_EQ(video->getString("lastReason"), "video-off");
+    EXPECT_EQ(churn.getNumber("lastVideoOff"), 1);
+    EXPECT_EQ(churn.getNumber("lastUnrouted"), 0);
+    const auto* audio = findChurnSource(churn, "participant-audio-601-mix");
+    ASSERT_NE(audio, nullptr);
+    EXPECT_TRUE(audio->get("subscribed")->asBool(false));
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, TheSpeakerEpochMovesOnLeaveAndEngineOff) {
+  // #478 N2: a follow-speaker route forgets its held speaker when this moves, so a
+  // reused Zoom user id in the next meeting is never bound from the last one.
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const auto start = runtime.speakerEpoch();
+    (void)runtime.stopCapture();  // Engine off
+    const auto afterEngineOff = runtime.speakerEpoch();
+    EXPECT_NE(afterEngineOff, start);
+    (void)runtime.leave();
+    EXPECT_NE(runtime.speakerEpoch(), afterEngineOff);
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }

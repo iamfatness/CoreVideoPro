@@ -128,6 +128,14 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
   }
 }
 
+void ZoomEngineRuntimeState::setSpeakerSources(bool active,
+                                               std::vector<std::uint32_t> sourceParticipantIds,
+                                               std::uint64_t nowMs) {
+  speakerDirector_.setSourceFilter(active, std::move(sourceParticipantIds));
+  speakerDirector_.tick(nowMs);
+  activeSpeakerId_ = speakerDirector_.directedSpeakerId();
+}
+
 void ZoomEngineRuntimeState::advanceActiveSpeaker(std::uint64_t nowMs) {
   speakerDirector_.tick(nowMs);
   activeSpeakerId_ = speakerDirector_.directedSpeakerId();

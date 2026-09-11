@@ -38,6 +38,29 @@ public static class ZoomMediaSpinePayloadBuilder
         public IReadOnlyList<MediaCoreSceneRouteWire> PreviewSceneRoutes { get; init; } = [];
 
         /// <summary>
+        /// The Tiles wall of the PROGRAM scene, or null when Program is not a Tiles scene. A
+        /// Tiles scene serialises an EMPTY route list, so without this its members would be
+        /// invisible to the video budget.
+        /// </summary>
+        public MediaCoreTilesLayerWire? ProgramTilesLayer { get; init; }
+
+        /// <summary>The Tiles wall of the PREVIEW scene, or null.</summary>
+        public MediaCoreTilesLayerWire? PreviewTilesLayer { get; init; }
+
+        /// <summary>
+        /// Bare Zoom participant ids armed for ISO recording. Empty unless "Program + ISOs" is
+        /// on (<see cref="IsoSourceSelectionResolver.Resolve"/> returns nothing when disabled).
+        /// An ISO guest needs video even when off the wall, or the ISO file has no picture.
+        /// </summary>
+        public IReadOnlyList<string> IsoParticipantIds { get; init; } = [];
+
+        /// <summary>
+        /// Bare Zoom ids latched by <see cref="TilesAudioSourceLatch"/>: Tiles members of a scene
+        /// still on its bus, kept as AUDIO sources after their camera goes off (#478 R3).
+        /// </summary>
+        public IReadOnlyList<string> StickyAudioParticipantIds { get; init; } = [];
+
+        /// <summary>
         /// Ordered Show Input roster that drives the core-composited GPU multiview. Delivered on
         /// this frequent, reliable channel (the production sync only carries it on scene publishes,
         /// which almost never re-run). Null leaves the multiview untouched.
@@ -50,13 +73,40 @@ public static class ZoomMediaSpinePayloadBuilder
         var participants = FilterParticipants(input.Participants, input.SelectedBreakoutRoomId)
             .Select(MapParticipant)
             .ToList();
+        // ONE source set feeds both the video and the audio lists (#478 owner rule: only
+        // sources that are sources; nothing is on air unless it is an input).
+        var sources = ZoomSourceSetPolicy.Resolve(new ZoomSourceSetPolicy.Input
+        {
+            Participants = participants
+                .Select(participant => new ZoomSourceSetPolicy.ParticipantState(
+                    participant["sdkUserId"]?.ToString() ?? string.Empty,
+                    participant["videoOn"] is true,
+                    participant["talking"] is true))
+                .ToList(),
+            ProgramRoutes = input.ProgramSceneRoutes,
+            ProgramTiles = input.ProgramTilesLayer,
+            PreviewRoutes = input.PreviewSceneRoutes,
+            PreviewTiles = input.PreviewTilesLayer,
+            StickyAudioParticipantIds = input.StickyAudioParticipantIds,
+            WallSources = input.Multiview?.Sources ?? [],
+            IsoParticipantIds = input.IsoParticipantIds
+        });
+        var videoDecision = ZoomSourceSetPolicy.DecideVideo(sources, input.MaxVideoSubscriptions);
         var subscriptions = BuildSubscriptions(
             participants,
-            input.MaxVideoSubscriptions,
-            input.ProgramSceneRoutes,
-            input.PreviewSceneRoutes);
+            videoDecision.Subscribed,
+            ZoomSourceSetPolicy.AudioParticipantIds(sources));
         var readiness = BuildReadiness(input);
         var warnings = new List<string>();
+        if (videoDecision.OverBudget.Count > 0)
+        {
+            // Loud, never silent: a routed camera-on guest with no video is a black tile.
+            warnings.Add(
+                $"No video: subscription limit ({input.MaxVideoSubscriptions}). " +
+                $"{videoDecision.OverBudget.Count} routed camera{(videoDecision.OverBudget.Count == 1 ? " is" : "s are")} unsubscribed: " +
+                string.Join(", ", videoDecision.OverBudget.Select(candidate =>
+                    $"{DisplayName(participants, candidate.ParticipantId)} ({candidate.Purpose})")) + ".");
+        }
         if (!input.EngineRunning)
         {
             warnings.Add("Media core is not running.");
@@ -80,7 +130,20 @@ public static class ZoomMediaSpinePayloadBuilder
             ["startCapture"] = input.StartCapture,
             ["blocked"] = blocked,
             ["warnings"] = warnings,
-            ["summary"] = summary
+            ["summary"] = summary,
+            // The core's speaker director follows the talker ONLY among these (#478 R1): a
+            // non-source never has a subscription, so it could never pass the director's
+            // fresh-frame gate and would deadlock speaker-following.
+            ["sourceParticipantIds"] = ZoomSourceSetPolicy.SpeakerCandidateIds(sources).ToList(),
+            // Structured twin of the warning above, for tests and the support bundle.
+            ["videoSubscriptionShortfall"] = videoDecision.OverBudget
+                .Select(candidate => new Dictionary<string, object?>
+                {
+                    ["participantId"] = candidate.ParticipantId,
+                    ["purpose"] = candidate.Purpose,
+                    ["reason"] = "subscription-limit"
+                })
+                .ToList()
         };
 
         if (input.Recording)
@@ -97,11 +160,56 @@ public static class ZoomMediaSpinePayloadBuilder
 
         if (input.Multiview is { } multiview)
         {
-            payload["multiview"] = BuildMultiviewPayload(multiview);
+            var unsubscribedWallGuests = videoDecision.OverBudget
+                .Select(candidate => candidate.ParticipantId)
+                .ToHashSet(StringComparer.Ordinal);
+            var multiviewPayload = BuildMultiviewPayload(
+                multiview,
+                unsubscribedWallGuests,
+                input.MaxVideoSubscriptions);
+            // #478 N4: a BUS source the budget left out (typically a cued Preview guest who is
+            // not on the wall) has no wall tile to carry the label, so the PGM/PVW cell names
+            // them. Always present (empty = nothing to say) so a notice CLEARS when it resolves.
+            multiviewPayload["programNotice"] = BusNotice(
+                participants, videoDecision.OverBudget, ZoomSourceSetPolicy.IsProgramPurpose, input.MaxVideoSubscriptions);
+            multiviewPayload["previewNotice"] = BusNotice(
+                participants, videoDecision.OverBudget, ZoomSourceSetPolicy.IsPreviewPurpose, input.MaxVideoSubscriptions);
+            payload["multiview"] = multiviewPayload;
         }
 
         return payload;
     }
+
+    /// <summary>"no video: A, B (subscription limit 10)" for the over-budget sources on a bus, or "".</summary>
+    public static string BusNotice(
+        IReadOnlyList<Dictionary<string, object?>> participants,
+        IReadOnlyList<ZoomSourceSetPolicy.Source> overBudget,
+        Func<string, bool> onBus,
+        int maxVideoSubscriptions)
+    {
+        var names = overBudget
+            .Where(source => onBus(source.Purpose))
+            .Select(source => DisplayName(participants, source.ParticipantId))
+            .ToList();
+        return names.Count == 0
+            ? string.Empty
+            : $"no video: {string.Join(", ", names)} (subscription limit {maxVideoSubscriptions})";
+    }
+
+    /// <summary>
+    /// The multiview overlay draws each tile's <c>label</c> (core <c>buildMultiviewTiles</c> →
+    /// <c>MultiviewOverlayFormatting.ResolveLabel</c>), so a wall guest the budget left out says
+    /// so ON the tile instead of sitting there as an unexplained empty box.
+    /// </summary>
+    public static string UnsubscribedTileLabel(string label, int maxVideoSubscriptions) =>
+        $"{label} · no video: subscription limit ({maxVideoSubscriptions})";
+
+    private static string DisplayName(IReadOnlyList<Dictionary<string, object?>> participants, string participantId) =>
+        participants
+            .FirstOrDefault(participant => participant["sdkUserId"]?.ToString() == participantId)?["displayName"]?.ToString()
+        is { Length: > 0 } name
+            ? name
+            : participantId;
 
     public static Dictionary<string, object?> BuildFromProductionContext(
         MediaCoreProductionSyncContext context,
@@ -114,7 +222,10 @@ public static class ZoomMediaSpinePayloadBuilder
     /// Serializes the multiview layout into the same per-source shape the standalone
     /// <c>set-multiview-layout</c> command uses, so the core can parse both with one helper.
     /// </summary>
-    private static Dictionary<string, object?> BuildMultiviewPayload(MediaCoreMultiviewLayout multiview) =>
+    private static Dictionary<string, object?> BuildMultiviewPayload(
+        MediaCoreMultiviewLayout multiview,
+        IReadOnlySet<string> unsubscribedParticipantIds,
+        int maxVideoSubscriptions) =>
         new()
         {
             ["canvasWidth"] = multiview.CanvasWidth,
@@ -129,7 +240,11 @@ public static class ZoomMediaSpinePayloadBuilder
                 ["captureDeviceId"] = source.CaptureDeviceId,
                 ["mediaAssetId"] = source.MediaAssetId,
                 ["slot"] = source.Slot,
-                ["label"] = source.Label
+                ["label"] = string.Equals(source.Kind, "zoom", StringComparison.Ordinal) &&
+                            source.ParticipantId is { Length: > 0 } participantId &&
+                            unsubscribedParticipantIds.Contains(participantId)
+                    ? UnsubscribedTileLabel(source.Label, maxVideoSubscriptions)
+                    : source.Label
             }).ToList()
         };
 
@@ -179,15 +294,16 @@ public static class ZoomMediaSpinePayloadBuilder
 
     private static List<Dictionary<string, object?>> BuildSubscriptions(
         IReadOnlyList<Dictionary<string, object?>> participants,
-        int maxVideoSubscriptions,
-        IReadOnlyList<MediaCoreSceneRouteWire> programSceneRoutes,
-        IReadOnlyList<MediaCoreSceneRouteWire> previewSceneRoutes)
+        IReadOnlyList<ZoomSourceSetPolicy.Source> video,
+        IReadOnlyList<string> audioParticipantIds)
     {
         var subscriptions = new List<Dictionary<string, object?>>();
         if (participants.Count > 0)
         {
             // The meeting mix is an audio source in its own right. Do not make
             // its lifetime depend on an active-speaker video subscription.
+            // Deliberately NOT narrowed to the source set: it is the programMix-mode
+            // path (Zoom's own mix), and is left unrouted in perGuestIso mode.
             subscriptions.Add(new Dictionary<string, object?>
             {
                 ["participantId"] = participants[0]["sdkUserId"]?.ToString() ?? string.Empty,
@@ -196,51 +312,12 @@ public static class ZoomMediaSpinePayloadBuilder
                 ["priority"] = 0
             });
         }
-        // Spend the finite raw-video budget in show order: directed speaker,
-        // Program, queued Preview, then multiview-only roster feeds. This makes
-        // a Take warm even when its participant sits beyond the roster cap.
-        var participantIds = participants
-            .Select(participant => participant["sdkUserId"]?.ToString() ?? string.Empty)
-            .Where(participantId => participantId.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
-        var videoCandidates = new List<(string ParticipantId, string Purpose)>();
-        var seenVideoParticipants = new HashSet<string>(StringComparer.Ordinal);
 
-        void AddVideoCandidate(string? participantId, string purpose)
+        // WHO gets raw video, in what order and at what purpose is ZoomSourceSetPolicy's
+        // decision (#478): camera-on sources only, capped, never by roster order.
+        for (var index = 0; index < video.Count; index++)
         {
-            if (string.IsNullOrWhiteSpace(participantId) ||
-                !participantIds.Contains(participantId) ||
-                !seenVideoParticipants.Add(participantId))
-            {
-                return;
-            }
-
-            videoCandidates.Add((participantId, purpose));
-        }
-
-        var activeSpeaker = participants.FirstOrDefault(participant =>
-            participant.TryGetValue("talking", out var talking) && talking is true);
-        AddVideoCandidate(activeSpeaker?["sdkUserId"]?.ToString(), "active-speaker");
-
-        foreach (var route in programSceneRoutes)
-        {
-            AddVideoCandidate(route.ParticipantId, "program");
-        }
-
-        foreach (var route in previewSceneRoutes)
-        {
-            AddVideoCandidate(route.ParticipantId, "preview");
-        }
-
-        foreach (var participant in participants)
-        {
-            AddVideoCandidate(participant["sdkUserId"]?.ToString(), "multiview");
-        }
-
-        var videoCount = Math.Min(Math.Max(0, maxVideoSubscriptions), videoCandidates.Count);
-        for (var index = 0; index < videoCount; index++)
-        {
-            var candidate = videoCandidates[index];
+            var candidate = video[index];
             subscriptions.Add(new Dictionary<string, object?>
             {
                 ["participantId"] = candidate.ParticipantId,
@@ -250,12 +327,16 @@ public static class ZoomMediaSpinePayloadBuilder
             });
         }
 
-        for (var index = 0; index < participants.Count; index++)
+        // Isolated per-participant AUDIO for the mixer and the per-guest ISO stems: the SAME
+        // source set as video (owner ruling, #478, option 1 "sources only"), except that a
+        // camera-OFF source keeps its audio — a wall guest with the camera off can still speak.
+        // Anyone who is not a source is not subscribed and is inaudible in Program: nothing is
+        // on air unless it is an input.
+        for (var index = 0; index < audioParticipantIds.Count; index++)
         {
-            var participant = participants[index];
             subscriptions.Add(new Dictionary<string, object?>
             {
-                ["participantId"] = participant["sdkUserId"]?.ToString() ?? string.Empty,
+                ["participantId"] = audioParticipantIds[index],
                 ["kind"] = "participant-audio",
                 ["purpose"] = "mix",
                 ["priority"] = 40 + index

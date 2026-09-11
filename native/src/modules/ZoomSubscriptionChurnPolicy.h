@@ -9,14 +9,23 @@ namespace corevideo::modules {
 // underneath a source that the operator never touched:
 //
 //   * RESOLUTION CHURN. `ZoomMediaSpinePayloadBuilder` stamps each request with
-//     a `purpose`, and syncSpine picks 1080P for `active-speaker`/screen-share
-//     and 720P for everything else. Resolution is part of the key, so a source
-//     flipping in or out of active-speaker is genuinely re-subscribed: an
-//     engine-side renderer teardown and rebuild, not bookkeeping.
+//     a `purpose`, and syncSpine picks the resolution from it. Resolution is part
+//     of the key, so raising it is a genuine engine-side renderer teardown and
+//     rebuild, not bookkeeping. Until #478 (2026-09-11) the 1080P purpose was
+//     `active-speaker`, so every speaker change re-subscribed; it is now a stable
+//     tier (ZoomSubscriptionResolutionPolicy.h) that moves only on a cue/Take,
+//     and a downgrade is never sent, so a source is raised at most once.
 //   * CAP EVICTION. A source that falls out of the requested set — because the
 //     candidate list reordered around `maxVideoSubscriptions`, e.g. when a
 //     Tiles scene serialises an empty route list — is UNSUBSCRIBED by the
 //     retire loop, and its frames simply stop arriving.
+//
+// Since #478 (2026-09-11) the shell subscribes ONLY sources (routes, Tiles
+// members, wall slots, ISO guests — ZoomSourceSetPolicy.cs), so most drops are an
+// operator UN-ROUTING a guest, not the budget. The shell names the ones the
+// budget left out in `videoSubscriptionShortfall`; a retire is a cap eviction
+// only when the participant is in that list, otherwise it is `unrouted`. Without
+// that split every ordinary un-route would read as the cap defect.
 //
 // Either one makes a wall or its background go black and re-decode on a take,
 // and on air it looks exactly like a render-plan rebuild. This classifies the
@@ -29,7 +38,9 @@ struct ZoomSubscriptionChurnPolicy {
     Initial,       // first subscribe for this source — not churn
     Resolution,    // same source, different resolution: re-subscribed
     Resubscribe,   // subscribed again after having been dropped earlier
-    CapEviction,   // dropped from the requested set while still in the meeting
+    CapEviction,   // dropped by the video budget while still in the meeting
+    Unrouted,      // dropped because it stopped being a source (operator un-routed it)
+    VideoOff,      // video dropped because the participant turned the camera off
     Departure,     // dropped because the participant left
   };
 
@@ -48,15 +59,27 @@ struct ZoomSubscriptionChurnPolicy {
     return observation.everSubscribed ? Change::Resubscribe : Change::Initial;
   }
 
-  [[nodiscard]] static Change classifyRetire(bool participantStillInMeeting) {
-    return participantStillInMeeting ? Change::CapEviction : Change::Departure;
+  // `overBudget`: the shell's videoSubscriptionShortfall names this participant.
+  // `cameraOff`: a VIDEO subscription whose participant's camera is now off (the
+  // engine roster's has_video). The shell drops camera-off sources from video.
+  [[nodiscard]] static Change classifyRetire(bool participantStillInMeeting, bool overBudget,
+                                             bool cameraOff = false) {
+    if (!participantStillInMeeting) {
+      return Change::Departure;
+    }
+    if (cameraOff) {
+      return Change::VideoOff;
+    }
+    return overBudget ? Change::CapEviction : Change::Unrouted;
   }
 
   // An Initial subscribe is the subscription starting, not churning. Everything
   // else here is a real teardown or rebuild the operator can see.
   [[nodiscard]] static bool countsAsChurn(Change change) {
     return change == Change::Resolution || change == Change::Resubscribe ||
-           change == Change::CapEviction || change == Change::Departure;
+           change == Change::CapEviction || change == Change::Unrouted ||
+           change == Change::VideoOff ||
+           change == Change::Departure;
   }
 
   // A new engine-side renderer exists after these. The generation is what a
@@ -72,6 +95,8 @@ struct ZoomSubscriptionChurnPolicy {
       case Change::Resolution: return "resolution-change";
       case Change::Resubscribe: return "resubscribe";
       case Change::CapEviction: return "cap-eviction";
+      case Change::Unrouted: return "unrouted";
+      case Change::VideoOff: return "video-off";
       case Change::Departure: return "departure";
     }
     return "none";
