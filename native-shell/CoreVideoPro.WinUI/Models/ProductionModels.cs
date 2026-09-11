@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 
 namespace CoreVideoPro.WinUI.Models;
 
@@ -1160,9 +1161,14 @@ public static class ProductionStateHelper
 
     public static IReadOnlyList<ParticipantAudioMix> BuildAudioMixChannels(
         IReadOnlyList<Participant> participants,
-        IReadOnlyDictionary<string, ParticipantAudioMix>? existing = null)
+        IReadOnlyDictionary<string, ParticipantAudioMix>? existing = null,
+        IReadOnlySet<string>? zoomSourceParticipantIds = null)
     {
-        return participants.Select(participant =>
+        return participants
+            .Where(participant =>
+                zoomSourceParticipantIds is null ||
+                MixerChannelSetPolicy.DisplayOnMixer(participant.Id, zoomSourceParticipantIds))
+            .Select(participant =>
         {
             if (existing is not null && existing.TryGetValue(participant.Id, out var prior))
             {

@@ -26,6 +26,108 @@ public sealed class StudioViewModelAudioStatusTests
     // what the core's EFFECTIVE mute (nativeChannel.Muted, which folds in the
     // Zoom mute) was on that first snapshot.
     [Fact]
+    public void LiveCase485_BuildAudioMixChannelsOmitsNonSourceZoomGuests()
+    {
+        var roster = new[]
+        {
+            new Participant { Id = "16778240", Name = "Host" },
+            new Participant { Id = "16791552", Name = "Program" },
+            new Participant { Id = "16788480", Name = "Off wall" }
+        };
+        var sources = new HashSet<string>(StringComparer.Ordinal) { "16791552" };
+        var channels = ProductionStateHelper.BuildAudioMixChannels(roster, zoomSourceParticipantIds: sources);
+        Assert.Equal(["16791552"], channels.Select(channel => channel.ParticipantId).ToArray());
+    }
+
+    [Fact]
+    public void LiveCase485_CameraOffSourceOnTheWallHasAStrip()
+    {
+        var roster = new[]
+        {
+            new Participant { Id = "wall-off", Name = "Wall off", Health = FeedHealth.VideoOff },
+            new Participant { Id = "comms", Name = "Comms", Health = FeedHealth.VideoOff }
+        };
+        var sources = new HashSet<string>(StringComparer.Ordinal) { "wall-off" };
+        var channels = ProductionStateHelper.BuildAudioMixChannels(roster, zoomSourceParticipantIds: sources);
+        Assert.Equal(["wall-off"], channels.Select(channel => channel.ParticipantId).ToArray());
+    }
+
+    [Fact]
+    public void LiveCase485_A1SettingsSurviveLeavingAndRejoiningTheSourceSet()
+    {
+        var prior = new ParticipantAudioMix
+        {
+            ParticipantId = "16778240",
+            OutputLevel = 40,
+            GainDb = 6,
+            ManualGainDb = 6,
+            Pan = -0.25,
+            Solo = false,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            Muted = true,
+            PluginInserts = ["eq"]
+        };
+        var remembered = StudioViewModel.RememberMixerChannelSettings(
+            new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal),
+            [prior]);
+        var afterDrop = StudioViewModel.RememberMixerChannelSettings(remembered, []);
+        Assert.True(afterDrop["16778240"].Muted);
+        Assert.Equal(6, afterDrop["16778240"].GainDb);
+        Assert.Equal(-0.25, afterDrop["16778240"].Pan);
+        Assert.Equal(["eq"], afterDrop["16778240"].PluginInserts);
+
+        var restored = StudioViewModel.MergeNativeAudioChannel(
+            new NativeMediaCoreParticipantAudioChannel
+            {
+                ParticipantId = "16778240",
+                OutputLevel = 50,
+                GainDb = 0,
+                RmsDbfs = -20,
+                PeakDbfs = -12,
+                InputRmsDbfs = -20,
+                InputPeakDbfs = -12,
+                Status = "cleaning"
+            },
+            afterDrop["16778240"],
+            sourceMuted: false);
+        Assert.True(restored.Muted);
+        Assert.Equal(6, restored.ManualGainDb);
+        Assert.Equal(-0.25, restored.Pan);
+        Assert.Equal(["eq"], restored.PluginInserts);
+    }
+
+    [Fact]
+    public void LiveCase485_A1SettingsDoNotFollowAReusedZoomIdAfterMeetingEnd()
+    {
+        var prior = new ParticipantAudioMix
+        {
+            ParticipantId = "16778240",
+            OutputLevel = 40,
+            GainDb = 6,
+            ManualGainDb = 6,
+            Pan = -0.25,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            Muted = true
+        };
+        var inMeeting = StudioViewModel.RememberMixerChannelSettings(
+            new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal),
+            [prior]);
+        Assert.True(inMeeting["16778240"].Muted);
+
+        var afterLeave = new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal);
+        var leftoverRoster = new[] { new Participant { Id = "16778240", Name = "Someone else" } };
+        var leftover = ProductionStateHelper.BuildAudioMixChannels(
+            leftoverRoster,
+            afterLeave,
+            zoomSourceParticipantIds: new HashSet<string>(StringComparer.Ordinal));
+        Assert.DoesNotContain(leftover, channel => channel.ParticipantId == "16778240");
+        var nextMeeting = StudioViewModel.RememberMixerChannelSettings(afterLeave, leftover);
+        Assert.False(nextMeeting.ContainsKey("16778240"));
+    }
+
+    [Fact]
     public void ResolveMergedChannelMute_NewChannelStartsUnmutedEvenIfGuestWasZoomMutedOnArrival()
     {
         // No prior at all - the channel has never appeared in this session.

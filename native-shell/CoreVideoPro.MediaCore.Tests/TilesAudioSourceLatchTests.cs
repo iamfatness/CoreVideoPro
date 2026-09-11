@@ -116,6 +116,22 @@ public sealed class TilesAudioSourceLatchTests
     }
 
     [Fact]
+    public void AVideoOnlyPresentSetForgetsACameraOffPanelist_ProductionMustNotObserveThatWay()
+    {
+        // #485 review: RoomVideoParticipants drops FeedHealth.VideoOff. Observe treats
+        // absence as "left the meeting" and cannot re-latch them (Tiles already dropped
+        // the camera-off member). Spine must Observe with the full in-room roster.
+        var latch = new TilesAudioSourceLatch();
+        latch.Observe(true, "gallery", Wall("gallery", "a", "b"), null, null, Everyone);
+        var videoOnly = new HashSet<string>(StringComparer.Ordinal) { "b", "comms", "c" };
+        Assert.DoesNotContain("a", latch.Observe(true, "gallery", Wall("gallery", "b"), null, null, videoOnly));
+
+        var spine = new TilesAudioSourceLatch();
+        spine.Observe(true, "gallery", Wall("gallery", "a", "b"), null, null, Everyone);
+        Assert.Contains("a", spine.Observe(true, "gallery", Wall("gallery", "b"), null, null, Everyone));
+    }
+
+    [Fact]
     public void AnUnknownMeetingStateTickNeverWipesTheLatch()
     {
         // #478 L5: a tick with no (or a synthesized) snapshot must not read as "left the
