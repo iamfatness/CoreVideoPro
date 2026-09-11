@@ -4066,6 +4066,16 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"peakDbfs", hasPcm && !channel.muted
                          ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
                          : derivePeakDbfs(0)},
+        // #481: PRE-MUTE input meters, measured off the same PCM before mute/
+        // fader is applied. A muted strip still receives signal - this is how
+        // the A1 sees a guest talking while their channel is muted. Never gate
+        // this on channel.muted; that would recreate the bug these fields fix.
+        {"inputRmsDbfs", hasPcm
+                        ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
+                        : deriveRmsDbfs(0)},
+        {"inputPeakDbfs", hasPcm
+                         ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
+                         : derivePeakDbfs(0)},
         // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
         // feeds the workspace GR meter.
         {"gainReductionDb",

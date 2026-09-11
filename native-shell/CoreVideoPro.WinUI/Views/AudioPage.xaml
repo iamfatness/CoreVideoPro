@@ -1351,8 +1351,21 @@
                                             </ToggleButton>
                                         </Grid>
 
-                                        <TextBlock Grid.Row="2" Text="{x:Bind GainLabel, Mode=OneWay}" FontSize="10"
-                                                   FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                        <StackPanel Grid.Row="2" Spacing="1">
+                                            <TextBlock Text="{x:Bind GainLabel, Mode=OneWay}" FontSize="10"
+                                                       FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                            <!-- #481: lets the A1 tell "muted in Zoom" apart from their own
+                                                 console mute - MuteStateLabel already distinguishes the two in
+                                                 the meter tooltip; this makes it visible without a hover.
+                                                 10px/bold (owner asked 10-11px; 7px was unreadable); #F5BE45 on #0B1016
+                                                 measures ~11:1 contrast, well over the small-text AA floor. -->
+                                            <TextBlock Text="ZOOM MUTED" FontSize="10" FontWeight="Bold"
+                                                       CharacterSpacing="20"
+                                                       Foreground="#F5BE45"
+                                                       HorizontalAlignment="Center"
+                                                       Visibility="{x:Bind SourceMuted, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                       AutomationProperties.Name="{x:Bind ZoomMutedIndicatorAutomationName, Mode=OneWay}" />
+                                        </StackPanel>
 
                                         <Grid Grid.Row="3" ColumnSpacing="4">
                                             <Grid.ColumnDefinitions>
@@ -1368,11 +1381,13 @@
                                             <controls:AudioLevelMeter Grid.Column="1"
                                                                       Level="{x:Bind MeterLevel, Mode=OneWay}"
                                                                       IsMuted="{x:Bind EffectiveMuted, Mode=OneWay}"
+                                                                      ShowLevelWhileMuted="{x:Bind MeterShowsInputWhileMuted, Mode=OneWay}"
                                                                       IsVertical="True"
                                                                       ShowDbfsScale="True"
                                                                       SegmentCount="36"
                                                                       Width="42"
                                                                       VerticalAlignment="Stretch"
+                                                                      AutomationProperties.Name="{x:Bind Name, Mode=OneWay}"
                                                                       ToolTipService.ToolTip="{x:Bind MuteStateLabel, Mode=OneWay}" />
                                         </Grid>
 

@@ -592,6 +592,37 @@ comment at the code site; this is the index.
   `node scripts/validate-record-audio.mjs --media` (real MF decoder, AAC 440 Hz clip,
   judges the recording's decoded audio). The FADER LAW line now says "unrouted
   source (no sends)" for a strip-less source nothing routes (perGuestIso's zoom-mix).
+- **THE A1's MUTE IS ONLY SET BY THE A1 (#481).** A live meeting caught CoreVideo
+  muting Courtney, Guy and CJ on its own while the console showed nobody muted: a
+  new audio channel's `Muted` was seeded from the core's EFFECTIVE mute
+  (`nativeChannel.Muted`, which folds in the Zoom mute), and then `prior?.Muted`
+  latched that forever — a guest who was Zoom-muted the instant their channel
+  first appeared stayed muted on every bus after they unmuted in Zoom. Fix: a new
+  channel's `Muted` starts `false`, full stop, via the pure
+  `StudioViewModel.ResolveMergedChannelMute(prior)`; the Zoom mute lives only in
+  `SourceMuted` and is never adopted into `Muted`. It is still ORed into the
+  EFFECTIVE mute sent to the core (`ResolveEffectiveAudioMute`) — harmless, since
+  Zoom sends no audio while muted — but that gating is recomputed fresh every
+  wire build, never latched into the A1's state. The core also now publishes
+  PRE-MUTE `inputRmsDbfs`/`inputPeakDbfs` per channel (measured before mute/
+  fader) so a muted, talking guest still shows on the meter (dimmed) instead of
+  reading silence — the OUTPUT `rmsDbfs`/`peakDbfs` stay exactly as documented
+  above. **Round 1 review correction: test the WHOLE merge, not just the leaf.**
+  `ResolveMergedChannelMute(prior)` alone takes no native channel, so a
+  regression that put `?? nativeChannel.Muted` back at the call site could not
+  fail any test built only against that function. The real call site is now
+  `StudioViewModel.MergeNativeAudioChannel(nativeChannel, prior, sourceMuted)` —
+  the WHOLE native-channel→`ParticipantAudioMix` merge, extracted as one pure
+  static — and the tests drive it through the live two-rebuild sequence (arrives
+  Zoom-muted with no prior → live; guest unmutes in Zoom before the core's next
+  wire echoes it → still live). Also fixed there: `SourceMuted` must never carry
+  forward from `prior` on a roster miss (a missing roster entry is not evidence
+  of a Zoom mute) — the caller resolves it fresh every rebuild and passes
+  `false` on a miss, never `prior?.SourceMuted`. **Any new derived-state merge in
+  this codebase should default to the pure-function-over-the-whole-decision
+  shape, not a leaf function that omits the variable the regression would
+  restore** — a test that cannot construct the regressed expression cannot catch
+  it.
 - **A throwing DispatcherQueue.TryEnqueue callback fail-fasts the process with NO
   managed log** (`UiDispatch.cs`): three live crashes decoded to ordinary NRE /
   ArgumentOutOfRange inside queued callbacks (stowed 0x80004003 / 0x8000000b at
