@@ -571,22 +571,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // Absolute default so recordings land somewhere the operator can find
     // (Videos\CoreVideo Pro) rather than the relative "Recordings/CoreVideo Pro" that
     // resolved next to the core exe. Overridable via the settings Browse picker.
-    internal static string ResolveDefaultRecordingFolder()
+    internal static string ResolveDefaultRecordingFolder() =>
+        RecordingFolderPolicy.Resolve(null, UserVideosFolder());
+
+    // Null when the profile has no Videos folder. RecordingFolderPolicy still
+    // returns an absolute path in that case; the OLD fallback here was the
+    // RELATIVE wire default, which is the value that caused #469.
+    private static string? UserVideosFolder()
     {
         try
         {
-            var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-            if (!string.IsNullOrWhiteSpace(videos))
-            {
-                return System.IO.Path.Combine(videos, "CoreVideo Pro");
-            }
+            return Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
         }
         catch
         {
-            // Fall back to the wire default below.
+            return null;
         }
-
-        return MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
     }
 
     [ObservableProperty]
@@ -11759,7 +11759,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RecordingAudioBitrateKbps = preferences.RecordingAudioBitrateKbps > 0
             ? NormalizeAudioBitrateKbps(preferences.RecordingAudioBitrateKbps)
             : RecordingAudioBitrateKbps;
-        RecordingTargetFolder = preferences.RecordingTargetFolder ?? RecordingTargetFolder;
+        // #469 / T2.8. A persisted RELATIVE folder bypasses the absolute default
+        // below and is resolved by the CORE against its own working directory —
+        // the install folder for an installed build, where an upgrade or an
+        // uninstall can strand a show. Migrate it here, at restore, so the fix
+        // is permanent on the next save; an absolute path the operator chose is
+        // returned untouched.
+        RecordingTargetFolder = RecordingFolderPolicy.Resolve(
+            preferences.RecordingTargetFolder ?? RecordingTargetFolder, UserVideosFolder());
         RecordingFilenamePrefix = preferences.RecordingFilenamePrefix ?? RecordingFilenamePrefix;
         RecordingFormat = preferences.RecordingFormat ?? RecordingFormat;
         RecordingQuality = preferences.RecordingQuality ?? RecordingQuality;

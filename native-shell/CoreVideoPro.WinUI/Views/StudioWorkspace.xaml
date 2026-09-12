@@ -1200,6 +1200,15 @@
                                             <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
                                                      Message="{x:Bind ViewModel.RecordingDiskWarning, Mode=OneWay}"
                                                      Visibility="{x:Bind ViewModel.RecordingDiskWarningVisibility, Mode=OneWay}" />
+                                            <!-- #469: the operator could not find their shows. The
+                                                 folder is always absolute now, so show it. -->
+                                            <TextBlock Text="{x:Bind ViewModel.RecordingTargetFolder, Mode=OneWay}"
+                                                       AutomationProperties.Name="Recording folder"
+                                                       ToolTipService.ToolTip="{x:Bind ViewModel.RecordingTargetFolder, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       IsTextSelectionEnabled="True"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
                                         </StackPanel>
                                     </Border>
                                     <Grid ColumnSpacing="10">
