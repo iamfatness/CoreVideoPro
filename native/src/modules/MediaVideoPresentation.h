@@ -49,6 +49,15 @@ class MediaVideoPresentation {
   // clock applies to its epoch) so the next image is the clip's next frame,
   // on time. Dropping them instead would skip up to a queue's worth of frames
   // on every resume, because the reader has already moved past them.
+  // A cue hand-over (T1.11 / #449): this decoder is being re-keyed onto a new
+  // playback identity, so its clock is about to be replaced and the frames
+  // queued against the old epoch can never come due — keeping them would freeze
+  // the clip on its poster forever. Drop them; KEEP `current_`, because that
+  // held poster is exactly what stops Program showing a placeholder while the
+  // decoder refills from the running clock. `hasIdentity_` is cleared too: the
+  // refilled frames may restart their ids on the new identity, and the dedup
+  // must not mistake the first of them for a repeat of the last old one.
+  void dropQueued() { queued_.clear(); hasIdentity_ = false; }
   void shift(int64_t delta100ns) { for (auto& sample : queued_) sample.due100ns += delta100ns; }
   const VideoFrame& current() const { return current_; }
   bool hasFrame() const { return current_.hasPixels() || !queued_.empty(); }

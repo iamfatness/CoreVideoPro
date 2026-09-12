@@ -518,3 +518,152 @@ TEST(MediaAudioWindows, ABackwardSeekWithinRecentHistoryReplaysDecodedSamples) {
   longClip.seek(0);
   EXPECT_EQ(longClip.take(960).front(), 0.f);
 }
+
+// T1.11 step 2: a clip cued in Preview hands its WARM decoder to Program.
+// Two things change on go-live — the `preview:` source-id namespace collapses
+// and MediaGoLiveLedger advances the generation baked into the playback key —
+// so the arriving request used to match no entry, a cold decoder opened, and
+// Program painted colorFromParticipantId for the ticks before its first frame
+// (the "placeholder flash", #449). The cue poster sits paused at frame 0, so
+// resuming IT is exactly the "roll from 0" the go-live contract asks for.
+TEST(OwnedMediaFrameSource, ACuedClipHandsItsWarmDecoderToProgram) {
+  std::atomic<int> created{0};
+  OwnedMediaFrameSource source([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto cue = workerLayer();
+  cue.sourceId = "preview:media:test";
+  cue.mediaPlaybackKey = "media:test:live:1";
+  cue.mediaAssetPlaying = false;
+  ASSERT_TRUE(pollUntilFrame(source, cue) > 0) << "the cue poster never warmed";
+  EXPECT_EQ(created.load(), 1);
+
+  // The Take: same asset, same file, live namespace, generation +1, playing.
+  auto live = workerLayer();
+  live.sourceId = "media:test";
+  live.mediaPlaybackKey = "media:test:live:2";
+  live.mediaAssetPlaying = true;
+  ASSERT_TRUE(pollUntilFrame(source, live) > 0);
+  // Give a would-be replacement worker the chance to start before counting.
+  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+  while (std::chrono::steady_clock::now() < settle) {
+    (void)source.pollMediaFrames({live}, steadyNowMs());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(created.load(), 1) << "the take opened a second decoder instead of adopting the warm cue";
+}
+
+// The refusal that keeps the go-live contract honest. A cue that has already
+// ROLLED is at an arbitrary position; adopting it would put the clip on air
+// mid-roll while the take record still read `cut`. It must cold-start.
+TEST(OwnedMediaFrameSource, ACueThatAlreadyRolledIsNeverHandedOver) {
+  std::atomic<int> created{0};
+  OwnedMediaFrameSource source([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto cue = workerLayer();
+  cue.sourceId = "preview:media:test";
+  cue.mediaPlaybackKey = "media:test:live:1";
+  cue.mediaAssetPlaying = true;  // auditioning in Preview: it has rolled
+  ASSERT_TRUE(pollUntilFrame(source, cue) > 0);
+  EXPECT_EQ(created.load(), 1);
+
+  auto live = workerLayer();
+  live.sourceId = "media:test";
+  live.mediaPlaybackKey = "media:test:live:2";
+  live.mediaAssetPlaying = true;
+  ASSERT_TRUE(pollUntilFrame(source, live) > 0);
+  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+  while (std::chrono::steady_clock::now() < settle) {
+    (void)source.pollMediaFrames({live}, steadyNowMs());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(created.load(), 2) << "a rolled cue was adopted; the clip would go on air mid-roll";
+}
+
+namespace {
+// A prefetching decoder, like the real MF adapter — which is what makes the
+// SCHEDULE visible. While the clip is paused it prepares frames due at a far
+// future instant (the cue's paused epoch); once playing it prepares frames due
+// now, on a clock that RESETS whenever the playback key changes. So if a
+// hand-over keeps the cue's queued frames, `MediaVideoPresentation::select`
+// finds nothing due and Program sits on the poster forever.
+class CueSchedulingDecoder final : public IMediaFrameSource, public IMediaVideoPrefetch {
+ public:
+  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>&, int64_t) override { return {}; }
+  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+    AudioFrame frame; frame.participantId = layers.front().sourceId;
+    frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
+    return {frame};
+  }
+  std::vector<std::string> warnings() const override { return {}; }
+  std::vector<ScheduledMediaVideo> prefetchMediaVideo(
+      const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
+    const auto& layer = layers.front();
+    VideoFrame frame;
+    frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+    frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
+    frame.pixelStride = 4; frame.frameId = ++frameId_;
+    frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
+    // Paused: due an hour out, exactly like a frame scheduled against an epoch
+    // that is not running. Playing: due now.
+    const int64_t due = layer.mediaAssetPlaying ? nowMs * 10000 : (nowMs + 3600'000) * 10000;
+    return {ScheduledMediaVideo{frame, due}};
+  }
+  void syncMediaClock(const std::vector<CompositorRenderPlanLayer>&, int64_t) override {}
+ private:
+  int64_t frameId_ = 0;
+};
+}  // namespace
+
+// The hand-over must leave the clip ROLLING, not frozen on its poster. The
+// adopted decoder's queued frames were scheduled against the cue's paused
+// epoch; the go-live clock is a new epoch, so they can never come due. They are
+// dropped on adoption and the decoder refills from the running clock — the
+// poster stays on air meanwhile, which is what removes the placeholder.
+TEST(OwnedMediaFrameSource, AnAdoptedCueRollsInsteadOfFreezingOnItsPoster) {
+  OwnedMediaFrameSource source([] { return std::make_unique<CueSchedulingDecoder>(); });
+  auto cue = workerLayer();
+  cue.sourceId = "preview:media:test";
+  cue.mediaPlaybackKey = "media:test:live:1";
+  cue.mediaAssetPlaying = false;
+  const int64_t poster = pollUntilFrame(source, cue);
+  ASSERT_TRUE(poster > 0) << "the cue poster never warmed";
+  // Let the cue queue up more far-future frames behind the poster.
+  const auto warm = std::chrono::steady_clock::now() + std::chrono::milliseconds(60);
+  while (std::chrono::steady_clock::now() < warm) {
+    (void)source.pollMediaFrames({cue}, steadyNowMs());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  auto live = workerLayer();
+  live.sourceId = "media:test";
+  live.mediaPlaybackKey = "media:test:live:2";
+  live.mediaAssetPlaying = true;
+  EXPECT_TRUE(pollUntilFrame(source, live, poster) > poster)
+      << "the adopted decoder never advanced past its poster";
+}
+
+// Go-live is "roll from 0, AUDIO ON". The cue was paused, so its entry carried
+// wantsAudio=false and an audio clock anchored to a run that never happened;
+// the hand-over has to arm the audio side as a fresh start, or the adoption
+// buys picture continuity by silencing the clip.
+TEST(OwnedMediaFrameSource, AnAdoptedCueTurnsItsAudioOn) {
+  OwnedMediaFrameSource source([] { return std::make_unique<CountingDecoder>(); });
+  auto cue = workerLayer();
+  cue.sourceId = "preview:media:test";
+  cue.mediaPlaybackKey = "media:test:live:1";
+  cue.mediaAssetPlaying = false;
+  ASSERT_TRUE(pollUntilFrame(source, cue) > 0);
+  EXPECT_FALSE(hasNonSilentPcm(source.pollMediaAudioFrames({cue}, steadyNowMs())))
+      << "a paused cue emitted audio";
+
+  auto live = workerLayer();
+  live.sourceId = "media:test";
+  live.mediaPlaybackKey = "media:test:live:2";
+  live.mediaAssetPlaying = true;
+  bool heard = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!heard && std::chrono::steady_clock::now() < deadline) {
+    (void)source.pollMediaFrames({live}, steadyNowMs());
+    heard = hasNonSilentPcm(source.pollMediaAudioFrames({live}, steadyNowMs()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(heard) << "the adopted clip went to Program silent";
+}

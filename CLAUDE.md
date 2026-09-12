@@ -1372,13 +1372,59 @@ media asset is now one decoder with one clock, not one per bus.
   `Take_DoesNotDoubleRefreshWhenPromoteAlreadyRebuiltTheBin`,
   `Take_DoesNotRefreshTheMediaBinWhenTheProgramMediaSetIsUnchanged`) on the
   shell side.
-- **KNOWN GAP: a clip going live still cold-starts.** The Preview cue poster
-  (`preview:media:<id>`) and the rolling Program source (`media:<id>`) are
-  different decoders, so a clip entering Program opens a fresh one: a placeholder
-  slab for a few ticks, and its take record reads `rebuilt` with
-  `missingSources=[media:<id>]`. That record is correct and honest — do not teach
-  the judge to excuse it. The fix (hand the warmed cue decoder to Program) belongs
-  to a later slice.
+- **A CUED CLIP HANDS ITS WARM DECODER TO PROGRAM (T1.11 / #449, 2026-09-12).**
+  The Preview cue poster (`preview:media:<id>`) and the rolling Program source
+  (`media:<id>`) are two decoders, because a clip changes identity TWICE on
+  go-live: the `preview:` namespace collapses, and `MediaGoLiveLedger` advances
+  the generation baked into the playback key (`media:<id>:live:<n>` ->
+  `:live:<n+1>`). So the arriving request matched no entry, a cold decoder
+  opened, and for the ticks before its first frame `resolveLayers` painted
+  `colorFromParticipantId` over PROGRAM — the placeholder flash. Now
+  `OwnedMediaFrameSource::adoptCuedDecoders` RE-KEYS the cue's entry onto the
+  live request instead of retiring it. `Entry` is a `shared_ptr` whose worker
+  holds its own reference, so the hand-over is a map re-key: the decoder and its
+  held poster never notice. **This is not an exception to the go-live contract,
+  it IS the contract** — the cue poster sits paused at frame 0
+  (`MediaVideoPresentation::hold` shows the first prepared frame and never
+  advances), so resuming it is exactly "roll from 0, audio on".
+  **The decision is pure** (`modules/MediaCueHandoff.h`, the
+  `CaptureReaderStallPolicy`/`TakeRecordPolicy` shape) and every condition is
+  required: same asset id AND same path (a repointed bin row holds the old
+  file's pictures), same loop flag, the retiring `sourceId` is exactly
+  `"preview:" + arriving.sourceId`, the arriving generation is exactly the
+  retiring one +1, and — the load-bearing one — **the cue NEVER ROLLED**
+  (`Entry::everPlayed`). A decoder that has played is at an arbitrary position,
+  and adopting it would put a clip on air mid-roll while the take record still
+  read `cut`. Two candidates for one arrival is refused loudly and cold-starts:
+  never guess which cue is the predecessor.
+  **Three traps, each found by a test that failed first:**
+  1. **It runs on the REQUEST path (`selectVideo` / `pollMediaAudioFrames`),
+     never in `manage()`.** That is the difference between one flashed frame and
+     none — the request set changes on the take tick, but `manage()` is a
+     separate thread on a 2 ms wait, so an adoption deferred to it lands a tick
+     late. Adoption starts no thread and does no I/O, which is what makes it
+     safe on the caller's path where creating a worker would not be.
+  2. **The queued frames are DROPPED (`MediaVideoPresentation::dropQueued`),
+     `current_` is kept.** They were scheduled against the cue's paused epoch
+     and can never come due on the go-live clock, so keeping them freezes the
+     clip on its poster forever. The held poster is what covers the refill.
+  3. **The OWNER names the source, not the decoder.** Every decoder stamps
+     `participantId` from the layer it was handed, so `selectVideo` re-stamping
+     it is normally a no-op — but an adopted poster was decoded under the
+     `preview:` id, and the compositor looks a media layer up by the LIVE source
+     id. Without the re-stamp the hand-off delivered a frame nothing could
+     match and Program painted the placeholder anyway.
+  The take record now reads `missingSources=[]` for this case because the cold
+  start stopped happening — **the judge was not touched, and must not be**.
+  Tests: `MediaCueHandoffTest.cpp` (every refusal),
+  `OwnedMediaFrameSource.ACuedClipHandsItsWarmDecoderToProgram` /
+  `ACueThatAlreadyRolledIsNeverHandedOver` /
+  `AnAdoptedCueRollsInsteadOfFreezingOnItsPoster` / `AnAdoptedCueTurnsItsAudioOn`,
+  and `ProgramPixelContinuity.ACuedClipTakenToProgramNeverShowsThePlaceholder`
+  (the end-to-end pixel proof, over a REAL `OwnedMediaFrameSource`).
+  **Still cold-starts, honestly:** a clip cut to Program that was never cued in
+  Preview has no warm decoder to adopt. That is step 1 of #449 (hold the
+  outgoing picture until the first real frame), not done here.
 - **The 16-decoder cap warning names the refused source** (`OwnedMediaFrameSource`)
   instead of just stating the count, and a loud, once-per-id `[media-playback]`
   warning fires when two different playback identities request one source id —
