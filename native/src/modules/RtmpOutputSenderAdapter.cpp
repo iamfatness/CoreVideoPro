@@ -835,18 +835,25 @@ class RtmpOutputSender final : public IOutputSender {
               ? sender_.lastError
               : std::string("FFmpeg stdin write failed; the ") + protocol_.destination +
                     " process stopped or rejected frames.";
-      // Carry FFmpeg's own reason. Without it this sentence is undiagnosable and
-      // reads to an operator as a credential problem (2026-09-12).
-      const auto detailedFailure = describeFfmpegSenderFailure(genericFailure, ffmpegStderrTail());
-      sender_.warning = detailedFailure;
       sender_.destinationHealth = "failed";
       if (sender_.lastResultCode != "ffmpeg-exited") {
         sender_.lastResultCode = "ffmpeg-write-failed";
       }
-      sender_.lastError = sender_.warning;
       const auto proofStatus = sender_.lastResultCode == "ffmpeg-exited" ? "ffmpeg-exited" : "ffmpeg-write-failed";
       scheduleFfmpegRetry();
+      // STOP FIRST, THEN READ THE STDERR. A failed stdin write is observed the
+      // instant the pipe breaks, which is BEFORE FFmpeg has flushed the line that
+      // says why - measured live 2026-09-12 against a refusing endpoint, where the
+      // tail read here held only "Guessed Channel Layout: stereo" and the whole
+      // 72-byte file never gained the "I/O error" line, because we killed the
+      // process first. stopFfmpegProcess() closes stdin (FFmpeg's EOF) and waits
+      // for exit, so the file is COMPLETE once it returns.
       stopFfmpegProcess();
+      // Carry FFmpeg's own reason. Without it this sentence is undiagnosable and
+      // reads to an operator as a credential problem (2026-09-12).
+      const auto detailedFailure = describeFfmpegSenderFailure(genericFailure, ffmpegStderrTail());
+      sender_.warning = detailedFailure;
+      sender_.lastError = sender_.warning;
       appendSendProof(frame, proofStatus);
       return snapshot();
     }
@@ -1825,7 +1832,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
+               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
               ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages ffmpeg.exe and corevideo-ffmpeg-runtime.json when FFmpeg is available or unavailable\"}");
   }
 
@@ -1842,7 +1849,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"renderPlanId\":" + jsonString(frame->renderPlanId) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
     }
     line += "}";
     writeLine(line);
@@ -1888,6 +1895,13 @@ class RtmpOutputSender final : public IOutputSender {
   int configuredBFrames_ = 2;
   bool configuredAllowEnhancedRtmp_ = false;
   std::string ffmpegExecutable_;
+  // NOTE: where this is empty (FFmpeg never started for this attempt) the proof
+  // reports the encoder that WOULD be used, and it must go through
+  // resolveRtmpCompatibility first. Reporting the raw configured codec said
+  // "av1_nvenc" on a run whose own runtimeDetail said "falling back to H.264" -
+  // two fields contradicting each other in the same proof line, sending a reader
+  // diagnosing a stream failure to chase an encoder that is never selected
+  // (observed live 2026-09-12).
   std::string selectedFfmpegVideoEncoder_;
   std::filesystem::path ffmpegStderrPath_;
   std::string activeEndpoint_;

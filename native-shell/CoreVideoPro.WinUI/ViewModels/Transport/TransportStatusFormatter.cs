@@ -175,6 +175,43 @@ public static class TransportStatusFormatter
         return true;
     }
 
+    /// <summary>
+    /// True when a streaming-start failure means "not yet", not "no".
+    ///
+    /// A stream start races Program's first COMPOSED pixels: the senders are fed
+    /// from the program tap, which is not producing the instant the destination is
+    /// armed. Reporting that as a failure on the first poll is what made a healthy
+    /// configuration read as "the encoder will not start" (owner, 2026-09-12 - two
+    /// of the attempts that day were this, and the third succeeded unchanged).
+    ///
+    /// Deliberately narrow: ONLY the program-pixel readiness case. A refusal, a
+    /// missing runtime or an incomplete configuration is answered immediately,
+    /// because waiting on those only delays an honest answer.
+    /// </summary>
+    public static bool IsStreamingStartStillWarming(string? failureStatus)
+    {
+        if (string.IsNullOrWhiteSpace(failureStatus))
+        {
+            return false;
+        }
+
+        var lowered = failureStatus.ToLowerInvariant();
+        // An explicit refusal outranks readiness: a destination that refused us is
+        // not warming, even if the sender also had no pixels to offer it.
+        if (lowered.Contains("refused the connection", StringComparison.Ordinal) ||
+            lowered.Contains("error opening output", StringComparison.Ordinal) ||
+            lowered.Contains("i/o error", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return lowered.Contains("frame-pixels-missing", StringComparison.Ordinal) ||
+               lowered.Contains("waiting-for-frame", StringComparison.Ordinal) ||
+               (lowered.Contains("waiting for", StringComparison.Ordinal) &&
+                (lowered.Contains("program frame", StringComparison.Ordinal) ||
+                 lowered.Contains("program pixels", StringComparison.Ordinal)));
+    }
+
     private static string BuildOutputSenderFailureDetail(NativeMediaCoreOutputSender sender) =>
         string.Join(
             " ",

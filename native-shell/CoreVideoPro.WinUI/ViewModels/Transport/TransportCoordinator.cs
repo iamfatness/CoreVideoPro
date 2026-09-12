@@ -536,7 +536,13 @@ public sealed class TransportCoordinator
                 }
 
                 var snapshot = await _host.SyncActiveSceneAsync(starting ? "stream-start" : "stream-stop").ConfigureAwait(false);
-                if (starting && TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
+                // A destination still producing its first pixels is NOT a failure: fall
+                // through to WaitForStreamingStartProofAsync, which waits it out. Bailing
+                // here is what rolled back two of the owner's three start attempts on
+                // 2026-09-12 with a message about Program while nothing was wrong.
+                if (starting &&
+                    TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus) &&
+                    !TransportStatusFormatter.IsStreamingStartStillWarming(healthFailureStatus))
                 {
                     LaunchLog.Write($"stream: start failed health proof {healthFailureStatus}");
                     _dispatcher.RunOnUiThread(() =>
@@ -664,7 +670,12 @@ public sealed class TransportCoordinator
             try
             {
                 var snapshot = await _host.SyncActiveSceneAsync().ConfigureAwait(false);
-                if (starting && TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
+                // Same rule as the primary path: warming is not failing. This is the
+                // site the LIVE re-test caught still bailing after the primary path was
+                // fixed - a start deferred for sync backpressure comes through here.
+                if (starting &&
+                    TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus) &&
+                    !TransportStatusFormatter.IsStreamingStartStillWarming(healthFailureStatus))
                 {
                     LaunchLog.Write($"stream: retry start failed health proof {healthFailureStatus}");
                     _dispatcher.RunOnUiThread(() =>
@@ -743,25 +754,60 @@ public sealed class TransportCoordinator
         }
     }
 
+    private const int StreamStartProofPollMs = 200;
+    // ~1.2 s: unchanged for every non-warming case.
+    private const int StreamStartProofAttempts = 6;
+    // ~5 s, reachable ONLY while Program is still producing its first pixels.
+    private const int StreamStartWarmingAttempts = 25;
+
     private async Task<(NativeMediaCoreStateSnapshot Snapshot, string? FailureStatus)> WaitForStreamingStartProofAsync(
         IReadOnlyList<string> requestedDestinations,
         NativeMediaCoreStateSnapshot initialSnapshot)
     {
         var snapshot = initialSnapshot;
-        for (var attempt = 0; attempt < 6; attempt++)
+        // A destination that has not produced pixels YET has not failed. A stream
+        // start races Program's first composed frame, and answering on the first
+        // poll is what made a healthy configuration read as "the encoder will not
+        // start" (owner, 2026-09-12: two attempts died on frame-pixels-missing and
+        // the third succeeded with nothing changed). Only that case may extend the
+        // window - a refusal or a misconfiguration is still answered immediately,
+        // because waiting on those only delays an honest answer.
+        string? warmingStatus = null;
+        for (var attempt = 0; attempt < StreamStartWarmingAttempts; attempt++)
         {
             if (TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
             {
-                return (snapshot, healthFailureStatus);
-            }
+                if (!TransportStatusFormatter.IsStreamingStartStillWarming(healthFailureStatus))
+                {
+                    return (snapshot, healthFailureStatus);
+                }
 
-            if (TransportStatusFormatter.IsStreamingStartProven(snapshot, requestedDestinations))
+                warmingStatus = healthFailureStatus;
+            }
+            else
             {
-                return (snapshot, null);
+                warmingStatus = null;
+                if (TransportStatusFormatter.IsStreamingStartProven(snapshot, requestedDestinations))
+                {
+                    return (snapshot, null);
+                }
+
+                // Nothing warming and nothing proven: the original short window stands.
+                if (attempt >= StreamStartProofAttempts - 1)
+                {
+                    break;
+                }
             }
 
-            await Task.Delay(200).ConfigureAwait(false);
+            await Task.Delay(StreamStartProofPollMs).ConfigureAwait(false);
             snapshot = await _bridge.PollSnapshotAsync().ConfigureAwait(false);
+        }
+
+        // It warmed for the whole budget and never produced a frame. Say exactly
+        // that rather than inventing a different cause.
+        if (warmingStatus is not null)
+        {
+            return (snapshot, warmingStatus);
         }
 
         return TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, requestedDestinations, out var failureStatus)
