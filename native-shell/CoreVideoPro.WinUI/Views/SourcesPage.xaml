@@ -278,7 +278,31 @@
                                         <Button Content="Clear stale entries" Command="{x:Bind ViewModel.ClearStaleGalleryEntriesCommand}" />
                                     </StackPanel>
                                     <TextBlock Text="{x:Bind ViewModel.GalleryMembershipSummary, Mode=OneWay}" TextWrapping="WrapWholeWords" FontSize="10" />
-                                    <TextBox Header="Tiles background color" Text="{x:Bind ViewModel.GalleryBackgroundColor, Mode=TwoWay}" />
+                                    <!-- #476: the hex box stays, with a picker beside it. -->
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="28" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Header="Tiles background color" Text="{x:Bind ViewModel.GalleryBackgroundColor, Mode=TwoWay}"
+                                                 PlaceholderText="#000000" />
+                                        <Border Grid.Column="1" Width="24" Height="24" CornerRadius="4" VerticalAlignment="Bottom"
+                                                Background="{x:Bind ViewModel.GalleryBackgroundSwatch, Mode=OneWay}" />
+                                        <Button Grid.Column="2" Content="Pick" VerticalAlignment="Bottom"
+                                                AutomationProperties.Name="Pick tiles background color">
+                                            <Button.Flyout>
+                                                <Flyout>
+                                                    <ColorPicker Color="{x:Bind ViewModel.GalleryBackgroundPickerColor, Mode=TwoWay}"
+                                                                 IsAlphaEnabled="False"
+                                                                 IsAlphaSliderVisible="False"
+                                                                 IsAlphaTextInputVisible="False"
+                                                                 IsColorChannelTextInputVisible="False"
+                                                                 IsHexInputVisible="False" />
+                                                </Flyout>
+                                            </Button.Flyout>
+                                        </Button>
+                                    </Grid>
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <Button Content="Use selected source behind tiles" Command="{x:Bind ViewModel.SetGalleryBackgroundSourceCommand}" />
                                         <Button Content="Clear live background" Command="{x:Bind ViewModel.ClearGalleryBackgroundSourceCommand}" />
@@ -325,8 +349,31 @@
                                         <NumberBox Grid.Column="1" Header="Thickness" Value="{x:Bind ViewModel.GalleryBorderThickness, Mode=TwoWay}"
                                                    Minimum="0" Maximum="12" SmallChange="1" SpinButtonPlacementMode="Compact" />
                                     </Grid>
-                                    <TextBox Header="Border color" Text="{x:Bind ViewModel.GalleryBorderColor, Mode=TwoWay}"
-                                             PlaceholderText="#000000" />
+                                    <!-- #476: the hex box stays, with a picker beside it. -->
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="28" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Header="Border color" Text="{x:Bind ViewModel.GalleryBorderColor, Mode=TwoWay}"
+                                                 PlaceholderText="#000000" />
+                                        <Border Grid.Column="1" Width="24" Height="24" CornerRadius="4" VerticalAlignment="Bottom"
+                                                Background="{x:Bind ViewModel.GalleryBorderSwatch, Mode=OneWay}" />
+                                        <Button Grid.Column="2" Content="Pick" VerticalAlignment="Bottom"
+                                                AutomationProperties.Name="Pick border color">
+                                            <Button.Flyout>
+                                                <Flyout>
+                                                    <ColorPicker Color="{x:Bind ViewModel.GalleryBorderPickerColor, Mode=TwoWay}"
+                                                                 IsAlphaEnabled="False"
+                                                                 IsAlphaSliderVisible="False"
+                                                                 IsAlphaTextInputVisible="False"
+                                                                 IsColorChannelTextInputVisible="False"
+                                                                 IsHexInputVisible="False" />
+                                                </Flyout>
+                                            </Button.Flyout>
+                                        </Button>
+                                    </Grid>
                                     <NumberBox Header="Corner radius" Value="{x:Bind ViewModel.GalleryCornerRadius, Mode=TwoWay}"
                                                Minimum="0" Maximum="100" SmallChange="1" SpinButtonPlacementMode="Compact" />
                                     <TextBlock Text="Glow" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
@@ -339,8 +386,31 @@
                                     </Grid>
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                        <TextBox Header="Glow color" Text="{x:Bind ViewModel.GalleryGlowColor, Mode=TwoWay}"
-                                                 PlaceholderText="#FFFFFF" />
+                                        <!-- #476: the hex box stays, with a picker beside it. -->
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="28" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Header="Glow color" Text="{x:Bind ViewModel.GalleryGlowColor, Mode=TwoWay}"
+                                                     PlaceholderText="#FFFFFF" />
+                                            <Border Grid.Column="1" Width="24" Height="24" CornerRadius="4" VerticalAlignment="Bottom"
+                                                    Background="{x:Bind ViewModel.GalleryGlowSwatch, Mode=OneWay}" />
+                                            <Button Grid.Column="2" Content="Pick" VerticalAlignment="Bottom"
+                                                    AutomationProperties.Name="Pick glow color">
+                                                <Button.Flyout>
+                                                    <Flyout>
+                                                        <ColorPicker Color="{x:Bind ViewModel.GalleryGlowPickerColor, Mode=TwoWay}"
+                                                                     IsAlphaEnabled="False"
+                                                                     IsAlphaSliderVisible="False"
+                                                                     IsAlphaTextInputVisible="False"
+                                                                     IsColorChannelTextInputVisible="False"
+                                                                     IsHexInputVisible="False" />
+                                                    </Flyout>
+                                                </Button.Flyout>
+                                            </Button>
+                                        </Grid>
                                         <NumberBox Grid.Column="1" Header="Softness" Value="{x:Bind ViewModel.GalleryGlowSoftness, Mode=TwoWay}"
                                                    Minimum="0" Maximum="100" SmallChange="5" SpinButtonPlacementMode="Compact" />
                                     </Grid>

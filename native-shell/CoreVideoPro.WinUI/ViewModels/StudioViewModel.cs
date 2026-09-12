@@ -13053,6 +13053,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _galleryEditGuard.Notify(() =>
         {
             OnPropertyChanged(nameof(IsPreviewDynamicGallery));
+            // #476: the pickers and swatches are projections of the hex values,
+            // so they ride the same notification every gallery edit already
+            // raises. Without this, typing a hex code leaves the swatch stale.
+            OnPropertyChanged(nameof(GalleryBackgroundPickerColor));
+            OnPropertyChanged(nameof(GalleryBackgroundSwatch));
+            OnPropertyChanged(nameof(GalleryBorderPickerColor));
+            OnPropertyChanged(nameof(GalleryBorderSwatch));
+            OnPropertyChanged(nameof(GalleryGlowPickerColor));
+            OnPropertyChanged(nameof(GalleryGlowSwatch));
             OnPropertyChanged(nameof(GalleryMembershipMode));
             OnPropertyChanged(nameof(GalleryMembershipSummary));
             OnPropertyChanged(nameof(GalleryMemberChoices));

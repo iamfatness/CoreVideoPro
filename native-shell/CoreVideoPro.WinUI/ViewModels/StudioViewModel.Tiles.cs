@@ -34,6 +34,37 @@ public sealed partial class StudioViewModel
     }
     public string GalleryBackgroundColor { get => PreviewScene.DynamicGallery?.BackgroundColor ?? "#000000";
         set => UpdateGallery(s => s.BackgroundColor = SceneRoutingService.NormalizeBorderColor(value)); }
+
+    // #476 / T3.5. The picker and the hex box are two views of ONE value, and
+    // the hex string stays the source of truth: the picker reads it and writes
+    // it back, so there is no second copy to fall out of sync and no
+    // re-entrancy latch to get wrong. Notified from
+    // NotifyDynamicGalleryPropertiesChanged, which every gallery edit already
+    // goes through, so typing a hex code moves the swatch and the picker too.
+    //
+    // The defaults are the same values the XAML placeholders show, so a blank
+    // or malformed field opens the picker on what the operator is looking at
+    // rather than snapping to black - which would read as a colour they chose.
+    public Windows.UI.Color GalleryBackgroundPickerColor
+    {
+        get => HexColor.ParseOrDefault(GalleryBackgroundColor, Microsoft.UI.Colors.Black);
+        set => GalleryBackgroundColor = HexColor.ToHex(value);
+    }
+    public Microsoft.UI.Xaml.Media.SolidColorBrush GalleryBackgroundSwatch => new(GalleryBackgroundPickerColor);
+
+    public Windows.UI.Color GalleryBorderPickerColor
+    {
+        get => HexColor.ParseOrDefault(GalleryBorderColor, Microsoft.UI.Colors.Black);
+        set => GalleryBorderColor = HexColor.ToHex(value);
+    }
+    public Microsoft.UI.Xaml.Media.SolidColorBrush GalleryBorderSwatch => new(GalleryBorderPickerColor);
+
+    public Windows.UI.Color GalleryGlowPickerColor
+    {
+        get => HexColor.ParseOrDefault(GalleryGlowColor, Microsoft.UI.Colors.White);
+        set => GalleryGlowColor = HexColor.ToHex(value);
+    }
+    public Microsoft.UI.Xaml.Media.SolidColorBrush GalleryGlowSwatch => new(GalleryGlowPickerColor);
     public void SetTilesBackground(string color, string sourceId)
     {
         RequireTilesPreview();
