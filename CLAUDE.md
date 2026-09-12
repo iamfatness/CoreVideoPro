@@ -2019,6 +2019,220 @@ Tests: `ZoomEngineClient.TheTakeoverChoiceRidesTheJoinCommandAndDefaultsOff`,
 test** — it links the Zoom SDK and the prompt only fires against live Zoom, so
 the callback itself is verified by a live join, not by CI.
 
+## The operator stutter is the SNAPSHOT APPLY, and it has two halves (2026-09-12)
+
+Owner, live: "While streaming I am seeing the stuttering on inputs in preview and
+program and the multiviewer." **The core was innocent and measured so**: 59.8
+render slots/s, 60.0 video-out ticks/s, zero deadline misses, zero underruns, no
+monitor shedding, render work 3.9 ms of a 16.7 ms budget. All three stuttering
+surfaces are WinUI hosts on one thread, and that thread was the problem.
+
+From their `launch.log` (14:00-14:12), EVERY apply exceeded 10 ms, a steady
+360/minute = 6/s:
+
+| | median | p90 | max |
+|---|---|---|---|
+| `ApplySnapshot` total | **19.0 ms** | 21.3 ms | 234 ms |
+| `audioReadouts` | 9.0 ms | 9.4 ms | 224 ms |
+| `applyParticipants` | ~4.2 ms | | **197 ms** |
+
+Their own present logs show the cost: preview 1440 frames in 32 s (**45/s**),
+multiview 1440 in 29 s (**49.6/s**), against a core delivering 60.
+`RefreshSurfaceBindings` is NOT a contributor (0.5-1.0 ms/call, 11/s, UI busy 1%).
+
+**Half one, the steady tax: diagnostic strings recomputed at snapshot rate.**
+`RefreshAudioReadoutBindings` fired 26 notifications, ~10 of which each walk the
+whole audio session, capture sources, senders and recording to BUILD A STRING
+(proof, validation checklist, capture/bus/monitor summaries). They are now split:
+meters and device labels stay live on every snapshot, the diagnostic summaries
+run on a 1 s throttle — the same interval and shape as
+`SettingsViewModel.RefreshDiagnosticsReadout`, which is called one line below for
+exactly this reason. **Every operator gesture still passes `throttle:false`** and
+gets an immediate answer; only the per-snapshot path throttles.
+
+**Half two, the spikes: one structural rebuild costs up to 202 ms.** When
+`ApplyLiveParticipants`'s signature flips it runs ten synchronous UI-thread
+operations, two of which replace a bound collection. It fired 93 times in twelve
+minutes. It is COALESCED now — leading edge plus one trailing timer, 150 ms, the
+same proven shape as the surface-binding throttle above — so the first change
+still applies immediately (a join/leave is not made laggy) and a burst collapses
+to one extra rebuild carrying the LATEST set, not the one that tripped the
+signature.
+
+**THE OBVIOUS SUSPECT WAS WRONG, AND THAT IS THE LESSON.** The signature buckets
+each participant as video-on/off, so "camera flicker during resubscribe churn" was
+the natural explanation. It is false: 207 engine `participants` payloads across
+that exact window carry **zero** video-on/off transitions, **zero** screen-share
+transitions and **zero** roster id-set changes. Something else flips that
+signature and it is still unidentified. Four hypotheses were killed by experiment
+in the test meeting, each its own build: verbose diagnostics (forced on — no
+effect), Engine off vs on, sources assigned, and tab realization (moves
+`audioReadouts` 0.1 -> 0.4 ms, real but 22x short of 9 ms). **Do not "fix" the
+video-off signature on the strength of the comment above it.**
+
+**So the rebuild now NAMES ITS OWN SLOW STEP**, like the FFmpeg stderr tail and the
+media-decoder branch logging: each of the ten operations is timed, and a rebuild
+past ONE FRAME (16.7 ms) logs `perf: structural participant rebuild <total>ms
+participants=N :: roomLists=… gallery=… audioRows=… multiviewTiles=…
+participantList=… showInputEditors=… multiviewGrid=… previewRouting=…
+productionReadouts=…`. Deliberately NOT gated on verbose diagnostics — this
+incident was only diagnosable because verbose happened to be on. Verified firing
+(4.7 ms here, largest step `multiviewGrid` 1.3 ms); silent below one frame.
+
+**Still open:** which step costs 197 ms on the owner's machine (it is ~4.7 ms on
+this one), and what actually flips the signature. The next occurrence answers
+both in one line.
+
+## A failing stream must name its own reason (owner report, 2026-09-12)
+
+The owner could not start a stream and was told *"RTMP output failed. Check the
+server URL, stream key, and network."*, so they re-entered credentials that were
+already correct. FFmpeg had written the real reason to its stderr temp file on
+the FIRST attempt:
+
+```
+[out#0/flv] Error opening output rtmp://a.rtmp.youtube.com/live2/<key>: I/O error
+Error opening output files: I/O error
+```
+
+The destination refused the connection. **The stream key in that URL is the same
+key that worked two minutes later** — it decrypts cleanly from
+`production-output-preferences.json` (DPAPI, v12) and was never wrong. Nothing
+read that file, so the one line naming the cause was thrown away, and the failure
+was undiagnosable from the app alone. This is the gap #473/#494 closed for the
+media decoder, and the rule this file already states twice for this very sender:
+**read FFmpeg's own stderr before theorising.**
+
+- **`modules/FfmpegSenderDiagnostics.h`** is the ONE place FFmpeg's stderr becomes
+  an operator sentence (the `ZoomJoinFailureMessage.h` shape: pure, header-only,
+  testable without a process). `RtmpOutputSenderAdapter::ffmpegStderrTail()` reads
+  it on FAILURE paths only — never per frame — and every `ffmpeg-exited` /
+  `ffmpeg-write-failed` message now carries `ffmpeg: <reason>`.
+- **THE SECRET IS STRIPPED AT THE SOURCE, not by the snapshot redactor.**
+  FFmpeg echoes the FULL output URL, stream key included, and `lastError` reaches
+  `/snapshot`, the support bundle and the log. `redactFfmpegDiagnostics` replaces
+  the configured stream key and SRT passphrase by value (so it cannot depend on
+  URL parsing), and the adapter now holds `configuredPassphrase_` for no other
+  purpose. The HOST deliberately survives — it is the diagnostic, not a secret.
+  A secret under 6 characters is NOT used as a pattern: it would match inside
+  ordinary words and shred the message the redaction exists to protect.
+- **The tail is trimmed from the FRONT.** FFmpeg names the fatal reason LAST, so
+  budgeting by cutting the end drops the only line that matters. Caught by
+  `OnlyTheTailIsKeptWhenTheLogIsLong` on the first green run.
+- **An ABSENT tail leaves the generic sentence exactly as it was.** Inventing
+  detail we do not have is the same lie pointing the other way.
+
+**A stream start RACES Program's first pixels, and warming is not failing.** Two
+of the owner's three attempts that day died on `frame-pixels-missing` ("RTMP
+sender is waiting for composed BGRA program pixels") and the third succeeded with
+nothing changed — so a healthy configuration read as "the encoder will not
+start". `TransportStatusFormatter.IsStreamingStartStillWarming` is the pure
+classifier, and it is deliberately NARROW: only the program-pixel readiness case
+waits, and an explicit refusal outranks it, because waiting on a real failure
+only delays an honest answer. The wait window is ~5 s while warming and the
+original ~1.2 s otherwise; if it never produces a frame the SAME honest message
+is returned rather than a different invented cause.
+
+**THE EAGER BAIL EXISTED IN THREE PLACES, and only the LIVE re-test found the
+third.** `TryFormatStreamingStartHealthFailure` is consulted before
+`WaitForStreamingStartProofAsync` on the primary path, inside that wait, AND
+again on the backpressure RETRY path (`RetryStreamSyncAsync`). Fixing the first
+two left the retry path still rolling back on the first poll — and a start
+deferred for sync backpressure comes through exactly there, which is what the
+owner's session hit. Verified live 2026-09-12 against a refusing endpoint: the
+process log now carries `stream: toggle requested` with NO health-proof failure
+and NO rollback, where the previous build rolled back every time.
+
+**Two message-ladder defects fixed with it** (`TransportStatusFormatter`), both
+from sniffing prose instead of reading the wire result code:
+
+1. **A destination refusal no longer leads with the stream key.** `error opening
+   output` / `i/o error` / `connection refused` now read "The streaming
+   destination refused the connection. Check the destination is live and
+   accepting (a YouTube/Twitch stream has to be started there first), then the
+   stream key and network." Compact readout: `Destination refused`.
+2. **Every FFmpeg exit used to report "Program video is not ready."** The ladder
+   matched the substring `"program frame"`, which also appears in *"FFmpeg
+   process exited before accepting program frames"* — so a dead encoder sent the
+   operator to put a source on Program. The readiness branch now requires
+   `waiting for` as well, because the sender is only reporting readiness when it
+   says it is WAITING; an exit is reporting a death. Found by a test that failed
+   for the wrong reason, which is the only reason it was found at all.
+
+**STOP THE PROCESS, THEN READ THE STDERR.** A failed stdin write is observed the
+instant the pipe breaks, which is BEFORE FFmpeg has flushed the line saying why.
+Measured live 2026-09-12 against a refusing endpoint: reading at the write
+failure gave a 72-byte file holding only "Guessed Channel Layout: stereo", and
+the file NEVER gained its error lines because the process was killed first.
+`stopFfmpegProcess()` closes stdin (FFmpeg's EOF) and waits for exit, so the file
+is complete once it returns — after the reorder the same run produced the whole
+chain: `Connection to tcp://... failed` | `Cannot open connection` | `Error
+opening output ... Error opening output files`.
+
+**The proof line no longer contradicts itself.** Where FFmpeg never started,
+`ffmpegVideoEncoder` reported `ffmpegVideoEncoderFor(configuredVideoCodec_, ...)`
+— the RAW codec — so a proof whose own `runtimeDetail` said "falling back to
+H.264" simultaneously reported `av1_nvenc`, sending a reader diagnosing a stream
+failure to chase an encoder that is never selected. It goes through
+`resolveRtmpCompatibility` now.
+
+Tests: `native/tests/FfmpegSenderDiagnosticsTest.cpp` (redaction, bounding,
+composition — the redaction case uses the owner's real stderr) and
+`StudioViewModelAudioStatusTests.FormatStreamingFailureStatus_ADestinationRefusalDoesNotLeadWithTheStreamKey`.
+**Verified live in the test meeting, 2026-09-12**, against `rtmp://127.0.0.1:1935`
+with nothing listening and a marker stream key: `lastError` carried FFmpeg's full
+refusal chain, and the marker key appeared **twice in FFmpeg's own temp file and
+zero times** in `media-core.log`, `launch.log`, the send-proof JSONL and
+`/snapshot`.
+
+## THE LAW covers SLOTS, not just people (#506-follow-up, 2026-09-12)
+
+The "sources keep reverting" family has a fourth member, and it is the same rule
+one level up. From the owner's `launch.log`:
+
+```
+13:52:06  lifecycle: unassign slot 4 (was ZoomParticipant pid=16791552)   <- operator
+13:52:06  slot-write: slot4 InShow 'true'->'false'  by=operator-unassign
+14:00:03  slot-write: slot4 Kind 'Unassigned'->'ZoomParticipant' by=roster-sync
+14:00:03  slot-write: slot4 ParticipantId ''->'33561600'          by=roster-sync
+```
+
+`ShowInputRosterService.SyncZoomParticipantSlots` fills **the first free slot**
+with a newcomer — and a slot the operator deliberately emptied is the freest slot
+there is. The existing memory (`_autoAssignSeenParticipantIds`) remembers the
+PERSON the operator removed; nothing remembered the SLOT. So THE LAW held for the
+participant and broke for the slot.
+
+**The cost is not one wrong slot.** Every source-set change re-ranks the whole
+resolution budget, so one phantom refill re-subscribes EVERY video source in the
+meeting — a real engine-side renderer teardown each time. Measured on that
+session: every camera at `churn` 4–12, `totalChurn` 77, every one's reason
+`resolution-change`, which the owner saw as video flashes and guests dropping out
+of the multiview and the Tiles wall. (#478's own fix is holding: 25 s across an
+active-speaker flip moved churn not at all. Only source-set changes do this now.)
+
+**Owner ruling (2026-09-12): a cleared slot is sticky until the MEETING ROSTER
+EMPTIES.** `ShowInputsCoordinator._operatorClearedSlotNumbers` records it on the
+one operator entry point (`UnassignShowInput`), `SyncZoomParticipantSlots` takes
+it as `operatorClearedSlotNumbers` and skips those slots when filling, and it is
+released when the roster goes empty (the meeting ending — the point the slot
+layout stops meaning anything) or when the operator flips the auto-assign toggle,
+which is an explicit "assign everyone now". It reserves against AUTO-assign only:
+the operator may still place anything there, and a roster refresh never undoes
+that.
+
+**Two testing notes, both learned here:**
+
+- **The leaf test proved nothing at first.** With a spare free slot earlier in the
+  list the newcomer never wanted slot 4, so the test passed with and without the
+  fix. It only became a real test once every slot was assigned, making the
+  cleared slot the FIRST free one — the live shape.
+- **The leaf test is not enough even when correct.** Dropping the
+  `_operatorClearedSlotNumbers` argument at the CALL SITE leaves it green. The
+  binding test is `ShowInputsCoordinatorTests.ARosterSyncNeverRefillsASlotTheOperatorUnassigned`,
+  which drives unassign -> roster sync through the coordinator (the #481
+  "test the whole decision, not the leaf" rule) and fails when the argument goes.
+
 ## Zoom capture on/off (engine raw-media stop — 2026-07-19)
 
 Capture-off must stop raw media IN THE ENGINE, not just our spine payloads:

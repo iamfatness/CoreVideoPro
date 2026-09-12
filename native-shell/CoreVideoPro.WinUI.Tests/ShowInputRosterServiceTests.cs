@@ -706,6 +706,76 @@ public sealed class ShowInputRosterServiceTests
         Assert.Equal("p-guest-b", slots[3].ParticipantId);
     }
 
+    // Owner report 2026-09-12. The operator unassigned slot 4 (a mimoLive input)
+    // at 13:52. At 14:00 a DIFFERENT participant joined and roster-sync put them
+    // straight into that slot, because the fill pass looks for "the first free
+    // slot" and a deliberately emptied slot is the freest one there is.
+    //
+    // The existing memory remembers PARTICIPANTS the operator removed. It did not
+    // remember SLOTS the operator cleared - so THE LAW held for the person and
+    // broke for the slot. Every such write also re-ranks the whole subscription
+    // budget, so one phantom refill re-subscribes every video source in the
+    // meeting (measured: a flash and a dropout on all of them at once).
+    [Fact]
+    public void SyncZoomParticipantSlots_NeverFillsASlotTheOperatorCleared()
+    {
+        // The LIVE shape, and the only one that proves anything: every slot was
+        // assigned, so the slot the operator cleared IS the first free slot. A
+        // setup that leaves some other slot free passes with or without the fix.
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        var roster = new List<string>();
+        for (var index = 0; index < slots.Count; index++)
+        {
+            var id = $"p-{index}";
+            slots[index].Kind = ShowInputKind.ZoomParticipant;
+            slots[index].ParticipantId = id;
+            slots[index].InShow = true;
+            roster.Add(id);
+        }
+
+        // The operator empties slot 4 (index 3) - it is now the ONLY free slot.
+        slots[3].Kind = ShowInputKind.Unassigned;
+        slots[3].ParticipantId = null;
+        slots[3].InShow = false;
+        roster.Remove("p-3");
+        roster.Add("p-newcomer");
+
+        ShowInputRosterService.SyncZoomParticipantSlots(
+            slots,
+            roster,
+            autoAssign: true,
+            autoAssignCandidates: ["p-newcomer"],
+            operatorClearedSlotNumbers: [4]);
+
+        Assert.Null(slots[3].ParticipantId);
+        Assert.Equal(ShowInputKind.Unassigned, slots[3].Kind);
+        Assert.False(slots[3].InShow);
+        // With no slot left that the operator did not clear, the newcomer waits
+        // rather than taking the operator's slot. NEVER INVENT A SOURCE.
+        Assert.DoesNotContain(slots, slot => slot.ParticipantId == "p-newcomer");
+    }
+
+    // A cleared slot is reserved against AUTO-assign only. It must never refuse
+    // the operator's own later placement, and a roster refresh must not undo one.
+    [Fact]
+    public void SyncZoomParticipantSlots_AClearedSlotStillAcceptsAnOperatorPlacement()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[3].Kind = ShowInputKind.ZoomParticipant;
+        slots[3].ParticipantId = "p-chosen";
+        slots[3].InShow = true;
+
+        ShowInputRosterService.SyncZoomParticipantSlots(
+            slots,
+            ["p-chosen"],
+            autoAssign: true,
+            autoAssignCandidates: [],
+            operatorClearedSlotNumbers: [4]);
+
+        Assert.Equal("p-chosen", slots[3].ParticipantId);
+        Assert.True(slots[3].InShow);
+    }
+
     [Fact]
     public void SyncZoomParticipantSlots_DoesNotReAddAnOperatorRemovedParticipant()
     {

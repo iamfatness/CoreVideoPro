@@ -3,6 +3,7 @@
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/EncoderPolicy.h"
+#include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
@@ -697,6 +698,10 @@ class RtmpOutputSender final : public IOutputSender {
     configuredEndpoint_ = protocol_.isSrt ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
                                           : buildRtmpEndpoint(*settings);
     configuredStreamKey_ = settings->streamKey;
+    // Held ONLY so the stderr tail can be scrubbed of it before it reaches
+    // lastError (and from there /snapshot and the support bundle). The SRT
+    // endpoint carries the passphrase in its query string, so FFmpeg echoes it.
+    configuredPassphrase_ = settings->passphrase;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
@@ -825,19 +830,30 @@ class RtmpOutputSender final : public IOutputSender {
     if (!writeFrameToFfmpeg(*frame)) {
       sender_.status = "failed";
       ++sender_.retryCount;
-      const auto detailedFailure =
+      const auto genericFailure =
           sender_.lastResultCode == "ffmpeg-exited" && !sender_.lastError.empty()
               ? sender_.lastError
-              : std::string("FFmpeg stdin write failed; the RTMP process stopped or rejected frames.");
-      sender_.warning = detailedFailure;
+              : std::string("FFmpeg stdin write failed; the ") + protocol_.destination +
+                    " process stopped or rejected frames.";
       sender_.destinationHealth = "failed";
       if (sender_.lastResultCode != "ffmpeg-exited") {
         sender_.lastResultCode = "ffmpeg-write-failed";
       }
-      sender_.lastError = sender_.warning;
       const auto proofStatus = sender_.lastResultCode == "ffmpeg-exited" ? "ffmpeg-exited" : "ffmpeg-write-failed";
       scheduleFfmpegRetry();
+      // STOP FIRST, THEN READ THE STDERR. A failed stdin write is observed the
+      // instant the pipe breaks, which is BEFORE FFmpeg has flushed the line that
+      // says why - measured live 2026-09-12 against a refusing endpoint, where the
+      // tail read here held only "Guessed Channel Layout: stereo" and the whole
+      // 72-byte file never gained the "I/O error" line, because we killed the
+      // process first. stopFfmpegProcess() closes stdin (FFmpeg's EOF) and waits
+      // for exit, so the file is COMPLETE once it returns.
       stopFfmpegProcess();
+      // Carry FFmpeg's own reason. Without it this sentence is undiagnosable and
+      // reads to an operator as a credential problem (2026-09-12).
+      const auto detailedFailure = describeFfmpegSenderFailure(genericFailure, ffmpegStderrTail());
+      sender_.warning = detailedFailure;
+      sender_.lastError = sender_.warning;
       appendSendProof(frame, proofStatus);
       return snapshot();
     }
@@ -1127,6 +1143,35 @@ class RtmpOutputSender final : public IOutputSender {
   std::string redactedSenderEndpoint() const {
     return protocol_.isSrt ? redactedSrtUrl(configuredEndpoint_)
                            : redactedEndpoint(configuredEndpoint_, configuredStreamKey_);
+  }
+
+  // FFmpeg's own last words, redacted and bounded.
+  //
+  // This is the line that was missing on 2026-09-12: FFmpeg wrote "Error opening
+  // output rtmp://<host>/<key>: I/O error" - the destination refusing the
+  // connection - and the operator was shown "Check the server URL, stream key,
+  // and network." instead, so a correct key was re-entered for two minutes.
+  // Read on a FAILURE path only, never per frame.
+  std::string ffmpegStderrTail() const {
+    if (ffmpegStderrPath_.empty()) {
+      return "";
+    }
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(ffmpegStderrPath_, ec);
+    if (ec) {
+      return "";
+    }
+    std::ifstream in(ffmpegStderrPath_, std::ios::binary);
+    if (!in) {
+      return "";
+    }
+    constexpr std::uintmax_t kMaxTailBytes = 2048;
+    if (size > kMaxTailBytes) {
+      in.seekg(static_cast<std::streamoff>(size - kMaxTailBytes), std::ios::beg);
+    }
+    std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return redactFfmpegDiagnostics(flattenFfmpegStderrTail(raw, kMaxTailBytes),
+                                   configuredStreamKey_, configuredPassphrase_);
   }
 
   std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
@@ -1465,7 +1510,9 @@ class RtmpOutputSender final : public IOutputSender {
     DWORD exitCode = 0;
     if (process && GetExitCodeProcess(process, &exitCode) && exitCode != STILL_ACTIVE) {
       sender_.lastResultCode = "ffmpeg-exited";
-      sender_.lastError = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(exitCode) + ".";
+      sender_.lastError = describeFfmpegSenderFailure(
+          "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(exitCode) + ".",
+          ffmpegStderrTail());
       return false;
     }
     // Audio is written on every output-worker tick before video pacing is
@@ -1493,13 +1540,13 @@ class RtmpOutputSender final : public IOutputSender {
       if (result == ffmpegPid_) {
         ffmpegPid_ = 0;
         sender_.lastResultCode = "ffmpeg-exited";
+        std::string exitDetail = "FFmpeg process exited before accepting program frames.";
         if (WIFEXITED(status)) {
-          sender_.lastError = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
+          exitDetail = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
         } else if (WIFSIGNALED(status)) {
-          sender_.lastError = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
-        } else {
-          sender_.lastError = "FFmpeg process exited before accepting program frames.";
+          exitDetail = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
         }
+        sender_.lastError = describeFfmpegSenderFailure(exitDetail, ffmpegStderrTail());
         return false;  // FFmpeg exited
       }
     }
@@ -1785,7 +1832,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
+               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
               ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages ffmpeg.exe and corevideo-ffmpeg-runtime.json when FFmpeg is available or unavailable\"}");
   }
 
@@ -1802,7 +1849,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"renderPlanId\":" + jsonString(frame->renderPlanId) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
     }
     line += "}";
     writeLine(line);
@@ -1838,6 +1885,7 @@ class RtmpOutputSender final : public IOutputSender {
   bool runtimeAvailable_ = false;
   std::string configuredEndpoint_;
   std::string configuredStreamKey_;
+  std::string configuredPassphrase_;
   std::string configuredFfmpegBinDirectory_;
   std::string configuredVideoCodec_ = "h264";
   std::string configuredEncoderMode_ = "auto";
@@ -1847,6 +1895,13 @@ class RtmpOutputSender final : public IOutputSender {
   int configuredBFrames_ = 2;
   bool configuredAllowEnhancedRtmp_ = false;
   std::string ffmpegExecutable_;
+  // NOTE: where this is empty (FFmpeg never started for this attempt) the proof
+  // reports the encoder that WOULD be used, and it must go through
+  // resolveRtmpCompatibility first. Reporting the raw configured codec said
+  // "av1_nvenc" on a run whose own runtimeDetail said "falling back to H.264" -
+  // two fields contradicting each other in the same proof line, sending a reader
+  // diagnosing a stream failure to chase an encoder that is never selected
+  // (observed live 2026-09-12).
   std::string selectedFfmpegVideoEncoder_;
   std::filesystem::path ffmpegStderrPath_;
   std::string activeEndpoint_;

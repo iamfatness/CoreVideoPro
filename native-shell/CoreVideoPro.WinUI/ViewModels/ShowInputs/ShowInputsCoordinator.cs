@@ -274,6 +274,18 @@ public sealed class ShowInputsCoordinator
     // MEANS "assign everyone".
     private readonly HashSet<string> _autoAssignSeenParticipantIds = new(StringComparer.Ordinal);
 
+    // Slot NUMBERS the operator deliberately emptied this meeting. The set above
+    // remembers the PERSON the operator removed; this remembers the SLOT, which is
+    // the other half of THE LAW. Owner report 2026-09-12: slot 4 was unassigned at
+    // 13:52 and roster-sync gave it to the next joiner at 14:00, because "the first
+    // free slot" is precisely the slot the operator just cleared. Every such write
+    // re-ranks the whole subscription budget, so one phantom refill re-subscribes
+    // every video source in the meeting - a flash and a dropout on all of them.
+    //
+    // Owner ruling (2026-09-12): sticky until the MEETING ROSTER EMPTIES, so it is
+    // cleared on leave/rejoin below rather than living for the app session.
+    private readonly HashSet<int> _operatorClearedSlotNumbers = new();
+
     public void SyncShowInputsFromMeeting(
         IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
@@ -291,11 +303,23 @@ public sealed class ShowInputsCoordinator
         _autoAssignSeenParticipantIds.Clear();
         _autoAssignSeenParticipantIds.UnionWith(rosterIds);
 
+        // Owner ruling: the operator's cleared slots are sticky until the MEETING
+        // ROSTER EMPTIES. An empty roster is the meeting ending or the engine going
+        // away, which is the point the slot layout stops meaning anything.
+        if (rosterIds.Count == 0 && _operatorClearedSlotNumbers.Count > 0)
+        {
+            LaunchLog.Write(string.Format(
+                "lifecycle: roster empty - releasing {0} operator-cleared slot(s)",
+                _operatorClearedSlotNumbers.Count));
+            _operatorClearedSlotNumbers.Clear();
+        }
+
         ShowInputRosterService.SyncZoomParticipantSlots(
             _host.ShowInputs,
             rosterIds,
             _host.AutomationAutoAssignInputsEnabled,
-            newcomers);
+            newcomers,
+            _operatorClearedSlotNumbers);
 
         RefreshShowInputEditors();
         _host.RefreshMultiviewGridTiles();
@@ -313,6 +337,9 @@ public sealed class ShowInputsCoordinator
         // now", so forget which ids were seen and fill from the whole roster
         // (candidates omitted = every unassigned id is eligible).
         _autoAssignSeenParticipantIds.Clear();
+        // The toggle is an explicit "assign everyone now", so it also releases the
+        // operator's reserved slots - same reasoning as the seen-ids reset above.
+        _operatorClearedSlotNumbers.Clear();
         ShowInputRosterService.SyncZoomParticipantSlots(
             _host.ShowInputs,
             _host.RoomParticipantsForInputs
@@ -378,6 +405,9 @@ public sealed class ShowInputsCoordinator
         }
         LaunchLog.Write(string.Format("lifecycle: unassign slot {0} (was {1} cap={2} pid={3})",
             editor.SlotNumber, editor.Kind, editor.CaptureDeviceId ?? "-", editor.ParticipantId ?? "-"));
+        // Reserve it against auto-assign for the rest of this meeting. The operator
+        // emptying a slot is a decision, not a vacancy.
+        _operatorClearedSlotNumbers.Add(editor.SlotNumber);
         editor.Unassign();
         RefreshShowInputEditors(force: true);
         _host.RefreshPreviewRoutingState();
