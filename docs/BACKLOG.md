@@ -2,6 +2,13 @@
 
 **Refined 2026-09-11 (after the first real meeting; see Tier 1 order).** Earlier today (owner: "Your rank makes sense"): #449 up to T1.11; new T1.12 #475, T1.13 #473; T2.7-T2.10 (#474, #469, #466, #468); T3.5-T3.7 (#476, #465, #470).
 
+**Batch of 2026-09-12 recorded (T1.12, T1.13, T2.6-T2.10, T3.2, T3.7, T3.8 done; T2.1 and T3.5
+partial), no re-ranking.** Everything in it shipped in `beta-2026-09-12-e1223d3`; **none of it is
+live-checked**. Two new entries came out of the work rather than the list: [#505](https://github.com/iamfatness/CoreVideoPro/issues/505)
+(vestigial per-layer border controls) and the T1.11 step-1 ruling below. Tier 1 has ONE open item
+and it is waiting on an owner decision, so the next unblocked code is Tier 3 — but the binding
+constraint is now T0.1 (the certificate) and a live check, not engineering capacity.
+
 **Reconciled 2026-09-12 against `main` and the issue tracker, no re-ranking.** T1.17
 (#479) was still listed as the next open item; it is closed by #490 and moved to Done,
 and the open Tier 1 order renumbered 1-3. T3.8 (#482) had no tier row at all. #465 was
@@ -54,9 +61,10 @@ The owner's top priority is core functionality: Zoom sources and audio.
 
 | Order | ID | Item | Clause | Size |
 |---|---|---|---|---|
-| 1 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. **Step 2 (hand over the warmed cue decoder) shipped in #492 and is live-checked on beta-2026-09-12-aac2d98**, so a clip CUED in Preview no longer flashes. Step 1 remains: a clip taken without ever being cued still cold-starts — hold the outgoing picture until its first real frame | 1/3 | S |
-| 2 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s. **PR #493 in review**: the engine answered NONE of the SDK's join-time prompts, so a prompted join hung until our timeout. Needs a LIVE check — the engine half links the SDK and cannot be covered by CI | 1/2 | S |
-| 3 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does). **PR #494 in review** closes the observability hole only (FFmpeg's stderr went to `NUL`; a spawn that died reported nothing). The defect itself did NOT reproduce and is NOT fixed — the issue stays open until a recurrence names itself | 1/2 | S-M |
+| 1 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. **Step 2 (hand over the warmed cue decoder) shipped in #492 and is live-checked on beta-2026-09-12-aac2d98**, so a clip CUED in Preview no longer flashes. **Step 1 is the only Tier 1 work left, and it needs an owner ruling first**: a plain cut goes through `load-scene-graph` and never captures the outgoing scene, so "hold the outgoing picture" is a change to the Take path itself, beside the take record and `SourceContinuityLedger` (which already carries a documented race). Not shipped unreviewed while the owner was away | 1/3 | S |
+
+T1.12 (#475) and T1.13 (#473) are **done and shipped** — see the Done table. T1.13 closed the observability
+hole ONLY; its issue stays open until the ProRes defect recurs and names itself.
 
 **Done** (verified by tests; the live check is noted where one ran):
 
@@ -78,6 +86,9 @@ The owner's top priority is core functionality: Zoom sources and audio.
 | [T1.16](https://github.com/iamfatness/CoreVideoPro/issues/485) | Mixer shows only sources | #489 (tests; live-checked on beta-2026-09-12-aac2d98) |
 | [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles slots / "never show" keyed on Zoom's per-session user id | #490 (tests; live-checked on beta-2026-09-12-aac2d98) |
 
+| [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A same-account join hung 52 s with no reason: the engine answered NONE of the SDK's join-time prompts | #493 (tests; the engine half links the SDK and needs a LIVE check) |
+| [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | A media source with no decoder was silent — FFmpeg stderr went to `NUL` | #494 (observability only; the ProRes defect never reproduced and #473 stays OPEN) |
+
 T1.1-T1.10, #478 and #481 shipped in beta-2026-09-11-404602b (installed on the owner's
 machine 2026-09-11).
 
@@ -94,29 +105,29 @@ Unsigned, so SmartScreen warns — that is T0.1.
 
 | ID | Item | Clause | Size |
 |---|---|---|---|
-| [T2.1](https://github.com/iamfatness/CoreVideoPro/issues/433) | Installer (`scripts/alpha/installer.nsi`) registers the virtual camera, enables WER LocalDumps, creates the recording folder | 1/2/4 | S |
+| [T2.1](https://github.com/iamfatness/CoreVideoPro/issues/433) | **PARTLY DONE (#497).** The installer registers the virtual camera and creates the recording folder; uninstall unregisters the camera. **WER LocalDumps is NOT done and cannot be**: that key is HKLM-only — measured 2026-09-12, an HKCU entry for a deliberately crashing exe produced ZERO dumps while the machine config produced two. A per-user installer writing it would ship a setting that does nothing. Needs an elevated step, which is the remaining work | 1/2/4 | S |
 | [T2.2](https://github.com/iamfatness/CoreVideoPro/issues/434) | Telemetry and crash upload point at a production endpoint baked into the shipped build (today: a staging `workers.dev` URL only in `scripts/load-staging-env.ps1`) | 2 | S |
 | [T2.3](https://github.com/iamfatness/CoreVideoPro/issues/435) | Closed-beta access gate (signed key or `services/licensing-api` — owner picks) | 4 | M |
 | [T2.4](https://github.com/iamfatness/CoreVideoPro/issues/436) | OAuth broker on a stable production domain (monitoring already shipped, #324) | 2 | S |
 | [T2.5](https://github.com/iamfatness/CoreVideoPro/issues/437) | Wire the certificate into the release pipeline when T0.1 lands | 4 | XS |
-| [T2.6](https://github.com/iamfatness/CoreVideoPro/issues/438) | Reconcile `docs/beta-engineering-spec.md` (signed MSIX) with what ships (NSIS installer, #417) | 4 | XS |
+| ~~T2.6~~ | ~~Reconcile the beta spec with what ships~~ — **DONE #504**. The spec recommended signed MSIX + App Installer; the NSIS fallback is what was built. Recorded what that cost: **auto-update is now unbuilt** rather than nearly free (MSIX gave it from one hosted file), and the installer grew by hand what MSIX does free | | |
 | [T1.7](https://github.com/iamfatness/CoreVideoPro/issues/457) | WinUI shell crash on a graceful close: 0xc000027b in XAML's post-Exit dispatcher drain, after cleanup (2 of 10 closes; false crash prompt on the next launch). (recommended tier 2 by investigation; fixed in this batch) | 1 | S |
-| [T2.7](https://github.com/iamfatness/CoreVideoPro/issues/474) | Installer: one `CoreVideo Pro` shortcut that always opens the newest beta; uninstall removes the first-run FFmpeg runtime; an install with no registry key can still be removed | 4 | S |
-| [T2.8](https://github.com/iamfatness/CoreVideoPro/issues/469) | The default recording folder is relative, so recordings land inside the install folder (at risk on uninstall/upgrade); resolve to a user folder and show the absolute path | 1/4 | S |
-| [T2.9](https://github.com/iamfatness/CoreVideoPro/issues/466) | Core: stopping Record while a stream stays up (or a stream start) erases the recording lifecycle, so status reads "stopping" forever with no completed/failed | 2 | M |
-| [T2.10](https://github.com/iamfatness/CoreVideoPro/issues/468) | RTMP sender keeps `status: live` / `destinationHealth: ok` while its destination is unreachable | 2 | S |
+| ~~T2.7~~ | ~~One shortcut; uninstall removes the first-run runtime; a refused uninstall says why~~ — **DONE #497**. Two traps it cost: never run an interactive helper (`regsvr32` without `/s`) from a silent installer, and a UTF-8 BOM is three literal characters to NSIS | | |
+| ~~T2.8~~ | ~~Recordings land inside the install folder~~ — **DONE #496**. The issue's premise was wrong: the DEFAULT has been absolute since 2026-07-21. What bit was a persisted RELATIVE preference that bypassed it, so the fix is a migration | | |
+| ~~T2.9~~ | ~~Stopping Record with a stream up erases the recording lifecycle~~ — **DONE #499**. A recording owns the encoder generation until its Stop barrier publishes. Also stops the live stream eating a reconnect and keyframe on every Record stop | | |
+| ~~T2.10~~ | ~~RTMP reports healthy while unreachable~~ — **DONE #499**. `status`/`destinationHealth` are projections of the lifecycle and supervisor now. A SECOND failure mode was found before merge: a destination that never connected sits at `preparing` and the first cut passed `live` straight through | | |
 
 ## Tier 3 — first show on a machine we cannot see
 
 | ID | Item | Clause | Size |
 |---|---|---|---|
 | [T3.1](https://github.com/iamfatness/CoreVideoPro/issues/439) | GPU-tier defaults: gate the 4K canvas and multiview tile counts on `GpuTierProbe` (today it only feeds telemetry) | 1 | S |
-| [T3.2](https://github.com/iamfatness/CoreVideoPro/issues/440) | Friendly message when the WebView2 runtime is missing (browser host exits 3; the shell shows a stalled source) | 3 | S |
+| ~~T3.2~~ | ~~Friendly message when the WebView2 runtime is missing~~ — **DONE #504**. Exit 3 is wire vocabulary; `BrowserHostExitMessage.h` is the one place it becomes English, and an unknown code keeps its number | | |
 | [T3.3](https://github.com/iamfatness/CoreVideoPro/issues/441) | First-run wizard — screens first, owner markup, then code (the OHG lesson) | 3 | M |
 | [T3.4](https://github.com/iamfatness/CoreVideoPro/issues/442) | Hardware sweeps on T0.3 machines: integrated GPU, audio devices (USB/Bluetooth, unplug mid-show), cheap UVC webcams | 1 | M |
-| [T3.5](https://github.com/iamfatness/CoreVideoPro/issues/476) | Colour fields need a colour picker (Tiles border/glow/background, layer colour, caption text); keep the hex box beside it | 3 | S |
-| [T3.7](https://github.com/iamfatness/CoreVideoPro/issues/470) | ISOs armed with Engine off write nothing and give no warning | 2/3 | S |
-| [T3.8](https://github.com/iamfatness/CoreVideoPro/issues/482) | ISO recordings crop or pad a guest's picture when their frame size changes mid-recording | 1/3 | S-M |
+| [T3.5](https://github.com/iamfatness/CoreVideoPro/issues/476) | **MOSTLY DONE (#501, #504):** Tiles background/border/glow and the caption text colour have pickers beside their hex boxes, over one shared `HexColor`. **Remaining is a product call, not code:** the per-layer border colour/width controls are VESTIGIAL — `buildRenderPlanForScene` forces `borderStyle="none"` on every route layer, so the core discards them. Filed as [#505](https://github.com/iamfatness/CoreVideoPro/issues/505): remove them, or scope them to the multiview where a border legitimately draws | 3 | XS |
+| ~~T3.7~~ | ~~ISOs armed with Engine off write nothing and say nothing~~ — **DONE #502**. Caught at ARMING, because a writer opens lazily at its first frame and a source that never produces one leaves no stream to carry a warning | | |
+| ~~T3.8~~ | ~~ISO crops or pads a guest when their frame size changes~~ — **DONE #503**. Frames are conformed to the size the writer opened at (aspect-preserving, letterboxed, box-filtered). The end-to-end MF test is a GUARD only: it passes with and without the fix, because MF accepts a mismatched sample silently — the pixel proof is in `IsoFrameConformTest` | | |
 
 T3.8 was filed 2026-09-11 and was in no tier; placed here 2026-09-12 so it stops being
 untracked. The tier is a proposal, not an owner ruling.
