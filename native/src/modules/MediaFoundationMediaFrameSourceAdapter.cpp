@@ -190,7 +190,10 @@ std::wstring quoteWindowsArgument(const std::wstring& value) {
   return L"\"" + value + L"\"";
 }
 
-std::wstring ffmpegExecutablePath() {
+// #473. Resolution used to be silent, so "no ffmpeg process was ever spawned"
+// could not be separated from "ffmpeg was never found". `source` names which of
+// the three rules answered, so a support bundle settles that in one line.
+std::wstring ffmpegExecutablePath(const char** source = nullptr) {
   const auto fromDirectory = [](const char* variable) -> std::wstring {
     const char* value = std::getenv(variable);
     if (!value || !*value) {
@@ -201,15 +204,31 @@ std::wstring ffmpegExecutablePath() {
     return std::filesystem::exists(candidate, error) ? candidate.wstring() : std::wstring{};
   };
   if (auto configured = fromDirectory("COREVIDEO_FFMPEG_BIN_DIR"); !configured.empty()) {
+    if (source) *source = "COREVIDEO_FFMPEG_BIN_DIR";
     return configured;
   }
   if (auto configured = fromDirectory("FFMPEG_BIN_DIR"); !configured.empty()) {
+    if (source) *source = "FFMPEG_BIN_DIR";
     return configured;
   }
 
   wchar_t found[MAX_PATH]{};
   const DWORD length = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, found, nullptr);
-  return length > 0 && length < MAX_PATH ? std::wstring(found, length) : std::wstring{};
+  if (length > 0 && length < MAX_PATH) {
+    if (source) *source = "SearchPath";
+    return std::wstring(found, length);
+  }
+  if (source) *source = "none";
+  return {};
+}
+
+// A wide path in a narrow log line. Lossy on purpose (a media path is evidence,
+// not content) and never throws: this only ever runs on a failure path.
+inline std::string narrowForLog(const std::wstring& value) {
+  std::string out;
+  out.reserve(value.size());
+  for (const wchar_t c : value) out.push_back(c < 128 ? static_cast<char>(c) : '?');
+  return out;
 }
 
 // Media Foundation does not decode common production MOV profiles such as
@@ -252,10 +271,62 @@ class FfmpegVideoDecoder {
  private:
   FfmpegVideoDecoder() = default;
 
+  // #473. A per-decoder temp file for FFmpeg's stderr. Named by pid + a counter
+  // so two decoders never share one, and deleted when the decoder stops.
+  static std::wstring makeFfmpegStderrPath() {
+    wchar_t directory[MAX_PATH]{};
+    const DWORD length = GetTempPathW(MAX_PATH, directory);
+    if (length == 0 || length >= MAX_PATH) return {};
+    static std::atomic<unsigned> counter{0};
+    return std::wstring(directory, length) + L"corevideo-ffmpeg-" +
+           std::to_wstring(GetCurrentProcessId()) + L"-" +
+           std::to_wstring(counter.fetch_add(1)) + L".log";
+  }
+
+  // The last few lines FFmpeg wrote. This is the evidence the placeholder class
+  // was missing: with -loglevel error FFmpeg says exactly why in one line, and
+  // that line used to go to NUL.
+  std::string stderrTail() const {
+    if (stderrPath_.empty()) return {};
+    HANDLE file = CreateFileW(stderrPath_.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return {};
+    LARGE_INTEGER size{};
+    std::string text;
+    if (GetFileSizeEx(file, &size) && size.QuadPart > 0) {
+      // Bounded: a decoder that fails every frame must not put a megabyte of
+      // repeats into a log the support bundle has to carry.
+      constexpr LONGLONG kMaxTail = 2048;
+      const LONGLONG offset = size.QuadPart > kMaxTail ? size.QuadPart - kMaxTail : 0;
+      LARGE_INTEGER move{};
+      move.QuadPart = offset;
+      if (SetFilePointerEx(file, move, nullptr, FILE_BEGIN)) {
+        text.resize(static_cast<std::size_t>(size.QuadPart - offset));
+        DWORD read = 0;
+        if (!ReadFile(file, text.data(), static_cast<DWORD>(text.size()), &read, nullptr)) read = 0;
+        text.resize(read);
+      }
+    }
+    CloseHandle(file);
+    // One log line: collapse newlines, drop control bytes.
+    for (auto& c : text) {
+      if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+      else if (static_cast<unsigned char>(c) < 0x20) c = '?';
+    }
+    const auto first = text.find_first_not_of(' ');
+    const auto last = text.find_last_not_of(' ');
+    return first == std::string::npos ? std::string{} : text.substr(first, last - first + 1);
+  }
+
   bool launch(const std::string& path, bool posterFrame, bool loop, int64_t start100ns, std::string& error) {
-    const auto executable = ffmpegExecutablePath();
+    const char* source = "none";
+    const auto executable = ffmpegExecutablePath(&source);
     if (executable.empty()) {
       error = "FFmpeg was not found in the configured runtime or PATH.";
+      ::corevideo::core::nativeLogf(
+          "[media-decoder] ffmpeg NOT FOUND (COREVIDEO_FFMPEG_BIN_DIR, FFMPEG_BIN_DIR, then SearchPath all missed)"
+          " for %s\n", path.c_str());
       return false;
     }
 
@@ -270,9 +341,16 @@ class FfmpegVideoDecoder {
       return false;
     }
 
-    HANDLE nullOutput = CreateFileW(L"NUL", GENERIC_WRITE,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                    &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // #473. This used to be NUL. FFmpeg's own stderr is the one thing that says
+    // WHY a decode died, and discarding it is what made a ProRes source render a
+    // placeholder for a whole session with nothing in the log. Same lesson the
+    // SRT sender already carries: read FFmpeg's stderr before theorising.
+    // A temp file, not the stdout pipe: the stdout pipe carries raw BGRA frames
+    // and a stderr line spliced into it would corrupt a frame.
+    stderrPath_ = makeFfmpegStderrPath();
+    HANDLE nullOutput = stderrPath_.empty() ? INVALID_HANDLE_VALUE :
+        CreateFileW(stderrPath_.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    &security, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
@@ -311,10 +389,19 @@ class FfmpegVideoDecoder {
       CloseHandle(nullOutput);
     }
     if (!created) {
+      const DWORD lastError = GetLastError();
       CloseHandle(childOutputRead);
-      error = "FFmpeg could not be started (Win32 " + std::to_string(GetLastError()) + ").";
+      error = "FFmpeg could not be started (Win32 " + std::to_string(lastError) + ").";
+      ::corevideo::core::nativeLogf(
+          "[media-decoder] ffmpeg SPAWN FAILED win32=%lu exe=%s (via %s) for %s\n",
+          lastError, narrowForLog(executable).c_str(), source, path.c_str());
       return false;
     }
+    ::corevideo::core::nativeLogf(
+        "[media-decoder] ffmpeg started pid=%lu exe=%s (via %s) poster=%d loop=%d for %s\n",
+        process.dwProcessId, narrowForLog(executable).c_str(), source,
+        posterFrame ? 1 : 0, loop ? 1 : 0, path.c_str());
+    mediaPath_ = path;
 
     CloseHandle(process.hThread);
     process_ = process.hProcess;
@@ -340,6 +427,14 @@ class FfmpegVideoDecoder {
         offset += read;
       }
       if (offset != frameBytes) {
+        // #473. The silent-placeholder path. FFmpeg was spawned successfully and
+        // then stopped producing — a bad argument, an unreadable file, a missing
+        // DLL. Before, launch() had already returned true and NOTHING was ever
+        // reported: the source simply showed a placeholder for the rest of the
+        // session. Report it once, with the child's exit code and its own last
+        // words. Once, not per attempt: the loop is about to end anyway, and a
+        // decoder that dies at startup must not be able to flood the log.
+        reportEarlyExit();
         break;
       }
       std::lock_guard<std::mutex> lock(mutex_);
@@ -348,6 +443,24 @@ class FfmpegVideoDecoder {
     }
     std::lock_guard<std::mutex> lock(mutex_);
     ended_ = !stopRequested_.load(std::memory_order_acquire);
+  }
+
+  // #473. Called from the reader thread the moment FFmpeg stops delivering whole
+  // frames. Only reports a death the operator did NOT ask for: a decoder we are
+  // tearing down (stop(), a pause, a resume) is expected to stop.
+  void reportEarlyExit() {
+    if (stopRequested_.load(std::memory_order_acquire)) return;
+    if (earlyExitReported_.exchange(true)) return;
+    DWORD exitCode = 0;
+    const bool haveExit = process_ && GetExitCodeProcess(process_, &exitCode);
+    const std::string exitText = !haveExit ? "unknown"
+        : exitCode == STILL_ACTIVE ? "still-running"
+                                   : std::to_string(exitCode);
+    const auto tail = stderrTail();
+    ::corevideo::core::nativeLogf(
+        "[media-decoder] ffmpeg STOPPED DELIVERING exit=%s for %s%s%s\n",
+        exitText.c_str(), mediaPath_.c_str(),
+        tail.empty() ? " (ffmpeg said nothing)" : " ffmpeg: ", tail.c_str());
   }
 
   void stop() {
@@ -369,6 +482,10 @@ class FfmpegVideoDecoder {
       CloseHandle(process_);
       process_ = nullptr;
     }
+    if (!stderrPath_.empty()) {
+      DeleteFileW(stderrPath_.c_str());
+      stderrPath_.clear();
+    }
   }
 
   mutable std::mutex mutex_;
@@ -379,6 +496,10 @@ class FfmpegVideoDecoder {
   HANDLE process_ = nullptr;
   HANDLE outputRead_ = nullptr;
   std::thread reader_;
+  // #473 evidence: where FFmpeg's own words go, and which asset it was decoding.
+  std::wstring stderrPath_;
+  std::string mediaPath_;
+  std::atomic<bool> earlyExitReported_{false};
 };
 
 bool copyWicImageToFrame(IWICImagingFactory* factory, const std::string& path, VideoFrame& frame) {
@@ -891,6 +1012,15 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       state.videoDecoderError = "Media Foundation did not provide a compatible video decoder.";
     }
 
+    // #473. Which decoder this asset gets, and why, used to be invisible. For a
+    // ProRes source MF parses the container and then refuses RGB32 with
+    // MF_E_TOPO_CODEC_NOT_FOUND (0xC00D5212), so FFmpeg is the only path — and
+    // when that path failed, nothing anywhere said so. Logged once per open, not
+    // per poll: an open is an operator-scale event.
+    ::corevideo::core::nativeLogf(
+        "[media-decoder] %s: Media Foundation declined (%s), trying FFmpeg\n",
+        path.c_str(), state.videoDecoderError.c_str());
+
     std::string fallbackError;
     state.ffmpegFrameIdBase = state.lastFrame.hasPixels() ? state.lastFrame.frameId : 0;
     state.ffmpegPublishedFrameId = 0;
@@ -898,6 +1028,12 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     state.ffmpegVideo = FfmpegVideoDecoder::start(path, posterFrame, loop, fallbackError);
     if (!state.ffmpegVideo) {
       state.videoDecoderError += " FFmpeg fallback failed: " + fallbackError;
+      // The end of the line for this asset: no decoder at all. It used to reach
+      // only warnings_, which never lands in media-core.log, so the operator saw
+      // a placeholder tile and the log said nothing but the compositor's
+      // 5-second "NO matching frame".
+      ::corevideo::core::nativeLogf(
+          "[media-decoder] %s: NO DECODER - %s\n", path.c_str(), state.videoDecoderError.c_str());
       return false;
     }
     return true;
