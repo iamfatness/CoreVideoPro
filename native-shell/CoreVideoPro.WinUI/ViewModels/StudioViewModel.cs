@@ -233,6 +233,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         get
         {
+            // #470 / T3.7 FIRST, because it is the case with no stream to warn
+            // on: an ISO writer opens lazily at its first frame, so sources that
+            // never produce one leave nothing behind to carry a warning. Armed
+            // with capture off, all 7 ISOs recorded nothing and said nothing.
+            var capture = IsoCapturePreflight.Describe(
+                IsoRecordingEnabled,
+                BuildIsoSourceTargets().SourceIds.Count(id => id.StartsWith("zoom:", StringComparison.Ordinal)),
+                Settings.RawMediaActive);
+            if (capture is not null)
+            {
+                return capture;
+            }
+
             var streams = _bridge.LastSnapshot?.Recording?.Streams;
             if (streams is null)
             {
