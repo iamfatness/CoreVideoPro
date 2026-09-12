@@ -669,6 +669,7 @@ if(BUILD_TESTING)
     tests/TilesAnimatorTest.cpp
     tests/TilesLayerTest.cpp
     tests/TilesMembershipTest.cpp
+    tests/TilesWallSourceTest.cpp
     tests/TilesRenderPlanTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/VstHostAbiTest.cpp

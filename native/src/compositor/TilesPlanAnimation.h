@@ -42,13 +42,17 @@ class TilesPlanAnimation {
     return true;
   }
 
-  void advance(modules::CompositorRenderPlan& plan, const std::string& wallKey,
+  // Returns true when this call RESET the animator (a departure/disable, or a
+  // different wall key arriving) - the caller's only truthful signal of "did
+  // this wall restart", with no std::function/allocation on the render tick.
+  bool advance(modules::CompositorRenderPlan& plan, const std::string& wallKey,
       bool present, bool enabled, double durationMs, double nowMs) {
-    if (!present || !enabled) { reset(); return; }
+    if (!present || !enabled) { reset(); return true; }
     // A DIFFERENT wall never inherits this one's geometry. (sampled_ is cleared
     // too: the all-stale guard below would otherwise let a new wall's first
     // frames be drawn at the previous wall's tile rects.)
-    if (key_ != wallKey) { animator_.reset(); key_ = wallKey; sampled_.clear(); }
+    bool didReset = false;
+    if (key_ != wallKey) { animator_.reset(); key_ = wallKey; sampled_.clear(); didReset = true; }
     std::vector<TilesAnimationTarget> targets;
     for (const auto& layer : plan.layers) {
       if (layer.kind == "participant-video" && layer.layerId.rfind("tile:", 0) == 0)
@@ -64,9 +68,10 @@ class TilesPlanAnimation {
     // fix exists to remove. Only a wall that has actually drawn tiles
     // preserves them; a cold wall's first tick is untouched, so a genuinely
     // new wall behaves exactly as it always has.
-    if (targets.empty() && !sampled_.empty()) return;
+    if (targets.empty() && !sampled_.empty()) return didReset;
     sampled_ = animator_.sample(targets, nowMs, enabled, durationMs, plan.width, plan.height);
     applyLatest(plan, wallKey);
+    return didReset;
   }
   void applyLatest(modules::CompositorRenderPlan& plan, const std::string& wallKey) const {
     if (key_ != wallKey) return;
