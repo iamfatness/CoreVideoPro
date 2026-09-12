@@ -233,6 +233,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=float, default=40.0)
     parser.add_argument("--core", default=DEFAULT_CORE)
+    # The recorded-rate gate measures the MACHINE as much as the code, and a
+    # shared CI runner cannot hold 60 Hz: measured on macos-14 across three
+    # commits with identical code paths, the COMPOSITOR itself rendered 48.7,
+    # 47.1 and 60.2 fps with worst ticks up to 123.7 ms, and the muxed rate
+    # followed it at 26.4, 29.5 and 34.6. Left blocking there it is permanent
+    # red, which trains everyone to ignore CI -- the same argument that already
+    # made the loaded step advisory, and exactly how a real compile break hid on
+    # main for six commits on 2026-09-12.
+    #
+    # It stays BLOCKING by default, so a local run and real hardware still
+    # enforce it, and it still PRINTS its full verdict either way. Only an
+    # explicit caller may downgrade it, and it says so loudly when it does.
+    parser.add_argument("--advisory-recorded-rate", action="store_true",
+                        help="print the recorded-rate verdict but do not fail on it "
+                             "(for shared CI runners that cannot source 60 Hz)")
     parser.add_argument("--load", type=int, default=0,
                         help="synthesize N 1080p Zoom feeds (the production wall)")
     args = parser.parse_args()
@@ -451,7 +466,13 @@ def main():
                         print(f"{'PASS' if ok_rate else 'FAIL'} recorded rate "
                               f"{actual:.1f}fps of {TARGET_OUTPUT_FPS:.0f} "
                               f"({frames} frames / {seconds:.2f}s)")
-                        if not ok_rate:
+                        if not ok_rate and args.advisory_recorded_rate:
+                            print("  ADVISORY: the recorded-rate gate is downgraded for "
+                                  "this run (--advisory-recorded-rate). This is a real "
+                                  "measurement and it did NOT pass; it is not gating "
+                                  "because a shared runner cannot source 60 Hz. Run the "
+                                  "drill on real hardware before shipping perf work.")
+                        if not ok_rate and not args.advisory_recorded_rate:
                             # NAME THE EVIDENCE, DO NOT ASSERT THE CAUSE. The old
                             # message blamed the ~50Hz audio worker; Program video
                             # no longer leaves from there, so that pointed every
