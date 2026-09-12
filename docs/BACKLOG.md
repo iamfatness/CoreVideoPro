@@ -54,9 +54,9 @@ The owner's top priority is core functionality: Zoom sources and audio.
 
 | Order | ID | Item | Clause | Size |
 |---|---|---|---|---|
-| 1 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. **Step 2 (hand over the warmed cue decoder) shipped in #492**, so a clip CUED in Preview no longer flashes. Step 1 remains: a clip taken without ever being cued still cold-starts — hold the outgoing picture until its first real frame | 1/3 | S |
-| 2 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s; forward the waiting states, always log meeting status, leave on give-up | 1/2 | S |
-| 3 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does) | 1/2 | S-M |
+| 1 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. **Step 2 (hand over the warmed cue decoder) shipped in #492 and is live-checked on beta-2026-09-12-aac2d98**, so a clip CUED in Preview no longer flashes. Step 1 remains: a clip taken without ever being cued still cold-starts — hold the outgoing picture until its first real frame | 1/3 | S |
+| 2 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s. **PR #493 in review**: the engine answered NONE of the SDK's join-time prompts, so a prompted join hung until our timeout. Needs a LIVE check — the engine half links the SDK and cannot be covered by CI | 1/2 | S |
+| 3 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does). **PR #494 in review** closes the observability hole only (FFmpeg's stderr went to `NUL`; a spawn that died reported nothing). The defect itself did NOT reproduce and is NOT fixed — the issue stays open until a recurrence names itself | 1/2 | S-M |
 
 **Done** (verified by tests; the live check is noted where one ran):
 
@@ -69,26 +69,26 @@ The owner's top priority is core functionality: Zoom sources and audio.
 | [T1.5](https://github.com/iamfatness/CoreVideoPro/issues/432) | Engine-off: shell stops polling the core | #462 |
 | [T1.6](https://github.com/iamfatness/CoreVideoPro/issues/455) | Media clip audio never reaches the engine | #458 (live-checked) |
 | [T1.8](https://github.com/iamfatness/CoreVideoPro/issues/461) | Close while recording kills the recording | #467 (8-step live checklist passed) |
-| [T1.9](https://github.com/iamfatness/CoreVideoPro/issues/463) | Multiview sources 9/10 not clickable | #464 (not yet re-checked live by the owner) |
+| [T1.9](https://github.com/iamfatness/CoreVideoPro/issues/463) | Multiview sources 9/10 not clickable | #464 (re-checked live on beta-2026-09-12-aac2d98) |
 | [T1.10](https://github.com/iamfatness/CoreVideoPro/issues/471) | Poll start/stop race freezes meters for a session | #472 (diagnosed from a dump) |
 | [#478](https://github.com/iamfatness/CoreVideoPro/issues/478) | Zoom: wall guests starved, video-off/unrouted feeds, talk-driven flashing → **sources-only feeds**, stable resolution tiers | #484 (live A/B: talk churn 4→0; unroute drops video+audio) |
 | [#481](https://github.com/iamfatness/CoreVideoPro/issues/481) | App muted guests on its own; meters hid talkers → **A1-only mute**, pre-mute meters, ZOOM MUTED badge | #483 |
-| [T1.14](https://github.com/iamfatness/CoreVideoPro/issues/480) | Scene layer sources wipe themselves, then a random guest | #487 (tests; live check with the batch beta) |
-| [T1.15](https://github.com/iamfatness/CoreVideoPro/issues/465) | First roster participant's isolated audio silent (mix keyed to `participants[0]`) | #488 (tests; live check with the batch beta) |
-| [T1.16](https://github.com/iamfatness/CoreVideoPro/issues/485) | Mixer shows only sources | #489 (tests; live check with the batch beta) |
-| [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles slots / "never show" keyed on Zoom's per-session user id | #490 (tests; live check with the batch beta) |
+| [T1.14](https://github.com/iamfatness/CoreVideoPro/issues/480) | Scene layer sources wipe themselves, then a random guest | #487 (tests; live-checked on beta-2026-09-12-aac2d98) |
+| [T1.15](https://github.com/iamfatness/CoreVideoPro/issues/465) | First roster participant's isolated audio silent (mix keyed to `participants[0]`) | #488 (tests; live-checked on beta-2026-09-12-aac2d98) |
+| [T1.16](https://github.com/iamfatness/CoreVideoPro/issues/485) | Mixer shows only sources | #489 (tests; live-checked on beta-2026-09-12-aac2d98) |
+| [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles slots / "never show" keyed on Zoom's per-session user id | #490 (tests; live-checked on beta-2026-09-12-aac2d98) |
 
 T1.1-T1.10, #478 and #481 shipped in beta-2026-09-11-404602b (installed on the owner's
 machine 2026-09-11).
 
-**T1.14-T1.17 and T1.11 step 2 shipped in beta-2026-09-12-aac2d98** (cut 2026-09-12, the
-batch beta those Done rows name). Their live checks are now POSSIBLE but still OWED — none
-of the five has been seen in a real meeting, and none may be ranked verified until it has.
-The release notes carry the five things to check. Build provenance: a fresh detached
-worktree at `aac2d981`, `COREVIDEO_WITH_D3D11:BOOL=ON` (a real GPU core, not the software
-Stub), 903 native tests green, both stale-PRI gates passed (2,360,144-byte `.pri`,
-`--verify-runtime` exit 0), `Test-AlphaPackage` and `Test-AlphaInstaller` green, both asset
-checksums verified. Unsigned, so SmartScreen warns — that is T0.1.
+**T1.14-T1.17 and T1.11 step 2 shipped in beta-2026-09-12-aac2d98** (cut 2026-09-12) and
+**the owner's live check on that beta PASSED the same day**. That closes the "live check
+with the batch beta" each of those Done rows was owing; all five are now verified in a real
+meeting, not by tests alone. Build provenance: a fresh detached worktree at `aac2d981`,
+`COREVIDEO_WITH_D3D11:BOOL=ON` (a real GPU core, not the software Stub), 903 native tests
+green, both stale-PRI gates passed (2,360,144-byte `.pri`, `--verify-runtime` exit 0),
+`Test-AlphaPackage` and `Test-AlphaInstaller` green, both asset checksums verified.
+Unsigned, so SmartScreen warns — that is T0.1.
 
 ## Tier 2 — first external install
 
