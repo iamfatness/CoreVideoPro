@@ -38,8 +38,9 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     internal Task SetRecordingAsync(bool requested) => _transportCoordinator.SetRecordingAsync(requested);
     internal Task SetStreamingAsync(bool requested) => _transportCoordinator.SetStreamingAsync(requested);
-    internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || Settings.IsInMeeting);
-    internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight;
+    // T1.8: while "Stop and close" finishes the outputs, a START is refused (a stop is still allowed).
+    internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || (Settings.IsInMeeting && !_outputsClosing));
+    internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight && (!requested || !_outputsClosing);
 
     // Called only on the UI thread, including the capture-independent polling path.
     private void ApplyOutputLifecyclePatch(LiveProductionSync.StudioLiveProductionPatch patch)
@@ -167,6 +168,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     void ITransportHost.BeginTakeMutation() => _takeMutationDepth++;
     void ITransportHost.EndTakeMutation() => _takeMutationDepth--;
     void ITransportHost.RequestTakeReconciliation() => QueueProductionSyncRetry("take-rollback");
+    void ITransportHost.QueueProductionSyncRetry(string reason) => QueueProductionSyncRetry(reason);
 
     // Capture originals now, then seal ownership after the local Take mutations.
     // A rollback must not erase edits made while the media-core reply was pending.
@@ -224,7 +226,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     void ITransportHost.CopyPreviewRoutesToScene(string sceneId) => CopyPreviewRoutesToScene(sceneId);
 
-    void ITransportHost.PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds) =>
+    bool ITransportHost.PromoteProgramMediaRouteToPlayback(IReadOnlyList<string> wentLiveMediaAssetIds) =>
         PromoteProgramMediaRouteToPlayback(wentLiveMediaAssetIds);
 
     void ITransportHost.RefreshPreviewRoutingState() => RefreshPreviewRoutingState();
@@ -236,6 +238,46 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     // Take may really have gone to air, and reusing its old key could resume a stale decoder.
     IReadOnlyList<string> ITransportHost.RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
         _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
+
+    void ITransportHost.RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
+        RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
+
+    // T1.3 (#430): the scene rollback above does not own the media selection; the coordinator
+    // captures it around the Take and TakeMediaSelectionRollback decides what stands.
+    MediaSelectionState ITransportHost.CaptureMediaSelection() =>
+        new(
+            SelectedMediaAssetId,
+            SelectedMediaAssetName,
+            SelectedMediaAssetPath,
+            SelectedMediaAssetKind,
+            SelectedMediaAssetId is { Length: > 0 } assetId && FindMediaAsset(assetId)?.SupportsPlayback == true,
+            SelectedMediaAssetPlaying,
+            MediaPlaybackStatus);
+
+    IReadOnlyCollection<string> ITransportHost.OperatorPausedMediaAssetIds => _mediaGoLive.OperatorPausedAssetIds;
+
+    void ITransportHost.RestoreMediaSelectionAfterRollback(MediaSelectionState selection)
+    {
+        SelectedMediaAssetId = selection.AssetId;
+        SelectedMediaAssetName = selection.Name;
+        SelectedMediaAssetPath = selection.Path;
+        SelectedMediaAssetKind = selection.Kind;
+        SelectedMediaAssetPlaying = selection.Playing;
+        MediaPlaybackStatus = selection.Status;
+        // One rebuild: the restored Program changes every row's on-air state, not just the selection's.
+        MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
+
+        OnPropertyChanged(nameof(MediaBinGroups));
+        OnPropertyChanged(nameof(HasSelectedMediaAsset));
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
+        OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
+        OnPropertyChanged(nameof(IsMediaAssetPlaying));
+        OnPropertyChanged(nameof(MediaPlaybackStatus));
+        RefreshMultiviewGridTiles();
+    }
 
     // --- media-core lifecycle + sync (stay on the god file; the coordinator calls through) ---
     Task ITransportHost.EnsureMediaCoreRunningAsync(string startingStatus) =>

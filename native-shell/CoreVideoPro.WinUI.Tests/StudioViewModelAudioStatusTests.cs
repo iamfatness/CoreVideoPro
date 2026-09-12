@@ -21,6 +21,305 @@ public sealed class StudioViewModelAudioStatusTests
         bool expected) =>
         Assert.Equal(expected, StudioViewModel.ResolveEffectiveAudioMute(sourceMuted, mixMuted));
 
+    // #481: THE A1's MUTE IS ONLY EVER SET BY THE A1. A channel with no prior
+    // (first appearance in this session) must always start unmuted, no matter
+    // what the core's EFFECTIVE mute (nativeChannel.Muted, which folds in the
+    // Zoom mute) was on that first snapshot.
+    [Fact]
+    public void LiveCase485_BuildAudioMixChannelsOmitsNonSourceZoomGuests()
+    {
+        var roster = new[]
+        {
+            new Participant { Id = "16778240", Name = "Host" },
+            new Participant { Id = "16791552", Name = "Program" },
+            new Participant { Id = "16788480", Name = "Off wall" }
+        };
+        var sources = new HashSet<string>(StringComparer.Ordinal) { "16791552" };
+        var channels = ProductionStateHelper.BuildAudioMixChannels(roster, zoomSourceParticipantIds: sources);
+        Assert.Equal(["16791552"], channels.Select(channel => channel.ParticipantId).ToArray());
+    }
+
+    [Fact]
+    public void LiveCase485_CameraOffSourceOnTheWallHasAStrip()
+    {
+        var roster = new[]
+        {
+            new Participant { Id = "wall-off", Name = "Wall off", Health = FeedHealth.VideoOff },
+            new Participant { Id = "comms", Name = "Comms", Health = FeedHealth.VideoOff }
+        };
+        var sources = new HashSet<string>(StringComparer.Ordinal) { "wall-off" };
+        var channels = ProductionStateHelper.BuildAudioMixChannels(roster, zoomSourceParticipantIds: sources);
+        Assert.Equal(["wall-off"], channels.Select(channel => channel.ParticipantId).ToArray());
+    }
+
+    [Fact]
+    public void LiveCase485_A1SettingsSurviveLeavingAndRejoiningTheSourceSet()
+    {
+        var prior = new ParticipantAudioMix
+        {
+            ParticipantId = "16778240",
+            OutputLevel = 40,
+            GainDb = 6,
+            ManualGainDb = 6,
+            Pan = -0.25,
+            Solo = false,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            Muted = true,
+            PluginInserts = ["eq"]
+        };
+        var remembered = StudioViewModel.RememberMixerChannelSettings(
+            new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal),
+            [prior]);
+        var afterDrop = StudioViewModel.RememberMixerChannelSettings(remembered, []);
+        Assert.True(afterDrop["16778240"].Muted);
+        Assert.Equal(6, afterDrop["16778240"].GainDb);
+        Assert.Equal(-0.25, afterDrop["16778240"].Pan);
+        Assert.Equal(["eq"], afterDrop["16778240"].PluginInserts);
+
+        var restored = StudioViewModel.MergeNativeAudioChannel(
+            new NativeMediaCoreParticipantAudioChannel
+            {
+                ParticipantId = "16778240",
+                OutputLevel = 50,
+                GainDb = 0,
+                RmsDbfs = -20,
+                PeakDbfs = -12,
+                InputRmsDbfs = -20,
+                InputPeakDbfs = -12,
+                Status = "cleaning"
+            },
+            afterDrop["16778240"],
+            sourceMuted: false);
+        Assert.True(restored.Muted);
+        Assert.Equal(6, restored.ManualGainDb);
+        Assert.Equal(-0.25, restored.Pan);
+        Assert.Equal(["eq"], restored.PluginInserts);
+    }
+
+    [Fact]
+    public void LiveCase485_A1SettingsDoNotFollowAReusedZoomIdAfterMeetingEnd()
+    {
+        var prior = new ParticipantAudioMix
+        {
+            ParticipantId = "16778240",
+            OutputLevel = 40,
+            GainDb = 6,
+            ManualGainDb = 6,
+            Pan = -0.25,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            Muted = true
+        };
+        var inMeeting = StudioViewModel.RememberMixerChannelSettings(
+            new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal),
+            [prior]);
+        Assert.True(inMeeting["16778240"].Muted);
+
+        var afterLeave = new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal);
+        var leftoverRoster = new[] { new Participant { Id = "16778240", Name = "Someone else" } };
+        var leftover = ProductionStateHelper.BuildAudioMixChannels(
+            leftoverRoster,
+            afterLeave,
+            zoomSourceParticipantIds: new HashSet<string>(StringComparer.Ordinal));
+        Assert.DoesNotContain(leftover, channel => channel.ParticipantId == "16778240");
+        var nextMeeting = StudioViewModel.RememberMixerChannelSettings(afterLeave, leftover);
+        Assert.False(nextMeeting.ContainsKey("16778240"));
+    }
+
+    [Fact]
+    public void ResolveMergedChannelMute_NewChannelStartsUnmutedEvenIfGuestWasZoomMutedOnArrival()
+    {
+        // No prior at all - the channel has never appeared in this session.
+        Assert.False(StudioViewModel.ResolveMergedChannelMute(null));
+    }
+
+    [Fact]
+    public void ResolveMergedChannelMute_ZoomMuteNeverLatchesIntoA1Mute()
+    {
+        // A channel that arrived while the guest was Zoom-muted, and stayed
+        // that way (SourceMuted = true), but the A1 never touched Muted.
+        var priorZoomMutedOnly = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,
+            Muted = false,
+        };
+
+        Assert.False(StudioViewModel.ResolveMergedChannelMute(priorZoomMutedOnly));
+    }
+
+    [Fact]
+    public void ResolveMergedChannelMute_A1MuteSurvivesRebuilds()
+    {
+        var priorA1Muted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = false,
+            Muted = true,
+        };
+
+        Assert.True(StudioViewModel.ResolveMergedChannelMute(priorA1Muted));
+    }
+
+    [Fact]
+    public void ResolveMergedChannelMute_A1UnmuteSurvivesRebuilds()
+    {
+        var priorA1Unmuted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,  // still Zoom-muted...
+            Muted = false,       // ...but the A1 explicitly unmuted the strip.
+        };
+
+        Assert.False(StudioViewModel.ResolveMergedChannelMute(priorA1Unmuted));
+    }
+
+    // #481 review round 1 (MAJOR finding): ResolveMergedChannelMute(prior) alone
+    // takes no native channel and no Zoom mute, so a regression that restores
+    // `?? nativeChannel.Muted` at the call site could not fail any test above -
+    // they never construct a native channel at all. These drive the WHOLE merge
+    // (StudioViewModel.MergeNativeAudioChannel) through the exact live sequence
+    // from the #481 meeting: a channel arrives while the guest is Zoom-muted
+    // (the core echoes that as its EFFECTIVE nativeChannel.Muted), then the guest
+    // unmutes in Zoom before the core's next wire catches up.
+    private static NativeMediaCoreParticipantAudioChannel NativeChannel(bool muted) => new()
+    {
+        ParticipantId = "guest-1",
+        Status = "native-pcm",
+        Muted = muted,
+    };
+
+    [Fact]
+    public void MergeNativeAudioChannel_Rebuild1_ArrivesZoomMutedButA1MuteStaysFalse()
+    {
+        // The core's FIRST wire for this guest: EFFECTIVE mute (Zoom mute folded
+        // in) reads true, there is no prior, and the roster agrees the guest is
+        // Zoom-muted right now.
+        var result = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), prior: null, sourceMuted: true);
+
+        Assert.False(result.Muted);
+        Assert.True(result.SourceMuted);
+    }
+
+    [Fact]
+    public void MergeNativeAudioChannel_Rebuild2_GuestUnmutesInZoomBeforeCoreWireCatchesUp_ChannelGoesLive()
+    {
+        var rebuild1 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), prior: null, sourceMuted: true);
+
+        // The guest unmutes in Zoom - the ROSTER already reflects it - but the
+        // core has not sent a fresh wire yet, so nativeChannel.Muted is STILL true
+        // (the stale echo of the old effective mute). This is exactly the shape
+        // that would fool `prior?.Muted ?? nativeChannel.Muted`.
+        var rebuild2 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), prior: rebuild1, sourceMuted: false);
+
+        Assert.False(rebuild2.Muted);
+        Assert.False(rebuild2.SourceMuted);
+        Assert.False(StudioViewModel.ResolveEffectiveAudioMute(rebuild2.SourceMuted, rebuild2.Muted));
+    }
+
+    [Fact]
+    public void MergeNativeAudioChannel_A1MuteSurvivesTwoRebuilds()
+    {
+        var priorA1Muted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = false,
+            Muted = true,
+        };
+
+        // Two rebuilds, each reporting a DIFFERENT native/Zoom state - none of it
+        // should move the A1's own mute.
+        var rebuild1 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: false), priorA1Muted, sourceMuted: false);
+        Assert.True(rebuild1.Muted);
+
+        var rebuild2 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), rebuild1, sourceMuted: true);
+        Assert.True(rebuild2.Muted);
+    }
+
+    [Fact]
+    public void MergeNativeAudioChannel_A1UnmuteSurvivesTwoRebuilds()
+    {
+        var priorA1Unmuted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,   // still Zoom-muted...
+            Muted = false,        // ...but the A1 explicitly unmuted the strip.
+        };
+
+        var rebuild1 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), priorA1Unmuted, sourceMuted: true);
+        Assert.False(rebuild1.Muted);
+
+        var rebuild2 = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: true), rebuild1, sourceMuted: false);
+        Assert.False(rebuild2.Muted);
+    }
+
+    // #481 review round 1 (MINOR finding): SourceMuted must never carry a Zoom
+    // mute forward from `prior` on its own - the caller resolves it fresh from
+    // the roster every rebuild (false on a roster miss, never `prior.SourceMuted`),
+    // and MergeNativeAudioChannel must honor exactly whatever it is handed.
+    [Fact]
+    public void MergeNativeAudioChannel_SourceMutedNeverCarriesForwardFromPrior()
+    {
+        var priorZoomMuted = new ParticipantAudioMix
+        {
+            ParticipantId = "guest-1",
+            OutputLevel = 0,
+            GainDb = 0,
+            NoiseSuppression = false,
+            Status = "native-pcm",
+            SourceMuted = true,
+            Muted = false,
+        };
+
+        // Simulates a roster-miss rebuild: the caller resolves sourceMuted to
+        // false (unknown is not evidence of a mute), independent of prior.
+        var result = StudioViewModel.MergeNativeAudioChannel(
+            NativeChannel(muted: false), priorZoomMuted, sourceMuted: false);
+
+        Assert.False(result.SourceMuted);
+    }
+
+    [Theory]
+    [InlineData(-60, -20, false, -60)]
+    [InlineData(-60, -20, true, -20)]
+    [InlineData(-6, -6, false, -6)]
+    public void ResolveChannelMeterLevel_ShowsInputMeterOnlyWhileMuted(
+        double outputTruePeakDb,
+        double inputTruePeakDb,
+        bool effectiveMuted,
+        double expectedSourceDb) =>
+        Assert.Equal(
+            AudioMeterScale.ToLevel(expectedSourceDb),
+            AudioMeterScale.ResolveChannelMeterLevel(outputTruePeakDb, inputTruePeakDb, effectiveMuted));
+
     [Fact]
     public void FormatAudioMixerFailureStatus_PreservesLoadFailureDetail()
     {
@@ -2401,7 +2700,7 @@ public sealed class StudioViewModelAudioStatusTests
     [Theory]
     [InlineData(false, false, "Audition")]
     [InlineData(false, true, "Pause audition")]
-    [InlineData(true, false, "Restart Program")]
+    [InlineData(true, false, "Resume Program")]
     [InlineData(true, true, "Pause Program")]
     public void FormatMediaPlaybackActionLabel_UsesCurrentBus(
         bool isOnProgram,

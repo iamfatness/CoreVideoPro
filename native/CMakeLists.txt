@@ -623,6 +623,9 @@ if(BUILD_TESTING)
     tests/IsolatedOutputSenderTest.cpp
     tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
+    tests/MediaCueHandoffTest.cpp
+    tests/BrowserHostExitMessageTest.cpp
+    tests/IsoFrameConformTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
@@ -636,7 +639,9 @@ if(BUILD_TESTING)
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
+    tests/EmptyRouteBlankTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
+    tests/MonitorShedPolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp
     tests/ProgramPixelContinuityTest.cpp
     tests/SourceContinuityLedgerTest.cpp

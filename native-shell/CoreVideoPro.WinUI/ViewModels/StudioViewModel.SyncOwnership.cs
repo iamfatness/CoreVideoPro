@@ -20,6 +20,7 @@ public sealed partial class StudioViewModel
             catch (Exception error) { LaunchLog.WriteException($"shutdown UI preparation: {step}", error); }
         }
         Prepare("Magic Scene", () => MagicScene.Stop());
+        Prepare("dispatcher timers", StopDispatcherTimersForShutdown);
         Prepare("lower third", () => _lowerThirdKeyTransitionCts?.Cancel());
         Prepare("capture state", () => _surfaces.SetZoomCaptureSubscribed(false));
         Prepare("event subscriptions", () =>
@@ -42,6 +43,19 @@ public sealed partial class StudioViewModel
                 source.PropertyChanged -= OnSrtIngestSourcePropertyChanged;
             }
         });
+    }
+
+    // T1.7 (#457), defence in depth: the view model's one-shot DispatcherQueueTimers (surface-
+    // binding throttle, multiview layout and multiviewer config debounces) touch XAML-bound
+    // state from their Tick. One still pending when the dispatcher queue drains or tears down
+    // is the shape of the 2026-09-09 close crash (DispatcherQueueTimer::TimerCallback failing
+    // under ShutdownQueue). Stop them before teardown. Idempotent; UI thread only.
+    internal void StopDispatcherTimersForShutdown()
+    {
+        _rsbThrottleTimer?.Stop();
+        _rsbThrottleScheduled = false;
+        _multiviewLayoutTimer?.Stop();
+        _multiviewerConfigTimer?.Stop();
     }
 
     private async Task<T> CaptureUiOwnedAsync<T>(Func<T> capture, CancellationToken cancellationToken = default)

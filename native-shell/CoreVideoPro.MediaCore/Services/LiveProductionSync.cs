@@ -21,6 +21,7 @@ public static class LiveProductionSync
         public bool IsMuted { get; init; }
         public int AudioLevel { get; init; }
         public string HealthLabel { get; init; } = "live";
+        public string? PersistentId { get; init; }
     }
 
     public sealed record LiveProductionSyncContext
@@ -158,7 +159,10 @@ public static class LiveProductionSync
                     IsScreenSharing = participant.SharingScreen == true,
                     IsMuted = participant.Muted == true,
                     AudioLevel = audioLevel,
-                    HealthLabel = healthLabel
+                    HealthLabel = healthLabel,
+                    PersistentId = string.IsNullOrWhiteSpace(participant.PersistentId)
+                        ? null
+                        : participant.PersistentId.Trim()
                 };
             })
             .ToList();
@@ -517,7 +521,13 @@ public static class LiveProductionSync
         return $"Breakout room changed to {roomLabel} — turn engine off before switching rooms.";
     }
 
-    private static string NormalizeFeedHealthLabel(RawParticipantEvent participant)
+    /// <summary>
+    /// The feed-health label for a raw participant: "video-off" when the camera is off, else the
+    /// network-quality label. Public so the spine payload's live-roster path uses the SAME
+    /// mapping (#478: it used to pass raw NetworkQuality, so a camera-off guest read as
+    /// video-on and was handed a video subscription).
+    /// </summary>
+    public static string NormalizeFeedHealthLabel(RawParticipantEvent participant)
     {
         if (participant.VideoOn == false)
         {

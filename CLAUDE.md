@@ -75,7 +75,8 @@ they carry real characterization tests (`MagicSceneCoordinatorTests`) — Studio
 is still NOT constructible in tests (field-init `DispatcherQueue.GetForCurrentThread()` + ctor
 hard-`new()`s ~10 services + launches the core; a later DI-seam PR). **PR2 (done):** the
 `IMediaCoreBridge` DI seam + `TransportCoordinator` (`ITransportHost` + `ITransportDispatcher`)
-owning the Engine/Take/Record/Stream async command bodies, in-flight guards, #286 rollback,
+owning the Engine/Take/Record/Stream async command bodies, in-flight guards, #286 rollback
+(scenes + the media selection the Take moved, T1.3),
 backpressure-retry, and sender-proof — constructible + characterization-tested
 (`TransportCoordinatorTests`). Same move-only façade rules: the `[RelayCommand]` objects stay
 generated on StudioViewModel as thin forwarders (XAML + external `NotifyCanExecuteChanged` pokes
@@ -129,6 +130,103 @@ or PFX/thumbprint env, RFC3161 timestamp + `verify /pa` + manifest-Publisher mat
 all REQUIRED — any gap hard-fails (never a silent unsigned artifact). `-DryRun`
 prints the resolved plan; tests: `scripts/tests/test-sign-native-msix.ps1`. Full
 env contract in the script header and `docs/beta-engineering-spec.md` §D2.
+
+## Installer: one entry point, and uninstall removes what it caused (T2.7/T2.1, 2026-09-12)
+
+Three rules, all learned from the owner's own machine:
+
+- **ONE stable `CoreVideo Pro` shortcut** (desktop + Start menu), repointed at
+  each install. The owner accumulated five version-named desktop shortcuts,
+  launched a three-day-old build by mistake and filed a defect against code that
+  already had the fix. The version-named shortcut survives in the Start menu
+  ONLY. Uninstall REMOVES the stable pair rather than repointing it: choosing
+  "the newest remaining release" means ranking sibling folders, and a wrong guess
+  silently opens the wrong build — the exact failure this exists to stop.
+- **Uninstall removes the first-run media runtime, from a MANIFEST.**
+  `Install-MediaRuntime.ps1` records what it wrote to
+  `notices\ffmpeg\installed-files.txt`; `un.RemoveMediaRuntime` deletes that set
+  and nothing else. A manifest rather than a hard-coded list because the file set
+  follows the pinned upstream build; a manifest rather than `RMDir /r` because
+  `$INSTDIR` is an app folder an operator's files can land in. Measured before
+  the fix: TWO uninstalled versions still holding 10 files / **195 MB each**.
+  The loop refuses any manifest line that is absolute, rooted, or contains `..`
+  — a file that decides what an uninstaller deletes is worth validating.
+- **A refused uninstall SAYS WHY.** Refusing when the registry does not match is
+  correct, but refusing silently left an operator with no Apps & Features entry
+  and an uninstaller that appeared to do nothing.
+
+**Two traps this cost, both worth remembering:**
+
+1. **NEVER run an interactive helper from a silent installer.**
+   `regsvr32` WITHOUT `/s` opens a modal result dialog, and
+   `Register-VirtualCamera.cmd` deliberately omits `/s` so a tester who
+   double-clicks it gets feedback. Calling that .cmd from the installer hung a
+   silent install forever — two `regsvr32` processes waiting on a dialog nobody
+   could see, until the 180 s `Test-AlphaInstaller` timeout. The installer calls
+   `regsvr32 /s` directly. Install registers the virtual camera; **uninstall must
+   unregister it**, before the payload delete, or a COM registration survives
+   pointing at a deleted DLL and every app that enumerates cameras inherits a
+   broken device.
+2. **A UTF-8 BOM is three literal characters to NSIS.** Windows PowerShell 5.1's
+   `Set-Content -Encoding UTF8` writes one, so the manifest's first path became
+   `<BOM>ffmpeg.exe`, `Delete` removed nothing, and only that one file was left
+   behind — a failure that looked like flaky file locking. Write manifests with
+   `[IO.File]::WriteAllLines(..., New-Object Text.UTF8Encoding $false)`. Any file
+   NSIS reads must be written BOM-free.
+
+`Test-AlphaInstaller.ps1` is the gate and now asserts all of it:
+`stableShortcutOnly`, `mediaRuntimeRemoved`, `manifestEscapeRefused`, alongside
+the existing real silent install / runtime probe / duplicate rejection /
+uninstall / user-file preservation.
+
+**T2.1 is PARTLY done, and the remainder is blocked by Windows, not by us.** The
+installer registers the virtual camera and creates the recording folder. It does
+NOT enable WER LocalDumps: that key is HKLM-only. Measured 2026-09-12 — an HKCU
+`LocalDumps` entry for a deliberately crashing test exe (exit `0xC0000005`)
+produced **zero** dumps, while the machine's HKLM configuration produced two. A
+per-user installer writing that key would ship a setting that does nothing. Full
+crash dumps on a tester's machine still need one elevated step
+(`scripts/setup-crash-dumps.ps1`); wiring that up is separate work.
+
+## Cutting a Windows beta (local, unsigned) — the runbook
+
+Betas are built LOCALLY and published as GitHub PRE-releases tagged `beta-YYYY-MM-DD-<sha7>`.
+The tag-driven `release.yml` (`v*`) needs signing secrets that do not exist yet, so it is not the
+beta path. Steps:
+
+1. **Worktree.** Make a fresh DETACHED worktree at the main commit, then copy
+   `native-core/zoom-runtime/windows` in.
+2. **Native core.** `npm run build:native-dev` with `ZOOM_SDK_DIR` set. Never hand-write cmake:
+   that once silently built a software "Stub" core. Confirm `COREVIDEO_WITH_D3D11:BOOL=ON`. Run
+   `native/build-dev/corevideo-native-tests.exe`.
+3. **Shell.** Publish from a CLEAN tree:
+   `dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -r win-x64
+   --self-contained true -p:WindowsAppSDKSelfContained=true -p:Platform=x64 -o <publish>`.
+4. **Package and install.**
+   - `scripts/package-alpha.ps1 -ReleaseId … -PublishDirectory … -NativeBuildDirectory …`
+   - `scripts/package-alpha-installer.ps1 -Archive <zip> -VcRedist <VS-bundled vc_redist.x64.exe>`.
+     The copy in Downloads is too old.
+   - `scripts/alpha/Test-AlphaPackage.ps1` and `Test-AlphaInstaller.ps1`, which does a real silent
+     install, runs the startup probe, then uninstalls.
+5. **Publish.** `gh release create <tag> --prerelease --target <sha>` with the six assets: the zip,
+   the Setup .exe, their `.sha256` files, their manifests, and the top-level manifest.
+
+**THE STALE-PRI TRAP (caught before publish on beta-2026-09-10-3a3bedf).** A publish run WITHOUT
+`-p:WindowsAppSDKSelfContained=true` leaves an app-only `CoreVideoPro.WinUI.pri` (~177 KB), and a
+later flagged publish REUSES it. The installed app then dies at launch with `XamlParseException:
+Cannot locate resource from 'ms-appx:///Microsoft.UI.Xaml/Themes/themeresources.xaml'`. The file
+count is identical, so only these two gates catch it, and both must pass before packaging:
+- the `.pri` is ~2.36 MB;
+- `CoreVideoPro.WinUI.exe --verify-runtime <json>` on the publish exits 0.
+
+**Before and after, live.** `python scripts/qa/live-check-sources-audio.py [seconds]` reads ONLY the
+control API, sends no input, and checks four things in a real meeting:
+- wall guests have video;
+- camera-off participants hold no video feed;
+- the app muted no guest;
+- talking causes no subscription churn, meters are live, and the snapshot is fresh.
+
+Run it on the previous build first, then on the new one.
 
 ## Observing a RUNNING core: `GET /snapshot` (2026-09-09)
 
@@ -222,6 +320,28 @@ off-thread guards never fired). Confirmed and suspected triggers:
   re-applies a matrix scale (`ApplyPanelTransform`), so the resize-vs-present race cannot
   occur by construction. No dedicated regression soak has confirmed it closed; treat any
   resize-adjacent fail-fast as this until the alpha soak passes.
+- **The post-Exit dispatcher drain on a normal close (T1.7, #457, 2026-09-10).** Here the
+  stack is `DispatcherQueue::DeferInvokeCallback` under
+  `DispatcherQueueController::ShutdownQueue` under `FrameworkApplication::StartDesktop`, on the
+  UI thread, AFTER `shutdown: resources released`. `Application.Current.Exit()` handed the
+  process back to XAML. Its shutdown drain then ran a leftover work item against torn-down XAML,
+  the item returned a failure HRESULT, and CoreMessaging fail-fasted. The failing item was a
+  `DispatcherQueueTimer::TimerCallback` (stowed E_UNEXPECTED) in one dump and a non-managed
+  callback (stowed E_ABORT) in the other. It hit 2 of 10 graceful closes, both after long
+  in-meeting sessions. Nothing aired, but each one costs a 1.1 GB dump, a WER APPCRASH, and a
+  false crash prompt on the next launch. FIXED: after a CLEAN shutdown, `MainWindow.ShutdownAsync`
+  calls `ShutdownCompletion.Complete`. It stops the view model's leftover timers, writes the last
+  log line, and calls `TerminateProcess` on its own process. It never calls
+  `Application.Current.Exit()`. It uses TerminateProcess, not `Environment.Exit`, because
+  `ExitProcess` would still run `DLL_PROCESS_DETACH` in Microsoft.UI.Xaml and CoreMessagingXP.
+  The logs are synchronous, and no ProcessExit handlers exist. A failed or timed-out cleanup
+  keeps the `ApplicationLifecycle.ForceExit` fallback. `PrepareForShutdown` also stops the view
+  model's DispatcherQueueTimers (defence in depth). **Rule: never hand a torn-down shell back to
+  WinUI's shutdown drain.** Unit tests (`ShutdownCompletionTests`) pin the order and the gate.
+  (T1.8 put a close guard in FRONT of this path — see "Engine teardown order": closing while
+  recording/streaming asks first and finishes the files before `ShutdownAsync` starts.)
+  The proof is a scripted close-cycle loop on the real app: zero new
+  `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
 
 Rules of thumb: never replace a bound collection at frame rate (sync in place / diff);
 keep one stable swap chain per surface (program, preview, one multiview);
@@ -313,14 +433,67 @@ config key, no wire field reaches any of them, and nothing outside `native/tests
 - **Program is NOT isolated from monitor rendering.** `MonitorRenderFaultInjectionTest`
   measured it on this rig (RTX 4090, 1080p Program + 720p Preview, 3-frame buffer): with
   no fault, 121 produced / 124 delivered / 4 underruns per 2s; with a sustained 25ms
-  Preview stall, 65 / 65 / 64 — **a Preview compositor overrunning by one and a half frame
-  periods costs Program HALF its frames.** Program `render()`, `renderMultiview()` and
+  Preview stall (unmitigated, at the product's 1ms timer resolution), 77 / 77 / 51 —
+  **a Preview compositor overrunning by ~1.5 frame periods costs Program ~36% of its
+  frames** (≈ 1 − 16.7/25.7, the slots a 25.7ms pass leaves). The originally published
+  "65 / 65 / 64 — HALF its frames" was measured at the default ~15.6ms timer tick, where
+  the seam's "25ms" stall actually slept ~31ms. Program `render()`, `renderMultiview()` and
   `renderPreview()` share one render thread and one D3D immediate context. A one-off stall
   costs only the slots it spans and Program recovers on its own. **The program buffer does
   not help here** — it protects delivery timing for frames that were produced, and these
   frames were never rendered. The monitor-compositor split in
   `docs/production-realtime-completion-plan.md` is what would give G2 its property; the
   sustained-stall case must be INVERTED when that lands, not deleted.
+  **Beta MITIGATION shipped (T1.4 / #431, 2026-09-10): monitor load-shedding.** Program
+  always renders; under sustained overload the MONITOR passes give way.
+  `core/MonitorShedPolicy.h` (pure, `MonitorShedPolicyTest.cpp`) is fed once per DISPLAY
+  tick in `MediaCore::renderSyntheticTick` (videoOnly only — synthetic full ticks never
+  feed it, so ordinary unit tests stay timing-free) with the tick's non-monitor render
+  cost, the last measured cost of one multiview+preview cycle (each refreshed only when
+  that pass runs — and only when that pass is SHEDDABLE: a compositor that exports no
+  handle is forced every tick, so its cost is fed as 0), and the budget `1s / outputFps_`. It projects the per-tick load at
+  divisor d as `program + monitor/d` and returns a monitor cadence divisor 1/2/3 that
+  multiplies `kMultiviewTickDivisor` (still 1 = the healthy cadence) and applies to BOTH
+  the multiview pass (phase 0) and the preview pass (phase 1 — staggered so a shed cycle
+  never stacks both). Constants: `kEnterAfterOverBudgetTicks = 3` (one or two slow ticks
+  are a shader compile; the buffer rides them out), `kShedAboveUtilisationPercent = 90`
+  (NOT 100 — jitter headroom: under shedding the tick that runs the monitor pass
+  finishes late, and the cheap ticks after it must absorb that plus scheduler / pacer /
+  GPU jitter; a lost Program slot costs far more than shedding a level early),
+  `kRecoverAfterHealthyTicks = 60` (1s, 20x slower than entry — late
+  recovery costs monitor smoothness, early recovery costs Program),
+  `kRecoveryHeadroomPercent = 75` (recover only when the next LOWER divisor fits in 75%:
+  the 75–90% band is the anti-flap hysteresis), `kMaxDivisor = 3`. It steps one level at
+  a time both ways. CPU-deadline misses are deliberately NOT an input (a shed monitor
+  tick finishing late is expected and absorbed by the buffer; feeding it back would pin
+  every recoverable overload at 3). On a shed tick the cached preview texture/dims are
+  REPUBLISHED exactly like the multiview cache (`lastPreviewTexture_`), and the first
+  tick, a structural change (`*StructureEmitted_ = false`) or an empty cache still force
+  the pass. No locks, no allocation, up to seven clock reads per tick (tick start/end,
+  monitor start/end, plus the end of the multiview pass and the start/end of the preview
+  pass when they run). **A Program- or GPU-bound overload sheds monitors too, by design:**
+  the policy sees only CPU-submission time, and D3D submission is async, so GPU cost
+  queued by a monitor pass often surfaces inside Program's NEXT call — shedding monitors
+  is the one lever this thread has, and it can only give Program time back.
+  Observability: `sessionState().realtimeEvidence.monitorShed {divisor, level,
+  enteredCount, shedTicks, lastReason, lastTransitionProgramMs,
+  lastTransitionMonitorCycleMs, lastTransitionBudgetMs}` (published unconditionally;
+  `lastReason` = none | over-budget | recovered; the `lastTransition*` fields are the
+  observation that caused the last divisor change, so a monitor-bound shed is
+  distinguishable from a Program/GPU-bound one) and ONE `[monitor-shed] enter|step-up|step-down|exit …` line per state
+  change via `nativeLogf`. **Measured (same rig, 1ms timer, one run, 2s windows):**
+  raw compositor, no shed — baseline 121/124/4, sustained 25ms 77/77/51; through
+  MediaCore with the shed — baseline 121/124/4, sustained 25ms **119/119/9** at divisor 2,
+  back to divisor 1 within 3s of the stall ending (182/182/6 per 3s). **What it does NOT
+  give:** isolation. Program is protected by cadence: the entry ticks are paid in full,
+  and a single monitor pass longer than the slack a 1/3 cadence leaves (~2 frame periods)
+  still costs Program slots. `ASustainedMonitorStallIsShedAndProgramKeepsItsRate` asserts
+  both halves — the raw leg still delivers <75% of baseline with underruns up by >30,
+  a bound tied to the stall (~35% expected loss), and that is the assertion to INVERT
+  when the split lands; the shed leg keeps >=90% — and the timing tests now run under
+  `timeBeginPeriod(1)` like the product's render thread: at the default ~15.6ms tick the
+  seam's "25ms" stall really slept ~31ms (that is what the 65/121 above measured) and
+  the harness's own slot sleeps overshot by up to a frame.
 
 ## One destination failing cannot take the show down (beta slice, PR19 — output supervisor)
 
@@ -452,6 +625,43 @@ the recording lifecycle and every sender lifecycle (redaction-safe: `Error` ride
 endpoint filter), and triage names a failed/interrupted destination, a bundle exported
 during the finalize window, and a stream that ended without sending media.
 
+**Two places the contract was still being broken, both fixed 2026-09-12:**
+
+- **A recording owns the encoder generation until its Stop barrier publishes
+  (#466).** `startProgramOutput` treated `recordingStatus_ == "stopping"` as
+  released, so the repeated desired-state `start-program-output` carrying only
+  the remaining stream destination called `encoder->start()`, bumped the sink
+  generation, and `AsyncEncoderSink` reset the snapshot with no recording
+  lifecycle. The old generation's Stop barrier then finalized the file and had
+  nowhere to publish `completed`: stop Record with a stream up and
+  `recording.status` sat at `"stopping"` for the rest of the show. The file was
+  never at risk (the barrier is FIFO ahead of the new Start) — the truthful
+  lifecycle was. Ownership is now `"recording" || "stopping"`, which also stops
+  the live stream eating a reconnect and a keyframe on every Record stop.
+  **The test asserts the RESTART, not the status:** the stub encoder publishes
+  no lifecycle, so the visible symptom only appears with the real sink, and a
+  status assertion passes with or without the fix (it did — that version was
+  thrown away). Counting `encoder->start()` pins the cause where the fix lives.
+- **A sender's `status`/`destinationHealth` are PROJECTIONS (#468).** They came
+  straight from the adapter's last LAUNCH state, which a dead destination never
+  disturbs: live 2026-09-10 an RTMP sender pointed at nothing reported
+  `status: live` / `destinationHealth: ok` for 20+ s with `framesSent` stuck at
+  8-10. The lifecycle knew (`producing` -> `interrupted`) and the supervisor knew
+  (unhealthy, restarting); only the operator-facing pair did not.
+  `core::publishedSenderStatus` / `publishedSenderDestinationHealth` project them
+  from the lifecycle and the supervisor. **`lastError` is deliberately not an
+  input** — it is sticky history, and a genuinely streaming SRT sender carries
+  its first-tick error forever. **An ABSENT supervisor keeps the adapter's own
+  words**: inventing health for a destination nothing watches is the same lie
+  pointing the other way. **And a destination that NEVER connected is its own
+  failure mode**: `evaluateActive` holds it at `preparing` while `everProgressed`
+  is false, so it never reaches `producing` or `interrupted` and the first cut of
+  this projection passed the adapter's `live` straight through. Found by pointing
+  RTMP at a hostname that does not resolve (2026-09-12) — FFmpeg dies at DNS
+  resolution, so nothing is ever accepted. `preparing` ALONE is never the
+  evidence (every healthy destination looks like that for its first moments);
+  the supervisor having already failed and restarted it is.
+
 **Contract:** `starting`/`live` remain in the `OutputLifecycle` enum as the RETIRED names so
 a newer consumer can read an older core; new producers must not emit them. Absent lifecycle
 means UNKNOWN, never healthy. Vocabulary and rules: `contracts/README.md`.
@@ -497,6 +707,56 @@ comment at the code site; this is the index.
   unity). Shell: `zoom-mix` — the audible Zoom path — was EXPLICITLY excluded from
   getting a strip (`IsConcreteAudioMixSourceId`), which is why muting every fader
   left audio on master. It has a "Zoom program mix" fader now.
+  **Media clips are governed by the shell's `"media"` strip and sends via a CORE
+  ALIAS (T1.6 / #455, `core/AudioControlSourcePolicy.h`).** Since #408 the decoder
+  labels each clip's PCM `media:<assetId>`, but the shell has ONE "Media playback"
+  row/strip/send set keyed `"media"`; exact-id matching made the FADER LAW drop every
+  clip and no send reached a bus, so media audio was silent on master, stream and
+  every recording while the shell looked fine. The routed-source build now
+  PRE-SUMS every `media:*` clip without its own strip/send into ONE routed source
+  keyed `"media"` (worker-owned scratch, no per-tick allocation), so the Media strip's
+  gate/compressor/inserts/VST run ONCE on the combined signal (a VST insert must never
+  be exchanged once per clip against one host instance), the `"media"` sends route it,
+  and the strip meters/GR-meters the sum. Clips keep their own ids in the mixer
+  session. An exact `media:<assetId>` strip or send keeps that clip separate; a clip
+  with its own send rows does NOT inherit the generic row's other cells. Do NOT fix it by sending
+  per-clip ids from the shell: the routing grid un-routes cells the core did not
+  echo, so the Media row would switch itself off ~2 s later. Proof:
+  `MediaCoreCommand.SceneMediaAudioReachesMasterThroughTheShellMediaStrip` and
+  `node scripts/validate-record-audio.mjs --media` (real MF decoder, AAC 440 Hz clip,
+  judges the recording's decoded audio). The FADER LAW line now says "unrouted
+  source (no sends)" for a strip-less source nothing routes (perGuestIso's zoom-mix).
+- **THE A1's MUTE IS ONLY SET BY THE A1 (#481).** A live meeting caught CoreVideo
+  muting Courtney, Guy and CJ on its own while the console showed nobody muted: a
+  new audio channel's `Muted` was seeded from the core's EFFECTIVE mute
+  (`nativeChannel.Muted`, which folds in the Zoom mute), and then `prior?.Muted`
+  latched that forever — a guest who was Zoom-muted the instant their channel
+  first appeared stayed muted on every bus after they unmuted in Zoom. Fix: a new
+  channel's `Muted` starts `false`, full stop, via the pure
+  `StudioViewModel.ResolveMergedChannelMute(prior)`; the Zoom mute lives only in
+  `SourceMuted` and is never adopted into `Muted`. It is still ORed into the
+  EFFECTIVE mute sent to the core (`ResolveEffectiveAudioMute`) — harmless, since
+  Zoom sends no audio while muted — but that gating is recomputed fresh every
+  wire build, never latched into the A1's state. The core also now publishes
+  PRE-MUTE `inputRmsDbfs`/`inputPeakDbfs` per channel (measured before mute/
+  fader) so a muted, talking guest still shows on the meter (dimmed) instead of
+  reading silence — the OUTPUT `rmsDbfs`/`peakDbfs` stay exactly as documented
+  above. **Round 1 review correction: test the WHOLE merge, not just the leaf.**
+  `ResolveMergedChannelMute(prior)` alone takes no native channel, so a
+  regression that put `?? nativeChannel.Muted` back at the call site could not
+  fail any test built only against that function. The real call site is now
+  `StudioViewModel.MergeNativeAudioChannel(nativeChannel, prior, sourceMuted)` —
+  the WHOLE native-channel→`ParticipantAudioMix` merge, extracted as one pure
+  static — and the tests drive it through the live two-rebuild sequence (arrives
+  Zoom-muted with no prior → live; guest unmutes in Zoom before the core's next
+  wire echoes it → still live). Also fixed there: `SourceMuted` must never carry
+  forward from `prior` on a roster miss (a missing roster entry is not evidence
+  of a Zoom mute) — the caller resolves it fresh every rebuild and passes
+  `false` on a miss, never `prior?.SourceMuted`. **Any new derived-state merge in
+  this codebase should default to the pure-function-over-the-whole-decision
+  shape, not a leaf function that omits the variable the regression would
+  restore** — a test that cannot construct the regressed expression cannot catch
+  it.
 - **A throwing DispatcherQueue.TryEnqueue callback fail-fasts the process with NO
   managed log** (`UiDispatch.cs`): three live crashes decoded to ordinary NRE /
   ArgumentOutOfRange inside queued callbacks (stowed 0x80004003 / 0x8000000b at
@@ -643,22 +903,130 @@ comment at the code site; this is the index.
   frozen feed still DELIVERS with a held frameId; `pause()` is the harsher
   no-frame case) and `AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated`.
   Both fail without the gate change.
-  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTS AND THIS FIX CANNOT TOUCH IT.**
-  `ZoomMediaSpinePayloadBuilder` assigns each video subscription a `purpose`
-  (active-speaker, then program routes, then preview routes, then roster order)
-  and caps the list at `maxVideoSubscriptions`. The core keys its
-  re-subscribe dedup on RESOLUTION, and resolution is `purpose == "active-speaker"
-  ? 1080P : 720P` — so a source flipping into or out of active-speaker is
-  re-subscribed at a new resolution, tearing down and rebuilding its engine
-  renderer. And because a Tiles scene serialises an EMPTY route list, a take
-  reorders the candidate list, which can push a source past the cap and
-  unsubscribe it outright. Either produces a real frame gap on the background
-  source, which reads exactly like this defect. The subscription UUID itself is
-  fine (`participant-video-<pid>-camera`, purpose deliberately excluded, so
-  Preview -> Program promotion alone never tears it down). UNPROVEN without a
-  live meeting: which of the two the owner is watching, and whether Zoom
-  re-subscribe churn on the taken members adds a third redraw.
-  **Both are now INSTRUMENTED, not fixed** (2026-09-10, see the next section).
+  **A SECOND, ENGINE-SIDE CONTRIBUTOR EXISTED; IT IS FIXED (#478, 2026-09-11,
+  plus fix rounds 1 and 2).** It was: `ZoomMediaSpinePayloadBuilder` ordered video
+  candidates active-speaker, program routes, preview routes, then EVERY participant
+  in roster order, capped at `maxVideoSubscriptions`; and the core picked resolution
+  as `purpose == "active-speaker" ? 1080P : 720P`, with resolution in the dedup key.
+  So every speaker change rebuilt two engine renderers, a Tiles scene's EMPTY route
+  list reordered the list on a take, and camera-OFF early joiners took the cap ahead
+  of a late wall guest (live, 12-person meeting: Alexander, slot 2,
+  `subscribed:false`, generation 14, froze whenever he left Preview/Program; three
+  camera-off non-wall guests held live subscriptions; `totalChurn` 53->59 in 20 s
+  with the owner seeing Tiles "flashing"). Now:
+  **(1) ONLY SOURCES ARE SUBSCRIBED (owner rule: "Why are you grabbing sources I
+  don't have routed to the multiviewer?").** `MediaCore/Services/ZoomSourceSetPolicy.cs`
+  is the ONE pure decision of who is a source, in budget order, PROGRAM FIRST:
+  Program routes -> Program Tiles members (+ Zoom wall background) -> Preview routes
+  -> Preview Tiles members -> in-show wall slots in slot order -> ISO-armed guests
+  (only while "Program + ISOs" is on) -> sticky Tiles audio members. What is on air
+  is never disturbed by a cue: an off-air Preview look can never take video (or the
+  1080P grant, which the core makes in this same order) from a Program source; a cued
+  guest the budget leaves out is named on the multiview PVW cell instead. (Round 1
+  briefly ranked Preview routes above Program Tiles; the re-review withdrew it — it
+  spent on-air pixels on an off-air cue.) No roster fill, anywhere. VIDEO =
+  camera-on sources, capped at 10; AUDIO (`participant-audio`, purpose "mix") = every
+  source including camera-off ones, uncapped (owner ruling "sources only": a
+  non-source is NOT subscribed and is inaudible in Program, the hardware-switcher
+  model); `meeting-audio` (the programMix path) is unchanged. **Tiles audio is
+  sticky** (`TilesAudioSourceLatch`), keyed by SCENE: a Tiles member stays an audio
+  source while their scene is on EITHER bus, so a panelist who turns their camera off
+  (the membership policy drops them) keeps talking on air — including across the Take
+  that swaps their gallery from Preview to Program. It forgets a scene on neither bus,
+  a participant who leaves, and EVERYTHING on a KNOWN "not in a meeting" or on Engine
+  off — a tick whose meeting state is UNKNOWN (no/synthesized snapshot) never clears it (Zoom
+  reuses per-meeting user ids; a latch that outlived the meeting would make a different
+  person audible). A never-on-camera participant is never a member, so never audible.
+  `StudioViewModel.BuildSpinePayload` only plumbs the Tiles layers, ISO ids and the
+  latch in, and maps the live roster's `VideoOn` into health (it used to pass raw
+  NetworkQuality, so every camera-off guest read as video-on).
+  **(2) THE SPEAKER DIRECTOR FOLLOWS ONLY SOURCES** (`ZoomActiveSpeakerDirector::setSourceFilter`,
+  fed from the payload's `sourceParticipantIds`). Without this, sources-only
+  DEADLOCKED speaker-following: the director only promotes a challenger with fresh
+  frames, a non-source never has a subscription, and the meeting's first talker
+  (vacancy fill, no freshness check) held the directed slot for the whole show. A
+  non-source who talks is ignored for direction; an incumbent that stops being a
+  source is released. A follow-speaker (`active-speaker` mode) route adds nobody,
+  moves nobody's budget position and GRANTS NO PURPOSE (round 2, N1: round 1 gave the
+  speaker the bus's 1080P purpose, which rebuilt two renderers — often on-air Tiles
+  tiles — on every speaker change, i.e. #478's flashing driven by talk again). **Known
+  limitation: a follow-speaker shot is 720P** (the speaker's own wall/Tiles/ISO tier)
+  until an in-place resolution change is proven on a live renderer. **The core
+  RENDERS a follow route as the directed speaker, FRAME-VALIDATED**
+  (`RouteSourcePolicy` `directedSpeakerParticipantId`, `MediaCore::followSpeakerForRoutes`,
+  pure `core/FollowSpeakerHold.h`): the directed speaker if they have a content frame
+  THIS tick, else the most recent previously directed speaker who does, else NOBODY —
+  the layer renders EMPTY (a transparent fill, opacity 0). Binding a frameless id
+  painted the `colorFromParticipantId` slab on Program (the director keeps a departed
+  incumbent 60 s; a speaker dropped from the sources mid-talk loses their video in the
+  same tick), and an unbound layer paints grey. The history is scoped to one meeting
+  by `ZoomEngineRuntime::speakerEpoch()` (moves on join, leave, Engine off and every
+  new engine process), so a reused Zoom id from the last meeting is never bound. It
+  used to take the positional fallback `videoFrames[routeIndex]` (uuid order), so a
+  speaker scene showed the lowest-pid source. #480 removed that fallback for every
+  mode: a route with no source id renders BLANK (transparent fill), including an
+  emptied OHG box.
+  **(3) RESOLUTION IS A STABLE TIER, CAPPED, NO RATCHET.**
+  `native/src/modules/ZoomSubscriptionResolutionPolicy.h`: FIXED bus routes (purpose
+  program/preview) and screen share at 1080P; Tiles, wall, ISO and a follow route's
+  speaker at 720P. At most
+  `kMaxConcurrentFullResolutionCameras` (4) cameras at 1080P, granted in payload order
+  (Program routes first, then Program Tiles, then Preview routes); the rest get 720P
+  and `zoomSubscriptionChurn.fullResolutionDemoted`
+  counts them. The number comes from commit bd3caf29: SIX concurrent 1080P raw
+  subscriptions crashed the SDK subprocess (0xc000000d), and everything since shipped
+  with ONE camera at 1080P. A guest who leaves the buses DROPS BACK to 720P: the engine
+  used to ignore a lower request (`video_subscribe_noop_existing`), which over a show
+  ratcheted every rotated guest to 1080P; it now rebuilds when the source is the
+  renderer's only target (`zoom-engine/shared/engine-resolution-policy.h`). In-place
+  `setRawDataResolution` was REJECTED: the SDK header only declares it
+  (`h/rawdata/rawdata_renderer_interface.h:50`) and the engine only ever calls it
+  before `subscribe()` (`engine-video.cpp:70`). **The unavoidable on-air
+  re-subscribe (a cue raises, leaving a bus drops — never who is talking) is HIDDEN by
+  holding the last frame:**
+  `ZoomEngineRuntime::latestDecodedFrames_` is erased only when a source is RETIRED,
+  so across a same-uuid re-subscribe the compositor keeps drawing the last decoded
+  frame. A route layer holds it until the rebuilt renderer delivers (no staleness
+  gate on routes — same as any stalled feed); a Tiles tile holds it for
+  `kTilesStaleFrameMs` (1500 ms) and is then dropped from the wall until frames
+  return. Pinned by `ZoomEngineRuntime.AResolutionReSubscribeKeepsTheSourcesLastFrameForTheCompositor`.
+  **(4) LOUD, BUT MULTIVIEW-ONLY.** A camera-on source the cap leaves out goes in the
+  payload's `videoSubscriptionShortfall` + `warnings`, and its multiview tile label
+  reads "<name> · no video: subscription limit (10)". A BUS source with no wall tile
+  (a cued Preview guest) is named on the PGM / PVW cell instead: the multiview layout
+  carries `programNotice` / `previewNotice`, the core appends it to the cell label and
+  the overlay draws "PREVIEW · no video: <names> (subscription limit 10)" (the tile LABEL
+  is part of `VideoSurfaceCoordinator.MultiviewLayoutSignature`, so a label-only change
+  reaches the overlay; the production sync's plain layout still blinks it for up to one
+  spine tick after a user action). The
+  multiview is the ONLY place a tile carries text: Program/Preview/Tiles are composited
+  pixels. The
+  subscription UUID is still `participant-video-<pid>-camera` (purpose excluded).
+  Tests: `ZoomMediaSpinePayloadBuilderTests` (`LiveCase478_*`, the follow-route,
+  speaker-flip-changes-nothing, at-the-cap, Program-first, sticky and breakout cases),
+  `TilesAudioSourceLatchTests` (incl. the swap Take and the reused-id rejoin),
+  `MagicSceneCoordinatorTests.AutomationCuesPreviewAtTheStartOfTheHold…`,
+  `MultiviewOverlayFormattingTests.ResolveLabel_BusCellCarries…`; native
+  `FollowSpeakerHold.*`, `TilesRenderPlan.AFollowSpeakerRouteWhoseSpeakerHasNoFrameRendersEmptyNotASlab`,
+  `LeavingTheMeetingForgetsTheFollowRoutesHeldSpeaker`,
+  `MediaCoreMultiview.TheBusCellsCarryTheShellsSubscriptionLimitNotice`;
+  native `ZoomEngineRuntime.AnActiveSpeakerFlipCausesNoTeardown`,
+  `ACueRaisesOnceTheTakeSendsNothingAndLeavingTheBusDropsBack`,
+  `TheFullResolutionCapDemotesTheRoutesPastItAndSaysSo`,
+  `ANonSourceWhoTalksFirstIsReleasedAndNeverDirected`,
+  `ZoomEngineRuntimeState.DirectsOnlyAmongSourcesAndReleasesANonSourceIncumbent`,
+  `TilesRenderPlan.AFollowSpeakerRouteShowsTheDirectedSpeakerNotTheFirstFrame`,
+  `RouteSourcePolicy.AFollowSpeakerRouteBindsTheDirectedSpeakerNeverAPositionalSource`,
+  `EngineResolutionPolicy.*`.
+  **Costs, by the owner's rule (expected, not defects):** an unrouted guest has NO
+  frames and NO audio anywhere — the Show Input / source pickers and the scene canvas
+  editor show "Waiting" for them (roster thumbnails come only from subscribed
+  streams), a non-source's mixer strip reads `waiting-for-pcm` (the mixer still lists
+  every participant; wiring it to `ZoomSourceSetPolicy` is a follow-up after #481),
+  and a scene built only on a follow-speaker route with nobody on the wall has no
+  speaker to follow. Magic Scene now cues Preview at the START of its hold so the
+  target warms before the auto-Take (a direct operator cut to a non-source still
+  subscribes cold).
 
 - **The scene canvas editor cannot show GPU video — DIAGNOSED 2026-08-15, NOT FIXED
   (a redesign is being specced separately; do not patch this ad hoc).** Owner report:
@@ -893,18 +1261,27 @@ measurement rather than from the product.
 - **SUBSCRIPTION CHURN IS MEASURED PER SOURCE.** `ZoomEngineRuntime` keeps a
   ledger keyed by sourceUuid — a `generation` that increments on every real
   (re)subscribe or teardown, a cumulative `churn` count, and the REASON
-  (`resolution-change` / `cap-eviction` / `departure` / `resubscribe`), decided by
-  the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
+  (`resolution-change` / `cap-eviction` / `unrouted` / `departure` / `resubscribe`),
+  decided by the pure `modules/ZoomSubscriptionChurnPolicy.h`. Published unconditionally as
   `sessionState().zoomSubscriptionChurn` (engine:false with empty arrays when there is
-  no engine — the multiviewer-node rule). Two things it is built to catch:
-  resolution is part of the subscription key and is `purpose == "active-speaker"
-  ? 1080P : 720P`, so an active-speaker flip is a genuine engine-side renderer
-  teardown; and a source dropped from the requested set is unsubscribed outright.
-  **The ledger deliberately SURVIVES the unsubscribe** — a record erased with the
-  subscription cannot answer the question it exists for — and is cleared only
-  where `sentSubscriptions_` is (leave / rejoin / a new engine process).
-  **The churn itself is NOT fixed. Do not fix it until the instrument has shown
-  how often it actually fires on a real show.**
+  no engine — the multiviewer-node rule). Two things it was built to catch:
+  resolution is part of the subscription key, so a raised resolution is a genuine
+  engine-side renderer teardown; and a source dropped from the requested set is
+  unsubscribed outright. **The ledger deliberately SURVIVES the unsubscribe** — a
+  record erased with the subscription cannot answer the question it exists for —
+  and is cleared only where `sentSubscriptions_` is (leave / rejoin / a new engine
+  process). **The instrument did its job and the churn is now FIXED (#478,
+  2026-09-11)**: on a real 12-person show it fired several times a minute
+  (`totalChurn` 53->59 in 20 s). See "A SECOND, ENGINE-SIDE CONTRIBUTOR" above:
+  resolution is a stable tier (an active-speaker flip sends nothing and moves no
+  generation, follow-speaker route or not), and the shell subscribes
+  only sources. A `resolution-change` now means a guest was cued onto or left a bus
+  (both directions: there is no ratchet). Retire reasons are split so the ledger
+  cannot blame the cap for ordinary events: `cap-eviction` ONLY when the shell's
+  `videoSubscriptionShortfall` names that participant, `video-off` when the engine
+  roster says their camera went off, else `unrouted` (an operator un-route); the
+  node carries `lastCapEvictions` / `lastVideoOff` / `lastUnrouted`, plus
+  `fullResolutionCap` / `fullResolutionDemoted` for the 1080P cap.
 - **PER-SOURCE CONTINUITY IS PART OF THE VERDICT (slice 1 of the persistent-sources
   redesign, 2026-09-10).** The wall-only verdict above missed the owner's actual
   case: a Tiles gallery whose foreground AND media background are on both Preview
@@ -979,9 +1356,9 @@ media asset is now one decoder with one clock, not one per bus.
   plays under `media:<id>:live:<n>` — paused on first frame while only in
   Preview, rolling from 0 with audio on only when it actually GOES LIVE. `n` is
   the `MediaGoLiveLedger` generation for that asset, which advances only when
-  the asset enters Program for the first time or the operator explicitly presses
-  Play on a Program-routed clip — never on every Take, so a clip already playing
-  on Program stays rolling across an unrelated cut. `ChooseAssetToPromote` /
+  the asset enters Program for the first time — never on every Take, and never
+  from Pause/Play on an already-live clip (pause is a clock state, below) — so a
+  clip already playing on Program stays rolling across an unrelated cut. `ChooseAssetToPromote` /
   `ITransportHost.RecordProgramMediaGoLive` runs promotion only for the assets
   that actually went live, and never for a still (`SupportsPlayback` filter).
   **Operator pause is PER-ASSET state, not "is it the selection":**
@@ -989,17 +1366,159 @@ media asset is now one decoder with one clock, not one per bus.
   adds it, playing it removes it, the clip GOING LIVE clears it — and
   `ShouldPlaySceneMediaRoute` / `ResolveSceneRoutePlayback` read that set (loops
   always play). Promotion only moves the selection, so a paused clip that stays
-  on Program stays paused when another asset goes live (before this, promoting Y
-  un-paused X and, because `playing` is part of the decoder's request key,
-  cold-restarted it). Selecting a Program clip in the bin reports its real state
-  instead of pausing it.
-- **KNOWN GAP: a clip going live still cold-starts.** The Preview cue poster
-  (`preview:media:<id>`) and the rolling Program source (`media:<id>`) are
-  different decoders, so a clip entering Program opens a fresh one: a placeholder
-  slab for a few ticks, and its take record reads `rebuilt` with
-  `missingSources=[media:<id>]`. That record is correct and honest — do not teach
-  the judge to excuse it. The fix (hand the warmed cue decoder to Program) belongs
-  to a later slice.
+  on Program stays paused when another asset goes live. Selecting a Program clip
+  in the bin reports its real state instead of pausing it.
+- **PAUSE IS A CLOCK STATE, NOT A NEW DECODER (T1.2, 2026-09-10).** `playing` used
+  to be part of the decoder's identity in two places — the owned source's request
+  key and the MF adapter's playback identity — so promoting another asset (or a
+  bin-row tap) that flipped a clip's `playing` flag opened a fresh decoder: Pause
+  cut to the clip's first frame, Play restarted it from 0. **Both identities now
+  EXCLUDE `playing`.** `MediaPlaybackTimeline::configure` only resets (new epoch,
+  `++generation`) on an identity change; a playing→paused transition freezes
+  elapsed time at its current value, and paused→playing resumes from exactly
+  that value (the epoch shifts by the paused duration). A paused clip HOLDS its
+  on-air frame (same `frameId`, no read) rather than showing a poster; audio
+  emits nothing while paused (not even silence) and resumes at the clock
+  position — `MediaAudioWindows` keeps 200 ms of decoded-ahead history so the
+  windows that would otherwise become a silent hole at the pause point are
+  replayed instead of dropped, and resume re-times the already-prepared frames
+  by the paused duration rather than snapping them to "now". The FFmpeg fallback
+  path (ProRes, which cannot pause a running process in place) is stopped on
+  Pause and restarted AT THE FROZEN CLOCK POSITION on Play — never from the top
+  — with frame ids kept rising; a restart that fails keeps the resume pending
+  and retries at the clock position on a bounded ladder (250 ms, 500 ms, 1 s,
+  2 s, give up after 5 attempts), holding the paused frame and warning every
+  poll, and a fresh operator Pause re-arms a resume that gave up (the FFmpeg
+  tests self-skip with a `[ SKIPPED ]` stderr line, not a silent pass, when
+  `C:\ffmpeg\bin` is absent from the build machine). In
+  `MediaCore::renderSyntheticTick`, Program's media layers are gathered BEFORE
+  Preview's are appended — Program-first ordering is what keeps Program
+  authoritative when a shared source id (same clip on both buses) arrives
+  paused on Preview: the Program request always wins the one shared clock
+  (`OwnedMediaFrameSource::requests()` lets the FIRST request for a key win).
+  **Restart from the top happens ONLY via the go-live generation**
+  (`media:<id>:live:<n>` advancing) — never from Pause, Play or a bin-row tap.
+  The Preview cue poster exception above (a paused, non-still `media-video`
+  layer keeps its own `preview:` key) is unchanged by this — it is a genuinely
+  different playback position from Program's rolling copy, not the same clip's
+  pause/resume.
+  **The shell surfaces the real on-air state, not "is it the selection"**
+  (`MediaRoutePlaybackService.IsPlayingOnAir` / `ResolveTap`): the media bin
+  row shows a rolling Program clip as playing even when it is not the current
+  selection (`ApplyMediaSelection` calls `IsMediaAssetPlaying` per row), and
+  tapping that row pauses it via the ledger (`RecordPause`/`RecordPlay`) —
+  `PlayMediaAsset` no longer restarts anything, and `MediaGoLiveLedger` no
+  longer even HAS a `RecordRestart` method (deleted as dead code once its one
+  caller was removed). **The transport toggle (`MediaPlaybackButtonLabel`,
+  "Pause Program"/"Resume Program"/"Audition") still only reflects the
+  SELECTED asset** — `FormatMediaPlaybackActionLabel` reads
+  `SelectedMediaAssetPlaying`, not the tapped bin row's id, so it does not (yet)
+  show an unselected rolling clip's state; only the bin row does. A tap on a
+  looping asset (kind `background`) is always just a selection
+  (`MediaTapAction.Select`) — a loop is always playing and has no useful ledger
+  pause state. `TransportCoordinator.TakeAsync` (and
+  `StudioViewModel.UpdateScene`) also calls
+  `ITransportHost.RefreshMediaBinPlaybackIndicators` so a clip that LEAVES
+  Program on a Take stops reading "playing" — `PromoteProgramMediaRouteToPlayback`
+  only rebuilds the bin when something ENTERED — and it clears
+  `SelectedMediaAssetPlaying` when the SELECTED clip itself is the one that
+  left, so the transport toggle cannot keep reading "Pause Program" for a clip
+  no longer on air. **It is called CONDITIONALLY, not on every Take** (folded
+  in from a review pass): only when the Program media SET actually changed
+  (`StudioViewModel.BuildProgramMediaRouteSignature` before vs after) AND
+  `PromoteProgramMediaRouteToPlayback` did NOT already run (that call's own
+  `ApplyMediaSelection` rebuild already gives every row — not just the
+  promoted one — its current on-air state, so a second rebuild in the same
+  Take would be pure waste). This is what keeps an automated Magic Scene Take
+  between two non-media scenes from rebuilding `MediaBinGroups` on every cut.
+  **A ROLLED-BACK TAKE RESTORES THE MEDIA SELECTION TOO (T1.3, #430).** The #286
+  rollback (`CaptureTakeRollback`) only ever put the SCENES back. A failed Take
+  kept the selection Promote had moved to a clip that went live. That clip was
+  still marked playing and kept auditioning locally with audio, and the status
+  said it was on Program. Worse, a Program clip X that LEFT on the failed Take
+  had its playing flag cleared. The rollback put X back on air, still rolling,
+  yet the toggle read "Resume Program", and pressing it paused X ON AIR.
+  `TransportCoordinator.TakeAsync` now captures the selection
+  (`ITransportHost.CaptureMediaSelection`) before and after the local mutations.
+  On a SUCCESSFUL scene rollback the pure `TakeMediaSelectionRollback.Resolve`
+  decides what stands: the pre-Take selection, unless the operator moved it
+  while the sync was pending (their choice is kept, like the scene rollback's
+  newer-edits rule); and for a clip on the restored Program, the playing flag
+  and status come from the real on-air state (`IsPlayingOnAir` over the paused
+  set), never from the saved flag. One more case: if the operator picked a clip
+  on the ATTEMPTED Program and the rollback takes it off air, it reads "<name> left
+  Program" and is not playing. `RequestTakeReconciliation` runs right after the scene
+  rollback, before `RestoreMediaSelectionAfterRollback`, so a throwing restore
+  cannot skip it. The restore then rebuilds the bin ONCE. A refused rollback
+  restores nothing. The go-live
+  ledger and the paused set are still deliberately NOT rewound. Tests:
+  `TransportCoordinatorTests.Take_Rollback*` and
+  `Take_RefusedRollbackLeavesTheSelectionAlone`.
+  Tests: `native/tests/MediaPlaybackTimelineTest.cpp`
+  (`MediaPlaybackTimeline.PauseFreezesElapsedAndResumeContinues`,
+  `OwnedMediaFrameSource.PauseAndResumeKeepOneDecoder` /
+  `PauseHoldsTheOnAirFrame` / `NoAudioWhilePausedAndAudioResumes`),
+  `native/tests/MediaCoreCommandTest.cpp`
+  (`AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop`), and
+  `MediaRoutePlaybackServiceTests` (`ResolveTap_*`, `IsPlayingOnAir_*`,
+  `SelectedAssetLeftProgram_*`) / `TransportCoordinatorTests`
+  (`Take_RefreshesTheMediaBinWhenAClipLeavesProgramWithNothingGoingLive`,
+  `Take_DoesNotDoubleRefreshWhenPromoteAlreadyRebuiltTheBin`,
+  `Take_DoesNotRefreshTheMediaBinWhenTheProgramMediaSetIsUnchanged`) on the
+  shell side.
+- **A CUED CLIP HANDS ITS WARM DECODER TO PROGRAM (T1.11 / #449, 2026-09-12).**
+  The Preview cue poster (`preview:media:<id>`) and the rolling Program source
+  (`media:<id>`) are two decoders, because a clip changes identity TWICE on
+  go-live: the `preview:` namespace collapses, and `MediaGoLiveLedger` advances
+  the generation baked into the playback key (`media:<id>:live:<n>` ->
+  `:live:<n+1>`). So the arriving request matched no entry, a cold decoder
+  opened, and for the ticks before its first frame `resolveLayers` painted
+  `colorFromParticipantId` over PROGRAM — the placeholder flash. Now
+  `OwnedMediaFrameSource::adoptCuedDecoders` RE-KEYS the cue's entry onto the
+  live request instead of retiring it. `Entry` is a `shared_ptr` whose worker
+  holds its own reference, so the hand-over is a map re-key: the decoder and its
+  held poster never notice. **This is not an exception to the go-live contract,
+  it IS the contract** — the cue poster sits paused at frame 0
+  (`MediaVideoPresentation::hold` shows the first prepared frame and never
+  advances), so resuming it is exactly "roll from 0, audio on".
+  **The decision is pure** (`modules/MediaCueHandoff.h`, the
+  `CaptureReaderStallPolicy`/`TakeRecordPolicy` shape) and every condition is
+  required: same asset id AND same path (a repointed bin row holds the old
+  file's pictures), same loop flag, the retiring `sourceId` is exactly
+  `"preview:" + arriving.sourceId`, the arriving generation is exactly the
+  retiring one +1, and — the load-bearing one — **the cue NEVER ROLLED**
+  (`Entry::everPlayed`). A decoder that has played is at an arbitrary position,
+  and adopting it would put a clip on air mid-roll while the take record still
+  read `cut`. Two candidates for one arrival is refused loudly and cold-starts:
+  never guess which cue is the predecessor.
+  **Three traps, each found by a test that failed first:**
+  1. **It runs on the REQUEST path (`selectVideo` / `pollMediaAudioFrames`),
+     never in `manage()`.** That is the difference between one flashed frame and
+     none — the request set changes on the take tick, but `manage()` is a
+     separate thread on a 2 ms wait, so an adoption deferred to it lands a tick
+     late. Adoption starts no thread and does no I/O, which is what makes it
+     safe on the caller's path where creating a worker would not be.
+  2. **The queued frames are DROPPED (`MediaVideoPresentation::dropQueued`),
+     `current_` is kept.** They were scheduled against the cue's paused epoch
+     and can never come due on the go-live clock, so keeping them freezes the
+     clip on its poster forever. The held poster is what covers the refill.
+  3. **The OWNER names the source, not the decoder.** Every decoder stamps
+     `participantId` from the layer it was handed, so `selectVideo` re-stamping
+     it is normally a no-op — but an adopted poster was decoded under the
+     `preview:` id, and the compositor looks a media layer up by the LIVE source
+     id. Without the re-stamp the hand-off delivered a frame nothing could
+     match and Program painted the placeholder anyway.
+  The take record now reads `missingSources=[]` for this case because the cold
+  start stopped happening — **the judge was not touched, and must not be**.
+  Tests: `MediaCueHandoffTest.cpp` (every refusal),
+  `OwnedMediaFrameSource.ACuedClipHandsItsWarmDecoderToProgram` /
+  `ACueThatAlreadyRolledIsNeverHandedOver` /
+  `AnAdoptedCueRollsInsteadOfFreezingOnItsPoster` / `AnAdoptedCueTurnsItsAudioOn`,
+  and `ProgramPixelContinuity.ACuedClipTakenToProgramNeverShowsThePlaceholder`
+  (the end-to-end pixel proof, over a REAL `OwnedMediaFrameSource`).
+  **Still cold-starts, honestly:** a clip cut to Program that was never cued in
+  Preview has no warm decoder to adopt. That is step 1 of #449 (hold the
+  outgoing picture until the first real frame), not done here.
 - **The 16-decoder cap warning names the refused source** (`OwnedMediaFrameSource`)
   instead of just stating the count, and a loud, once-per-id `[media-playback]`
   warning fires when two different playback identities request one source id —
@@ -1062,9 +1581,78 @@ renderers before stopping raw data with a callback in flight. Hard rules:
   (`createRenderer`/`destroyRenderer`) and so runs OUTSIDE the map lock — move
   unique_ptrs out of the map under the lock, construct/destroy after release.
   Lock order: `m_mtx` → `m_targets_mtx` (leaf, never reversed).
-- **Shell: stop off the UI thread.** `_bridge.Stop()` is a kill-tree +
-  `WaitForExit(1500)` under the supervisor gate — it always rides `Task.Run`
-  (both leave-meeting in `SettingsViewModel` and app-exit in `MainWindow`).
+- **Shell: stop off the UI thread.** Every core stop rides `Task.Run`. Leave-meeting
+  (`SettingsViewModel`), respawn and the post-failure `ForceStopMediaCoreAsync` use
+  `_bridge.Stop()`: a kill-tree + `WaitForExit(1500)` under the supervisor gate. App exit
+  (`StudioViewModel.DisposeAsync`) uses `_bridge.StopForAppExit(2 s)` instead (T1.8, below):
+  worst case 2 s grace + 1.5 s kill wait = 3.5 s inside the 5 s `ShutdownTimeout`.
+- **App close never cuts a recording off unasked (T1.8, #461, 2026-09-10; fix round 1).** Closing
+  used to kill-tree the core with no stop sent, so the Program moov atom, every ISO writer and any
+  RTMP/SRT egress died mid-write (unplayable show file). Now, in order:
+  1. `MainWindow.OnAppWindowClosing` hands the request to `CloseGuardFlow` (constructible, tested
+     in `CloseGuardFlowTests`), which asks `CloseGuardPolicy` (pure, tested). Recording or
+     streaming live — the shell flags, the core lifecycle (`stopping`/`finalizing` COUNT as live),
+     or `recording.active` on a core with no lifecycle; the virtual camera alone never asks — opens
+     a ContentDialog "Stop outputs and close?" with **Stop and close** / **Keep running** (the
+     default). The window is restored/activated first and the dialog opens after the Closing
+     callback returns. A second close while it is open, or while outputs finish, is ignored (and
+     brings the window forward) — never a force-exit. **If the dialog cannot be shown (no XamlRoot,
+     another ContentDialog open, anything) while outputs are live, the flow takes the Stop-and-close
+     path — never the old kill path.** Only a failure of the stop itself falls through to a plain
+     shutdown.
+  2. **Stop and close** → `OutputShutdownCoordinator`: sends the EXISTING transport stops
+     (`SetRecordingAsync(false)` / `SetStreamingAsync(false)`, not awaited — they can hold for
+     30 s on a busy core) and refuses new Record/Stream starts while it runs. It then waits for
+     evidence tied to THIS stop, read from the bridge's `LastSnapshot` (never its own syncs, which
+     would compete with the stop for the single sync slot):
+     **freshness** — only a snapshot whose `RawReceivedUtc` is later than the last moment the stop
+     was still pending (intent set or a Record/Stream command in flight — a stop sent while a start
+     is in flight is silently ignored by the transport, so it is re-sent once a second until it
+     lands); **session binding** — the `OutputStopBaseline` captured at the close request names the
+     recording lifecycle session and the senders that were live, and only THEIR terminal states
+     count (a stale pre-stop `completed`, another session's state, an old failure, or an ABSENT
+     node never read as finished); **core generation** — the supervisor restart count; a change means
+     a respawned core answered, so the wait ends at once as `CoreRestarted` ("the recording was
+     interrupted with the old core and nothing more can be saved"), and a core that is gone ends it
+     as `CoreUnavailable`. The generation baseline is re-armed when the stop is actually SENT: a
+     core that respawned while the dialog was open is logged as having lost the old files, and
+     whatever the NEW core is doing is still stopped and waited for (fix round 2). Bounded at
+     15 s; on timeout it logs `shutdown: outputs did not finish within 15s — closing anyway` and
+     proceeds. Only THEN does the unchanged `ShutdownAsync` run, so the 15 s is outside the
+     5 s / 6 s watchdog budget.
+     **STREAMS ARE STOPPED BEFORE RECORDING, and the order is load-bearing** (fix round 2). Each
+     transport stop builds its sync payload inline from the current flags. A recording stop sent
+     while Streaming is still desired carries `start-program-output{rtmp…}`, which the core
+     treats as unowned (`recordingStatus_` is "stopping") and answers with `encoder->start`: the
+     sink generation bumps, the recording lifecycle is ERASED, and the finalized file never
+     reports `completed` — so record+stream always ran to the 15 s bound. Pinned by
+     `OutputShutdownCoordinatorTests.StreamsAreStoppedBeforeRecording…` and
+     `RecordAndStreamTogetherFinishesInsteadOfTimingOut` (both fail with the order swapped). The
+     core defect itself (a non-recording Start erasing a finalizing recording's lifecycle — it
+     also leaves `recording.status` "stopping" whenever an operator stops Record while Stream
+     stays up) is filed separately and NOT fixed here. Two more evidence rules: `interrupted` is
+     NOT terminal (the core's `isTerminal` is completed|failed; a stalled writer is still open),
+     and a sender only counts as finished when its ADAPTER reads `stopped`/`failed` — the core
+     reports `idle`, or re-serves an older run's terminal state, while the adapter is still live.
+  3. **App-exit core stop only** (`StudioViewModel.DisposeAsync` → `MediaCoreBridgeService.StopForAppExit`):
+     snapshot the core's descendants (`ProcessTreeSnapshot`, pid + start time), close stdin — the
+     core's quit signal: JsonRpcServer's reader hits EOF, the loop breaks, all workers join, `main`
+     returns and MediaCore's destructors run — wait up to `ShutdownBudget.CoreExitGrace` (2 s) for
+     it to exit, THEN the old kill-tree. While it exits the supervisor keeps DRAINING the retired
+     core's stdout (`_drainOnlyProcess`), because the core's writer thread flushes before it can
+     join — stop reading and a full pipe wedges the exit (`MediaCoreAppExitStopTests` fails with
+     the drain removed). After a clean exit it waits ≤250 ms for stderr EOF (the core's last log
+     lines) and kills any recorded descendant still alive (the tree kill can no longer reach them;
+     that test fails with the sweep removed). A plain `Stop()` that lands while a grace is still
+     running (the shutdown-timeout fallback) kills the retiring core instead of orphaning it.
+     `ShutdownBudgetTests` pins the budget; the disposal after the core stop is logged with its
+     duration. Leave-meeting, respawn and the post-failure `ForceStopMediaCoreAsync` keep the
+     immediate kill.
+  **Remaining gaps:** the Zoom engine still does not get the Leave → `stop_raw_media` order on app
+  close — `~ZoomEngineRuntime` terminates it (same as the kill-tree did). And NONE of this has run
+  against the real app yet: the pre-merge live checklist is in the T1.8 fix-round-1 report (idle
+  close, Keep running via mouse/Esc/Enter, Stop and close + ffprobe of Program and every ISO,
+  repeated closes, minimized close, a stream stop, zero new WinUI dumps).
 - **Never delete the vcam SHM file in `stop()`** — same hard rule as the
   virtual-camera section below; stop only unmaps/closes handles, the writer
   re-opens IN PLACE on the next start.
@@ -1370,11 +1958,66 @@ its judgement logic is unit-tested offline by `npm run test:show-engine-drill-ju
   the previous guest's participant id on the route — so cueing a look with an empty box put the
   PREVIOUS guest on air. `OhgRouteSlotWriter` clears participant/role/spotlight on every route it
   writes; the test is the contract.
-- **An "empty" OHG box is not guaranteed BLANK yet.** The C++ core's positional fallback
-  (`native/src/core/RouteSourcePolicy.h`) makes a route with no participant/capture/media id
-  inherit `videoFrames[routeIndex]` — so a cleared box can composite an arbitrary decoded guest.
-  Fixing it needs a route-contract sentinel in the core and is **not** Plan 7a scope. Until then,
-  clearing a box is "not the previous guest", not "blank". Do not assert blankness in a drill.
+- **An empty route renders BLANK (#480).** `RouteSourcePolicy` never inherits
+  `videoFrames[routeIndex]`. A `fixed`/`none` route with no participant/capture/media
+  id (and a follow-speaker route with nobody directed) binds nothing; the compositor
+  paints a transparent fill instead of the default grey or a random guest. The shell
+  may only change a scene layer's source on an operator gesture — a ComboBox list
+  refresh that lands on the blank placeholder is ignored (`LayerSourceSelectionPolicy`,
+  log `by=operator` / `by=refresh-ignored`).
+
+## The SDK's join-time prompts must be ANSWERED (#475, 2026-09-12)
+
+Live 2026-09-11: the owner's Zoom app was already in meeting 97682593786 on the
+same account. CoreVideo joined at 08:44:43, the engine logged `ready` then
+`auth_ok` then **nothing**, and 52 s later the shell gave up with "Timed out
+waiting for Zoom meeting join result." Zoom red, Engine off, no reason.
+
+**The engine implemented `IMeetingConfigurationEvent` not at all.** That interface
+is how the SDK asks the APP to resolve join-time prompts, and it WAITS for an
+answer. An unanswered prompt is not an error and produces no event — the join
+simply hangs until our own timeout. Every prompt on it was unanswered; the
+same-account collision (`onEndOtherMeetingToJoinMeetingNotification`) is just the
+one that happened to fire. This is a ZComms talkback delivery law that was never
+ported (`ZComms/src/zoom/zoom_client.cpp:526`).
+
+`EngineConfigurationEvent` (`native/zoom-engine/engine/main.cpp`) now answers all
+of them and reports a machine reason. Rules encoded there:
+
+- **Answer on the callback thread, immediately.** The SDK destroys the handler
+  after `EndOtherMeeting()` or `Cancel()`, so it CANNOT be held open while a
+  dialog is put to the operator. The choice has to exist before the join is sent.
+- **Never end the operator's own meeting by default.** `Cancel()`, then
+  `join_failed` with `reason:"account-busy-elsewhere"`.
+- **The takeover is EXPLICIT and PER JOIN.** `end_other_meeting` rides the join
+  command (`ZoomEngineJoinCommand::endOtherMeeting` -> `"end_other_meeting":true`),
+  read fresh on every join and never stored as engine state or a preference:
+  ending the other session evicts the operator's own Zoom client, so it may only
+  happen because they just asked. The shell offers it as a separate button
+  ("Join and end my other Zoom session") that appears ONLY while
+  `CanEndOtherZoomSession` is true, and that flag is cleared at the start of
+  every join so it can never outlive the failure it answers.
+- **A reason is wire vocabulary; operators must not read it.**
+  `modules/ZoomJoinFailureMessage.h` is the ONE place it becomes English, so the
+  two vocabularies cannot drift. An UNMAPPED reason passes through VERBATIM —
+  mapping it to a generic sentence would recreate the silence this fixes.
+- **The other prompts are answered too, loudly** (passcode/screen-name, webinar
+  registration, webinar screen name, user info, expired-meeting recovery). Any
+  new pure-virtual on that interface must be answered, not stubbed: a silent
+  `{}` is a hang, not a no-op.
+
+**Not a defect, do not "fix" it:** the engine process is still alive after a join
+timeout. `ZoomEngineRuntime::retireTimedOutJoinLocked` quarantines it
+(`restartBeforeJoin_`) deliberately and the next explicit join terminates it
+outside the runtime lock. The comment at that site is the contract.
+
+Tests: `ZoomEngineClient.TheTakeoverChoiceRidesTheJoinCommandAndDefaultsOff`,
+`ZoomEngineRuntimeState.ASameAccountCollisionReadsAsOperatorLanguage` /
+`AnUnmappedJoinFailureIsStillReported`, and
+`ZoomJoinReconciliationTests.TheSameAccountCollisionIsOfferedTheTakeoverRetry`
+(+ the every-other-failure and already-joined refusals). **The engine half has no
+test** — it links the Zoom SDK and the prompt only fires against live Zoom, so
+the callback itself is verified by a live join, not by CI.
 
 ## Zoom capture on/off (engine raw-media stop — 2026-07-19)
 
@@ -1396,6 +2039,61 @@ Capture status line reflects that engine-reported truth ("Capture stopped —
 Zoom recording indicator cleared"), polling briefly until confirmed — never
 claiming stopped on hope. (This section belongs with the engine-teardown rules
 from PR #302 once that lands.)
+
+**THE POLL CAN DIE SILENTLY IF START/STOP RACE — they are atomic now (2026-09-10, live on
+beta-2026-09-10-5a24225).** Owner: "Audio meters aren't showing live data… If I slide a channel it
+updates." `/snapshot` aged to 130 s+ while the core rendered at 58 fps. Evidence chain, all from
+the running shell with no input touched: `dotnet-trace` showed no poll work at all (only the spine
+sync and command replies), a 10 s exception trace showed ZERO exceptions (so polls were not failing,
+they were not happening), and a `dotnet-dump` + `dumpasync` showed NO pending poll. Reading the
+bridge object out of the dump settled it: the one live poll timer was armed with generation **17**
+while `SingleFlightTimerWork` was at **20**, so every tick returned at the generation check. Cause:
+`EnsureMediaCoreRunningAsync` is built to be called by several startup edits at once, each reaches
+`StartAsync` → `StartPolling`, and start/stop were three unsynchronised steps (reset, dispose,
+assign) — a stop reset the generation and disposed the newest timer, then an older start still in
+flight installed ITS timer. Only operator commands (a fader, a source pick) carried fresh state
+after that, for the whole session. T1.5's launch retries made the interleaving far more likely.
+`StartPolling`/`StopPolling` now run under one leaf lock (`_pollTimerGate`), so the installed timer
+always carries the current generation. Test: `MediaCoreBridgePollTimerRaceTests` — 8 threads x
+1000 rounds of concurrent start/stop; it fails 3/3 runs with the lock removed. **Diagnostic
+lesson:** when a periodic loop "stops", check its generation guard against its timer in a dump
+before theorising — a no-op tick leaves no trace in logs, CPU samples, or exceptions.
+
+**Engine off does NOT stop the shell polling the core (T1.5, #432).** The
+bridge's 250 ms poll (`MediaCoreBridgeService.PollLoopAsync`) requests the core
+snapshot on EVERY tick, with Engine on or off. While capture is off in a meeting
+it ALSO refreshes the Zoom roster, because the spine sync that normally carries
+the roster is not running. It used to do only the roster refresh there, and
+`ZoomCaptureSnapshotMerger` carried the old core fields forward. So after a join
+with Engine off, `/snapshot` aged and `nativeProgramFrameCount` froze, and so did
+everything bound to `LastSnapshot` (meters, output health, program buffer). In one
+session that lasted 67 minutes. Operators read it as a core wedge, but Program
+had rendered at 60 Hz the whole time. The decision is `MediaCorePollPolicy`: core
+first, then roster, each best-effort on its own. An empty `media-core-sync` runs
+no tick, but it is not free: the core takes `coreMutex` and builds
+`sessionState()`, and the shell's single sync slot is held for the round trip.
+This is the same per-poll cost as with Engine on. Test: `MediaCoreBridgePollTests`
+(a node fake core; it asserts the poll cadence and a fresh `RawReceivedUtc` with
+Engine off).
+**Consequence, and a rule: A SKIPPED SINGLE SEND MUST RE-ARM ITSELF.** With the
+poll now running while Engine is off, a single-send sync can collide with it and
+be refused with `MediaCoreSyncInFlightException`, meaning it was NOT delivered.
+Three paths used to swallow that because "the periodic sync reapplies". With
+Engine off nothing does: there is no spine sync and the poll is empty. A
+Preview-scene pick could be lost, and the operator could then Take a scene the
+core never composited in Preview. The three paths now re-arm: the Preview-scene
+sync (`QueueProductionSyncRetry`), the multiview layout (its own debounce), and
+the Engine-On production sync. The spine carries only the Preview scene, so the
+Program sync is not repeated either. They use `SingleSendBackpressure.RunAsync`
+(`SingleSendBackpressureTests`, plus
+`TransportCoordinatorTests.ToggleEngine_ASyncSkippedForBackpressureIsReArmedNotAssumed`).
+Never swallow `MediaCoreSyncInFlightException` on the assumption that someone
+else will resend. Same report, second half:
+a launch sync that collided with that poll used to leave EngineStatus reading
+"Media core unavailable - media-core sync in flight; skipped for backpressure"
+until Engine On. `MediaCoreLaunchStatusPolicy` now treats a skipped launch sync
+as backpressure: the core is reported ready and the retry worker delivers the
+sync. Only a real failure reads "unavailable" (`MediaCoreLaunchStatusPolicyTests`).
 
 ## Browser sources (BR-1, 2026-07-13 — render-only URL sources)
 
@@ -1503,6 +2201,80 @@ MPEG-TS/SRT stream at us and it becomes an ordinary capture source.
   lands — so a size-based wait reads an unfinalized file that decodes as **zero frames**,
   which looks exactly like a dead feed. Wait until **ffprobe** can read a duration, with
   the core still alive, before killing it.
+
+## A media source with no decoder is LOUD now (#473, 2026-09-12)
+
+Owner, installed beta, 2026-09-10: a ProRes Show Input drew a placeholder for a
+whole session. `media-core.log` carried the compositor's `media layer
+'media:...' has NO matching frame` every 5 s and **nothing else** — no ffmpeg
+process, no reason. The same code in a dev launch decoded it fine.
+
+**What the investigation actually established** (worth keeping, because it rules
+out the obvious guesses):
+
+- Media Foundation genuinely cannot decode this ProRes:
+  `SetCurrentMediaType(RGB32)` returns `MF_E_TOPO_CODEC_NOT_FOUND` (0xC00D5212).
+  Falling through to FFmpeg is correct.
+- FFmpeg resolution is NOT the difference. `COREVIDEO_FFMPEG_BIN_DIR` is a
+  persistent USER variable on the owner's box (`C:\ffmpeg\bin`), so both launches
+  get it; with it cleared, `SearchPathW` still finds the app-local `ffmpeg.exe`
+  that `StartCoreVideo.cmd` installs on first run. Diffing the launcher
+  environments is a dead end.
+- The app-local runtime was installed an hour BEFORE the failing session.
+- The exact command the core builds decodes the real asset: exit 0, a full
+  1920x1080x4 BGRA frame.
+
+**So the trigger was never identified — because the code could not say.** Three
+silent surfaces, all closed here:
+
+1. **FFmpeg's stderr went to `NUL`** (`startup.hStdError`). With `-loglevel error`
+   FFmpeg names the cause in one line; we threw it away. It now goes to a
+   per-decoder temp file, and the last 2 KB are logged when the decoder dies.
+   A temp file and NOT the stdout pipe: stdout carries raw BGRA frames, and a
+   stderr line spliced into it would corrupt one. Same lesson the SRT sender
+   already carries — read FFmpeg's own stderr before theorising.
+2. **A spawn that succeeded and then died reported NOTHING.** `launch()` returned
+   true, `readLoop` read 0 bytes and broke, and the source showed a placeholder
+   forever. `reportEarlyExit()` now fires once per decoder, with the child's exit
+   code and its stderr tail — and only when we did not ask it to stop, so a
+   pause, a resume or a teardown stays quiet.
+3. **Every `openVideoReader` failure reached only `warnings_`**, which never lands
+   in `media-core.log`. The branch decision, the resolved ffmpeg path and which
+   of the three rules found it, and a total failure to get any decoder, are all
+   `[media-decoder]` lines now. So is the **16-decoder cap refusal** in
+   `OwnedMediaFrameSource`, which from outside looks exactly like a broken
+   decoder (rate-limited per source so a busy show cannot flood the log).
+
+**Verified by reproducing the class, not by a unit test.** A truncated `.mov`
+driven through the real core previously produced only the compositor line; it now
+produces the branch, `ffmpeg started pid=... exe=... (via COREVIDEO_FFMPEG_BIN_DIR)`,
+and `ffmpeg STOPPED DELIVERING exit=... ffmpeg: moov atom not found`.
+
+**The original ProRes defect is NOT fixed and #473 stays open.** It did not
+reproduce on the current install. The next occurrence will name itself in one
+line; until then there is nothing honest to fix.
+## Recordings land somewhere findable (#469 / T2.8, 2026-09-12)
+
+`RecordingFolderPolicy.Resolve` (MediaCore, pure) decides the recording folder,
+and it is the ONLY rule: the shell's default and the prefs restore both go
+through it.
+
+**The issue's premise was wrong and the fix is not what it asked for.** The
+DEFAULT has been an absolute `Videos\CoreVideo Pro` since 2026-07-21. What
+actually bit the owner is a **persisted RELATIVE preference**, which bypasses the
+default entirely and is resolved by the CORE against its own working directory —
+the install folder for an installed build, where a version-isolated upgrade or an
+uninstall can strand or delete a show. Verified live 2026-09-12: the stored value
+was the literal `Recordings/CoreVideo Pro`.
+
+Rules: an absolute path is returned UNTOUCHED (it migrates accidents, never
+decisions, and that includes a UNC share); the one legacy value maps onto the
+user folder itself rather than nesting under it; any other relative path keeps
+its shape under the user folder; a drive-rooted path stays on its drive; and with
+no Videos folder the result is still ABSOLUTE (LocalApplicationData) — the old
+fallback there was the relative wire default, i.e. the bug. The record flyout
+shows the resolved path, because "operators can't find their files" is half the
+issue. Tests: `RecordingFolderPolicyTests`.
 
 ## Performance profiling (operator lag/stutter/crash)
 

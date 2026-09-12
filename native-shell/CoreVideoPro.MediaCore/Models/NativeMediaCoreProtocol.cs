@@ -60,6 +60,20 @@ public sealed class MediaCoreHealth
     public IReadOnlyList<MediaCoreCrashEvent> CrashEvents { get; init; } = [];
 }
 
+/// <summary>How a media-core stop ended (T1.8, #461: the app-exit stop reports it so the
+/// shutdown log says whether the core left on its own or had to be killed).</summary>
+public enum MediaCoreExitOutcome
+{
+    /// <summary>There was no child process to stop.</summary>
+    NotRunning,
+
+    /// <summary>The core exited by itself after its stdin closed (or had already exited).</summary>
+    ExitedOnItsOwn,
+
+    /// <summary>The core was still running (no grace, or the grace ran out); the tree was killed.</summary>
+    Killed
+}
+
 /// <summary>
 /// A single media-core child process exit captured by the supervisor. Mirrors
 /// the React shell's SupportBundleCrashEvent (src/domain/production.ts).
@@ -431,6 +445,11 @@ public sealed class NativeMediaCoreParticipantAudioChannel
     public double GainDb { get; init; }
     public double RmsDbfs { get; init; } = -60;
     public double PeakDbfs { get; init; } = -60;
+    // #481: PRE-MUTE input meters (measured before mute/fader in the core).
+    // RmsDbfs/PeakDbfs above are the honest OUTPUT meters and read silence
+    // when muted by design - these let the A1 see a muted guest is talking.
+    public double InputRmsDbfs { get; init; } = -60;
+    public double InputPeakDbfs { get; init; } = -60;
     // C7b: live compressor gain reduction in dB (0 = idle/not engaged).
     public double GainReductionDb { get; init; }
     public double? ManualGainDb { get; init; }

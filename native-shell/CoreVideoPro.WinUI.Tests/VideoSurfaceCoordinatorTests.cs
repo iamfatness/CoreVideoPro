@@ -9,6 +9,24 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class VideoSurfaceCoordinatorTests
 {
     [Fact]
+    public void AMultiviewLabelOnlyChangeIsStructural()
+    {
+        // #478 L4: a subscription-limit notice changes only a tile's LABEL. Without the label in
+        // the structural signature it reached the overlay only when something else refreshed.
+        var plain = new MultiviewTile { Role = "pvw", Slot = -1, Label = "Preview", X = 0.5, W = 0.5, H = 0.5 };
+        var noticed = new MultiviewTile
+        {
+            Role = "pvw", Slot = -1, Label = "Preview · no video: Cued guest (subscription limit 10)", X = 0.5, W = 0.5, H = 0.5
+        };
+        Assert.NotEqual(
+            VideoSurfaceCoordinator.MultiviewLayoutSignature([plain]),
+            VideoSurfaceCoordinator.MultiviewLayoutSignature([noticed]));
+        Assert.Equal(
+            VideoSurfaceCoordinator.MultiviewLayoutSignature([plain]),
+            VideoSurfaceCoordinator.MultiviewLayoutSignature([new MultiviewTile { Role = "pvw", Slot = -1, Label = "Preview", X = 0.5, W = 0.5, H = 0.5 }]));
+    }
+
+    [Fact]
     public void CaptureDeviceFrame_PreservesNaturalSourceDimensionsForSceneFraming()
     {
         var coordinator = new VideoSurfaceCoordinator();

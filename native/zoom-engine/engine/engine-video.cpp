@@ -1,4 +1,5 @@
 #include "engine-video.h"
+#include "engine-resolution-policy.h"
 #include "engine-writer.h"
 #if __has_include(<rawdata/zoom_rawdata_api.h>)
 #include <rawdata/zoom_rawdata_api.h>
@@ -352,7 +353,13 @@ void EngineVideo::subscribe(uint32_t participant_id,
             if (existing_sub != m_subs.end() && existing_sub->second &&
                 existing_sub->second->active()) {
                 const uint32_t current_resolution = existing_sub->second->resolution();
-                if (resolution <= current_resolution) {
+                const auto current_targets = existing_sub->second->sources();
+                const size_t other_targets = static_cast<size_t>(std::count_if(
+                    current_targets.begin(), current_targets.end(),
+                    [&source_uuid](const auto &target) { return target.first != source_uuid; }));
+                // #478 R4: a lower request now rebuilds too (no ratchet), unless
+                // another target of this renderer still needs the higher one.
+                if (!video_resolution_needs_rebuild(resolution, current_resolution, other_targets)) {
                     EngineIpc::write(
                         R"({"cmd":"debug","stage":"video_subscribe_noop_existing","source_uuid":")" +
                         source_uuid + R"(","participant_id":)" +
@@ -386,7 +393,12 @@ void EngineVideo::subscribe(uint32_t participant_id,
     auto it = m_subs.find(participant_id);
     if (it != m_subs.end() && it->second) {
         if (it->second->active()) {
-            if (resolution > it->second->resolution()) {
+            const auto live_targets = it->second->sources();
+            const size_t other_live_targets = static_cast<size_t>(std::count_if(
+                live_targets.begin(), live_targets.end(),
+                [&source_uuid](const auto &target) { return target.first != source_uuid; }));
+            if (video_resolution_needs_rebuild(resolution, it->second->resolution(),
+                                               other_live_targets)) {
                 auto targets = it->second->sources();
                 const auto already_targeted =
                     std::find_if(targets.begin(), targets.end(),

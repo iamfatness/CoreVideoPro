@@ -634,9 +634,9 @@ static void producer_loop() {
                 }
                 // Z4a: tone packets for every SUBSCRIBED audio target - the app
                 // decides which streams exist (ISO per participant + the mixed
-                // stream it subscribes on the active-speaker target). A second
-                // hardcoded mix stream here interleaved TWO tones into the
-                // core zoom-mix buffer = packet-boundary phase chaos (run 11).
+                // stream keyed at synthetic id 0). A second hardcoded mix
+                // stream here interleaved TWO tones into the core zoom-mix
+                // buffer = packet-boundary phase chaos (run 11).
                 for (auto& [auuid, atarget] : g_audioTargets) {
                     if (atarget.fixedFreq > 0.0 || roster_has(atarget.participant_id))
                         produce_audio_locked(auuid, atarget);
@@ -878,13 +878,16 @@ int main(int argc, char** argv) {
             std::string uuid = json_str(line, "source_uuid");
             {
                 const uint32_t pid = json_uint(line, "participant_id");
-                if (!uuid.empty() && pid != 0) {
+                const bool isMix = uuid.rfind("meeting-audio-", 0) == 0;
+                // Mix is keyed at synthetic id 0 (#465); isolate still needs a
+                // real Zoom user id.
+                if (!uuid.empty() && (pid != 0 || isMix)) {
                     std::lock_guard<std::mutex> lk(g_mtx);
                     auto& target = g_audioTargets[uuid];
                     target.participant_id = pid;
                     // The meeting mix has its own audio-only target: fixed
                     // 330Hz keeps program-vs-ISO routing measurable in tests.
-                    if (uuid.rfind("meeting-audio-", 0) == 0)
+                    if (isMix)
                         target.fixedFreq = 330.0;
                 }
             }

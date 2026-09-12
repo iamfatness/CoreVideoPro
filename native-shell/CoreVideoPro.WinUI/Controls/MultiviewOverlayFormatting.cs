@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -28,15 +30,32 @@ public static class MultiviewOverlayFormatting
 
         if (IsRole(tile.Role, "pgm"))
         {
-            return "PROGRAM";
+            return WithBusNotice("PROGRAM", tile.Label);
         }
 
         if (IsRole(tile.Role, "pvw"))
         {
-            return "PREVIEW";
+            return WithBusNotice("PREVIEW", tile.Label);
         }
 
         return tile.Label ?? string.Empty;
+    }
+
+    /// <summary>
+    /// #478 N4: the core appends the bus's subscription-limit notice to the PGM/PVW cell label
+    /// as "Program · &lt;notice&gt;" / "Preview · &lt;notice&gt;". Keep the canonical caption and
+    /// carry the notice after it, so a cued guest the video budget left out is named on the
+    /// cell instead of the cell silently showing a placeholder.
+    /// </summary>
+    private static string WithBusNotice(string caption, string? label)
+    {
+        const string separator = " \u00b7 ";
+        if (label is { Length: > 0 } && label.IndexOf(separator, StringComparison.Ordinal) is var index and >= 0)
+        {
+            return caption + separator + label[(index + separator.Length)..];
+        }
+
+        return caption;
     }
 
     /// <summary>
@@ -73,6 +92,34 @@ public static class MultiviewOverlayFormatting
         tile is not null && (IsRole(tile.Role, "pgm") || IsProgramTally(tile.Tally));
 
     public static string FormatClock(DateTime time) => time.ToString("HH:mm:ss");
+
+    /// <summary>
+    /// The tiles that get a click target and decorations: every PGM/PVW cell plus up to
+    /// <see cref="ShowInputRosterService.MaxShowInputs"/> source cells. The cap applies to
+    /// SOURCES only — the core's list leads with PGM and PVW, so a flat Take(10) used to drop
+    /// sources 9 and 10 (not cueable, no label/tally).
+    /// </summary>
+    public static IReadOnlyList<MultiviewTile> SelectOverlayTiles(IEnumerable<MultiviewTile> tiles)
+    {
+        var selected = new List<MultiviewTile>();
+        var sources = 0;
+        foreach (var tile in tiles)
+        {
+            if (IsRole(tile.Role, "source"))
+            {
+                if (sources >= ShowInputRosterService.MaxShowInputs)
+                {
+                    continue;
+                }
+
+                sources++;
+            }
+
+            selected.Add(tile);
+        }
+
+        return selected;
+    }
 
     private static bool IsProgramTally(string? tally) =>
         string.Equals(NormalizeTally(tally), TallyProgram, StringComparison.Ordinal);

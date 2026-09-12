@@ -114,6 +114,9 @@ std::string buildZoomEngineJoinCommand(const ZoomEngineJoinCommand& command) {
   if (!command.onBehalfToken.empty()) object.emplace("on_behalf_token", command.onBehalfToken);
   if (!command.userZak.empty()) object.emplace("user_zak", command.userZak);
   if (!command.appPrivilegeToken.empty()) object.emplace("app_privilege_token", command.appPrivilegeToken);
+  // Emitted only when the operator asked for it, so the engine's literal match
+  // on "end_other_meeting":true cannot fire for an ordinary join.
+  if (command.endOtherMeeting) object.emplace("end_other_meeting", true);
   return commandLine(std::move(object));
 }
 
@@ -205,6 +208,7 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
       event.participants.push_back({
           uintField(participant, "id"),
           participant.getString("name"),
+          participant.getString("persistent_id"),
           boolField(participant, "has_video"),
           boolField(participant, "is_talking"),
           boolField(participant, "is_muted"),

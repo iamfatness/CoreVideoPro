@@ -55,8 +55,20 @@ jobs:
         run: >
           cmake --build native/build-metal
           --target corevideo-native corevideo-zoom-engine-fake
+      # The drill's STRUCTURAL gates still block: request timeouts, an
+      # over-budget render tick, a wall missing its PGM/PVW cells, a recording
+      # that writes nothing. Only the recorded-RATE gate is downgraded, and only
+      # here, because a macos-14 runner cannot hold 60 Hz. Measured across three
+      # commits with identical code paths, the COMPOSITOR itself rendered 48.7,
+      # 47.1 and 60.2 fps with worst ticks up to 123.7 ms, and the muxed rate
+      # followed at 26.4, 29.5 and 34.6 - i.e. this job was permanent red, which
+      # is exactly how a real compile break sat unnoticed on main for six
+      # commits on 2026-09-12. The verdict is still PRINTED every run.
+      #
+      # THE REAL GATE IS LOCAL, same as the loaded step below. Drop the flag the
+      # day CI runs on a machine that can sustain 60 Hz.
       - name: Show drill
-        run: python3 scripts/mac-show-drill.py --seconds 25
+        run: python3 scripts/mac-show-drill.py --seconds 25 --advisory-recorded-rate
       # Production wall under load: synthetic 1080p60 Zoom feeds through the real
       # ingest path. Gates sustained fps, frame DELIVERY and coreMutex hold — the
       # class that made the port look slow for weeks.

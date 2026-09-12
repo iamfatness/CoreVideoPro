@@ -745,7 +745,7 @@ TEST(ZoomSubscriptionChurnPolicyRules, ResolutionCapEvictionAndDepartureAreDisti
   EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifySubscribe({true, 1, 1, true}), Change::None);
   EXPECT_FALSE(ZoomSubscriptionChurnPolicy::advancesGeneration(Change::None));
 
-  // 720P -> 1080P because the source became active-speaker: a real re-subscribe.
+  // 720P -> 1080P because the source was cued to a bus: a real re-subscribe.
   EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifySubscribe({true, 1, 2, true}), Change::Resolution);
   EXPECT_TRUE(ZoomSubscriptionChurnPolicy::countsAsChurn(Change::Resolution));
   EXPECT_TRUE(ZoomSubscriptionChurnPolicy::advancesGeneration(Change::Resolution));
@@ -753,9 +753,21 @@ TEST(ZoomSubscriptionChurnPolicyRules, ResolutionCapEvictionAndDepartureAreDisti
   // Subscribed again after having been dropped earlier.
   EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifySubscribe({false, -1, 1, true}), Change::Resubscribe);
 
-  // The distinction that decides whether a black wall is our bug or a departure.
-  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(true), Change::CapEviction);
-  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(false), Change::Departure);
+  // The distinction that decides whether a black wall is our bug or a departure:
+  // only a participant the shell's budget named (videoSubscriptionShortfall) is a
+  // cap eviction; any other in-meeting drop is the operator un-routing a source.
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(true, true), Change::CapEviction);
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(true, false), Change::Unrouted);
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(false, true), Change::Departure);
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(false, false), Change::Departure);
+  EXPECT_TRUE(ZoomSubscriptionChurnPolicy::countsAsChurn(Change::Unrouted));
+  // A camera that went off is its own reason (R6), whatever the budget said, and a
+  // departure still wins over everything.
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(true, false, true), Change::VideoOff);
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(true, true, true), Change::VideoOff);
+  EXPECT_EQ(ZoomSubscriptionChurnPolicy::classifyRetire(false, false, true), Change::Departure);
+  EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::VideoOff)), "video-off");
+  EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Unrouted)), "unrouted");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::CapEviction)), "cap-eviction");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Departure)), "departure");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Resolution)), "resolution-change");

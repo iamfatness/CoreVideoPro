@@ -50,14 +50,28 @@ class ZoomEngineRuntimeState {
   void apply(const ZoomEngineEvent& event);
   void apply(const ZoomEngineEvent& event, std::uint64_t nowMs);
   void advanceActiveSpeaker(std::uint64_t nowMs);
+  // #478 R1: restrict speaker direction to the shell's source set (see
+  // ZoomActiveSpeakerDirector). `active == false` lifts the restriction.
+  void setSpeakerSources(bool active, std::vector<std::uint32_t> sourceParticipantIds,
+                         std::uint64_t nowMs);
   void reset();
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
   [[nodiscard]] bool sdkAuthenticated() const { return sdkAuthenticated_; }
+  // The DIRECTED speaker (the director's choice, not Zoom's raw event), "" when none.
+  [[nodiscard]] std::string directedSpeakerIdString() const {
+    return activeSpeakerId_ == 0 ? std::string{} : std::to_string(activeSpeakerId_);
+  }
   // Roster membership without projecting the whole snapshot. Tells a dropped
   // subscription apart from a departed participant.
   [[nodiscard]] bool hasParticipant(std::uint32_t participantId) const {
     return participants_.find(participantId) != participants_.end();
+  }
+  // Camera state from the engine roster. Tells a video subscription dropped
+  // because the camera went off apart from one the operator un-routed.
+  [[nodiscard]] bool participantHasVideo(std::uint32_t participantId) const {
+    const auto found = participants_.find(participantId);
+    return found != participants_.end() && found->second.hasVideo;
   }
   [[nodiscard]] rpc::Json::Array participantsJson() const;
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs) const;

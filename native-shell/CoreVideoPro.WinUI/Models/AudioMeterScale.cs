@@ -25,6 +25,17 @@ public static class AudioMeterScale
     }
 
     /// <summary>
+    /// #481: a muted strip's OUTPUT meter is correctly silent (nothing reaches a
+    /// bus), but that made a talking, muted guest LOOK silent too — the A1 had no
+    /// way to see Courtney and Guy were talking while their channels read -60 dB.
+    /// While the strip is muted (A1 mute OR Zoom mute), show the pre-mute INPUT
+    /// level instead of forcing 0; the caller renders it visually distinct
+    /// (dimmed) so the A1 can still tell the strip is muted.
+    /// </summary>
+    public static int ResolveChannelMeterLevel(double outputTruePeakDb, double inputTruePeakDb, bool effectiveMuted) =>
+        effectiveMuted ? ToLevel(inputTruePeakDb) : ToLevel(outputTruePeakDb);
+
+    /// <summary>
     /// Fits a segmented vertical meter to its current viewport. Full-size
     /// consoles keep the requested resolution and grow the segment bodies;
     /// compact windows reduce the segment count only when 2 px bodies no

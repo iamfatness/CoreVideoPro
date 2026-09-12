@@ -16,6 +16,8 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     private IReadOnlyList<ShowInputSlot> _showInputs;
     private IReadOnlyList<MediaAsset> _mediaAssets;
     private bool _suppressChangeNotification;
+    private bool _operatorPickingSource;
+    private bool _pendingSourceOptionsRefresh;
 
     public SceneCanvasLayerViewModel(
         int layerIndex,
@@ -181,6 +183,26 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     public bool TrySelectSourceOption(RouteSelectOption? option) =>
         option is not null && TrySelectSource(option.Value);
+
+    public bool IsOperatorPickingSource => _operatorPickingSource;
+
+    public void BeginOperatorSourcePick() => _operatorPickingSource = true;
+
+    public void EndOperatorSourcePick()
+    {
+        _operatorPickingSource = false;
+        if (!_pendingSourceOptionsRefresh)
+            return;
+        _pendingSourceOptionsRefresh = false;
+        RefreshSourceOptions();
+    }
+
+    public bool TryCommitSourceOption(RouteSelectOption? option, bool operatorGesture)
+    {
+        if (!LayerSourceSelectionPolicy.ShouldCommit(operatorGesture, option?.Value))
+            return false;
+        return TrySelectSourceOption(option);
+    }
 
     public bool TrySelectSource(string? value)
     {
@@ -466,6 +488,12 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         if (ParticipantOptions.Count == options.Count &&
             ParticipantOptions.Zip(options).All(pair => pair.First.Value == pair.Second.Value && pair.First.Label == pair.Second.Label))
             return;
+        // Hold the open list still; a replace would select the blank placeholder.
+        if (_operatorPickingSource)
+        {
+            _pendingSourceOptionsRefresh = true;
+            return;
+        }
         ParticipantOptions = options;
         OnPropertyChanged(nameof(ParticipantOptions));
     }

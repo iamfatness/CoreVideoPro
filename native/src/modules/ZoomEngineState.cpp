@@ -1,5 +1,7 @@
 #include "modules/ZoomEngineState.h"
 
+#include "modules/ZoomJoinFailureMessage.h"
+
 #include <algorithm>
 #include <chrono>
 #include <utility>
@@ -61,7 +63,8 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       if (meetingState_ != "in-meeting") {
         meetingState_ = "error";
       }
-      addWarning(!event.message.empty() ? event.message
+      // #475: a join_failed reason is wire vocabulary. Operators read this.
+      addWarning(!event.message.empty() ? zoomJoinFailureMessage(event.message)
                  : !event.stage.empty() ? "Zoom engine failed during " + event.stage + "."
                                         : "Zoom engine reported an error.");
       break;
@@ -126,6 +129,14 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
     default:
       break;
   }
+}
+
+void ZoomEngineRuntimeState::setSpeakerSources(bool active,
+                                               std::vector<std::uint32_t> sourceParticipantIds,
+                                               std::uint64_t nowMs) {
+  speakerDirector_.setSourceFilter(active, std::move(sourceParticipantIds));
+  speakerDirector_.tick(nowMs);
+  activeSpeakerId_ = speakerDirector_.directedSpeakerId();
 }
 
 void ZoomEngineRuntimeState::advanceActiveSpeaker(std::uint64_t nowMs) {
@@ -275,6 +286,7 @@ rpc::Json::Array ZoomEngineRuntimeState::participantsJson() const {
     result.emplace_back(rpc::Json::Object{
         {"sdkUserId", participantIdString(id)},
         {"displayName", participant.displayName},
+        {"persistentId", participant.persistentId},
         {"role", "guest"},
         {"videoOn", participant.hasVideo},
         {"muted", participant.isMuted},

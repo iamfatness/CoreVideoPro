@@ -34,6 +34,37 @@ public sealed partial class StudioViewModel
     }
     public string GalleryBackgroundColor { get => PreviewScene.DynamicGallery?.BackgroundColor ?? "#000000";
         set => UpdateGallery(s => s.BackgroundColor = SceneRoutingService.NormalizeBorderColor(value)); }
+
+    // #476 / T3.5. The picker and the hex box are two views of ONE value, and
+    // the hex string stays the source of truth: the picker reads it and writes
+    // it back, so there is no second copy to fall out of sync and no
+    // re-entrancy latch to get wrong. Notified from
+    // NotifyDynamicGalleryPropertiesChanged, which every gallery edit already
+    // goes through, so typing a hex code moves the swatch and the picker too.
+    //
+    // The defaults are the same values the XAML placeholders show, so a blank
+    // or malformed field opens the picker on what the operator is looking at
+    // rather than snapping to black - which would read as a colour they chose.
+    public Windows.UI.Color GalleryBackgroundPickerColor
+    {
+        get => HexColor.ParseOrDefault(GalleryBackgroundColor, Microsoft.UI.Colors.Black);
+        set => GalleryBackgroundColor = HexColor.ToHex(value);
+    }
+    public Microsoft.UI.Xaml.Media.SolidColorBrush GalleryBackgroundSwatch => new(GalleryBackgroundPickerColor);
+
+    public Windows.UI.Color GalleryBorderPickerColor
+    {
+        get => HexColor.ParseOrDefault(GalleryBorderColor, Microsoft.UI.Colors.Black);
+        set => GalleryBorderColor = HexColor.ToHex(value);
+    }
+    public Microsoft.UI.Xaml.Media.SolidColorBrush GalleryBorderSwatch => new(GalleryBorderPickerColor);
+
+    public Windows.UI.Color GalleryGlowPickerColor
+    {
+        get => HexColor.ParseOrDefault(GalleryGlowColor, Microsoft.UI.Colors.White);
+        set => GalleryGlowColor = HexColor.ToHex(value);
+    }
+    public Microsoft.UI.Xaml.Media.SolidColorBrush GalleryGlowSwatch => new(GalleryGlowPickerColor);
     public void SetTilesBackground(string color, string sourceId)
     {
         RequireTilesPreview();
@@ -87,10 +118,16 @@ public sealed partial class StudioViewModel
         {
             var settings = PreviewScene.DynamicGallery;
             if (settings is null) return string.Empty;
-            string Name(string id) => GalleryMemberChoices.FirstOrDefault(p => p.Id == id)?.Name ?? "Unavailable source";
+            var roster = TilesIdentityRoster();
+            string Name(string id) =>
+                GalleryMemberChoices.FirstOrDefault(p => p.Id == id)?.Name ?? TilesIdentityPolicy.Label(id, roster);
             var slots = settings.ManualSlots.Select((id, index) => string.IsNullOrEmpty(id) ? null : $"{index + 1}: {Name(id)}").Where(s => s is not null);
             var exclusions = settings.ExcludedSourceIds.Select(Name);
-            return "Manual slots: " + string.Join(", ", slots) + " · Never show: " + string.Join(", ", exclusions);
+            var stale = TilesIdentityPolicy.DescribeStale(settings, roster, CurrentTilesMeetingId());
+            var summary = "Manual slots: " + string.Join(", ", slots) + " · Never show: " + string.Join(", ", exclusions);
+            return stale.Count == 0
+                ? summary
+                : summary + " · Stale: " + string.Join(", ", stale.Select(entry => entry.Label));
         }
     }
     public void SetTilesAutoFill(bool enabled)
@@ -106,10 +143,26 @@ public sealed partial class StudioViewModel
             throw new ArgumentException("Choose an available source for this Tiles slot.");
         UpdateGallery(settings =>
         {
+            var roster = TilesIdentityRoster();
+            var persisted = string.IsNullOrEmpty(sourceId) ? null : TilesIdentityPolicy.Persist(sourceId, roster);
+            var meetingId = CurrentTilesMeetingId();
+            if (!string.IsNullOrEmpty(meetingId))
+            {
+                settings.BoundMeetingId = meetingId;
+            }
+
             while (settings.ManualSlots.Count < slot) settings.ManualSlots.Add(null);
             for (var index = 0; index < settings.ManualSlots.Count; index++)
-                if (settings.ManualSlots[index] == sourceId) settings.ManualSlots[index] = null;
-            settings.ManualSlots[slot - 1] = string.IsNullOrEmpty(sourceId) ? null : sourceId;
+            {
+                var existing = settings.ManualSlots[index];
+                if (existing == sourceId || existing == persisted ||
+                    TilesIdentityPolicy.ResolveLiveSourceId(existing, roster, meetingId, settings.BoundMeetingId) == sourceId)
+                {
+                    settings.ManualSlots[index] = null;
+                }
+            }
+
+            settings.ManualSlots[slot - 1] = persisted;
         });
     }
     public void SetTilesExclusion(string sourceId, bool excluded)
@@ -119,9 +172,29 @@ public sealed partial class StudioViewModel
         if (excluded && !GalleryMemberChoices.Any(p => p.Id == sourceId)) throw new ArgumentException("Choose an available source to exclude.");
         UpdateGallery(settings =>
         {
-            settings.ExcludedSourceIds.RemoveAll(id => id == sourceId);
-            if (excluded) settings.ExcludedSourceIds.Add(sourceId);
+            var roster = TilesIdentityRoster();
+            var persisted = TilesIdentityPolicy.Persist(sourceId, roster);
+            var meetingId = CurrentTilesMeetingId();
+            if (!string.IsNullOrEmpty(meetingId))
+            {
+                settings.BoundMeetingId = meetingId;
+            }
+
+            settings.ExcludedSourceIds.RemoveAll(id =>
+                id == sourceId || id == persisted ||
+                TilesIdentityPolicy.ResolveLiveSourceId(id, roster, meetingId, settings.BoundMeetingId) == sourceId);
+            if (excluded)
+            {
+                settings.ExcludedSourceIds.Add(persisted);
+            }
         });
+    }
+
+    public void ClearStaleTilesEntries()
+    {
+        RequireTilesPreview();
+        UpdateGallery(settings =>
+            TilesIdentityPolicy.ClearStale(settings, TilesIdentityRoster(), CurrentTilesMeetingId()));
     }
     private void RequireTilesPreview()
     {
@@ -135,6 +208,16 @@ public sealed partial class StudioViewModel
     [RelayCommand] private void ClearGallerySlot() => TryTilesEdit(() => AssignTilesSlot((int)GalleryManualSlot, string.Empty));
     [RelayCommand] private void ExcludeGalleryMember() => TryTilesEdit(() => SetTilesExclusion(GallerySelectedMemberId, true));
     [RelayCommand] private void AllowGalleryMember() => TryTilesEdit(() => SetTilesExclusion(GallerySelectedMemberId, false));
+    [RelayCommand] private void ClearStaleGalleryEntries() => TryTilesEdit(ClearStaleTilesEntries);
+
+    private IReadOnlyList<TilesIdentityPolicy.Person> TilesIdentityRoster() =>
+        RoomParticipantsForInputs.Select(TilesIdentityPolicy.FromParticipant).ToList();
+
+    private string? CurrentTilesMeetingId()
+    {
+        var parsed = CoreVideoPro.MediaCore.Services.ZoomMeetingUrlParser.Parse(Settings.JoinMeetingUrl);
+        return string.IsNullOrWhiteSpace(parsed.MeetingNumber) ? null : parsed.MeetingNumber;
+    }
     public double GalleryCornerRadius
     {
         get => PreviewScene.DynamicGallery?.CornerRadius ?? 16;

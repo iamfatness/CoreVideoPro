@@ -1,6 +1,7 @@
 #include "core/BoundedAsyncLog.h"
 #include <deque>
 #include <limits>
+#include "modules/IsoFrameConform.h"
 #include "modules/Interfaces.h"
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/IsoEncoderAdmission.h"
@@ -1364,13 +1365,58 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
           continue;
         }
         entry.opened = true;
+        // #482: an MP4 video track has ONE size. Remember what we opened at so
+        // a later frame at another size is CONFORMED rather than handed to the
+        // writer with mismatched dimensions, which cropped or padded it.
+        entry.openedWidth = w;
+        entry.openedHeight = h;
       }
       bool ok = false;
       if (haveI420) {
-        i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
-        ok = entry.writer.writeVideoNv12(entry.nv12Scratch.data(), frame.i420Width, frame.i420Height,
-                                         *pts, error);
+        // #482 / T3.8. A guest's frame size changes mid-recording — a Zoom
+        // resolution change, the SDK's downgrade ladder, or (since #478, the
+        // common case) moving onto or off a bus between the 720P and 1080P
+        // tiers. The writer keeps the size it opened at, so the frame is
+        // conformed to it: aspect-preserving, centred, letterboxed with legal
+        // black. conformI420ToNv12 takes a straight copy/interleave when the
+        // size is unchanged, so the ordinary path pays nothing.
+        const bool sizeChanged = frame.i420Width != entry.openedWidth ||
+                                 frame.i420Height != entry.openedHeight;
+        if (sizeChanged && !entry.loggedSizeChange) {
+          entry.loggedSizeChange = true;
+          ::corevideo::core::nativeLogf(
+              "[recording] iso %s (%s) source changed size %dx%d -> writer opened %dx%d; "
+              "conforming (aspect preserved, letterboxed)\n",
+              entry.displayName.c_str(), src.sourceId.c_str(), frame.i420Width, frame.i420Height,
+              entry.openedWidth, entry.openedHeight);
+        }
+        if (sizeChanged) {
+          conformI420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height,
+                            entry.openedWidth, entry.openedHeight, entry.nv12Scratch);
+        } else {
+          i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
+        }
+        ok = entry.writer.writeVideoNv12(entry.nv12Scratch.data(), entry.openedWidth,
+                                         entry.openedHeight, *pts, error);
       } else {
+        // BGRA (capture, ISO-3). Capture sources do not retier the way Zoom
+        // guests do, so a size change here is rare — but it is the same defect,
+        // and silently writing a mismatched buffer is the thing being removed.
+        // Refused loudly rather than conformed: no BGRA scaler exists yet, and
+        // inventing one unexercised would be worse than a named refusal.
+        if (frame.pixelWidth != entry.openedWidth || frame.pixelHeight != entry.openedHeight) {
+          if (!entry.loggedSizeChange) {
+            entry.loggedSizeChange = true;
+            entry.warning = "ISO " + entry.displayName + " (" + src.sourceId + ") changed size " +
+                            std::to_string(frame.pixelWidth) + "x" +
+                            std::to_string(frame.pixelHeight) + " after its writer opened at " +
+                            std::to_string(entry.openedWidth) + "x" +
+                            std::to_string(entry.openedHeight) +
+                            "; frames at the new size are not recorded.";
+            raiseIsoWarning(entry.warning);
+          }
+          continue;
+        }
         ok = entry.writer.writeVideo(frame.pixels->data(), frame.pixelWidth, frame.pixelHeight,
                                      frame.pixelStride, *pts, error);
       }
@@ -1835,6 +1881,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     std::filesystem::path path;
     Mp4Writer writer;
     bool opened = false;
+    // #482: the size this writer opened at. An MP4 video track has one size for
+    // its lifetime, so later frames are conformed to this, never written at
+    // whatever size they happen to arrive as.
+    int openedWidth = 0;
+    int openedHeight = 0;
+    bool loggedSizeChange = false;
     bool failed = false;
     IsoEncoderPath encoderPath = IsoEncoderPath::Software;
     std::string encoderReason = "hardware-unavailable";

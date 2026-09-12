@@ -33,6 +33,12 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _isWebinar = false;
 
+    // #475. True only while the LAST join failed because the operator's own
+    // Zoom account is already in that meeting. Cleared at the start of every
+    // join, so the takeover button can never outlive the failure it answers.
+    [ObservableProperty]
+    private bool _canEndOtherZoomSession = false;
+
     [ObservableProperty]
     private ZoomMeetingState _meetingState = ZoomMeetingState.Idle;
 
@@ -806,8 +812,18 @@ public sealed partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task JoinZoomAsync()
+    private Task JoinZoomAsync() => JoinZoomAsync(endOtherMeeting: false);
+
+    // #475. The operator's answer to "your account is already in this meeting".
+    // A SECOND, EXPLICIT gesture, offered only while CanEndOtherZoomSession is
+    // true: it ends their own Zoom client's session, so it can never be the
+    // ordinary Join and is never remembered for the next one.
+    [RelayCommand]
+    private Task EndOtherZoomSessionAndJoinAsync() => JoinZoomAsync(endOtherMeeting: true);
+
+    private async Task JoinZoomAsync(bool endOtherMeeting)
     {
+        RunOnUiThread(() => CanEndOtherZoomSession = false);
         var joinDetails = ZoomMeetingUrlParser.Parse(JoinMeetingUrl);
         if (!joinDetails.CanJoin)
         {
@@ -891,7 +907,8 @@ public sealed partial class SettingsViewModel : ObservableObject
                 string.IsNullOrWhiteSpace(DisplayName) ? "CoreVideo Producer" : DisplayName.Trim(),
                 IsWebinar,
                 sdkJwt,
-                userZak).ConfigureAwait(false);
+                userZak,
+                endOtherMeeting: endOtherMeeting).ConfigureAwait(false);
 
             snapshot = await ZoomJoinReconciliation.ObserveLateJoinAsync(
                 snapshot, token => _bridge.GetZoomSnapshotAsync(token)).ConfigureAwait(false);
@@ -903,7 +920,17 @@ public sealed partial class SettingsViewModel : ObservableObject
             {
                 var failure = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Join");
                 LaunchLog.Write($"zoom-join: {failure}");
-                SetJoinFailure("Could not join Zoom. Open Health for details.");
+                // #475. The same-account collision is the one join failure an
+                // operator can act on without leaving this screen, and the core
+                // has already phrased it. Sending them to Health for a sentence
+                // we are holding is what made this cost 52 s and a hunt.
+                var canTakeOver = ZoomJoinReconciliation.CanEndOtherSessionAndRetry(snapshot);
+                var actionable = canTakeOver
+                    ? snapshot.Warnings?.FirstOrDefault(warning =>
+                        warning.Contains("already in this meeting", StringComparison.Ordinal))
+                    : null;
+                RunOnUiThread(() => CanEndOtherZoomSession = canTakeOver);
+                SetJoinFailure(actionable ?? "Could not join Zoom. Open Health for details.");
                 return;
             }
 

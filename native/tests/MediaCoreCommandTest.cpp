@@ -1,4 +1,5 @@
 ﻿#include "compositor/CompositorLayout.h"
+#include "core/AudioControlSourcePolicy.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
 
@@ -15,13 +16,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <chrono>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -204,7 +209,11 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
       }
 
       corevideo::modules::AudioFrame frame;
-      frame.participantId = "media";
+      // Exactly what the real decoder stamps since #408
+      // (MediaFoundationMediaFrameSourceAdapter decodeLayerAudio →
+      // mediaFrameSourceId): the layer's own `media:<assetId>`. This fake used
+      // to emit the shell's generic "media", which is why no test saw T1.6.
+      frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
       frame.sampleRate = 48000;
       frame.channels = 2;
       frame.timestampMs = timestampMs;
@@ -1957,6 +1966,41 @@ TEST(MediaCoreCommand, MutedPcmChannelPublishesSilentOutputMeters) {
   EXPECT_EQ(participant->get("peakDbfs")->asNumber(), -120.0);
 }
 
+// #481: a muted strip still has PCM arriving. The output meters correctly
+// read silence (nothing reaches a bus), but the A1 needs to see the guest is
+// talking, so the pre-mute INPUT meters must keep reporting real levels.
+TEST(MediaCoreCommand, MutedPcmChannelStillPublishesLiveInputMeters) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"channels",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"participantId", "pcm-speaker"},
+               {"inputLevel", 0},
+               {"muted", true},
+           },
+       }},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  const auto* participant = findParticipantMix(*mix, "pcm-speaker");
+  ASSERT_NE(participant, nullptr);
+  EXPECT_TRUE(participant->get("muted")->asBool());
+  // Output meters stay honest: silent.
+  EXPECT_EQ(participant->get("rmsDbfs")->asNumber(), -120.0);
+  EXPECT_EQ(participant->get("peakDbfs")->asNumber(), -120.0);
+  // Input meters, measured before mute/fader, still show the real signal.
+  ASSERT_NE(participant->get("inputRmsDbfs"), nullptr);
+  ASSERT_NE(participant->get("inputPeakDbfs"), nullptr);
+  EXPECT_TRUE(participant->get("inputRmsDbfs")->asNumber() > -20.0);
+  EXPECT_TRUE(participant->get("inputPeakDbfs")->asNumber() > -10.0);
+}
+
 TEST(AudioDsp, BoundsFramesAndTracksInternalBridgeFaultMetrics) {
   corevideo::modules::AudioFrame frame;
   frame.participantId = "host";
@@ -2838,25 +2882,312 @@ TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
   ASSERT_NE(mix, nullptr);
   const auto* participants = mix->get("participants");
   ASSERT_NE(participants, nullptr);
+  // Headless (no console synced): meters carry each clip's own identity.
   const auto mediaParticipant = std::find_if(
       participants->asArray().begin(), participants->asArray().end(), [](const corevideo::rpc::Json& participant) {
-        return participant.getString("participantId") == "media";
+        return participant.getString("participantId") == "media:clip-intro";
       });
   ASSERT_TRUE(mediaParticipant != participants->asArray().end());
   EXPECT_TRUE(mediaParticipant->get("outputLevel")->asNumber() > 0);
 }
 
+namespace {
+
+float peakOfSamples(const std::vector<float>& samples) {
+  float peak = 0.f;
+  for (const auto sample : samples) {
+    peak = std::max(peak, std::abs(sample));
+  }
+  return peak;
+}
+
+corevideo::rpc::Json playingMediaRoute(const std::string& routeId, const std::string& assetId) {
+  return corevideo::rpc::Json::Object{
+      {"routeId", routeId},
+      {"mode", "fixed"},
+      {"mediaAssetId", assetId},
+      {"mediaAssetName", assetId},
+      {"mediaAssetKind", "video"},
+      {"mediaAssetPath", "C:\\media\\" + assetId + ".mp4"},
+      {"mediaPlaybackKey", "media:" + assetId + ":live:1"},
+      {"mediaAssetPlaying", true},
+      {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+  };
+}
+
+// A channel strip exactly as MediaCoreCommandBuilder.BuildAudioMixCommand
+// serializes one.
+corevideo::rpc::Json shellAudioStrip(const std::string& participantId, bool muted = false) {
+  return corevideo::rpc::Json::Object{
+      {"participantId", participantId},
+      {"inputLevel", 0},
+      {"muted", muted},
+      {"noiseSuppression", false},
+      {"manualGainDb", 0},
+      {"pan", 0},
+      {"solo", false},
+      {"pluginInserts", corevideo::rpc::Json::Array{}},
+      {"insertSettings", corevideo::rpc::Json::Object{}},
+  };
+}
+
+corevideo::rpc::Json shellAudioMix(corevideo::rpc::Json::Array channels) {
+  return corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"limiterEnabled", true},
+      {"channels", std::move(channels)},
+  };
+}
+
+// The routing command as MediaCoreCommandBuilder.BuildAudioRoutingMatrixCommand
+// serializes it, with the sends StudioViewModel.EnsureDefaultMediaAudioRoutingSends
+// seeds whenever Program carries a media route.
+corevideo::rpc::Json shellMediaRouting(corevideo::rpc::Json::Array extraSends = {}) {
+  corevideo::rpc::Json::Array sends;
+  for (const char* busId : {"master", "pgm-l", "pgm-r", "stream", "mon"}) {
+    sends.emplace_back(corevideo::rpc::Json::Object{
+        {"sourceId", "media"}, {"busId", busId}, {"gainDb", 0}, {"busPluginInserts", corevideo::rpc::Json::Array{}}});
+  }
+  for (auto& send : extraSends) {
+    sends.emplace_back(std::move(send));
+  }
+  return corevideo::rpc::Json::Object{
+      {"type", "sync-audio-routing-matrix"},
+      {"sends", std::move(sends)},
+      {"busSends", corevideo::rpc::Json::Array{}},
+      {"monitorBusId", ""},
+  };
+}
+
+const corevideo::rpc::Json* audioMixParticipant(const corevideo::rpc::Json& state, const std::string& participantId) {
+  const auto* mix = state.get("audioMixSession");
+  if (mix == nullptr || mix->get("participants") == nullptr) return nullptr;
+  for (const auto& participant : mix->get("participants")->asArray()) {
+    if (participant.getString("participantId") == participantId) return &participant;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST(AudioControlSourcePolicy, MediaClipsAreGovernedByTheShellMediaControls) {
+  using corevideo::core::audioControlSourceIdFor;
+  using corevideo::core::joinsMediaAudioPreSum;
+  using std::string_view_literals::operator""sv;
+  EXPECT_EQ(audioControlSourceIdFor("media:clip-intro"), "media"sv);
+  EXPECT_EQ(audioControlSourceIdFor("media:media-5f953bd23617"), "media"sv);
+  EXPECT_EQ(audioControlSourceIdFor("media"), "media"sv);
+  EXPECT_EQ(audioControlSourceIdFor("media:"), "media:"sv);  // no asset id: not a clip
+  EXPECT_EQ(audioControlSourceIdFor("mediafoo"), "mediafoo"sv);
+  EXPECT_EQ(audioControlSourceIdFor("zoom-mix"), "zoom-mix"sv);
+  EXPECT_EQ(audioControlSourceIdFor("capture:cam-1"), "capture:cam-1"sv);
+  EXPECT_EQ(audioControlSourceIdFor("background:clip"), "background:clip"sv);
+
+  // Pre-sum membership: a clip joins unless it has its own strip or send row.
+  EXPECT_TRUE(joinsMediaAudioPreSum("media:a", false, false));
+  EXPECT_FALSE(joinsMediaAudioPreSum("media:a", true, false));
+  EXPECT_FALSE(joinsMediaAudioPreSum("media:a", false, true));
+  EXPECT_TRUE(joinsMediaAudioPreSum("media", true, true));  // legacy id cannot collide with the pre-sum
+  EXPECT_FALSE(joinsMediaAudioPreSum("zoom-mix", false, false));
+  EXPECT_FALSE(joinsMediaAudioPreSum("media:", false, false));
+}
+
+// T1.6 / #455, RED before the alias: with the console the shell ALWAYS syncs
+// (a "media" strip and "media" sends), media PCM keyed `media:<assetId>` had
+// no strip, the FADER LAW dropped it, and master/stream/recording were silent.
+TEST(MediaCoreCommand, SceneMediaAudioReachesMasterThroughTheShellMediaStrip) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  auto* mediaFramesPtr = mediaFrames.get();
+  modules.mediaFrames = std::move(mediaFrames);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "media-shell-console"},
+          {"routes", corevideo::rpc::Json::Array{playingMediaRoute("media-main", "clip-intro")}},
+      },
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media"), shellAudioStrip("zoom-mix")}),
+      shellMediaRouting(),
+  });
+
+  ASSERT_TRUE(mediaFramesPtr->audioPollCount > 0);
+  const auto& master = mediaCore.programAudioTapPcm();
+  ASSERT_FALSE(master.empty()) << "media PCM never reached the master bus";
+  EXPECT_TRUE(peakOfSamples(master) > 0.05f);
+  EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm("stream")) > 0.05f);
+
+  // The operator's "Media playback" strip meters the clip it governs.
+  const auto* mediaStrip = audioMixParticipant(state, "media");
+  ASSERT_NE(mediaStrip, nullptr);
+  EXPECT_TRUE(mediaStrip->get("outputLevel")->asNumber() > 0);
+  EXPECT_NE(mediaStrip->getString("status"), "waiting-for-pcm");
+
+  // The alias respects the fader: muting the "media" strip silences the clip.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media", true), shellAudioStrip("zoom-mix")}),
+  });
+  const auto mutedState = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) < 0.001f)
+      << "a muted Media strip must keep media PCM off master";
+  EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm("stream")) < 0.001f);
+  const auto* mutedStrip = audioMixParticipant(mutedState, "media");
+  ASSERT_NE(mutedStrip, nullptr);
+  EXPECT_EQ(mutedStrip->get("outputLevel")->asNumber(), 0);
+}
+
+// Two clips on Program under the ONE "media" strip + send: both sum into master
+// (each keeps its own source slot — neither overwrites the other).
+TEST(MediaCoreCommand, TwoMediaClipsBothSumThroughTheOneMediaStrip) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "two-clips"},
+          {"routes", corevideo::rpc::Json::Array{playingMediaRoute("clip-a", "clip-a"),
+                                                 playingMediaRoute("clip-b", "clip-b")}},
+      },
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media")}),
+      shellMediaRouting(),
+  });
+
+  // The fake emits the same 0.2-peak in-phase sine per clip: one clip alone
+  // peaks at ~0.2, both summed at ~0.4.
+  EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) > 0.3f);
+}
+
+// An explicit per-clip strip or send (exact `media:<assetId>`) wins over the alias.
+TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
+  {
+    auto modules = corevideo::modules::createStubModules();
+    modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+    corevideo::core::MediaCore mediaCore(std::move(modules));
+    // Generic Media strip muted, the clip's own strip open: the clip is audible.
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "load-scene-graph"},
+            {"sceneId", "explicit-strip"},
+            {"routes", corevideo::rpc::Json::Array{playingMediaRoute("media-main", "clip-intro")}},
+        },
+        shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media", true),
+                                                  shellAudioStrip("media:clip-intro")}),
+        shellMediaRouting(),
+    });
+    EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) > 0.05f);
+  }
+  {
+    auto modules = corevideo::modules::createStubModules();
+    modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+    corevideo::core::MediaCore mediaCore(std::move(modules));
+    // The clip's own send (aux-1 only) replaces the generic media sends for it.
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "load-scene-graph"},
+            {"sceneId", "explicit-send"},
+            {"routes", corevideo::rpc::Json::Array{playingMediaRoute("media-main", "clip-intro")}},
+        },
+        shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media")}),
+        shellMediaRouting(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+            {"sourceId", "media:clip-intro"}, {"busId", "aux-1"}, {"gainDb", 0},
+            {"busPluginInserts", corevideo::rpc::Json::Array{}}}}),
+    });
+    EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm("aux-1")) > 0.05f);
+    EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) < 0.001f);
+  }
+}
+
+// A clip with its own send row but no strip of its own is still governed by the
+// "media" strip: muting it silences the clip on EVERY bus (the FADER LAW holds
+// through the alias strip), including the clip's own explicit send.
+TEST(MediaCoreCommand, AClipWithItsOwnSendIsStillSilencedByTheMutedMediaStrip) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "own-send-muted-strip"},
+          {"routes", corevideo::rpc::Json::Array{playingMediaRoute("media-main", "clip-intro")}},
+      },
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media", true), shellAudioStrip("zoom-mix")}),
+      shellMediaRouting(corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "aux-1"}, {"gainDb", 0},
+                                       {"busPluginInserts", corevideo::rpc::Json::Array{}}},
+          corevideo::rpc::Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "master"}, {"gainDb", 0},
+                                       {"busPluginInserts", corevideo::rpc::Json::Array{}}}}),
+  });
+  for (const char* busId : {"master", "pgm-l", "pgm-r", "stream", "mon", "aux-1"}) {
+    EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm(busId)) < 0.001f) << busId;
+  }
+}
+
+// Fix round 1 (Important): the "media" strip processes the MIX of its clips,
+// not each clip separately. A compressor at -12 dBFS (hard knee) leaves one
+// 0.2-peak clip (-14 dBFS) alone but must bite on two summed (0.4, -8 dBFS) —
+// per-clip processing would report no gain reduction in either case. And the
+// strip chain runs once: one persistent DSP state, keyed "media".
+TEST(MediaCoreCommand, TheMediaStripCompressesTheSumOfItsClipsInOneChain) {
+  const auto compressedMediaStrip = [] {
+    return corevideo::rpc::Json::Object{
+        {"participantId", "media"},
+        {"inputLevel", 0},
+        {"muted", false},
+        {"noiseSuppression", false},
+        {"manualGainDb", 0},
+        {"pan", 0},
+        {"solo", false},
+        {"pluginInserts", corevideo::rpc::Json::Array{"compressor"}},
+        {"insertSettings",
+         corevideo::rpc::Json::Object{
+             {"compressor", corevideo::rpc::Json::Object{{"thresholdDb", -12}, {"kneeDb", 0}, {"ratio", 4}}}}},
+    };
+  };
+  const auto runWithClips = [&](corevideo::rpc::Json::Array routes, std::vector<std::string>* dspIds) {
+    auto modules = corevideo::modules::createStubModules();
+    modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+    corevideo::core::MediaCore mediaCore(std::move(modules));
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "compressed-media"},
+                                     {"routes", std::move(routes)}},
+        shellAudioMix(corevideo::rpc::Json::Array{compressedMediaStrip(), shellAudioStrip("zoom-mix")}),
+        shellMediaRouting(),
+    });
+    const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+    if (dspIds != nullptr) *dspIds = mediaCore.channelDspStateIdsForTest();
+    const auto* strip = audioMixParticipant(state, "media");
+    return strip == nullptr ? -1.0 : strip->get("gainReductionDb")->asNumber();
+  };
+
+  const double oneClipGr = runWithClips(corevideo::rpc::Json::Array{playingMediaRoute("clip-a", "clip-a")}, nullptr);
+  std::vector<std::string> dspIds;
+  const double twoClipGr = runWithClips(corevideo::rpc::Json::Array{playingMediaRoute("clip-a", "clip-a"),
+                                                                    playingMediaRoute("clip-b", "clip-b")},
+                                        &dspIds);
+  EXPECT_EQ(oneClipGr, 0.0);
+  EXPECT_TRUE(twoClipGr > 0.5) << "the Media strip compressor must react to the combined clips";
+  EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media") != dspIds.end());
+  EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media:clip-a") == dspIds.end());
+  EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media:clip-b") == dspIds.end());
+}
+
 #if !COREVIDEO_STUB && COREVIDEO_WITH_MF_ENCODER
-TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
-  const auto videoPath = std::filesystem::temp_directory_path() / "corevideo-mf-preview-cue.mp4";
-  std::filesystem::remove(videoPath);
+// A 1 s, 30-frame, 64x64 H.264 MP4 (Media Foundation decodes it natively).
+void writeMfVideoFixture(const std::filesystem::path& path) {
   const auto videoBytes = corevideo::modules::base64Decode(R"(
 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
 )");
-  {
-    std::ofstream output(videoPath, std::ios::binary | std::ios::trunc);
-    output.write(reinterpret_cast<const char*>(videoBytes.data()), static_cast<std::streamsize>(videoBytes.size()));
-  }
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(videoBytes.data()), static_cast<std::streamsize>(videoBytes.size()));
+}
+
+TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
+  const auto videoPath = std::filesystem::temp_directory_path() / "corevideo-mf-preview-cue.mp4";
+  std::filesystem::remove(videoPath);
+  writeMfVideoFixture(videoPath);
 
   auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
   ASSERT_NE(source, nullptr);
@@ -2927,6 +3258,344 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
 
   source.reset(); // Release owned decoder workers before deleting their fixture.
   std::filesystem::remove(wavPath);
+}
+
+namespace {
+int64_t steadyNow100ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+}
+// 48 kHz stereo float WAV whose every sample encodes its own media time:
+// value = (millisecond + 1) / 4096. Coarse on purpose, so any resampler
+// rounding still decodes to the right millisecond.
+void writeTimecodedFloatWav(const std::filesystem::path& path, int seconds) {
+  const uint32_t frames = static_cast<uint32_t>(seconds) * 48000u;
+  const uint32_t dataBytes = frames * 2u * 4u;
+  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+  stream.write("RIFF", 4);
+  writeLe32(stream, 4u + (8u + 18u) + (8u + 4u) + (8u + dataBytes));
+  stream.write("WAVE", 4);
+  stream.write("fmt ", 4);
+  writeLe32(stream, 18);
+  writeLe16(stream, 3);  // WAVE_FORMAT_IEEE_FLOAT
+  writeLe16(stream, 2);
+  writeLe32(stream, 48000);
+  writeLe32(stream, 48000u * 8u);
+  writeLe16(stream, 8);
+  writeLe16(stream, 32);
+  writeLe16(stream, 0);  // cbSize
+  stream.write("fact", 4);
+  writeLe32(stream, 4);
+  writeLe32(stream, frames);
+  stream.write("data", 4);
+  writeLe32(stream, dataBytes);
+  for (uint32_t n = 0; n < frames; ++n) {
+    const float value = static_cast<float>(n / 48u + 1u) / 4096.f;
+    stream.write(reinterpret_cast<const char*>(&value), 4);
+    stream.write(reinterpret_cast<const char*>(&value), 4);
+  }
+}
+int timecodeMs(float sample) { return static_cast<int>(std::lround(sample * 4096.f)) - 1; }
+}  // namespace
+
+// T1.2, end to end through the real Media Foundation decoder: a clip paused
+// mid-roll holds the frame that was on air (never its first frame), and Play
+// continues with the NEXT frame of the same reader — not the top of the clip
+// (frameId 1, a reopened decoder) and not the paused duration later.
+TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndResumeContinues) {
+  const auto videoPath = std::filesystem::temp_directory_path() /
+      ("corevideo-mf-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".mp4");
+  writeMfVideoFixture(videoPath);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{videoPath};
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:pause-clip";
+  layer.mediaAssetId = "pause-clip";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = videoPath.string();
+  layer.mediaPlaybackKey = "media:pause-clip:live:1";
+  layer.mediaAssetPlaying = true;
+
+  int64_t held = -1;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (held < 5 && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty()) held = frames.front().frameId;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(held >= 5);
+  ASSERT_TRUE(held < 25); // Still mid-clip (30 frames), so resume has frames to continue with.
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames.front().frameId, held);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  layer.mediaAssetPlaying = true;
+  int64_t next = held;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (next == held && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty()) next = frames.front().frameId;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(next > held) << "held=" << held << " next=" << next;
+  // 250 ms of pause is ~7 frames at 30 fps: skipping it would land far past
+  // held+2; a reopened decoder would restart at 1.
+  EXPECT_TRUE(next <= held + 2) << "held=" << held << " next=" << next;
+  source.reset(); // Release owned decoder workers before deleting their fixture.
+}
+
+// The audio half: no PCM while paused, and Play resumes from the paused media
+// position (within the 50 ms A/V budget) — not from 0, not after the pause.
+TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePausedPosition) {
+  const auto wavPath = std::filesystem::temp_directory_path() /
+      ("corevideo-mf-pause-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".wav");
+  writeTimecodedFloatWav(wavPath, 3);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{wavPath};
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:pause-audio";
+  layer.mediaAssetId = "pause-audio";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = wavPath.string();
+  layer.mediaPlaybackKey = "media:pause-audio:live:1";
+  layer.mediaAssetPlaying = true;
+  const auto nowMs = [] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  };
+  // MediaCore polls a Program layer on the video path every render tick as
+  // well; that is what keeps the source alive while its audio is paused.
+  const auto poll = [&] {
+    (void)source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    return source->pollMediaAudioFrames({layer}, nowMs());
+  };
+
+  int lastHeardMs = -1;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (lastHeardMs < 300 && std::chrono::steady_clock::now() < deadline) {
+    for (const auto& frame : poll())
+      for (size_t i = frame.pcm.size(); i-- > 0;)
+        if (frame.pcm[i] != 0.f) { lastHeardMs = timecodeMs(frame.pcm[i]); break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(lastHeardMs >= 300);
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    EXPECT_TRUE(poll().empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  layer.mediaAssetPlaying = true;
+  int resumedMs = -1;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (resumedMs < 0 && std::chrono::steady_clock::now() < deadline) {
+    for (const auto& frame : poll()) {
+      for (const auto sample : frame.pcm)
+        if (sample != 0.f) { resumedMs = timecodeMs(sample); break; }
+      if (resumedMs >= 0) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(resumedMs >= 0);
+  EXPECT_TRUE(std::abs(resumedMs - lastHeardMs) <= 50) << "lastHeard=" << lastHeardMs << "ms resumed=" << resumedMs << "ms";
+  source.reset(); // Release owned decoder workers before deleting their fixture.
+}
+
+// ProRes MOVs (Media Foundation has no decoder) run on the FFmpeg fallback,
+// which paces itself with -re and cannot be paused in place: the adapter stops
+// it on Pause and restarts it at the frozen clock position on Play. The clip's
+// luma encodes media time, so the resumed picture proves where it resumed.
+// Opt-in on machines with FFmpeg at C:\ffmpeg\bin (it generates the fixture).
+TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPositionNotTheTop) {
+  const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
+  std::error_code missing;
+  if (!std::filesystem::exists(ffmpegDir / "ffmpeg.exe", missing)) {
+    // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+    std::fprintf(stderr, "[  SKIPPED ] MediaFoundationMediaFrameSource.AnFfmpegDecodedClipResumesFromThePausedPositionNotTheTop"
+                         " (ffmpeg absent at C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
+  const auto dir = std::filesystem::temp_directory_path() /
+      ("corevideo-ffmpeg-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(dir);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{dir};
+  const auto clip = dir / "ramp.mov";
+  // Luma = 16 + 50 * t (limited range): 0.0 s -> 16, 4.0 s -> 216.
+  const auto command = "\"\"" + (ffmpegDir / "ffmpeg.exe").string() +
+      "\" -hide_banner -loglevel error -y -f lavfi -i \"color=c=black:s=64x64:r=30:d=4,format=yuv444p,"
+      "geq=lum='min(235,16+T*50)':cb=128:cr=128\" -c:v prores_ks -profile:v 0 \"" + clip.string() + "\"\"";
+  ASSERT_EQ(std::system(command.c_str()), 0);
+  const char* previousDir = std::getenv("COREVIDEO_FFMPEG_BIN_DIR");
+  const std::string restore = previousDir ? previousDir : "";
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+  struct RestoreEnv { std::string value; ~RestoreEnv() { _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", value.c_str()); } } restoreEnv{restore};
+
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:prores";
+  layer.mediaAssetId = "prores";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = clip.string();
+  layer.mediaPlaybackKey = "media:prores:live:1";
+  layer.mediaAssetPlaying = true;
+  // Seconds of media time, read back from the frame's centre luma.
+  const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
+    const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
+    const double full = (*frame.pixels)[centre + 1];            // G of BGRA, full range.
+    return (full * 219.0 / 255.0) / 50.0;                         // Back to limited, then to t.
+  };
+
+  corevideo::modules::VideoFrame held;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while ((!held.hasPixels() || mediaSeconds(held) < 0.6) && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().hasPixels()) held = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(held.hasPixels());
+  const double heldSeconds = mediaSeconds(held);
+  std::fprintf(stderr, "[ffmpeg-pause] decoder=%s held frame=%lld t=%.3fs\n",
+               held.pixelWidth == 1920 ? "ffmpeg" : "media-foundation", static_cast<long long>(held.frameId), heldSeconds);
+  ASSERT_TRUE(heldSeconds >= 0.6 && heldSeconds < 2.5);
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames.front().frameId, held.frameId);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  layer.mediaAssetPlaying = true;
+  corevideo::modules::VideoFrame resumed;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+  while (!resumed.hasPixels() && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().frameId != held.frameId) resumed = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(resumed.hasPixels());
+  const double resumedSeconds = mediaSeconds(resumed);
+  std::fprintf(stderr, "[ffmpeg-pause] resumed frame=%lld t=%.3fs\n", static_cast<long long>(resumed.frameId), resumedSeconds);
+  EXPECT_TRUE(resumed.frameId > held.frameId);
+  // Not the top (t~0) and not the 1.5 s pause later. The FFmpeg path may land
+  // up to its own start-up lag ahead of the held picture, where the shared
+  // clock (and the audio) actually are.
+  EXPECT_TRUE(resumedSeconds >= heldSeconds - 0.1) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  EXPECT_TRUE(resumedSeconds <= heldSeconds + 0.7) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  source.reset();
+}
+
+// If the FFmpeg restart on Play FAILS (FFmpeg briefly unavailable), the clip
+// holds its paused frame, says so, and retries at the clock position; it must
+// never fall back to a fresh open, which would roll the clip from the top.
+TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop) {
+  const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
+  std::error_code missing;
+  if (!std::filesystem::exists(ffmpegDir / "ffmpeg.exe", missing)) {
+    std::fprintf(stderr, "[  SKIPPED ] MediaFoundationMediaFrameSource.AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop"
+                         " (ffmpeg absent at C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
+  const auto dir = std::filesystem::temp_directory_path() /
+      ("corevideo-ffmpeg-resume-fail-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(dir);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{dir};
+  const auto clip = dir / "ramp.mov";
+  // 8 s, luma = 16 + 25 * t (limited range): long enough to land a late retry.
+  const auto command = "\"\"" + (ffmpegDir / "ffmpeg.exe").string() +
+      "\" -hide_banner -loglevel error -y -f lavfi -i \"color=c=black:s=64x64:r=30:d=8,format=yuv444p,"
+      "geq=lum='min(235,16+T*25)':cb=128:cr=128\" -c:v prores_ks -profile:v 0 \"" + clip.string() + "\"\"";
+  ASSERT_EQ(std::system(command.c_str()), 0);
+  struct SavedEnv {
+    std::string name, value;
+    explicit SavedEnv(const char* n) : name(n) { const char* v = std::getenv(n); value = v ? v : ""; }
+    ~SavedEnv() { _putenv_s(name.c_str(), value.c_str()); }
+  } savedDir{"COREVIDEO_FFMPEG_BIN_DIR"}, savedAltDir{"FFMPEG_BIN_DIR"}, savedPath{"PATH"};
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:prores-retry";
+  layer.mediaAssetId = "prores-retry";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = clip.string();
+  layer.mediaPlaybackKey = "media:prores-retry:live:1";
+  layer.mediaAssetPlaying = true;
+  const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
+    const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
+    return ((*frame.pixels)[centre + 1] * 219.0 / 255.0) / 25.0;
+  };
+
+  corevideo::modules::VideoFrame held;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while ((!held.hasPixels() || mediaSeconds(held) < 0.6) && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().hasPixels()) held = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(held.hasPixels());
+  ASSERT_TRUE(held.pixelWidth == 1920); // This test is about the FFmpeg path.
+  const double heldSeconds = mediaSeconds(held);
+
+  layer.mediaAssetPlaying = false;
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  // FFmpeg disappears exactly as the operator presses Play.
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", (dir / "no-ffmpeg-here").string().c_str());
+  _putenv_s("FFMPEG_BIN_DIR", "");
+  _putenv_s("PATH", "C:\\Windows\\System32");
+  layer.mediaAssetPlaying = true;
+  bool warned = false;
+  const auto outageEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+  while (std::chrono::steady_clock::now() < outageEnd) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_EQ(frames.front().frameId, held.frameId); // Holds the paused frame; nothing from the top.
+    for (const auto& warning : source->warnings())
+      warned = warned || warning.find("could not resume after a pause") != std::string::npos;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(warned);
+
+  // FFmpeg is back: the next retry must land at the clock position.
+  _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
+  _putenv_s("PATH", savedPath.value.c_str());
+  corevideo::modules::VideoFrame resumed;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while (!resumed.hasPixels() && std::chrono::steady_clock::now() < deadline) {
+    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    if (!frames.empty() && frames.front().frameId != held.frameId) resumed = frames.front();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(resumed.hasPixels());
+  const double resumedSeconds = mediaSeconds(resumed);
+  std::fprintf(stderr, "[ffmpeg-resume-retry] held t=%.3fs resumed t=%.3fs\n", heldSeconds, resumedSeconds);
+  EXPECT_TRUE(resumed.frameId > held.frameId);
+  // Never the top of the clip; at or after the paused picture (the clock kept
+  // running during the outage, so a late retry lands later, not earlier).
+  EXPECT_TRUE(resumedSeconds >= heldSeconds - 0.1) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  EXPECT_TRUE(resumedSeconds <= heldSeconds + 4.0) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
+  source.reset();
 }
 #endif
 
@@ -4390,6 +5059,62 @@ TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPrev
     }
   }
   EXPECT_TRUE(sawPvw) << "expected a pvw-role tile in a pgmPvw layout";
+}
+
+// #478 N4: a cued Preview (or Program) guest the shell's video budget left out has no
+// wall tile to carry a label, so the shell sends the notice with the layout and the
+// core puts it on the PVW / PGM cell. The overlay draws "PREVIEW · <notice>". An empty
+// notice clears it. Skips without a D3D11 device (the event needs the GPU composite).
+TEST(MediaCoreMultiview, TheBusCellsCarryTheShellsSubscriptionLimitNotice) {
+  auto gpuCompositor = corevideo::modules::createD3D11Compositor();
+  if (!gpuCompositor) {
+    std::fprintf(stderr, "[multiview-validation] skipped: no D3D11 GPU compositor in this environment.\n");
+    return;
+  }
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::move(gpuCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "configure-multiviewer"},
+      {"layoutMode", "pgmPvwTop"},
+      {"tileCount", 4},
+  });
+
+  const auto layout = [](const std::string& previewNotice) {
+    return corevideo::rpc::Json::Object{
+        {"type", "set-multiview-layout"},
+        {"canvasWidth", 1920},
+        {"canvasHeight", 1080},
+        {"programNotice", ""},
+        {"previewNotice", previewNotice},
+        {"sources", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+            {"sourceId", "zoom:alice"}, {"kind", "zoom"}, {"participantId", "alice"},
+            {"slot", 0}, {"label", "Alice"}}}},
+    };
+  };
+  // One drain per layout change: the tiles event is emitted on STRUCTURAL change only.
+  const auto busLabels = [&]() {
+    std::map<std::string, std::string> labels;
+    mediaCore.renderDisplayTick();
+    const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+    EXPECT_FALSE(events.empty());
+    if (events.empty()) return labels;
+    const auto* tiles = events.back().get("tiles");
+    if (!tiles || !tiles->isArray()) return labels;
+    for (const auto& tile : tiles->asArray()) {
+      labels[tile.getString("role")] = tile.getString("label");
+    }
+    return labels;
+  };
+
+  (void)mediaCore.applyCommand(layout("no video: Cued guest (subscription limit 10)"));
+  auto labels = busLabels();
+  EXPECT_EQ(labels["pvw"], "Preview Â· no video: Cued guest (subscription limit 10)");
+  EXPECT_EQ(labels["pgm"], "Program");
+
+  (void)mediaCore.applyCommand(layout(""));
+  labels = busLabels();
+  EXPECT_EQ(labels["pvw"], "Preview");
 }
 
 TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {

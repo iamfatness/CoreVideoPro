@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Controls;
 using Xunit;
@@ -19,6 +21,16 @@ public sealed class MultiviewOverlayFormattingTests
     {
         var tile = new MultiviewTile { Role = "pvw", Label = "Bob" };
         Assert.Equal("PREVIEW", MultiviewOverlayFormatting.ResolveLabel(tile));
+    }
+
+    [Fact]
+    public void ResolveLabel_BusCellCarriesTheCoresSubscriptionLimitNotice()
+    {
+        // #478 N4: a cued Preview guest the video budget left out is named on the PVW cell.
+        var preview = new MultiviewTile { Role = "pvw", Label = "Preview · no video: Cued guest (subscription limit 10)" };
+        Assert.Equal("PREVIEW · no video: Cued guest (subscription limit 10)", MultiviewOverlayFormatting.ResolveLabel(preview));
+        var program = new MultiviewTile { Role = "pgm", Label = "Program · no video: A (subscription limit 10)" };
+        Assert.Equal("PROGRAM · no video: A (subscription limit 10)", MultiviewOverlayFormatting.ResolveLabel(program));
     }
 
     [Fact]
@@ -74,5 +86,42 @@ public sealed class MultiviewOverlayFormattingTests
     {
         var time = new DateTime(2026, 6, 30, 14, 5, 9);
         Assert.Equal("14:05:09", MultiviewOverlayFormatting.FormatClock(time));
+    }
+
+    // Regression: the overlay capped at 10 tiles TOTAL, but the core's list leads with the PGM
+    // and PVW cells, so sources 9 and 10 got no click target (not cueable) and no label/tally.
+    [Fact]
+    public void SelectOverlayTiles_FullWall_KeepsProgramPreviewAndAllTenSources()
+    {
+        var tiles = new List<MultiviewTile>
+        {
+            new() { Role = "pgm", Slot = -2 },
+            new() { Role = "pvw", Slot = -1 }
+        };
+        for (var slot = 0; slot < 10; slot++)
+        {
+            tiles.Add(new MultiviewTile { Role = "source", Slot = slot });
+        }
+
+        var selected = MultiviewOverlayFormatting.SelectOverlayTiles(tiles);
+
+        Assert.Equal(12, selected.Count);
+        Assert.Contains(selected, tile => tile.Role == "source" && tile.Slot == 8);
+        Assert.Contains(selected, tile => tile.Role == "source" && tile.Slot == 9);
+    }
+
+    [Fact]
+    public void SelectOverlayTiles_MoreSourcesThanShowInputs_CapsSourcesOnly()
+    {
+        var tiles = new List<MultiviewTile> { new() { Role = "pgm", Slot = -2 } };
+        for (var slot = 0; slot < 14; slot++)
+        {
+            tiles.Add(new MultiviewTile { Role = "source", Slot = slot });
+        }
+
+        var selected = MultiviewOverlayFormatting.SelectOverlayTiles(tiles);
+
+        Assert.Single(selected, tile => tile.Role == "pgm");
+        Assert.Equal(10, selected.Count(tile => tile.Role == "source"));
     }
 }

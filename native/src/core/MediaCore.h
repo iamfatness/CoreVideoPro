@@ -3,7 +3,9 @@
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/Director.h"
+#include "core/MonitorShedPolicy.h"
 #include "core/OutputLifecyclePolicy.h"
+#include "core/FollowSpeakerHold.h"
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
@@ -120,6 +122,9 @@ class MediaCore {
   // the engine command rides ZoomEngineRuntime's sender thread.
   [[nodiscard]] rpc::Json stopZoomCapture();
   [[nodiscard]] rpc::Json zoomSnapshot() const;
+  // #478 R2/N2: who a follow-speaker (`active-speaker`) route shows this tick —
+  // frame-validated, "" for nobody. See the .cpp and core/FollowSpeakerHold.h.
+  [[nodiscard]] std::string followSpeakerForRoutes(const std::vector<modules::VideoFrame>& videoFrames) const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
@@ -239,6 +244,18 @@ class MediaCore {
   // compositor filled `preview` with). Same law as setStillImageDecoderForTest
   // — nothing outside native/tests/ calls it.
   [[nodiscard]] const modules::ProgramFrame& lastProgramFrameForTest() const { return lastProgramFrame_; }
+
+  // Test seam (T1.6): the source ids that own persistent channel DSP state —
+  // proves the "media" pre-sum runs ONE strip chain instead of one per clip.
+  // Worker-domain map; only the single-threaded test path may call this.
+  [[nodiscard]] std::vector<std::string> channelDspStateIdsForTest() const {
+    std::vector<std::string> ids;
+    for (const auto& [id, state] : channelDspStates_) {
+      (void)state;
+      ids.push_back(id);
+    }
+    return ids;
+  }
 
   // T1: the PROGRAM-bus tiles wall parsed off the load-scene-graph command,
   // and the scene validation warnings a bad/unrecognised value gets recorded
@@ -896,6 +913,11 @@ class MediaCore {
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
+  // Recently directed speakers for follow-speaker routes, scoped to one meeting
+  // (#478 N2). Written only from plan builds, which run under coreMutex.
+  mutable FollowSpeakerHold followSpeakerHold_;
+  // Moves on every stub join/leave, standing in for the engine's speaker epoch.
+  std::uint64_t zoomStubEpoch_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
   std::string breakoutRoomId_ = "main";
   std::string breakoutRoomName_ = "Main room";
@@ -933,6 +955,16 @@ class MediaCore {
   // consumed only inside runAudioOutputWork). Without this, biquads/envelopes
   // restart every 20ms block = audible buzz (owner-reported mic distortion).
   std::map<std::string, modules::ChannelDspState> channelDspStates_;
+  // T1.6: the "media" pre-sum — every `media:*` clip without its own strip/send
+  // summed (stereo, mono upmixed) into ONE routed source before the strip
+  // (core/AudioControlSourcePolicy.h). Worker domain (audioOutputMutex_); the
+  // buffer keeps its capacity across ticks, so the steady state allocates nothing.
+  std::vector<float> mediaPreSumPcm_;
+  // The pre-sum's measured input level (published from the worker like
+  // audioCompGainReductionDbBySource_), metered on the "media" strip.
+  bool mediaPreSumMetered_ = false;
+  double mediaPreSumRmsLevel_ = 0.0;
+  double mediaPreSumPeakLevel_ = 0.0;
   // C7d: per-bus limiter gain state (same block-continuity requirement).
   std::map<std::string, modules::LimiterState> busLimiterGains_;
   // Bus-send re-limit state: summing a bus into a target can exceed the
@@ -1080,6 +1112,10 @@ class MediaCore {
     bool monitorFeedbackRisk = false;
     // C7b: per-source compressor gain reduction this tick (dB, >0 only).
     std::map<std::string, double> compGainReductionDbBySource;
+    // T1.6: the "media" pre-sum's measured input level this tick.
+    bool mediaPreSumMetered = false;
+    double mediaPreSumRmsLevel = 0.0;
+    double mediaPreSumPeakLevel = 0.0;
     bool recordingActive = false;
     // Encoder-side recording warning (e.g. "Media Foundation dropped program
     // audio: ..."), published into recordingWarning_ so the snapshot's
@@ -1176,6 +1212,10 @@ class MediaCore {
   // applyMultiviewLayout every tick; this lets it cheaply skip the clear/rebuild +
   // structural-emit reset when the layout has not actually changed.
   std::string multiviewLayoutSignature_;
+  // #478 N4: the shell's "no video: subscription limit" notices for the PGM / PVW
+  // cells (a bus source the video budget left out). Empty = nothing to say.
+  std::string multiviewProgramNotice_;
+  std::string multiviewPreviewNotice_;
   // Structural signature of the last emitted multiview event, so the event is
   // emitted only on structural change (and once at cold start).
   uint32_t lastMultiviewStructureSignature_ = 0;
@@ -1186,6 +1226,22 @@ class MediaCore {
   std::vector<modules::MultiviewTileRect> lastMultiviewTiles_;
   int lastMultiviewWidth_ = 0;
   int lastMultiviewHeight_ = 0;
+  // T1.4 monitor load-shedding (core/MonitorShedPolicy.h). Program always
+  // renders; under sustained overload the multiview + preview passes run on
+  // every 2nd / 3rd tick. Mutated only by the render tick, read by
+  // sessionState — both under coreMutex, so plain fields.
+  MonitorShedPolicy monitorShed_;
+  // Most recent measured CPU-submission cost of each monitor pass, refreshed
+  // only on ticks where that pass actually ran (0 when the pass is not
+  // configured). Their sum is the policy's monitorCycleCostNs.
+  int64_t lastMultiviewPassNs_ = 0;
+  int64_t lastPreviewPassNs_ = 0;
+  // Published preview identity, held across shed ticks — the same reason as
+  // lastMultiviewTexture_ above: the program frame is rebuilt every tick, and a
+  // skipped composite must never publish an EMPTY preview handle.
+  modules::ProgramFrameSharedTexture lastPreviewTexture_;
+  int lastPreviewWidth_ = 0;
+  int lastPreviewHeight_ = 0;
   std::vector<rpc::Json> pendingMultiviewSharedTextureEvents_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;

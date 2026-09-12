@@ -82,6 +82,13 @@ struct RouteSourcePolicyInput {
   const ExactRouteSourceIntent* exactSource{nullptr};
   // Must identify the exact immutable frame being bound, not a roster entry.
   const ExactRouteSourceRef* frameIdentity{nullptr};
+  // The core's DIRECTED speaker (ZoomActiveSpeakerDirector: chosen among the
+  // shell's sources, #478 R1), or the last one it directed when there is none now.
+  // Additive alongside the exact-source fields above: #478/#480 landed on main
+  // after this branch's merge base, and the two describe different questions -
+  // WHICH participant a follow-speaker route resolves to, versus WHICH immutable
+  // frame a bound route is pinned to.
+  std::string_view directedSpeakerParticipantId = {};
 };
 
 struct RouteSourceBinding {
@@ -112,13 +119,18 @@ inline RouteSourceBinding resolveRouteSource(const RouteSourcePolicyInput& input
     // available. Roster order must never silently replace that guest.
     binding.participantId = input.participantId;
     binding.sourceId = "zoom:" + binding.participantId;
-  } else if (input.positionalFallbackParticipantId) {
-    // Compatibility with existing empty route assignments. This fallback is
-    // deliberately retained, including mode=none, until the route contract can
-    // distinguish an intentional blank from a legacy omitted assignment.
-    binding.participantId = *input.positionalFallbackParticipantId;
-    binding.sourceId = "zoom:" + binding.participantId;
+  } else if (input.mode == "active-speaker") {
+    // A FOLLOW-SPEAKER route shows the directed speaker (#478 R2). With no
+    // directed speaker yet it binds NOTHING: never a random source.
+    if (!input.directedSpeakerParticipantId.empty()) {
+      binding.participantId = std::string(input.directedSpeakerParticipantId);
+      binding.sourceId = "zoom:" + binding.participantId;
+    }
   }
+  // #480: a route with no source id renders BLANK. Never inherit
+  // videoFrames[routeIndex] — that positional fallback showed a random guest
+  // after the shell wiped a layer, and it made an empty OHG box composite
+  // whoever sat at that index.
   return binding;
 }
 

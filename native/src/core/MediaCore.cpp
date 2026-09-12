@@ -5,6 +5,7 @@
 #include "compositor/TilesLayout.h"
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
+#include "core/AudioControlSourcePolicy.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
@@ -44,6 +45,8 @@ namespace corevideo::core {
 namespace {
 
 constexpr int64_t kStaleCaptureAudioAgeMs = 1000;
+// The stub Zoom session's (constant) directed speaker.
+constexpr const char* kStubActiveSpeakerId = "operator-1";
 
 rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   rpc::Json::Array result;
@@ -532,6 +535,7 @@ rpc::Json MediaCore::joinZoom(const rpc::Json& payload, const std::function<bool
   }
 
   zoomJoined_ = true;
+  ++zoomStubEpoch_;
   const std::string displayName = payload.getString("displayName", zoomDisplayName_);
   if (!displayName.empty()) {
     zoomDisplayName_ = displayName;
@@ -546,6 +550,7 @@ rpc::Json MediaCore::leaveZoom() {
   }
 
   zoomJoined_ = false;
+  ++zoomStubEpoch_;
   ++zoomSnapshotTick_;
   return zoomSnapshot();
 }
@@ -558,6 +563,33 @@ rpc::Json MediaCore::stopZoomCapture() {
   // Stub path: capture-off is NOT a leave — the meeting stays joined.
   ++zoomSnapshotTick_;
   return zoomSnapshot();
+}
+
+std::string MediaCore::followSpeakerForRoutes(const std::vector<modules::VideoFrame>& videoFrames) const {
+  // #478 R2 + N2: a follow-speaker route shows the DIRECTED speaker (the
+  // director's choice among the shell's sources) ONLY if they have a content
+  // frame this tick; otherwise the most recent previously directed speaker who
+  // does; otherwise nobody (the caller renders the layer empty). The history is
+  // forgotten when the engine's speaker epoch moves (join, leave, Engine off, a
+  // new engine process). See core/FollowSpeakerHold.h.
+  std::string current;
+  std::uint64_t epoch = 0;
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    // L3: the EPOCH first. join() runs off coreMutex; reading the id first could record
+    // the previous meeting's speaker under the new meeting's epoch.
+    epoch = zoomEngineRuntime_->speakerEpoch();
+    current = zoomEngineRuntime_->directedSpeakerId();
+  } else {
+    // N6: the stub's speaker is a constant; never build a whole stub snapshot per tick.
+    current = zoomJoined_ ? kStubActiveSpeakerId : "";
+    epoch = zoomStubEpoch_;
+  }
+  followSpeakerHold_.observe(epoch, current);
+  return followSpeakerHold_.pick([&videoFrames](const std::string& id) {
+    return std::any_of(videoFrames.begin(), videoFrames.end(), [&id](const modules::VideoFrame& frame) {
+      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+    });
+  });
 }
 
 rpc::Json MediaCore::zoomSnapshot() const {
@@ -578,7 +610,7 @@ rpc::Json MediaCore::zoomSnapshot() const {
 
   return rpc::Json::Object{
       {"meetingState", "in_meeting"},
-      {"activeSpeakerId", "operator-1"},
+      {"activeSpeakerId", kStubActiveSpeakerId},
       {"caption", ""},
       {"readiness", zoomReadinessState()},
       {"evidence", zoomEvidenceState()},
@@ -828,6 +860,25 @@ rpc::Json MediaCore::sessionState() const {
           {"eventDrainTotalNs", static_cast<double>(renderWorkerDrainTotalNs_.load(std::memory_order_relaxed))},
           {"eventDrainMaximumNs", static_cast<double>(renderWorkerDrainMaximumNs_.load(std::memory_order_relaxed))},
           {"gpuCompletionVerified", false}, {"deliveryVerified", false}}},
+      // T1.4 monitor load-shedding (core/MonitorShedPolicy.h). Published
+      // unconditionally — divisor 1 / level 0 is the healthy state, and a node
+      // that only appeared while shedding would be absent in exactly the case
+      // worth comparing against.
+      {"monitorShed", rpc::Json::Object{
+          {"divisor", monitorShed_.divisor()},
+          {"level", monitorShed_.level()},
+          {"enteredCount", static_cast<double>(monitorShed_.enteredCount())},
+          {"shedTicks", static_cast<double>(monitorShed_.shedTicks())},
+          {"lastReason", std::string(monitorShed_.lastReason())},
+          // The observation that caused the last divisor change: a shed with a
+          // big monitorCycleMs was monitor-bound; one with a big programMs was
+          // Program- or GPU-bound (see MonitorShedPolicy.h — both shed, by design).
+          {"lastTransitionProgramMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().programCostNs) / 1e6},
+          {"lastTransitionMonitorCycleMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().monitorCycleCostNs) / 1e6},
+          {"lastTransitionBudgetMs",
+           static_cast<double>(monitorShed_.lastTransitionObservation().budgetNs) / 1e6}}},
       {"audio", rpc::Json::Object{
           {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
           {"observed", audioLastProgressNs > 0},
@@ -1646,7 +1697,7 @@ rpc::Json MediaCore::zoomEvidenceState() const {
       {"participantCount", zoomJoined_ ? 2 : 0},
       {"videoFeeds", zoomJoined_ ? 2 : 0},
       {"audioFeeds", zoomJoined_ ? 2 : 0},
-      {"activeSpeakerId", zoomJoined_ ? "operator-1" : ""},
+      {"activeSpeakerId", zoomJoined_ ? kStubActiveSpeakerId : ""},
       {"snapshotTick", zoomSnapshotTick_},
   };
 }
@@ -1958,6 +2009,10 @@ rpc::Json MediaCore::zoomSubscriptionChurnState() const {
       {"totalChurn", 0.0},
       {"lastResolutionChanges", 0.0},
       {"lastCapEvictions", 0.0},
+      {"lastUnrouted", 0.0},
+      {"lastVideoOff", 0.0},
+      {"fullResolutionCap", 0.0},
+      {"fullResolutionDemoted", 0.0},
       {"lastDepartures", 0.0},
       {"sources", rpc::Json::Array{}},
   };
@@ -2349,7 +2404,18 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = readIsoSourceIds(command);
   }
-  const bool recordingOwnsEncoderGeneration = recordingStatus_ == "recording";
+  // #466 / T2.9. "stopping" still OWNS the generation. A recording's Stop
+  // barrier finalizes on the generation it recorded on, and publishes the
+  // terminal lifecycle there. Treating "stopping" as released let a repeated
+  // start-program-output carrying only the remaining stream destination call
+  // encoder->start(), bump the sink generation and reset the snapshot — so the
+  // barrier finalized the file correctly and had nowhere to report it, leaving
+  // recording.status at "stopping" for the rest of the show. Ownership ends
+  // when the barrier publishes a terminal state, not when Stop is requested.
+  // It also stops the stream eating a needless reconnect and keyframe every
+  // time the operator stops Record.
+  const bool recordingOwnsEncoderGeneration =
+      recordingStatus_ == "recording" || recordingStatus_ == "stopping";
   if (!recordingOwnsEncoderGeneration) {
     // Encoder module mutation: guard against the audio/output worker's concurrent
     // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
@@ -3290,6 +3356,12 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
     }
   }
 
+  // #478 N4: the PGM/PVW cells carry the bus's subscription-limit notice. They
+  // ride the layout signature, so a notice appearing or clearing is applied once.
+  const std::string programNotice = layout.getString("programNotice");
+  const std::string previewNotice = layout.getString("previewNotice");
+  signature += "#pgm:" + programNotice + "#pvw:" + previewNotice;
+
   if (signature == multiviewLayoutSignature_) {
     // Unchanged layout â€” do NOT churn multiviewSources_ or reset the structural-emit flag.
     return false;
@@ -3297,6 +3369,8 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
 
   multiviewLayoutSignature_ = std::move(signature);
   multiviewSources_ = std::move(parsed);
+  multiviewProgramNotice_ = programNotice;
+  multiviewPreviewNotice_ = previewNotice;
   multiviewCanvasWidth_ = resolvedWidth;
   multiviewCanvasHeight_ = resolvedHeight;
   // A layout change is a structural change; force the next render's event emit.
@@ -3704,7 +3778,10 @@ std::vector<modules::MultiviewTileRect> MediaCore::buildMultiviewTiles(const std
     modules::MultiviewTileRect pgm;
     pgm.role = "pgm";
     pgm.tally = "pgm";
-    pgm.label = "Program";
+    // " \xC2\xB7 " is a UTF-8 middle dot, spelled as bytes so it never depends on
+    // the compiler's execution character set.
+    pgm.label = multiviewProgramNotice_.empty() ? std::string("Program")
+                                                : "Program \xC2\xB7 " + multiviewProgramNotice_;
     pgm.slot = -2;
     assignRect(pgm, layout.programCell);
     tiles.push_back(std::move(pgm));
@@ -3712,7 +3789,8 @@ std::vector<modules::MultiviewTileRect> MediaCore::buildMultiviewTiles(const std
     modules::MultiviewTileRect pvw;
     pvw.role = "pvw";
     pvw.tally = "pvw";
-    pvw.label = "Preview";
+    pvw.label = multiviewPreviewNotice_.empty() ? std::string("Preview")
+                                                : "Preview \xC2\xB7 " + multiviewPreviewNotice_;
     pvw.slot = -1;
     // The PVW cell renders the live preview composite (buildMultiviewRenderPlan),
     // not a specific roster source, so it carries no pinned sourceId/participantId
@@ -3978,10 +4056,26 @@ rpc::Json MediaCore::audioMixSessionState() const {
   const std::string vstHostActivePlugin = pluginHostClient_.activePlugin();
   const std::string vstHostError = pluginHostClient_.lastError();
 
+  // T1.6: the "media" strip meters the pre-sum of every clip it governs (the
+  // signal its DSP actually processes). The clips keep their own ids in the
+  // mixer session.
+  modules::AudioParticipantMixMetrics mediaPreSumMetric;
+  if (mediaPreSumMetered_) {
+    mediaPreSumMetric.participantId = std::string(kMediaAudioControlSourceId);
+    mediaPreSumMetric.rmsLevel = std::clamp(mediaPreSumRmsLevel_, 0.0, 1.0);
+    mediaPreSumMetric.peakLevel = std::clamp(mediaPreSumPeakLevel_, mediaPreSumMetric.rmsLevel, 1.0);
+    mediaPreSumMetric.inputLevel =
+        clampInt(static_cast<int>(std::lround(mediaPreSumMetric.rmsLevel * 100.0)), 0, 100);
+    mediaPreSumMetric.limiterActive = mediaPreSumMetric.peakLevel >= 0.92;
+  }
+
   for (const auto& channel : audioChannels_) {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
     const modules::AudioParticipantMixMetrics* measured =
         nativeMetric == nativeMetricsByParticipant.end() ? nullptr : &nativeMetric->second;
+    if (mediaPreSumMetered_ && channel.participantId == kMediaAudioControlSourceId) {
+      measured = &mediaPreSumMetric;
+    }
     const bool hasPcm = measured != nullptr;
     const int measuredInputLevel = hasPcm ? measured->inputLevel : 0;
     const int smartGainDb = calculateSmartGainDb(measuredInputLevel);
@@ -4042,6 +4136,16 @@ rpc::Json MediaCore::audioMixSessionState() const {
                         ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
                         : deriveRmsDbfs(0)},
         {"peakDbfs", hasPcm && !channel.muted
+                         ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
+                         : derivePeakDbfs(0)},
+        // #481: PRE-MUTE input meters, measured off the same PCM before mute/
+        // fader is applied. A muted strip still receives signal - this is how
+        // the A1 sees a guest talking while their channel is muted. Never gate
+        // this on channel.muted; that would recreate the bug these fields fix.
+        {"inputRmsDbfs", hasPcm
+                        ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
+                        : deriveRmsDbfs(0)},
+        {"inputPeakDbfs", hasPcm
                          ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
                          : derivePeakDbfs(0)},
         // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
@@ -4784,15 +4888,20 @@ rpc::Json MediaCore::outputSenderSessionState() const {
         std::find(outputDestinations_.begin(), outputDestinations_.end(), sender.destination) !=
         outputDestinations_.end();
     const auto lifecycle = evaluateSenderLifecycle(sender, desiredActive, senderNowMs);
+    // #468 / T2.10: status and destinationHealth are PROJECTIONS of the
+    // lifecycle and the supervisor, never the adapter's last launch state - a
+    // dead destination never disturbs that state, so it read "live"/"ok" for a
+    // stream nothing was receiving.
+    const std::string lifecycleState = lifecycle.state;
     rpc::Json::Object senderJson{
         {"senderId", sender.senderId},
         {"destination", sender.destination},
-        {"status", sender.status},
+        {"status", core::publishedSenderStatus(sender.status, lifecycleState, sender.supervisor)},
         {"framesSent", static_cast<double>(sender.framesSent)},
         {"retryCount", sender.retryCount},
         {"latencyMs", sender.latencyMs},
         {"bitrateMbps", sender.bitrateMbps},
-        {"destinationHealth", sender.destinationHealth},
+        {"destinationHealth", core::publishedSenderDestinationHealth(sender.destinationHealth, lifecycleState, sender.supervisor)},
         {"lastResultCode", sender.lastResultCode},
         {"bytesSent", static_cast<double>(sender.bytesSent)},
         {"audioFramesSent", static_cast<double>(sender.audioFramesSent)},
@@ -5370,18 +5479,58 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   }
   if (!sceneRoutes.empty()) {
     renderPlan.layers.reserve(static_cast<size_t>(sceneRoutes.size() + overlayCount));
+    // Resolved once per plan, and only when a follow-speaker route needs it.
+    const bool hasFollowSpeakerRoute = std::any_of(sceneRoutes.begin(), sceneRoutes.end(), [](const auto& route) {
+      return route.mode == "active-speaker" && route.participantId.empty() &&
+             route.captureDeviceId.empty() && route.mediaAssetId.empty();
+    });
+    // L1: only a tick that HAS frames can bind anyone (the binding is frame-validated),
+    // so a frameless plan build — the audio worker's `buildCompositorRenderPlan({})`,
+    // `sessionState`, `armTakeRecord` — skips the lookup and never takes
+    // ZoomEngineRuntime::mutex_ under coreMutex for nothing (the audio gather was
+    // cleaned of exactly that pattern). With no frames the layer renders empty anyway.
+    const std::string directedSpeaker = hasFollowSpeakerRoute && !videoFrames.empty()
+                                            ? followSpeakerForRoutes(videoFrames)
+                                            : std::string{};
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
-      const auto fallbackParticipantId = videoLayerIndex < static_cast<int>(videoFrames.size())
-          ? std::optional<std::string_view>(videoFrames[static_cast<size_t>(videoLayerIndex)].participantId) : std::nullopt;
-      const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
-          route.captureDeviceId, route.participantId, fallbackParticipantId,
-          route.exactSource ? &*route.exactSource : nullptr, nullptr});
-      // No producer currently attaches an exact source token to VideoFrame.
-      // Explicit paint also prevents the compositor's empty-plan fallback.
-      if (binding.status == RouteSourceBinding::Status::Missing ||
-          binding.status == RouteSourceBinding::Status::Rejected) {
+      // NAMED FIELDS, NOT POSITIONAL. Both sides of this merge built this input
+      // positionally and DISAGREED on slot 6 - this branch passed a positional
+      // fallback participant, `main` passes the directed speaker - so a positional
+      // resolution would have bound the speaker into a dead field and silently
+      // broken every follow-speaker route. Assigning by name is why adding a
+      // field to RouteSourcePolicyInput can never do that again.
+      RouteSourcePolicyInput policyInput{};
+      policyInput.mode = route.mode;
+      policyInput.mediaAssetId = route.mediaAssetId;
+      policyInput.mediaAssetPath = route.mediaAssetPath;
+      policyInput.captureDeviceId = route.captureDeviceId;
+      policyInput.participantId = route.participantId;
+      policyInput.exactSource = route.exactSource ? &*route.exactSource : nullptr;
+      // No producer attaches an exact source token to a VideoFrame yet.
+      policyInput.frameIdentity = nullptr;
+      policyInput.directedSpeakerParticipantId = directedSpeaker;
+      // positionalFallbackParticipantId is deliberately LEFT UNSET: #480 retired
+      // the positional fallback outright ("a route with no source id renders
+      // BLANK"), and `main` deleted the variable this branch passed here, so the
+      // old call site no longer even compiles. The newer owner ruling wins.
+      const auto binding = resolveRouteSource(policyInput);
+      // An exact-source REFUSAL is opaque black, and it outranks the #480 blank
+      // below. The two answer different questions and both must stand:
+      //   #480  "no source is configured"      -> blank, transparent, opacity 0
+      //   here  "an exact source was DEMANDED   -> opaque black
+      //          and could not be honoured"
+      // Transparent would let whatever else is composited show through, and the
+      // whole point of an exact-source refusal is that the WRONG guest must not
+      // appear in that slot. Pinned by MediaCoreCommand.AllExactMissingSlots-
+      // RemainAnExplicitBlackPlanDespiteParticipantPixels, which probes the
+      // rendered PIXEL, not the plan. Missing/Rejected can only arise when
+      // exactSource is non-null, so this changes nothing for routes on `main`.
+      const bool exactSourceRefused =
+          binding.status == RouteSourceBinding::Status::Missing ||
+          binding.status == RouteSourceBinding::Status::Rejected;
+      if (exactSourceRefused) {
         layer.hasFillColor = true;
         layer.fillColor = "#000000";
       }
@@ -5420,6 +5569,16 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.colorGrade = route.colorGrade;
       layer.hasChromaKey = route.hasChromaKey;
       layer.chromaKey = route.chromaKey;
+      if (!exactSourceRefused &&
+          binding.sourceId.empty() && binding.participantId.empty() && route.mediaAssetId.empty()) {
+        // #480: a route with no source renders BLANK — a fully transparent fill.
+        // An unbound layer would paint the default grey, a bound-but-frameless
+        // one a colour slab, and the old positional fallback a random source,
+        // all on Program. Follow-speaker with nobody directed lands here too.
+        layer.hasFillColor = true;
+        layer.fillColor = "#00000000";
+        layer.opacity = 0.f;
+      }
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }
@@ -5544,8 +5703,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     //
     // Nothing is fabricated: hasFrame is false for a source that never arrived
     // or has departed, so those keep today's behaviour exactly, and the layer
-    // below always carries a non-empty participantId so RouteSourcePolicy's
-    // positional fallback stays unreachable.
+    // below always carries a non-empty participantId so a sourceless route
+    // cannot be invented here (#480 made empty routes render BLANK).
     // Regression tests: TilesRenderPlan.AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat,
     // ABackgroundSourceThatNeverArrivedIsNeverFabricated,
     // ADepartedBackgroundSourceIsReleasedNotHeld.
@@ -5797,6 +5956,10 @@ void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnch
 }
 
 void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTime100ns) {
+  // T1.4: the monitor load-shedding policy needs this tick's total render cost
+  // on EVERY tick, not just when verbose stage diagnostics are on. One clock
+  // read here and a few around the monitor passes below; nothing else.
+  const auto tickStartTp = std::chrono::steady_clock::now();
   if (mediaPresentationTime100ns < 0) {
     mediaPresentationTime100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
@@ -6200,6 +6363,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
        modules_.compositor->wantsFullProgramReadbackForRecording());
 
   if (modules_.mediaFrames) {
+    // ORDER IS LOAD-BEARING: Program's layers first, Preview's appended. Play state is not part of a
+    // media source's key, and OwnedMediaFrameSource::requests() lets the FIRST request for a key win,
+    // so this order is what keeps Program authoritative when a shared key arrives paused on Preview.
     auto mediaLayers = renderPlan.layers;
     if (hasPreviewScene()) {
       const auto previewMediaPlan = buildPreviewCompositorRenderPlan(videoFrames);
@@ -6314,6 +6480,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
   markStage(s_stageProgramUs, 2);
+  const auto monitorStartTp = std::chrono::steady_clock::now();
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
@@ -6338,9 +6505,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // is expected to run at full rate. Kept as a named constant so it can be
   // raised again if a slower machine ever needs it.
   constexpr int kMultiviewTickDivisor = 1;
+  // T1.4 MONITOR LOAD-SHEDDING. Program `render()` and both monitor passes
+  // share this thread and one D3D immediate context, so a monitor pass that
+  // overruns takes its time straight out of Program (measured, unmitigated: a
+  // sustained 25ms Preview stall cost Program ~36% of its frames, 121 -> 77 per
+  // 2s — MonitorRenderFaultInjectionTest).
+  // `kMultiviewTickDivisor` stays the HEALTHY cadence; the policy multiplies
+  // it by 1/2/3 when the tick cannot fit the Program frame budget, and the
+  // SAME divisor applies to the preview pass below. Program always renders.
+  // The two passes run on different phases of the cycle (multiview on 0,
+  // preview on 1) so a shed cycle spreads the monitor cost over its ticks
+  // instead of stacking both passes on one. Structural changes and the first
+  // tick still render immediately (the *StructureEmitted_ gates).
+  const auto monitorDivisor = static_cast<std::uint64_t>(kMultiviewTickDivisor * monitorShed_.divisor());
+  const bool multiviewActive = !multiviewSources_.empty() || multiviewHasProgramPreview;
   const bool multiviewDue = !multiviewStructureEmitted_ ||
-                            (multiviewTickCounter_ % kMultiviewTickDivisor) == 0;
-  if ((!multiviewSources_.empty() || multiviewHasProgramPreview) && multiviewDue) {
+                            (multiviewTickCounter_ % monitorDivisor) == 0;
+  if (multiviewActive && multiviewDue) {
     auto multiviewPlan = buildMultiviewRenderPlan(videoFrames);
     multiviewPlan.skipCpuReadback = true;
     lastProgramFrame_.multiviewSharedTexture = modules_.compositor->renderMultiview(multiviewPlan, videoFrames);
@@ -6364,6 +6545,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastMultiviewTiles_ = lastProgramFrame_.multiviewTiles;
     lastMultiviewWidth_ = lastProgramFrame_.multiviewWidth;
     lastMultiviewHeight_ = lastProgramFrame_.multiviewHeight;
+    // A compositor that exports no multiview handle never sets
+    // multiviewStructureEmitted_, so `multiviewDue` forces this pass EVERY tick:
+    // the shed cannot touch it. Its cost is not sheddable and must not drive the
+    // decision (it would pin the divisor up while shedding nothing).
+    const bool multiviewSheddable = !lastMultiviewTexture_.sharedHandleHex.empty() ||
+                                    lastMultiviewTexture_.iosurfaceId != 0;
+    lastMultiviewPassNs_ = multiviewSheddable
+        ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - monitorStartTp).count()
+        : 0;
   } else if (lastMultiviewTexture_.iosurfaceId != 0 ||
              !lastMultiviewTexture_.sharedHandleHex.empty()) {
     // Throttled tick: the program frame is rebuilt every tick, so without this
@@ -6377,13 +6568,26 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     lastProgramFrame_.multiviewWidth = lastMultiviewWidth_;
     lastProgramFrame_.multiviewHeight = lastMultiviewHeight_;
   }
+  if (!multiviewActive) {
+    lastMultiviewPassNs_ = 0;
+  }
   markStage(s_stageMultiviewUs, 3);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
   // (mirrors the program shared texture). Opt-in â€” only for a genuinely multi-layer
   // preview scene (a single passthrough source stays on the cheap WinUI single-source
   // path). Reuses the same videoFrames, stays on the light videoOnly tick (no CPU
   // readback), and never touches the audio/output lock.
-  if (hasPreviewScene()) {
+  const bool previewActive = hasPreviewScene();
+  const bool previewCached = lastPreviewTexture_.iosurfaceId != 0 ||
+                             !lastPreviewTexture_.sharedHandleHex.empty();
+  // Phase 1 of the shed cycle (see the multiview block). At divisor 1 this is
+  // `% 1 == 0`, i.e. every tick — the pre-T1.4 behaviour exactly. Nothing
+  // cached yet (first composite, or a compositor that exports no handle) also
+  // forces the pass, so a shed can never strand the preview on nothing.
+  const bool previewDue = !previewStructureEmitted_ || !previewCached ||
+                          (multiviewTickCounter_ % monitorDivisor) == (1u % monitorDivisor);
+  if (previewActive && previewDue) {
+    const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
     previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
     previewPlan.skipCpuReadback = true;
@@ -6398,14 +6602,42 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
                    lastProgramFrame_.previewSharedTexture.sharedHandleHex.c_str(),
                    previewPlan.width, previewPlan.height);
     }
-  } else if (lastProgramFrame_.previewSharedTexture.width != 0) {
-    // Preview scene retired / became single-source: clear the handle so the WinUI
-    // falls back to the single-source preview path and the event re-emits on return.
-    lastProgramFrame_.previewSharedTexture = {};
-    lastProgramFrame_.previewWidth = 0;
-    lastProgramFrame_.previewHeight = 0;
-    previewStructureEmitted_ = false;
+    // Cache for the shed ticks below.
+    lastPreviewTexture_ = lastProgramFrame_.previewSharedTexture;
+    lastPreviewWidth_ = lastProgramFrame_.previewWidth;
+    lastPreviewHeight_ = lastProgramFrame_.previewHeight;
+    // Same rule as multiview: with no exported handle `!previewCached` forces
+    // the pass on every tick, so it is not sheddable and its cost must not feed
+    // the decision.
+    const bool previewSheddable = !lastPreviewTexture_.sharedHandleHex.empty() ||
+                                  lastPreviewTexture_.iosurfaceId != 0;
+    lastPreviewPassNs_ = previewSheddable
+        ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - previewStartTp).count()
+        : 0;
+  } else if (previewActive) {
+    // Shed tick: the composite is skipped, its published identity is not —
+    // exactly the multiview rule above. Without this the preview handle reads
+    // EMPTY on every skipped tick, and a consumer sampling the snapshot (or a
+    // fresh shell connecting mid-shed) loses the preview monitor.
+    lastProgramFrame_.previewSharedTexture = lastPreviewTexture_;
+    lastProgramFrame_.previewWidth = lastPreviewWidth_;
+    lastProgramFrame_.previewHeight = lastPreviewHeight_;
+  } else {
+    lastPreviewPassNs_ = 0;
+    lastPreviewTexture_ = {};
+    lastPreviewWidth_ = 0;
+    lastPreviewHeight_ = 0;
+    if (lastProgramFrame_.previewSharedTexture.width != 0) {
+      // Preview scene retired / became single-source: clear the handle so the WinUI
+      // falls back to the single-source preview path and the event re-emits on return.
+      lastProgramFrame_.previewSharedTexture = {};
+      lastProgramFrame_.previewWidth = 0;
+      lastProgramFrame_.previewHeight = 0;
+      previewStructureEmitted_ = false;
+    }
   }
+  const auto monitorEndTp = std::chrono::steady_clock::now();
   markStage(s_stagePreviewUs, 4);
   if (collectStageDiagnostics && ++s_stageTicks >= 120) {
     const auto buffer = modules_.compositor->programBufferDiagnostics();
@@ -6471,6 +6703,32 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       lastFrameEventEmit_ = nowTp;
     }
     markStage(s_stageEmitUs, 5);
+  }
+  // T1.4: feed the monitor load-shedding policy. Display ticks only — they are
+  // the paced 60Hz production timeline the budget describes. A synthetic full
+  // tick (a direct caller with no render worker) carries CPU readback and audio
+  // work that is not render cost, and would only make ordinary unit tests
+  // timing-dependent. A few integer ops under the lock we already hold; the log
+  // line is per STATE CHANGE, never per tick.
+  if (videoOnly) {
+    const auto tickEndTp = std::chrono::steady_clock::now();
+    MonitorShedObservation shedObservation;
+    shedObservation.budgetNs = 1'000'000'000LL / std::max(1, outputFps_);
+    shedObservation.programCostNs =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(tickEndTp - tickStartTp).count() -
+        std::chrono::duration_cast<std::chrono::nanoseconds>(monitorEndTp - monitorStartTp).count();
+    shedObservation.monitorCycleCostNs = lastMultiviewPassNs_ + lastPreviewPassNs_;
+    const auto transition = monitorShed_.observe(shedObservation);
+    if (transition != MonitorShedTransition::None) {
+      ::corevideo::core::nativeLogf(
+          "[monitor-shed] %s divisor=%d level=%d reason=%s programMs=%.2f monitorCycleMs=%.2f "
+          "budgetMs=%.2f entered=%lld shedTicks=%lld\n",
+          MonitorShedPolicy::transitionName(transition), monitorShed_.divisor(), monitorShed_.level(),
+          monitorShed_.lastReason(), shedObservation.programCostNs / 1e6,
+          shedObservation.monitorCycleCostNs / 1e6, shedObservation.budgetNs / 1e6,
+          static_cast<long long>(monitorShed_.enteredCount()),
+          static_cast<long long>(monitorShed_.shedTicks()));
+    }
   }
   if (collectStageDiagnostics) {
     static std::array<int64_t, 6> peakStages{};
@@ -6764,50 +7022,73 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // Routed-bus matrix mix over the real PCM into a LOCAL bus map (published later).
   {
     std::vector<modules::RoutedAudioSource> routedSources;
-    routedSources.reserve(work.audioFrames.size());
-    for (const auto& frame : work.audioFrames) {
-      if (frame.pcm.empty() || frame.channels <= 0) {
-        continue;
-      }
-      modules::RoutedAudioSource source;
-      source.sourceId = frame.participantId;
-      source.pcm = &frame.pcm;
-      source.channels = frame.channels;
-      bool hasStrip = false;
+    routedSources.reserve(work.audioFrames.size() + 1);
+    // T1.6 (core/AudioControlSourcePolicy.h): linear scans, no per-tick sets —
+    // the channel and send lists are a console's worth of rows.
+    const auto findStrip = [&work](std::string_view id) -> const ParticipantAudioChannelInput* {
       for (const auto& channel : work.channels) {
-        if (channel.participantId == frame.participantId) {
-          hasStrip = true;
-          source.muted = channel.muted;
-          source.solo = channel.solo;
-          source.pan = channel.pan;
-          source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
-          // Spec 4.4: the strip's insert chain + noise suppression now PROCESS
-          // (previously stored/exported only). Pointer into work.channels,
-          // which outlives the mix call.
-          source.inserts = &channel.pluginInserts;
-          source.insertSettings = &channel.insertSettings;  // C5b params
-          source.dspState = &channelDspStates_[frame.participantId];  // C7c continuity
-          if (debugDir != nullptr) {
-            ::corevideo::core::nativeVerboseLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
-                         frame.participantId.c_str(), static_cast<void*>(source.dspState),
-                         source.dspState->gateEnvelope, source.dspState->gateGain,
-                         source.dspState->gateHoldRemaining);
-          }
-          source.noiseSuppression = channel.noiseSuppression;
-          source.sampleRate = modules_.mixer->monitorBusSampleRate();
-          // A3: sources whose own chain hosts the plugin already carry its
-          // latency; every OTHER source gets the compensating delay.
-          if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
-            bool hostsPlugin = false;
-            for (const auto& insert : channel.pluginInserts) {
-              if (isHostHandledInsertName(insert)) {
-                hostsPlugin = true;
-                break;
-              }
+        if (channel.participantId == id) {
+          return &channel;
+        }
+      }
+      return nullptr;
+    };
+    const auto hasSendFor = [&work](std::string_view id) {
+      for (const auto& send : work.routingSends) {
+        if (send.sourceId == id) {
+          return true;
+        }
+      }
+      return false;
+    };
+    // Builds one routed source through its strip (exact first, then the alias
+    // strip) and the FADER LAW. `sourceId` names the source on the buses.
+    const auto addRoutedSource = [&](const std::string& sourceId, const std::vector<float>* pcm, int channels) {
+      modules::RoutedAudioSource source;
+      source.sourceId = sourceId;
+      source.pcm = pcm;
+      source.channels = channels;
+      const ParticipantAudioChannelInput* strip = findStrip(sourceId);
+      if (strip == nullptr) {
+        const std::string_view controlId = audioControlSourceIdFor(sourceId);
+        if (controlId != sourceId) {
+          strip = findStrip(controlId);
+        }
+      }
+      const bool hasStrip = strip != nullptr;
+      if (hasStrip) {
+        const auto& channel = *strip;
+        source.muted = channel.muted;
+        source.solo = channel.solo;
+        source.pan = channel.pan;
+        source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
+        // Spec 4.4: the strip's insert chain + noise suppression now PROCESS
+        // (previously stored/exported only). Pointer into work.channels,
+        // which outlives the mix call.
+        source.inserts = &channel.pluginInserts;
+        source.insertSettings = &channel.insertSettings;  // C5b params
+        // C7c continuity, keyed by the routed source id (the "media" pre-sum
+        // owns ONE state; per-asset entries never accumulate).
+        source.dspState = &channelDspStates_[sourceId];
+        if (debugDir != nullptr) {
+          ::corevideo::core::nativeVerboseLogf("[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
+                       sourceId.c_str(), static_cast<void*>(source.dspState),
+                       source.dspState->gateEnvelope, source.dspState->gateGain,
+                       source.dspState->gateHoldRemaining);
+        }
+        source.noiseSuppression = channel.noiseSuppression;
+        source.sampleRate = modules_.mixer->monitorBusSampleRate();
+        // A3: sources whose own chain hosts the plugin already carry its
+        // latency; every OTHER source gets the compensating delay.
+        if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0) {
+          bool hostsPlugin = false;
+          for (const auto& insert : channel.pluginInserts) {
+            if (isHostHandledInsertName(insert)) {
+              hostsPlugin = true;
+              break;
             }
-            source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
           }
-          break;
+          source.alignDelayFrames = hostsPlugin ? 0 : vstActiveLatencySamples;
         }
       }
       // THE FADER LAW (owner rule, 2026-08-09): no audio source reaches ANY bus
@@ -6819,28 +7100,85 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       // callers (validators, scripts) sync no channels and keep unity behavior.
       if (!hasStrip && !work.channels.empty()) {
         static std::map<std::string, std::int64_t> s_lastWarn;
-        auto& warned = s_lastWarn[frame.participantId];
+        auto& warned = s_lastWarn[sourceId];
         const auto warningCount = warned++;
-        if (warningCount == 0) {
-          ::corevideo::core::nativeLogf("[audio] FADER LAW: routed source '%s' has NO channel strip — "
-                       "dropped from the bus mix (add a fader to make it audible)\n",
-                       frame.participantId.c_str());
-        } else if (warningCount % 250 == 0) {  // ~every 5s at 50Hz when detailed diagnostics are enabled
-          ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: routed source '%s' has NO channel strip — "
-                                              "dropped from the bus mix\n",
-                                              frame.participantId.c_str());
+        // "routed" only when a send actually names it: perGuestIso's zoom-mix
+        // is deliberately unrouted, and calling it a dropped routed source
+        // trained readers to ignore this line. Only computed when logging.
+        if (warningCount == 0 || warningCount % 250 == 0) {
+          const char* sourceKind = hasSendFor(sourceId) ? "routed source" : "unrouted source (no sends)";
+          if (warningCount == 0) {
+            ::corevideo::core::nativeLogf("[audio] FADER LAW: %s '%s' has NO channel strip — "
+                         "dropped from the bus mix (add a fader to make it audible)\n",
+                         sourceKind, sourceId.c_str());
+          } else {  // ~every 5s at 50Hz when detailed diagnostics are enabled
+            ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: %s '%s' has NO channel strip — "
+                                                "dropped from the bus mix\n",
+                                                sourceKind, sourceId.c_str());
+          }
         }
-        continue;
+        return;
       }
       // A3: sources with no channel-strip entry still need the compensating
       // delay (they sum into the same buses); give them their persistent DSP
       // state so the delay line survives across ticks.
       if (vstLatencyAlignEnabled && anyChannelVstInsert && vstActiveLatencySamples > 0 &&
           source.dspState == nullptr) {
-        source.dspState = &channelDspStates_[frame.participantId];
+        source.dspState = &channelDspStates_[sourceId];
         source.alignDelayFrames = vstActiveLatencySamples;
       }
-      routedSources.push_back(source);
+      routedSources.push_back(std::move(source));
+    };
+
+    // T1.6: fold every aliased media clip into ONE "media" source (stereo,
+    // mono upmixed, first two channels of anything wider — the same rule
+    // mixRoutedBuses applies). The strip then runs gate/compressor/inserts/VST
+    // once on the combined signal, and the existing "media" sends route it.
+    size_t preSumFrames = 0;
+    bool preSumActive = false;
+    // A clip with its own strip but no send row of its own is still routed by
+    // the "media" row (below). Empty in every shell-shaped show: no allocation.
+    std::vector<const std::string*> stripOnlyMediaClips;
+    for (const auto& frame : work.audioFrames) {
+      if (frame.pcm.empty() || frame.channels <= 0) {
+        continue;
+      }
+      const bool hasOwnStrip = findStrip(frame.participantId) != nullptr;
+      const bool hasOwnSend = hasSendFor(frame.participantId);
+      if (!joinsMediaAudioPreSum(frame.participantId, hasOwnStrip, hasOwnSend)) {
+        if (hasOwnStrip && !hasOwnSend && isMediaClipAudioSourceId(frame.participantId)) {
+          stripOnlyMediaClips.push_back(&frame.participantId);
+        }
+        addRoutedSource(frame.participantId, &frame.pcm, frame.channels);
+        continue;
+      }
+      const size_t frames = frame.pcm.size() / static_cast<size_t>(frame.channels);
+      if (!preSumActive) {
+        preSumActive = true;
+        mediaPreSumPcm_.assign(frames * 2, 0.0f);  // keeps capacity: no steady-state allocation
+        preSumFrames = frames;
+      } else if (frames > preSumFrames) {
+        mediaPreSumPcm_.resize(frames * 2, 0.0f);
+        preSumFrames = frames;
+      }
+      const size_t channels = static_cast<size_t>(frame.channels);
+      for (size_t index = 0; index < frames; ++index) {
+        const float left = frame.pcm[index * channels];
+        const float right = channels == 1 ? left : frame.pcm[index * channels + 1];
+        mediaPreSumPcm_[index * 2] += left;
+        mediaPreSumPcm_[index * 2 + 1] += right;
+      }
+    }
+    if (preSumActive) {
+      // Input meter for the "media" strip: the summed pre-strip level, the same
+      // pre-fader measurement every other strip reads from its own PCM.
+      results.mediaPreSumMetered = true;
+      results.mediaPreSumRmsLevel =
+          modules::dbfsToLinear(modules::computeRmsDbfs(mediaPreSumPcm_.data(), mediaPreSumPcm_.size()));
+      results.mediaPreSumPeakLevel =
+          modules::dbfsToLinear(modules::computeSamplePeakDbfs(mediaPreSumPcm_.data(), mediaPreSumPcm_.size()));
+      static const std::string kMediaPreSumSourceId(kMediaAudioControlSourceId);
+      addRoutedSource(kMediaPreSumSourceId, &mediaPreSumPcm_, 2);
     }
     if (debugDir != nullptr) {
       const std::string path = std::string(debugDir) + "/tap-structure.txt";
@@ -6864,6 +7202,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     crosspoints.reserve(work.routingSends.size());
     for (const auto& send : work.routingSends) {
       crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
+      if (!stripOnlyMediaClips.empty() && send.sourceId == kMediaAudioControlSourceId) {
+        for (const auto* clipId : stripOnlyMediaClips) {
+          crosspoints.push_back({*clipId, send.busId, modules::dbfsToLinear(send.gainDb)});
+        }
+      }
     }
     // One fail-open bridge hook for both channel and bus chains. A recognized
     // host insert always returns true even when unresolved/loading/failed so
@@ -7377,6 +7720,9 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
   audioMasteringRideDb_ = results.masteringRideDb;
   mixedAudioFrameCount_ = results.mixedFrameCount;
   audioCompGainReductionDbBySource_ = std::move(results.compGainReductionDbBySource);
+  mediaPreSumMetered_ = results.mediaPreSumMetered;
+  mediaPreSumRmsLevel_ = results.mediaPreSumRmsLevel;
+  mediaPreSumPeakLevel_ = results.mediaPreSumPeakLevel;
   if (results.monitorTouched) {
     audioMonitorStatus_ = results.monitorStatus;
     audioMonitorWarning_ = results.monitorWarning;

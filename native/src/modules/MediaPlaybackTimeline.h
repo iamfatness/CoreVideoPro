@@ -10,21 +10,37 @@
 namespace corevideo::modules {
 // A playback generation has one clock shared by its audio and video readers.
 // Callers supply a monotonic clock; decoder packet counts never advance time.
+//
+// PAUSE IS A CLOCK STATE, NOT AN IDENTITY (T1.2). Only a new identity (a new
+// go-live generation, path or loop mode) resets the clock and bumps the
+// generation. Playing -> paused freezes elapsed time where it is; paused ->
+// playing resumes from that value by shifting the epoch forward by exactly the
+// paused duration, so video due-times (epoch + pts) and the audio sample
+// position (elapsed) both continue from the frame that was on air — no jump
+// to 0 and no skip of the time spent paused. A new identity that starts
+// paused (a cue poster) sits at 0 until it is played.
 class MediaPlaybackTimeline {
  public:
   bool configure(const std::string& identity, bool playing, int64_t now100ns) {
-    const bool reset = identity != identity_ || playing != playing_;
-    if (reset) { identity_ = identity; playing_ = playing; epoch_ = now100ns; ++generation_; }
-    return reset;
+    if (generation_ == 0 || identity != identity_) {
+      identity_ = identity; paused_ = !playing; epoch_ = now100ns; pausedAt_ = now100ns; ++generation_;
+      return true;
+    }
+    if (playing && paused_) { epoch_ += now100ns - pausedAt_; paused_ = false; }
+    else if (!playing && !paused_) { pausedAt_ = now100ns; paused_ = true; }
+    return false;
   }
-  int64_t elapsed100ns(int64_t now100ns) const { return playing_ ? (std::max)(int64_t{0}, now100ns - epoch_) : 0; }
+  int64_t elapsed100ns(int64_t now100ns) const {
+    return (std::max)(int64_t{0}, (paused_ ? pausedAt_ : now100ns) - epoch_);
+  }
   bool videoDue(int64_t pts100ns, int64_t now100ns) const { return pts100ns <= elapsed100ns(now100ns); }
   int64_t epoch100ns() const { return epoch_; }
   uint64_t generation() const { return generation_; }
+  bool paused() const { return paused_; }
  private:
   std::string identity_;
-  bool playing_ = false;
-  int64_t epoch_ = 0;
+  bool paused_ = true;
+  int64_t epoch_ = 0, pausedAt_ = 0;
   uint64_t generation_ = 0;
 };
 
@@ -54,6 +70,12 @@ class MediaAudioDemandClock {
 
 // Decoded interleaved PCM uses media PTS, not decoder chunk boundaries. This
 // helper emits exact sample windows; absent ranges remain explicitly silent.
+//
+// Consumed chunks are kept for a short HISTORY behind the cursor. Audio is
+// decoded a few windows ahead of the clock; when a clip pauses, those windows
+// are dropped unheard, and on resume the clock seeks back to the paused
+// position. Retaining ~200 ms lets that backward seek replay the real samples
+// instead of turning them into a silent hole (and skipping that media).
 class MediaAudioWindows {
  public:
   struct Chunk { int64_t firstSample; std::vector<float> pcm; };
@@ -61,11 +83,11 @@ class MediaAudioWindows {
   void reset(int rate, int channels) { rate_ = rate; channels_ = channels; cursor_ = 0; chunks_.clear(); }
   void seek(int64_t sample) {
     cursor_ = (std::max)(int64_t{0}, sample);
-    while (!chunks_.empty() && chunks_.front().firstSample + static_cast<int64_t>(chunks_.front().pcm.size() / channels_) <= cursor_) chunks_.pop_front();
+    trimHistory();
   }
   int64_t cursor() const { return cursor_; }
   int64_t bufferedThrough() const {
-    return chunks_.empty() ? cursor_ : chunks_.back().firstSample + static_cast<int64_t>(chunks_.back().pcm.size() / channels_);
+    return chunks_.empty() ? cursor_ : (std::max)(cursor_, chunkEnd(chunks_.back()));
   }
   void append(int64_t pts100ns, std::vector<float> pcm) {
     const auto sample = (pts100ns / 10000000) * rate_ + ((pts100ns % 10000000) * rate_ + (pts100ns >= 0 ? 5000000 : -5000000)) / 10000000;
@@ -82,10 +104,15 @@ class MediaAudioWindows {
           (stop - begin) * channels_, result.begin() + (begin - cursor_) * channels_);
     }
     cursor_ = end;
-    while (!chunks_.empty() && chunks_.front().firstSample + static_cast<int64_t>(chunks_.front().pcm.size() / channels_) <= cursor_) chunks_.pop_front();
+    trimHistory();
     return result;
   }
  private:
+  int64_t chunkEnd(const Chunk& chunk) const { return chunk.firstSample + static_cast<int64_t>(chunk.pcm.size() / channels_); }
+  void trimHistory() {
+    const int64_t keepFrom = cursor_ - static_cast<int64_t>(rate_) / 5; // 200 ms behind the cursor.
+    while (!chunks_.empty() && chunkEnd(chunks_.front()) <= keepFrom) chunks_.pop_front();
+  }
   int rate_, channels_;
   int64_t cursor_ = 0;
   std::deque<Chunk> chunks_;

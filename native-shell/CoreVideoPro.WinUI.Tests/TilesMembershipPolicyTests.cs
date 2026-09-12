@@ -93,6 +93,40 @@ public class TilesMembershipPolicyTests
     }
 
     [Fact]
+    public void LiveCase479_NameKeyedNeverShowFollowsThePersonAndLegacyIdsDoNotSeatAStranger()
+    {
+        var settings = new DynamicGallerySettings
+        {
+            MaxTiles = 4,
+            MembershipMode = "manual",
+            ManualSlots = ["zoom:33556480"],
+            ExcludedSourceIds = ["zoom-name:Jason Bache"],
+            BoundMeetingId = "97682593786"
+        };
+        var roster = new[]
+        {
+            new TilesIdentityPolicy.Person("zoom:16778240", "Someone else"),
+            new TilesIdentityPolicy.Person("zoom:222", "Jason Bache")
+        };
+        var manual = TilesMembershipPolicy.Resolve(
+            settings,
+            ["zoom:16778240", "zoom:222", "zoom:333"],
+            roster: roster,
+            currentMeetingId: "8916561023");
+        Assert.Equal([""], manual); // leftover session id does not seat Someone else
+
+        settings.MembershipMode = "eligible";
+        var eligible = TilesMembershipPolicy.Resolve(
+            settings,
+            ["zoom:16778240", "zoom:222", "zoom:333"],
+            roster: roster,
+            currentMeetingId: "8916561023");
+        Assert.DoesNotContain("zoom:222", eligible);
+        Assert.Contains("zoom:16778240", eligible);
+        Assert.Contains("zoom:333", eligible);
+    }
+
+    [Fact]
     public void CloneDoesNotAliasMembershipIntent()
     {
         var settings = new DynamicGallerySettings { ManualSlots = ["zoom:a"], ExcludedSourceIds = ["zoom:b"] };

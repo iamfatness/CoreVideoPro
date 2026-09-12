@@ -11,25 +11,19 @@ shell implementations; only the former has one execution owner.
 used by `MediaCore::buildCompositorRenderPlan`. Both shipping shells already send
 their scene graphs to this core, so program and preview rendering use this single
 policy on Windows and macOS. It is constructible/testable without the core, a GPU,
-Zoom, a dispatcher or either shell. The extraction preserves existing behavior:
+Zoom, a dispatcher or either shell. Binding rules:
 
 | Input | Binding |
 | --- | --- |
 | Media ID and valid path present | Media source takes precedence |
 | Capture-input mode with device ID | Exact `capture:` identity used by capture frames |
 | Explicit participant ID | Keep that guest identity, even if its current frame is absent |
-| No explicit identity, fallback frame at route position | Existing positional fallback |
-| No explicit identity or fallback | Unbound source |
+| No explicit identity | Unbound — render BLANK, never `videoFrames[routeIndex]` (#480) |
 
 Screen-share routes retain their screen-share frame kind. An incomplete media
 reference falls through to the prior participant/capture behavior. Native tests
-cover these precedence rules, missing guests and a reordered fallback roster.
-
-The positional fallback also exists for legacy `none` mode. It is compatibility
-debt, not the desired future meaning of an intentionally blank source. This
-extraction does not silently change a live show's blank/fallback semantics; a
-versioned route contract must distinguish intentional blank from omitted legacy
-assignment before changing that rule.
+cover these precedence rules, missing guests, follow-speaker direction, and
+the blank sentinel for an unassigned route.
 
 `ZoomActiveSpeakerDirector` remains the native owner of speaker sensitivity,
 minimum hold, frame freshness, exclusions and temporary roster absence grace.

@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 
 namespace CoreVideoPro.WinUI.Models;
 
@@ -38,6 +39,8 @@ public sealed class Participant
 {
     public string Id { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
+    /// <summary>Zoom SDK persistent id when the engine provided one (#479). Empty for non-Zoom.</summary>
+    public string? PersistentId { get; init; }
     public string Title { get; init; } = string.Empty;
     public ParticipantRole Role { get; init; }
     public string BreakoutRoomId { get; init; } = string.Empty;
@@ -102,6 +105,8 @@ public sealed class DynamicGallerySettings
     public string MembershipMode { get; set; } = "eligible";
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
+    /// <summary>Meeting number the Zoom identities were saved in. Legacy session ids are only valid in this meeting.</summary>
+    public string? BoundMeetingId { get; set; }
     public int MaxTiles { get; set; } = 16;
     public string TileAspect { get; set; } = "16:9";
     public double CustomAspectRatio { get; set; } = 16.0 / 9.0;
@@ -127,6 +132,7 @@ public sealed class DynamicGallerySettings
         Overrides = Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
         ManualSlots = [.. ManualSlots],
         ExcludedSourceIds = [.. ExcludedSourceIds],
+        BoundMeetingId = BoundMeetingId,
         MaxTiles = MaxTiles,
         TileAspect = TileAspect,
         CustomAspectRatio = CustomAspectRatio,
@@ -690,7 +696,9 @@ public sealed class AudioParticipantRow : ObservableObject
     private double _lufs;
     private double _truePeakDb;
     private bool _muted;
+    private bool _sourceMuted;
     private bool _effectiveMuted;
+    private bool _meterShowsInputWhileMuted;
     private bool _isSolo;
     private string _gainLabel = string.Empty;
     private string _panLabel = string.Empty;
@@ -703,7 +711,17 @@ public sealed class AudioParticipantRow : ObservableObject
     private bool _isSelected;
 
     public string Id { get => _id; set => SetProperty(ref _id, value); }
-    public string Name { get => _name; set => SetProperty(ref _name, value); }
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            if (SetProperty(ref _name, value))
+            {
+                OnPropertyChanged(nameof(ZoomMutedIndicatorAutomationName));
+            }
+        }
+    }
     public string Subtitle { get => _subtitle; set => SetProperty(ref _subtitle, value); }
     public int OutputLevel { get => _outputLevel; set => SetProperty(ref _outputLevel, value); }
     public int MeterLevel { get => _meterLevel; set => SetProperty(ref _meterLevel, value); }
@@ -712,7 +730,27 @@ public sealed class AudioParticipantRow : ObservableObject
     public double Lufs { get => _lufs; set => SetProperty(ref _lufs, value); }
     public double TruePeakDb { get => _truePeakDb; set => SetProperty(ref _truePeakDb, value); }
     public bool Muted { get => _muted; set => SetProperty(ref _muted, value); }
+    // #481: the Zoom mute, kept distinct from the A1's own Muted so the strip
+    // can show a "muted in Zoom" indicator separate from the console mute.
+    // Review round 1 (advisory): plain bool, no Visibility here - the model stays
+    // XAML-free; AudioPage.xaml converts it with the existing {StaticResource BoolToVis}.
+    public bool SourceMuted
+    {
+        get => _sourceMuted;
+        set
+        {
+            if (SetProperty(ref _sourceMuted, value))
+            {
+                OnPropertyChanged(nameof(ZoomMutedIndicatorAutomationName));
+            }
+        }
+    }
     public bool EffectiveMuted { get => _effectiveMuted; set => SetProperty(ref _effectiveMuted, value); }
+    // #481: true when MeterLevel is showing the pre-mute INPUT level (the strip
+    // is muted). The view dims the meter fill in this state so it stays visibly
+    // distinct from a live, unmuted meter at the same level.
+    public bool MeterShowsInputWhileMuted { get => _meterShowsInputWhileMuted; set => SetProperty(ref _meterShowsInputWhileMuted, value); }
+    public string ZoomMutedIndicatorAutomationName => $"{Name} is muted in Zoom";
     public bool IsSolo { get => _isSolo; set => SetProperty(ref _isSolo, value); }
     public string GainLabel { get => _gainLabel; set => SetProperty(ref _gainLabel, value); }
     public string PanLabel { get => _panLabel; set => SetProperty(ref _panLabel, value); }
@@ -741,6 +779,10 @@ public sealed class ParticipantAudioMix
     public required string Status { get; init; }
     public double Lufs { get; set; } = -60;
     public double TruePeakDb { get; set; } = -60;
+    // #481: PRE-MUTE input meters, so the strip can show the A1 a muted guest
+    // is talking. Lufs/TruePeakDb above stay the honest OUTPUT meters.
+    public double InputLufs { get; set; } = -60;
+    public double InputTruePeakDb { get; set; } = -60;
     // C7b: live compressor gain reduction (dB, 0 = idle) from the core chain.
     public double GainReductionDb { get; set; }
     public List<string> PluginInserts { get; set; } = [];
@@ -1124,9 +1166,14 @@ public static class ProductionStateHelper
 
     public static IReadOnlyList<ParticipantAudioMix> BuildAudioMixChannels(
         IReadOnlyList<Participant> participants,
-        IReadOnlyDictionary<string, ParticipantAudioMix>? existing = null)
+        IReadOnlyDictionary<string, ParticipantAudioMix>? existing = null,
+        IReadOnlySet<string>? zoomSourceParticipantIds = null)
     {
-        return participants.Select(participant =>
+        return participants
+            .Where(participant =>
+                zoomSourceParticipantIds is null ||
+                MixerChannelSetPolicy.DisplayOnMixer(participant.Id, zoomSourceParticipantIds))
+            .Select(participant =>
         {
             if (existing is not null && existing.TryGetValue(participant.Id, out var prior))
             {

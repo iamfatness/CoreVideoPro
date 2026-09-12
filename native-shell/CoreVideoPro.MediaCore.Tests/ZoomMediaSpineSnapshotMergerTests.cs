@@ -19,6 +19,7 @@ public sealed class ZoomMediaSpineSnapshotMergerTests
                 {
                     SdkUserId = "operator-1",
                     DisplayName = "Operator",
+                    PersistentId = "operator-pid",
                     Talking = true,
                     VideoOn = true
                 }
@@ -45,6 +46,7 @@ public sealed class ZoomMediaSpineSnapshotMergerTests
         Assert.Equal("in_meeting", merged.MeetingState);
         Assert.Single(merged.Participants);
         Assert.Equal("operator-1", merged.Participants[0].UserId);
+        Assert.Equal("operator-pid", merged.Participants[0].PersistentId);
         Assert.Equal("operator-1", merged.ActiveSpeakerId);
         Assert.True(merged.SourceSnapshot.SubscribedSourceCount >= 1);
         var subscription = Assert.Single(merged.ZoomSubscriptions);
