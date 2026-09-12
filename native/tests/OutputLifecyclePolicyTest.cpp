@@ -1,4 +1,7 @@
 #include "core/OutputLifecyclePolicy.h"
+#include "modules/Interfaces.h"
+
+#include <optional>
 
 #include <gtest/gtest.h>
 
@@ -216,3 +219,89 @@ TEST(SenderLifecyclePolicy, AnUnconfiguredDestinationIsIdle) {
 }
 
 }  // namespace
+
+// #468 / T2.10. Live 2026-09-10: RTMP pointed at a listener that had died, the
+// egress sat in SYN_SENT, framesSent stuck at 8-10 for 20+ seconds - and the
+// sender reported status "live", destinationHealth "ok" and lastResultCode
+// "encoder-input-accepted" the whole time. The lifecycle DID cycle
+// producing -> interrupted and the supervisor did restart it, so recovery
+// worked; what never showed a problem is the pair an operator actually reads.
+//
+// The published fields are PROJECTIONS now, exactly like publishedRecordingStatus,
+// so the adapter's last launch state can no longer contradict the evidence.
+TEST(OutputLifecyclePolicy, AnUnreachableDestinationCannotPublishAHealthyStream) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.healthy = false;
+  supervisor.restarts = 3;
+
+  // What the adapter said on 2026-09-10, verbatim.
+  EXPECT_NE(corevideo::core::publishedSenderStatus("live", "interrupted", supervisor), "live");
+  EXPECT_NE(corevideo::core::publishedSenderDestinationHealth("ok", "interrupted", supervisor), "ok");
+}
+
+// The opposite error is just as bad. A genuinely streaming sender carries its
+// first-tick lastError forever ("waiting for composed BGRA program pixels"),
+// and CLAUDE.md is explicit that treating that as failure reports every live
+// stream as broken. Health follows the lifecycle and the supervisor, nothing else.
+TEST(OutputLifecyclePolicy, AProducingSenderStaysHealthyWhateverItsStickyError) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.healthy = true;
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("live", "producing", supervisor), "live");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "producing", supervisor), "ok");
+}
+
+// Give-up is LOUD. The supervisor already rewrites the record to failed; the
+// projection must agree rather than depend on that rewrite having happened.
+TEST(OutputLifecyclePolicy, AGivenUpDestinationPublishesFailed) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.gaveUp = true;
+  supervisor.failureClass = "terminal";
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("live", "producing", supervisor), "failed");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "producing", supervisor), "failed");
+}
+
+// A sender with no supervisor (unit tests, the synthetic sender) must keep the
+// adapter's own words: inventing health for a destination nothing is watching
+// would be the same lie in the other direction.
+TEST(OutputLifecyclePolicy, WithoutSupervisionTheAdapterStateIsKept) {
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("live", "producing", std::nullopt), "live");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "", std::nullopt), "ok");
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("stopped", "", std::nullopt), "stopped");
+}
+
+// #468, second failure mode, found by the owner pointing RTMP at
+// fakertmp.iamfatness.us (NXDOMAIN) on 2026-09-12. The original report was a
+// destination in SYN_SENT: FFmpeg connected forever, produced a few frames, and
+// the lifecycle reached producing -> interrupted. A hostname that does not
+// resolve never produces ANYTHING, so evaluateActive's
+// `if (!o.everProgressed) return {"preparing", ...}` holds it at "preparing"
+// for the whole show - a state the first cut of this projection passed straight
+// through to the adapter's word, which is "live".
+//
+// "preparing" alone is NOT a problem: it is what every healthy destination looks
+// like for its first moments. The evidence that separates them is the
+// supervisor having already failed and restarted it.
+TEST(OutputLifecyclePolicy, ADestinationThatNeverConnectedCannotPublishAHealthyStream) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.healthy = false;
+  supervisor.consecutiveFailures = 2;
+  supervisor.restarts = 2;
+  supervisor.lastProgressAgeMs = -1;  // nothing has ever been accepted
+
+  EXPECT_NE(corevideo::core::publishedSenderStatus("live", "preparing", supervisor), "live");
+  EXPECT_NE(corevideo::core::publishedSenderDestinationHealth("ok", "preparing", supervisor), "ok");
+}
+
+// The other half of that rule: a destination still coming up for the first time
+// must not be reported as a problem. Flagging every start as a warning would
+// train an operator to ignore the indicator, which is the same failure as the
+// one this fixes.
+TEST(OutputLifecyclePolicy, AFirstStartIsNotReportedAsAProblem) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.healthy = false;          // nothing accepted yet, which is normal
+  supervisor.consecutiveFailures = 0;  // and nothing has failed
+  supervisor.restarts = 0;
+
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("starting", "preparing", supervisor), "starting");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("starting", "preparing", supervisor), "starting");
+}

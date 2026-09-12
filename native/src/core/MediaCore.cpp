@@ -2395,7 +2395,18 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = readIsoSourceIds(command);
   }
-  const bool recordingOwnsEncoderGeneration = recordingStatus_ == "recording";
+  // #466 / T2.9. "stopping" still OWNS the generation. A recording's Stop
+  // barrier finalizes on the generation it recorded on, and publishes the
+  // terminal lifecycle there. Treating "stopping" as released let a repeated
+  // start-program-output carrying only the remaining stream destination call
+  // encoder->start(), bump the sink generation and reset the snapshot — so the
+  // barrier finalized the file correctly and had nowhere to report it, leaving
+  // recording.status at "stopping" for the rest of the show. Ownership ends
+  // when the barrier publishes a terminal state, not when Stop is requested.
+  // It also stops the stream eating a needless reconnect and keyframe every
+  // time the operator stops Record.
+  const bool recordingOwnsEncoderGeneration =
+      recordingStatus_ == "recording" || recordingStatus_ == "stopping";
   if (!recordingOwnsEncoderGeneration) {
     // Encoder module mutation: guard against the audio/output worker's concurrent
     // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
@@ -4863,15 +4874,20 @@ rpc::Json MediaCore::outputSenderSessionState() const {
         std::find(outputDestinations_.begin(), outputDestinations_.end(), sender.destination) !=
         outputDestinations_.end();
     const auto lifecycle = evaluateSenderLifecycle(sender, desiredActive, senderNowMs);
+    // #468 / T2.10: status and destinationHealth are PROJECTIONS of the
+    // lifecycle and the supervisor, never the adapter's last launch state - a
+    // dead destination never disturbs that state, so it read "live"/"ok" for a
+    // stream nothing was receiving.
+    const std::string lifecycleState = lifecycle.state;
     rpc::Json::Object senderJson{
         {"senderId", sender.senderId},
         {"destination", sender.destination},
-        {"status", sender.status},
+        {"status", core::publishedSenderStatus(sender.status, lifecycleState, sender.supervisor)},
         {"framesSent", static_cast<double>(sender.framesSent)},
         {"retryCount", sender.retryCount},
         {"latencyMs", sender.latencyMs},
         {"bitrateMbps", sender.bitrateMbps},
-        {"destinationHealth", sender.destinationHealth},
+        {"destinationHealth", core::publishedSenderDestinationHealth(sender.destinationHealth, lifecycleState, sender.supervisor)},
         {"lastResultCode", sender.lastResultCode},
         {"bytesSent", static_cast<double>(sender.bytesSent)},
         {"audioFramesSent", static_cast<double>(sender.audioFramesSent)},
