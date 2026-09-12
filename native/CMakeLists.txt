@@ -603,6 +603,7 @@ if(BUILD_TESTING)
     tests/IsolatedOutputSenderTest.cpp
     tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
+    tests/MediaCueHandoffTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp

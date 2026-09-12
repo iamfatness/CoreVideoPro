@@ -18,6 +18,7 @@
 // `MediaCore::buildPreviewCompositorRenderPlan`.
 
 #include "core/MediaCore.h"
+#include "modules/OwnedMediaFrameSource.h"
 #include "modules/Interfaces.h"
 #include "rpc/Json.h"
 
@@ -29,6 +30,8 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -138,6 +141,58 @@ corevideo::rpc::Json sceneWithNoBackground(const char* sceneId, const char* type
       {"type", type}, {"sceneId", sceneId}, {"routes", corevideo::rpc::Json::Array{}}};
 }
 
+
+// T1.11 / #449. A cold-starting DECODER, handed to a real OwnedMediaFrameSource
+// by its factory — so this test exercises the owner's decoder bookkeeping, not a
+// stand-in for it. Every fresh decoder yields nothing on its first poll (still
+// opening) and a flat dark 0x10 frame afterwards, the same 0x10 sentinel and the
+// same reasoning as ColdStartGreyMediaFrameSource above.
+class ColdStartClipDecoder final : public corevideo::modules::IMediaFrameSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
+      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+    if (layers.empty() || layers.front().mediaAssetId.empty()) return {};
+    if (!opened_) { opened_ = true; return {}; }  // first poll: the reader is still opening
+    const auto& layer = layers.front();
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+    frame.width = frame.pixelWidth = frame.naturalWidth = 64;
+    frame.height = frame.pixelHeight = frame.naturalHeight = 36;
+    frame.pixelStride = 64 * 4;
+    frame.timestampMs = timestampMs;
+    frame.frameId = ++frameId_;
+    auto pixels = std::make_shared<std::vector<std::uint8_t>>(
+        static_cast<std::size_t>(64) * static_cast<std::size_t>(36) * 4u, 0x10);
+    for (std::size_t i = 3; i < pixels->size(); i += 4) (*pixels)[i] = 0xff;
+    frame.pixels = std::move(pixels);
+    return {frame};
+  }
+
+ private:
+  bool opened_ = false;
+  std::int64_t frameId_ = 0;
+};
+
+// A scene whose only layer is a clip ROUTE. `playing` and the go-live
+// generation are exactly what the shell sends: a Preview cue is paused at
+// generation n, and the Take that puts it on Program plays it at n+1
+// (MediaGoLiveLedger.RecordTake).
+corevideo::rpc::Json sceneWithClipRoute(const char* sceneId, const char* type, bool playing, int generation) {
+  return corevideo::rpc::Json::Object{
+      {"type", type},
+      {"sceneId", sceneId},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "route-1"},
+          {"mode", "fixed"},
+          {"mediaAssetId", "clip"},
+          {"mediaAssetName", "clip"},
+          {"mediaAssetKind", "video"},
+          {"mediaAssetPath", "C:\media\clip.mp4"},
+          {"mediaPlaybackKey", std::string("media:clip:live:") + std::to_string(generation)},
+          {"mediaAssetPlaying", playing},
+          {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}};
+}
+
 }  // namespace
 
 TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
@@ -175,5 +230,50 @@ TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
     const double luma = meanLuma(core.lastProgramFrameForTest());
     ASSERT_GT(luma, 0.0) << "tick " << tick << " after the take: preview was empty";
     EXPECT_NEAR(luma, kExpectedGreyLuma, kLumaTolerance) << "tick " << tick << " after the take";
+  }
+}
+
+
+// T1.11 / #449: a clip cued in Preview and then TAKEN must never show the
+// cold-start placeholder on Program. Unlike the background case above, a clip
+// legitimately changes identity on go-live (the `preview:` namespace collapses
+// AND the go-live generation advances), so the fix is not a shared id — it is
+// the warm cue decoder being handed over (MediaCueHandoff). Same 0x10 sentinel
+// and the same designed luma margin as the background test.
+TEST(ProgramPixelContinuity, ACuedClipTakenToProgramNeverShowsThePlaceholder) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaFrames = std::make_unique<corevideo::modules::OwnedMediaFrameSource>(
+      [] { return std::unique_ptr<corevideo::modules::IMediaFrameSource>(new ColdStartClipDecoder()); });
+  modules.zoom = std::make_unique<NoZoomCaptureSource>();
+  modules.captureDevice = std::make_unique<NoCaptureDevice>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // Program: scene-a, nothing. Preview: scene-b, the clip CUED (paused, gen 1).
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      sceneWithNoBackground("scene-a", "load-scene-graph"),
+      sceneWithClipRoute("scene-b", "set-preview-scene", /*playing=*/false, /*generation=*/1)});
+  // Let the cue decoder open and settle on its poster. The owner's workers are
+  // asynchronous, so this is a bounded wait on real work, not a fixed sleep.
+  const auto warmed = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < warmed) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  // The Take: Program becomes scene-b, the clip PLAYING at generation 2.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      sceneWithClipRoute("scene-b", "load-scene-graph", /*playing=*/true, /*generation=*/2),
+      sceneWithNoBackground("scene-a", "set-preview-scene")});
+
+  constexpr double kExpectedGreyLuma = 0.114 * 0x10 + 0.587 * 0x10 + 0.299 * 0x10;
+  constexpr double kLumaTolerance = 2.0;
+  for (int tick = 0; tick < 10; ++tick) {
+    core.renderDisplayTick();
+    const double luma = meanLuma(core.lastProgramFrameForTest());
+    ASSERT_GT(luma, 0.0) << "tick " << tick << " after the take: preview was empty";
+    EXPECT_NEAR(luma, kExpectedGreyLuma, kLumaTolerance)
+        << "tick " << tick << " after the take: the clip cold-started on Program";
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 }

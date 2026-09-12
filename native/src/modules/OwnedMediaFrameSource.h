@@ -2,9 +2,11 @@
 
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
+#include "modules/MediaCueHandoff.h"
 #include "modules/MediaPlaybackTimeline.h"
 #include "modules/MediaVideoPresentation.h"
 #include "modules/StillMediaFrameCache.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -40,6 +42,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     std::vector<VideoFrame> result;
     std::lock_guard<std::mutex> lock(mutex_);
     videoRequests_ = requests(layers);
+    adoptCuedDecoders();
     rebuildCollisionWarnings();
     for (const auto& [id, layer] : videoRequests_) {
       const auto found = entries_.find(id); if (found == entries_.end()) continue;
@@ -52,6 +55,14 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
       found->second->wake = true; found->second->changed.notify_all();
       if (selected.hasPixels()) {
         result.push_back(selected); result.back().timestampMs = timestamp100ns / 10000;
+        // THE OWNER NAMES THE SOURCE, NOT THE DECODER. Every decoder stamps
+        // `participantId` from the layer it was handed, so this is normally a
+        // no-op — but an ADOPTED cue's held poster was decoded under the
+        // `preview:` id, and the compositor looks a media layer up by the
+        // live source id (D3D11CompositorAdapter::resolveLayers). Left alone,
+        // the hand-off would deliver a frame nothing could match and Program
+        // would paint the very placeholder the hand-off exists to remove.
+        result.back().participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
       }
     }
     changed_.notify_all(); return result;
@@ -61,6 +72,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     std::vector<AudioFrame> result;
     std::lock_guard<std::mutex> lock(mutex_);
     audioRequests_ = requests(layers, true);
+    adoptCuedDecoders();
     rebuildCollisionWarnings();
     for (auto it = audioNextTime_.begin(); it != audioNextTime_.end();) {
       if (!audioRequests_.count(it->first)) it = audioNextTime_.erase(it); else ++it;
@@ -124,6 +136,10 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     int64_t audioNextTime = 0;
     bool audioEverProduced = false;
     std::vector<std::string> warnings;
+    // Set by the worker the first tick this decoder is actually playing, and
+    // never cleared. A cue that has rolled can no longer be handed to Program
+    // (MediaCueHandoff): it is at an arbitrary position, not at frame 0.
+    std::atomic<bool> everPlayed{false};
     std::atomic<bool> stop{false}, finished{false}, wantsVideo{false}, wantsAudio{false};
     std::thread thread;
   };
@@ -215,7 +231,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
           }
           haveSyncedPlaying = true; syncedPlaying = playing;
         }
-        if (playing) playedOnce = true;
+        if (playing) { playedOnce = true; entry->everPlayed.store(true); }
         // A paused clip that has rolled holds its on-air frame: prefetch
         // nothing (no video, no audio) until it resumes. A clip that has
         // never played (a cue poster) still decodes and holds one frame.
@@ -271,6 +287,87 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
     }
     entry->finished.store(true);
   }
+  static MediaSourceRequest requestOf(const CompositorRenderPlanLayer& layer) {
+    return MediaSourceRequest{
+        layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId,
+        layer.mediaAssetId, layer.mediaAssetPath, layer.mediaPlaybackKey, layer.mediaAssetLoop};
+  }
+  // T1.11 / #449. Re-keys a Preview cue's WARM decoder onto the live request
+  // that has just replaced it, instead of letting it retire while a cold one
+  // opens and the compositor paints colorFromParticipantId over Program. Entry
+  // is a shared_ptr and its worker holds its own reference, so this is a map
+  // re-key: the decoder and its held poster never notice.
+  //
+  // Called under mutex_ from the REQUEST sites (selectVideo /
+  // pollMediaAudioFrames), never from manage(). That is deliberate, and it is
+  // the difference between one flashed frame and none: the request set changes
+  // on the take tick, while manage() is a separate thread on a 2 ms wait, so an
+  // adoption deferred to it lands a tick late — at 60 Hz, exactly one frame of
+  // the placeholder this exists to remove. Adoption starts no thread and does
+  // no I/O, so it is safe on the caller's path in a way creating a worker
+  // would not be.
+  void adoptCuedDecoders() {
+    if (entries_.empty()) return;
+    // Candidates are the entries nothing requests any more. manage() has not
+    // reaped them yet, and that window is exactly what this runs in.
+    std::vector<std::shared_ptr<Entry>> candidates;
+    for (const auto& [id, entry] : entries_) {
+      if (!videoRequests_.count(id) && !audioRequests_.count(id)) candidates.push_back(entry);
+    }
+    if (candidates.empty()) return;
+    Requests desired = videoRequests_;
+    desired.insert(audioRequests_.begin(), audioRequests_.end());
+    std::vector<std::pair<std::string, std::shared_ptr<Entry>>> adopted;
+    for (const auto& [arrivingId, arrivingLayer] : desired) {
+      if (entries_.count(arrivingId)) continue;  // already running: nothing to adopt
+      const auto arriving = requestOf(arrivingLayer);
+      std::size_t matches = 0, matched = 0;
+      for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const auto& candidate = candidates[i];
+        if (!candidate) continue;
+        MediaSourceRequest cue;
+        { std::lock_guard<std::mutex> entryLock(candidate->mutex); cue = requestOf(candidate->layer); }
+        if (!isCueHandoff(cue, arriving, candidate->everPlayed.load())) continue;
+        ++matches; matched = i;
+      }
+      // NEVER GUESS. Two cues that both claim to be this clip's predecessor is
+      // a state we cannot disambiguate, and adopting the wrong one puts the
+      // wrong pictures on air. Cold-start instead, and say so.
+      if (matches != 1) {
+        if (matches > 1) {
+          warnings_.push_back("Media source " + arriving.sourceId +
+                              " has more than one cued decoder to adopt; starting a fresh one.");
+          ::corevideo::core::nativeLogf(
+              "[media-playback] source=%s has %zu cued decoders to adopt; refusing the hand-over.\n",
+              arriving.sourceId.c_str(), matches);
+        }
+        continue;
+      }
+      auto entry = candidates[matched];
+      candidates[matched].reset();  // claimed: it cannot be adopted twice
+      {
+        std::lock_guard<std::mutex> entryLock(entry->mutex);
+        entry->layer = arrivingLayer;
+        // The queued frames were scheduled against the cue's paused epoch and
+        // can never come due on the go-live clock. The held poster stays on
+        // air; the decoder refills from the new identity.
+        entry->video.dropQueued();
+        entry->wake = true;
+        entry->changed.notify_all();
+      }
+      adopted.emplace_back(arrivingId, entry);
+      ::corevideo::core::nativeLogf("[media-playback] cue hand-off source=%s key=%s (warm decoder adopted)\n",
+                                    arriving.sourceId.c_str(), arriving.mediaPlaybackKey.c_str());
+    }
+    // Re-key only after the matching pass: erasing from entries_ while the loop
+    // above still walks it would invalidate what it is reading.
+    for (const auto& [arrivingId, entry] : adopted) {
+      for (auto it = entries_.begin(); it != entries_.end();) {
+        if (it->second == entry) it = entries_.erase(it); else ++it;
+      }
+      entries_.emplace(arrivingId, entry);
+    }
+  }
   void manage() {
     std::vector<std::shared_ptr<Entry>> retired;
     for (;;) {
@@ -285,6 +382,9 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
         }
         auto desired = videoRequests_;
         desired.insert(audioRequests_.begin(), audioRequests_.end());
+        // A cue whose clip has gone live was already re-keyed onto the live
+        // request by adoptCuedDecoders, on the request path, so anything still
+        // unwanted here is genuinely dead.
         for (auto it = entries_.begin(); it != entries_.end();) {
           if (!desired.count(it->first)) {
             it->second->stop.store(true); it->second->changed.notify_all(); retired.push_back(it->second); it = entries_.erase(it);
