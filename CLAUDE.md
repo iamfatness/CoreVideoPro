@@ -2019,6 +2019,114 @@ Tests: `ZoomEngineClient.TheTakeoverChoiceRidesTheJoinCommandAndDefaultsOff`,
 test** — it links the Zoom SDK and the prompt only fires against live Zoom, so
 the callback itself is verified by a live join, not by CI.
 
+## A failing stream must name its own reason (owner report, 2026-09-12)
+
+The owner could not start a stream and was told *"RTMP output failed. Check the
+server URL, stream key, and network."*, so they re-entered credentials that were
+already correct. FFmpeg had written the real reason to its stderr temp file on
+the FIRST attempt:
+
+```
+[out#0/flv] Error opening output rtmp://a.rtmp.youtube.com/live2/<key>: I/O error
+Error opening output files: I/O error
+```
+
+The destination refused the connection. **The stream key in that URL is the same
+key that worked two minutes later** — it decrypts cleanly from
+`production-output-preferences.json` (DPAPI, v12) and was never wrong. Nothing
+read that file, so the one line naming the cause was thrown away, and the failure
+was undiagnosable from the app alone. This is the gap #473/#494 closed for the
+media decoder, and the rule this file already states twice for this very sender:
+**read FFmpeg's own stderr before theorising.**
+
+- **`modules/FfmpegSenderDiagnostics.h`** is the ONE place FFmpeg's stderr becomes
+  an operator sentence (the `ZoomJoinFailureMessage.h` shape: pure, header-only,
+  testable without a process). `RtmpOutputSenderAdapter::ffmpegStderrTail()` reads
+  it on FAILURE paths only — never per frame — and every `ffmpeg-exited` /
+  `ffmpeg-write-failed` message now carries `ffmpeg: <reason>`.
+- **THE SECRET IS STRIPPED AT THE SOURCE, not by the snapshot redactor.**
+  FFmpeg echoes the FULL output URL, stream key included, and `lastError` reaches
+  `/snapshot`, the support bundle and the log. `redactFfmpegDiagnostics` replaces
+  the configured stream key and SRT passphrase by value (so it cannot depend on
+  URL parsing), and the adapter now holds `configuredPassphrase_` for no other
+  purpose. The HOST deliberately survives — it is the diagnostic, not a secret.
+  A secret under 6 characters is NOT used as a pattern: it would match inside
+  ordinary words and shred the message the redaction exists to protect.
+- **The tail is trimmed from the FRONT.** FFmpeg names the fatal reason LAST, so
+  budgeting by cutting the end drops the only line that matters. Caught by
+  `OnlyTheTailIsKeptWhenTheLogIsLong` on the first green run.
+- **An ABSENT tail leaves the generic sentence exactly as it was.** Inventing
+  detail we do not have is the same lie pointing the other way.
+
+**Two message-ladder defects fixed with it** (`TransportStatusFormatter`), both
+from sniffing prose instead of reading the wire result code:
+
+1. **A destination refusal no longer leads with the stream key.** `error opening
+   output` / `i/o error` / `connection refused` now read "The streaming
+   destination refused the connection. Check the destination is live and
+   accepting (a YouTube/Twitch stream has to be started there first), then the
+   stream key and network." Compact readout: `Destination refused`.
+2. **Every FFmpeg exit used to report "Program video is not ready."** The ladder
+   matched the substring `"program frame"`, which also appears in *"FFmpeg
+   process exited before accepting program frames"* — so a dead encoder sent the
+   operator to put a source on Program. The readiness branch now requires
+   `waiting for` as well, because the sender is only reporting readiness when it
+   says it is WAITING; an exit is reporting a death. Found by a test that failed
+   for the wrong reason, which is the only reason it was found at all.
+
+Tests: `native/tests/FfmpegSenderDiagnosticsTest.cpp` (redaction, bounding,
+composition — the redaction case uses the owner's real stderr) and
+`StudioViewModelAudioStatusTests.FormatStreamingFailureStatus_ADestinationRefusalDoesNotLeadWithTheStreamKey`.
+**Not yet seen live** — the next real refusal is what proves the tail arrives.
+
+## THE LAW covers SLOTS, not just people (#506-follow-up, 2026-09-12)
+
+The "sources keep reverting" family has a fourth member, and it is the same rule
+one level up. From the owner's `launch.log`:
+
+```
+13:52:06  lifecycle: unassign slot 4 (was ZoomParticipant pid=16791552)   <- operator
+13:52:06  slot-write: slot4 InShow 'true'->'false'  by=operator-unassign
+14:00:03  slot-write: slot4 Kind 'Unassigned'->'ZoomParticipant' by=roster-sync
+14:00:03  slot-write: slot4 ParticipantId ''->'33561600'          by=roster-sync
+```
+
+`ShowInputRosterService.SyncZoomParticipantSlots` fills **the first free slot**
+with a newcomer — and a slot the operator deliberately emptied is the freest slot
+there is. The existing memory (`_autoAssignSeenParticipantIds`) remembers the
+PERSON the operator removed; nothing remembered the SLOT. So THE LAW held for the
+participant and broke for the slot.
+
+**The cost is not one wrong slot.** Every source-set change re-ranks the whole
+resolution budget, so one phantom refill re-subscribes EVERY video source in the
+meeting — a real engine-side renderer teardown each time. Measured on that
+session: every camera at `churn` 4–12, `totalChurn` 77, every one's reason
+`resolution-change`, which the owner saw as video flashes and guests dropping out
+of the multiview and the Tiles wall. (#478's own fix is holding: 25 s across an
+active-speaker flip moved churn not at all. Only source-set changes do this now.)
+
+**Owner ruling (2026-09-12): a cleared slot is sticky until the MEETING ROSTER
+EMPTIES.** `ShowInputsCoordinator._operatorClearedSlotNumbers` records it on the
+one operator entry point (`UnassignShowInput`), `SyncZoomParticipantSlots` takes
+it as `operatorClearedSlotNumbers` and skips those slots when filling, and it is
+released when the roster goes empty (the meeting ending — the point the slot
+layout stops meaning anything) or when the operator flips the auto-assign toggle,
+which is an explicit "assign everyone now". It reserves against AUTO-assign only:
+the operator may still place anything there, and a roster refresh never undoes
+that.
+
+**Two testing notes, both learned here:**
+
+- **The leaf test proved nothing at first.** With a spare free slot earlier in the
+  list the newcomer never wanted slot 4, so the test passed with and without the
+  fix. It only became a real test once every slot was assigned, making the
+  cleared slot the FIRST free one — the live shape.
+- **The leaf test is not enough even when correct.** Dropping the
+  `_operatorClearedSlotNumbers` argument at the CALL SITE leaves it green. The
+  binding test is `ShowInputsCoordinatorTests.ARosterSyncNeverRefillsASlotTheOperatorUnassigned`,
+  which drives unassign -> roster sync through the coordinator (the #481
+  "test the whole decision, not the leaf" rule) and fails when the argument goes.
+
 ## Zoom capture on/off (engine raw-media stop — 2026-07-19)
 
 Capture-off must stop raw media IN THE ENGINE, not just our spine payloads:

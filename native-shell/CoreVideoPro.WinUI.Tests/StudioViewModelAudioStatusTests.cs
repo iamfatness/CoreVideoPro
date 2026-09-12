@@ -431,10 +431,40 @@ public sealed class StudioViewModelAudioStatusTests
             "start",
             new InvalidOperationException("media-core sync failed: RTMP sender exited. Connection refused ffmpeg exited with code 1"));
 
+        // A refusal by the far end is named as such. It used to lead with
+        // "Check the server URL, stream key, and network." - see
+        // FormatStreamingFailureStatus_ADestinationRefusalDoesNotLeadWithTheStreamKey
+        // for why that ordering cost an operator real time.
         Assert.StartsWith(
-            "Streaming start failed: RTMP output failed. Check the server URL, stream key, and network.",
+            "Streaming start failed: The streaming destination refused the connection.",
             status);
         Assert.Contains("Connection refused", status, StringComparison.Ordinal);
+    }
+
+    // Owner report 2026-09-12: a stream that would not start was reported as
+    // "Check the server URL, stream key, and network.", so a CORRECT stream key
+    // was re-entered for two minutes. FFmpeg's own stderr said the destination
+    // refused the connection ("Error opening output rtmp://... I/O error") with
+    // the very key that worked minutes later. The message must not lead the
+    // operator to their credentials when the evidence says the destination
+    // refused us.
+    [Fact]
+    public void FormatStreamingFailureStatus_ADestinationRefusalDoesNotLeadWithTheStreamKey()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException(
+                "FFmpeg process exited before accepting program frames. Exit code 1. " +
+                "ffmpeg: [out#0/flv] Error opening output rtmp://a.rtmp.youtube.com/live2/<stream-key>: I/O error"));
+
+        Assert.DoesNotContain(
+            "RTMP output failed. Check the server URL, stream key, and network.",
+            status,
+            StringComparison.Ordinal);
+        Assert.Contains("refused the connection", status, StringComparison.Ordinal);
+        // FFmpeg's own words must survive into the operator-visible string - they
+        // are the whole reason the failure is diagnosable at all.
+        Assert.Contains("I/O error", status, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -685,7 +715,7 @@ public sealed class StudioViewModelAudioStatusTests
             "settings",
             new InvalidOperationException("media-core sync failed: output sender failed during sync: RTMP sender exited. Connection refused"));
 
-        Assert.Equal("RTMP output failed", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.Equal("Destination refused", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
         Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
     }
 
@@ -708,7 +738,7 @@ public sealed class StudioViewModelAudioStatusTests
             "start",
             new InvalidOperationException("media-core sync failed: start-program-output failed. RTMP sender exited. Connection refused ffmpeg exited with code 1"));
 
-        Assert.Equal("RTMP output failed", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
+        Assert.Equal("Destination refused", TransportStatusFormatter.FormatOutputStatusBrief(fullStatus));
         Assert.True(TransportStatusFormatter.ShouldShowOutputStatusDetails(fullStatus));
         Assert.Contains("Connection refused", fullStatus, StringComparison.Ordinal);
         Assert.DoesNotContain("media-core sync failed", fullStatus, StringComparison.OrdinalIgnoreCase);

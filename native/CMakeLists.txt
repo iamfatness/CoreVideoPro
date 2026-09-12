@@ -659,6 +659,7 @@ if(BUILD_TESTING)
     tests/IsoEncoderAdmissionTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/SrtFfmpegArgsTest.cpp
+    tests/FfmpegSenderDiagnosticsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/TilesLayoutTest.cpp
