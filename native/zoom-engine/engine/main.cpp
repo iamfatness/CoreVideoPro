@@ -8,6 +8,7 @@
 #include <setting_service_interface.h>
 #include <meeting_service_interface.h>
 #if __has_include(<meeting_service_components/meeting_audio_interface.h>)
+#include <meeting_service_components/meeting_configuration_interface.h>
 #include <meeting_service_components/meeting_audio_interface.h>
 #else
 #include <meeting_audio_interface.h>
@@ -717,6 +718,92 @@ private:
 
 // ── Meeting event handler ─────────────────────────────────────────────────────
 
+// #475. The SDK asks the APP to resolve a handful of join-time prompts, and an
+// unanswered prompt is not an error — the join simply hangs until our own
+// timeout fires 52 s later, which is what the operator reported as "Zoom and
+// Engine are both red". The prompt that actually bit is
+// onEndOtherMeetingToJoinMeetingNotification: joining as the signed-in operator
+// (ZAK) while that same account is already in the meeting — their own Zoom app,
+// live 2026-09-11 — makes the SDK wait for an answer we never gave. Nothing in
+// this engine implemented IMeetingConfigurationEvent at all, so every prompt in
+// it was unanswered. The rest are answered the way ZComms answers them: named
+// loudly, so a stuck join says why instead of dying as an opaque timeout.
+class EngineConfigurationEvent : public ZOOMSDK::IMeetingConfigurationEvent {
+ public:
+    // Set from the join command. The operator's takeover is an EXPLICIT choice
+    // per join (#475 owner ruling): ending their other session kicks their own
+    // Zoom client out of the meeting, so it is never automatic and never sticky.
+    void set_end_other_meeting(bool end_other) { m_end_other_meeting = end_other; }
+
+    void onEndOtherMeetingToJoinMeetingNotification(
+        ZOOMSDK::IEndOtherMeetingToJoinMeetingHandler* handler) override {
+        // The SDK destroys this handler after either answer, so it cannot be
+        // held open while a dialog is put to the operator. Answer NOW on the
+        // callback thread; the choice was made before the join was sent.
+        if (!handler) {
+            EngineIpc::write(R"({"cmd":"debug","stage":"end_other_meeting","code":-1})");
+            return;
+        }
+        if (m_end_other_meeting) {
+            EngineIpc::write(R"({"cmd":"debug","stage":"end_other_meeting","action":"end"})");
+            handler->EndOtherMeeting();
+            return;
+        }
+        // Never end the operator's own meeting out from under them. Cancel and
+        // fail the join with a reason the shell turns into operator language,
+        // within a second instead of a 52 s timeout.
+        handler->Cancel();
+        EngineIpc::write(
+            R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"account-busy-elsewhere"})");
+    }
+
+    // The remaining prompts have no sane automatic answer. Name them loudly
+    // rather than letting the join hang on silence.
+    void onInputMeetingPasswordAndScreenNameNotification(
+        ZOOMSDK::IMeetingPasswordAndScreenNameHandler* handler) override {
+        if (handler) handler->Cancel();
+        EngineIpc::write(
+            R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"passcode-or-name-required"})");
+    }
+    void onWebinarNeedRegisterNotification(ZOOMSDK::IWebinarNeedRegisterHandler*) override {
+        EngineIpc::write(
+            R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"webinar-registration-required"})");
+    }
+    void onWebinarNeedInputScreenName(ZOOMSDK::IWebinarInputScreenNameHandler*) override {
+        EngineIpc::write(
+            R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"webinar-screen-name-required"})");
+    }
+    void onJoinMeetingNeedUserInfo(ZOOMSDK::IMeetingInputUserInfoHandler*) override {
+        EngineIpc::write(
+            R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"user-info-required"})");
+    }
+    void onUserConfirmToStartArchive(ZOOMSDK::IMeetingArchiveConfirmHandler*) override {
+        EngineIpc::write(R"({"cmd":"debug","stage":"archive_confirm"})");
+    }
+    // A deleted or expired meeting the SDK offers to recover. Answering is
+    // mandatory for the same reason as every prompt here: unanswered means the
+    // join hangs. Decline — recovering someone's meeting is not a decision a
+    // switcher should take silently — and say so.
+    void onUserConfirmRecoverMeeting(ZOOMSDK::IMeetingConfirmRecoverHandler* handler) override {
+        if (handler) handler->RecoverMeeting(false);
+        EngineIpc::write(
+            R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"meeting-expired-or-deleted"})");
+    }
+
+    // IMeetingConfigurationFreeMeetingEvent (inherited; nothing to do).
+    void onFreeMeetingRemainTime(unsigned int) override {}
+    void onFreeMeetingNeedToUpgrade(
+        ZOOMSDK::IMeetingConfigurationFreeMeetingEvent::FreeMeetingNeedUpgradeType,
+        const zchar_t*) override {}
+    void onFreeMeetingRemainTimeStopCountDown() override {}
+    void onFreeMeetingUpgradeToGiftFreeTrialStart() override {}
+    void onFreeMeetingUpgradeToGiftFreeTrialStop() override {}
+    void onFreeMeetingUpgradeToProMeeting() override {}
+
+ private:
+    bool m_end_other_meeting = false;
+};
+
 class EngineMeetingEvent : public ZOOMSDK::IMeetingServiceEvent
 #if defined(COREVIDEO_HAS_RECORDING_CTRL)
                          , public ZOOMSDK::IMeetingRecordingCtrlEvent
@@ -1200,6 +1287,9 @@ int main(int argc, char **argv)
     EngineShare        share_engine(&participants);
     EngineMeetingEvent meeting_event(e2p, &meeting_svc, &participants,
                                      &video_engine, &share_engine);
+    // #475. Lives as long as the meeting service it is registered on; the SDK
+    // holds a raw pointer, so it must outlive every Join.
+    EngineConfigurationEvent configuration_event;
 
     // Persistent wide-string storage for async SDK calls (JoinParam / AuthContext
     // hold raw pointers — these must outlive the Join/SDKAuth call).
@@ -1320,6 +1410,12 @@ int main(int argc, char **argv)
             std::string on_behalf_token = json_str(line, "on_behalf_token");
             std::string user_zak = json_str(line, "user_zak");
             std::string app_privilege_token = json_str(line, "app_privilege_token");
+            // #475: an EXPLICIT per-join choice, never a stored preference. It
+            // is re-read on every join, so a takeover can never leak into the
+            // next one and silently evict the operator's own Zoom client.
+            const bool end_other_meeting =
+                line.find("\"end_other_meeting\":true") != std::string::npos;
+            configuration_event.set_end_other_meeting(end_other_meeting);
             if (display_name.empty()) display_name = "CoreVideo Pro";
             EngineIpc::write(R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
                 json_escape(meeting_id) + R"(","has_on_behalf_token":)" +
@@ -1331,7 +1427,17 @@ int main(int argc, char **argv)
 
             if (!meeting_svc) {
                 ZOOMSDK::CreateMeetingService(&meeting_svc);
-                if (meeting_svc) meeting_svc->SetEvent(&meeting_event);
+                if (meeting_svc) {
+                    meeting_svc->SetEvent(&meeting_event);
+                    // #475: without this the SDK's join-time prompts are never
+                    // answered and a prompted join hangs until our timeout.
+                    if (auto* configuration = meeting_svc->GetMeetingConfiguration()) {
+                        configuration->SetEvent(&configuration_event);
+                    } else {
+                        EngineIpc::write(
+                            R"({"cmd":"debug","stage":"meeting_configuration","code":-1})");
+                    }
+                }
             }
             if (meeting_svc && !meeting_id.empty()) {
                 // Store as persistent variables so JoinParam raw pointers

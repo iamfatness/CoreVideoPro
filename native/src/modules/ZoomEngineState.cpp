@@ -1,5 +1,7 @@
 #include "modules/ZoomEngineState.h"
 
+#include "modules/ZoomJoinFailureMessage.h"
+
 #include <algorithm>
 #include <chrono>
 #include <utility>
@@ -61,7 +63,8 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       if (meetingState_ != "in-meeting") {
         meetingState_ = "error";
       }
-      addWarning(!event.message.empty() ? event.message
+      // #475: a join_failed reason is wire vocabulary. Operators read this.
+      addWarning(!event.message.empty() ? zoomJoinFailureMessage(event.message)
                  : !event.stage.empty() ? "Zoom engine failed during " + event.stage + "."
                                         : "Zoom engine reported an error.");
       break;

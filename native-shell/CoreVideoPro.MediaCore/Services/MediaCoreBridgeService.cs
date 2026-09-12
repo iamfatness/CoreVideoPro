@@ -191,7 +191,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         bool webinar,
         string? sdkJwt = null,
         string? userZak = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        // #475: this join only. See MediaCoreSupervisor.JoinZoomAsync.
+        bool endOtherMeeting = false)
     {
         if (!Running)
         {
@@ -204,7 +206,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
                 webinar,
                 sdkJwt,
                 userZak,
-                cancellationToken)
+                cancellationToken,
+                endOtherMeeting)
             .ConfigureAwait(false);
         PublishCaptureSnapshot(capture);
         return capture;
