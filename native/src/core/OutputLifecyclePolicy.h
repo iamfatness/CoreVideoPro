@@ -222,6 +222,16 @@ class SenderLifecyclePolicy {
   // destination is up in name only. Not "failed" - the supervisor is still
   // inside its restart budget and may recover without the operator acting.
   if (lifecycleState == "producing" && !supervisor->healthy) return "warning";
+  // A destination that never connected at all never reaches `producing` or
+  // `interrupted`: evaluateActive holds it at "preparing" while
+  // `everProgressed` is false. Found live 2026-09-12 pointing RTMP at a
+  // hostname that does not resolve — FFmpeg dies at DNS resolution, so nothing
+  // is ever accepted and the first cut of this projection passed the adapter's
+  // "live" straight through. "preparing" ALONE is not evidence of a problem —
+  // it is what every healthy destination looks like for its first moments — so
+  // the supervisor having already failed and restarted it is what separates a
+  // start from a stuck destination.
+  if (!supervisor->healthy && supervisor->consecutiveFailures > 0) return "warning";
   return adapterStatus;
 }
 
@@ -233,6 +243,9 @@ class SenderLifecyclePolicy {
   if (lifecycleState == "failed") return "failed";
   if (lifecycleState == "interrupted") return "warning";
   if (lifecycleState == "producing" && !supervisor->healthy) return "warning";
+  // Same rule as publishedSenderStatus: a destination the supervisor has
+  // already had to restart is not "ok", whatever the adapter's launch said.
+  if (!supervisor->healthy && supervisor->consecutiveFailures > 0) return "warning";
   return adapterHealth;
 }
 

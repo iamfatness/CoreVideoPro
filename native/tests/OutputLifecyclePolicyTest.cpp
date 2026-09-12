@@ -268,3 +268,40 @@ TEST(OutputLifecyclePolicy, WithoutSupervisionTheAdapterStateIsKept) {
   EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "", std::nullopt), "ok");
   EXPECT_EQ(corevideo::core::publishedSenderStatus("stopped", "", std::nullopt), "stopped");
 }
+
+// #468, second failure mode, found by the owner pointing RTMP at
+// fakertmp.iamfatness.us (NXDOMAIN) on 2026-09-12. The original report was a
+// destination in SYN_SENT: FFmpeg connected forever, produced a few frames, and
+// the lifecycle reached producing -> interrupted. A hostname that does not
+// resolve never produces ANYTHING, so evaluateActive's
+// `if (!o.everProgressed) return {"preparing", ...}` holds it at "preparing"
+// for the whole show - a state the first cut of this projection passed straight
+// through to the adapter's word, which is "live".
+//
+// "preparing" alone is NOT a problem: it is what every healthy destination looks
+// like for its first moments. The evidence that separates them is the
+// supervisor having already failed and restarted it.
+TEST(OutputLifecyclePolicy, ADestinationThatNeverConnectedCannotPublishAHealthyStream) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.healthy = false;
+  supervisor.consecutiveFailures = 2;
+  supervisor.restarts = 2;
+  supervisor.lastProgressAgeMs = -1;  // nothing has ever been accepted
+
+  EXPECT_NE(corevideo::core::publishedSenderStatus("live", "preparing", supervisor), "live");
+  EXPECT_NE(corevideo::core::publishedSenderDestinationHealth("ok", "preparing", supervisor), "ok");
+}
+
+// The other half of that rule: a destination still coming up for the first time
+// must not be reported as a problem. Flagging every start as a warning would
+// train an operator to ignore the indicator, which is the same failure as the
+// one this fixes.
+TEST(OutputLifecyclePolicy, AFirstStartIsNotReportedAsAProblem) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.healthy = false;          // nothing accepted yet, which is normal
+  supervisor.consecutiveFailures = 0;  // and nothing has failed
+  supervisor.restarts = 0;
+
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("starting", "preparing", supervisor), "starting");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("starting", "preparing", supervisor), "starting");
+}

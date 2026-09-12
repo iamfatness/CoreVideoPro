@@ -653,7 +653,14 @@ during the finalize window, and a stream that ended without sending media.
   input** — it is sticky history, and a genuinely streaming SRT sender carries
   its first-tick error forever. **An ABSENT supervisor keeps the adapter's own
   words**: inventing health for a destination nothing watches is the same lie
-  pointing the other way.
+  pointing the other way. **And a destination that NEVER connected is its own
+  failure mode**: `evaluateActive` holds it at `preparing` while `everProgressed`
+  is false, so it never reaches `producing` or `interrupted` and the first cut of
+  this projection passed the adapter's `live` straight through. Found by pointing
+  RTMP at a hostname that does not resolve (2026-09-12) — FFmpeg dies at DNS
+  resolution, so nothing is ever accepted. `preparing` ALONE is never the
+  evidence (every healthy destination looks like that for its first moments);
+  the supervisor having already failed and restarted it is.
 
 **Contract:** `starting`/`live` remain in the `OutputLifecycle` enum as the RETIRED names so
 a newer consumer can read an older core; new producers must not emit them. Absent lifecycle
