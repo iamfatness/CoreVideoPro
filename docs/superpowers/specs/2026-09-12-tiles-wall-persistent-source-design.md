@@ -101,27 +101,46 @@ That is the shape of #468, where a field asserted a state nothing had
 established, and of the standing rule "absent lifecycle means UNKNOWN, never
 healthy".
 
-**And this is a published, golden-tested contract**, not an internal struct:
-`test/data/wave1-authority.json` is `authority-goldens-v2` with ~1,700 lines of
-scenarios, and a serialized source reads
-`{sourceId, instanceId, processEpoch, generation, personId, videoAvailable,
-videoFresh, audioAvailable, audioFresh, audioMuted}`. Registering a wall forces
-an answer to "is this wall's audio muted? is its video fresh? who is its person?",
-and whatever is answered lands in the goldens and on the wire, where the shell's
-`NativeSourceAuthority` reads it.
+**And that false claim feeds PLAN GENERATION.** `SourceRegistry::Snapshot` is
+consumed in-process by `ShowPlanGenerator` and `SceneVersionShadow`. A wall
+asserting "subscription observed = false" is therefore an input to how shows are
+planned, not a cosmetic field.
+
+*(Correction, recorded because this spec was first approved on a wrong fact: an
+earlier draft claimed the registry snapshot is a published, golden-tested wire
+contract. It is NOT. `SourceRegistry::Snapshot` never reaches the wire or the
+session state. The `authority-goldens-v2` scenarios in
+`test/data/wave1-authority.json` belong to
+`ZoomSourceAuthorityAdapter::Observation::Source` — the Zoom ROSTER OBSERVATION
+that is synced INTO the registry, carrying `videoFresh` / `audioMuted` /
+`personId`. A wall registered directly in `SourceRegistry` never appears there.
+The in-process consequence above is the real argument, and it is the narrower
+one.)*
 
 **Why `nullopt` rather than splitting the struct.** Splitting `Source` into a
 common core plus a `CaptureDetails` payload is the tidier type, and it was this
-spec's first draft. It was rejected on cost: it touches every existing #419
-consumer and its tests (`NativeSourceAuthorityTests`, `SourceAuthorityAdmissionTests`)
-and reshapes ~1,700 lines of golden scenarios — #419 surgery smuggled in under a
-Tiles-wall fix, which is not the minimal carve this slice is supposed to be.
-`nullopt` buys the honesty (a wall never claims a subscription state) at a
-fraction of the churn, and the split stays available if a later slice needs it.
+spec's first draft. Measured cost of that split: about seven files, all in the
+Zoom authority path (`SourceRegistry`, `ZoomSourceAuthorityAdapter`,
+`ZoomRuntimeAuthorityBridge`, `ZoomEngineRuntime`) plus their tests. That is
+real but modest — **an earlier draft wrongly claimed it also reshaped ~1,700
+lines of goldens; it does not.** The split was still declined for this slice
+because it is #419 surgery inside a Tiles-wall change, and the owner asked for a
+minimal carve. It stays available, and slice 3 (lower-thirds and graphics as
+composed sources) is the natural place to revisit it, with more than one composed
+kind to justify the shape.
 
 Leaving the fields as-is and documenting that composed sources ignore them was
-also rejected: a field that serializes a false claim is exactly how #468
+rejected: a field that asserts a state nothing established is exactly how #468
 happened.
+
+**Two registration rules must gain composed handling, whichever option is
+chosen.** `SourceRegistry::validRegistration` currently requires
+`!r.externalId.empty()`, so `add()` returns `Result::Invalid` for a wall, which
+has no SDK handle. And `externalConflict` matches on
+`kind + processEpoch + externalId`, so two walls with empty external ids would
+collide as duplicates. A composed registration is identified by its `sourceId`
+alone; `externalId` is not required and not compared. A wall's `processEpoch` is
+the CORE's process epoch — walls do not outlive the core.
 
 **Consequences to hold to:** the serializer omits `nullopt` fields rather than
 emitting nulls or defaults, so existing capture goldens are unchanged; and any
@@ -257,12 +276,16 @@ one-animator contract instead: `TilesRenderPlanTest.cpp:519,916-1081`,
 - `SourceRegistry` accepting and releasing a composed wall by scene reference.
 - **`AComposedWallNeverClaimsASubscriptionState`** — a registered wall reports
   `personId`, `externalId`, `availability`, `subscriptionRequested` and
-  `subscriptionObserved` as `nullopt`, and the serializer OMITS them rather than
-  emitting `null` or `false`. This is the test that stops the `nullopt` decision
-  decaying back into a false claim.
-- **The existing capture goldens are byte-identical.** `wave1-authority.json` must
-  not change: making a field optional may not alter what a capture source emits.
-  If the goldens move, the change is wrong.
+  `subscriptionObserved` as `nullopt`. This is the test that stops the `nullopt`
+  decision decaying back into a false claim.
+- **`ShowPlanGeneratorTreatsNulloptAsNotApplicable`** — plan generation must not
+  read an absent subscription as an unsubscribed source. This is the consequence
+  that actually matters: the registry snapshot is a plan-generation input.
+- **`AWallIsAdmittedWithoutAnExternalId`** and **`TwoWallsWithNoExternalIdDoNotCollide`**
+  — pinning the two registration rules above, which reject or merge walls today.
+- **The Zoom authority goldens are byte-identical.** `wave1-authority.json` must
+  not change: making a registry field optional must not alter what the Zoom
+  observation path emits. If those goldens move, the change has leaked.
 - The Take running through `AtomicTakeCoordinator` as one revision transition,
   including the interleaving race it closes.
 
