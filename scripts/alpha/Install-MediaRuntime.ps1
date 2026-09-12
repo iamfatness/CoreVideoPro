@@ -72,6 +72,21 @@ try {
     $provenance = Get-CheckedTarget 'notices/ffmpeg/download-provenance.txt'
     @("Upstream URL: $url", "Archive SHA-256: $expectedHash", 'Library variant: Windows x64 LGPL shared',
         'Installed app-locally; no global PATH changes.') | Set-Content -LiteralPath $provenance -Encoding UTF8
+    # T2.7 / #474. The uninstaller is not allowed to guess, and it must never
+    # recursively delete an app folder that can hold an operator's files. Record
+    # exactly what first run added, as relative paths, so uninstall removes that
+    # set and nothing else. The set varies with the pinned upstream build, so a
+    # hard-coded list in the .nsi would rot; this cannot.
+    $installed = @($selected | ForEach-Object { $_.Relative -replace '/', '\\' })
+    $installed += 'notices\ffmpeg\download-provenance.txt'
+    $manifest = Get-CheckedTarget 'notices/ffmpeg/installed-files.txt'
+    $installed += 'notices\ffmpeg\installed-files.txt'
+    # NO BOM. Windows PowerShell 5.1's -Encoding UTF8 writes one, and NSIS reads
+    # those three bytes as literal characters: the uninstaller then tried to
+    # delete a file whose name began with the BOM, silently removed nothing, and
+    # left ffmpeg.exe behind. Caught by Test-AlphaInstaller 2026-09-12.
+    [IO.File]::WriteAllLines($manifest, [string[]]($installed | Sort-Object -Unique),
+        (New-Object Text.UTF8Encoding $false))
     Write-Host 'Verified FFmpeg media runtime installed beside CoreVideo Pro.'
 } finally {
     if ($zip) { $zip.Dispose() }

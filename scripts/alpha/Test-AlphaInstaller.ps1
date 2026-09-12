@@ -9,8 +9,18 @@ if ($releaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') 
 $registryPath = "HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/CoreVideoPro-$releaseId"
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) "CoreVideo Pro $releaseId.lnk"
 $startFolder = Join-Path ([Environment]::GetFolderPath('Programs')) "CoreVideo Pro $releaseId"
+# T2.7 / #474: the ONE entry point that always opens the newest install.
+$stableDesktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'CoreVideo Pro.lnk'
+$stableStart = Join-Path ([Environment]::GetFolderPath('Programs')) 'CoreVideo Pro.lnk'
 if ((Test-Path $registryPath) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $startFolder)) {
     throw 'This release already has installation metadata; refusing to alter it for testing.'
+}
+# The stable shortcuts are shared across releases, so a real install on this
+# machine would own them. Refuse rather than clobber the operator's own.
+$hadStableDesktop = Test-Path -LiteralPath $stableDesktop
+$hadStableStart = Test-Path -LiteralPath $stableStart
+if ($hadStableDesktop -or $hadStableStart) {
+    throw 'A CoreVideo Pro shortcut already exists; refusing to alter a real installation for testing.'
 }
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $work = Join-Path $repoRoot ('artifacts/installer-validation/' + [Guid]::NewGuid().ToString('N'))
@@ -36,7 +46,12 @@ foreach ($file in $manifest.files) {
     }
 }
 $shell = New-Object -ComObject WScript.Shell
-foreach ($shortcut in @($desktopShortcut, (Join-Path $startFolder 'CoreVideo Pro.lnk'))) {
+# T2.7: the version-named shortcut lives in the Start menu ONLY. A desktop full
+# of version-named shortcuts is how the owner launched a three-day-old build and
+# filed a defect against code that already had the fix.
+if (Test-Path -LiteralPath $desktopShortcut) { throw 'Install created a version-named desktop shortcut.' }
+foreach ($shortcut in @($stableDesktop, $stableStart, (Join-Path $startFolder 'CoreVideo Pro.lnk'))) {
+    if (-not (Test-Path -LiteralPath $shortcut)) { throw "Expected shortcut missing: $shortcut" }
     $link = $shell.CreateShortcut($shortcut)
     if ($link.TargetPath -ne (Join-Path $installRoot 'StartCoreVideo.cmd') -or $link.WorkingDirectory -ne $installRoot) {
         throw 'Shortcut target/working directory mismatch.'
@@ -58,13 +73,45 @@ if ((Invoke-OwnedProcess $installerPath @('/S', "/D=$secondRoot")) -ne 1638) { t
 if (Test-Path -LiteralPath $secondRoot) { throw 'Duplicate installation wrote a second app directory.' }
 $sentinel = Join-Path $installRoot 'keep-user-recording.txt'
 [IO.File]::WriteAllText($sentinel, 'preserve this user file')
+# T2.7 / #474 item 2. Stand in for what first launch downloads: ~195 MB of
+# FFmpeg runtime that lived in NO uninstall list, so RMDir (non-recursive)
+# silently failed and the whole thing stayed behind. Two uninstalled versions on
+# the owner's machine were still holding 10 files and 195 MB each on 2026-09-12.
+# Shaped exactly like Install-MediaRuntime.ps1 writes it, manifest included.
+$runtimeFiles = @('ffmpeg.exe', 'avcodec-62.dll', 'swscale-9.dll', 'notices\ffmpeg\LICENSE.txt')
+New-Item -ItemType Directory -Force (Join-Path $installRoot 'notices\ffmpeg') | Out-Null
+foreach ($relative in $runtimeFiles) { [IO.File]::WriteAllText((Join-Path $installRoot $relative), 'runtime') }
+[IO.File]::WriteAllText((Join-Path $installRoot 'notices\ffmpeg\download-provenance.txt'), 'provenance')
+$runtimeManifest = Join-Path $installRoot 'notices\ffmpeg\installed-files.txt'
+# Written exactly the way Install-MediaRuntime.ps1 writes it: UTF-8 with NO BOM.
+# That is the bug this test caught on 2026-09-12 - Set-Content -Encoding UTF8
+# emits a BOM under Windows PowerShell 5.1, NSIS reads it as three literal
+# characters, and the first path in the manifest then deletes nothing at all.
+$manifestLines = [string[]]($runtimeFiles + @('notices\ffmpeg\download-provenance.txt', 'notices\ffmpeg\installed-files.txt'))
+# A manifest is a file on disk, and a file that decides what an uninstaller
+# deletes is worth hardening. These must be refused, not followed.
+$manifestLines += @('..\escape-attempt.txt', 'C:\Windows\System32\absolute-attempt.txt', '\rooted-attempt.txt')
+[IO.File]::WriteAllLines($runtimeManifest, $manifestLines, (New-Object Text.UTF8Encoding $false))
+$escapeTarget = Join-Path (Split-Path -Parent $installRoot) 'escape-attempt.txt'
+[IO.File]::WriteAllText($escapeTarget, 'must survive')
 if ((Invoke-OwnedProcess $uninstaller @('/S', "_?=$installRoot")) -ne 0) { throw 'Uninstall failed.' }
+foreach ($relative in $runtimeFiles) {
+    if (Test-Path -LiteralPath (Join-Path $installRoot $relative)) {
+        throw "First-run media runtime remained after uninstall: $relative"
+    }
+}
+if (Test-Path -LiteralPath $runtimeManifest) { throw 'Media runtime manifest remained after uninstall.' }
+if (-not (Test-Path -LiteralPath $escapeTarget)) { throw 'Uninstall followed a ".." path out of the install directory.' }
 if ((Test-Path $registryPath) -or (Test-Path -LiteralPath $desktopShortcut) -or (Test-Path -LiteralPath $startFolder)) { throw 'Uninstall metadata or shortcuts remain.' }
+if ((Test-Path -LiteralPath $stableDesktop) -or (Test-Path -LiteralPath $stableStart)) {
+    throw 'Uninstall left the stable shortcut pointing at a removed install.'
+}
 foreach ($file in $manifest.files) {
     if (Test-Path -LiteralPath (Join-Path $installRoot $file.path)) { throw "Delivered file remained after uninstall: $($file.path)" }
 }
 if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { throw 'Uninstall did not preserve the user file.' }
 [ordered]@{ success=$true; releaseId=$releaseId; payloadFilesVerified=$manifest.files.Count
     silentInstall=$true; runtimeProbe=$true; shortcutTargets=$true; duplicateInstallRejected=$true
-    invalidMarkerRejected=$true; silentUninstall=$true; userFilePreserved=$true; evidence=$work
+    invalidMarkerRejected=$true; silentUninstall=$true; userFilePreserved=$true
+    stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$work
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')
