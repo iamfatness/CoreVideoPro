@@ -3,6 +3,7 @@
 #include "compositor/TilesPlanAnimation.h"
 
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>

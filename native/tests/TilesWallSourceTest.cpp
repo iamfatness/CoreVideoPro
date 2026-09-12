@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 namespace {
+using corevideo::core::TilesWallSource;
 using corevideo::core::TilesWallSources;
 
 // One wall id yields ONE source however many buses ask for it. This is the
@@ -54,5 +55,41 @@ TEST(TilesWallSources, ARecreatedWallDoesNotInheritTheOldGeneration) {
   sources.releaseAllExcept({});
   EXPECT_EQ(sources.forWall("tiles:scene-a").generation(), 0U);
   EXPECT_NE(sources.forWall("tiles:scene-a").generation(), retired);
+}
+
+// Review round 1, finding 1: the five tests above never call
+// TilesWallSource::advance(...) - they only prove ++generation_ works, not the
+// glue that decides WHEN to call it:
+//   if (animation_.advance(...)) { noteReset(); }
+// This pins that glue in BOTH directions, driving the real advance() the way
+// MediaCore will (one animation object per wall, sampled across two "bus"
+// calls with different wall keys - the whole point of the slice).
+//
+// A different wall key arriving is TilesPlanAnimation::advance's reset path
+// (`if (key_ != wallKey) { animator_.reset(); ... }`), and the FIRST call on a
+// fresh source is also a "key changed" transition (from the empty initial
+// key), so it too counts as a reset - a cold start is not continuity.
+TEST(TilesWallSource, AdvanceWithADifferentWallKeyMovesTheGenerationByExactlyOne) {
+  TilesWallSource wall;
+  corevideo::modules::CompositorRenderPlan plan;
+  wall.advance(plan, "tiles:scene-a", /*present=*/true, /*enabled=*/true, 350, 0);
+  const auto before = wall.generation();
+
+  corevideo::modules::CompositorRenderPlan otherPlan;
+  wall.advance(otherPlan, "tiles:scene-b", /*present=*/true, /*enabled=*/true, 350, 16);
+
+  EXPECT_EQ(wall.generation(), before + 1);
+}
+
+TEST(TilesWallSource, AdvanceWithTheSameWallKeyDoesNotMoveTheGeneration) {
+  TilesWallSource wall;
+  corevideo::modules::CompositorRenderPlan plan;
+  wall.advance(plan, "tiles:scene-a", /*present=*/true, /*enabled=*/true, 350, 0);
+  const auto before = wall.generation();
+
+  corevideo::modules::CompositorRenderPlan samePlan;
+  wall.advance(samePlan, "tiles:scene-a", /*present=*/true, /*enabled=*/true, 350, 16);
+
+  EXPECT_EQ(wall.generation(), before);
 }
 }  // namespace
