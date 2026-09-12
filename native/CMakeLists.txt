@@ -604,6 +604,7 @@ if(BUILD_TESTING)
     tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
     tests/MediaCueHandoffTest.cpp
+    tests/IsoFrameConformTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp

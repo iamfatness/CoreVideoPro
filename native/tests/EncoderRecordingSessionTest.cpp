@@ -919,6 +919,97 @@ corevideo::modules::IsoSourceVideoFrame makeIsoI420(const std::string& sourceId,
 // ISO-1: N per-source ISO writers open with their OWN NV12 video, finalize
 // independently (no 0-byte tails), and PROGRAM is never regressed (it still muxes
 // A+V with ISO writers present). Exercises the real Media Foundation sink.
+// #482 / T3.8, end to end through a REAL Media Foundation writer. The ISO
+// writer opens lazily at its source's first frame and keeps that size; a guest
+// whose frame size changes later used to have the NEW dimensions handed to that
+// writer, which cropped or padded the picture. #478 made this routine: a guest
+// retiers 720P <-> 1080P every time they are cued onto or off a bus.
+//
+// HONEST SCOPE: this is a GUARD, not a red-green proof, and it was checked --
+// it passes with and without the fix. Media Foundation accepts a mismatched
+// sample silently, so the frame count, the warning and even ffprobe's view of
+// the container (640x360, 9 frames) are identical either way. That is the
+// "verify pixels, not stream presence" trap from CLAUDE.md, met again: every
+// observable this level offers survives the bug.
+//
+// What it does earn: the writer keeps accepting frames across two size changes
+// and raises no warning, so a conform that silently dropped or failed frames
+// would fail here. The PIXEL proof lives in IsoFrameConformTest, which asserts
+// the scaled values and the letterbox black exactly.
+TEST(EncoderRecordingSession, MediaFoundationIsoSurvivesASourceChangingFrameSize) {
+  // About MP4 writers, not capacity: pin an ample machine so the asynchronous,
+  // GPU-dependent probe cannot decide the outcome.
+  const corevideo::testing::ForcedEncoderCapacity ampleCapacity;
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable - nothing to test.
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso-resize";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso-resize-show";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "resize";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 4;
+  request.isoSources = {{"zoom:A", "Alice"}};
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+
+  // Opens at 640x360 (the 1080P-tier stand-in), then the guest retiers down.
+  int frameId = 0;
+  for (int i = 0; i < 3; ++i) {
+    frame.frameNumber = ++frameId;
+    encoder->submit(frame);
+    encoder->submitIsoVideo({makeIsoI420("zoom:A", 640, 360, frameId, 120)});
+  }
+  for (int i = 0; i < 3; ++i) {
+    frame.frameNumber = ++frameId;
+    encoder->submit(frame);
+    encoder->submitIsoVideo({makeIsoI420("zoom:A", 320, 180, frameId, 120)});
+  }
+  // And back up again, because a guest cued back onto a bus retiers up.
+  for (int i = 0; i < 3; ++i) {
+    frame.frameNumber = ++frameId;
+    encoder->submit(frame);
+    encoder->submitIsoVideo({makeIsoI420("zoom:A", 640, 360, frameId, 120)});
+  }
+
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  const auto& iso = session.isoStreams[0];
+  EXPECT_TRUE(iso.trackOpen) << iso.warning;
+  EXPECT_TRUE(iso.warning.empty()) << iso.warning;
+  // EVERY frame is muxed, across both size changes. This is the assertion the
+  // defect fails: frames at the new size never reached the file.
+  EXPECT_EQ(iso.videoFrameCount, 9) << iso.warning;
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+
+  encoder->stopRecording();
+
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path isoPath = fs::path(session.recordingSessionDir) / "ISO-01-Alice.mp4";
+  ASSERT_TRUE(fs::exists(isoPath));
+  EXPECT_GT(fs::file_size(isoPath), 0u);
+}
+
 TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayableFiles) {
   // This test is about MP4 writers, not capacity: pin an ample machine so the
   // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
