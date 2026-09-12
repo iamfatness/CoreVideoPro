@@ -100,7 +100,7 @@ TEST(SourceRegistry, DeviceReplacementAndCameraShareAreSeparateInstances) {
   const auto next = registry.replace(*first.token, device);
   ASSERT_TRUE(next.token.has_value());
   EXPECT_EQ(registry.publish(*first.token, 1, 1, format()), Registry::Result::Stale);
-  EXPECT_EQ(registry.snapshot()->sources[0].externalId, "device-path-b");
+  EXPECT_EQ(*registry.snapshot()->sources[0].externalId, "device-path-b");
   EXPECT_EQ(registry.add(participant("camera")).result, Registry::Result::Applied);
   auto share = participant("share");
   share.kind = Registry::Kind::ParticipantShare;
@@ -167,8 +167,8 @@ TEST(SourceRegistry, ReplacedProcessEpochRetiresAllSourcesAndFencesEveryCallback
   EXPECT_EQ(retired->revision, before + 1);
   ASSERT_EQ(retired->sources.size(), 2u);
   for (const auto& source : retired->sources) {
-    EXPECT_EQ(source.availability, Registry::Availability::Departed);
-    EXPECT_FALSE(source.subscriptionRequested);
+    EXPECT_EQ(*source.availability, Registry::Availability::Departed);
+    EXPECT_FALSE(*source.subscriptionRequested);
     EXPECT_FALSE(source.subscriptionObserved.value_or(false));
   }
   EXPECT_EQ(registry.publish(*camera.token, 1, 1, format()), Registry::Result::Stale);
@@ -232,7 +232,7 @@ TEST(SourceRegistry, ProcessRetirementSerializesAgainstAddAndReplace) {
     retire.join();
     const auto added = addRegistry.snapshot();
     for (const auto& source : added->sources)
-      EXPECT_NE(source.availability, Registry::Availability::Available);
+      EXPECT_NE(*source.availability, Registry::Availability::Available);
 
     Registry replaceRegistry("authority-replace");
     const auto original = replaceRegistry.add(participant("camera"));
@@ -243,7 +243,7 @@ TEST(SourceRegistry, ProcessRetirementSerializesAgainstAddAndReplace) {
     retireReplacement.join();
     const auto replaced = replaceRegistry.snapshot();
     ASSERT_EQ(replaced->sources.size(), 1u);
-    EXPECT_EQ(replaced->sources[0].availability, Registry::Availability::Departed);
+    EXPECT_EQ(*replaced->sources[0].availability, Registry::Availability::Departed);
   }
 }
 
@@ -257,7 +257,7 @@ TEST(SourceRegistry, IdentityAndEpochTombstoneAdmissionIsBounded) {
   EXPECT_EQ(registry.add(second).result, Registry::Result::Exhausted);
   EXPECT_EQ(registry.retireProcessEpoch("meeting-1"), Registry::Result::Applied);
   EXPECT_EQ(registry.retireProcessEpoch("meeting-2"), Registry::Result::Exhausted);
-  EXPECT_EQ(registry.snapshot()->sources[0].availability, Registry::Availability::Departed);
+  EXPECT_EQ(*registry.snapshot()->sources[0].availability, Registry::Availability::Departed);
 }
 
 TEST(SourceRegistry, CameraReturnClearsReadinessButPreservesPublicationWatermarks) {

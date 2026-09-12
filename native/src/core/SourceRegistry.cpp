@@ -47,20 +47,32 @@ SourceRegistry::Result SourceRegistry::upsertPerson(Person person) {
 }
 
 bool SourceRegistry::validRegistration(const Registration& r) const {
-  const bool knownKind = r.kind == Kind::ParticipantVideo || r.kind == Kind::ParticipantShare ||
+  const bool composed = r.kind == Kind::Composed;
+  const bool knownKind = composed || r.kind == Kind::ParticipantVideo || r.kind == Kind::ParticipantShare ||
       r.kind == Kind::Device || r.kind == Kind::Media || r.kind == Kind::Browser;
-  return knownKind && (!r.requestedGeneration || (*r.requestedGeneration > 0 && *r.requestedGeneration <= kMaxRevision)) &&
+  // A composed source is identified by its sourceId alone: it has no SDK handle,
+  // so requiring an externalId would reject every wall outright.
+  const bool externalIdOk = composed
+      ? r.externalId.empty()
+      : (!r.externalId.empty() && r.externalId.size() <= 512);
+  return knownKind && externalIdOk &&
+      (!r.requestedGeneration || (*r.requestedGeneration > 0 && *r.requestedGeneration <= kMaxRevision)) &&
       (!r.instanceId || (!r.instanceId->value.empty() && r.instanceId->value.size() <= 512)) &&
       !r.sourceId.value.empty() && r.sourceId.value.size() <= 512 &&
       !r.processEpoch.empty() && r.processEpoch.size() <= 512 &&
-      !retiredProcessEpochs_.contains(r.processEpoch) && !r.externalId.empty() &&
-      r.externalId.size() <= 512 && r.displayName.size() <= 4096 &&
+      !retiredProcessEpochs_.contains(r.processEpoch) &&
+      r.displayName.size() <= 4096 &&
       ((!r.personId && r.personGeneration == 0) ||
        (r.personId && persons_.contains(r.personId->value) && r.personGeneration > 0 &&
         persons_.at(r.personId->value).generation == r.personGeneration));
 }
 
 bool SourceRegistry::externalConflict(const Registration& r) const {
+  // A composed source has no externalId to collide on; two walls are distinct
+  // whenever their sourceIds differ.
+  if (r.kind == Kind::Composed) {
+    return false;
+  }
   for (const auto& entry : sources_) {
     const auto& source = entry.second;
     if (entry.first != r.sourceId.value && source.availability != Availability::Departed &&
@@ -84,7 +96,21 @@ SourceRegistry::Mutation SourceRegistry::install(Registration r, uint64_t genera
   source.personId = std::move(r.personId);
   source.personGeneration = r.personGeneration;
   source.displayName = std::move(r.displayName);
-  source.externalId = std::move(r.externalId);
+  if (r.kind == Kind::Composed) {
+    // A composed source has no SDK handle, no availability concept (it lives
+    // and dies with the core process), and is never subscribed. Leaving these
+    // nullopt is the whole point: a stray `false` here would let a consumer
+    // read "not subscribed" as an observed fact about a wall.
+    source.externalId.reset();
+    source.availability.reset();
+    source.subscriptionRequested.reset();
+    source.subscriptionObserved.reset();
+  } else {
+    source.externalId = std::move(r.externalId);
+    source.availability = Availability::Available;
+    source.subscriptionRequested = false;
+    source.subscriptionObserved = false;
+  }
   const auto token = source.token;
   sources_[r.sourceId.value] = std::move(source);
   ++revision_;

@@ -19,7 +19,11 @@ struct SourceInstanceId { std::string value; };
 
 class SourceRegistry final {
  public:
-  enum class Kind { ParticipantVideo, ParticipantShare, Device, Media, Browser };
+  // Composed: a source the CORE renders rather than captures (the Tiles wall
+  // today; lower-thirds and graphics in slice 3). It has no SDK handle, no
+  // person, and is never subscribed - so the capture-only fields below stay
+  // nullopt for it, and "nullopt" means NOT APPLICABLE, never false.
+  enum class Kind { ParticipantVideo, ParticipantShare, Device, Media, Browser, Composed };
   enum class Availability { Available, Unavailable, Departed };
   enum class Result { Applied, Unchanged, Invalid, NotFound, Conflict, Stale, Exhausted };
   struct Format {
@@ -55,10 +59,12 @@ class SourceRegistry final {
     Kind kind = Kind::ParticipantVideo;
     std::optional<PersonId> personId;
     uint64_t personGeneration = 0;
-    std::string displayName, externalId;
-    Availability availability = Availability::Available;
-    bool subscriptionRequested = false;
-    std::optional<bool> subscriptionObserved{false}; // nullopt means unacknowledged/unknown.
+    std::string displayName;
+    // nullopt = NOT APPLICABLE to this kind (e.g. a Composed wall). Never read as false.
+    std::optional<std::string> externalId;
+    std::optional<Availability> availability;
+    std::optional<bool> subscriptionRequested;
+    std::optional<bool> subscriptionObserved; // nullopt means unacknowledged/unknown/not applicable.
     std::optional<Format> format;
     bool hasPublication = false;
     bool hasPublicationWatermark = false; // Survives unavailable/departed until token replacement.

@@ -621,6 +621,7 @@ if(BUILD_TESTING)
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
     tests/SourceRegistryTest.cpp
+    tests/SourceRegistryComposedTest.cpp
     tests/EmptyRouteBlankTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
     tests/MonitorShedPolicyTest.cpp
