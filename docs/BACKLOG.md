@@ -54,7 +54,7 @@ The owner's top priority is core functionality: Zoom sources and audio.
 
 | Order | ID | Item | Clause | Size |
 |---|---|---|---|---|
-| 1 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. Step 1: hold the outgoing picture until the first real frame; step 2: hand over the warmed decoder | 1/3 | S then M |
+| 1 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. **Step 2 (hand over the warmed cue decoder) shipped in #492**, so a clip CUED in Preview no longer flashes. Step 1 remains: a clip taken without ever being cued still cold-starts — hold the outgoing picture until its first real frame | 1/3 | S |
 | 2 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s; forward the waiting states, always log meeting status, leave on give-up | 1/2 | S |
 | 3 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does) | 1/2 | S-M |
 
@@ -79,9 +79,16 @@ The owner's top priority is core functionality: Zoom sources and audio.
 | [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles slots / "never show" keyed on Zoom's per-session user id | #490 (tests; live check with the batch beta) |
 
 T1.1-T1.10, #478 and #481 shipped in beta-2026-09-11-404602b (installed on the owner's
-machine 2026-09-11). **T1.14-T1.17 (#487, #488, #489, #490) are on `main` but in no beta
-yet** — the "live check with the batch beta" each one names is still owed, and the beta it
-refers to has not been built. Build it before ranking any of them verified.
+machine 2026-09-11).
+
+**T1.14-T1.17 and T1.11 step 2 shipped in beta-2026-09-12-aac2d98** (cut 2026-09-12, the
+batch beta those Done rows name). Their live checks are now POSSIBLE but still OWED — none
+of the five has been seen in a real meeting, and none may be ranked verified until it has.
+The release notes carry the five things to check. Build provenance: a fresh detached
+worktree at `aac2d981`, `COREVIDEO_WITH_D3D11:BOOL=ON` (a real GPU core, not the software
+Stub), 903 native tests green, both stale-PRI gates passed (2,360,144-byte `.pri`,
+`--verify-runtime` exit 0), `Test-AlphaPackage` and `Test-AlphaInstaller` green, both asset
+checksums verified. Unsigned, so SmartScreen warns — that is T0.1.
 
 ## Tier 2 — first external install
 
