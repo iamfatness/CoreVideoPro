@@ -625,6 +625,36 @@ the recording lifecycle and every sender lifecycle (redaction-safe: `Error` ride
 endpoint filter), and triage names a failed/interrupted destination, a bundle exported
 during the finalize window, and a stream that ended without sending media.
 
+**Two places the contract was still being broken, both fixed 2026-09-12:**
+
+- **A recording owns the encoder generation until its Stop barrier publishes
+  (#466).** `startProgramOutput` treated `recordingStatus_ == "stopping"` as
+  released, so the repeated desired-state `start-program-output` carrying only
+  the remaining stream destination called `encoder->start()`, bumped the sink
+  generation, and `AsyncEncoderSink` reset the snapshot with no recording
+  lifecycle. The old generation's Stop barrier then finalized the file and had
+  nowhere to publish `completed`: stop Record with a stream up and
+  `recording.status` sat at `"stopping"` for the rest of the show. The file was
+  never at risk (the barrier is FIFO ahead of the new Start) — the truthful
+  lifecycle was. Ownership is now `"recording" || "stopping"`, which also stops
+  the live stream eating a reconnect and a keyframe on every Record stop.
+  **The test asserts the RESTART, not the status:** the stub encoder publishes
+  no lifecycle, so the visible symptom only appears with the real sink, and a
+  status assertion passes with or without the fix (it did — that version was
+  thrown away). Counting `encoder->start()` pins the cause where the fix lives.
+- **A sender's `status`/`destinationHealth` are PROJECTIONS (#468).** They came
+  straight from the adapter's last LAUNCH state, which a dead destination never
+  disturbs: live 2026-09-10 an RTMP sender pointed at nothing reported
+  `status: live` / `destinationHealth: ok` for 20+ s with `framesSent` stuck at
+  8-10. The lifecycle knew (`producing` -> `interrupted`) and the supervisor knew
+  (unhealthy, restarting); only the operator-facing pair did not.
+  `core::publishedSenderStatus` / `publishedSenderDestinationHealth` project them
+  from the lifecycle and the supervisor. **`lastError` is deliberately not an
+  input** — it is sticky history, and a genuinely streaming SRT sender carries
+  its first-tick error forever. **An ABSENT supervisor keeps the adapter's own
+  words**: inventing health for a destination nothing watches is the same lie
+  pointing the other way.
+
 **Contract:** `starting`/`live` remain in the `OutputLifecycle` enum as the RETIRED names so
 a newer consumer can read an older core; new producers must not emit them. Absent lifecycle
 means UNKNOWN, never healthy. Vocabulary and rules: `contracts/README.md`.

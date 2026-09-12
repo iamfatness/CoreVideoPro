@@ -1,5 +1,9 @@
 #pragma once
 
+#include <optional>
+
+#include "modules/Interfaces.h"
+
 // Truthful destination lifecycle decisions, as a PURE state machine.
 //
 // The vocabulary is the one the execution plan names:
@@ -188,6 +192,48 @@ class SenderLifecyclePolicy {
   if (state == "failed") return "failed";
   if (state == "interrupted") return "interrupted";
   return "idle";
+}
+
+// #468 / T2.10. The operator-facing pair for a SENDER, projected the same way
+// the recording pair is. Live 2026-09-10 an RTMP destination that nothing was
+// listening to reported status "live" / destinationHealth "ok" for 20+ seconds
+// while framesSent sat at 8-10: those two fields came straight from the
+// adapter's last LAUNCH state, which a dead destination never disturbs. The
+// lifecycle already knew (producing -> interrupted) and the supervisor already
+// knew (unhealthy, restarting); only the fields an operator reads did not.
+//
+// `lastError` is deliberately NOT an input. It is sticky history: a genuinely
+// streaming SRT sender still carries its first-tick "waiting for composed BGRA
+// program pixels", and treating that as failure reports every live stream as
+// broken. Evidence is the lifecycle and the supervisor, nothing else.
+//
+// An ABSENT supervisor keeps the adapter's own words. A sender nothing is
+// watching (unit tests, the synthetic sender) must not have health invented
+// for it - that is the same lie pointing the other way.
+[[nodiscard]] inline std::string publishedSenderStatus(
+    const std::string& adapterStatus, const std::string& lifecycleState,
+    const std::optional<modules::OutputSupervisorState>& supervisor) {
+  if (!supervisor) return adapterStatus;
+  if (supervisor->gaveUp) return "failed";
+  if (lifecycleState == "failed") return "failed";
+  if (lifecycleState == "completed") return "stopped";
+  if (lifecycleState == "interrupted") return "warning";
+  // Producing but the supervisor has not seen accepted units advance: the
+  // destination is up in name only. Not "failed" - the supervisor is still
+  // inside its restart budget and may recover without the operator acting.
+  if (lifecycleState == "producing" && !supervisor->healthy) return "warning";
+  return adapterStatus;
+}
+
+[[nodiscard]] inline std::string publishedSenderDestinationHealth(
+    const std::string& adapterHealth, const std::string& lifecycleState,
+    const std::optional<modules::OutputSupervisorState>& supervisor) {
+  if (!supervisor) return adapterHealth;
+  if (supervisor->gaveUp) return "failed";
+  if (lifecycleState == "failed") return "failed";
+  if (lifecycleState == "interrupted") return "warning";
+  if (lifecycleState == "producing" && !supervisor->healthy) return "warning";
+  return adapterHealth;
 }
 
 [[nodiscard]] inline std::string publishedRecordingWriterStatus(const std::string& state) {

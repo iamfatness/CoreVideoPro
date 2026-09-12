@@ -1759,3 +1759,97 @@ TEST(RecordingStartBoundary, RestartAndStopBeforeFirstFrameNeverReusePriorEpoch)
   EXPECT_FALSE(start.select(599));
   EXPECT_EQ(*start.epoch(), 600);
 }
+
+// #466 / T2.9. Stop Record while a STREAM stays up. The stop sync carries
+// stop-recording-session followed by start-program-output{destinations:[rtmp]}
+// with no "recording" - a repeated desired-state assertion the shell sends on
+// every sync. MediaCore treated recordingStatus_ "stopping" as "the recording
+// no longer owns the encoder generation", so it called encoder->start(). That
+// bumps the sink generation and AsyncEncoderSink resets the snapshot with no
+// recording lifecycle, so the old generation's Stop barrier finalized the file
+// and had nowhere to publish `completed`: recording.status sat at "stopping"
+// for the rest of the show.
+//
+// The file was always fine - the barrier is FIFO ahead of the new Start. What
+// broke is the truthful-lifecycle contract (CLAUDE.md, "Destination lifecycle
+// is TRUTHFUL"): neither the operator nor a support bundle could say whether
+// the recording finalized.
+//
+// The restart itself is the defect, so the restart is what this asserts. A
+// status assertion cannot see it: the stub encoder publishes no lifecycle, so
+// the visible symptom only appears with the real AsyncEncoderSink. Counting
+// start() pins the cause at the level the fix lives on, and has the second
+// benefit the fix buys - the live stream no longer eats a reconnect and a
+// keyframe every time the operator stops Record.
+namespace {
+class StartCountingEncoder final : public corevideo::modules::IEncoderSink {
+ public:
+  StartCountingEncoder(std::unique_ptr<corevideo::modules::IEncoderSink> inner, int* starts)
+      : inner_(std::move(inner)), starts_(starts) {}
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    inner_->configureRecording(request);
+  }
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>& isoParticipantIds) override {
+    ++*starts_;
+    return inner_->start(destinations, isoParticipantIds);
+  }
+  void submit(const corevideo::modules::ProgramFrame& frame) override { inner_->submit(frame); }
+  corevideo::modules::OutputSession session() const override { return inner_->session(); }
+
+ private:
+  std::unique_ptr<corevideo::modules::IEncoderSink> inner_;
+  int* starts_;
+};
+}  // namespace
+
+TEST(EncoderRecordingSession, StoppingRecordWhileAStreamStaysUpDoesNotRestartTheEncoder) {
+  int starts = 0;
+  auto modules = corevideo::modules::createStubModules();
+  modules.encoder = std::make_unique<StartCountingEncoder>(std::move(modules.encoder), &starts);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-recording-targets"},
+          {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+          {"filenamePrefix", "stop-with-stream"},
+          {"format", "mp4"},
+          {"quality", "medium"},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"recording", "rtmp://127.0.0.1/live/key"}},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-recording-session"},
+          {"sessionId", "session-stop-with-stream"},
+          {"startedAtMs", 100},
+      },
+  });
+  const int startsBeforeStop = starts;
+
+  // The operator stops Record only. The stream is still desired, so the very
+  // same sync re-asserts the remaining destination - and every later sync
+  // re-asserts it again while the writer is still finalizing.
+  mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "stop-recording-session"},
+          {"reason", "Operator stopped recording."},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp://127.0.0.1/live/key"}},
+      },
+  });
+  mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp://127.0.0.1/live/key"}},
+      },
+  });
+
+  EXPECT_EQ(starts, startsBeforeStop)
+      << "the stream's desired-state re-assertion restarted the encoder while the "
+         "recording was still finalizing, which is what erases its lifecycle";
+}
