@@ -187,7 +187,7 @@ corevideo::rpc::Json sceneWithClipRoute(const char* sceneId, const char* type, b
           {"mediaAssetId", "clip"},
           {"mediaAssetName", "clip"},
           {"mediaAssetKind", "video"},
-          {"mediaAssetPath", "C:\media\clip.mp4"},
+          {"mediaAssetPath", "C:\\media\\clip.mp4"},
           {"mediaPlaybackKey", std::string("media:clip:live:") + std::to_string(generation)},
           {"mediaAssetPlaying", playing},
           {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}};

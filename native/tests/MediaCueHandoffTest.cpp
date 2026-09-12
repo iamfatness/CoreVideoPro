@@ -15,11 +15,11 @@ using corevideo::modules::MediaSourceRequest;
 using corevideo::modules::isCueHandoff;
 
 MediaSourceRequest cue() {
-  return MediaSourceRequest{"preview:media:clip-1", "clip-1", "C:\media\clip.mp4", "media:clip-1:live:1", false};
+  return MediaSourceRequest{"preview:media:clip-1", "clip-1", "C:\\media\\clip.mp4", "media:clip-1:live:1", false};
 }
 
 MediaSourceRequest live() {
-  return MediaSourceRequest{"media:clip-1", "clip-1", "C:\media\clip.mp4", "media:clip-1:live:2", false};
+  return MediaSourceRequest{"media:clip-1", "clip-1", "C:\\media\\clip.mp4", "media:clip-1:live:2", false};
 }
 
 }  // namespace
@@ -53,7 +53,7 @@ TEST(MediaCueHandoff, RefusesADifferentAssetOrADifferentFile) {
   // Same asset id, different file on disk: the bin row was repointed. The warm
   // decoder holds the OLD file's pictures and must not be handed over.
   auto otherFile = live();
-  otherFile.mediaAssetPath = "C:\media\other.mp4";
+  otherFile.mediaAssetPath = "C:\\media\\other.mp4";
   EXPECT_FALSE(isCueHandoff(cue(), otherFile, false));
 }
 
