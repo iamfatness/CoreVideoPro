@@ -82,11 +82,51 @@ registers on first scene reference and is released when no scene references it,
 per the parent spec's Lifetime rule ("A source referenced by no scene is released
 after a short grace period").
 
-The registry's existing fields are capture-oriented — `externalId`,
-`subscriptionRequested`, `subscriptionObserved`, `availability` — and are
-meaningless for a composed source. The composed kind carries only `Token`,
-`displayName`, `format` and publication state. Five inert fields on a type is how
-a registry starts lying about what it knows; the type says what applies.
+**The non-applying fields become `std::optional` and are left `nullopt` for a
+composed source. They are NOT deleted, and the struct is NOT split.**
+
+`SourceRegistry::Source` is one struct with a `kind` discriminator, so every
+source carries every field. About five are meaningless for a wall: it has no
+`personId`, no `externalId` (there is no SDK handle), it cannot be `Departed`
+(a wall is *released when unreferenced* — a different lifecycle), and it is never
+subscribed, so neither `subscriptionRequested` nor `subscriptionObserved` applies.
+
+This is not cosmetic, for two reasons.
+
+**The defaults are assertions, not blanks.** `std::optional<bool>
+subscriptionObserved{false}` is initialised ENGAGED, and the comment beside it
+says `nullopt` is what means "unacknowledged/unknown". A registered wall would
+therefore assert *"subscription observed = false"* rather than "not applicable".
+That is the shape of #468, where a field asserted a state nothing had
+established, and of the standing rule "absent lifecycle means UNKNOWN, never
+healthy".
+
+**And this is a published, golden-tested contract**, not an internal struct:
+`test/data/wave1-authority.json` is `authority-goldens-v2` with ~1,700 lines of
+scenarios, and a serialized source reads
+`{sourceId, instanceId, processEpoch, generation, personId, videoAvailable,
+videoFresh, audioAvailable, audioFresh, audioMuted}`. Registering a wall forces
+an answer to "is this wall's audio muted? is its video fresh? who is its person?",
+and whatever is answered lands in the goldens and on the wire, where the shell's
+`NativeSourceAuthority` reads it.
+
+**Why `nullopt` rather than splitting the struct.** Splitting `Source` into a
+common core plus a `CaptureDetails` payload is the tidier type, and it was this
+spec's first draft. It was rejected on cost: it touches every existing #419
+consumer and its tests (`NativeSourceAuthorityTests`, `SourceAuthorityAdmissionTests`)
+and reshapes ~1,700 lines of golden scenarios — #419 surgery smuggled in under a
+Tiles-wall fix, which is not the minimal carve this slice is supposed to be.
+`nullopt` buys the honesty (a wall never claims a subscription state) at a
+fraction of the churn, and the split stays available if a later slice needs it.
+
+Leaving the fields as-is and documenting that composed sources ignore them was
+also rejected: a field that serializes a false claim is exactly how #468
+happened.
+
+**Consequences to hold to:** the serializer omits `nullopt` fields rather than
+emitting nulls or defaults, so existing capture goldens are unchanged; and any
+registry query that means "unsubscribed" or "departed" must treat `nullopt` as
+NOT-APPLICABLE, never as false.
 
 **What this deletes:** `adoptSettledFrom`, `programTilesAnimation_`,
 `previewTilesAnimation_`, and the take-tick hand-off in
@@ -212,9 +252,19 @@ three tests in the 2026-09-12 session initially passed without their fix.
 one-animator contract instead: `TilesRenderPlanTest.cpp:519,916-1081`,
 `TilesAnimatorTest.cpp:97-163`, `RenderedSceneAttributionTest.cpp:196`.
 
-**New, for the #419 wiring:** `SourceRegistry` accepting and releasing a composed
-wall by scene reference; the Take running through `AtomicTakeCoordinator` as one
-revision transition, including the interleaving race it closes.
+**New, for the #419 wiring:**
+
+- `SourceRegistry` accepting and releasing a composed wall by scene reference.
+- **`AComposedWallNeverClaimsASubscriptionState`** — a registered wall reports
+  `personId`, `externalId`, `availability`, `subscriptionRequested` and
+  `subscriptionObserved` as `nullopt`, and the serializer OMITS them rather than
+  emitting `null` or `false`. This is the test that stops the `nullopt` decision
+  decaying back into a false claim.
+- **The existing capture goldens are byte-identical.** `wave1-authority.json` must
+  not change: making a field optional may not alter what a capture source emits.
+  If the goldens move, the change is wrong.
+- The Take running through `AtomicTakeCoordinator` as one revision transition,
+  including the interleaving race it closes.
 
 ## 6. What lands, and what does not
 
