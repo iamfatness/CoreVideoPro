@@ -459,8 +459,33 @@
                     </StackPanel>
                     <StackPanel Grid.Row="1" Grid.Column="2" Spacing="4">
                         <TextBlock Text="Text color" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBox Text="{x:Bind ViewModel.Overlays.CaptionTextColor, Mode=TwoWay}"
-                                 PlaceholderText="#F7FBF8" />
+                        <!-- #476: the hex box stays, with a picker beside it. -->
+                        <Grid ColumnSpacing="6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="24" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{x:Bind ViewModel.Overlays.CaptionTextColor, Mode=TwoWay}"
+                                     PlaceholderText="#F7FBF8" />
+                            <Border Grid.Column="1" Width="22" Height="22" CornerRadius="4"
+                                    VerticalAlignment="Center"
+                                    Background="{x:Bind ViewModel.Overlays.CaptionTextBrush, Mode=OneWay}" />
+                            <Button Grid.Column="2" Content="Pick"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    AutomationProperties.Name="Pick caption text color">
+                                <Button.Flyout>
+                                    <Flyout>
+                                        <ColorPicker Color="{x:Bind ViewModel.Overlays.CaptionTextPickerColor, Mode=TwoWay}"
+                                                     IsAlphaEnabled="False"
+                                                     IsAlphaSliderVisible="False"
+                                                     IsAlphaTextInputVisible="False"
+                                                     IsColorChannelTextInputVisible="False"
+                                                     IsHexInputVisible="False" />
+                                    </Flyout>
+                                </Button.Flyout>
+                            </Button>
+                        </Grid>
                     </StackPanel>
                     <StackPanel Grid.Row="1" Grid.Column="3" Spacing="4">
                         <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">

@@ -124,6 +124,19 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     public SolidColorBrush CaptionTextBrush => CaptionStyleHelper.CaptionTextBrush(CaptionTextColor);
 
+    // #476 / T3.5. A caption composites into PROGRAM, so its colour is a real
+    // on-air decision and deserves the same picker the brand rows have had all
+    // along. The hex string stays the source of truth: the picker reads it and
+    // writes it back, so there is no second copy to drift and no re-entrancy
+    // latch (the brand rows need one because their hex values are observable
+    // properties written from two directions; this is a projection).
+    public Color CaptionTextPickerColor
+    {
+        get => CoreVideoPro.WinUI.Services.HexColor.ParseOrDefault(
+            CaptionTextColor, Color.FromArgb(255, 0xF7, 0xFB, 0xF8));
+        set => CaptionTextColor = CoreVideoPro.WinUI.Services.HexColor.ToHex(value);
+    }
+
     public SolidColorBrush CaptionBackgroundBrush =>
         CaptionStyleHelper.CaptionBackgroundBrush(CaptionBackgroundOpacity);
 
@@ -143,7 +156,11 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     partial void OnCaptionFontSizeChanged(string value) => NotifyCaptionPresentationChanged();
 
-    partial void OnCaptionTextColorChanged(string value) => NotifyCaptionPresentationChanged();
+    partial void OnCaptionTextColorChanged(string value)
+    {
+        OnPropertyChanged(nameof(CaptionTextPickerColor));
+        NotifyCaptionPresentationChanged();
+    }
 
     partial void OnCaptionBackgroundOpacityChanged(int value) => NotifyCaptionPresentationChanged();
 
@@ -336,7 +353,7 @@ public sealed partial class OverlaysViewModel : ObservableObject
     }
 
     private static Color ParseHexColorOrDefault(string value, Color fallback) =>
-        TryParseHexColor(value, out var color) ? color : fallback;
+        CoreVideoPro.WinUI.Services.HexColor.ParseOrDefault(value, fallback);
 
     private static bool TryParseHexColor(string? value, out Color color)
     {

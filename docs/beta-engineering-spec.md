@@ -14,7 +14,7 @@ What exists vs. what the plans assumed:
 
 | Area | Reality |
 |---|---|
-| Packaging | `scripts/package-native.ps1` (loose folder) and `package-native-msix.ps1` (unsigned MSIX with a robust MakeAppx/layout fallback chain) both stage native core + Zoom runtime + FFmpeg. Neither registers the vcam DLL, sets up crash dumps, nor creates the recording folder |
+| Packaging | **The beta path is NSIS, not MSIX (T2.6 / #438).** `package-alpha.ps1` + `package-alpha-installer.ps1` build the shipped installer from `scripts/alpha/installer.nsi`, gated by `Test-AlphaInstaller.ps1`. The installer registers the virtual camera and creates the recording folder as of T2.1/#433, and its uninstall removes the first-run FFmpeg runtime (T2.7/#474). It does NOT enable WER crash dumps: that key is HKLM-only and this installer is per-user — measured 2026-09-12, an HKCU entry produced zero dumps. `package-native.ps1` (loose folder) and `package-native-msix.ps1` (unsigned MSIX) still exist; nothing on the beta path calls them |
 | Signing | **D2 shipped 2026-07-18:** `sign-native-msix.ps1 -Mode production` signs via Azure Trusted Signing (dlib) or PFX/thumbprint from env, requires an RFC3161 timestamp, runs `signtool verify /pa`, enforces the manifest-Publisher/cert-subject match, and **hard-fails on any gap** (distinct exit codes). `-Mode dev` (default) keeps the self-signed flow and still exits 0 without signtool, but now prints a LOUD "ARTIFACT LEFT UNSIGNED" warning. Decision logic covered by `scripts/tests/test-sign-native-msix.ps1` (10 dry-run cases). Cert identity itself still unprovisioned (D0.1) |
 | Versioning | ~~THREE unsynced version sources~~ **Synced via D1 (2026-07-18):** `package.json` is the source of truth; `scripts/stamp-version.mjs` stamps `Package.appxmanifest` (`Identity Version`, still `Publisher="CN=CoreVideo Pro Dev"` — D2 owns that) and the csproj; CI `version-sync` job enforces it. Release tag validation still checks only `package.json` (fine — everything else must now match it) |
 | CI release | `release.yml` builds the **loose folder** (not MSIX), never signs, never creates a GitHub Release; the artifact upload is gated on `COREVIDEO_PUBLISH == 'never'` (inverted/dead). `bump:version` + `release:notes` exist but are unwired |
@@ -34,13 +34,35 @@ What exists vs. what the plans assumed:
    trusted, signtool-integrated, days not weeks, no cert file to protect in CI)
    with a classic OV Authenticode purchase started in parallel as fallback —
    Trusted Signing still requires org identity validation, so start BOTH now.
-2. **Package format: signed MSIX + App Installer.** `package-native-msix.ps1`
-   already produces the MSIX and the manifest already declares `runFullTrust` +
-   the OAuth protocol. App Installer (`.appinstaller` at a stable HTTPS URL)
-   gives install + **auto-update on launch** with near-zero app code — it
-   collapses the B1 "auto-update channel" item into hosting a file. Fallback if
-   MSIX fights us on a reference config: signed EXE installer (Inno/WiX) + the
-   D4 in-app version check.
+2. **Package format — SUPERSEDED 2026-09-12 (T2.6 / #438). What actually ships
+   is an NSIS EXE installer, not MSIX.** This section recommended signed MSIX +
+   App Installer, and named "signed EXE installer (Inno/WiX)" only as the
+   fallback if MSIX fought us on a reference config. The fallback is what was
+   built, in #417, and every beta since has shipped that way. Reading this
+   section as current sends you to a packaging route nothing uses.
+
+   **The route in use, and where it actually lives:**
+   `scripts/package-alpha.ps1` stages the app, then
+   `scripts/package-alpha-installer.ps1` builds an NSIS installer from
+   `scripts/alpha/installer.nsi`, and `scripts/alpha/Test-AlphaInstaller.ps1` is
+   the gate — it performs a REAL silent install, a runtime probe, duplicate and
+   invalid-marker rejection, a silent uninstall and a user-file preservation
+   check. The whole runbook is in CLAUDE.md under "Cutting a Windows beta".
+   `package-native-msix.ps1` and `sign-native-msix.ps1` still exist and still
+   work; nothing on the beta path calls them.
+
+   **What the change cost, which is the part worth recording.** MSIX would have
+   given install + auto-update from one hosted `.appinstaller` file — that is
+   why it was preferred. NSIS gives neither, so:
+   - **auto-update is still unbuilt** and is no longer "collapsed into hosting a
+     file"; it is the D4 in-app version check or nothing;
+   - the installer had to grow, by hand, the things MSIX does for free —
+     one stable entry point, a manifest-driven uninstall that removes what first
+     run downloaded, and a refusal that says why (T2.7 / #474, 2026-09-12).
+
+   **Signing is unaffected either way.** T0.1 (a certificate) is still the
+   blocker, and `release.yml` already refuses to ship unsigned. Whichever
+   package format carries the bytes, nothing external installs until that lands.
 3. **Zoom SDK redistribution** (`docs/zoom-windows-sdk-packaging.md`, still
    unresolved): ask Zoom now. Fork: (a) licensed to bundle → runtime rides the
    MSIX payload (already implemented — `Assert-MsixPayloadReady` requires

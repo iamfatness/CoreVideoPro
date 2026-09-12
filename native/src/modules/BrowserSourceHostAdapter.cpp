@@ -1,6 +1,8 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/BrowserSourceHostAdapter.h"
 
+#include "modules/BrowserHostExitMessage.h"
+
 #include "modules/BrowserSourceShm.h"
 
 #include <algorithm>
@@ -377,7 +379,10 @@ void BrowserSourceHostAdapter::supervisorLoop() {
       closeProcessLocked(source);
       closeMappingLocked(source);
       source.policy.onFailure(now);
-      source.lastError = "browser host exited (code " + std::to_string(exitCode) + ")";
+      // #440 / T3.2: an exit code is wire vocabulary. Exit 3 means the
+      // WebView2 Runtime is missing, which is the one thing a tester on a
+      // machine we cannot see can actually fix.
+      source.lastError = browserHostExitMessage(static_cast<int>(exitCode));
       ::corevideo::core::nativeLogf("[browser] WARNING %s host DIED (exit=%lu, failure %d/%d) — %s\n",
                    id.c_str(), static_cast<unsigned long>(exitCode),
                    source.policy.consecutiveFailures(),
