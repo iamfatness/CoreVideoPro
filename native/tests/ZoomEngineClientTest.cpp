@@ -412,3 +412,22 @@ TEST(ZoomEngineClient, AppendPcmChunkCoalescesDedupsAndCapsPendingAudio) {
   EXPECT_EQ(pending.pcm[0], 1.0f);    // the 0.5/0.6 frame was dropped
   EXPECT_EQ(pending.droppedSamples, 1);
 }
+
+// #475. The operator's "join and end my other Zoom session" is an EXPLICIT
+// per-join choice. It travels on the join command itself, never as engine
+// state, so a takeover cannot leak into the next join and silently evict the
+// operator's own Zoom client from a meeting they meant to stay in.
+TEST(ZoomEngineClient, TheTakeoverChoiceRidesTheJoinCommandAndDefaultsOff) {
+  corevideo::modules::ZoomEngineJoinCommand command;
+  command.meetingId = "97682593786";
+
+  const auto ordinary = parseCommand(corevideo::modules::buildZoomEngineJoinCommand(command));
+  // Absent, not false: the engine reads the literal "end_other_meeting":true,
+  // so an ordinary join can never be mistaken for a takeover.
+  EXPECT_EQ(ordinary.get("end_other_meeting"), nullptr);
+
+  command.endOtherMeeting = true;
+  const auto takeover = parseCommand(corevideo::modules::buildZoomEngineJoinCommand(command));
+  ASSERT_NE(takeover.get("end_other_meeting"), nullptr);
+  EXPECT_TRUE(takeover.get("end_other_meeting")->asBool());
+}

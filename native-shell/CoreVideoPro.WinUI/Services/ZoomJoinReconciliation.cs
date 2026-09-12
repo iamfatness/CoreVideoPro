@@ -29,6 +29,19 @@ public static class ZoomJoinReconciliation
         catch (Exception) when (!cancellationToken.IsCancellationRequested) { return initial; }
     }
 
+    // #475. The one failure the takeover retry answers: the operator's own Zoom
+    // account is already in the meeting, the engine cancelled the SDK's prompt,
+    // and re-joining with endOtherMeeting:true would end their other session.
+    // Matched on the phrase the core's single mapping produces
+    // (modules/ZoomJoinFailureMessage.h), NOT on the wire reason, which never
+    // reaches the shell. Deliberately narrow: offering this after any other
+    // failure would invite an operator to evict their own client for nothing.
+    private const string AccountBusyElsewhere = "already in this meeting";
+
+    public static bool CanEndOtherSessionAndRetry(RawCaptureSnapshot snapshot) =>
+        snapshot.MeetingState == "error" && snapshot.Warnings?.Any(warning =>
+            warning.Contains(AccountBusyElsewhere, StringComparison.Ordinal)) == true;
+
     private static bool IsJoinTimeout(RawCaptureSnapshot snapshot) =>
         snapshot.MeetingState == "error" && snapshot.Warnings?.Any(warning =>
             warning.Contains(JoinTimeout, StringComparison.Ordinal)) == true;

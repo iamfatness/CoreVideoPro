@@ -20,6 +20,11 @@ struct ZoomEngineJoinCommand {
   std::string onBehalfToken;
   std::string userZak;
   std::string appPrivilegeToken;
+  // #475. The operator answering "join and end my other Zoom session" to a
+  // same-account collision. It rides the JOIN, never engine state: ending the
+  // operator's other session evicts their own Zoom client, so the choice is
+  // made once per join and can never carry into the next one.
+  bool endOtherMeeting = false;
 };
 
 struct ZoomEngineSubscribeCommand {

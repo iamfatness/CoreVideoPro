@@ -238,3 +238,34 @@ TEST(ZoomEngineRuntimeState, ClearsRosterAndSubscriptionsOnLeave) {
   EXPECT_EQ(snapshot.events.size(), 1u);
   EXPECT_EQ(snapshot.events[0], "Zoom meeting left.");
 }
+
+// #475. The engine now answers the SDK's join-time prompts instead of letting
+// them hang, and reports WHY as a machine reason. The operator must not read
+// that reason: "join_failed: account-busy-elsewhere" is not something anyone
+// can act on. Live 2026-09-11 this case cost a 52 s wait and then said only
+// "Timed out waiting for Zoom meeting join result."
+TEST(ZoomEngineRuntimeState, ASameAccountCollisionReadsAsOperatorLanguage) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(
+      R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"account-busy-elsewhere"})"), 0);
+
+  const auto snapshot = state.snapshot();
+  EXPECT_EQ(snapshot.meetingState, "error");
+  ASSERT_FALSE(snapshot.warnings.empty());
+  const auto& warning = snapshot.warnings.back();
+  EXPECT_NE(warning.find("already in this meeting"), std::string::npos) << warning;
+  // It must name the way out, and it must not leak the wire reason.
+  EXPECT_NE(warning.find("end my other Zoom session"), std::string::npos) << warning;
+  EXPECT_EQ(warning.find("account-busy-elsewhere"), std::string::npos) << warning;
+}
+
+// An unmapped reason must still reach the operator verbatim. Swallowing it
+// would recreate the silence this change exists to remove.
+TEST(ZoomEngineRuntimeState, AnUnmappedJoinFailureIsStillReported) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(
+      R"({"cmd":"error","stage":"join","msg":"join_failed","reason":"SDKERR_SOMETHING_NEW"})"), 0);
+  const auto snapshot = state.snapshot();
+  ASSERT_FALSE(snapshot.warnings.empty());
+  EXPECT_NE(snapshot.warnings.back().find("SDKERR_SOMETHING_NEW"), std::string::npos);
+}

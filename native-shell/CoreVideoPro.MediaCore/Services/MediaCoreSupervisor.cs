@@ -469,7 +469,12 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         bool webinar,
         string? sdkJwt = null,
         string? userZak = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        // #475. The operator's answer to a same-account collision, for THIS
+        // join only. Defaulted off and never stored: ending their other Zoom
+        // session evicts their own client from the meeting, so it may only
+        // ever happen because they just asked for it.
+        bool endOtherMeeting = false)
     {
         var joinDetails = ZoomMeetingUrlParser.Parse(meetingUrl);
         var payload = new Dictionary<string, object?>
@@ -478,6 +483,10 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             ["displayName"] = displayName,
             ["webinar"] = webinar
         };
+        if (endOtherMeeting)
+        {
+            payload["endOtherMeeting"] = true;
+        }
         if (!string.IsNullOrWhiteSpace(joinDetails.Passcode))
         {
             payload["passcode"] = joinDetails.Passcode;

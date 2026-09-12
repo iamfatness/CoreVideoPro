@@ -264,6 +264,13 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     const auto payloadZak = payload.getString("userZak");
     command.userZak = !payloadZak.empty() ? payloadZak : config_.userZak;
     command.appPrivilegeToken = config_.appPrivilegeToken;
+    // #475. Read from the JOIN PAYLOAD, never from config_: the operator's
+    // "join and end my other Zoom session" is one explicit answer to one
+    // collision. Storing it would let a later join silently evict their own
+    // Zoom client from a meeting they meant to stay in.
+    if (const rpc::Json* takeover = payload.get("endOtherMeeting")) {
+      command.endOtherMeeting = takeover->asBool(false);
+    }
     // Async send: a failed pipe write surfaces as an Error event (stage "join")
     // from the sender thread; the wait loop below returns on meetingState "error".
     enqueueEngineSendLocked("join", buildZoomEngineJoinCommand(command));

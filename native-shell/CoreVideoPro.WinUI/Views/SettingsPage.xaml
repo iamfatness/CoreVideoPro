@@ -122,6 +122,16 @@
                                 IsEnabled="{x:Bind ViewModel.CanJoinZoom, Mode=OneWay}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.JoinActionHint, Mode=OneWay}"
                                 Visibility="{x:Bind ViewModel.ShowJoinButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                        <!-- #475. Shown ONLY after a join failed because this
+                             account is already in the meeting. It ends the
+                             operator's own Zoom session, so it is a separate,
+                             explicit gesture and never the default Join. -->
+                        <Button Style="{StaticResource StudioGhostButton}"
+                                Content="Join and end my other Zoom session"
+                                AutomationProperties.Name="Join and end my other Zoom session"
+                                Command="{x:Bind ViewModel.EndOtherZoomSessionAndJoinCommand}"
+                                ToolTipService.ToolTip="Ends this Zoom account's other session, including your own Zoom app, and joins here."
+                                Visibility="{x:Bind ViewModel.CanEndOtherZoomSession, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                         <Button Style="{StaticResource StudioGhostButton}"
                                 Content="Open in Zoom app"
                                 Command="{x:Bind ViewModel.OpenMeetingExternallyCommand}"
