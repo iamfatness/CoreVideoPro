@@ -68,15 +68,16 @@ bool SourceRegistry::validRegistration(const Registration& r) const {
 }
 
 bool SourceRegistry::externalConflict(const Registration& r) const {
-  // A composed source has no externalId to collide on; two walls are distinct
-  // whenever their sourceIds differ.
-  if (r.kind == Kind::Composed) {
-    return false;
-  }
+  const bool composed = r.kind == Kind::Composed;
   for (const auto& entry : sources_) {
     const auto& source = entry.second;
     if (entry.first != r.sourceId.value && source.availability != Availability::Departed &&
         r.instanceId && source.token.instanceId.value == r.instanceId->value) return true;
+    // A composed source has no externalId to collide on; two walls are
+    // distinct whenever their sourceIds differ. Only skip THIS clause for a
+    // composed registration - the instanceId check above still applies, so
+    // two walls sharing an explicit instanceId still conflict.
+    if (composed) continue;
     if (entry.first != r.sourceId.value && source.availability != Availability::Departed &&
         source.kind == r.kind && source.token.processEpoch == r.processEpoch && source.externalId == r.externalId)
       return true;
@@ -162,6 +163,11 @@ SourceRegistry::Result SourceRegistry::setAvailability(const Token& token, Avail
   if (found == sources_.end()) return Result::NotFound;
   auto& source = found->second;
   if (!sameToken(source.token, token) || source.availability == Availability::Departed) return Result::Stale;
+  // A composed source has no availability concept - nullopt means NOT
+  // APPLICABLE, not "unknown Available/Unavailable". Applying this call to one
+  // would flip subscriptionObserved from nullopt to a concrete `false`, the
+  // exact false claim this registry exists to refuse to make.
+  if (source.kind == Kind::Composed) return Result::Invalid;
   if (availability != Availability::Available && availability != Availability::Unavailable && availability != Availability::Departed)
     return Result::Invalid;
   if (source.availability == availability) return Result::Unchanged;
@@ -207,6 +213,14 @@ SourceRegistry::Result SourceRegistry::retireProcessEpoch(const std::string& pro
   for (auto& entry : sources_) {
     auto& source = entry.second;
     if (source.token.processEpoch != processEpoch) continue;
+    // A composed source has no provider process and no callbacks to fence -
+    // retirement exists to stop a dead helper's late callbacks from looking
+    // current, which does not apply to a wall. SKIP it, do not mark it
+    // Departed: that would flip its nullopt fields to concrete false/Departed,
+    // the exact false claim this task removed from install(). A wall's
+    // lifetime is scene-reference, released by a separate sweep (later task) -
+    // do not "fix" this skip into a mark.
+    if (source.kind == Kind::Composed) continue;
     source.availability = Availability::Departed;
     source.subscriptionRequested = false;
     source.subscriptionObserved = false;
