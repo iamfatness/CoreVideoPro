@@ -395,8 +395,17 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
           auto found = entries_.find(id);
           if (found == entries_.end()) {
             if (entries_.size() + retired.size() >= 16) {
+              const auto refused = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
               warnings_.push_back("Media decoder capacity reached (16 active/retiring assets); not starting " +
-                                  (layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId) + ".");
+                                  refused + ".");
+              // #473. A refusal here looks EXACTLY like a broken decoder from the
+              // outside: no frames, a placeholder tile, and (before this) not one
+              // line in media-core.log. Rate-limited per source so a busy show
+              // cannot flood the log with the same refusal every tick.
+              if (capWarningsLogged_.insert(refused).second) {
+                ::corevideo::core::nativeLogf(
+                    "[media-decoder] capacity reached (16 active/retiring); refusing %s\n", refused.c_str());
+              }
               continue;
             }
             auto entry = std::make_shared<Entry>(); entry->layer = layer;
@@ -448,6 +457,7 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
   std::vector<std::string> warnings_;
   std::vector<std::string> collisionWarnings_;
   std::set<std::string> collisionWarningsLogged_;
+  std::set<std::string> capWarningsLogged_;
   std::thread manager_;
 };
 } // namespace corevideo::modules
