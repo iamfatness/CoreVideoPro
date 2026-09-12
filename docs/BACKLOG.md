@@ -2,6 +2,12 @@
 
 **Refined 2026-09-11 (after the first real meeting; see Tier 1 order).** Earlier today (owner: "Your rank makes sense"): #449 up to T1.11; new T1.12 #475, T1.13 #473; T2.7-T2.10 (#474, #469, #466, #468); T3.5-T3.7 (#476, #465, #470).
 
+**Reconciled 2026-09-12 against `main` and the issue tracker, no re-ranking.** T1.17
+(#479) was still listed as the next open item; it is closed by #490 and moved to Done,
+and the open Tier 1 order renumbered 1-3. T3.8 (#482) had no tier row at all. #465 was
+promoted to T1.15, which is why Tier 3 has no T3.6. Four Tier 1 fixes are on `main` but
+in no beta — see the note under Tier 1.
+
 **This is the single ordered list of work.** Owner-approved 2026-09-10. It supersedes the
 scoreboards in `docs/beta-plan.md` (§2) and the status claims in `docs/FOCUS_PLAN.md`,
 which are kept for their rationale, not their checkboxes. Every item has a GitHub issue
@@ -48,10 +54,9 @@ The owner's top priority is core functionality: Zoom sources and audio.
 
 | Order | ID | Item | Clause | Size |
 |---|---|---|---|---|
-| 1 | [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles manual slots / "never show" are saved by Zoom's per-session user ID, so they go stale or hit the wrong person next meeting; key on stable identity, clear stale entries. Audit the Show Input roster for the same issue | 1/3 | M |
-| 3 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. Step 1: hold the outgoing picture until the first real frame; step 2: hand over the warmed decoder | 1/3 | S then M |
-| 4 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s; forward the waiting states, always log meeting status, leave on give-up | 1/2 | S |
-| 5 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does) | 1/2 | S-M |
+| 1 | [T1.11](https://github.com/iamfatness/CoreVideoPro/issues/449) | A clip going to Program shows a placeholder colour before its first frame. **Step 2 (hand over the warmed cue decoder) shipped in #492**, so a clip CUED in Preview no longer flashes. Step 1 remains: a clip taken without ever being cued still cold-starts — hold the outgoing picture until its first real frame | 1/3 | S |
+| 2 | [T1.12](https://github.com/iamfatness/CoreVideoPro/issues/475) | A join that lands in the waiting room (or waits for the host) is reported as a failed join after ~52 s; forward the waiting states, always log meeting status, leave on give-up | 1/2 | S |
+| 3 | [T1.13](https://github.com/iamfatness/CoreVideoPro/issues/473) | Installed build never starts FFmpeg for a ProRes media source (a dev launch does) | 1/2 | S-M |
 
 **Done** (verified by tests; the live check is noted where one ran):
 
@@ -71,8 +76,19 @@ The owner's top priority is core functionality: Zoom sources and audio.
 | [T1.14](https://github.com/iamfatness/CoreVideoPro/issues/480) | Scene layer sources wipe themselves, then a random guest | #487 (tests; live check with the batch beta) |
 | [T1.15](https://github.com/iamfatness/CoreVideoPro/issues/465) | First roster participant's isolated audio silent (mix keyed to `participants[0]`) | #488 (tests; live check with the batch beta) |
 | [T1.16](https://github.com/iamfatness/CoreVideoPro/issues/485) | Mixer shows only sources | #489 (tests; live check with the batch beta) |
+| [T1.17](https://github.com/iamfatness/CoreVideoPro/issues/479) | Tiles slots / "never show" keyed on Zoom's per-session user id | #490 (tests; live check with the batch beta) |
 
-Shipped in beta-2026-09-11-404602b (installed on the owner's machine 2026-09-11).
+T1.1-T1.10, #478 and #481 shipped in beta-2026-09-11-404602b (installed on the owner's
+machine 2026-09-11).
+
+**T1.14-T1.17 and T1.11 step 2 shipped in beta-2026-09-12-aac2d98** (cut 2026-09-12, the
+batch beta those Done rows name). Their live checks are now POSSIBLE but still OWED — none
+of the five has been seen in a real meeting, and none may be ranked verified until it has.
+The release notes carry the five things to check. Build provenance: a fresh detached
+worktree at `aac2d981`, `COREVIDEO_WITH_D3D11:BOOL=ON` (a real GPU core, not the software
+Stub), 903 native tests green, both stale-PRI gates passed (2,360,144-byte `.pri`,
+`--verify-runtime` exit 0), `Test-AlphaPackage` and `Test-AlphaInstaller` green, both asset
+checksums verified. Unsigned, so SmartScreen warns — that is T0.1.
 
 ## Tier 2 — first external install
 
@@ -100,6 +116,10 @@ Shipped in beta-2026-09-11-404602b (installed on the owner's machine 2026-09-11)
 | [T3.4](https://github.com/iamfatness/CoreVideoPro/issues/442) | Hardware sweeps on T0.3 machines: integrated GPU, audio devices (USB/Bluetooth, unplug mid-show), cheap UVC webcams | 1 | M |
 | [T3.5](https://github.com/iamfatness/CoreVideoPro/issues/476) | Colour fields need a colour picker (Tiles border/glow/background, layer colour, caption text); keep the hex box beside it | 3 | S |
 | [T3.7](https://github.com/iamfatness/CoreVideoPro/issues/470) | ISOs armed with Engine off write nothing and give no warning | 2/3 | S |
+| [T3.8](https://github.com/iamfatness/CoreVideoPro/issues/482) | ISO recordings crop or pad a guest's picture when their frame size changes mid-recording | 1/3 | S-M |
+
+T3.8 was filed 2026-09-11 and was in no tier; placed here 2026-09-12 so it stops being
+untracked. The tier is a proposal, not an owner ruling.
 
 ## Tier 4 — release gates
 
