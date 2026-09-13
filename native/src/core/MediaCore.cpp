@@ -6375,6 +6375,51 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (tilesLayer_.present) liveWallIds.push_back(programWallId);
   if (previewTilesLayer_.present) liveWallIds.push_back(previewWallId);
   tilesWallSources_.releaseAllExcept(liveWallIds);
+  // Task 4: the wall is a SOURCE (parent spec section 2), so it registers like
+  // one — the first real consumer of SourceRegistry's Kind::Composed. Its
+  // lifetime mirrors tilesWallSources_'s own exactly (same liveWallIds set,
+  // same "named by a live scene" rule), one level up. registeredWallIds_ is
+  // the idempotence guard: add() answers Conflict on a repeat, so without it
+  // a live wall's steady-state tick would take the registry mutex and get
+  // refused every single frame — this keeps that cost to liveness
+  // TRANSITIONS only. A composed registration carries no externalId (a wall
+  // has no SDK handle) and never claims a subscription state — see
+  // SourceRegistry::Kind::Composed and validRegistration.
+  for (const auto& wallId : liveWallIds) {
+    // A deferred edge case from Task 3 (forWall admits an empty wall id):
+    // skip it here rather than registering a nameless source that
+    // validRegistration would refuse as Invalid anyway.
+    if (wallId.empty()) continue;
+    if (registeredWallIds_.insert(wallId).second) {
+      SourceRegistry::Registration registration;
+      registration.sourceId = {wallId};
+      registration.kind = SourceRegistry::Kind::Composed;
+      registration.displayName = "Tiles wall " + wallId;
+      registration.processEpoch = kCoreProcessEpoch;
+      const auto mutation = sourceRegistry_.add(std::move(registration));
+      if (mutation.result != SourceRegistry::Result::Applied) {
+        // Only reachable via Conflict/Exhausted — an ordinary liveness
+        // transition never hits this. Loud, since a wall that fails to
+        // register is silently invisible to any future registry consumer.
+        ::corevideo::core::nativeLogf("[source-registry] wall '%s' failed to register (result=%d)\n",
+                   wallId.c_str(), static_cast<int>(mutation.result));
+      }
+    }
+  }
+  // Release from the registry whatever the sweep above just released from
+  // tilesWallSources_. A wall has no provider process to fence, so this is a
+  // genuine erase (SourceRegistry::removeComposed), not a tombstone — and the
+  // id must come out of registeredWallIds_ too, or a wall recreated under the
+  // same scene id would find add() answering Conflict against a guard entry
+  // for a wall that no longer exists in the registry at all.
+  for (auto it = registeredWallIds_.begin(); it != registeredWallIds_.end();) {
+    if (std::find(liveWallIds.begin(), liveWallIds.end(), *it) != liveWallIds.end()) {
+      ++it;
+      continue;
+    }
+    sourceRegistry_.removeComposed(SourceId{*it});
+    it = registeredWallIds_.erase(it);
+  }
   // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
   // and the sessionState() `tiles` node both read THIS, so a consumer can never
   // observe a wall the compositor did not also receive (see modules_.compositor->

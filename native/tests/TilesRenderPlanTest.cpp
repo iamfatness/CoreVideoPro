@@ -1438,3 +1438,103 @@ TEST(TilesRenderPlan, AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated) {
   // is above the admission gate and is what program falls back to.
   EXPECT_NE(findLayer(core.lastRenderPlanForTest(), "tiles-bg:tiles:pinned"), nullptr);
 }
+
+namespace {
+using corevideo::core::SourceRegistry;
+
+const SourceRegistry::Source* findRegisteredSource(
+    const std::shared_ptr<const SourceRegistry::Snapshot>& snapshot, const std::string& sourceId) {
+  if (!snapshot) return nullptr;
+  for (const auto& source : snapshot->sources) {
+    if (source.token.sourceId.value == sourceId) return &source;
+  }
+  return nullptr;
+}
+}  // namespace
+
+// Task 4: the wall is the first real consumer of SourceRegistry — it registers
+// as a Kind::Composed source the tick it becomes live, with its five
+// capture-only fields left nullopt (a wall has no SDK handle, no availability
+// concept, and is never subscribed — SourceRegistry::Kind::Composed).
+TEST(TilesRenderPlan, ALiveWallRegistersAsAComposedSourceInTheRegistry) {
+  MediaCore core;
+  loadWall(core, {"zoom:1", "zoom:2"});
+
+  // Bind the shared_ptr before taking a pointer into it (SourceRegistryComposedTest's
+  // own rule) - `findRegisteredSource(core.sourceRegistrySnapshotForTest(), ...)` as
+  // one expression leaves `wall` dangling the instant the temporary shared_ptr's
+  // refcount drops to zero at the semicolon.
+  const auto snapshot = core.sourceRegistrySnapshotForTest();
+  const auto* wall = findRegisteredSource(snapshot, "tiles:s");
+  ASSERT_NE(wall, nullptr) << "a live wall must appear in the SourceRegistry snapshot";
+  EXPECT_EQ(wall->kind, SourceRegistry::Kind::Composed);
+  EXPECT_FALSE(wall->personId.has_value());
+  EXPECT_FALSE(wall->externalId.has_value());
+  EXPECT_FALSE(wall->availability.has_value());
+  EXPECT_FALSE(wall->subscriptionRequested.has_value());
+  EXPECT_FALSE(wall->subscriptionObserved.has_value());
+}
+
+// Lifetime is "named by a live scene" (parent spec section 2) — the SAME rule
+// tilesWallSources_.releaseAllExcept already implements one level down. Once
+// no scene on either bus names the wall, it must be genuinely gone from the
+// registry, not tombstoned (a wall has no provider process to fence).
+TEST(TilesRenderPlan, AWallNoSceneReferencesIsGoneFromTheRegistry) {
+  MediaCore core;
+  loadWall(core, {"zoom:1"});
+  ASSERT_NE(findRegisteredSource(core.sourceRegistrySnapshotForTest(), "tiles:s"), nullptr);
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{wallLessScene("load-scene-graph", "solo")});
+
+  EXPECT_EQ(findRegisteredSource(core.sourceRegistrySnapshotForTest(), "tiles:s"), nullptr)
+      << "a wall no scene still names must be gone from the registry, not merely departed";
+}
+
+// A wall released and then re-cued under the SAME scene id is a NEW source,
+// never a resurrection of the old registry entry — mirroring
+// core::TilesWallSource's own "a recreated wall starts at generation 0, never
+// continuing a retired one's count." The registry has no generation counter
+// per composed source to reuse, so the discriminator is the registry-minted
+// instanceId: install() mints a fresh one from the CURRENT revision every
+// time, so a genuinely new install() call can never mint the same value twice.
+TEST(TilesRenderPlan, AWallReleasedAndReCuedRegistersAsANewSource) {
+  MediaCore core;
+  loadWall(core, {"zoom:1"});
+  // Bind each snapshot before taking a pointer into it — see the comment on
+  // the headline registration test above for why the unbound one-expression
+  // form dangles.
+  const auto firstSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto* first = findRegisteredSource(firstSnapshot, "tiles:s");
+  ASSERT_NE(first, nullptr);
+  const auto firstInstanceId = first->token.instanceId.value;
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{wallLessScene("load-scene-graph", "solo")});
+  ASSERT_EQ(findRegisteredSource(core.sourceRegistrySnapshotForTest(), "tiles:s"), nullptr);
+
+  loadWall(core, {"zoom:1"});
+  const auto secondSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto* second = findRegisteredSource(secondSnapshot, "tiles:s");
+  ASSERT_NE(second, nullptr) << "re-cueing the same scene id must register again";
+  EXPECT_NE(second->token.instanceId.value, firstInstanceId)
+      << "a re-cued wall is a NEW registry entry, not the old one come back";
+}
+
+// The idempotence guard (registeredWallIds_) exists so a live wall's
+// steady-state tick never touches the registry mutex again once registered —
+// but the observable contract this test pins is simpler and still real:
+// however many render ticks a wall stays live, the registry holds exactly
+// ONE entry for it, never zero (a lost registration) and never more than one.
+TEST(TilesRenderPlan, ALiveWallHoldsExactlyOneRegistryEntryAcrossManyTicks) {
+  MediaCore core;
+  loadWall(core, {"zoom:1"});
+
+  for (int tick = 0; tick < 25; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  }
+
+  const auto snapshot = core.sourceRegistrySnapshotForTest();
+  ASSERT_NE(snapshot, nullptr);
+  const auto count = std::count_if(snapshot->sources.begin(), snapshot->sources.end(),
+      [](const auto& source) { return source.token.sourceId.value == "tiles:s"; });
+  EXPECT_EQ(count, 1);
+}

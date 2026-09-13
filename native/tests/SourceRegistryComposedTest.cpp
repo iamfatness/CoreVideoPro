@@ -133,4 +133,52 @@ TEST(SourceRegistryComposed, TwoWallsSharingAnInstanceIdStillConflict) {
   second.instanceId = corevideo::core::SourceInstanceId{"shared-wall-instance"};
   EXPECT_EQ(registry.add(second).result, SourceRegistry::Result::Conflict);
 }
+
+// Task 4: removeComposed ERASES a wall outright (never tombstones it) - a
+// wall's lifetime is "named by a live scene," not a provider process to fence.
+TEST(SourceRegistryComposed, RemoveComposedErasesTheWallFromTheSnapshot) {
+  SourceRegistry registry("registry-epoch-1");
+  ASSERT_EQ(registry.add(wallRegistration("tiles:scene-a")).result,
+            SourceRegistry::Result::Applied);
+
+  EXPECT_EQ(registry.removeComposed(corevideo::core::SourceId{"tiles:scene-a"}),
+            SourceRegistry::Result::Applied);
+
+  const auto snapshot = registry.snapshot();
+  EXPECT_TRUE(snapshot->sources.empty());
+}
+
+// A wall id freed by removeComposed is genuinely free to reuse - add() must
+// not answer Conflict against a tombstone that no longer exists.
+TEST(SourceRegistryComposed, ARemovedWallCanBeReRegisteredAsANewSource) {
+  SourceRegistry registry("registry-epoch-1");
+  ASSERT_EQ(registry.add(wallRegistration("tiles:scene-a")).result,
+            SourceRegistry::Result::Applied);
+  ASSERT_EQ(registry.removeComposed(corevideo::core::SourceId{"tiles:scene-a"}),
+            SourceRegistry::Result::Applied);
+
+  const auto second = registry.add(wallRegistration("tiles:scene-a"));
+  EXPECT_EQ(second.result, SourceRegistry::Result::Applied);
+}
+
+TEST(SourceRegistryComposed, RemoveComposedRefusesANonComposedSource) {
+  SourceRegistry registry("registry-epoch-1");
+  SourceRegistry::Registration camera;
+  camera.sourceId = {"camera-alice"};
+  camera.kind = SourceRegistry::Kind::ParticipantVideo;
+  camera.displayName = "Alice";
+  camera.processEpoch = "zoom-process-1";
+  camera.externalId = "alice-sdk-id";
+  ASSERT_EQ(registry.add(camera).result, SourceRegistry::Result::Applied);
+
+  EXPECT_EQ(registry.removeComposed(corevideo::core::SourceId{"camera-alice"}),
+            SourceRegistry::Result::Invalid);
+  EXPECT_EQ(registry.snapshot()->sources.size(), 1U);
+}
+
+TEST(SourceRegistryComposed, RemoveComposedOnAnUnknownIdIsNotFound) {
+  SourceRegistry registry("registry-epoch-1");
+  EXPECT_EQ(registry.removeComposed(corevideo::core::SourceId{"tiles:never-added"}),
+            SourceRegistry::Result::NotFound);
+}
 }  // namespace

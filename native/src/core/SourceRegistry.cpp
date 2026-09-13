@@ -232,6 +232,20 @@ SourceRegistry::Result SourceRegistry::retireProcessEpoch(const std::string& pro
   return Result::Applied;
 }
 
+SourceRegistry::Result SourceRegistry::removeComposed(const SourceId& sourceId) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto found = sources_.find(sourceId.value);
+  if (found == sources_.end()) return Result::NotFound;
+  // Refuse for any non-composed kind - see the header comment for why a real
+  // source's record must be tombstoned, never erased outright.
+  if (found->second.kind != Kind::Composed) return Result::Invalid;
+  if (revision_ == kMaxRevision) return Result::Exhausted;
+  sources_.erase(found);
+  ++revision_;
+  ++decisionRevision_;
+  return Result::Applied;
+}
+
 SourceRegistry::Result SourceRegistry::publish(const Token& token, uint64_t sequence, int64_t observedNs, Format format) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto found = sources_.find(token.sourceId.value);

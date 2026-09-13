@@ -11,6 +11,7 @@
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceContinuityLedger.h"
+#include "core/SourceRegistry.h"
 #include "core/TakeRecordPolicy.h"
 #include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
@@ -273,6 +274,12 @@ class MediaCore {
   // Also the test seam: the headline #448 regression test reads this directly
   // to assert a mid-animation Take does not bump the wall's generation.
   [[nodiscard]] uint64_t tilesWallGeneration(const std::string& wallId) const;
+  // Task 4: the SourceRegistry snapshot, for tests asserting the wall's own
+  // Kind::Composed registration/release — the same snapshot() a real consumer
+  // (a future ShowPlanGenerator) would read.
+  [[nodiscard]] std::shared_ptr<const core::SourceRegistry::Snapshot> sourceRegistrySnapshotForTest() const {
+    return sourceRegistry_.snapshot();
+  }
   const std::vector<std::string>& sceneValidationWarningsForTest() const {
     return sceneValidationWarnings_;
   }
@@ -529,6 +536,23 @@ class MediaCore {
   // One animation per WALL, not per bus (#448). See core/TilesWallSource.h for
   // why the per-bus pair and its hand-off were wrong.
   core::TilesWallSources tilesWallSources_;
+  // Task 4: the wall is the first real consumer of SourceRegistry. Registered
+  // as Kind::Composed the tick a wall becomes live, released the tick nothing
+  // names it any longer - the SAME "referenced by a live scene" lifetime
+  // tilesWallSources_ already implements (releaseAllExcept above), one level
+  // up. registeredWallIds_ is the idempotence guard: add() answers Conflict on
+  // a repeat, so without it every render tick for a live wall would take the
+  // registry mutex and get refused - a per-tick cost for a value that only
+  // actually changes on liveness transitions.
+  //
+  // kCoreProcessEpoch is a fixed label, not a fresh-per-instance token: a wall
+  // has no provider process to fence (SourceRegistry::removeComposed erases it
+  // outright instead of tombstoning by epoch), so nothing here ever calls
+  // retireProcessEpoch against it, and a stable constant is honest - it names
+  // "this core process," not an incarnation that could be replaced mid-run.
+  static constexpr const char* kCoreProcessEpoch = "core-process";
+  core::SourceRegistry sourceRegistry_{"core-registry"};
+  std::unordered_set<std::string> registeredWallIds_;
   // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
   // every render tick from the live videoFrames gather (renderSyntheticTick,
   // under coreMutex — geometry bookkeeping, not pixel work). Covers members of

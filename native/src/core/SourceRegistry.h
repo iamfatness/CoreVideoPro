@@ -94,6 +94,17 @@ class SourceRegistry final {
   // Retire every source owned by a replaced helper process as one registry
   // transaction. This fences callbacks even when a provider changes its source IDs.
   Result retireProcessEpoch(const std::string& processEpoch);
+  // Composed-only: erases the source outright rather than tombstoning it.
+  // Every other kind's departure is Availability::Departed, kept deliberately
+  // (retireProcessEpoch, setAvailability) so a late callback or a diagnostic
+  // read can still see what a provider incarnation was. A composed source has
+  // no provider process and no callback to fence against - its lifetime is
+  // "named by a live scene" (parent spec section 2), so once nothing names it
+  // the tombstone would just be a permanent, meaningless entry, and it would
+  // make add() answer Conflict forever for a wall id that is free to reuse.
+  // Refuses (Invalid) for any other kind: erasing a real source's record is
+  // the false-erasure this registry exists to prevent from the other direction.
+  Result removeComposed(const SourceId& sourceId);
   Result publish(const Token& token, uint64_t sequence, int64_t observedNs, Format format);
   [[nodiscard]] std::shared_ptr<const Snapshot> snapshot() const;
   // Discovery only: zero/multiple matches remain explicit, with no auto-binding.
