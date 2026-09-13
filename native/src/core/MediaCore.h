@@ -553,6 +553,17 @@ class MediaCore {
   static constexpr const char* kCoreProcessEpoch = "core-process";
   core::SourceRegistry sourceRegistry_{"core-registry"};
   std::unordered_set<std::string> registeredWallIds_;
+  // Wall ids SourceRegistry refuses on their SPELLING (over kMaxIdBytes), which
+  // no retry can ever change. Skipped outright: a failed add is deliberately not
+  // remembered as registered, so without this a permanently-Invalid id would
+  // take the registry mutex and log on EVERY render tick.
+  std::unordered_set<std::string> unregisterableWallIds_;
+  // Wall ids whose RETRYABLE registration failure has already been logged once.
+  // The retry itself is kept (it is a liveness-transition cost); only the line
+  // is bounded, because an unbounded render-tick line rolls the diagnosis out
+  // of the bounded log it exists to land in. Both sets are pruned with
+  // registeredWallIds_ when a wall stops being live.
+  std::unordered_set<std::string> warnedWallRegistrationIds_;
   // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
   // every render tick from the live videoFrames gather (renderSyntheticTick,
   // under coreMutex — geometry bookkeeping, not pixel work). Covers members of

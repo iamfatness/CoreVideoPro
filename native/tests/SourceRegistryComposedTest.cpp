@@ -176,6 +176,32 @@ TEST(SourceRegistryComposed, RemoveComposedRefusesANonComposedSource) {
   EXPECT_EQ(registry.snapshot()->sources.size(), 1U);
 }
 
+// setAvailability refuses Composed; setSubscription did NOT, and nothing in the
+// tree noticed because the only writer never calls it for a wall. The honesty
+// rule is symmetric: nothing subscribes to a wall, so a wall may never carry a
+// subscription state. An `observed:true` call was already refused as a side
+// effect (nullopt availability is not Available), but `requested:true` with
+// observed nullopt applied cleanly and turned a NOT-APPLICABLE field into a
+// concrete claim - the exact lie the nullopt fields exist to prevent.
+TEST(SourceRegistryComposed, SetSubscriptionOnAWallIsRefusedOutright) {
+  SourceRegistry registry("registry-epoch-1");
+  const auto mutation = registry.add(wallRegistration("tiles:scene-a"));
+  ASSERT_TRUE(mutation.token.has_value());
+
+  EXPECT_EQ(registry.setSubscription(*mutation.token, true, std::nullopt),
+            SourceRegistry::Result::Invalid);
+  EXPECT_EQ(registry.setSubscription(*mutation.token, true, true),
+            SourceRegistry::Result::Invalid);
+  EXPECT_EQ(registry.setSubscription(*mutation.token, false, false),
+            SourceRegistry::Result::Invalid);
+
+  const auto snapshot = registry.snapshot();
+  ASSERT_EQ(snapshot->sources.size(), 1u);
+  const auto& wall = snapshot->sources.front();
+  EXPECT_FALSE(wall.subscriptionRequested.has_value());
+  EXPECT_FALSE(wall.subscriptionObserved.has_value());
+}
+
 TEST(SourceRegistryComposed, RemoveComposedOnAnUnknownIdIsNotFound) {
   SourceRegistry registry("registry-epoch-1");
   EXPECT_EQ(registry.removeComposed(corevideo::core::SourceId{"tiles:never-added"}),

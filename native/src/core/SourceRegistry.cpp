@@ -54,12 +54,12 @@ bool SourceRegistry::validRegistration(const Registration& r) const {
   // so requiring an externalId would reject every wall outright.
   const bool externalIdOk = composed
       ? r.externalId.empty()
-      : (!r.externalId.empty() && r.externalId.size() <= 512);
+      : (!r.externalId.empty() && r.externalId.size() <= kMaxIdBytes);
   return knownKind && externalIdOk &&
       (!r.requestedGeneration || (*r.requestedGeneration > 0 && *r.requestedGeneration <= kMaxRevision)) &&
-      (!r.instanceId || (!r.instanceId->value.empty() && r.instanceId->value.size() <= 512)) &&
-      !r.sourceId.value.empty() && r.sourceId.value.size() <= 512 &&
-      !r.processEpoch.empty() && r.processEpoch.size() <= 512 &&
+      (!r.instanceId || (!r.instanceId->value.empty() && r.instanceId->value.size() <= kMaxIdBytes)) &&
+      !r.sourceId.value.empty() && r.sourceId.value.size() <= kMaxIdBytes &&
+      !r.processEpoch.empty() && r.processEpoch.size() <= kMaxIdBytes &&
       !retiredProcessEpochs_.contains(r.processEpoch) &&
       r.displayName.size() <= 4096 &&
       ((!r.personId && r.personGeneration == 0) ||
@@ -190,6 +190,13 @@ SourceRegistry::Result SourceRegistry::setSubscription(const Token& token, bool 
   if (found == sources_.end()) return Result::NotFound;
   auto& source = found->second;
   if (!sameToken(source.token, token) || source.availability == Availability::Departed) return Result::Stale;
+  // Symmetric with setAvailability above: NOTHING subscribes to a composed
+  // source - it has no provider process and no SDK handle - so it may never
+  // carry a subscription state at all. The `observed` clause below already
+  // refuses observed:true for one (a nullopt availability is not Available),
+  // but requested:true with observed nullopt applied cleanly and turned a
+  // NOT-APPLICABLE field into a concrete claim.
+  if (source.kind == Kind::Composed) return Result::Invalid;
   if (observed.value_or(false) && source.availability != Availability::Available) return Result::Invalid;
   if (source.subscriptionRequested == requested && source.subscriptionObserved == observed)
     return Result::Unchanged;

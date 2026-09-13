@@ -1047,15 +1047,30 @@ void take(MediaCore& core, const corevideo::rpc::Json& program, const corevideo:
 // #448. `TilesPlanAnimation::adoptSettledFrom` refused a wall whose tiles were
 // still flying, because with two per-bus animators mid-flight state had no
 // correct owner ("mid-flight state belongs to the bus that is flying it").
-// So a wall taken MID-ANIMATION re-animated from alpha 0 on Program — the
-// live-show defect this file is named for, caught here at its actual root:
-// with one animator PER WALL (core::TilesWallSource, shared by both buses)
-// there is nothing to hand over, so the cut is continuous even mid-flight.
+// So a wall taken MID-ANIMATION lost its motion on Program — the live-show
+// defect this file is named for, caught here at its actual root: with one
+// animator PER WALL (core::TilesWallSource, shared by both buses) there is
+// nothing to hand over, so the cut is continuous even mid-flight.
 //
-// This test MUST FAIL before Task 3. Verified by reverting the MediaCore.cpp/
-// TilesPlanAnimation.h changes (not assumed): with the old per-bus pair, this
-// wall's key had never been held by programTilesAnimation_, so it reset and
-// EXPECT_GE(onAir alpha, midFlight alpha) failed as the wall replayed from 0.
+// WHAT THE OLD MECHANISM ACTUALLY DID, because the direction matters to every
+// assertion below: a reset does NOT replay from alpha 0. `TilesAnimator`
+// treats a reset animator's next non-empty sample() as an ADOPTION — content
+// already present, not entering — so the wall SNAPS STRAIGHT TO ITS FINAL
+// STATE: alpha pops to 1 and mid-spring rects jump to their settled positions.
+// That is why `EXPECT_GE(onAir alpha, midFlight alpha)` alone is NOT a
+// regression test — a snap to 1 satisfies it just as well as continuity does,
+// and the first draft of this test passed against the unfixed code. The
+// falsifying assertions are the ones that bound the OTHER side: the post-take
+// alpha of a tile that was mid-ramp must stay BELOW 0.9, and any tile already
+// at opacity 1 must keep its mid-spring RECT (EXPECT_NEAR, 0.05). Both were
+// verified red by reverting the MediaCore.cpp / TilesPlanAnimation.h changes,
+// not assumed.
+//
+// One honest limit on that revert: the generation-equality check is not
+// independently falsified by it, because the reverted take path never touches
+// tilesWallSources_ at all — it reads 0 == 0 either way. The alpha and rect
+// assertions are the proven-red ones; the generation assertion holds forward,
+// by construction of the new API.
 //
 // Getting a wall genuinely MID-FLIGHT deterministically (no real-time
 // polling): TilesAnimator treats an animator's truly first-ever sample() call

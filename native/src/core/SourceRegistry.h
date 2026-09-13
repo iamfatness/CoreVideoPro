@@ -119,6 +119,13 @@ class SourceRegistry final {
   // Discovery only: zero/multiple matches remain explicit, with no auto-binding.
   [[nodiscard]] std::vector<PersonId> peopleNamed(const std::string& displayName) const;
 
+  // The one declared bound on every id-shaped field (sourceId, externalId,
+  // instanceId, processEpoch). Public because a CALLER cannot otherwise tell a
+  // permanently-refusable id from a transiently-refused one: MediaCore's wall
+  // registration loop retries failures on every liveness transition, and an
+  // over-length id would be retried forever.
+  static constexpr std::size_t kMaxIdBytes = 512;
+
  private:
   static bool sameToken(const Token& left, const Token& right);
   bool validRegistration(const Registration& registration) const;

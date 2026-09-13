@@ -3639,6 +3639,18 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     // This is a read-only path (buildMultiviewRenderPlan is const): use find(),
     // never forWall(), which would insert a wall on a mere read. A wall with no
     // TilesWallSource yet has never animated, so there is nothing to apply.
+    // SHARED-WALL COUPLING, deliberate and scoped (plan 2, the wall-texture
+    // slice, is where it goes away). One wall id now has ONE animator shared by
+    // both buses, so when the same gallery is cued in Preview and live on
+    // Program these two cells read the SAME animation state — the PVW cell shows
+    // Program's geometry for that wall, not an independent Preview animation.
+    // That is the correct trade today and the whole point of #448: the operator's
+    // complaint was the wall REBUILDING across the cut, and one shared animator
+    // is what makes the cut continuous. It is only visible at all while a wall
+    // is mid-flight on both buses at once, and in that window Program is the
+    // authority on what the wall looks like (see `enabled = programEnabled`).
+    // applyLatest is a pure read of the settled state and cannot itself advance
+    // or reset anything, so neither cell can corrupt the other's wall.
     if (const auto* wall = tilesWallSources_.find(tilesLayer_.layerId)) {
       wall->applyLatest(programPlan, tilesLayer_.layerId);
     }
@@ -3677,6 +3689,11 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     // never reflected the preview and never swapped on Take.)
     if (hasPreviewScene()) {
       auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      // Same shared-wall coupling as the PGM cell above: when Preview and
+      // Program carry the SAME wall id this reads the one shared animator, so
+      // the PVW cell mirrors Program's wall geometry rather than animating on
+      // its own. Pure read; it cannot advance or reset the wall. Owned by plan 2
+      // (the wall-texture slice), where the PVW cell gets the wall's own texture.
       if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId)) {
         wall->applyLatest(previewPlan, previewTilesLayer_.layerId);
       }
@@ -6390,6 +6407,21 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // skip it here rather than registering a nameless source that
     // validRegistration would refuse as Invalid anyway.
     if (wallId.empty()) continue;
+    // Final-review finding: an id validRegistration refuses on its SPELLING can
+    // never become valid, yet a failed add is deliberately NOT remembered as
+    // registered (below) - so the retry that exists for transient failures
+    // turned a permanent refusal into a registry-mutex acquisition plus a log
+    // line on every single render tick. Skip those, once and loudly, against the
+    // registry's own declared bound rather than a second copy of the number.
+    if (unregisterableWallIds_.contains(wallId)) continue;
+    if (wallId.size() > SourceRegistry::kMaxIdBytes) {
+      unregisterableWallIds_.insert(wallId);
+      ::corevideo::core::nativeLogf(
+          "[source-registry] wall id of %zu bytes exceeds the %zu-byte limit and can never "
+          "register; not retrying\n",
+          wallId.size(), static_cast<std::size_t>(SourceRegistry::kMaxIdBytes));
+      continue;
+    }
     // Review round 1, Finding 3: check-then-insert, not insert-and-read-.second.
     // unordered_set::insert on an already-present key is not guaranteed
     // allocation-free on every implementation (MSVC's has historically built
@@ -6412,8 +6444,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       // transition, not silently abandoned for the rest of its life. Loud,
       // since a wall invisible to the registry is invisible to any future
       // registry consumer too.
-      ::corevideo::core::nativeLogf("[source-registry] wall '%s' failed to register (result=%d)\n",
-                 wallId.c_str(), static_cast<int>(mutation.result));
+      // RETRYABLE (Conflict / Exhausted / a retired epoch): the retry above
+      // stands, but say it ONCE per id - see warnedWallRegistrationIds_.
+      if (warnedWallRegistrationIds_.insert(wallId).second) {
+        ::corevideo::core::nativeLogf("[source-registry] wall '%s' failed to register (result=%d)\n",
+                   wallId.c_str(), static_cast<int>(mutation.result));
+      }
     }
   }
   // Release from the registry whatever the sweep above just released from
@@ -6429,6 +6465,17 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     }
     sourceRegistry_.removeComposed(SourceId{*it});
     it = registeredWallIds_.erase(it);
+  }
+  // The two failure-side guards are pruned on the SAME rule, or a wall refused
+  // once and then legitimately re-cued under a corrected id would stay skipped
+  // (unregisterableWallIds_) or silent (warnedWallRegistrationIds_) for the life
+  // of the process. This is also what bounds both sets by the live wall set.
+  for (auto* guard : {&unregisterableWallIds_, &warnedWallRegistrationIds_}) {
+    for (auto it = guard->begin(); it != guard->end();) {
+      it = std::find(liveWallIds.begin(), liveWallIds.end(), *it) == liveWallIds.end()
+               ? guard->erase(it)
+               : std::next(it);
+    }
   }
   // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
   // and the sessionState() `tiles` node both read THIS, so a consumer can never

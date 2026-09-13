@@ -12,6 +12,21 @@ which #419 foundations slices 2-3 build on.
 A Tiles wall cued in Preview and taken to Program re-animates on the cut. The
 owner's words, live show 2026-09-09:
 
+> **CORRECTION (post-implementation, 2026-09-12).** Every "re-animates" /
+> "replays from alpha 0" reading below describes the SYMPTOM in the wrong
+> direction, and it matters to the tests this spec implies. A reset animator does
+> not replay an entrance: `TilesAnimator` treats a reset animator's next
+> non-empty `sample()` as an ADOPTION — content already present, not entering —
+> so the wall **SNAPS TO ITS FINAL STATE**: alpha pops to 1 and mid-spring rects
+> jump to their settled positions. On air this reads as a wall that stops moving
+> and jumps, which is what the owner saw as "loading for the first time". The
+> consequence: an `EXPECT_GE(alpha_after, alpha_before)` assertion is satisfied by
+> a snap just as well as by continuity and catches NOTHING; a falsifying test has
+> to bound the other side (post-take alpha stays below 0.9 for a tile that was
+> mid-ramp, and a tile already at opacity 1 keeps its mid-spring rect).
+> Read "re-animates" throughout as "loses its in-flight animation".
+
+
 > I am ok if panelists leave and join the video but what I can't have is a total
 > rerender from what is in preview to program like it is loading for the first
 > time.

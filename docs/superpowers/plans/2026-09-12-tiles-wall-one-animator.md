@@ -466,8 +466,16 @@ Add to `native/tests/TilesRenderPlanTest.cpp`:
 ```cpp
 // #448. adoptSettledFrom refuses a wall whose tiles are still flying, because
 // with two animators mid-flight state has no correct owner. So a wall taken
-// MID-ANIMATION re-animated from alpha 0 on Program. With one animator per wall
-// there is nothing to hand over and the cut is continuous.
+// MID-ANIMATION lost its animation on Program. With one animator per wall there
+// is nothing to hand over and the cut is continuous.
+//
+// CORRECTION (post-implementation): a reset does NOT replay from alpha 0. The
+// animator treats a reset's next non-empty sample() as an ADOPTION, so the wall
+// SNAPS TO ITS FINAL STATE - alpha pops to 1, mid-spring rects jump to settled.
+// Therefore the EXPECT_GE below is NOT a regression test (a snap satisfies it);
+// see the as-built test in TilesRenderPlanTest.cpp, which additionally asserts
+// the post-take alpha stays BELOW 0.9 and that any tile already at opacity 1
+// keeps its mid-spring rect. Those are the assertions verified red.
 //
 // This test MUST FAIL before Task 3. Verify that by reverting, not by assuming.
 TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
@@ -489,14 +497,14 @@ TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
   // The wall did not restart...
   EXPECT_EQ(harness.wallGeneration("tiles:scene-a"), generationBefore);
 
-  // ...and its tiles continued from where they were, rather than snapping back
-  // to the entry state. Alpha is the sharpest signal: a replayed entrance
-  // restarts at 0.
+  // ...and its tiles continued from where they were, rather than SNAPPING
+  // FORWARD to the settled state (see the correction above - this direction is
+  // the opposite of what the first draft of this plan assumed).
   const auto afterTake = harness.sampledProgramTiles();
   ASSERT_EQ(afterTake.size(), midFlight.size());
   for (size_t i = 0; i < afterTake.size(); ++i) {
     EXPECT_GE(afterTake[i].alpha, midFlight[i].alpha)
-        << "tile " << i << " replayed its entrance instead of continuing";
+        << "tile " << i << " lost its in-flight animation instead of continuing";
   }
 }
 ```

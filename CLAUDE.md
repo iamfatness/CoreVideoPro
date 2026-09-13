@@ -107,14 +107,25 @@ dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Releas
 runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respects a
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
-**Run the binary the build just wrote.** `native/build-dev/` is a single-config
-generator — the current binaries are `native/build-dev/corevideo-native.exe` and
-`corevideo-native-tests.exe`. A `native/build-dev/Release/` directory also exists,
-left by an older VS-generator build, and **nothing updates it**: a test run from
-there reported a confident "380 tests passed" from a binary a MONTH old, which
-silently omitted every test file added since. The real suite is 529 tests. If a
-newly added test does not appear in the output, check which binary you ran before
-suspecting CMake.
+**Run the binary the build just wrote, and ALWAYS pass `--config Release`.**
+`native/build-dev/` is a **MULTI-CONFIG** generator (`CMAKE_GENERATOR: Visual
+Studio 18 2026`) whose `CMAKE_RUNTIME_OUTPUT_DIRECTORY` is pinned to the binary
+dir for EVERY config (`native/CMakeLists.txt:46-48`). So the exes have no
+per-config suffix: **Debug and Release write to the exact same path**,
+`native/build-dev/corevideo-native.exe`, and `cmake --build native/build-dev
+--target …` with no `--config` silently builds DEBUG over your Release core.
+This cost a full false regression on 2026-09-12 — a drill reported `coreMutex`
+over-budget 1% -> 81% and was reported to the owner as a real regression caused
+by the branch. The tell was uniform inflation across trivial stages (emit 32x,
+plan 19x) and the binary SIZE: 8,322,560 bytes Debug vs 2,168,832 Release. With
+`--config Release` every metric matched baseline and the drill passed. **Check
+the size, or `--config`, before believing any native perf number.** (Libraries
+DO get a per-config dir — `build-dev/Release/corevideo_native.lib` — so a
+`Release/` subdirectory existing proves nothing about the exes.) Separately, a
+test run from a STALE `build-dev/Release/*.exe` left by an older layout once
+reported a confident "380 tests passed" from a binary a MONTH old, silently
+omitting every test file added since. If a newly added test does not appear in
+the output, check which binary you ran before suspecting CMake.
 
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
@@ -852,20 +863,30 @@ comment at the code site; this is the index.
   what I can't have is a total rerender from what is in preview to program like
   it is loading for the first time." The wall key is `sceneId + ":" + layerId`
   and the layer id is derived from the scene id, so the SAME gallery has the
-  SAME key on both buses — `MediaCore` holds two animation objects
-  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one used
-  to reset its animator the moment the key it had never held arrived. Two
-  corrections, both in `compositor/TilesPlanAnimation.h`:
-  `adoptSettledFrom()` MOVES a settled wall's state from preview to program on
-  the take tick (exact key match + every sampled tile `atRest` only; the source
-  is reset, never aliased, so the next wall cued in preview starts clean), and
-  `advance()` no longer samples an EMPTY target set for a wall that is still
-  present and has already drawn tiles. That second one is what actually produced
-  the reported replay: an all-stale beat (`kTilesStaleFrameMs`, an ordinary
-  state — see the empty-plan rule above) erased every retained tile AND consumed
-  the animator's adoption, so the instant frames returned the whole wall faded in
-  from alpha 0. A COLD wall's first tick is untouched, so a wall that was never
-  in preview behaves exactly as before. Not a contributor, measured: preview and
+  SAME key on both buses. **This was first fixed with a HAND-OVER and is now
+  fixed STRUCTURALLY — the hand-over is DELETED. See "ONE ANIMATOR PER WALL"
+  below; `TilesPlanAnimation::adoptSettledFrom` no longer exists.** The original
+  shape: `MediaCore` held two animation objects
+  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one reset
+  its animator the moment the key it had never held arrived. `adoptSettledFrom()`
+  moved a SETTLED wall's state across on the take tick — settled only, because
+  with two animators mid-flight state had no correct owner. The second
+  correction survives and still matters: `advance()` does not sample an EMPTY
+  target set for a wall that is still present and has already drawn tiles. That
+  is what produced the reported rebuild — an all-stale beat
+  (`kTilesStaleFrameMs`, an ordinary state — see the empty-plan rule above)
+  erased every retained tile AND consumed the animator's adoption.
+  **What a reset actually looks like, because the direction is counter-intuitive
+  and the docs had it backwards: it does NOT replay from alpha 0. `TilesAnimator`
+  treats a reset animator's next non-empty `sample()` as an ADOPTION (content
+  already present, not entering), so the wall SNAPS TO ITS FINAL STATE** — alpha
+  pops to 1, mid-spring rects jump to their settled positions. On air that is a
+  wall that stops moving and jumps, which is what "loading for the first time"
+  looked like. The practical consequence for tests: `EXPECT_GE(after, before)` on
+  alpha is satisfied by a snap just as well as by continuity and therefore
+  catches NOTHING — a falsifying assertion has to bound the other side (alpha
+  stays below 0.9, rects stay near their mid-spring values). A COLD wall's first
+  tick is untouched, so a wall that was never in preview behaves as before. Not a contributor, measured: preview and
   program share one device and one `sourceTextures_` cache keyed by
   `participantId` (`D3D11CompositorAdapter`), so tile textures are already warm
   across a take. Tests: `TilesRenderPlan.AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame`,
@@ -1249,7 +1270,11 @@ measurement rather than from the product.
   ONE sync, so that IS the take on this wire) and completed on the first program
   render tick after it — the only place the "after" half exists. Carries scene id
   and renderPlanId on both sides, the layer ids on both sides, the wall keys,
-  whether `TilesPlanAnimation::adoptSettledFrom` **adopted or reset**, whether the
+  whether the wall was **adopted or reset** (since #448: whether the ONE
+  `core::TilesWallSource` for that wall id survived the take with its generation
+  intact — `wallAdoptedSettled` is computed as `wallExistedBefore &&
+  generationAfter == generationBefore`, not from the deleted
+  `TilesPlanAnimation::adoptSettledFrom`), whether the
   wall's live background (`tiles-source-bg:`) made the first program frame, and
   the subscription-churn delta across the take. `core/TakeRecordPolicy.h` turns
   those into the one-word answer to "did the wall rebuild or cut" — and it will
@@ -1327,6 +1352,16 @@ red/green, the policies, and the take record end to end),
 
 ## The Tiles wall is a composed source, and composed sources are ERASED not tombstoned (#448 slice 2 task 4, 2026-09-12)
 
+**It has a production WRITER and, as of this slice, no production READER.**
+`MediaCore::renderSyntheticTick` registers and releases walls for real, and the
+only consumers are tests (`sourceRegistrySnapshotForTest`). That is deliberate —
+per `docs/BACKLOG.md`, a #419 foundation lands on `main` only together with a real
+consumer, and wall registration IS that consumer for the registry's write side —
+but it means nothing in the product yet behaves differently because of these
+entries. Do not describe the registry as "wired" beyond that, and expect the
+first real reader (the multiview PVW cell, plan 2) to be where its snapshot shape
+gets its first genuine test.
+
 `SourceRegistry` (`native/src/core/SourceRegistry.h`, carved out of #419 unwired
 onto main) gained `Kind::Composed` for sources the CORE renders rather than
 captures — the Tiles wall is the first one. `MediaCore::renderSyntheticTick`
@@ -1347,7 +1382,26 @@ state.** `personId`, `externalId`, `availability`, `subscriptionRequested`,
 `subscriptionObserved` are all `nullopt` for it — `nullopt` means NOT
 APPLICABLE, never false — because a wall has no provider process and nothing
 ever subscribes to it. `setAvailability`/`setSubscription` refuse `Composed`
-outright for exactly this reason.
+outright for exactly this reason — `setSubscription`'s refusal was MISSING and
+this file asserted it anyway for a day (final-review finding, fixed with
+`SourceRegistryComposed.SetSubscriptionOnAWallIsRefusedOutright`): an
+`observed:true` call was already refused as a side effect, because a nullopt
+availability is not `Available`, but `requested:true, observed:nullopt` applied
+cleanly and turned a NOT-APPLICABLE field into a concrete claim. Nothing in the
+tree called it for a wall, so only the documentation was wrong — which is exactly
+how an invariant rots.
+
+**A wall id too long to register is SKIPPED, not retried** (same finding).
+`SourceRegistry::kMaxIdBytes` (512) is the one declared bound on every id-shaped
+field, and it is public precisely so a caller can tell a PERMANENTLY refusable id
+from a transiently refused one: the registration loop deliberately does not
+remember a failed add as registered (so a transient failure retries on the next
+liveness transition), which turned a spelling-based refusal into a registry-mutex
+acquisition plus a log line on EVERY render tick. `unregisterableWallIds_` skips
+those once and loudly; `warnedWallRegistrationIds_` bounds the retryable
+failures' log line to once per id while keeping the retry. Both are pruned on the
+same liveness rule as `registeredWallIds_`, or a wall re-cued under a corrected
+id would stay skipped or silent for the life of the process.
 
 **A composed source is ERASED (`SourceRegistry::removeComposed`), never
 tombstoned — and this is not a simplification, it is the only mechanism that
