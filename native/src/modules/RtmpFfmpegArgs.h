@@ -161,7 +161,15 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
   if (!config.h264Profile.empty() && config.h264Profile != "auto") {
     args << " -profile:v " << config.h264Profile;
   }
-  args << " -bf " << (std::max)(0, (std::min)(4, config.bFrames)) << " -pix_fmt yuv420p"
+  // #515 round 3: feed the encoder the INPUT format directly when it is already
+  // nv12. Forcing yuv420p inserted a per-frame, single-threaded CPU swscale
+  // (nv12->yuv420p) between the raw pipe and the GPU encoder — with NVENC
+  // measured IDLE at 3% while the stream ran at speed=0.733x (44/60fps), that
+  // conversion was starving the encoder and capping the whole mux. h264_nvenc
+  // encodes nv12 natively and emits identical 4:2:0 h264, so nv12 passthrough is
+  // YouTube-compatible and skips the conversion. bgra input still needs yuv420p.
+  const std::string encodePixFmt = config.videoInputPixelFormat == "nv12" ? "nv12" : "yuv420p";
+  args << " -bf " << (std::max)(0, (std::min)(4, config.bFrames)) << " -pix_fmt " << encodePixFmt
        << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
        // Keep the audio clock tied to wallclock-paced video so A/V stays in sync
        // when the PCM pipe briefly under/overruns relative to the frame pipe.
