@@ -72,6 +72,7 @@ add_library(corevideo_native
   src/compositor/CompositorOverlayRaster.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/EncoderCapacityProbe.cpp
+  src/modules/MediaFoundationGpuVideoEncoder.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
