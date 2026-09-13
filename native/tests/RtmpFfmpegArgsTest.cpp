@@ -121,3 +121,20 @@ TEST(RtmpVideoFramePacer, ResetMakesNextFrameImmediatelyEligible) {
   pacer.reset();
   EXPECT_TRUE(pacer.shouldWrite(1010.0, 30));
 }
+
+// #521 slice 1: GPU-direct encode hands the muxer a compressed H.264 bitstream,
+// so the video input is copied (-c:v copy), not re-encoded from raw. The 186 MB/s
+// raw-video pipe is gone; audio is still encoded to AAC as before.
+TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
+  corevideo::modules::RtmpFfmpegArgsConfig config;
+  config.videoBitstreamInput = true;
+  config.hasAudio = true;
+  config.audioInput = "pipe:3";
+  const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-f h264 -thread_queue_size 512 -i pipe:0"), std::string::npos);
+  EXPECT_NE(args.find("-c:v copy"), std::string::npos);
+  EXPECT_EQ(args.find("-f rawvideo"), std::string::npos);  // no raw video input
+  EXPECT_EQ(args.find("-b:v "), std::string::npos);          // no re-encode bitrate
+  EXPECT_NE(args.find("-c:a aac"), std::string::npos);       // audio still encoded
+  EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
+}
