@@ -2,6 +2,7 @@
 
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
+#include "core/TilesWallSource.h"
 #include "core/Director.h"
 #include "core/MonitorShedPolicy.h"
 #include "core/OutputLifecyclePolicy.h"
@@ -266,6 +267,12 @@ class MediaCore {
   // declaration for why sharing one field was a live-show bug, not just a
   // test-seam gap.
   const TilesLayerState& previewTilesLayerForTest() const { return previewTilesLayer_; }
+  // The take record's proof that a wall did not restart across a Take: read
+  // via the const find() (never forWall(), which would insert a wall on a
+  // mere read). An unknown wall reports generation 0 — true, not a guess.
+  // Also the test seam: the headline #448 regression test reads this directly
+  // to assert a mid-animation Take does not bump the wall's generation.
+  [[nodiscard]] uint64_t tilesWallGeneration(const std::string& wallId) const;
   const std::vector<std::string>& sceneValidationWarningsForTest() const {
     return sceneValidationWarnings_;
   }
@@ -519,8 +526,9 @@ class MediaCore {
   // applyPreviewScene. See tilesLayer_ above for why this must be a SEPARATE
   // field rather than shared.
   TilesLayerState previewTilesLayer_;
-  compositor::TilesPlanAnimation programTilesAnimation_;
-  compositor::TilesPlanAnimation previewTilesAnimation_;
+  // One animation per WALL, not per bus (#448). See core/TilesWallSource.h for
+  // why the per-bus pair and its hand-off were wrong.
+  core::TilesWallSources tilesWallSources_;
   // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
   // every render tick from the live videoFrames gather (renderSyntheticTick,
   // under coreMutex — geometry bookkeeping, not pixel work). Covers members of
@@ -752,7 +760,7 @@ class MediaCore {
   // `frames` is THIS tick's final gather (media frames included): a source the
   // take brought on air with no frame in it counts as missing.
   void completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                          bool wallAdoptedSettled,
+                          bool wallContinuous,
                           const std::vector<modules::VideoFrame>& frames);
   static std::vector<std::string> renderPlanSourceIds(const modules::CompositorRenderPlan& plan);
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's

@@ -1020,6 +1020,84 @@ void take(MediaCore& core, const corevideo::rpc::Json& program, const corevideo:
 
 }  // namespace
 
+// #448. `TilesPlanAnimation::adoptSettledFrom` refused a wall whose tiles were
+// still flying, because with two per-bus animators mid-flight state had no
+// correct owner ("mid-flight state belongs to the bus that is flying it").
+// So a wall taken MID-ANIMATION re-animated from alpha 0 on Program — the
+// live-show defect this file is named for, caught here at its actual root:
+// with one animator PER WALL (core::TilesWallSource, shared by both buses)
+// there is nothing to hand over, so the cut is continuous even mid-flight.
+//
+// This test MUST FAIL before Task 3. Verified by reverting the MediaCore.cpp/
+// TilesPlanAnimation.h changes (not assumed): with the old per-bus pair, this
+// wall's key had never been held by programTilesAnimation_, so it reset and
+// EXPECT_GE(onAir alpha, midFlight alpha) failed as the wall replayed from 0.
+//
+// Getting a wall genuinely MID-FLIGHT deterministically (no real-time
+// polling): TilesAnimator treats an animator's truly first-ever sample() call
+// as an "adoption" — its content is already-present, not entering (see
+// DifferentWallCannotReuseAnotherWallsCachedGeometry / TilesAnimatorTest.cpp,
+// unrelated to and unchanged by #448) — so a wall's very first tick is
+// SETTLED instantly and cannot exercise this test. A member JOINING an
+// ALREADY-ESTABLISHED wall does animate in, and its alpha is exactly 0 on the
+// single tick it is added (entryElapsed only advances on LATER ticks) — the
+// everyday case that actually produces a mid-flight take.
+TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
+  RecordingCompositor* compositor = nullptr;
+  MediaCore core(wallModules(&compositor, nullptr));
+
+  const std::vector<std::string> initialMembers{"capture:g1", "capture:g2"};
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallLessScene("load-scene-graph", "solo"),
+      wallScene("set-preview-scene", "gallery", initialMembers)});
+  ASSERT_TRUE(allSettled(tileLayers(compositor->lastPreviewPlan)))
+      << "precondition: the wall must be established before a member joins it";
+
+  // A THIRD member joins the SAME wall (same layerId, same scene) while it is
+  // already on air in preview.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallScene("set-preview-scene", "gallery", wallMembers())});
+
+  const auto midFlight = tileLayers(compositor->lastPreviewPlan);
+  ASSERT_EQ(midFlight.size(), wallMembers().size());
+  ASSERT_FALSE(allSettled(midFlight))
+      << "precondition: the wall must still be animating for this test to mean anything";
+  const auto midFlightSnapshot = snapshotTiles(compositor->lastPreviewPlan);
+
+  const auto generationBefore = core.tilesWallGeneration("tiles:gallery");
+
+  take(core, wallScene("load-scene-graph", "gallery", wallMembers()),
+       wallLessScene("set-preview-scene", "solo"));
+
+  // The wall did not restart...
+  EXPECT_EQ(core.tilesWallGeneration("tiles:gallery"), generationBefore)
+      << "the wall's generation moved across the take — it restarted instead of continuing";
+
+  // ...and its tiles continued from where they were, rather than snapping to
+  // a new state. Alpha is the sharpest signal, but ">= before" alone is too
+  // weak: an animator that RESETS (a fresh TilesAnimator's first non-empty
+  // sample call is itself treated as "already there" — see
+  // AWallThatWasNeverCuedStartsCold above) pops a still-entering tile straight
+  // to fully opaque, which technically satisfies ">=" too. The take happens on
+  // the very next tick with negligible additional wall-clock time, so a
+  // CONTINUING animation cannot have progressed far past where it was; a value
+  // that jumped essentially to 1.0 is a reset wearing an alpha that happens to
+  // be no smaller, not a continuation.
+  const auto onAir = tileLayers(compositor->lastPlan);
+  ASSERT_EQ(onAir.size(), wallMembers().size()) << "the taken wall lost tiles on its first program frame";
+  for (const auto* tile : onAir) {
+    ASSERT_EQ(midFlightSnapshot.count(tile->layerId), 1u);
+    const auto& before = midFlightSnapshot.at(tile->layerId);
+    EXPECT_GE(tile->opacity, before.opacity)
+        << tile->layerId << " opacity regressed across the take";
+    if (before.opacity < 1.f) {
+      EXPECT_LT(tile->opacity, 0.9f)
+          << tile->layerId << " snapped straight to fully opaque instead of continuing its entrance "
+             "— the wall was reset (popped in), not continued";
+    }
+  }
+}
+
 // THE PROPERTY: a wall settled in preview, then taken, is at its settled state
 // on the first program frame — a cut, not a redraw.
 TEST(TilesRenderPlan, AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame) {

@@ -2049,8 +2049,13 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
   pendingTakeRecord_ = std::move(record);
 }
 
+uint64_t MediaCore::tilesWallGeneration(const std::string& wallId) const {
+  const auto* wall = tilesWallSources_.find(wallId);
+  return wall ? wall->generation() : 0;
+}
+
 void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                                   bool wallAdoptedSettled,
+                                   bool wallContinuous,
                                    const std::vector<modules::VideoFrame>& frames) {
   if (!pendingTakeRecord_) return;
   TakeRecord record = std::move(*pendingTakeRecord_);
@@ -2065,7 +2070,7 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
 
   const std::string liveBackgroundLayerId = "tiles-source-bg:" + tilesLayer_.layerId;
   record.observation.hasWallAfter = tilesLayer_.present;
-  record.observation.wallAdoptedSettled = wallAdoptedSettled;
+  record.observation.wallContinuous = wallContinuous;
   record.observation.liveBackgroundExpected =
       tilesLayer_.present && !tilesLayer_.style.backgroundSourceId.empty() &&
       tilesLayer_.style.backgroundSourceId != tilesLayer_.layerId;
@@ -3631,7 +3636,12 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       renderPlan.layers.push_back(std::move(marker));
     } else {
     auto programPlan = buildCompositorRenderPlan(videoFrames);
-    programTilesAnimation_.applyLatest(programPlan, sceneId_ + ":" + tilesLayer_.layerId);
+    // This is a read-only path (buildMultiviewRenderPlan is const): use find(),
+    // never forWall(), which would insert a wall on a mere read. A wall with no
+    // TilesWallSource yet has never animated, so there is nothing to apply.
+    if (const auto* wall = tilesWallSources_.find(tilesLayer_.layerId)) {
+      wall->applyLatest(programPlan, tilesLayer_.layerId);
+    }
     renderPlan.layers.reserve(programPlan.layers.size() + static_cast<size_t>(sourceCount) + 1);
     std::stable_sort(programPlan.layers.begin(), programPlan.layers.end(),
         [](const auto& a, const auto& b) { return a.order < b.order; });
@@ -3667,7 +3677,9 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     // never reflected the preview and never swapped on Take.)
     if (hasPreviewScene()) {
       auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
-      previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
+      if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId)) {
+        wall->applyLatest(previewPlan, previewTilesLayer_.layerId);
+      }
       std::stable_sort(previewPlan.layers.begin(), previewPlan.layers.end(),
           [](const auto& a, const auto& b) { return a.order < b.order; });
       for (const auto& src : previewPlan.layers) {
@@ -6252,30 +6264,42 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // THE TAKE HAND-OFF (owner report 2026-09-09: a gallery taken from preview to
   // program must be a CUT to something already rendered, never a redraw).
   // TransportCoordinator.TakeAsync swaps ActiveSceneId/PreviewSceneId and sends
-  // ONE sync, so the program wall key becomes the key preview held on the
-  // previous tick — the same wall, continuing on the other bus. Carry its
-  // settled animation state over before advancing, instead of letting the
-  // key change reset the animator. Refused unless the keys match EXACTLY and
-  // the preview wall is settled, and the state is MOVED (preview is reset), so
-  // the two buses cannot contaminate each other. Cost is a key compare plus a
-  // move of <=64 tiles, only on the tick a wall changes bus — no added
-  // coreMutex hold.
-  const std::string programWallKey = sceneId_ + ":" + tilesLayer_.layerId;
-  bool wallAdoptedSettled = false;
+  // ONE sync, so the program wall id becomes the id preview held on the
+  // previous tick — the SAME wall (#448: one animator per wall, not per bus),
+  // so there is nothing to hand over: both buses sample the same object, and a
+  // cut changes only which bus is looking at it.
+  const std::string programWallId = tilesLayer_.layerId;
+  const std::string previewWallId = previewTilesLayer_.layerId;
+  // The take record's proof that this wall did not restart across the take:
+  // its generation before this tick's advance, compared after (equal ==
+  // continuous). Read via the const find() (never forWall(), which would
+  // insert on a mere read) — an unknown wall has never animated and reports
+  // 0, which is true, not a guess. Scoped to the same present+animated gate
+  // as the advance call below: a wall that is not animating has no animator
+  // state to be continuous ABOUT, so it stays "not proven continuous", same
+  // as the old adoptSettledFrom-gated default.
+  bool wallContinuous = false;
   if (tilesLayer_.present && tilesLayer_.style.animateLayout) {
-    wallAdoptedSettled = programTilesAnimation_.adoptSettledFrom(previewTilesAnimation_, programWallKey);
+    const uint64_t generationBefore = tilesWallGeneration(programWallId);
+    tilesWallSources_.forWall(programWallId).advance(renderPlan, programWallId,
+        tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
+    wallContinuous = tilesWallGeneration(programWallId) == generationBefore;
   }
-  programTilesAnimation_.advance(renderPlan, programWallKey,
-      tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
-  // Advance Preview on this same render clock even when its wall is empty.
-  // Snapshot/prefetch builds must not change entry/departure animation state.
-  if (previewTilesLayer_.present && previewTilesLayer_.style.animateLayout && hasPreviewScene()) {
+  // Advance Preview on the SAME render clock even when its wall is empty, so
+  // snapshot/prefetch builds cannot change entry/departure animation state.
+  // When both buses show the SAME wall this is the same object, advanced once
+  // above — guard against double-advancing it on one tick.
+  if (previewTilesLayer_.present && previewTilesLayer_.style.animateLayout &&
+      hasPreviewScene() && previewWallId != programWallId) {
     auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
-    previewTilesAnimation_.advance(previewAnimationPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId,
+    tilesWallSources_.forWall(previewWallId).advance(previewAnimationPlan, previewWallId,
         true, previewTilesLayer_.style.animateLayout, previewTilesLayer_.style.animationDurationMs, animationNowMs);
-  } else {
-    previewTilesAnimation_.reset();
   }
+  // Lifetime: release any wall no live scene still names (parent spec section 2).
+  std::vector<std::string> liveWallIds;
+  if (tilesLayer_.present) liveWallIds.push_back(programWallId);
+  if (previewTilesLayer_.present) liveWallIds.push_back(previewWallId);
+  tilesWallSources_.releaseAllExcept(liveWallIds);
   // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
   // and the sessionState() `tiles` node both read THIS, so a consumer can never
   // observe a wall the compositor did not also receive (see modules_.compositor->
@@ -6374,7 +6398,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // is built, and judging continuity or "had a frame" before they arrive would
   // call every media source missing and read the previous tick's generations.
   if (pendingTakeRecord_) {
-    completeTakeRecord(renderPlan, wallAdoptedSettled, videoFrames);
+    completeTakeRecord(renderPlan, wallContinuous, videoFrames);
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
@@ -6555,7 +6579,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (previewActive && previewDue) {
     const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
-    previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
+    tilesWallSources_.forWall(previewTilesLayer_.layerId).applyLatest(previewPlan, previewTilesLayer_.layerId);
     previewPlan.skipCpuReadback = true;
     lastProgramFrame_.previewSharedTexture = modules_.compositor->renderPreview(previewPlan, videoFrames);
     lastProgramFrame_.previewWidth = previewPlan.width;

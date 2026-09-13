@@ -9,39 +9,6 @@ class TilesPlanAnimation {
  public:
   void reset() { animator_.reset(); key_.clear(); sampled_.clear(); }
 
-  // Carry a SETTLED wall from one bus to the other (live-show defect, owner
-  // report 2026-09-09: "I can't have a total rerender from what is in preview
-  // to program like it is loading for the first time").
-  //
-  // The wall key is sceneId + ":" + layerId and the layer id is derived from
-  // the scene id, so the gallery sitting settled in PREVIEW and the same
-  // gallery a Take puts on PROGRAM carry the IDENTICAL key — it is one wall
-  // continuing on another bus, not a new one. Without this, the program
-  // animation saw a key it had never held, reset its animator, and threw away
-  // spring positions and entry alpha that were fully settled an instant
-  // earlier on the other bus.
-  //
-  // Scoped so the two buses can never contaminate each other:
-  //   * only on an EXACT key match (a different wall, or a wall the other bus
-  //     never held, is refused and animates exactly as it does today),
-  //   * only when the other bus's wall is SETTLED (every sampled tile atRest —
-  //     mid-flight state belongs to the bus that is flying it),
-  //   * the state is MOVED, and the source is reset — never aliased, so the
-  //     next wall cued on the source bus starts clean.
-  // Returns true if the state was carried across.
-  bool adoptSettledFrom(TilesPlanAnimation& previous, const std::string& wallKey) {
-    if (wallKey.empty() || key_ == wallKey) return false;
-    if (previous.key_ != wallKey || previous.sampled_.empty()) return false;
-    for (const auto& tile : previous.sampled_) {
-      if (!tile.atRest) return false;
-    }
-    animator_ = std::move(previous.animator_);
-    sampled_ = std::move(previous.sampled_);
-    key_ = wallKey;
-    previous.reset();
-    return true;
-  }
-
   // Returns true when this call RESET the animator (a departure/disable, or a
   // different wall key arriving) - the caller's only truthful signal of "did
   // this wall restart", with no std::function/allocation on the render tick.

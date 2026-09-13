@@ -1,5 +1,6 @@
 #include "compositor/TilesAnimator.h"
 #include "compositor/TilesPlanAnimation.h"
+#include "core/TilesWallSource.h"
 #include <gtest/gtest.h>
 
 using namespace corevideo::compositor;
@@ -108,10 +109,10 @@ TEST(TilesAnimator, DifferentWallCannotReuseAnotherWallsCachedGeometry) {
   EXPECT_EQ(plan.layers[0].rect.x, .5f);
   EXPECT_EQ(plan.layers[0].opacity, 1.f);
 }
-// The take hand-off (owner report 2026-09-09). A wall that changes BUS is the
-// same wall: preview's settled state moves to program instead of being thrown
-// away and re-adopted. Scoped by an exact key match + settledness, and MOVED so
-// the two buses can never alias each other.
+// The take hand-off (owner report 2026-09-09, #448). A wall that changes BUS
+// is the SAME wall — and since #448 it is, literally: `core::TilesWallSource`
+// gives a wall ONE animator shared by both buses, so a Take need not move or
+// adopt anything. There is no per-bus pair left to hand off between.
 corevideo::modules::CompositorRenderPlan wallPlan(std::initializer_list<TilesAnimationTarget> tiles) {
   corevideo::modules::CompositorRenderPlan plan;
   for (const auto& tile : tiles) {
@@ -123,43 +124,71 @@ corevideo::modules::CompositorRenderPlan wallPlan(std::initializer_list<TilesAni
   }
   return plan;
 }
-TEST(TilesAnimator, ASettledWallMovesBusWithoutReplayingItsEntrance) {
-  TilesPlanAnimation preview, program;
+// Was: "a settled wall moves bus without replaying its entrance" via
+// adoptSettledFrom(). Now: a wall settled on one bus is ALREADY settled on the
+// other, because there is only one animator object and both buses read it.
+TEST(TilesAnimator, AWallSettledOnOneBusIsAlreadySettledOnTheOtherBecauseItIsTheSameObject) {
+  corevideo::core::TilesWallSources walls;
+  auto& wall = walls.forWall("tiles:gallery");
   auto plan = wallPlan({tile("a", 0, .5f), tile("b", .5f, .5f)});
-  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 0);
+  wall.advance(plan, "tiles:gallery", true, true, 350, 0);
   plan = wallPlan({tile("a", 0, .5f), tile("b", .5f, .5f)});
-  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 5000);
+  wall.advance(plan, "tiles:gallery", true, true, 350, 5000);
   ASSERT_EQ(plan.layers[0].opacity, 1.f);
+  const auto generationBefore = wall.generation();
 
-  EXPECT_TRUE(program.adoptSettledFrom(preview, "gallery:tiles:gallery"));
+  // "Taking" it is just another applyLatest/advance call against the SAME
+  // wallId — no hand-off call, no second object, nothing to adopt.
+  auto onProgram = wallPlan({tile("a", 0, .5f), tile("b", .5f, .5f)});
+  wall.applyLatest(onProgram, "tiles:gallery");
+  EXPECT_EQ(onProgram.layers[0].opacity, 1.f);
+  EXPECT_EQ(onProgram.layers[1].opacity, 1.f);
+
   plan = wallPlan({tile("a", 0, .5f), tile("b", .5f, .5f)});
-  program.advance(plan, "gallery:tiles:gallery", true, true, 350, 5016);
+  wall.advance(plan, "tiles:gallery", true, true, 350, 5016);
   EXPECT_EQ(plan.layers[0].opacity, 1.f);
   EXPECT_EQ(plan.layers[1].opacity, 1.f);
-
-  // Preview was RESET, not aliased: its next wall starts clean, and it no
-  // longer claims the wall program now owns.
-  auto stale = wallPlan({tile("a", 0, .5f)});
-  preview.applyLatest(stale, "gallery:tiles:gallery");
-  EXPECT_EQ(stale.layers[0].opacity, 1.f);
+  EXPECT_EQ(wall.generation(), generationBefore)
+      << "continuing on the other bus must not bump the wall's generation";
 }
-TEST(TilesAnimator, HandOffIsRefusedForADifferentOrUnsettledWall) {
-  TilesPlanAnimation preview, program;
-  auto plan = wallPlan({tile("a")});
-  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 0);
-  plan = wallPlan({tile("a")});
-  preview.advance(plan, "gallery:tiles:gallery", true, true, 350, 5000);
-  EXPECT_FALSE(program.adoptSettledFrom(preview, "other:tiles:other"));
+// Was: "hand-off is refused for a different or unsettled wall" via
+// adoptSettledFrom() returning false. There is no hand-off left to refuse —
+// each wall id gets its OWN TilesWallSource, so a wall that was never cued on
+// either bus simply starts cold: generation 0, full entry animation.
+// NOTE on this rewrite: the underlying TilesAnimator treats an animator's
+// truly FIRST-ever sample() call as an "adoption" (see
+// TilesAnimator::sample's `adopted_`/`adoption` — proven by the pre-existing
+// DifferentWallCannotReuseAnotherWallsCachedGeometry test above, which was
+// NOT touched by #448 and still asserts alpha==1 on a fresh animator's first
+// tick). So a wall cued cold with content on its very first tick renders
+// SETTLED, not fading in from alpha 0 — there is no earlier state for it to
+// contradict. What #448 needed pinned is narrower and still true: the wall
+// starts at generation 0 before anything has cued it, and a genuinely
+// different wall id is a SEPARATE object that can never inherit this one's
+// geometry or generation — there is no hand-off left to (correctly) refuse.
+TEST(TilesAnimator, AWallThatWasNeverCuedStartsCold) {
+  corevideo::core::TilesWallSources walls;
+  ASSERT_EQ(walls.find("tiles:gallery"), nullptr)
+      << "an uncued wall must not exist yet — find() must never insert";
+  auto& wall = walls.forWall("tiles:gallery");
+  EXPECT_EQ(wall.generation(), 0u);
 
-  // Mid-entrance is not settled — it belongs to the bus flying it.
-  TilesPlanAnimation entering, taking;
-  auto empty = wallPlan({});
-  entering.advance(empty, "gallery:tiles:gallery", true, true, 350, 0);
-  auto arriving = wallPlan({tile("a")});
-  entering.advance(arriving, "gallery:tiles:gallery", true, true, 350, 16);
-  ASSERT_EQ(arriving.layers[0].opacity, 0.f);
-  EXPECT_FALSE(taking.adoptSettledFrom(entering, "gallery:tiles:gallery"));
+  auto arriving = wallPlan({tile("a", .25f, .3f)});
+  wall.advance(arriving, "tiles:gallery", true, true, 350, 0);
+  EXPECT_EQ(arriving.layers[0].rect.x, .25f);
+  EXPECT_EQ(arriving.layers[0].rect.width, .3f);
+
+  // A DIFFERENT wall id is a genuinely different object and also starts cold
+  // at generation 0 — it cannot inherit this one's geometry or generation.
+  auto& other = walls.forWall("tiles:other");
+  EXPECT_EQ(other.generation(), 0u);
+  auto otherArriving = wallPlan({tile("a")});
+  other.advance(otherArriving, "tiles:other", true, true, 350, 16);
+  EXPECT_NE(otherArriving.layers[0].rect.x, arriving.layers[0].rect.x)
+      << "the second wall inherited the first wall's geometry";
 }
+// This guard matters MORE with one shared animator per wall (#448): a wipe
+// here now hits whichever bus is looking at the wall, not just one of a pair.
 TEST(TilesAnimator, AnAllStaleBeatDoesNotWipeAWallThatIsAlreadyDrawn) {
   TilesPlanAnimation animation;
   auto plan = wallPlan({tile("a")});

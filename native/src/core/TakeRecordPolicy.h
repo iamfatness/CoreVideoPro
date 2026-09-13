@@ -9,11 +9,14 @@ namespace corevideo::core {
 // DID THE WALL CUT, OR DID IT REBUILD?
 //
 // A Take of a Tiles scene is supposed to be a CUT to something already
-// composited on Preview: `TilesPlanAnimation::adoptSettledFrom` moves the
-// settled animator across buses so the wall continues instead of replaying its
-// entrance. When adoption is refused (keys differ, or the preview wall was not
-// at rest) the program animator resets and every tile animates in from scratch
-// — on air that reads as the wall redrawing itself.
+// composited on Preview. Since #448, a wall owns exactly ONE animator
+// (`core::TilesWallSource`, shared by both buses) instead of a per-bus pair
+// with a hand-off between them — so there is nothing to adopt or refuse.
+// `wallContinuous` is that animator's generation before this take's advance
+// compared to after: equal means the wall kept animating in place; a bump
+// means something reset it (a different wall arrived, or it went away and
+// came back), and every tile would have animated in from scratch — on air
+// that reads as the wall redrawing itself.
 //
 // Two other things can produce the identical picture and must not be confused
 // with it, which is why they are inputs here rather than a second guess later:
@@ -42,7 +45,7 @@ struct TakeRecordPolicy {
 
   struct Observation {
     bool hasWallAfter = false;         // the taken scene carries a Tiles wall
-    bool wallAdoptedSettled = false;   // adoptSettledFrom() returned true
+    bool wallContinuous = false;       // the wall's generation did not move across the take
     bool liveBackgroundExpected = false;   // the wall declares a live source background
     bool liveBackgroundEmitted = false;    // ...and it was in the first program frame
     std::uint64_t subscriptionChurnDelta = 0;  // real re-subscribes across the take
@@ -56,7 +59,7 @@ struct TakeRecordPolicy {
 
   struct Verdict {
     // How the wall arrived on Program.
-    const char* wall = "none";       // none | adopted-settled | reset
+    const char* wall = "none";       // none | continuous | reset
     // The one-word answer to "did the take rebuild or cut".
     const char* verdict = "no-wall";  // cut | rebuilt | no-wall
     // Whether anything other than the render plan could explain a rebuild.
@@ -92,12 +95,12 @@ struct TakeRecordPolicy {
       else verdict.verdict = observation.sharedSources.empty() ? "no-wall" : "cut";
       return verdict;
     }
-    if (!observation.wallAdoptedSettled) {
+    if (!observation.wallContinuous) {
       verdict.wall = "reset";
       verdict.verdict = "rebuilt";
       return verdict;
     }
-    verdict.wall = "adopted-settled";
+    verdict.wall = "continuous";
     // The animator cut cleanly. If the background never made the first frame,
     // a subscription was torn down in the same tick, or a source restarted or
     // cold-started, the operator can still have seen a rebuild — say so
