@@ -34,6 +34,18 @@ class TilesWallSource final {
     }
   }
 
+  // Review round 4, Finding 1: release a wall that is present but not
+  // animating, with no plan argument at all — see
+  // TilesPlanAnimation::releaseIfIdle for why a caller must never substitute
+  // a plan built for a DIFFERENT wall on this path. Same generation contract
+  // as advance(): a reset (key_ was non-empty) bumps it, an already-idle wall
+  // does not.
+  void releaseIfIdle() {
+    if (animation_.releaseIfIdle()) {
+      noteReset();
+    }
+  }
+
   void applyLatest(modules::CompositorRenderPlan& plan, const std::string& wallId) const {
     animation_.applyLatest(plan, wallId);
   }

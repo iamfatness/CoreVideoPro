@@ -1202,6 +1202,30 @@ TEST(TilesRenderPlan, AProgramDisabledSharedWallNeverAnimatesEvenWhenPreviewWant
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       wallScene("set-preview-scene", "s", members)});
 
+  // Review round 4, Finding 2: prove the SHARED configuration this test is
+  // about actually exists before asserting on it — an all-negative test
+  // (generation == 0 forever) passes VACUOUSLY if the configuration silently
+  // stops existing (set-preview-scene stops populating previewTilesLayer_,
+  // hasPreviewScene() goes false, or the layerId derivation changes so the
+  // two buses no longer share "tiles:s"). Program's own wall must be present
+  // and drawing real tiles — a plain MediaCore() has no real source to admit
+  // zoom:1/zoom:2, so force admission the same way
+  // EachAdmittedMemberBecomesOneTileLayer does. This only rebuilds
+  // lastRenderPlan_ via buildCompositorRenderPlan (see the seam's own
+  // comment) — it does NOT touch tilesWallSources_/generation, so it cannot
+  // disturb the property under test below.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:1"), nullptr)
+      << "precondition: Program's wall never rendered its tiles";
+  // ...and Preview's scene must have been accepted onto the SAME wall id, not
+  // silently rejected or parsed onto some other layerId.
+  ASSERT_TRUE(core.previewTilesLayerForTest().present)
+      << "precondition: the preview scene was not accepted";
+  ASSERT_EQ(core.previewTilesLayerForTest().layerId, "tiles:s")
+      << "precondition: preview did not land on the SAME wall id as Program";
+  ASSERT_TRUE(core.previewTilesLayerForTest().style.animateLayout)
+      << "precondition: Preview's animateLayout must be true for this test to mean anything";
+
   EXPECT_EQ(core.tilesWallGeneration("tiles:s"), 0u)
       << "the shared wall animated on its very first tick even though Program's "
          "animateLayout is false — Preview must never be able to start it";

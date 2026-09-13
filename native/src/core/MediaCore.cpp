@@ -6351,15 +6351,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // A disabled preview wall (animateLayout=false, the DEFAULT) with a
     // different id from Program used to pay a full buildRenderPlanForScene
     // deep build (a layer vector, ~13 strings per layer, the paused-clip-cue
-    // pass) under coreMutex, EVERY tick, for nothing. Pass the already-built
-    // program `renderPlan` instead — advance() never reads it on this path.
+    // pass) under coreMutex, EVERY tick, for nothing.
+    //
+    // Review round 4, Finding 1: the disabled branch used to pass the
+    // PROGRAM `renderPlan` here — safe only because advance() returns before
+    // ever reading `plan` on the disabled path, an invariant that lives in a
+    // different file from this call and would silently start rewriting
+    // Program's `tile:*` layer rects/opacity (the exact object handed to
+    // compositor->render() and cached into lastRenderPlan_) the moment that
+    // early return is reordered. releaseIfIdle() takes no plan and cannot
+    // ever read one, so the hazard does not exist rather than being merely
+    // documented.
     if (previewEnabled) {
       auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
       tilesWallSources_.forWall(previewWallId).advance(previewAnimationPlan, previewWallId,
           true, true, previewTilesLayer_.style.animationDurationMs, animationNowMs);
     } else {
-      tilesWallSources_.forWall(previewWallId).advance(renderPlan, previewWallId,
-          true, false, previewTilesLayer_.style.animationDurationMs, animationNowMs);
+      tilesWallSources_.forWall(previewWallId).releaseIfIdle();
     }
   }
   // Lifetime: release any wall no live scene still names (parent spec section 2).
