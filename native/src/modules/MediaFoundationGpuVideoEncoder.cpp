@@ -17,7 +17,6 @@
 #include <vector>
 
 #include <d3d11.h>
-#include <d3d11_1.h>
 #include <dxgi1_2.h>
 #include <codecapi.h>
 #include <mfapi.h>
@@ -236,11 +235,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     if (openedTexture_ && openedHandleHex_ == hex) return true;
     openedTexture_.Reset();
     openedMutex_.Reset();
-    ComPtr<ID3D11Device1> device1;
-    if (FAILED(device_.As(&device1)) || !device1) return false;
     HANDLE handle = handleFromHex(hex);
     if (!handle) return false;
-    if (FAILED(device1->OpenSharedResource1(handle, IID_PPV_ARGS(&openedTexture_))) || !openedTexture_) {
+    if (FAILED(device_->OpenSharedResource(handle, IID_PPV_ARGS(&openedTexture_))) || !openedTexture_) {
       return false;
     }
     openedTexture_.As(&openedMutex_);
@@ -249,10 +246,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   }
 
   // BGRA (shared) -> NV12 (encode target) on the GPU via the driver's video
-  // processor. Acquires the keyed mutex (key 0), releases it back (key 1).
+  // processor. Acquires the keyed mutex (key 1) held by the producer, then releases
+  // key 0 for it to continue rendering.
   bool convertToNv12(const std::string& hex) {
     if (!ensureOpened(hex) || !openedMutex_) return false;
-    if (openedMutex_->AcquireSync(0, 4) != S_OK) return false;  // producer holds it; skip
+    if (openedMutex_->AcquireSync(1, 4) != S_OK) return false;  // wait for consumer's release
     bool ok = false;
     do {
       D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
@@ -276,7 +274,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       stream.pInputSurface = inView.Get();
       ok = SUCCEEDED(videoContext_->VideoProcessorBlt(videoProcessor_.Get(), outView.Get(), 0, 1, &stream));
     } while (false);
-    openedMutex_->ReleaseSync(1);
+    openedMutex_->ReleaseSync(0);
     return ok;
   }
 
