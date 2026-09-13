@@ -6283,11 +6283,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // and again with enabled=true (a SECOND reset, since the first call just
   // cleared key_) — generation +2/tick with no actual animation, and Preview's
   // geometry re-adopted from scratch on every tick. `sameWall` decides whether
-  // there is one object or two to advance this tick; when it is one, `enabled`
-  // is the OR of both buses' flags — a shared wall animates if EITHER bus wants
-  // it to, and there is exactly one advance() call to carry that decision.
-  const bool sameWall = programPresent && previewPresent && !programWallId.empty() &&
-                        programWallId == previewWallId;
+  // there is one object or two to advance this tick; when it is one, there is
+  // exactly one advance() call to carry the decision (see Finding 2 below for
+  // which bus's `enabled` that call uses).
+  // Review round 3, Finding 3: no `!programWallId.empty()` term — two empty
+  // ids are the SAME map entry (TilesWallSources keys on the string), so
+  // excluding them re-opens the two-advance-on-one-object path this whole
+  // restructure exists to close. It has no generation effect (an empty
+  // wallKey never trips `key_ != wallKey` or the idempotent guard's
+  // `!key_.empty()`), but the shape is wrong regardless.
+  const bool sameWall = programPresent && previewPresent && programWallId == previewWallId;
   // The take record's proof that this wall did not restart across the take:
   // its generation before this tick's advance, compared after (equal ==
   // continuous). Read via the const find() (never forWall(), which would
@@ -6310,7 +6315,24 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // the multiview PGM cell and the preview composite (both read via
     // applyLatest, which does not know about "enabled") kept applying stale
     // animated geometry the Program plan itself no longer carried.
-    const bool enabled = sameWall ? (programEnabled || previewEnabled) : programEnabled;
+    // Review round 3, Finding 2 (RULING): Program wins for a shared wall.
+    // `enabled = programEnabled || previewEnabled` let a PREVIEW-side toggle
+    // start motion on PROGRAM for a shared wall with no take involved, since
+    // the shared advance samples straight into the program `renderPlan`. This
+    // codebase's bedrock rule is that an off-air Preview look never changes
+    // what is on air (CLAUDE.md: "an off-air Preview look can never take
+    // video ... from a Program source") — the preview scene is an
+    // operator-editable draft (S2b), so a draft edit reaching Program is a
+    // live-show hazard, and Program is inherited by the virtual camera, every
+    // recording and every stream. Do not restore the OR.
+    //
+    // This is cost-free thanks to the Finding C fix: a disabled shared wall
+    // still resets every tick (idempotently after the first), `sampled_`
+    // clears, and `applyLatest` no-ops on the mismatched `key_` — so Preview
+    // falls back to raw (non-animated) plan geometry rather than stale rects.
+    // Preview simply does not animate; nothing on air moves because of an
+    // off-air edit.
+    const bool enabled = programEnabled;
     tilesWallSources_.forWall(programWallId).advance(renderPlan, programWallId,
         programPresent, enabled, tilesLayer_.style.animationDurationMs, animationNowMs);
     wallContinuous = wallExistedBefore && tilesWallGeneration(programWallId) == generationBefore;
@@ -6319,12 +6341,26 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // snapshot/prefetch builds cannot change entry/departure animation state —
   // but ONLY when it names a wall DIFFERENT from Program's (a genuinely
   // separate object). When `sameWall`, the program branch above already
-  // advanced this exact object once this tick, carrying Preview's `enabled`
-  // into the OR — a second call here would be the round-2 double-advance bug.
+  // advanced this exact object once this tick (with Program's `enabled` —
+  // Finding 2) — a second call here would be the round-2 double-advance bug.
   if (previewPresent && !sameWall) {
-    auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
-    tilesWallSources_.forWall(previewWallId).advance(previewAnimationPlan, previewWallId,
-        true, previewEnabled, previewTilesLayer_.style.animationDurationMs, animationNowMs);
+    // Review round 3, Finding 1: build the deep preview plan ONLY when
+    // advance() will actually read it. `advance()` returns at its very first
+    // line when `!enabled`, before touching the plan at all — the same class
+    // of waste the "Task 4 review fix (I6)" comment below exists to prevent.
+    // A disabled preview wall (animateLayout=false, the DEFAULT) with a
+    // different id from Program used to pay a full buildRenderPlanForScene
+    // deep build (a layer vector, ~13 strings per layer, the paused-clip-cue
+    // pass) under coreMutex, EVERY tick, for nothing. Pass the already-built
+    // program `renderPlan` instead — advance() never reads it on this path.
+    if (previewEnabled) {
+      auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      tilesWallSources_.forWall(previewWallId).advance(previewAnimationPlan, previewWallId,
+          true, true, previewTilesLayer_.style.animationDurationMs, animationNowMs);
+    } else {
+      tilesWallSources_.forWall(previewWallId).advance(renderPlan, previewWallId,
+          true, false, previewTilesLayer_.style.animationDurationMs, animationNowMs);
+    }
   }
   // Lifetime: release any wall no live scene still names (parent spec section 2).
   std::vector<std::string> liveWallIds;

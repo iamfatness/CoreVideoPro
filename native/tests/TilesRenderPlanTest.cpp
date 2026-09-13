@@ -1171,7 +1171,26 @@ TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
 // actually completes, and the shared object churns forever. This test must
 // FAIL against commit c11862d2 (round 1) and pass after round 2's "one
 // advance per wall per tick" restructure.
-TEST(TilesRenderPlan, ASharedWallWithDisagreeingAnimateFlagsAdvancesAtMostOncePerTick) {
+// Review round 2 caught: this configuration (same wall id, disagreeing
+// `animateLayout`) had NO coverage before it, which is why it took two review
+// rounds to find the double-advance bug it exposed.
+//
+// Review round 3, Finding 2 (RULING) changed what "correct" means here: the
+// original version of this test asserted the shared wall's generation settled
+// after climbing once (the old `enabled = programEnabled || previewEnabled`
+// behaviour) — i.e. Preview's animateLayout=true was allowed to start motion
+// on Program. That is a live-show hazard (an off-air Preview draft edit
+// reaching Program — CLAUDE.md: "an off-air Preview look can never take video
+// ... from a Program source"), so the rule is now PROGRAM WINS: a wall shared
+// by both buses uses ONLY Program's `enabled`, never an OR. This test now
+// asserts that property directly: with Program's animateLayout=false, the
+// shared wall's generation NEVER moves off 0, no matter how many ticks pass
+// or what Preview wants — it never even acquires a real key (`advance()`
+// takes the early-return branch every tick since `enabled` is `false`
+// throughout). If the OR were ever restored, the first tick would establish
+// a real key and settle the generation at 1 instead of 0 — this assertion
+// would catch that.
+TEST(TilesRenderPlan, AProgramDisabledSharedWallNeverAnimatesEvenWhenPreviewWantsIt) {
   MediaCore core;
   const std::vector<std::string> members{"zoom:1", "zoom:2"};
 
@@ -1183,20 +1202,18 @@ TEST(TilesRenderPlan, ASharedWallWithDisagreeingAnimateFlagsAdvancesAtMostOncePe
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       wallScene("set-preview-scene", "s", members)});
 
-  const auto generationAfterFirstTick = core.tilesWallGeneration("tiles:s");
-  ASSERT_GT(generationAfterFirstTick, 0u)
-      << "precondition: the shared wall must have animated at least once by now";
+  EXPECT_EQ(core.tilesWallGeneration("tiles:s"), 0u)
+      << "the shared wall animated on its very first tick even though Program's "
+         "animateLayout is false — Preview must never be able to start it";
 
-  // Several more ticks with nothing changing: a correctly-shared object
-  // settles and its generation goes flat. The round-2 bug climbs it by 2
-  // EVERY tick — this loop catches that on the very first iteration.
+  // Several more ticks with nothing changing: the generation must stay
+  // pinned at 0 forever, not merely "settle" at some nonzero value (which
+  // would mean Preview's flag won at least once).
   for (int tick = 0; tick < 5; ++tick) {
     (void)core.applyCommands(corevideo::rpc::Json::Array{});
-    const auto generationNow = core.tilesWallGeneration("tiles:s");
-    EXPECT_LE(generationNow, generationAfterFirstTick + 1)
-        << "tick " << tick << ": the shared wall's generation is still climbing — "
-           "it is being advanced more than once per tick with contradictory `enabled`, "
-           "the same object being reset and re-adopted every tick instead of animating once";
+    EXPECT_EQ(core.tilesWallGeneration("tiles:s"), 0u)
+        << "tick " << tick << ": the shared wall animated even though Program's "
+           "animateLayout is false — a Preview-only toggle must never move Program";
   }
 }
 
