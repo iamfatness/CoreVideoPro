@@ -108,18 +108,33 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       static_cast<double>(fps) * (std::max)(0.5, (std::min)(10.0, config.keyframeIntervalSeconds)))));
   std::ostringstream args;
   args << " -hide_banner -loglevel warning"
-       // Pace raw pipe input by its declared media clock. The application also
-       // paces writes, while -re prevents short queue bursts from advancing RTMP
-       // timestamps faster than wall time.
-       << " -re -thread_queue_size 512"
+       // The video pipe is read GREEDILY — deliberately NO -re (owner live
+       // incident 2026-09-13). The application already paces writes at the 60Hz
+       // video-output tick, so this input is realtime by construction. -re here
+       // double-throttled it: when the RTMP push to the destination could not
+       // sustain the bitrate, FFmpeg kept reading at wallclock into its internal
+       // buffer while the output drained slower, so the encode fell progressively
+       // behind live — measured 0.7s -> 124s of lag over ~8 min of a YouTube
+       // stream ("Resumed reading ... after a lag of 123s"), which the ingest
+       // read as "poor / not enough data". Without -re the pipe fills under
+       // backpressure, the sender's write blocks, and AsyncOutputSender's
+       // newest-wins DROPS stale frames to stay live — the standard live-encoder
+       // behaviour (OBS drops "network" frames the same way). It also gets the
+       // first video keyframe + decoder config to the muxer sooner, so it cannot
+       // reintroduce the audio-races-ahead / no-video close the AUDIO -re guards.
+       << " -thread_queue_size 512"
        << " -f rawvideo -pix_fmt " << config.videoInputPixelFormat << " -s " << config.width << "x" << config.height
        << " -r " << fps << " -i pipe:0";
   if (config.hasAudio) {
     const int channels = (std::max)(1, config.audioChannels);
     const int sampleRate = (std::max)(8000, config.audioSampleRate);
     // Real PCM can arrive in coalesced blocks after encoder startup. Pace it by
-    // sample count just like video so AAC cannot race several seconds ahead of
-    // the RTMP video clock and make the ingest stall.
+    // sample count so AAC cannot race several seconds ahead of the RTMP video
+    // clock and make the ingest stall. This -re is DELIBERATELY KEPT while the
+    // video pipe's was removed (see above): audio is ~256 kbps and never backs
+    // up the link, so pacing it costs no live-lag, and pacing it is what keeps
+    // the A/V startup ordering that prevents the audio-before-video-config close.
+    // `aresample=async=1` below holds sync while video drops to live.
     args << " -re -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
          << " -ac " << channels << " -i " << config.audioInput;
   } else {
