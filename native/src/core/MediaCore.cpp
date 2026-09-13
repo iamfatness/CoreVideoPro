@@ -6270,57 +6270,61 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // cut changes only which bus is looking at it.
   const std::string programWallId = tilesLayer_.layerId;
   const std::string previewWallId = previewTilesLayer_.layerId;
-  // Review fix round 1, Finding C: advance() runs UNCONDITIONALLY whenever the
-  // wall is present — never additionally gated on animateLayout — and lets
-  // `enabled` (=animateLayout) decide reset-vs-sample INSIDE advance() (Finding
-  // 0's idempotent guard makes a repeated disabled tick a harmless no-op, not a
-  // tick-counter). Gating the call itself on animateLayout, as the first cut of
-  // this fix did, left a disabled wall's `sampled_` retained forever: the
-  // multiview PGM cell and the preview composite (both read via applyLatest,
-  // which does not know about "enabled") kept applying stale animated geometry
-  // that the Program plan itself no longer carried.
-  //
+  const bool programPresent = tilesLayer_.present;
+  const bool programEnabled = tilesLayer_.style.animateLayout;
+  const bool previewPresent = previewTilesLayer_.present && hasPreviewScene();
+  const bool previewEnabled = previewTilesLayer_.style.animateLayout;
+  // Review round 2: ONE ADVANCE PER WALL PER TICK, true by construction rather
+  // than by a chain of conditions. Round 1 fixed the freeze (Finding B) and the
+  // stale-geometry retention (Finding C) separately, and their combination
+  // advanced the SAME shared object TWICE in one tick whenever both buses named
+  // it with contradictory `enabled` (Program false / Preview true, or vice
+  // versa): once with enabled=false (a real reset, since it had a key to lose)
+  // and again with enabled=true (a SECOND reset, since the first call just
+  // cleared key_) — generation +2/tick with no actual animation, and Preview's
+  // geometry re-adopted from scratch on every tick. `sameWall` decides whether
+  // there is one object or two to advance this tick; when it is one, `enabled`
+  // is the OR of both buses' flags — a shared wall animates if EITHER bus wants
+  // it to, and there is exactly one advance() call to carry that decision.
+  const bool sameWall = programPresent && previewPresent && !programWallId.empty() &&
+                        programWallId == previewWallId;
   // The take record's proof that this wall did not restart across the take:
   // its generation before this tick's advance, compared after (equal ==
   // continuous). Read via the const find() (never forWall(), which would
   // insert on a mere read) — an unknown wall has never animated and reports
-  // 0, which is true, not a guess.
-  const bool programAdvanced = tilesLayer_.present && tilesLayer_.style.animateLayout;
+  // 0, which is true, not a guess. "Continuous" also requires the wall to have
+  // EXISTED before this tick — a wall id seen for the first time starts at
+  // generation 0, and with the idempotent guard below a disabled first call
+  // also reports "did not reset" (nothing to reset), so raw generation
+  // equality alone would misread a brand-new wall as continuous.
   bool wallContinuous = false;
-  if (tilesLayer_.present) {
-    // "Continuous" requires the wall to have EXISTED before this tick, not
-    // just for its generation to be unchanged — a wall id that has NEVER been
-    // seen (a genuinely different wall, e.g. a plain scene-to-scene cut with
-    // no animation) starts at generation 0 and, with Finding 0's idempotent
-    // guard, a disabled first call also reports "did not reset" (nothing to
-    // reset) — so generation stays 0 on BOTH sides of a brand-new wall's
-    // first tick. Raw generation equality alone would misread that as
-    // continuous. find() first (never forWall() for this read — a lookup
-    // must not decide existence by the side effect of creating it).
+  if (programPresent) {
     const auto* existingWall = tilesWallSources_.find(programWallId);
     const bool wallExistedBefore = existingWall != nullptr;
     const uint64_t generationBefore = existingWall ? existingWall->generation() : 0;
+    // advance() runs UNCONDITIONALLY whenever the wall is present — never
+    // additionally gated on `enabled` — and lets `enabled` decide reset-vs-
+    // sample INSIDE advance() (the idempotent guard there makes a repeated
+    // disabled tick a harmless no-op, not a tick-counter). Gating the call
+    // itself on `enabled` left a disabled wall's `sampled_` retained forever:
+    // the multiview PGM cell and the preview composite (both read via
+    // applyLatest, which does not know about "enabled") kept applying stale
+    // animated geometry the Program plan itself no longer carried.
+    const bool enabled = sameWall ? (programEnabled || previewEnabled) : programEnabled;
     tilesWallSources_.forWall(programWallId).advance(renderPlan, programWallId,
-        tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
+        programPresent, enabled, tilesLayer_.style.animationDurationMs, animationNowMs);
     wallContinuous = wallExistedBefore && tilesWallGeneration(programWallId) == generationBefore;
   }
   // Advance Preview on the SAME render clock even when its wall is empty, so
-  // snapshot/prefetch builds cannot change entry/departure animation state.
-  //
-  // Review fix round 1, Finding B: gate on whether PROGRAM actually advanced
-  // this tick (`programAdvanced`, present && animateLayout — the shape of the
-  // call that can move this object), not on id equality alone. The two layer
-  // states are parsed independently (load-scene-graph vs set-preview-scene,
-  // and the preview draft is separately editable), so their `animateLayout`
-  // flags can disagree even when they name the SAME wall id. Gating only on
-  // `previewWallId != programWallId` meant a wall with `animateLayout=false`
-  // on Program and `true` on Preview, at the same id, got ADVANCED BY NEITHER
-  // branch — frozen, with applyLatest re-applying stale rects forever.
-  if (previewTilesLayer_.present && previewTilesLayer_.style.animateLayout &&
-      hasPreviewScene() && (!programAdvanced || previewWallId != programWallId)) {
+  // snapshot/prefetch builds cannot change entry/departure animation state —
+  // but ONLY when it names a wall DIFFERENT from Program's (a genuinely
+  // separate object). When `sameWall`, the program branch above already
+  // advanced this exact object once this tick, carrying Preview's `enabled`
+  // into the OR — a second call here would be the round-2 double-advance bug.
+  if (previewPresent && !sameWall) {
     auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
     tilesWallSources_.forWall(previewWallId).advance(previewAnimationPlan, previewWallId,
-        true, previewTilesLayer_.style.animateLayout, previewTilesLayer_.style.animationDurationMs, animationNowMs);
+        true, previewEnabled, previewTilesLayer_.style.animationDurationMs, animationNowMs);
   }
   // Lifetime: release any wall no live scene still names (parent spec section 2).
   std::vector<std::string> liveWallIds;

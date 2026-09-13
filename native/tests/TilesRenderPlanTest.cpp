@@ -1157,6 +1157,49 @@ TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
       << "the take record still reads this as a rebuild, not a cut";
 }
 
+// Review round 2: a wall present on BOTH buses with DISAGREEING `animateLayout`
+// (Program false, Preview true) has NO coverage before this test — which is
+// why it took two review rounds to find. Round 1 fixed the freeze (Finding B:
+// the double-advance guard keyed on wall-id equality, so this exact
+// configuration was advanced by NEITHER branch) and the stale-geometry
+// retention (Finding C: advance() must run unconditionally for a present
+// wall) as two separate, correct fixes — but combined, they advance the SAME
+// shared TilesWallSource TWICE in one tick with contradictory `enabled`:
+// Program's own call (enabled=false) resets it (a real reset once it has a
+// key to lose), then Preview's separate call (enabled=true) sees an EMPTY key
+// and resets it AGAIN. Net per tick: generation +2, no animation ever
+// actually completes, and the shared object churns forever. This test must
+// FAIL against commit c11862d2 (round 1) and pass after round 2's "one
+// advance per wall per tick" restructure.
+TEST(TilesRenderPlan, ASharedWallWithDisagreeingAnimateFlagsAdvancesAtMostOncePerTick) {
+  MediaCore core;
+  const std::vector<std::string> members{"zoom:1", "zoom:2"};
+
+  // PROGRAM: layerId "tiles:s", animateLayout=false (loadWall()'s default —
+  // it sends no "animateLayout" key at all).
+  loadWall(core, members);
+  // PREVIEW: the SAME scene id "s" -> the SAME layerId "tiles:s",
+  // animateLayout=true (wallScene()/animatedTilesPayload()'s default).
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallScene("set-preview-scene", "s", members)});
+
+  const auto generationAfterFirstTick = core.tilesWallGeneration("tiles:s");
+  ASSERT_GT(generationAfterFirstTick, 0u)
+      << "precondition: the shared wall must have animated at least once by now";
+
+  // Several more ticks with nothing changing: a correctly-shared object
+  // settles and its generation goes flat. The round-2 bug climbs it by 2
+  // EVERY tick — this loop catches that on the very first iteration.
+  for (int tick = 0; tick < 5; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    const auto generationNow = core.tilesWallGeneration("tiles:s");
+    EXPECT_LE(generationNow, generationAfterFirstTick + 1)
+        << "tick " << tick << ": the shared wall's generation is still climbing — "
+           "it is being advanced more than once per tick with contradictory `enabled`, "
+           "the same object being reset and re-adopted every tick instead of animating once";
+  }
+}
+
 // THE PROPERTY: a wall settled in preview, then taken, is at its settled state
 // on the first program frame — a cut, not a redraw.
 TEST(TilesRenderPlan, AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame) {
