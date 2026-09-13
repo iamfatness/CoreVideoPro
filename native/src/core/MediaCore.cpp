@@ -6270,27 +6270,54 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // cut changes only which bus is looking at it.
   const std::string programWallId = tilesLayer_.layerId;
   const std::string previewWallId = previewTilesLayer_.layerId;
+  // Review fix round 1, Finding C: advance() runs UNCONDITIONALLY whenever the
+  // wall is present — never additionally gated on animateLayout — and lets
+  // `enabled` (=animateLayout) decide reset-vs-sample INSIDE advance() (Finding
+  // 0's idempotent guard makes a repeated disabled tick a harmless no-op, not a
+  // tick-counter). Gating the call itself on animateLayout, as the first cut of
+  // this fix did, left a disabled wall's `sampled_` retained forever: the
+  // multiview PGM cell and the preview composite (both read via applyLatest,
+  // which does not know about "enabled") kept applying stale animated geometry
+  // that the Program plan itself no longer carried.
+  //
   // The take record's proof that this wall did not restart across the take:
   // its generation before this tick's advance, compared after (equal ==
   // continuous). Read via the const find() (never forWall(), which would
   // insert on a mere read) — an unknown wall has never animated and reports
-  // 0, which is true, not a guess. Scoped to the same present+animated gate
-  // as the advance call below: a wall that is not animating has no animator
-  // state to be continuous ABOUT, so it stays "not proven continuous", same
-  // as the old adoptSettledFrom-gated default.
+  // 0, which is true, not a guess.
+  const bool programAdvanced = tilesLayer_.present && tilesLayer_.style.animateLayout;
   bool wallContinuous = false;
-  if (tilesLayer_.present && tilesLayer_.style.animateLayout) {
-    const uint64_t generationBefore = tilesWallGeneration(programWallId);
+  if (tilesLayer_.present) {
+    // "Continuous" requires the wall to have EXISTED before this tick, not
+    // just for its generation to be unchanged — a wall id that has NEVER been
+    // seen (a genuinely different wall, e.g. a plain scene-to-scene cut with
+    // no animation) starts at generation 0 and, with Finding 0's idempotent
+    // guard, a disabled first call also reports "did not reset" (nothing to
+    // reset) — so generation stays 0 on BOTH sides of a brand-new wall's
+    // first tick. Raw generation equality alone would misread that as
+    // continuous. find() first (never forWall() for this read — a lookup
+    // must not decide existence by the side effect of creating it).
+    const auto* existingWall = tilesWallSources_.find(programWallId);
+    const bool wallExistedBefore = existingWall != nullptr;
+    const uint64_t generationBefore = existingWall ? existingWall->generation() : 0;
     tilesWallSources_.forWall(programWallId).advance(renderPlan, programWallId,
         tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
-    wallContinuous = tilesWallGeneration(programWallId) == generationBefore;
+    wallContinuous = wallExistedBefore && tilesWallGeneration(programWallId) == generationBefore;
   }
   // Advance Preview on the SAME render clock even when its wall is empty, so
   // snapshot/prefetch builds cannot change entry/departure animation state.
-  // When both buses show the SAME wall this is the same object, advanced once
-  // above — guard against double-advancing it on one tick.
+  //
+  // Review fix round 1, Finding B: gate on whether PROGRAM actually advanced
+  // this tick (`programAdvanced`, present && animateLayout — the shape of the
+  // call that can move this object), not on id equality alone. The two layer
+  // states are parsed independently (load-scene-graph vs set-preview-scene,
+  // and the preview draft is separately editable), so their `animateLayout`
+  // flags can disagree even when they name the SAME wall id. Gating only on
+  // `previewWallId != programWallId` meant a wall with `animateLayout=false`
+  // on Program and `true` on Preview, at the same id, got ADVANCED BY NEITHER
+  // branch — frozen, with applyLatest re-applying stale rects forever.
   if (previewTilesLayer_.present && previewTilesLayer_.style.animateLayout &&
-      hasPreviewScene() && previewWallId != programWallId) {
+      hasPreviewScene() && (!programAdvanced || previewWallId != programWallId)) {
     auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
     tilesWallSources_.forWall(previewWallId).advance(previewAnimationPlan, previewWallId,
         true, previewTilesLayer_.style.animateLayout, previewTilesLayer_.style.animationDurationMs, animationNowMs);
@@ -6579,7 +6606,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (previewActive && previewDue) {
     const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
-    tilesWallSources_.forWall(previewTilesLayer_.layerId).applyLatest(previewPlan, previewTilesLayer_.layerId);
+    // Read-only: use find(), never forWall() — a preview scene with no wall
+    // has an empty layerId, and forWall("") would insert a phantom map node
+    // (allocate + free) under coreMutex on every such render tick.
+    if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId)) {
+      wall->applyLatest(previewPlan, previewTilesLayer_.layerId);
+    }
     previewPlan.skipCpuReadback = true;
     lastProgramFrame_.previewSharedTexture = modules_.compositor->renderPreview(previewPlan, videoFrames);
     lastProgramFrame_.previewWidth = previewPlan.width;

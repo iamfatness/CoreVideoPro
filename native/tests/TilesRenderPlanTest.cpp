@@ -937,6 +937,30 @@ corevideo::rpc::Json wallScene(const char* type, const char* sceneId,
       {"tiles", animatedTilesPayload(std::string("tiles:") + sceneId, members)}}};
 }
 
+// Same shape as wallScene(), but with a caller-chosen animationDurationMs.
+// AWallTakenMidAnimationIsContinuous needs the SLOWEST duration the animator
+// accepts (clamped at 2000ms in TilesAnimator) so its rect-continuity check
+// (Finding E, review round 1) is not at the mercy of how many real
+// milliseconds of test-process overhead land between two back-to-back
+// applyCommands() calls: at the shared 100ms floor, this rig's own command
+// handling was enough real wall-clock time for a critically-damped 6.6/duration-Hz
+// spring to converge audibly close to its target on its own, with or without a
+// bug — the same closed-form "rest" snap the reset path uses. At 2000ms the
+// per-millisecond convergence is 20x slower, giving a reliable margin.
+corevideo::rpc::Json wallSceneWithDuration(const char* type, const char* sceneId,
+                                           const std::vector<std::string>& members, double durationMs) {
+  auto tiles = animatedTilesPayload(std::string("tiles:") + sceneId, members);
+  auto object = tiles.asObject();
+  auto style = object.at("style").asObject();
+  style.insert_or_assign("animationDurationMs", corevideo::rpc::Json{durationMs});
+  object.insert_or_assign("style", corevideo::rpc::Json{style});
+  return corevideo::rpc::Json{corevideo::rpc::Json::Object{
+      {"type", corevideo::rpc::Json{type}},
+      {"sceneId", corevideo::rpc::Json{sceneId}},
+      {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+      {"tiles", corevideo::rpc::Json{object}}}};
+}
+
 // The same wall, but carrying a LIVE background feed (tiles-source-bg:<layerId>).
 corevideo::rpc::Json wallSceneWithBackground(const char* type, const char* sceneId,
                                              const std::vector<std::string>& members,
@@ -1046,17 +1070,18 @@ TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
   RecordingCompositor* compositor = nullptr;
   MediaCore core(wallModules(&compositor, nullptr));
 
+  const double kDurationMs = 2000.0;  // the animator's own clamp ceiling — see wallSceneWithDuration
   const std::vector<std::string> initialMembers{"capture:g1", "capture:g2"};
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       wallLessScene("load-scene-graph", "solo"),
-      wallScene("set-preview-scene", "gallery", initialMembers)});
+      wallSceneWithDuration("set-preview-scene", "gallery", initialMembers, kDurationMs)});
   ASSERT_TRUE(allSettled(tileLayers(compositor->lastPreviewPlan)))
       << "precondition: the wall must be established before a member joins it";
 
   // A THIRD member joins the SAME wall (same layerId, same scene) while it is
   // already on air in preview.
   (void)core.applyCommands(corevideo::rpc::Json::Array{
-      wallScene("set-preview-scene", "gallery", wallMembers())});
+      wallSceneWithDuration("set-preview-scene", "gallery", wallMembers(), kDurationMs)});
 
   const auto midFlight = tileLayers(compositor->lastPreviewPlan);
   ASSERT_EQ(midFlight.size(), wallMembers().size());
@@ -1066,7 +1091,7 @@ TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
 
   const auto generationBefore = core.tilesWallGeneration("tiles:gallery");
 
-  take(core, wallScene("load-scene-graph", "gallery", wallMembers()),
+  take(core, wallSceneWithDuration("load-scene-graph", "gallery", wallMembers(), kDurationMs),
        wallLessScene("set-preview-scene", "solo"));
 
   // The wall did not restart...
@@ -1094,8 +1119,42 @@ TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
       EXPECT_LT(tile->opacity, 0.9f)
           << tile->layerId << " snapped straight to fully opaque instead of continuing its entrance "
              "— the wall was reset (popped in), not continued";
+    } else {
+      // Review fix round 1, Finding E: g1/g2 are already fully opaque at the
+      // midFlight tick (only g3, the newly joined member, has a ramping
+      // alpha) — the layout change from 2-up to 3-up put THEM mid-spring on
+      // their RECT instead. A reset snaps a tile's position straight to its
+      // new target (TilesAnimator: `if (added) state.position = goal;`), so
+      // an on-air rect far from the mid-flight rect is a reset wearing full
+      // opacity, not a continuation — the take happens on the very next tick
+      // with negligible additional wall-clock time, so a genuinely
+      // CONTINUING spring cannot have travelled far from where it was.
+      EXPECT_NEAR(tile->rect.x, before.rect.x, 0.05f)
+          << tile->layerId << " rect.x snapped to a new position instead of continuing its spring";
+      EXPECT_NEAR(tile->rect.y, before.rect.y, 0.05f)
+          << tile->layerId << " rect.y snapped to a new position instead of continuing its spring";
+      EXPECT_NEAR(tile->rect.width, before.rect.width, 0.05f)
+          << tile->layerId << " rect.width snapped to a new position instead of continuing its spring";
+      EXPECT_NEAR(tile->rect.height, before.rect.height, 0.05f)
+          << tile->layerId << " rect.height snapped to a new position instead of continuing its spring";
     }
   }
+
+  // Review fix round 1, Finding D: the verdict this task exists to prove was
+  // never asserted end-to-end. A take record reading "continuous"/"cut" is
+  // the whole point of #448 — read the record the take above just completed
+  // and assert it directly, not just the raw generation number.
+  const auto snapshot = core.sessionState();
+  const auto* takes = snapshot.get("takeRecords");
+  ASSERT_NE(takes, nullptr);
+  ASSERT_NE(takes->get("records"), nullptr);
+  const auto& records = takes->get("records")->asArray();
+  ASSERT_FALSE(records.empty()) << "the take above produced no record";
+  const auto& record = records.back();
+  EXPECT_EQ(record.getString("wall"), "continuous")
+      << "the take record still reads the wall as having reset";
+  EXPECT_EQ(record.getString("verdict"), "cut")
+      << "the take record still reads this as a rebuild, not a cut";
 }
 
 // THE PROPERTY: a wall settled in preview, then taken, is at its settled state

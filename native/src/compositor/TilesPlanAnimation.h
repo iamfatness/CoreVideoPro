@@ -14,7 +14,11 @@ class TilesPlanAnimation {
   // this wall restart", with no std::function/allocation on the render tick.
   bool advance(modules::CompositorRenderPlan& plan, const std::string& wallKey,
       bool present, bool enabled, double durationMs, double nowMs) {
-    if (!present || !enabled) { reset(); return true; }
+    // Idempotent: an ALREADY-reset wall (key_ empty) reports it did NOT reset
+    // on a repeated not-present/disabled tick — without this a caller that
+    // advances every tick regardless of presence would read "reset" forever,
+    // turning the generation into a tick counter instead of a restart signal.
+    if (!present || !enabled) { const bool had = !key_.empty(); reset(); return had; }
     // A DIFFERENT wall never inherits this one's geometry. (sampled_ is cleared
     // too: the all-stale guard below would otherwise let a new wall's first
     // frames be drawn at the previous wall's tile rects.)
