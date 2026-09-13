@@ -354,6 +354,38 @@ off-thread guards never fired). Confirmed and suspected triggers:
   The proof is a scripted close-cycle loop on the real app: zero new
   `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
 
+- **The GC FINALIZER THREAD releasing a XAML object (#513, 2026-09-13) — the first
+  member of this family that is ASYNCHRONOUS and TIME-DELAYED, and it is NOT
+  reproduced yet.** The app died IDLE, 58 min into a live meeting, 43 min after the
+  last operator action, with `launch.log` silent the whole time. Dump
+  (`CoreVideoPro.WinUI.exe.19580.dmp`, full memory): crashing thread is the CLR
+  **Finalizer** (MTA); stack `GC.RunFinalizers -> WinRT.IObjectReference.Finalize
+  -> Microsoft_UI_Xaml!ctl::ComObject<DirectUI::Border>::Release ->
+  FailFastWithStowedExceptions`, stowed `0x8000000E` = **E_ILLEGAL_METHOD_CALL**.
+  The wrapper was a PLAIN `WinRT.ObjectReference<IUnknownVftbl>` (not
+  `ObjectReferenceWithContext`) with `_referenceTrackerPtr` set, so the release
+  had no UI context to marshal to; the UI thread was idle in `GetMessage`, so a
+  marshaled release would have landed. **What this is NOT:** a finalizer-thread
+  release is the ORDINARY path — a forced full GC (`dotnet-gcdump collect -p`)
+  on a healthy run finalized ~2,700 wrappers and a couple of Borders with no
+  incident, three times (fresh app; after 12 takes; after a record/stop cycle).
+  The dead population at the crash (66 Borders, 1,845 wrappers) was the SAME size
+  as a healthy run's. So the trigger is a specific object STATE, not volume, and
+  it did not reproduce on demand. Our code has no manual CsWinRT marshaling and
+  no element-building control touches XAML off-thread (checked). Framework:
+  WinAppSDK Runtime 2.4.0 / WinUI 2.3.6, CsWinRT 2.2.0. The four code-behind
+  element factories that `Children.Clear()` (`ShowMultiviewHost` overlays,
+  `ScenePreviewControl`, `AudioLevelMeter`, `SceneCanvasEditorControl` — which
+  hooks 4 handlers and unhooks 0) are the likely POPULATION, not a proven cause;
+  pooling them reduces exposure and cannot be claimed to eliminate the crash.
+  **Two rules it teaches.** (1) A stability claim is bounded by the window you
+  watched: 25 clean minutes of takes/drill/soak said nothing about hour 1, and a
+  crash with NO application code on the stack is invisible to every log we write
+  — only the dump sees it, so `setup-crash-dumps.ps1` full dumps are not optional
+  on a test box. (2) Analyze a WinUI dump BEFORE rebuilding the shell (same PDB
+  rule as the core); `!dumpobj` on the finalizer frame's `this` is what
+  distinguishes a marshaled release from an unmarshaled one.
+
 Rules of thumb: never replace a bound collection at frame rate (sync in place / diff);
 keep one stable swap chain per surface (program, preview, one multiview);
 present with **skip-present** (only on a new keyed-mutex frame) — smooth-present crashes
