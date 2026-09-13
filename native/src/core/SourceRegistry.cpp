@@ -218,8 +218,17 @@ SourceRegistry::Result SourceRegistry::retireProcessEpoch(const std::string& pro
     // current, which does not apply to a wall. SKIP it, do not mark it
     // Departed: that would flip its nullopt fields to concrete false/Departed,
     // the exact false claim this task removed from install(). A wall's
-    // lifetime is scene-reference, released by a separate sweep (later task) -
-    // do not "fix" this skip into a mark.
+    // lifetime is scene-reference, released by removeComposed() (the caller's
+    // own liveness sweep, not this one) - do not "fix" this skip into a mark.
+    // A tombstone would also be a dead end here: setAvailability() refuses
+    // Composed outright (it cannot flip subscriptionObserved's nullopt to a
+    // concrete false), so there is no legal way to mark one Departed even if
+    // this loop tried - and because a composed entry's availability stays
+    // nullopt forever, externalConflict()'s `availability != Departed` test
+    // reads true for it PERMANENTLY, meaning a tombstoned wall id could never
+    // be reused by add() again. Erasing outright (removeComposed) is not a
+    // simplification of tombstoning - it is the only mechanism that actually
+    // frees the id.
     if (source.kind == Kind::Composed) continue;
     source.availability = Availability::Departed;
     source.subscriptionRequested = false;

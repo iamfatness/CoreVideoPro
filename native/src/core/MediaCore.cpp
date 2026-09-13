@@ -6390,20 +6390,30 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // skip it here rather than registering a nameless source that
     // validRegistration would refuse as Invalid anyway.
     if (wallId.empty()) continue;
-    if (registeredWallIds_.insert(wallId).second) {
-      SourceRegistry::Registration registration;
-      registration.sourceId = {wallId};
-      registration.kind = SourceRegistry::Kind::Composed;
-      registration.displayName = "Tiles wall " + wallId;
-      registration.processEpoch = kCoreProcessEpoch;
-      const auto mutation = sourceRegistry_.add(std::move(registration));
-      if (mutation.result != SourceRegistry::Result::Applied) {
-        // Only reachable via Conflict/Exhausted — an ordinary liveness
-        // transition never hits this. Loud, since a wall that fails to
-        // register is silently invisible to any future registry consumer.
-        ::corevideo::core::nativeLogf("[source-registry] wall '%s' failed to register (result=%d)\n",
-                   wallId.c_str(), static_cast<int>(mutation.result));
-      }
+    // Review round 1, Finding 3: check-then-insert, not insert-and-read-.second.
+    // unordered_set::insert on an already-present key is not guaranteed
+    // allocation-free on every implementation (MSVC's has historically built
+    // the node before discovering the duplicate) — this file's render-path
+    // allocation rule should hold BY CONSTRUCTION, not by implementation detail.
+    if (registeredWallIds_.contains(wallId)) continue;
+    SourceRegistry::Registration registration;
+    registration.sourceId = {wallId};
+    registration.kind = SourceRegistry::Kind::Composed;
+    registration.displayName = "Tiles wall " + wallId;
+    registration.processEpoch = kCoreProcessEpoch;
+    const auto mutation = sourceRegistry_.add(std::move(registration));
+    if (mutation.result == SourceRegistry::Result::Applied) {
+      registeredWallIds_.insert(wallId);
+    } else {
+      // Review round 1, Finding 2: do NOT remember this id as registered on
+      // failure — Invalid (e.g. an over-length wire layerId, or a retired
+      // processEpoch) is genuinely reachable, not just Conflict/Exhausted, and
+      // a wall that fails to register must be RETRIED on the next liveness
+      // transition, not silently abandoned for the rest of its life. Loud,
+      // since a wall invisible to the registry is invisible to any future
+      // registry consumer too.
+      ::corevideo::core::nativeLogf("[source-registry] wall '%s' failed to register (result=%d)\n",
+                 wallId.c_str(), static_cast<int>(mutation.result));
     }
   }
   // Release from the registry whatever the sweep above just released from

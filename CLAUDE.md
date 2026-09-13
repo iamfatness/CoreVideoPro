@@ -1325,6 +1325,63 @@ red/green, the policies, and the take record end to end),
 `native/tests/SourceContinuityLedgerTest.cpp`, and
 `ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
 
+## The Tiles wall is a composed source, and composed sources are ERASED not tombstoned (#448 slice 2 task 4, 2026-09-12)
+
+`SourceRegistry` (`native/src/core/SourceRegistry.h`, carved out of #419 unwired
+onto main) gained `Kind::Composed` for sources the CORE renders rather than
+captures — the Tiles wall is the first one. `MediaCore::renderSyntheticTick`
+registers a live wall as `Kind::Composed` (sourceId = its layerId, `externalId`
+empty, a fixed `kCoreProcessEpoch`) and releases it the tick nothing on either
+bus names it any longer, in lockstep with `tilesWallSources_.releaseAllExcept` —
+the same "referenced by a live scene" lifetime, one level up. `registeredWallIds_`
+is the idempotence guard so a live wall's steady-state tick never touches the
+registry mutex (`unordered_set::contains` before `insert`, not `insert().second`
+— MSVC's `unordered_set::insert` has historically built the node before
+detecting the duplicate, so this file's render-path no-allocation rule holds by
+construction, not by implementation detail). A registration that fails
+(`Invalid`/`Conflict`/`Exhausted`) is NOT remembered as registered, so the next
+liveness transition retries it rather than abandoning the wall silently forever.
+
+**A composed source carries no SDK handle and never claims a subscription
+state.** `personId`, `externalId`, `availability`, `subscriptionRequested`,
+`subscriptionObserved` are all `nullopt` for it — `nullopt` means NOT
+APPLICABLE, never false — because a wall has no provider process and nothing
+ever subscribes to it. `setAvailability`/`setSubscription` refuse `Composed`
+outright for exactly this reason.
+
+**A composed source is ERASED (`SourceRegistry::removeComposed`), never
+tombstoned — and this is not a simplification, it is the only mechanism that
+actually works.** Every other kind's departure is `Availability::Departed`
+(kept for diagnostics via `retireProcessEpoch`/`setAvailability`). A composed
+entry CANNOT be tombstoned that way even in principle: `setAvailability`
+refuses `Composed`, so nothing can ever flip it to `Departed`, and because its
+`availability` stays `nullopt` forever, `externalConflict`'s
+`availability != Departed` test reads true for it PERMANENTLY — a tombstoned
+wall id could never be reused by `add()` again. `removeComposed` erases the
+`sources_` entry outright and refuses (`Invalid`) for any non-`Composed` kind.
+It takes a bare `SourceId`, deliberately not a `Token`: the caller must be the
+SOLE owner of a composed source's lifetime (`replace()` exists precisely so an
+OLD callback cannot retire a NEW instance it no longer owns via compare-and-
+replace; removal has no such fence and must never grow a second writer).
+
+**Its lifetime is scene-reference, exactly like `TilesWallSources`
+(`releaseAllExcept`) one level down** — a wall no live scene names is gone from
+the registry the same render tick `tilesWallSources_` releases its animation
+object, and a wall released then re-cued under the same scene id is a
+genuinely NEW registry entry (a fresh `instanceId`, minted from the registry's
+own revision counter), never the old one resurrected.
+
+Tests: `native/tests/SourceRegistryComposedTest.cpp` (`removeComposed`: erases,
+frees the id for reuse, refuses non-composed, `NotFound` on an unknown id) and
+`native/tests/TilesRenderPlanTest.cpp` (a live wall registers as `Composed`
+with all five capture-only fields `nullopt`; an unreferenced wall is gone from
+the registry; a released-then-re-cued wall gets a new `instanceId`; a wall
+staying live across many ticks keeps the SAME registry identity — pinned by
+`instanceId` equality, not a source count, because `sources_` is a
+`std::map` keyed by sourceId where a count assertion cannot distinguish "the
+guard works" from "every tick refuses `Conflict` while quietly taking the
+registry mutex 60x/s").
+
 ## Media is a persistent source (slice 1, 2026-09-10)
 
 Slice 1 of `docs/superpowers/specs/2026-09-10-persistent-sources-design.md`: a

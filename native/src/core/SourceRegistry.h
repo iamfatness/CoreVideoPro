@@ -76,7 +76,11 @@ class SourceRegistry final {
     uint64_t revision = 0;
     uint64_t decisionRevision = 0; // Binding/readiness changes, independent of frame traffic.
     std::vector<Person> persons;
-    std::vector<Source> sources; // Stable SourceId order, includes departure tombstones.
+    // Stable SourceId order, includes departure tombstones for every non-Composed
+    // kind (Availability::Departed, kept for diagnostics). A Composed source is
+    // the exception: it never tombstones, it VANISHES via removeComposed() -
+    // see that method's comment for why a wall cannot be tombstoned at all.
+    std::vector<Source> sources;
   };
   struct Mutation { Result result; std::optional<Token> token; };
 
@@ -104,6 +108,11 @@ class SourceRegistry final {
   // make add() answer Conflict forever for a wall id that is free to reuse.
   // Refuses (Invalid) for any other kind: erasing a real source's record is
   // the false-erasure this registry exists to prevent from the other direction.
+  // Takes a bare SourceId, deliberately not a Token: the caller must be the
+  // SOLE owner of a composed source's lifetime. replace() exists in this class
+  // precisely so an old callback cannot retire a new instance it no longer
+  // owns (compare-and-replace against the expected Token) - removal has no
+  // such fence, so it must never grow a second writer.
   Result removeComposed(const SourceId& sourceId);
   Result publish(const Token& token, uint64_t sequence, int64_t observedNs, Format format);
   [[nodiscard]] std::shared_ptr<const Snapshot> snapshot() const;

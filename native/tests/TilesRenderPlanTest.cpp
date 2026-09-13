@@ -1519,22 +1519,40 @@ TEST(TilesRenderPlan, AWallReleasedAndReCuedRegistersAsANewSource) {
       << "a re-cued wall is a NEW registry entry, not the old one come back";
 }
 
-// The idempotence guard (registeredWallIds_) exists so a live wall's
-// steady-state tick never touches the registry mutex again once registered —
-// but the observable contract this test pins is simpler and still real:
-// however many render ticks a wall stays live, the registry holds exactly
-// ONE entry for it, never zero (a lost registration) and never more than one.
-TEST(TilesRenderPlan, ALiveWallHoldsExactlyOneRegistryEntryAcrossManyTicks) {
+// Review round 1, Finding 1: a plain "exactly one entry" count is near-
+// unfalsifiable here. `sources_` is a std::map keyed by sourceId, so ONE key
+// can never hold two entries by construction, and "never zero" is already
+// covered by ALiveWallRegistersAsAComposedSourceInTheRegistry above. Worse:
+// delete registeredWallIds_ entirely and add() answers Conflict on every
+// tick (taking the registry mutex 60x/s on the render path) while this count
+// assertion STILL passes, because a refused add() neither creates a second
+// entry nor bumps any counter this test reads.
+//
+// The falsifiable property is identity, not count: install() mints a fresh
+// instanceId as `epoch + ":" + revision` on every real add() call, so the
+// realistic regression this guards against — someone drops the guard and
+// instead removes-and-re-adds every tick — mints a NEW instanceId every
+// frame, which this assertion catches and a count assertion cannot.
+TEST(TilesRenderPlan, ALiveWallKeepsTheSameRegistryIdentityAcrossManyTicks) {
   MediaCore core;
   loadWall(core, {"zoom:1"});
+
+  const auto firstSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto* first = findRegisteredSource(firstSnapshot, "tiles:s");
+  ASSERT_NE(first, nullptr);
+  const auto firstInstanceId = first->token.instanceId.value;
 
   for (int tick = 0; tick < 25; ++tick) {
     (void)core.applyCommands(corevideo::rpc::Json::Array{});
   }
 
-  const auto snapshot = core.sourceRegistrySnapshotForTest();
-  ASSERT_NE(snapshot, nullptr);
-  const auto count = std::count_if(snapshot->sources.begin(), snapshot->sources.end(),
+  const auto laterSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto count = std::count_if(laterSnapshot->sources.begin(), laterSnapshot->sources.end(),
       [](const auto& source) { return source.token.sourceId.value == "tiles:s"; });
-  EXPECT_EQ(count, 1);
+  ASSERT_EQ(count, 1) << "never zero (a lost registration) across a live wall's steady state";
+  const auto* later = findRegisteredSource(laterSnapshot, "tiles:s");
+  ASSERT_NE(later, nullptr);
+  EXPECT_EQ(later->token.instanceId.value, firstInstanceId)
+      << "a live wall's registration must be the SAME entry across ticks, "
+      << "never removed-and-re-added (which would mint a fresh instanceId)";
 }
