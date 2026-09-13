@@ -42,33 +42,35 @@ TEST(RtmpFfmpegArgs, RealAudioReplacesAnullsrcWithPcmInput) {
   // A/V are explicitly mapped and the audio is encoded to AAC.
   EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);
-  // The VIDEO pipe is read greedily (NO -re) so it drops to live under RTMP
-  // backpressure instead of falling progressively behind wallclock (owner
-  // incident 2026-09-13: 124s of accumulated lag on a YouTube stream). The AUDIO
-  // pipe KEEPS -re to preserve A/V startup ordering.
+  // BOTH pipes are read greedily (NO -re) so the mux runs at realtime and drops
+  // to live under backpressure instead of falling behind (owner incident
+  // 2026-09-13: video -re caused 124s lag; keeping audio -re then capped the mux
+  // at ~82% with no resource limit). aresample=async=1 holds A/V sync.
   EXPECT_NE(args.find("-thread_queue_size 512 -f rawvideo"), std::string::npos);
   EXPECT_EQ(args.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
-  EXPECT_NE(args.find("-re -thread_queue_size 512 -f f32le"), std::string::npos);
+  EXPECT_NE(args.find("-thread_queue_size 512 -f f32le"), std::string::npos);
+  EXPECT_EQ(args.find("-re -thread_queue_size 512 -f f32le"), std::string::npos);
 }
 
-// Regression for the live-lag incident: the video input must never be paced with
-// -re (which turned RTMP backpressure into unbounded lag), while both audio paths
-// must keep it (which prevents the audio-races-ahead / no-video connection close).
-TEST(RtmpFfmpegArgs, VideoPipeIsGreedyWhileAudioIsPaced) {
+// Regression for the live-lag incident: neither REAL pipe (video or audio) is
+// paced with -re — -re on video caused 124s of unbounded lag, and keeping it on
+// audio then capped the whole mux at ~82% of realtime with no resource limit.
+// Only the anullsrc silent fallback keeps -re (lavfi is not realtime). -stats is
+// present so the real fps=/speed=/drop= reach the captured stderr.
+TEST(RtmpFfmpegArgs, BothRealPipesAreGreedyOnlyAnullsrcKeepsRe) {
   corevideo::modules::RtmpFfmpegArgsConfig config;
   config.hasAudio = true;
   config.audioInput = "pipe:3";
   const auto real = corevideo::modules::buildRtmpFfmpegArguments(config);
-  // video: no -re immediately before the rawvideo input
   EXPECT_EQ(real.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
-  // real audio: -re present
-  EXPECT_NE(real.find("-re -thread_queue_size 512 -f f32le"), std::string::npos);
+  EXPECT_EQ(real.find("-re -thread_queue_size 512 -f f32le"), std::string::npos);
+  EXPECT_NE(real.find("-thread_queue_size 512 -f f32le"), std::string::npos);
+  EXPECT_NE(real.find("-stats"), std::string::npos);
 
   config.hasAudio = false;
   const auto silent = corevideo::modules::buildRtmpFfmpegArguments(config);
   // the silent fallback still needs -re (lavfi is not realtime)
   EXPECT_NE(silent.find("-re -f lavfi -i anullsrc"), std::string::npos);
-  EXPECT_EQ(silent.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
 }
 
 TEST(RtmpFfmpegArgs, HonorsAudioChannelsAndSampleRate) {

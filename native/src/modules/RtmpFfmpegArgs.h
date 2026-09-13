@@ -107,7 +107,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
   const int keyframeFrames = (std::max)(1, static_cast<int>(std::round(
       static_cast<double>(fps) * (std::max)(0.5, (std::min)(10.0, config.keyframeIntervalSeconds)))));
   std::ostringstream args;
-  args << " -hide_banner -loglevel warning"
+  args << " -hide_banner -loglevel warning -stats -stats_period 1"  // #515 diag: real fps=/speed=/drop= to stderr
        // The video pipe is read GREEDILY — deliberately NO -re (owner live
        // incident 2026-09-13). The application already paces writes at the 60Hz
        // video-output tick, so this input is realtime by construction. -re here
@@ -128,14 +128,20 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
   if (config.hasAudio) {
     const int channels = (std::max)(1, config.audioChannels);
     const int sampleRate = (std::max)(8000, config.audioSampleRate);
-    // Real PCM can arrive in coalesced blocks after encoder startup. Pace it by
-    // sample count so AAC cannot race several seconds ahead of the RTMP video
-    // clock and make the ingest stall. This -re is DELIBERATELY KEPT while the
-    // video pipe's was removed (see above): audio is ~256 kbps and never backs
-    // up the link, so pacing it costs no live-lag, and pacing it is what keeps
-    // the A/V startup ordering that prevents the audio-before-video-config close.
-    // `aresample=async=1` below holds sync while video drops to live.
-    args << " -re -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
+    // Audio pipe ALSO read greedily (no -re) — 2026-09-13 live incident, round 2.
+    // Keeping -re here (after removing it from video) made the AUDIO reader the
+    // mux's pacing gate: with 48Mbps up / CPU 50% / GPU 30% (no resource limit),
+    // the whole encode ran at ~82% of realtime, audio and video locked, because
+    // FFmpeg will not output video ahead of the -re-paced audio and the audio
+    // reader fell behind and could not catch up. Both pipes are sender-paced
+    // (video 60Hz tick, audio ~50Hz worker), so both are realtime by construction
+    // and neither needs -re; aresample=async=1 below holds A/V sync. The
+    // audio-races-ahead / no-video-config close that -re guarded is a STARTUP
+    // ordering hazard, and greedy video now delivers the keyframe+config first,
+    // so removing audio -re should not reopen it — VERIFY on the live endpoint
+    // (that failure only shows against a real RTMP ingest). The anullsrc silent
+    // fallback KEEPS -re (lavfi is not realtime).
+    args << " -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
          << " -ac " << channels << " -i " << config.audioInput;
   } else {
     // -re is REQUIRED here. lavfi generates silence as fast as the CPU allows,
