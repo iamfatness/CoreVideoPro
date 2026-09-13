@@ -1235,7 +1235,14 @@ class RtmpOutputSender final : public IOutputSender {
 
     HANDLE childStdinRead = nullptr;
     HANDLE childStdinWrite = nullptr;
-    if (!CreatePipe(&childStdinRead, &childStdinWrite, &securityAttributes, 0)) {
+    // #515 round 4: the VIDEO stdin pipe carries raw NV12 at ~186 MB/s (3.1 MB x
+    // 60fps). nSize 0 = the Windows default ~4 KB buffer, forcing ~45,000
+    // write/read syscalls/s of ping-pong that capped the feed at ~57fps
+    // (speed 0.95x) AFTER the swscale fix — NVENC still idle. An ~8 MB buffer
+    // (~2.5 frames) lets the sender write a whole frame without blocking; bounded
+    // so latency stays low and the sender's newest-wins still drops to live.
+    constexpr DWORD kVideoStdinPipeBytes = 8u << 20;
+    if (!CreatePipe(&childStdinRead, &childStdinWrite, &securityAttributes, kVideoStdinPipeBytes)) {
       sender_.status = "failed";
       sender_.warning = "Could not create FFmpeg stdin pipe.";
       sender_.destinationHealth = "failed";
