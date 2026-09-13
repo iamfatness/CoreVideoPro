@@ -7,8 +7,12 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class ZoomMediaSpinePayloadBuilderTests
 {
     [Fact]
-    public void DefaultCapacityRequestsAllTenShowVideoSources()
+    public void DefaultCapacityStopsAtEightAndNamesTheOverflow()
     {
+        // Owner ruling 2026-09-13: 8 concurrent Zoom video subscriptions is the
+        // hard bandwidth ceiling. Ten camera-on wall guests => 8 subscribed, and
+        // the 2 over the cap are NOT silently dropped — they are named in the
+        // shortfall so the multiview tile can read "no video: subscription limit (8)".
         var guests = Enumerable.Range(1, 10).Select(index => Guest(index.ToString(), $"Guest {index}")).ToList();
         var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
         {
@@ -17,7 +21,8 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             Multiview = Wall(guests.Select((guest, slot) => (slot, guest.Id)).ToArray())
         });
 
-        Assert.Equal(10, Video(payload).Count);
+        Assert.Equal(8, Video(payload).Count);
+        Assert.Equal(2, Shortfall(payload).Count);
     }
 
     [Fact]

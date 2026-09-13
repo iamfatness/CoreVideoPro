@@ -8,15 +8,22 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class ZoomMediaSpinePayloadBuilder
 {
-    // Ten matches the Show Input and Multiview capacity contract. This was 6, then 8, which
-    // silently left the 7th and 8th camera-on participants with NO raw video
-    // subscription at all — they showed as frozen/placeholder tiles with no error
-    // anywhere (live meeting, 2026-08-09: seven cameras on, Susan Cho never
-    // subscribed). If the SDK refuses the extra subscriptions, the engine's
-    // per-participant downgrade ladder handles it LOUDLY (video_subscribe code +
-    // video_resolution_downgraded), so the cap must not pre-censor what the SDK
-    // might grant.
-    public const int DefaultMaxVideoSubscriptions = 10;
+    // EIGHT is the hard ceiling of concurrent Zoom video subscriptions the SDK
+    // integration can carry over the meeting's bandwidth (owner ruling
+    // 2026-09-13: "8 zoom sources is all we can support with the SDK integration
+    // because of bandwidth limits"). It matches kMaxConcurrentFullResolutionCameras
+    // (8) in the native ZoomSubscriptionResolutionPolicy, so all 8 subscribed
+    // cameras can run 1080P at once without demotion — the tiles-at-1080P design
+    // (the wall no longer flips resolution when a member is soloed in preview).
+    //
+    // History: this was 6 (which silently dropped the 7th/8th camera — Susan Cho
+    // never subscribed, live 2026-08-09), then raised to 10 to stop that silent
+    // drop. The silent-drop danger is now closed a different way: a camera-on
+    // source past the cap is NOT silent — it is named in `videoSubscriptionShortfall`
+    // + `warnings` and its multiview tile reads "no video: subscription limit (8)"
+    // (#478). So the cap can enforce the real bandwidth limit AND stay loud. A 9th
+    // camera-on guest is left unsubscribed by design, not by accident.
+    public const int DefaultMaxVideoSubscriptions = 8;
 
     /// <summary>
     /// Synthetic Zoom user id for the meeting-mix subscription. Must be numeric
@@ -188,7 +195,7 @@ public static class ZoomMediaSpinePayloadBuilder
         return payload;
     }
 
-    /// <summary>"no video: A, B (subscription limit 10)" for the over-budget sources on a bus, or "".</summary>
+    /// <summary>"no video: A, B (subscription limit 8)" for the over-budget sources on a bus, or "".</summary>
     public static string BusNotice(
         IReadOnlyList<Dictionary<string, object?>> participants,
         IReadOnlyList<ZoomSourceSetPolicy.Source> overBudget,
