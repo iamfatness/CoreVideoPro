@@ -625,7 +625,9 @@ struct OutputSender {
   int64_t lastFrameNumber = 0;
   int64_t framesSent = 0;
   int retryCount = 0;
-  int latencyMs = 2100;
+  // #519: 0 = not measured. Was 2100, a constant masquerading as a measurement
+  // in /snapshot and the support bundle. Real egress latency needs FFmpeg -progress.
+  int latencyMs = 0;
   double bitrateMbps = 6.0;
   std::string warning;
   std::string destinationHealth = "starting";

@@ -868,7 +868,11 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.lastFrameNumber = frame->frameNumber;
     // These counters prove local FFmpeg input acceptance, not destination receipt.
     ++sender_.framesSent;
-    sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps);
+    // #519: REAL bytes written to the FFmpeg stdin pipe (encoder input), mirroring
+    // audioBytesSent — not the old estimatedFrameBytes() guess that assumed 30fps
+    // and reported a phantom bitrate. This is encoder-input bytes, not destination
+    // egress; real egress bitrate/drops need FFmpeg -progress (filed as #519 follow-up).
+    sender_.bytesSent = videoBytesWritten_.load();
     sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
     sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
     sender_.destinationHealth = "ok";
@@ -1048,7 +1052,8 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.destination = protocol_.destination;
     sender_.status = "starting";
     sender_.startedAtMs = elapsedMs;
-    sender_.latencyMs = 2100;
+    // #519: latencyMs is NOT measured — do not stamp a fake constant here. It
+    // stays 0 (unknown) until real egress latency is available (FFmpeg -progress).
     sender_.bitrateMbps = 6.0;
     sender_.runtimeDetail = runtimeDetail_;
     sender_.destinationHealth = "starting";
@@ -1529,6 +1534,7 @@ class RtmpOutputSender final : public IOutputSender {
       data += written;
       remaining -= written;
     }
+    videoBytesWritten_.fetch_add(static_cast<int64_t>(videoBytes.size()));
     return true;
 #else
     if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) {
@@ -1587,6 +1593,7 @@ class RtmpOutputSender final : public IOutputSender {
       data += written;
       remaining -= static_cast<size_t>(written);
     }
+    videoBytesWritten_.fetch_add(static_cast<int64_t>(videoBytes.size()));
     return true;
 #endif
   }
@@ -1650,6 +1657,7 @@ class RtmpOutputSender final : public IOutputSender {
       audioQueue_.clear();
     }
     audioBytesWritten_.store(0);
+    videoBytesWritten_.store(0);
     audioWriterThread_ = std::thread([this] { audioWriterLoop(); });
   }
 
@@ -1949,6 +1957,7 @@ class RtmpOutputSender final : public IOutputSender {
   std::thread audioWriterThread_;
   bool audioWriterStop_ = true;
   std::atomic<int64_t> audioBytesWritten_{0};
+  std::atomic<int64_t> videoBytesWritten_{0};  // #519: real bytes fed to the video pipe
 #else
   int ffmpegStdinFd_ = -1;
   int ffmpegAudioFd_ = -1;
