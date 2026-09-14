@@ -1603,14 +1603,29 @@ class RtmpOutputSender final : public IOutputSender {
   void writeBitstreamToFfmpeg(const uint8_t* data, size_t size) {
     if (!data || size == 0) return;
 #if defined(_WIN32)
-    if (!ffmpegRunning_ || !ffmpegStdin_) return;
+    if (!ffmpegRunning_ || !ffmpegStdin_) {
+      if (!firstBitstreamLogged_) {
+        firstBitstreamLogged_ = true;
+        ::corevideo::core::nativeLogf("[gpu-encode] bitstream dropped: ffmpegRunning=%d stdin=%p size=%zu\n",
+                                     ffmpegRunning_ ? 1 : 0, (void*)ffmpegStdin_, size);
+      }
+      return;
+    }
     size_t remaining = size;
     while (remaining > 0) {
       DWORD written = 0;
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
-      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) return;
+      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
+        ::corevideo::core::nativeLogf("[gpu-encode] bitstream WriteFile failed err=%lu (encoder->ffmpeg pipe broke)\n",
+                                     static_cast<unsigned long>(GetLastError()));
+        return;
+      }
       data += written;
       remaining -= written;
+    }
+    if (!firstBitstreamLogged_) {
+      firstBitstreamLogged_ = true;
+      ::corevideo::core::nativeLogf("[gpu-encode] first bitstream write to ffmpeg size=%zu\n", size);
     }
 #else
     if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) return;
@@ -2114,6 +2129,7 @@ class RtmpOutputSender final : public IOutputSender {
   bool useGpuDirect_ = false;        // desired path for the next/running process
   bool activeUseGpuDirect_ = false;  // path baked into the RUNNING FFmpeg args
   std::string gpuEncodePathReason_ = "cpu-fallback";
+  bool firstBitstreamLogged_ = false;
 
   OutputSender sender_;
   RtmpVideoFramePacer videoFramePacer_;

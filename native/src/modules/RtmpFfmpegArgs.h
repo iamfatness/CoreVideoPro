@@ -115,7 +115,14 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // GPU-direct path: video arrives already H.264-encoded on pipe:0; ffmpeg is a
     // pure muxer/transport (-c:v copy). Only ~6 Mbps crosses the pipe, so the raw
     // -re pacing and pixel-format handling of the raw path are not needed here.
+    // A live H.264 Annex-B elementary stream on a pipe carries NO container
+    // timestamps. -r alone made ffmpeg's h264 demuxer leave stream 0 unset once a
+    // second input was present, and -c:v copy then muxed a stream the endpoint
+    // read as 0x/stalled. -use_wallclock_as_timestamps stamps each arriving access
+    // unit at its realtime arrival, which for a 60fps live feed is monotonic and
+    // ~wall time; -r declares the nominal frame rate alongside it.
     args << " -hide_banner -loglevel warning"
+         << " -use_wallclock_as_timestamps 1 -r " << fps
          << " -f h264 -thread_queue_size 512 -i pipe:0";
     if (config.hasAudio) {
       const int channels = (std::max)(1, config.audioChannels);

@@ -82,9 +82,13 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     if (frame.sharedHandleHex.empty()) return true;  // nothing to encode this tick
     {
       std::lock_guard<std::mutex> lock(queueMutex_);
-      // Newest-wins: a live encoder never accumulates a backlog.
-      pending_ = frame;
-      hasPending_ = true;
+      // Publish the latest handle; the encode loop reads it on the MFT's next
+      // NeedInput. The keyed mutex — not a per-submit wait — paces the encoder to
+      // the producer's frame rate: convertToNv12's AcquireSync(1) only succeeds
+      // once the compositor has released a new frame.
+      latestHandle_ = frame.sharedHandleHex;
+      latestFrameNumber_ = frame.frameNumber;
+      haveHandle_ = true;
     }
     queueCv_.notify_one();
     return true;
@@ -255,7 +259,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   // key 0 for it to continue rendering.
   bool convertToNv12(const std::string& hex) {
     if (!ensureOpened(hex) || !openedMutex_) return false;
-    if (openedMutex_->AcquireSync(1, 4) != S_OK) return false;  // wait for consumer's release
+    // Wait up to ~2 frame periods for the producer (the 60Hz render thread) to
+    // release key 1. A 4ms wait missed the 16ms production cadence on almost
+    // every frame, so most converts timed out, wasted the MFT's input slot and
+    // starved the encoder to ~2fps. Bounded so stop() is never blocked for long.
+    if (openedMutex_->AcquireSync(1, 34) != S_OK) return false;
     bool ok = false;
     do {
       D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
@@ -345,6 +353,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     chunk.size = len;
     chunk.keyframe = clean != 0;
     chunk.frameNumber = hns * (std::max)(1, config_.fps) / 10000000LL;
+    if (!firstEmitLogged_) {
+      firstEmitLogged_ = true;
+      ::corevideo::core::nativeLogf("[gpu-encode] first output chunk size=%zu keyframe=%d\n", chunk.size,
+                                   chunk.keyframe ? 1 : 0);
+    }
     if (sink_) sink_(chunk);
     buffer->Unlock();
   }
@@ -360,22 +373,29 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       MediaEventType type = MEUnknown;
       event->GetType(&type);
       if (type == METransformNeedInput) {
-        GpuVideoEncoderFrame frame;
+        std::string handle;
+        int64_t frameNumber = 0;
         bool have = false;
         {
           std::unique_lock<std::mutex> lock(queueMutex_);
-          queueCv_.wait_for(lock, std::chrono::milliseconds(20),
-                            [this] { return hasPending_ || !running_.load(); });
-          if (hasPending_) {
-            frame = pending_;
-            hasPending_ = false;
+          // Only wait during startup, before the first frame ever arrives. Once we
+          // have a handle we take the latest immediately: the per-NeedInput wait
+          // used to serialize with the mutex wait (~20ms + ~16ms) and halved the
+          // encode rate to ~30fps. The keyed mutex does the pacing.
+          if (!haveHandle_) {
+            queueCv_.wait_for(lock, std::chrono::milliseconds(20),
+                              [this] { return haveHandle_ || !running_.load(); });
+          }
+          if (haveHandle_) {
+            handle = latestHandle_;
+            frameNumber = latestFrameNumber_;
             have = true;
           }
         }
         if (!running_.load()) break;
         if (have) {
-          if (convertToNv12(frame.sharedHandleHex)) {
-            if (!processInput(frame.frameNumber)) {
+          if (convertToNv12(handle)) {
+            if (!processInput(frameNumber)) {
               const HRESULT removed = deviceRemovedReason();
               if (removed != S_OK) {
                 ::corevideo::core::nativeLogf(
@@ -409,6 +429,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::atomic<bool> running_{false};
   std::atomic<bool> healthy_{false};
   bool mfStarted_ = false;
+  bool firstEmitLogged_ = false;
 
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> context_;
@@ -427,8 +448,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::thread thread_;
   std::mutex queueMutex_;
   std::condition_variable queueCv_;
-  GpuVideoEncoderFrame pending_{};
-  bool hasPending_ = false;
+  std::string latestHandle_;
+  int64_t latestFrameNumber_ = 0;
+  bool haveHandle_ = false;
 };
 
 }  // namespace
