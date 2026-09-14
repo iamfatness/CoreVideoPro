@@ -175,6 +175,43 @@ public static class TransportStatusFormatter
         return true;
     }
 
+    /// <summary>
+    /// True when a streaming-start failure means "not yet", not "no".
+    ///
+    /// A stream start races Program's first COMPOSED pixels: the senders are fed
+    /// from the program tap, which is not producing the instant the destination is
+    /// armed. Reporting that as a failure on the first poll is what made a healthy
+    /// configuration read as "the encoder will not start" (owner, 2026-09-12 - two
+    /// of the attempts that day were this, and the third succeeded unchanged).
+    ///
+    /// Deliberately narrow: ONLY the program-pixel readiness case. A refusal, a
+    /// missing runtime or an incomplete configuration is answered immediately,
+    /// because waiting on those only delays an honest answer.
+    /// </summary>
+    public static bool IsStreamingStartStillWarming(string? failureStatus)
+    {
+        if (string.IsNullOrWhiteSpace(failureStatus))
+        {
+            return false;
+        }
+
+        var lowered = failureStatus.ToLowerInvariant();
+        // An explicit refusal outranks readiness: a destination that refused us is
+        // not warming, even if the sender also had no pixels to offer it.
+        if (lowered.Contains("refused the connection", StringComparison.Ordinal) ||
+            lowered.Contains("error opening output", StringComparison.Ordinal) ||
+            lowered.Contains("i/o error", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return lowered.Contains("frame-pixels-missing", StringComparison.Ordinal) ||
+               lowered.Contains("waiting-for-frame", StringComparison.Ordinal) ||
+               (lowered.Contains("waiting for", StringComparison.Ordinal) &&
+                (lowered.Contains("program frame", StringComparison.Ordinal) ||
+                 lowered.Contains("program pixels", StringComparison.Ordinal)));
+    }
+
     private static string BuildOutputSenderFailureDetail(NativeMediaCoreOutputSender sender) =>
         string.Join(
             " ",
@@ -243,8 +280,25 @@ public static class TransportStatusFormatter
         var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
                      lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
             ? "Media core is busy applying changes. Wait a moment and try Stream again."
-            : lowered.Contains("program frame", StringComparison.Ordinal) ||
-                     lowered.Contains("program pixels", StringComparison.Ordinal)
+            // The DESTINATION refused us. Checked BEFORE the Program-pixels and
+            // generic-RTMP branches because FFmpeg's own words ("Error opening
+            // output ... I/O error") are the only evidence that separates "the
+            // far end would not take the connection" from "your credentials are
+            // wrong" - and leading with the stream key cost the owner two
+            // minutes re-entering a key that was correct (2026-09-12).
+            : lowered.Contains("error opening output", StringComparison.Ordinal) ||
+              lowered.Contains("i/o error", StringComparison.Ordinal) ||
+              lowered.Contains("connection refused", StringComparison.Ordinal)
+            ? "The streaming destination refused the connection. Check the destination is live and accepting (a YouTube/Twitch stream has to be started there first), then the stream key and network."
+            // "program frame" ALONE is NOT this case: it also matches "FFmpeg
+            // process exited before accepting program frames", which sent every
+            // FFmpeg exit to "put a valid source on Program". The sender is only
+            // reporting readiness when it says it is WAITING ("waiting for a
+            // program frame" / "waiting for composed BGRA program pixels") - an
+            // exit is reporting a death.
+            : lowered.Contains("waiting for", StringComparison.Ordinal) &&
+              (lowered.Contains("program frame", StringComparison.Ordinal) ||
+               lowered.Contains("program pixels", StringComparison.Ordinal))
             ? "Program video is not ready. Put a valid source on Program before streaming."
             : lowered.Contains("did not arm a native output sender", StringComparison.Ordinal) ||
               lowered.Contains("sender state idle", StringComparison.Ordinal)
@@ -421,6 +475,14 @@ public static class TransportStatusFormatter
         if (normalized.Contains("Native output sender did not start", StringComparison.OrdinalIgnoreCase))
         {
             return "Stream sender not armed";
+        }
+
+        // The far end would not take the connection. Distinct from "RTMP output
+        // failed" so the compact readout does not point an operator at settings
+        // that are already correct.
+        if (normalized.Contains("destination refused the connection", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Destination refused";
         }
 
         if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))

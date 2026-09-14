@@ -1337,19 +1337,25 @@ TEST(ZoomSubscriptionResolutionPolicyRules, ResolutionIsAStableTierNotWhoIsTalki
   EXPECT_EQ(Policy::requestedResolution("participant-video", "preview"), Policy::k1080P);
   EXPECT_EQ(Policy::requestedResolution("screen-share", "program"), Policy::k1080P);
   EXPECT_EQ(Policy::requestedResolution("screen-share", ""), Policy::k1080P);
+  // The Tiles wall is 1080P too (2026-09-13): a wall member must not flip
+  // resolution when soloed in preview, so program-tiles and preview-tiles hold
+  // the same 1080P tier as the buses. Live-soak-proven at 8 concurrent.
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "program-tiles"), Policy::k1080P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "preview-tiles"), Policy::k1080P);
   // Everything else, INCLUDING active-speaker (a follow-speaker route): 720P, so
   // a change of speaker can never move a key.
   EXPECT_EQ(Policy::requestedResolution("participant-video", "active-speaker"), Policy::k720P);
   EXPECT_EQ(Policy::requestedResolution("participant-video", "multiview"), Policy::k720P);
-  EXPECT_EQ(Policy::requestedResolution("participant-video", "program-tiles"), Policy::k720P);
-  EXPECT_EQ(Policy::requestedResolution("participant-video", "preview-tiles"), Policy::k720P);
   EXPECT_EQ(Policy::requestedResolution("participant-video", "iso"), Policy::k720P);
   // The macOS shell's kind "video"/purpose "program" for every assigned guest is
   // NOT promoted to N x 1080P.
   EXPECT_EQ(Policy::requestedResolution("video", "program"), Policy::k720P);
 
-  // Tiles members are 720P (R4): they share the wall with everyone else.
-  EXPECT_FALSE(Policy::wantsFullResolution("participant-video", "program-tiles"));
+  // Tiles members are 1080P (2026-09-13): the wall holds the highest tier so a
+  // soloed member does not flip resolution. multiview/iso stay 720P.
+  EXPECT_TRUE(Policy::wantsFullResolution("participant-video", "program-tiles"));
+  EXPECT_TRUE(Policy::wantsFullResolution("participant-video", "preview-tiles"));
+  EXPECT_FALSE(Policy::wantsFullResolution("participant-video", "multiview"));
 }
 
 TEST(ZoomSubscriptionResolutionPolicyRules, FullResolutionIsCappedInPayloadOrder) {
@@ -1507,9 +1513,20 @@ corevideo::modules::ZoomEngineEvent rosterEvent(
 
 }  // namespace
 
-TEST(ZoomEngineRuntime, ACueRaisesOnceTheTakeSendsNothingAndLeavingTheBusDropsBack) {
-  // R4: Tiles 720P -> cued to Preview 1080P (raise, off air) -> taken to Program
-  // (same tier: nothing) -> back on the wall only (drop back to 720P: no ratchet).
+TEST(ZoomEngineRuntime, AWallMemberCuedToPreviewDoesNotReSubscribe) {
+  // 2026-09-13: the owner report "CoreVideo tiles participants are dropping as I
+  // go through different people in preview." Root cause: a wall member was
+  // program-tiles (720P) and a solo Preview cue made it a preview route (1080P);
+  // resolution is part of the engine subscription key, so that 720P->1080P was a
+  // real renderer teardown/rebuild of a source LIVE ON THE PROGRAM WALL — the
+  // drop, and the "few hundred ms then color changes" placeholder flash.
+  //
+  // The fix pins Tiles at 1080P (the highest tier), live-soak-proven at 8
+  // concurrent on the GPU pipeline. So a wall member has NO lower tier to fall
+  // back to: program-tiles -> cued Preview -> taken to Program all stay 1080P and
+  // send NOTHING. Only leaving the wall entirely (to a 720P tier like multiview)
+  // is a real resolution change. This is the regression test for that report; it
+  // is the inverse of the old "a cue raises" behavior it replaces.
   setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
   auto fake = std::make_shared<FakeZoomEngineProcessClient>();
   {
@@ -1523,16 +1540,18 @@ TEST(ZoomEngineRuntime, ACueRaisesOnceTheTakeSendsNothingAndLeavingTheBusDropsBa
                               elapsed);
       elapsed += 10.0;
     }
-    ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
+    // initial 1080P (program-tiles); preview and program are the SAME tier so send
+    // nothing — the cue that used to drop the tile now costs no re-subscribe; only
+    // the drop to multiview (720P) sends.
+    ASSERT_TRUE(fake->waitForSentLines(2, std::chrono::milliseconds(5000)));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const auto lines = fake->sentLines();
-    ASSERT_EQ(lines.size(), 3u);  // initial, raise, drop — the Take sent nothing
-    EXPECT_EQ(sentResolution(lines[0]), 1);
-    EXPECT_EQ(sentResolution(lines[1]), 2);
-    EXPECT_EQ(sentResolution(lines[2]), 1);
+    ASSERT_EQ(lines.size(), 2u);  // initial 1080P, then the drop to 720P — no cue churn
+    EXPECT_EQ(sentResolution(lines[0]), 2);  // program-tiles is 1080P now
+    EXPECT_EQ(sentResolution(lines[1]), 1);  // only leaving the wall drops to 720P
     const auto churn = runtime.subscriptionChurnState();
     EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 1);
-    EXPECT_EQ(churn.getNumber("totalChurn"), 2);
+    EXPECT_EQ(churn.getNumber("totalChurn"), 1);  // was 2: the preview cue no longer churns
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }

@@ -25,11 +25,14 @@ namespace corevideo::modules {
 // An in-place change cannot be proven without a live meeting, and a silent no-op
 // would leave a Program guest at the wrong resolution with nothing to say so.
 //
-// THE TIER (R4): the shell stamps a purpose that does not depend on who is talking
-// (ZoomSourceSetPolicy.cs), and
+// THE TIER (R4, amended 2026-09-13): the shell stamps a purpose that does not
+// depend on who is talking (ZoomSourceSetPolicy.cs), and
 //   * screen share                                        -> 1080P
 //   * camera video, purpose program / preview (a FIXED route on a bus) -> 1080P, capped
-//   * program-tiles, preview-tiles, multiview, iso         -> 720P
+//   * camera video, purpose program-tiles / preview-tiles -> 1080P, capped
+//     (the Tiles wall; raised from 720P so a wall member does not flip resolution
+//      when soloed in preview — see wantsFullResolution below)
+//   * multiview, iso                                       -> 720P
 // so the resolution moves only on a Take or a cue — NEVER on who is talking. A
 // follow-speaker route grants no purpose (fix round 2, N1): its speaker keeps their
 // own tier, so a follow-speaker shot is 720P until an in-place resolution change is
@@ -59,10 +62,33 @@ namespace corevideo::modules {
 struct ZoomSubscriptionResolutionPolicy {
   static constexpr int k720P = 1;
   static constexpr int k1080P = 2;
-  static constexpr int kMaxConcurrentFullResolutionCameras = 4;
+  // 8, RAISED FROM 4 AND LIVE-SOAK-PROVEN (2026-09-13, owner "whole wall at
+  // 1080p"; the reported bug was tiles dropping as the operator cycled preview).
+  // The historic 4 came from a 2026-06 CPU-I420-era crash at 6 concurrent 1080p
+  // (bd3caf29). That ceiling is a CPU-path artifact: on today's GPU pipeline an
+  // 8-member Tiles wall ran all 8 at 1080p on Program for 30+ min with 60fps
+  // delivery, zero underruns, no monitor shedding, and NO engine crash/respawn,
+  // through repeated preview cues (totalChurn held flat; per-source churn = 1,
+  // the one-time take). 8 is the number a soak PROVED and is the meeting's
+  // camera count; raising it further needs a bigger-meeting soak — never raise
+  // it on extrapolation (the rule this constant has always carried). Graceful
+  // past 8: members are granted in payload order (AddTiles adds members before
+  // the wall background), so a 9th 1080p source — a live wall background, a
+  // >8-member wall, a non-wall bus route — is DEMOTED to 720P stably rather than
+  // flipping a member. Screen share is 1080P and bypasses this camera counter.
+  static constexpr int kMaxConcurrentFullResolutionCameras = 8;
 
+  // Tiles request the highest tier too, so a wall member does NOT flip resolution
+  // when soloed in preview (the dropping bug: resolution is part of the engine's
+  // subscription key, so a 720P->1080P change tore down and rebuilt the live
+  // renderer while the tile was on air). With program-tiles and preview both at
+  // 1080P, a soloed wall member has no lower tier to fall back to — same feed,
+  // no re-subscribe, no drop. program-tiles is the on-air wall; preview-tiles is
+  // the same wall cued on the other bus.
   [[nodiscard]] static bool wantsFullResolution(std::string_view kind, std::string_view purpose) {
-    return kind == "participant-video" && (purpose == "program" || purpose == "preview");
+    return kind == "participant-video" &&
+           (purpose == "program" || purpose == "preview" ||
+            purpose == "program-tiles" || purpose == "preview-tiles");
   }
 
   // The resolution a request asks for BEFORE the concurrency cap.

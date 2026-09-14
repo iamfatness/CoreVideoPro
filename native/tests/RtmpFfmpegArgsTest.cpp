@@ -42,8 +42,33 @@ TEST(RtmpFfmpegArgs, RealAudioReplacesAnullsrcWithPcmInput) {
   // A/V are explicitly mapped and the audio is encoded to AAC.
   EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);
-  EXPECT_NE(args.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
+  // The VIDEO pipe is read greedily (NO -re) so it drops to live under RTMP
+  // backpressure instead of falling progressively behind wallclock (owner
+  // incident 2026-09-13: 124s of accumulated lag on a YouTube stream). The AUDIO
+  // pipe KEEPS -re to preserve A/V startup ordering.
+  EXPECT_NE(args.find("-thread_queue_size 512 -f rawvideo"), std::string::npos);
+  EXPECT_EQ(args.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
   EXPECT_NE(args.find("-re -thread_queue_size 512 -f f32le"), std::string::npos);
+}
+
+// Regression for the live-lag incident: the video input must never be paced with
+// -re (which turned RTMP backpressure into unbounded lag), while both audio paths
+// must keep it (which prevents the audio-races-ahead / no-video connection close).
+TEST(RtmpFfmpegArgs, VideoPipeIsGreedyWhileAudioIsPaced) {
+  corevideo::modules::RtmpFfmpegArgsConfig config;
+  config.hasAudio = true;
+  config.audioInput = "pipe:3";
+  const auto real = corevideo::modules::buildRtmpFfmpegArguments(config);
+  // video: no -re immediately before the rawvideo input
+  EXPECT_EQ(real.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
+  // real audio: -re present
+  EXPECT_NE(real.find("-re -thread_queue_size 512 -f f32le"), std::string::npos);
+
+  config.hasAudio = false;
+  const auto silent = corevideo::modules::buildRtmpFfmpegArguments(config);
+  // the silent fallback still needs -re (lavfi is not realtime)
+  EXPECT_NE(silent.find("-re -f lavfi -i anullsrc"), std::string::npos);
+  EXPECT_EQ(silent.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
 }
 
 TEST(RtmpFfmpegArgs, HonorsAudioChannelsAndSampleRate) {
@@ -120,4 +145,45 @@ TEST(RtmpVideoFramePacer, ResetMakesNextFrameImmediatelyEligible) {
   EXPECT_FALSE(pacer.shouldWrite(1010.0, 30));
   pacer.reset();
   EXPECT_TRUE(pacer.shouldWrite(1010.0, 30));
+}
+
+// #521 slice 1: GPU-direct encode hands the muxer a compressed H.264 bitstream,
+// so the video input is copied (-c:v copy), not re-encoded from raw. The 186 MB/s
+// raw-video pipe is gone; audio is still encoded to AAC as before.
+TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
+  corevideo::modules::RtmpFfmpegArgsConfig config;
+  config.videoBitstreamInput = true;
+  config.fps = 60;
+  config.hasAudio = true;
+  config.audioInput = "pipe:3";
+  const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-f h264 -thread_queue_size 512 -i pipe:0"), std::string::npos);
+  // A live raw H.264 Annex-B stream on a pipe has no container timestamps, so the
+  // input needs wallclock timestamps (realtime-spaced, monotonic) plus a declared
+  // frame rate, or -c:v copy muxes an unusable stream the endpoint reads as 0x.
+  EXPECT_NE(args.find("-use_wallclock_as_timestamps 1 -r 60 -f h264 -thread_queue_size 512 -i pipe:0"),
+            std::string::npos);
+  EXPECT_NE(args.find("-c:v copy"), std::string::npos);
+  // -stats makes the realtime speed readable from ffmpeg's own stderr (diagnosability).
+  EXPECT_NE(args.find("-stats -stats_period 1"), std::string::npos);
+  EXPECT_EQ(args.find("-f rawvideo"), std::string::npos);  // no raw video input
+  EXPECT_EQ(args.find("-b:v "), std::string::npos);          // no re-encode bitrate
+  EXPECT_NE(args.find("-c:a aac"), std::string::npos);       // audio still encoded
+  EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
+}
+
+TEST(RtmpFfmpegArgs, BitstreamRtmpDisablesTcpDelayWithoutChangingSrt) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  for (const auto* endpoint : {"rtmp://live.example/app/test", "rtmps://live.example/app/test"}) {
+    config.endpoint = endpoint;
+    const auto args = buildRtmpFfmpegArguments(config);
+    EXPECT_NE(args.find(" -tcp_nodelay 1 -f flv "), std::string::npos);
+    EXPECT_NE(args.find(" -c:v copy"), std::string::npos);
+  }
+  config.endpoint = "srt://127.0.0.1:9021?mode=caller";
+  config.container = "mpegts";
+  const auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_EQ(args.find("tcp_nodelay"), std::string::npos);
+  EXPECT_NE(args.find(" -f mpegts "), std::string::npos);
 }

@@ -429,6 +429,24 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
                 t.luma.data() + static_cast<size_t>(prev) * w, w);
     std::memset(yp + static_cast<size_t>(band) * w, 235, w);
 
+    // ...but a ONE-ROW band is not measurable MOTION. Any judge that asks "did
+    // the picture move" reads the frame's MEAN luma, and a band that brightens
+    // one row of h while restoring the row behind it changes that mean by
+    // ~0.0007 - so `live-meeting-soak.mjs`'s motion gate (>0.05 YAVG of
+    // frame-to-frame change, which exists because 8995 frames of FLAT luma once
+    // passed every validator that counted frames) scored 0% of frames moving on
+    // a rig that was in fact delivering 60fps. A harness that cannot satisfy a
+    // gate makes that gate unfalsifiable, which is worse than not having it.
+    // So pulse a BLOCK: h/8 rows stepping 7 luma per frame is ~0.9 YAVG at the
+    // frame level, 18x the threshold, for 1/8 of a full repaint (the cost this
+    // function deliberately avoids - see the comment above). Offset by pid so
+    // the tiles of one wall carry different values while all advancing together.
+    const uint32_t pulseRows = h / 8;
+    if (pulseRows > 0) {
+        const auto pulse = static_cast<uint8_t>(40 + (tick * 7 + pid) % 180);
+        std::memset(yp, pulse, static_cast<size_t>(pulseRows) * w);
+    }
+
     // A/V clap: one full-white frame. Restored on the very next frame, so the
     // event is exactly one frame long and unambiguous to find in the recording.
     if (t.clapRestore) {

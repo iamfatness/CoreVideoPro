@@ -2,6 +2,7 @@
 
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
+#include "core/TilesWallSource.h"
 #include "core/Director.h"
 #include "core/MonitorShedPolicy.h"
 #include "core/OutputLifecyclePolicy.h"
@@ -10,6 +11,7 @@
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceContinuityLedger.h"
+#include "core/SourceRegistry.h"
 #include "core/TakeRecordPolicy.h"
 #include "core/ProgramAudioDelay.h"
 #include "core/PluginHostScan.h"
@@ -266,6 +268,18 @@ class MediaCore {
   // declaration for why sharing one field was a live-show bug, not just a
   // test-seam gap.
   const TilesLayerState& previewTilesLayerForTest() const { return previewTilesLayer_; }
+  // The take record's proof that a wall did not restart across a Take: read
+  // via the const find() (never forWall(), which would insert a wall on a
+  // mere read). An unknown wall reports generation 0 — true, not a guess.
+  // Also the test seam: the headline #448 regression test reads this directly
+  // to assert a mid-animation Take does not bump the wall's generation.
+  [[nodiscard]] uint64_t tilesWallGeneration(const std::string& wallId) const;
+  // Task 4: the SourceRegistry snapshot, for tests asserting the wall's own
+  // Kind::Composed registration/release — the same snapshot() a real consumer
+  // (a future ShowPlanGenerator) would read.
+  [[nodiscard]] std::shared_ptr<const core::SourceRegistry::Snapshot> sourceRegistrySnapshotForTest() const {
+    return sourceRegistry_.snapshot();
+  }
   const std::vector<std::string>& sceneValidationWarningsForTest() const {
     return sceneValidationWarnings_;
   }
@@ -520,8 +534,37 @@ class MediaCore {
   // applyPreviewScene. See tilesLayer_ above for why this must be a SEPARATE
   // field rather than shared.
   TilesLayerState previewTilesLayer_;
-  compositor::TilesPlanAnimation programTilesAnimation_;
-  compositor::TilesPlanAnimation previewTilesAnimation_;
+  // One animation per WALL, not per bus (#448). See core/TilesWallSource.h for
+  // why the per-bus pair and its hand-off were wrong.
+  core::TilesWallSources tilesWallSources_;
+  // Task 4: the wall is the first real consumer of SourceRegistry. Registered
+  // as Kind::Composed the tick a wall becomes live, released the tick nothing
+  // names it any longer - the SAME "referenced by a live scene" lifetime
+  // tilesWallSources_ already implements (releaseAllExcept above), one level
+  // up. registeredWallIds_ is the idempotence guard: add() answers Conflict on
+  // a repeat, so without it every render tick for a live wall would take the
+  // registry mutex and get refused - a per-tick cost for a value that only
+  // actually changes on liveness transitions.
+  //
+  // kCoreProcessEpoch is a fixed label, not a fresh-per-instance token: a wall
+  // has no provider process to fence (SourceRegistry::removeComposed erases it
+  // outright instead of tombstoning by epoch), so nothing here ever calls
+  // retireProcessEpoch against it, and a stable constant is honest - it names
+  // "this core process," not an incarnation that could be replaced mid-run.
+  static constexpr const char* kCoreProcessEpoch = "core-process";
+  core::SourceRegistry sourceRegistry_{"core-registry"};
+  std::unordered_set<std::string> registeredWallIds_;
+  // Wall ids SourceRegistry refuses on their SPELLING (over kMaxIdBytes), which
+  // no retry can ever change. Skipped outright: a failed add is deliberately not
+  // remembered as registered, so without this a permanently-Invalid id would
+  // take the registry mutex and log on EVERY render tick.
+  std::unordered_set<std::string> unregisterableWallIds_;
+  // Wall ids whose RETRYABLE registration failure has already been logged once.
+  // The retry itself is kept (it is a liveness-transition cost); only the line
+  // is bounded, because an unbounded render-tick line rolls the diagnosis out
+  // of the bounded log it exists to land in. Both sets are pruned with
+  // registeredWallIds_ when a wall stops being live.
+  std::unordered_set<std::string> warnedWallRegistrationIds_;
   // Task 4: per-member frame-age snapshot for the wall expansion, refreshed
   // every render tick from the live videoFrames gather (renderSyntheticTick,
   // under coreMutex — geometry bookkeeping, not pixel work). Covers members of
@@ -753,7 +796,7 @@ class MediaCore {
   // `frames` is THIS tick's final gather (media frames included): a source the
   // take brought on air with no frame in it counts as missing.
   void completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                          bool wallAdoptedSettled,
+                          bool wallContinuous,
                           const std::vector<modules::VideoFrame>& frames);
   static std::vector<std::string> renderPlanSourceIds(const modules::CompositorRenderPlan& plan);
   // Lock-free mirror of lastProgramFrame_.frameNumber for the audio worker's

@@ -937,6 +937,30 @@ corevideo::rpc::Json wallScene(const char* type, const char* sceneId,
       {"tiles", animatedTilesPayload(std::string("tiles:") + sceneId, members)}}};
 }
 
+// Same shape as wallScene(), but with a caller-chosen animationDurationMs.
+// AWallTakenMidAnimationIsContinuous needs the SLOWEST duration the animator
+// accepts (clamped at 2000ms in TilesAnimator) so its rect-continuity check
+// (Finding E, review round 1) is not at the mercy of how many real
+// milliseconds of test-process overhead land between two back-to-back
+// applyCommands() calls: at the shared 100ms floor, this rig's own command
+// handling was enough real wall-clock time for a critically-damped 6.6/duration-Hz
+// spring to converge audibly close to its target on its own, with or without a
+// bug — the same closed-form "rest" snap the reset path uses. At 2000ms the
+// per-millisecond convergence is 20x slower, giving a reliable margin.
+corevideo::rpc::Json wallSceneWithDuration(const char* type, const char* sceneId,
+                                           const std::vector<std::string>& members, double durationMs) {
+  auto tiles = animatedTilesPayload(std::string("tiles:") + sceneId, members);
+  auto object = tiles.asObject();
+  auto style = object.at("style").asObject();
+  style.insert_or_assign("animationDurationMs", corevideo::rpc::Json{durationMs});
+  object.insert_or_assign("style", corevideo::rpc::Json{style});
+  return corevideo::rpc::Json{corevideo::rpc::Json::Object{
+      {"type", corevideo::rpc::Json{type}},
+      {"sceneId", corevideo::rpc::Json{sceneId}},
+      {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+      {"tiles", corevideo::rpc::Json{object}}}};
+}
+
 // The same wall, but carrying a LIVE background feed (tiles-source-bg:<layerId>).
 corevideo::rpc::Json wallSceneWithBackground(const char* type, const char* sceneId,
                                              const std::vector<std::string>& members,
@@ -1019,6 +1043,218 @@ void take(MediaCore& core, const corevideo::rpc::Json& program, const corevideo:
 }
 
 }  // namespace
+
+// #448. `TilesPlanAnimation::adoptSettledFrom` refused a wall whose tiles were
+// still flying, because with two per-bus animators mid-flight state had no
+// correct owner ("mid-flight state belongs to the bus that is flying it").
+// So a wall taken MID-ANIMATION lost its motion on Program — the live-show
+// defect this file is named for, caught here at its actual root: with one
+// animator PER WALL (core::TilesWallSource, shared by both buses) there is
+// nothing to hand over, so the cut is continuous even mid-flight.
+//
+// WHAT THE OLD MECHANISM ACTUALLY DID, because the direction matters to every
+// assertion below: a reset does NOT replay from alpha 0. `TilesAnimator`
+// treats a reset animator's next non-empty sample() as an ADOPTION — content
+// already present, not entering — so the wall SNAPS STRAIGHT TO ITS FINAL
+// STATE: alpha pops to 1 and mid-spring rects jump to their settled positions.
+// That is why `EXPECT_GE(onAir alpha, midFlight alpha)` alone is NOT a
+// regression test — a snap to 1 satisfies it just as well as continuity does,
+// and the first draft of this test passed against the unfixed code. The
+// falsifying assertions are the ones that bound the OTHER side: the post-take
+// alpha of a tile that was mid-ramp must stay BELOW 0.9, and any tile already
+// at opacity 1 must keep its mid-spring RECT (EXPECT_NEAR, 0.05). Both were
+// verified red by reverting the MediaCore.cpp / TilesPlanAnimation.h changes,
+// not assumed.
+//
+// One honest limit on that revert: the generation-equality check is not
+// independently falsified by it, because the reverted take path never touches
+// tilesWallSources_ at all — it reads 0 == 0 either way. The alpha and rect
+// assertions are the proven-red ones; the generation assertion holds forward,
+// by construction of the new API.
+//
+// Getting a wall genuinely MID-FLIGHT deterministically (no real-time
+// polling): TilesAnimator treats an animator's truly first-ever sample() call
+// as an "adoption" — its content is already-present, not entering (see
+// DifferentWallCannotReuseAnotherWallsCachedGeometry / TilesAnimatorTest.cpp,
+// unrelated to and unchanged by #448) — so a wall's very first tick is
+// SETTLED instantly and cannot exercise this test. A member JOINING an
+// ALREADY-ESTABLISHED wall does animate in, and its alpha is exactly 0 on the
+// single tick it is added (entryElapsed only advances on LATER ticks) — the
+// everyday case that actually produces a mid-flight take.
+TEST(TilesRenderPlan, AWallTakenMidAnimationIsContinuous) {
+  RecordingCompositor* compositor = nullptr;
+  MediaCore core(wallModules(&compositor, nullptr));
+
+  const double kDurationMs = 2000.0;  // the animator's own clamp ceiling — see wallSceneWithDuration
+  const std::vector<std::string> initialMembers{"capture:g1", "capture:g2"};
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallLessScene("load-scene-graph", "solo"),
+      wallSceneWithDuration("set-preview-scene", "gallery", initialMembers, kDurationMs)});
+  ASSERT_TRUE(allSettled(tileLayers(compositor->lastPreviewPlan)))
+      << "precondition: the wall must be established before a member joins it";
+
+  // A THIRD member joins the SAME wall (same layerId, same scene) while it is
+  // already on air in preview.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallSceneWithDuration("set-preview-scene", "gallery", wallMembers(), kDurationMs)});
+
+  const auto midFlight = tileLayers(compositor->lastPreviewPlan);
+  ASSERT_EQ(midFlight.size(), wallMembers().size());
+  ASSERT_FALSE(allSettled(midFlight))
+      << "precondition: the wall must still be animating for this test to mean anything";
+  const auto midFlightSnapshot = snapshotTiles(compositor->lastPreviewPlan);
+
+  const auto generationBefore = core.tilesWallGeneration("tiles:gallery");
+
+  take(core, wallSceneWithDuration("load-scene-graph", "gallery", wallMembers(), kDurationMs),
+       wallLessScene("set-preview-scene", "solo"));
+
+  // The wall did not restart...
+  EXPECT_EQ(core.tilesWallGeneration("tiles:gallery"), generationBefore)
+      << "the wall's generation moved across the take — it restarted instead of continuing";
+
+  // ...and its tiles continued from where they were, rather than snapping to
+  // a new state. Alpha is the sharpest signal, but ">= before" alone is too
+  // weak: an animator that RESETS (a fresh TilesAnimator's first non-empty
+  // sample call is itself treated as "already there" — see
+  // AWallThatWasNeverCuedStartsCold above) pops a still-entering tile straight
+  // to fully opaque, which technically satisfies ">=" too. The take happens on
+  // the very next tick with negligible additional wall-clock time, so a
+  // CONTINUING animation cannot have progressed far past where it was; a value
+  // that jumped essentially to 1.0 is a reset wearing an alpha that happens to
+  // be no smaller, not a continuation.
+  const auto onAir = tileLayers(compositor->lastPlan);
+  ASSERT_EQ(onAir.size(), wallMembers().size()) << "the taken wall lost tiles on its first program frame";
+  for (const auto* tile : onAir) {
+    ASSERT_EQ(midFlightSnapshot.count(tile->layerId), 1u);
+    const auto& before = midFlightSnapshot.at(tile->layerId);
+    EXPECT_GE(tile->opacity, before.opacity)
+        << tile->layerId << " opacity regressed across the take";
+    if (before.opacity < 1.f) {
+      EXPECT_LT(tile->opacity, 0.9f)
+          << tile->layerId << " snapped straight to fully opaque instead of continuing its entrance "
+             "— the wall was reset (popped in), not continued";
+    } else {
+      // Review fix round 1, Finding E: g1/g2 are already fully opaque at the
+      // midFlight tick (only g3, the newly joined member, has a ramping
+      // alpha) — the layout change from 2-up to 3-up put THEM mid-spring on
+      // their RECT instead. A reset snaps a tile's position straight to its
+      // new target (TilesAnimator: `if (added) state.position = goal;`), so
+      // an on-air rect far from the mid-flight rect is a reset wearing full
+      // opacity, not a continuation — the take happens on the very next tick
+      // with negligible additional wall-clock time, so a genuinely
+      // CONTINUING spring cannot have travelled far from where it was.
+      EXPECT_NEAR(tile->rect.x, before.rect.x, 0.05f)
+          << tile->layerId << " rect.x snapped to a new position instead of continuing its spring";
+      EXPECT_NEAR(tile->rect.y, before.rect.y, 0.05f)
+          << tile->layerId << " rect.y snapped to a new position instead of continuing its spring";
+      EXPECT_NEAR(tile->rect.width, before.rect.width, 0.05f)
+          << tile->layerId << " rect.width snapped to a new position instead of continuing its spring";
+      EXPECT_NEAR(tile->rect.height, before.rect.height, 0.05f)
+          << tile->layerId << " rect.height snapped to a new position instead of continuing its spring";
+    }
+  }
+
+  // Review fix round 1, Finding D: the verdict this task exists to prove was
+  // never asserted end-to-end. A take record reading "continuous"/"cut" is
+  // the whole point of #448 — read the record the take above just completed
+  // and assert it directly, not just the raw generation number.
+  const auto snapshot = core.sessionState();
+  const auto* takes = snapshot.get("takeRecords");
+  ASSERT_NE(takes, nullptr);
+  ASSERT_NE(takes->get("records"), nullptr);
+  const auto& records = takes->get("records")->asArray();
+  ASSERT_FALSE(records.empty()) << "the take above produced no record";
+  const auto& record = records.back();
+  EXPECT_EQ(record.getString("wall"), "continuous")
+      << "the take record still reads the wall as having reset";
+  EXPECT_EQ(record.getString("verdict"), "cut")
+      << "the take record still reads this as a rebuild, not a cut";
+}
+
+// Review round 2: a wall present on BOTH buses with DISAGREEING `animateLayout`
+// (Program false, Preview true) has NO coverage before this test — which is
+// why it took two review rounds to find. Round 1 fixed the freeze (Finding B:
+// the double-advance guard keyed on wall-id equality, so this exact
+// configuration was advanced by NEITHER branch) and the stale-geometry
+// retention (Finding C: advance() must run unconditionally for a present
+// wall) as two separate, correct fixes — but combined, they advance the SAME
+// shared TilesWallSource TWICE in one tick with contradictory `enabled`:
+// Program's own call (enabled=false) resets it (a real reset once it has a
+// key to lose), then Preview's separate call (enabled=true) sees an EMPTY key
+// and resets it AGAIN. Net per tick: generation +2, no animation ever
+// actually completes, and the shared object churns forever. This test must
+// FAIL against commit c11862d2 (round 1) and pass after round 2's "one
+// advance per wall per tick" restructure.
+// Review round 2 caught: this configuration (same wall id, disagreeing
+// `animateLayout`) had NO coverage before it, which is why it took two review
+// rounds to find the double-advance bug it exposed.
+//
+// Review round 3, Finding 2 (RULING) changed what "correct" means here: the
+// original version of this test asserted the shared wall's generation settled
+// after climbing once (the old `enabled = programEnabled || previewEnabled`
+// behaviour) — i.e. Preview's animateLayout=true was allowed to start motion
+// on Program. That is a live-show hazard (an off-air Preview draft edit
+// reaching Program — CLAUDE.md: "an off-air Preview look can never take video
+// ... from a Program source"), so the rule is now PROGRAM WINS: a wall shared
+// by both buses uses ONLY Program's `enabled`, never an OR. This test now
+// asserts that property directly: with Program's animateLayout=false, the
+// shared wall's generation NEVER moves off 0, no matter how many ticks pass
+// or what Preview wants — it never even acquires a real key (`advance()`
+// takes the early-return branch every tick since `enabled` is `false`
+// throughout). If the OR were ever restored, the first tick would establish
+// a real key and settle the generation at 1 instead of 0 — this assertion
+// would catch that.
+TEST(TilesRenderPlan, AProgramDisabledSharedWallNeverAnimatesEvenWhenPreviewWantsIt) {
+  MediaCore core;
+  const std::vector<std::string> members{"zoom:1", "zoom:2"};
+
+  // PROGRAM: layerId "tiles:s", animateLayout=false (loadWall()'s default —
+  // it sends no "animateLayout" key at all).
+  loadWall(core, members);
+  // PREVIEW: the SAME scene id "s" -> the SAME layerId "tiles:s",
+  // animateLayout=true (wallScene()/animatedTilesPayload()'s default).
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      wallScene("set-preview-scene", "s", members)});
+
+  // Review round 4, Finding 2: prove the SHARED configuration this test is
+  // about actually exists before asserting on it — an all-negative test
+  // (generation == 0 forever) passes VACUOUSLY if the configuration silently
+  // stops existing (set-preview-scene stops populating previewTilesLayer_,
+  // hasPreviewScene() goes false, or the layerId derivation changes so the
+  // two buses no longer share "tiles:s"). Program's own wall must be present
+  // and drawing real tiles — a plain MediaCore() has no real source to admit
+  // zoom:1/zoom:2, so force admission the same way
+  // EachAdmittedMemberBecomesOneTileLayer does. This only rebuilds
+  // lastRenderPlan_ via buildCompositorRenderPlan (see the seam's own
+  // comment) — it does NOT touch tilesWallSources_/generation, so it cannot
+  // disturb the property under test below.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:1"), nullptr)
+      << "precondition: Program's wall never rendered its tiles";
+  // ...and Preview's scene must have been accepted onto the SAME wall id, not
+  // silently rejected or parsed onto some other layerId.
+  ASSERT_TRUE(core.previewTilesLayerForTest().present)
+      << "precondition: the preview scene was not accepted";
+  ASSERT_EQ(core.previewTilesLayerForTest().layerId, "tiles:s")
+      << "precondition: preview did not land on the SAME wall id as Program";
+  ASSERT_TRUE(core.previewTilesLayerForTest().style.animateLayout)
+      << "precondition: Preview's animateLayout must be true for this test to mean anything";
+
+  EXPECT_EQ(core.tilesWallGeneration("tiles:s"), 0u)
+      << "the shared wall animated on its very first tick even though Program's "
+         "animateLayout is false — Preview must never be able to start it";
+
+  // Several more ticks with nothing changing: the generation must stay
+  // pinned at 0 forever, not merely "settle" at some nonzero value (which
+  // would mean Preview's flag won at least once).
+  for (int tick = 0; tick < 5; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    EXPECT_EQ(core.tilesWallGeneration("tiles:s"), 0u)
+        << "tick " << tick << ": the shared wall animated even though Program's "
+           "animateLayout is false — a Preview-only toggle must never move Program";
+  }
+}
 
 // THE PROPERTY: a wall settled in preview, then taken, is at its settled state
 // on the first program frame — a cut, not a redraw.
@@ -1216,4 +1452,122 @@ TEST(TilesRenderPlan, AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated) {
   // And the wall never ships an empty plan either way: its own solid background
   // is above the admission gate and is what program falls back to.
   EXPECT_NE(findLayer(core.lastRenderPlanForTest(), "tiles-bg:tiles:pinned"), nullptr);
+}
+
+namespace {
+using corevideo::core::SourceRegistry;
+
+const SourceRegistry::Source* findRegisteredSource(
+    const std::shared_ptr<const SourceRegistry::Snapshot>& snapshot, const std::string& sourceId) {
+  if (!snapshot) return nullptr;
+  for (const auto& source : snapshot->sources) {
+    if (source.token.sourceId.value == sourceId) return &source;
+  }
+  return nullptr;
+}
+}  // namespace
+
+// Task 4: the wall is the first real consumer of SourceRegistry — it registers
+// as a Kind::Composed source the tick it becomes live, with its five
+// capture-only fields left nullopt (a wall has no SDK handle, no availability
+// concept, and is never subscribed — SourceRegistry::Kind::Composed).
+TEST(TilesRenderPlan, ALiveWallRegistersAsAComposedSourceInTheRegistry) {
+  MediaCore core;
+  loadWall(core, {"zoom:1", "zoom:2"});
+
+  // Bind the shared_ptr before taking a pointer into it (SourceRegistryComposedTest's
+  // own rule) - `findRegisteredSource(core.sourceRegistrySnapshotForTest(), ...)` as
+  // one expression leaves `wall` dangling the instant the temporary shared_ptr's
+  // refcount drops to zero at the semicolon.
+  const auto snapshot = core.sourceRegistrySnapshotForTest();
+  const auto* wall = findRegisteredSource(snapshot, "tiles:s");
+  ASSERT_NE(wall, nullptr) << "a live wall must appear in the SourceRegistry snapshot";
+  EXPECT_EQ(wall->kind, SourceRegistry::Kind::Composed);
+  EXPECT_FALSE(wall->personId.has_value());
+  EXPECT_FALSE(wall->externalId.has_value());
+  EXPECT_FALSE(wall->availability.has_value());
+  EXPECT_FALSE(wall->subscriptionRequested.has_value());
+  EXPECT_FALSE(wall->subscriptionObserved.has_value());
+}
+
+// Lifetime is "named by a live scene" (parent spec section 2) — the SAME rule
+// tilesWallSources_.releaseAllExcept already implements one level down. Once
+// no scene on either bus names the wall, it must be genuinely gone from the
+// registry, not tombstoned (a wall has no provider process to fence).
+TEST(TilesRenderPlan, AWallNoSceneReferencesIsGoneFromTheRegistry) {
+  MediaCore core;
+  loadWall(core, {"zoom:1"});
+  ASSERT_NE(findRegisteredSource(core.sourceRegistrySnapshotForTest(), "tiles:s"), nullptr);
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{wallLessScene("load-scene-graph", "solo")});
+
+  EXPECT_EQ(findRegisteredSource(core.sourceRegistrySnapshotForTest(), "tiles:s"), nullptr)
+      << "a wall no scene still names must be gone from the registry, not merely departed";
+}
+
+// A wall released and then re-cued under the SAME scene id is a NEW source,
+// never a resurrection of the old registry entry — mirroring
+// core::TilesWallSource's own "a recreated wall starts at generation 0, never
+// continuing a retired one's count." The registry has no generation counter
+// per composed source to reuse, so the discriminator is the registry-minted
+// instanceId: install() mints a fresh one from the CURRENT revision every
+// time, so a genuinely new install() call can never mint the same value twice.
+TEST(TilesRenderPlan, AWallReleasedAndReCuedRegistersAsANewSource) {
+  MediaCore core;
+  loadWall(core, {"zoom:1"});
+  // Bind each snapshot before taking a pointer into it — see the comment on
+  // the headline registration test above for why the unbound one-expression
+  // form dangles.
+  const auto firstSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto* first = findRegisteredSource(firstSnapshot, "tiles:s");
+  ASSERT_NE(first, nullptr);
+  const auto firstInstanceId = first->token.instanceId.value;
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{wallLessScene("load-scene-graph", "solo")});
+  ASSERT_EQ(findRegisteredSource(core.sourceRegistrySnapshotForTest(), "tiles:s"), nullptr);
+
+  loadWall(core, {"zoom:1"});
+  const auto secondSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto* second = findRegisteredSource(secondSnapshot, "tiles:s");
+  ASSERT_NE(second, nullptr) << "re-cueing the same scene id must register again";
+  EXPECT_NE(second->token.instanceId.value, firstInstanceId)
+      << "a re-cued wall is a NEW registry entry, not the old one come back";
+}
+
+// Review round 1, Finding 1: a plain "exactly one entry" count is near-
+// unfalsifiable here. `sources_` is a std::map keyed by sourceId, so ONE key
+// can never hold two entries by construction, and "never zero" is already
+// covered by ALiveWallRegistersAsAComposedSourceInTheRegistry above. Worse:
+// delete registeredWallIds_ entirely and add() answers Conflict on every
+// tick (taking the registry mutex 60x/s on the render path) while this count
+// assertion STILL passes, because a refused add() neither creates a second
+// entry nor bumps any counter this test reads.
+//
+// The falsifiable property is identity, not count: install() mints a fresh
+// instanceId as `epoch + ":" + revision` on every real add() call, so the
+// realistic regression this guards against — someone drops the guard and
+// instead removes-and-re-adds every tick — mints a NEW instanceId every
+// frame, which this assertion catches and a count assertion cannot.
+TEST(TilesRenderPlan, ALiveWallKeepsTheSameRegistryIdentityAcrossManyTicks) {
+  MediaCore core;
+  loadWall(core, {"zoom:1"});
+
+  const auto firstSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto* first = findRegisteredSource(firstSnapshot, "tiles:s");
+  ASSERT_NE(first, nullptr);
+  const auto firstInstanceId = first->token.instanceId.value;
+
+  for (int tick = 0; tick < 25; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  }
+
+  const auto laterSnapshot = core.sourceRegistrySnapshotForTest();
+  const auto count = std::count_if(laterSnapshot->sources.begin(), laterSnapshot->sources.end(),
+      [](const auto& source) { return source.token.sourceId.value == "tiles:s"; });
+  ASSERT_EQ(count, 1) << "never zero (a lost registration) across a live wall's steady state";
+  const auto* later = findRegisteredSource(laterSnapshot, "tiles:s");
+  ASSERT_NE(later, nullptr);
+  EXPECT_EQ(later->token.instanceId.value, firstInstanceId)
+      << "a live wall's registration must be the SAME entry across ticks, "
+      << "never removed-and-re-added (which would mint a fresh instanceId)";
 }

@@ -47,24 +47,37 @@ SourceRegistry::Result SourceRegistry::upsertPerson(Person person) {
 }
 
 bool SourceRegistry::validRegistration(const Registration& r) const {
-  const bool knownKind = r.kind == Kind::ParticipantVideo || r.kind == Kind::ParticipantShare ||
+  const bool composed = r.kind == Kind::Composed;
+  const bool knownKind = composed || r.kind == Kind::ParticipantVideo || r.kind == Kind::ParticipantShare ||
       r.kind == Kind::Device || r.kind == Kind::Media || r.kind == Kind::Browser;
-  return knownKind && (!r.requestedGeneration || (*r.requestedGeneration > 0 && *r.requestedGeneration <= kMaxRevision)) &&
-      (!r.instanceId || (!r.instanceId->value.empty() && r.instanceId->value.size() <= 512)) &&
-      !r.sourceId.value.empty() && r.sourceId.value.size() <= 512 &&
-      !r.processEpoch.empty() && r.processEpoch.size() <= 512 &&
-      !retiredProcessEpochs_.contains(r.processEpoch) && !r.externalId.empty() &&
-      r.externalId.size() <= 512 && r.displayName.size() <= 4096 &&
+  // A composed source is identified by its sourceId alone: it has no SDK handle,
+  // so requiring an externalId would reject every wall outright.
+  const bool externalIdOk = composed
+      ? r.externalId.empty()
+      : (!r.externalId.empty() && r.externalId.size() <= kMaxIdBytes);
+  return knownKind && externalIdOk &&
+      (!r.requestedGeneration || (*r.requestedGeneration > 0 && *r.requestedGeneration <= kMaxRevision)) &&
+      (!r.instanceId || (!r.instanceId->value.empty() && r.instanceId->value.size() <= kMaxIdBytes)) &&
+      !r.sourceId.value.empty() && r.sourceId.value.size() <= kMaxIdBytes &&
+      !r.processEpoch.empty() && r.processEpoch.size() <= kMaxIdBytes &&
+      !retiredProcessEpochs_.contains(r.processEpoch) &&
+      r.displayName.size() <= 4096 &&
       ((!r.personId && r.personGeneration == 0) ||
        (r.personId && persons_.contains(r.personId->value) && r.personGeneration > 0 &&
         persons_.at(r.personId->value).generation == r.personGeneration));
 }
 
 bool SourceRegistry::externalConflict(const Registration& r) const {
+  const bool composed = r.kind == Kind::Composed;
   for (const auto& entry : sources_) {
     const auto& source = entry.second;
     if (entry.first != r.sourceId.value && source.availability != Availability::Departed &&
         r.instanceId && source.token.instanceId.value == r.instanceId->value) return true;
+    // A composed source has no externalId to collide on; two walls are
+    // distinct whenever their sourceIds differ. Only skip THIS clause for a
+    // composed registration - the instanceId check above still applies, so
+    // two walls sharing an explicit instanceId still conflict.
+    if (composed) continue;
     if (entry.first != r.sourceId.value && source.availability != Availability::Departed &&
         source.kind == r.kind && source.token.processEpoch == r.processEpoch && source.externalId == r.externalId)
       return true;
@@ -84,7 +97,21 @@ SourceRegistry::Mutation SourceRegistry::install(Registration r, uint64_t genera
   source.personId = std::move(r.personId);
   source.personGeneration = r.personGeneration;
   source.displayName = std::move(r.displayName);
-  source.externalId = std::move(r.externalId);
+  if (r.kind == Kind::Composed) {
+    // A composed source has no SDK handle, no availability concept (it lives
+    // and dies with the core process), and is never subscribed. Leaving these
+    // nullopt is the whole point: a stray `false` here would let a consumer
+    // read "not subscribed" as an observed fact about a wall.
+    source.externalId.reset();
+    source.availability.reset();
+    source.subscriptionRequested.reset();
+    source.subscriptionObserved.reset();
+  } else {
+    source.externalId = std::move(r.externalId);
+    source.availability = Availability::Available;
+    source.subscriptionRequested = false;
+    source.subscriptionObserved = false;
+  }
   const auto token = source.token;
   sources_[r.sourceId.value] = std::move(source);
   ++revision_;
@@ -136,6 +163,11 @@ SourceRegistry::Result SourceRegistry::setAvailability(const Token& token, Avail
   if (found == sources_.end()) return Result::NotFound;
   auto& source = found->second;
   if (!sameToken(source.token, token) || source.availability == Availability::Departed) return Result::Stale;
+  // A composed source has no availability concept - nullopt means NOT
+  // APPLICABLE, not "unknown Available/Unavailable". Applying this call to one
+  // would flip subscriptionObserved from nullopt to a concrete `false`, the
+  // exact false claim this registry exists to refuse to make.
+  if (source.kind == Kind::Composed) return Result::Invalid;
   if (availability != Availability::Available && availability != Availability::Unavailable && availability != Availability::Departed)
     return Result::Invalid;
   if (source.availability == availability) return Result::Unchanged;
@@ -158,6 +190,13 @@ SourceRegistry::Result SourceRegistry::setSubscription(const Token& token, bool 
   if (found == sources_.end()) return Result::NotFound;
   auto& source = found->second;
   if (!sameToken(source.token, token) || source.availability == Availability::Departed) return Result::Stale;
+  // Symmetric with setAvailability above: NOTHING subscribes to a composed
+  // source - it has no provider process and no SDK handle - so it may never
+  // carry a subscription state at all. The `observed` clause below already
+  // refuses observed:true for one (a nullopt availability is not Available),
+  // but requested:true with observed nullopt applied cleanly and turned a
+  // NOT-APPLICABLE field into a concrete claim.
+  if (source.kind == Kind::Composed) return Result::Invalid;
   if (observed.value_or(false) && source.availability != Availability::Available) return Result::Invalid;
   if (source.subscriptionRequested == requested && source.subscriptionObserved == observed)
     return Result::Unchanged;
@@ -181,6 +220,23 @@ SourceRegistry::Result SourceRegistry::retireProcessEpoch(const std::string& pro
   for (auto& entry : sources_) {
     auto& source = entry.second;
     if (source.token.processEpoch != processEpoch) continue;
+    // A composed source has no provider process and no callbacks to fence -
+    // retirement exists to stop a dead helper's late callbacks from looking
+    // current, which does not apply to a wall. SKIP it, do not mark it
+    // Departed: that would flip its nullopt fields to concrete false/Departed,
+    // the exact false claim this task removed from install(). A wall's
+    // lifetime is scene-reference, released by removeComposed() (the caller's
+    // own liveness sweep, not this one) - do not "fix" this skip into a mark.
+    // A tombstone would also be a dead end here: setAvailability() refuses
+    // Composed outright (it cannot flip subscriptionObserved's nullopt to a
+    // concrete false), so there is no legal way to mark one Departed even if
+    // this loop tried - and because a composed entry's availability stays
+    // nullopt forever, externalConflict()'s `availability != Departed` test
+    // reads true for it PERMANENTLY, meaning a tombstoned wall id could never
+    // be reused by add() again. Erasing outright (removeComposed) is not a
+    // simplification of tombstoning - it is the only mechanism that actually
+    // frees the id.
+    if (source.kind == Kind::Composed) continue;
     source.availability = Availability::Departed;
     source.subscriptionRequested = false;
     source.subscriptionObserved = false;
@@ -189,6 +245,20 @@ SourceRegistry::Result SourceRegistry::retireProcessEpoch(const std::string& pro
     // Retired tokens retain their publication watermark for diagnostics.
   }
   ++revision_;
+  return Result::Applied;
+}
+
+SourceRegistry::Result SourceRegistry::removeComposed(const SourceId& sourceId) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto found = sources_.find(sourceId.value);
+  if (found == sources_.end()) return Result::NotFound;
+  // Refuse for any non-composed kind - see the header comment for why a real
+  // source's record must be tombstoned, never erased outright.
+  if (found->second.kind != Kind::Composed) return Result::Invalid;
+  if (revision_ == kMaxRevision) return Result::Exhausted;
+  sources_.erase(found);
+  ++revision_;
+  ++decisionRevision_;
   return Result::Applied;
 }
 

@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
@@ -92,6 +92,7 @@ add_library(corevideo_native
   src/compositor/CompositorOverlayRaster.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/EncoderCapacityProbe.cpp
+  src/modules/MediaFoundationGpuVideoEncoder.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
@@ -624,6 +625,7 @@ if(BUILD_TESTING)
     tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
     tests/MediaCueHandoffTest.cpp
+    tests/GpuVideoEncoderPolicyTest.cpp
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp
     tests/BrowserSourceTest.cpp
@@ -634,11 +636,14 @@ if(BUILD_TESTING)
     tests/MasteringReferenceTest.cpp
     tests/ImageResizeTest.cpp
     tests/VirtualCameraShmRoundtripTest.cpp
+    tests/MediaFoundationGpuVideoEncoderTest.cpp
     tests/WgcScreenCaptureTest.cpp
     tests/CaptureIngestTest.cpp
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
+    tests/SourceRegistryTest.cpp
+    tests/SourceRegistryComposedTest.cpp
     tests/EmptyRouteBlankTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
     tests/MonitorShedPolicyTest.cpp
@@ -699,12 +704,14 @@ if(BUILD_TESTING)
     tests/IsoEncoderAdmissionTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/SrtFfmpegArgsTest.cpp
+    tests/FfmpegSenderDiagnosticsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/TilesLayoutTest.cpp
     tests/TilesAnimatorTest.cpp
     tests/TilesLayerTest.cpp
     tests/TilesMembershipTest.cpp
+    tests/TilesWallSourceTest.cpp
     tests/TilesRenderPlanTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/VstHostAbiTest.cpp

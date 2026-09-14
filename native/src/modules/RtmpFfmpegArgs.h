@@ -83,6 +83,10 @@ struct RtmpFfmpegArgsConfig {
   // between the two, which is why SRT delivery rides this same path instead of
   // linking libsrt into the core.
   std::string container = "flv";
+  // #521 slice 1: when true the video input is a pre-encoded H.264 elementary
+  // stream (GPU-direct hardware encode), so ffmpeg COPIES video instead of
+  // re-encoding a 186 MB/s raw pipe. Audio is unchanged.
+  bool videoBitstreamInput = false;
 };
 
 inline std::string quoteRtmpArgument(const std::string& value) {
@@ -107,19 +111,68 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
   const int keyframeFrames = (std::max)(1, static_cast<int>(std::round(
       static_cast<double>(fps) * (std::max)(0.5, (std::min)(10.0, config.keyframeIntervalSeconds)))));
   std::ostringstream args;
-  args << " -hide_banner -loglevel warning"
-       // Pace raw pipe input by its declared media clock. The application also
-       // paces writes, while -re prevents short queue bursts from advancing RTMP
-       // timestamps faster than wall time.
-       << " -re -thread_queue_size 512"
+  if (config.videoBitstreamInput) {
+    // GPU-direct path: video arrives already H.264-encoded on pipe:0; ffmpeg is a
+    // pure muxer/transport (-c:v copy). Only ~6 Mbps crosses the pipe, so the raw
+    // -re pacing and pixel-format handling of the raw path are not needed here.
+    // A live H.264 Annex-B elementary stream on a pipe carries NO container
+    // timestamps. -r alone made ffmpeg's h264 demuxer leave stream 0 unset once a
+    // second input was present, and -c:v copy then muxed a stream the endpoint
+    // read as 0x/stalled. -use_wallclock_as_timestamps stamps each arriving access
+    // unit at its realtime arrival, which for a 60fps live feed is monotonic and
+    // ~wall time; -r declares the nominal frame rate alongside it.
+    args << " -hide_banner -loglevel warning -stats -stats_period 1"
+         << " -use_wallclock_as_timestamps 1 -r " << fps
+         << " -f h264 -thread_queue_size 512 -i pipe:0";
+    if (config.hasAudio) {
+      const int channels = (std::max)(1, config.audioChannels);
+      const int sampleRate = (std::max)(8000, config.audioSampleRate);
+      args << " -re -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
+           << " -ac " << channels << " -i " << config.audioInput;
+    } else {
+      args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
+    }
+    args << " -map 0:v:0 -map 1:a:0 -c:v copy"
+         << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
+         << " -af aresample=async=1:first_pts=0";
+    if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {
+      // RTMP emits small protocol writes. Nagle/delayed-ACK backpressure can
+      // block the bitstream pipe and therefore the hardware encoder's event
+      // thread. Disable it at the RTMP transport, without changing SRT options.
+      args << " -tcp_nodelay 1";
+    }
+    args << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
+         << quoteRtmpArgument(config.endpoint);
+    return args.str();
+  }
+  args << " -hide_banner -loglevel warning -stats -stats_period 1"
+       // The video pipe is read GREEDILY — deliberately NO -re (owner live
+       // incident 2026-09-13). The application already paces writes at the 60Hz
+       // video-output tick, so this input is realtime by construction. -re here
+       // double-throttled it: when the RTMP push to the destination could not
+       // sustain the bitrate, FFmpeg kept reading at wallclock into its internal
+       // buffer while the output drained slower, so the encode fell progressively
+       // behind live — measured 0.7s -> 124s of lag over ~8 min of a YouTube
+       // stream ("Resumed reading ... after a lag of 123s"), which the ingest
+       // read as "poor / not enough data". Without -re the pipe fills under
+       // backpressure, the sender's write blocks, and AsyncOutputSender's
+       // newest-wins DROPS stale frames to stay live — the standard live-encoder
+       // behaviour (OBS drops "network" frames the same way). It also gets the
+       // first video keyframe + decoder config to the muxer sooner, so it cannot
+       // reintroduce the audio-races-ahead / no-video close the AUDIO -re guards.
+       << " -thread_queue_size 512"
        << " -f rawvideo -pix_fmt " << config.videoInputPixelFormat << " -s " << config.width << "x" << config.height
        << " -r " << fps << " -i pipe:0";
   if (config.hasAudio) {
     const int channels = (std::max)(1, config.audioChannels);
     const int sampleRate = (std::max)(8000, config.audioSampleRate);
     // Real PCM can arrive in coalesced blocks after encoder startup. Pace it by
-    // sample count just like video so AAC cannot race several seconds ahead of
-    // the RTMP video clock and make the ingest stall.
+    // sample count so AAC cannot race several seconds ahead of the RTMP video
+    // clock and make the ingest stall. This -re is DELIBERATELY KEPT while the
+    // video pipe's was removed (see above): audio is ~256 kbps and never backs
+    // up the link, so pacing it costs no live-lag, and pacing it is what keeps
+    // the A/V startup ordering that prevents the audio-before-video-config close.
+    // `aresample=async=1` below holds sync while video drops to live.
     args << " -re -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
          << " -ac " << channels << " -i " << config.audioInput;
   } else {

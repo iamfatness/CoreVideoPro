@@ -109,6 +109,78 @@ public sealed class ShowInputsCoordinatorTests
         Assert.DoesNotContain(host.ShowInputs, slot => slot.Kind == ShowInputKind.ZoomParticipant);
     }
 
+    // The owner's live sequence, 2026-09-12, end to end through the COORDINATOR -
+    // not the roster-service leaf. A leaf test cannot catch the regression that
+    // actually matters here (dropping the reserved-slots argument at the call
+    // site), which is the #481 lesson: test the whole decision.
+    //
+    //   13:52  operator unassigns slot 4 (mimoLive)
+    //   14:00  "LIVE | Admin" joins  ->  roster-sync puts them straight into slot 4
+    [Fact]
+    public void ARosterSyncNeverRefillsASlotTheOperatorUnassigned()
+    {
+        var (coordinator, host) = Build();
+        host.AutomationAutoAssignInputsEnabled = true;
+
+        // Fill every slot, so the slot the operator clears is the FIRST free one -
+        // the only arrangement that can reproduce the defect.
+        host.RoomParticipantsForInputs = Enumerable
+            .Range(0, host.ShowInputs.Count)
+            .Select(index => new Participant { Id = $"p{index}", Name = $"Guest {index}" })
+            .ToList();
+        coordinator.ReapplyShowInputAutoAssign();
+
+        var cleared = coordinator.ShowInputEditors.First(e => e.SlotNumber == 4);
+        var evictedId = cleared.ParticipantId;
+        Assert.NotNull(evictedId);
+        coordinator.UnassignShowInput(cleared);
+        Assert.Equal(ShowInputKind.Unassigned, host.ShowInputs.First(s => s.SlotNumber == 4).Kind);
+
+        // A newcomer joins while everyone else stays.
+        var roster = host.RoomParticipantsForInputs
+            .Where(participant => participant.Id != evictedId)
+            .Select(participant => Context(participant.Id))
+            .Append(Context("p-newcomer"))
+            .ToList();
+
+        coordinator.SyncShowInputsFromMeeting(roster);
+
+        var slot4 = host.ShowInputs.First(s => s.SlotNumber == 4);
+        Assert.Equal(ShowInputKind.Unassigned, slot4.Kind);
+        Assert.Null(slot4.ParticipantId);
+        Assert.DoesNotContain(host.ShowInputs, slot => slot.ParticipantId == "p-newcomer");
+    }
+
+    // Owner ruling: sticky until the MEETING ROSTER EMPTIES - not for the app session.
+    [Fact]
+    public void AnEmptyRosterReleasesTheOperatorsClearedSlots()
+    {
+        var (coordinator, host) = Build();
+        host.AutomationAutoAssignInputsEnabled = true;
+        host.RoomParticipantsForInputs = Enumerable
+            .Range(0, host.ShowInputs.Count)
+            .Select(index => new Participant { Id = $"p{index}", Name = $"Guest {index}" })
+            .ToList();
+        coordinator.ReapplyShowInputAutoAssign();
+        coordinator.UnassignShowInput(coordinator.ShowInputEditors.First(e => e.SlotNumber == 4));
+
+        // The meeting ends - every slot frees, and the reservation is released.
+        coordinator.SyncShowInputsFromMeeting([]);
+
+        // A new meeting fills every slot. Slot 4 is an ordinary slot again, so it
+        // takes a guest like any other; while reserved it would have stayed empty
+        // and one guest would have had nowhere to go.
+        coordinator.SyncShowInputsFromMeeting(
+            Enumerable.Range(0, host.ShowInputs.Count).Select(index => Context($"q{index}")).ToList());
+
+        var slot4 = host.ShowInputs.First(s => s.SlotNumber == 4);
+        Assert.Equal(ShowInputKind.ZoomParticipant, slot4.Kind);
+        Assert.False(string.IsNullOrEmpty(slot4.ParticipantId));
+    }
+
+    private static CoreVideoPro.MediaCore.Services.LiveProductionSync.LiveProductionParticipantContext Context(string id) =>
+        new() { Id = id, Name = id, RoleLabel = "guest" };
+
     // ---------------------------------------------------------------- ISO × ShowInputs integration
 
     [Fact]

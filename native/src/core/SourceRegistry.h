@@ -19,7 +19,11 @@ struct SourceInstanceId { std::string value; };
 
 class SourceRegistry final {
  public:
-  enum class Kind { ParticipantVideo, ParticipantShare, Device, Media, Browser };
+  // Composed: a source the CORE renders rather than captures (the Tiles wall
+  // today; lower-thirds and graphics in slice 3). It has no SDK handle, no
+  // person, and is never subscribed - so the capture-only fields below stay
+  // nullopt for it, and "nullopt" means NOT APPLICABLE, never false.
+  enum class Kind { ParticipantVideo, ParticipantShare, Device, Media, Browser, Composed };
   enum class Availability { Available, Unavailable, Departed };
   enum class Result { Applied, Unchanged, Invalid, NotFound, Conflict, Stale, Exhausted };
   struct Format {
@@ -55,10 +59,12 @@ class SourceRegistry final {
     Kind kind = Kind::ParticipantVideo;
     std::optional<PersonId> personId;
     uint64_t personGeneration = 0;
-    std::string displayName, externalId;
-    Availability availability = Availability::Available;
-    bool subscriptionRequested = false;
-    std::optional<bool> subscriptionObserved{false}; // nullopt means unacknowledged/unknown.
+    std::string displayName;
+    // nullopt = NOT APPLICABLE to this kind (e.g. a Composed wall). Never read as false.
+    std::optional<std::string> externalId;
+    std::optional<Availability> availability;
+    std::optional<bool> subscriptionRequested;
+    std::optional<bool> subscriptionObserved; // nullopt means unacknowledged/unknown/not applicable.
     std::optional<Format> format;
     bool hasPublication = false;
     bool hasPublicationWatermark = false; // Survives unavailable/departed until token replacement.
@@ -70,7 +76,11 @@ class SourceRegistry final {
     uint64_t revision = 0;
     uint64_t decisionRevision = 0; // Binding/readiness changes, independent of frame traffic.
     std::vector<Person> persons;
-    std::vector<Source> sources; // Stable SourceId order, includes departure tombstones.
+    // Stable SourceId order, includes departure tombstones for every non-Composed
+    // kind (Availability::Departed, kept for diagnostics). A Composed source is
+    // the exception: it never tombstones, it VANISHES via removeComposed() -
+    // see that method's comment for why a wall cannot be tombstoned at all.
+    std::vector<Source> sources;
   };
   struct Mutation { Result result; std::optional<Token> token; };
 
@@ -88,10 +98,33 @@ class SourceRegistry final {
   // Retire every source owned by a replaced helper process as one registry
   // transaction. This fences callbacks even when a provider changes its source IDs.
   Result retireProcessEpoch(const std::string& processEpoch);
+  // Composed-only: erases the source outright rather than tombstoning it.
+  // Every other kind's departure is Availability::Departed, kept deliberately
+  // (retireProcessEpoch, setAvailability) so a late callback or a diagnostic
+  // read can still see what a provider incarnation was. A composed source has
+  // no provider process and no callback to fence against - its lifetime is
+  // "named by a live scene" (parent spec section 2), so once nothing names it
+  // the tombstone would just be a permanent, meaningless entry, and it would
+  // make add() answer Conflict forever for a wall id that is free to reuse.
+  // Refuses (Invalid) for any other kind: erasing a real source's record is
+  // the false-erasure this registry exists to prevent from the other direction.
+  // Takes a bare SourceId, deliberately not a Token: the caller must be the
+  // SOLE owner of a composed source's lifetime. replace() exists in this class
+  // precisely so an old callback cannot retire a new instance it no longer
+  // owns (compare-and-replace against the expected Token) - removal has no
+  // such fence, so it must never grow a second writer.
+  Result removeComposed(const SourceId& sourceId);
   Result publish(const Token& token, uint64_t sequence, int64_t observedNs, Format format);
   [[nodiscard]] std::shared_ptr<const Snapshot> snapshot() const;
   // Discovery only: zero/multiple matches remain explicit, with no auto-binding.
   [[nodiscard]] std::vector<PersonId> peopleNamed(const std::string& displayName) const;
+
+  // The one declared bound on every id-shaped field (sourceId, externalId,
+  // instanceId, processEpoch). Public because a CALLER cannot otherwise tell a
+  // permanently-refusable id from a transiently-refused one: MediaCore's wall
+  // registration loop retries failures on every liveness transition, and an
+  // over-length id would be retried forever.
+  static constexpr std::size_t kMaxIdBytes = 512;
 
  private:
   static bool sameToken(const Token& left, const Token& right);

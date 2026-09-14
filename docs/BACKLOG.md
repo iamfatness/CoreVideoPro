@@ -146,7 +146,7 @@ untracked. The tier is a proposal, not an owner ruling.
 | ID | Item | Clause | Size |
 |---|---|---|---|
 | [T5.1](https://github.com/iamfatness/CoreVideoPro/issues/447) | Reconcile persistent sources with the rearch: which #419 foundations slices 2-3 build on (likely `SourceRegistry`, atomic Take, `DeliveredProgramPacket`) | 3 | S |
-| [T5.2](https://github.com/iamfatness/CoreVideoPro/issues/448) | Tiles wall stops re-animating on the cut (persistent-sources slice 2, on T5.1) | 3 | M-L |
+| [T5.2](https://github.com/iamfatness/CoreVideoPro/issues/448) | Tiles wall stops re-animating on the cut (persistent-sources slice 2, on T5.1) — **plan 1 of 2 in PR #511**: one animator per wall + the #419 `SourceRegistry` carve, its first real consumer (soak: 20 takes, 20 cut, 0 rebuilt). Plan 2 = the wall texture / one-layer slice, Metal + CPU parity, the PVW cell as the registry's first reader, `AtomicTakeCoordinator`. Residual minors: #512. | 3 | M-L |
 | ~~T5.3~~ | ~~A clip entering Program cold-starts with a placeholder flash~~ — **moved to T1.11** (owner, 2026-09-11) | | |
 | [T5.4](https://github.com/iamfatness/CoreVideoPro/issues/450) | OHG: redesign on screens first, integrate into existing tabs; cheap parity gaps (preview tally, gallery order, black/bars/FTB, on-air clock, nameplates) | 3 | L |
 | [T5.5](https://github.com/iamfatness/CoreVideoPro/issues/451) | The scene canvas editor shows live GPU video (redesign, not a whitelist) | 3 | L |

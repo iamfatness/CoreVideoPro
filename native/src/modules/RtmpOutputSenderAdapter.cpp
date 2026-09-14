@@ -2,7 +2,11 @@
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
+#include "modules/GpuVideoEncoder.h"
+#include "modules/MediaFoundationGpuVideoEncoder.h"
+#include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
+#include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
@@ -597,7 +601,8 @@ class RtmpOutputSender final : public IOutputSender {
       : protocol_(std::move(protocol)),
         runtimeProbe_(std::move(runtimeProbe)),
         runtimeDetail_(runtimeProbe_.detail),
-        runtimeAvailable_(runtimeProbe_.available) {}
+        runtimeAvailable_(runtimeProbe_.available),
+        gpuEncoderFactory_(&createMediaFoundationGpuVideoEncoder) {}
 
   ~RtmpOutputSender() override { stopFfmpegProcess(); }
 
@@ -697,6 +702,10 @@ class RtmpOutputSender final : public IOutputSender {
     configuredEndpoint_ = protocol_.isSrt ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
                                           : buildRtmpEndpoint(*settings);
     configuredStreamKey_ = settings->streamKey;
+    // Held ONLY so the stderr tail can be scrubbed of it before it reaches
+    // lastError (and from there /snapshot and the support bundle). The SRT
+    // endpoint carries the passphrase in its query string, so FFmpeg echoes it.
+    configuredPassphrase_ = settings->passphrase;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
@@ -822,22 +831,37 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
-    if (!writeFrameToFfmpeg(*frame)) {
+    // GPU-direct: hand the compositor's encoder texture to the hardware encoder,
+    // whose sink writes the bitstream to FFmpeg. Raw path writes NV12/BGRA itself.
+    const bool videoWriteOk =
+        useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
+    if (!videoWriteOk) {
       sender_.status = "failed";
       ++sender_.retryCount;
-      const auto detailedFailure =
+      const auto genericFailure =
           sender_.lastResultCode == "ffmpeg-exited" && !sender_.lastError.empty()
               ? sender_.lastError
-              : std::string("FFmpeg stdin write failed; the RTMP process stopped or rejected frames.");
-      sender_.warning = detailedFailure;
+              : std::string("FFmpeg stdin write failed; the ") + protocol_.destination +
+                    " process stopped or rejected frames.";
       sender_.destinationHealth = "failed";
       if (sender_.lastResultCode != "ffmpeg-exited") {
         sender_.lastResultCode = "ffmpeg-write-failed";
       }
-      sender_.lastError = sender_.warning;
       const auto proofStatus = sender_.lastResultCode == "ffmpeg-exited" ? "ffmpeg-exited" : "ffmpeg-write-failed";
       scheduleFfmpegRetry();
+      // STOP FIRST, THEN READ THE STDERR. A failed stdin write is observed the
+      // instant the pipe breaks, which is BEFORE FFmpeg has flushed the line that
+      // says why - measured live 2026-09-12 against a refusing endpoint, where the
+      // tail read here held only "Guessed Channel Layout: stereo" and the whole
+      // 72-byte file never gained the "I/O error" line, because we killed the
+      // process first. stopFfmpegProcess() closes stdin (FFmpeg's EOF) and waits
+      // for exit, so the file is COMPLETE once it returns.
       stopFfmpegProcess();
+      // Carry FFmpeg's own reason. Without it this sentence is undiagnosable and
+      // reads to an operator as a credential problem (2026-09-12).
+      const auto detailedFailure = describeFfmpegSenderFailure(genericFailure, ffmpegStderrTail());
+      sender_.warning = detailedFailure;
+      sender_.lastError = sender_.warning;
       appendSendProof(frame, proofStatus);
       return snapshot();
     }
@@ -1043,6 +1067,11 @@ class RtmpOutputSender final : public IOutputSender {
     const int width = videoWidth(frame);
     const int height = videoHeight(frame);
     const auto pixelFormat = videoPixelFormat(frame);
+    // GPU-direct vs raw is decided at process start; a change (env toggle, codec
+    // change, encoder texture appearing/disappearing) restarts FFmpeg with the
+    // matching argument list.
+    const bool desiredGpuDirect = resolveGpuEncodePath(frame, width, height) == GpuEncodePath::GpuDirect;
+    const bool gpuPathChanged = desiredGpuDirect != activeUseGpuDirect_;
     const bool sizeChanged = width != ffmpegFrameWidth_ || height != ffmpegFrameHeight_;
     const bool pixelFormatChanged = pixelFormat != ffmpegPixelFormat_;
     const bool endpointChanged = configuredEndpoint_ != activeEndpoint_;
@@ -1065,7 +1094,7 @@ class RtmpOutputSender final : public IOutputSender {
     const bool audioChanged = audioPresent != activeAudioPresent_ ||
                               pendingAudioChannels_ != activeAudioChannels_ ||
                               pendingAudioSampleRate_ != activeAudioSampleRate_;
-    if (ffmpegRunning_ && !sizeChanged && !pixelFormatChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !audioBitrateChanged && !codecChanged && !encoderModeChanged && !keyframeChanged && !rateControlChanged && !h264ProfileChanged && !bFramesChanged && !enhancedChanged && !audioChanged) {
+    if (ffmpegRunning_ && !sizeChanged && !pixelFormatChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !audioBitrateChanged && !codecChanged && !encoderModeChanged && !keyframeChanged && !rateControlChanged && !h264ProfileChanged && !bFramesChanged && !enhancedChanged && !audioChanged && !gpuPathChanged) {
       return true;
     }
 
@@ -1101,12 +1130,15 @@ class RtmpOutputSender final : public IOutputSender {
     activeAudioPresent_ = audioPresent;
     activeAudioChannels_ = pendingAudioChannels_;
     activeAudioSampleRate_ = pendingAudioSampleRate_;
+    useGpuDirect_ = desiredGpuDirect;  // startFfmpegProcess may downgrade if the encoder fails to start
     if (startFfmpegProcess(width, height, pixelFormat)) {
+      activeUseGpuDirect_ = useGpuDirect_;
       sender_.startedAtMs = elapsedMs;
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "ffmpeg-started";
       return true;
     }
+    activeUseGpuDirect_ = false;
     scheduleFfmpegRetry();
     return false;
   }
@@ -1127,6 +1159,35 @@ class RtmpOutputSender final : public IOutputSender {
   std::string redactedSenderEndpoint() const {
     return protocol_.isSrt ? redactedSrtUrl(configuredEndpoint_)
                            : redactedEndpoint(configuredEndpoint_, configuredStreamKey_);
+  }
+
+  // FFmpeg's own last words, redacted and bounded.
+  //
+  // This is the line that was missing on 2026-09-12: FFmpeg wrote "Error opening
+  // output rtmp://<host>/<key>: I/O error" - the destination refusing the
+  // connection - and the operator was shown "Check the server URL, stream key,
+  // and network." instead, so a correct key was re-entered for two minutes.
+  // Read on a FAILURE path only, never per frame.
+  std::string ffmpegStderrTail() const {
+    if (ffmpegStderrPath_.empty()) {
+      return "";
+    }
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(ffmpegStderrPath_, ec);
+    if (ec) {
+      return "";
+    }
+    std::ifstream in(ffmpegStderrPath_, std::ios::binary);
+    if (!in) {
+      return "";
+    }
+    constexpr std::uintmax_t kMaxTailBytes = 2048;
+    if (size > kMaxTailBytes) {
+      in.seekg(static_cast<std::streamoff>(size - kMaxTailBytes), std::ios::beg);
+    }
+    std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return redactFfmpegDiagnostics(flattenFfmpegStderrTail(raw, kMaxTailBytes),
+                                   configuredStreamKey_, configuredPassphrase_);
   }
 
   std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
@@ -1158,6 +1219,9 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
+    // GPU-direct: video arrives already H.264-encoded on pipe:0; FFmpeg is a pure
+    // -c:v copy muxer. Raw path leaves this false and re-encodes.
+    config.videoBitstreamInput = useGpuDirect_;
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -1178,6 +1242,13 @@ class RtmpOutputSender final : public IOutputSender {
     const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
     selectedFfmpegVideoEncoder_ = selectFfmpegVideoEncoder(
         ffmpegExecutable_, compatibility.videoCodec, configuredEncoderMode_);
+    // Start the GPU encoder BEFORE FFmpeg so start() is the real capability gate:
+    // on failure it clears useGpuDirect_ and FFmpeg is launched in raw mode below.
+    startGpuEncoderIfChosen(width, height);
+    if (!useGpuDirect_) {
+      ::corevideo::core::nativeLogf("[gpu-encode] path=cpu-fallback reason=%s\n",
+                                   gpuEncodePathReason_.c_str());
+    }
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES securityAttributes{};
     securityAttributes.nLength = sizeof(securityAttributes);
@@ -1185,7 +1256,11 @@ class RtmpOutputSender final : public IOutputSender {
 
     HANDLE childStdinRead = nullptr;
     HANDLE childStdinWrite = nullptr;
-    if (!CreatePipe(&childStdinRead, &childStdinWrite, &securityAttributes, 0)) {
+    // A compressed access unit can exceed the default anonymous-pipe buffer.
+    // Let FFmpeg consume complete bursts without repeatedly blocking the MFT
+    // event thread. Bounded at 1 MiB; the raw fallback retains its existing size.
+    const DWORD videoPipeBufferBytes = useGpuDirect_ ? (1u << 20) : 0;
+    if (!CreatePipe(&childStdinRead, &childStdinWrite, &securityAttributes, videoPipeBufferBytes)) {
       sender_.status = "failed";
       sender_.warning = "Could not create FFmpeg stdin pipe.";
       sender_.destinationHealth = "failed";
@@ -1452,6 +1527,210 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
   }
 
+  // -------- GPU-direct encode path (#521 slice 1) --------
+
+  bool gpuForcedOffByEnv() const {
+    const char* v = std::getenv("COREVIDEO_GPU_ENCODE");
+    return v && std::string(v) == "0";
+  }
+
+  // A hardware H.264 encoder session is (probably) available. Never REFUSE on a
+  // pending/unknown probe (the TESTER RULE) — encoder->start() is the real gate.
+  bool gpuEncoderProbeAllows(int width, int height) const {
+    const auto cap = EncoderCapacityCache::instance().lookup(
+        EncoderProbeKey{"h264", width, height, (std::max)(1, configuredFps_)});
+    if (!cap.probed) return true;
+    return cap.hardwareAvailable && cap.hardwareSessionCeiling > 0;
+  }
+
+  // The start-time path decision, using the exact pure policy the unit tests pin.
+  GpuEncodePath resolveGpuEncodePath(const ProgramFrame& frame, int width, int height) {
+    GpuEncodePathInputs in;
+    in.platformSupported = static_cast<bool>(gpuEncoderFactory_);
+    in.forcedOffByEnv = gpuForcedOffByEnv();
+    const bool probeAllows = gpuEncoderProbeAllows(width, height);
+    in.hardwareEncoderAvailable = in.platformSupported && probeAllows;
+    in.sessionAvailable = probeAllows;
+    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    const bool codecIsH264 = compatibility.videoCodec == "h264";
+    const bool frameHasEncoderTexture = !frame.encoderSharedTexture.sharedHandleHex.empty();
+    const char* reason = "cpu-fallback";
+    const auto path = chooseStreamEncodePath(in, codecIsH264, frameHasEncoderTexture, &reason);
+    gpuEncodePathReason_ = reason;
+    return path;
+  }
+
+  // Called from startFfmpegProcess BEFORE FFmpeg is launched: if we mean to run
+  // GPU-direct, actually start the encoder here so start() is the real capability
+  // gate. On failure we downgrade to raw so FFmpeg is never launched in bitstream
+  // mode with no encoder feeding it. The sink writes the compressed bitstream to
+  // FFmpeg's stdin (populated right after this returns).
+  bool startGpuEncoderIfChosen(int width, int height) {
+    if (!useGpuDirect_) return false;
+    gpuEncoder_ = gpuEncoderFactory_ ? gpuEncoderFactory_() : nullptr;
+    if (!gpuEncoder_) {
+      useGpuDirect_ = false;
+      gpuEncodePathReason_ = "encoder-create-failed";
+      return false;
+    }
+    GpuVideoEncoderConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    cfg.fps = (std::max)(1, configuredFps_);
+    cfg.bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
+    cfg.keyframeIntervalSeconds = configuredKeyframeIntervalSeconds_;
+    cfg.rateControl = configuredRateControl_;
+    cfg.h264Profile = configuredH264Profile_.empty() ? "high" : configuredH264Profile_;
+#if defined(_WIN32)
+    bitstreamWriterFailed_.store(false);
+    bitstreamWriterStop_.store(false);
+#endif
+    const bool ok = gpuEncoder_->start(cfg, [this](const GpuEncodedChunk& chunk) {
+#if defined(_WIN32)
+      enqueueBitstream(chunk);
+#else
+      writeBitstreamToFfmpeg(chunk.data, chunk.size);
+#endif
+    });
+    if (!ok) {
+      gpuEncoder_.reset();
+      useGpuDirect_ = false;
+      gpuEncodePathReason_ = "encoder-start-failed";
+      return false;  // startFfmpegProcess logs the unified cpu-fallback line
+    }
+#if defined(_WIN32)
+    bitstreamWriterExited_.store(false);
+    bitstreamWriterThread_ = std::thread([this] { bitstreamWriterLoop(); });
+#endif
+    ::corevideo::core::nativeLogf("[gpu-encode] path=gpu-direct %dx%d@%d bitrate=%.1fMbps\n", width,
+                                 height, cfg.fps, sender_.bitrateMbps);
+    return true;
+  }
+
+  void stopGpuEncoder() {
+    if (gpuEncoder_) {
+      gpuEncoder_->stop();  // joins the encoder thread before we close FFmpeg's stdin
+      gpuEncoder_.reset();
+    }
+#if defined(_WIN32)
+    bitstreamWriterStop_.store(true);
+    bitstreamQueueCv_.notify_all();
+    if (bitstreamWriterThread_.joinable()) {
+      // Repeat cancellation to cover a write entering after the first cancel.
+      while (!bitstreamWriterExited_.load()) {
+        CancelSynchronousIo(static_cast<HANDLE>(bitstreamWriterThread_.native_handle()));
+        Sleep(1);
+      }
+      bitstreamWriterThread_.join();
+    }
+    std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+    bitstreamQueue_.clear();
+    bitstreamQueuedBytes_ = 0;
+#endif
+  }
+
+#if defined(_WIN32)
+  void enqueueBitstream(const GpuEncodedChunk& chunk) {
+    if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamWriterFailed_.load()) return;
+    {
+      std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+      // Never block the MFT event loop on network I/O or grow latency without
+      // bound. An overrun fails the sender so its supervisor can restart it.
+      constexpr size_t maxBytes = 2u << 20;
+      if (chunk.size > maxBytes || bitstreamQueuedBytes_ > maxBytes - chunk.size || bitstreamQueue_.size() >= 60) {
+        bitstreamWriterFailed_.store(true);
+        ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; sender unhealthy -> supervisor\n");
+        return;
+      }
+      bitstreamQueue_.emplace_back(chunk.data, chunk.data + chunk.size);
+      bitstreamQueuedBytes_ += chunk.size;
+    }
+    bitstreamQueueCv_.notify_one();
+  }
+
+  void bitstreamWriterLoop() {
+    while (!bitstreamWriterStop_.load() && !bitstreamWriterFailed_.load()) {
+      std::vector<uint8_t> bytes;
+      {
+        std::unique_lock<std::mutex> lock(bitstreamQueueMutex_);
+        bitstreamQueueCv_.wait(lock, [this] { return bitstreamWriterStop_.load() || !bitstreamQueue_.empty(); });
+        if (bitstreamWriterStop_.load()) break;
+        bytes = std::move(bitstreamQueue_.front());
+        bitstreamQueue_.pop_front();
+        bitstreamQueuedBytes_ -= bytes.size();
+      }
+      writeBitstreamToFfmpeg(bytes.data(), bytes.size());
+    }
+    bitstreamWriterExited_.store(true);
+  }
+#endif
+
+  // Write one encoded chunk to FFmpeg's stdin. Windows runs this on its
+  // transport worker; stopGpuEncoder joins both workers before stdin is closed.
+  void writeBitstreamToFfmpeg(const uint8_t* data, size_t size) {
+    if (!data || size == 0) return;
+#if defined(_WIN32)
+    if (!ffmpegRunning_ || !ffmpegStdin_) {
+      if (!firstBitstreamLogged_) {
+        firstBitstreamLogged_ = true;
+        ::corevideo::core::nativeLogf("[gpu-encode] bitstream dropped: ffmpegRunning=%d stdin=%p size=%zu\n",
+                                     ffmpegRunning_ ? 1 : 0, (void*)ffmpegStdin_, size);
+      }
+      return;
+    }
+    size_t remaining = size;
+    while (remaining > 0) {
+      if (bitstreamWriterStop_.load()) return;
+      DWORD written = 0;
+      const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
+      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
+        if (bitstreamWriterStop_.load()) return;
+        bitstreamWriterFailed_.store(true);
+        ::corevideo::core::nativeLogf("[gpu-encode] bitstream WriteFile failed err=%lu (encoder->ffmpeg pipe broke)\n",
+                                     static_cast<unsigned long>(GetLastError()));
+        return;
+      }
+      data += written;
+      remaining -= written;
+    }
+    if (!firstBitstreamLogged_) {
+      firstBitstreamLogged_ = true;
+      ::corevideo::core::nativeLogf("[gpu-encode] first bitstream write to ffmpeg size=%zu\n", size);
+    }
+#else
+    if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) return;
+    size_t remaining = size;
+    while (remaining > 0) {
+      const ssize_t written = ::write(ffmpegStdinFd_, data, remaining);
+      if (written <= 0) {
+        if (written < 0 && errno == EINTR) continue;
+        return;
+      }
+      data += static_cast<size_t>(written);
+      remaining -= static_cast<size_t>(written);
+    }
+#endif
+    hasWrittenVideo_ = true;
+  }
+
+  // GPU-direct per-frame path: hand the compositor's dedicated encoder texture to
+  // the hardware encoder. A missing texture this tick is not a failure (hold);
+  // an unhealthy encoder returns false so the failure path restarts the sender.
+  bool submitFrameToGpuEncoder(const ProgramFrame& frame) {
+#if defined(_WIN32)
+    if (bitstreamWriterFailed_.load()) return false;
+#endif
+    if (!gpuEncoder_) return false;
+    if (!gpuEncoder_->healthy()) return false;
+    if (frame.encoderSharedTexture.sharedHandleHex.empty()) return true;
+    GpuVideoEncoderFrame f;
+    f.sharedHandleHex = frame.encoderSharedTexture.sharedHandleHex;
+    f.width = frame.encoderSharedTexture.width;
+    f.height = frame.encoderSharedTexture.height;
+    f.frameNumber = frame.frameNumber;
+    return gpuEncoder_->submit(f);
+  }
+
   bool writeFrameToFfmpeg(const ProgramFrame& frame) {
 #if defined(_WIN32)
     if (!ffmpegRunning_ || !ffmpegStdin_) {
@@ -1465,7 +1744,9 @@ class RtmpOutputSender final : public IOutputSender {
     DWORD exitCode = 0;
     if (process && GetExitCodeProcess(process, &exitCode) && exitCode != STILL_ACTIVE) {
       sender_.lastResultCode = "ffmpeg-exited";
-      sender_.lastError = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(exitCode) + ".";
+      sender_.lastError = describeFfmpegSenderFailure(
+          "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(exitCode) + ".",
+          ffmpegStderrTail());
       return false;
     }
     // Audio is written on every output-worker tick before video pacing is
@@ -1493,13 +1774,13 @@ class RtmpOutputSender final : public IOutputSender {
       if (result == ffmpegPid_) {
         ffmpegPid_ = 0;
         sender_.lastResultCode = "ffmpeg-exited";
+        std::string exitDetail = "FFmpeg process exited before accepting program frames.";
         if (WIFEXITED(status)) {
-          sender_.lastError = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
+          exitDetail = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
         } else if (WIFSIGNALED(status)) {
-          sender_.lastError = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
-        } else {
-          sender_.lastError = "FFmpeg process exited before accepting program frames.";
+          exitDetail = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
         }
+        sender_.lastError = describeFfmpegSenderFailure(exitDetail, ffmpegStderrTail());
         return false;  // FFmpeg exited
       }
     }
@@ -1713,6 +1994,10 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
 
   void stopFfmpegProcess() {
+    // Stop the GPU encoder FIRST: its sink writes FFmpeg's stdin on the encoder
+    // thread, so joining it here guarantees no write-after-close on the pipe.
+    stopGpuEncoder();
+    activeUseGpuDirect_ = false;
     hasWrittenVideo_ = false;
 #if defined(_WIN32)
     if (ffmpegStdin_) {
@@ -1785,7 +2070,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
+               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
               ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages ffmpeg.exe and corevideo-ffmpeg-runtime.json when FFmpeg is available or unavailable\"}");
   }
 
@@ -1802,7 +2087,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"renderPlanId\":" + jsonString(frame->renderPlanId) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
     }
     line += "}";
     writeLine(line);
@@ -1838,6 +2123,7 @@ class RtmpOutputSender final : public IOutputSender {
   bool runtimeAvailable_ = false;
   std::string configuredEndpoint_;
   std::string configuredStreamKey_;
+  std::string configuredPassphrase_;
   std::string configuredFfmpegBinDirectory_;
   std::string configuredVideoCodec_ = "h264";
   std::string configuredEncoderMode_ = "auto";
@@ -1847,6 +2133,13 @@ class RtmpOutputSender final : public IOutputSender {
   int configuredBFrames_ = 2;
   bool configuredAllowEnhancedRtmp_ = false;
   std::string ffmpegExecutable_;
+  // NOTE: where this is empty (FFmpeg never started for this attempt) the proof
+  // reports the encoder that WOULD be used, and it must go through
+  // resolveRtmpCompatibility first. Reporting the raw configured codec said
+  // "av1_nvenc" on a run whose own runtimeDetail said "falling back to H.264" -
+  // two fields contradicting each other in the same proof line, sending a reader
+  // diagnosing a stream failure to chase an encoder that is never selected
+  // (observed live 2026-09-12).
   std::string selectedFfmpegVideoEncoder_;
   std::filesystem::path ffmpegStderrPath_;
   std::string activeEndpoint_;
@@ -1899,9 +2192,31 @@ class RtmpOutputSender final : public IOutputSender {
   int ffmpegAudioFd_ = -1;
   pid_t ffmpegPid_ = 0;
 #endif
+  // GPU-direct encode (#521 slice 1). When chosen at process start, the compositor's
+  // dedicated keyed-mutex encoder texture is fed to the MF hardware H.264 MFT and the
+  // ~6 Mbps bitstream is written to FFmpeg (demoted to a -c:v copy muxer). The raw
+  // path is the fallback for every non-capable machine and COREVIDEO_GPU_ENCODE=0.
+  // The factory is injectable for tests; default is the real MF encoder.
+  std::function<std::unique_ptr<GpuVideoEncoder>()> gpuEncoderFactory_;
+  std::unique_ptr<GpuVideoEncoder> gpuEncoder_;
+  bool useGpuDirect_ = false;        // desired path for the next/running process
+  bool activeUseGpuDirect_ = false;  // path baked into the RUNNING FFmpeg args
+  std::string gpuEncodePathReason_ = "cpu-fallback";
+  bool firstBitstreamLogged_ = false;
+#if defined(_WIN32)
+  std::mutex bitstreamQueueMutex_;
+  std::condition_variable bitstreamQueueCv_;
+  std::deque<std::vector<uint8_t>> bitstreamQueue_;
+  size_t bitstreamQueuedBytes_ = 0;
+  std::thread bitstreamWriterThread_;
+  std::atomic<bool> bitstreamWriterStop_{true};
+  std::atomic<bool> bitstreamWriterFailed_{false};
+  std::atomic<bool> bitstreamWriterExited_{true};
+#endif
+
   OutputSender sender_;
   RtmpVideoFramePacer videoFramePacer_;
-  bool hasWrittenVideo_ = false;
+  std::atomic<bool> hasWrittenVideo_{false};
   std::ofstream sendProof_;
 };
 #endif

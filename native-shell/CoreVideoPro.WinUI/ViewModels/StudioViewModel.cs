@@ -7485,15 +7485,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MasteringMeterTruePeakDbfs));
         OnPropertyChanged(nameof(MasteringMeterIntegratedLabel));
         OnPropertyChanged(nameof(MasteringMeterTruePeakLabel));
-        RefreshAudioMonitorBindings();
+        // Per-snapshot path: meters live, diagnostic summaries throttled.
+        RefreshAudioMonitorBindings(throttleDiagnostics: true);
     }
 
-    private void RefreshAudioMonitorBindings()
+    /// <param name="throttleDiagnostics">Set ONLY by the per-snapshot path. The
+    /// validation/proof summaries below each walk the whole audio session, capture
+    /// sources, senders and recording to BUILD A STRING; recomputing them on every
+    /// snapshot cost a measured 9.0 ms median on the UI thread in the owner's
+    /// 2026-09-12 session, out of a 19.0 ms apply against a 16.7 ms frame. Every
+    /// operator gesture still passes false and gets an immediate answer.</param>
+    private void RefreshAudioMonitorBindings(bool throttleDiagnostics = false)
     {
+        // LIVE: cheap scalars the operator reads while working. Never throttled.
         OnPropertyChanged(nameof(SelectedAudioMonitorDeviceName));
         OnPropertyChanged(nameof(AudioMonitorVolumeLabel));
         OnPropertyChanged(nameof(AudioMonitorStatus));
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
+        OnPropertyChanged(nameof(LocalAudioSourceStatus));
+        RefreshAudioDiagnosticSummaries(throttleDiagnostics);
+    }
+
+    private DateTime _lastAudioDiagnosticSummaryUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// The DIAGNOSTIC half of the audio readouts: proof, validation checklist and the
+    /// capture/bus/monitor summaries. These are human-readable status text, so a 1 s
+    /// cadence is indistinguishable to a reader while a snapshot-rate recomputation
+    /// (~4-6 per second) is not affordable on the UI thread.
+    ///
+    /// Same shape and the same interval as <c>SettingsViewModel.RefreshDiagnosticsReadout</c>,
+    /// which is called one line below the per-snapshot caller for exactly this reason.
+    /// </summary>
+    private void RefreshAudioDiagnosticSummaries(bool throttle)
+    {
+        if (throttle && (DateTime.UtcNow - _lastAudioDiagnosticSummaryUtc) < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+
+        _lastAudioDiagnosticSummaryUtc = DateTime.UtcNow;
         OnPropertyChanged(nameof(AudioProofSummary));
         OnPropertyChanged(nameof(AudioValidationSummary));
         OnPropertyChanged(nameof(AudioValidationChecklist));
@@ -7504,7 +7535,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioBusTapSummary));
         OnPropertyChanged(nameof(CaptureAudioSourceSummary));
         OnPropertyChanged(nameof(StudioMonitorSummary));
-        OnPropertyChanged(nameof(LocalAudioSourceStatus));
     }
 
     private void MaybeLogAudioTelemetry(NativeMediaCoreStateSnapshot snapshot)
@@ -10610,21 +10640,130 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         _liveStructureSignature = structureSignature;
 
+        // COALESCE. The rebuild below is ten synchronous operations on the UI thread,
+        // two of which REPLACE a bound collection. Measured on the owner's 2026-09-12
+        // session it cost up to 202 ms -- twelve consecutive dropped frames -- and it
+        // ran 93 times in twelve minutes. It is triggered by the signature above, which
+        // includes every participant's video-on/off state, so ONE burst of subscription
+        // churn (a guest cued, a slot written, a resubscribe) can flip it several times
+        // in a few hundred milliseconds and pay the full cost for each flip.
+        //
+        // Leading-edge + single trailing timer, the SAME shape as the surface-binding
+        // throttle above (which exists for the same reason and is proven): the first
+        // change still applies immediately, so a join/leave is not made laggy, and a
+        // flurry collapses to one extra rebuild carrying the latest state.
+        _pendingStructuralParticipants = mapped;
+        var nowMs = Environment.TickCount64;
+        var sinceRebuild = nowMs - _lastStructuralRebuildMs;
+        if (sinceRebuild >= StructuralRebuildMinIntervalMs)
+        {
+            RunStructuralParticipantRebuild();
+            return;
+        }
+
+        if (_structuralRebuildScheduled)
+        {
+            return;  // a trailing rebuild is already armed; it will carry the latest set
+        }
+
+        _structuralRebuildScheduled = true;
+        if (_structuralRebuildTimer is null)
+        {
+            _structuralRebuildTimer = _dispatcher.CreateTimer();
+            _structuralRebuildTimer.IsRepeating = false;
+            // Guarded: a throwing DispatcherQueueTimer callback fail-fasts the process
+            // with no managed log (UiDispatch.cs, the 2026-08-09 crash class).
+            _structuralRebuildTimer.Tick += (_, _) => UiDispatch.Run(
+                _dispatcher,
+                () =>
+                {
+                    _structuralRebuildScheduled = false;
+                    RunStructuralParticipantRebuild();
+                },
+                "StructuralParticipantRebuild");
+        }
+
+        _structuralRebuildTimer.Interval =
+            TimeSpan.FromMilliseconds(StructuralRebuildMinIntervalMs - sinceRebuild);
+        _structuralRebuildTimer.Start();
+    }
+
+    private IReadOnlyList<Participant>? _pendingStructuralParticipants;
+    private long _lastStructuralRebuildMs;
+    private bool _structuralRebuildScheduled;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _structuralRebuildTimer;
+    // 150 ms: below an operator's perception of a roster change, and wide enough to
+    // swallow a resubscribe burst. Deliberately NOT longer - this path owns what the
+    // Sources pickers and the multiview wall show.
+    private const long StructuralRebuildMinIntervalMs = 150;
+
+    /// <summary>
+    /// The structural half of <see cref="ApplyLiveParticipants"/>, always run against the
+    /// LATEST mapped set rather than the one that happened to trip the signature.
+    /// </summary>
+    private void RunStructuralParticipantRebuild()
+    {
+        var mapped = _pendingStructuralParticipants;
+        if (mapped is null)
+        {
+            return;
+        }
+
+        _pendingStructuralParticipants = null;
+        _lastStructuralRebuildMs = Environment.TickCount64;
+
+        // THE NEXT SPIKE MUST NAME ITS OWN SUB-STEP. This rebuild was measured at up to
+        // 202 ms on the owner's machine and only ~43 ms here, and the obvious suspect was
+        // WRONG: 207 engine participant payloads across that window carry ZERO video-on/off,
+        // screen-share or roster-id transitions, so the signature was not flipping for the
+        // reason the code comment assumes. Rather than guess which of these ten operations
+        // is expensive, each one reports itself the moment the rebuild is slow -- the same
+        // "make it name itself" move as the FFmpeg stderr tail and the media-decoder branch
+        // logging. Cost when fast: one Stopwatch and ten Elapsed reads, and NO log line.
+        var _sr = System.Diagnostics.Stopwatch.StartNew();
+        var _srTotal = System.Diagnostics.Stopwatch.StartNew();
+        var _srb = new System.Text.StringBuilder();
+        void SrT(string n)
+        {
+            _srb.Append(n).Append('=').Append(_sr.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms ");
+            _sr.Restart();
+        }
+
         RoomVideoParticipants = ParticipantMapper.VideoParticipantsInRoom(mapped, _currentRoomId);
         RoomParticipantsForInputs = ParticipantMapper.ParticipantsInRoom(mapped, _currentRoomId);
         CurrentRoomLabel = _currentRoomName;
         OnPropertyChanged(nameof(RoomVideoParticipants));
+        SrT("roomLists");
         NotifyDynamicGalleryPropertiesChanged();
         OnPropertyChanged(nameof(CurrentRoomHeader));
+        SrT("gallery");
         RefreshAudioParticipantRows();
+        SrT("audioRows");
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        SrT("multiviewTiles");
         RefreshParticipantListItems();
+        SrT("participantList");
         RefreshShowInputEditors();
+        SrT("showInputEditors");
         RefreshMultiviewGridTiles();
+        SrT("multiviewGrid");
         OnPropertyChanged(nameof(CamerasOnCount));
         OnPropertyChanged(nameof(ScreenShareLabel));
         SchedulePreviewRoutingRefresh();
+        SrT("previewRouting");
         RefreshProductionReadouts();
+        SrT("productionReadouts");
+
+        // 16.7 ms is one frame. A rebuild past that dropped one, so it is worth a line;
+        // anything under it is normal and stays silent (this is NOT gated on verbose
+        // diagnostics - the owner's stutter was investigated from a log that only had
+        // these numbers because verbose happened to be on).
+        if (_srTotal.Elapsed.TotalMilliseconds > 16.7)
+        {
+            LaunchLog.Write(
+                $"perf: structural participant rebuild {_srTotal.Elapsed.TotalMilliseconds:F1}ms " +
+                $"participants={mapped.Count} :: {_srb}");
+        }
     }
 
     private void ApplyMeetingFieldsFromSnapshot(NativeMediaCoreStateSnapshot snapshot)

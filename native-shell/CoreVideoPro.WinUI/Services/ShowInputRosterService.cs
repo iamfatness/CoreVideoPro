@@ -291,11 +291,20 @@ public static class ShowInputRosterService
     /// FREE (Unassigned) slots with roster participants not yet shown, in roster order, up to the
     /// slot cap. Never disturbs operator- or capture/media-assigned slots, and keeps each already
     /// shown participant in its current slot (no reshuffle when others leave).</summary>
+    /// <param name="operatorClearedSlotNumbers">Slot NUMBERS the operator deliberately
+    /// emptied this meeting. They are reserved against AUTO-assign only: the operator may
+    /// still place anything there, and a roster refresh never undoes that. Owner report
+    /// 2026-09-12 - an unassigned slot 4 was refilled by the next joiner eight minutes
+    /// later, because "the first free slot" is exactly the slot the operator just cleared.
+    /// The existing memory remembers PARTICIPANTS the operator removed; this remembers the
+    /// SLOT, which is the other half of THE LAW. Owner ruling: sticky until the meeting
+    /// roster empties, so the caller clears it on leave/rejoin.</param>
     public static void SyncZoomParticipantSlots(
         IList<ShowInputSlot> slots,
         IReadOnlyList<string> participantIdsInRosterOrder,
         bool autoAssign,
-        IReadOnlyList<string>? autoAssignCandidates = null)
+        IReadOnlyList<string>? autoAssignCandidates = null,
+        IReadOnlyCollection<int>? operatorClearedSlotNumbers = null)
     {
         using var _ = ShowInputWriteScope.Enter("roster-sync");
 
@@ -338,7 +347,10 @@ public static class ShowInputRosterService
                 continue;  // already in a slot — keep it stable
             }
 
-            var freeSlot = slots.FirstOrDefault(s => s.Kind == ShowInputKind.Unassigned);
+            var freeSlot = slots.FirstOrDefault(s =>
+                s.Kind == ShowInputKind.Unassigned &&
+                (operatorClearedSlotNumbers is null ||
+                 !operatorClearedSlotNumbers.Contains(s.SlotNumber)));
             if (freeSlot is null)
             {
                 break;  // every slot is taken

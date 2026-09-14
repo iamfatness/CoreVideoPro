@@ -107,14 +107,25 @@ dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Releas
 runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respects a
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
-**Run the binary the build just wrote.** `native/build-dev/` is a single-config
-generator — the current binaries are `native/build-dev/corevideo-native.exe` and
-`corevideo-native-tests.exe`. A `native/build-dev/Release/` directory also exists,
-left by an older VS-generator build, and **nothing updates it**: a test run from
-there reported a confident "380 tests passed" from a binary a MONTH old, which
-silently omitted every test file added since. The real suite is 529 tests. If a
-newly added test does not appear in the output, check which binary you ran before
-suspecting CMake.
+**Run the binary the build just wrote, and ALWAYS pass `--config Release`.**
+`native/build-dev/` is a **MULTI-CONFIG** generator (`CMAKE_GENERATOR: Visual
+Studio 18 2026`) whose `CMAKE_RUNTIME_OUTPUT_DIRECTORY` is pinned to the binary
+dir for EVERY config (`native/CMakeLists.txt:46-48`). So the exes have no
+per-config suffix: **Debug and Release write to the exact same path**,
+`native/build-dev/corevideo-native.exe`, and `cmake --build native/build-dev
+--target …` with no `--config` silently builds DEBUG over your Release core.
+This cost a full false regression on 2026-09-12 — a drill reported `coreMutex`
+over-budget 1% -> 81% and was reported to the owner as a real regression caused
+by the branch. The tell was uniform inflation across trivial stages (emit 32x,
+plan 19x) and the binary SIZE: 8,322,560 bytes Debug vs 2,168,832 Release. With
+`--config Release` every metric matched baseline and the drill passed. **Check
+the size, or `--config`, before believing any native perf number.** (Libraries
+DO get a per-config dir — `build-dev/Release/corevideo_native.lib` — so a
+`Release/` subdirectory existing proves nothing about the exes.) Separately, a
+test run from a STALE `build-dev/Release/*.exe` left by an older layout once
+reported a confident "380 tests passed" from a binary a MONTH old, silently
+omitting every test file added since. If a newly added test does not appear in
+the output, check which binary you ran before suspecting CMake.
 
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
@@ -342,6 +353,38 @@ off-thread guards never fired). Confirmed and suspected triggers:
   recording/streaming asks first and finishes the files before `ShutdownAsync` starts.)
   The proof is a scripted close-cycle loop on the real app: zero new
   `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
+
+- **The GC FINALIZER THREAD releasing a XAML object (#513, 2026-09-13) — the first
+  member of this family that is ASYNCHRONOUS and TIME-DELAYED, and it is NOT
+  reproduced yet.** The app died IDLE, 58 min into a live meeting, 43 min after the
+  last operator action, with `launch.log` silent the whole time. Dump
+  (`CoreVideoPro.WinUI.exe.19580.dmp`, full memory): crashing thread is the CLR
+  **Finalizer** (MTA); stack `GC.RunFinalizers -> WinRT.IObjectReference.Finalize
+  -> Microsoft_UI_Xaml!ctl::ComObject<DirectUI::Border>::Release ->
+  FailFastWithStowedExceptions`, stowed `0x8000000E` = **E_ILLEGAL_METHOD_CALL**.
+  The wrapper was a PLAIN `WinRT.ObjectReference<IUnknownVftbl>` (not
+  `ObjectReferenceWithContext`) with `_referenceTrackerPtr` set, so the release
+  had no UI context to marshal to; the UI thread was idle in `GetMessage`, so a
+  marshaled release would have landed. **What this is NOT:** a finalizer-thread
+  release is the ORDINARY path — a forced full GC (`dotnet-gcdump collect -p`)
+  on a healthy run finalized ~2,700 wrappers and a couple of Borders with no
+  incident, three times (fresh app; after 12 takes; after a record/stop cycle).
+  The dead population at the crash (66 Borders, 1,845 wrappers) was the SAME size
+  as a healthy run's. So the trigger is a specific object STATE, not volume, and
+  it did not reproduce on demand. Our code has no manual CsWinRT marshaling and
+  no element-building control touches XAML off-thread (checked). Framework:
+  WinAppSDK Runtime 2.4.0 / WinUI 2.3.6, CsWinRT 2.2.0. The four code-behind
+  element factories that `Children.Clear()` (`ShowMultiviewHost` overlays,
+  `ScenePreviewControl`, `AudioLevelMeter`, `SceneCanvasEditorControl` — which
+  hooks 4 handlers and unhooks 0) are the likely POPULATION, not a proven cause;
+  pooling them reduces exposure and cannot be claimed to eliminate the crash.
+  **Two rules it teaches.** (1) A stability claim is bounded by the window you
+  watched: 25 clean minutes of takes/drill/soak said nothing about hour 1, and a
+  crash with NO application code on the stack is invisible to every log we write
+  — only the dump sees it, so `setup-crash-dumps.ps1` full dumps are not optional
+  on a test box. (2) Analyze a WinUI dump BEFORE rebuilding the shell (same PDB
+  rule as the core); `!dumpobj` on the finalizer frame's `this` is what
+  distinguishes a marshaled release from an unmarshaled one.
 
 Rules of thumb: never replace a bound collection at frame rate (sync in place / diff);
 keep one stable swap chain per surface (program, preview, one multiview);
@@ -852,20 +895,30 @@ comment at the code site; this is the index.
   what I can't have is a total rerender from what is in preview to program like
   it is loading for the first time." The wall key is `sceneId + ":" + layerId`
   and the layer id is derived from the scene id, so the SAME gallery has the
-  SAME key on both buses — `MediaCore` holds two animation objects
-  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one used
-  to reset its animator the moment the key it had never held arrived. Two
-  corrections, both in `compositor/TilesPlanAnimation.h`:
-  `adoptSettledFrom()` MOVES a settled wall's state from preview to program on
-  the take tick (exact key match + every sampled tile `atRest` only; the source
-  is reset, never aliased, so the next wall cued in preview starts clean), and
-  `advance()` no longer samples an EMPTY target set for a wall that is still
-  present and has already drawn tiles. That second one is what actually produced
-  the reported replay: an all-stale beat (`kTilesStaleFrameMs`, an ordinary
-  state — see the empty-plan rule above) erased every retained tile AND consumed
-  the animator's adoption, so the instant frames returned the whole wall faded in
-  from alpha 0. A COLD wall's first tick is untouched, so a wall that was never
-  in preview behaves exactly as before. Not a contributor, measured: preview and
+  SAME key on both buses. **This was first fixed with a HAND-OVER and is now
+  fixed STRUCTURALLY — the hand-over is DELETED. See "ONE ANIMATOR PER WALL"
+  below; `TilesPlanAnimation::adoptSettledFrom` no longer exists.** The original
+  shape: `MediaCore` held two animation objects
+  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one reset
+  its animator the moment the key it had never held arrived. `adoptSettledFrom()`
+  moved a SETTLED wall's state across on the take tick — settled only, because
+  with two animators mid-flight state had no correct owner. The second
+  correction survives and still matters: `advance()` does not sample an EMPTY
+  target set for a wall that is still present and has already drawn tiles. That
+  is what produced the reported rebuild — an all-stale beat
+  (`kTilesStaleFrameMs`, an ordinary state — see the empty-plan rule above)
+  erased every retained tile AND consumed the animator's adoption.
+  **What a reset actually looks like, because the direction is counter-intuitive
+  and the docs had it backwards: it does NOT replay from alpha 0. `TilesAnimator`
+  treats a reset animator's next non-empty `sample()` as an ADOPTION (content
+  already present, not entering), so the wall SNAPS TO ITS FINAL STATE** — alpha
+  pops to 1, mid-spring rects jump to their settled positions. On air that is a
+  wall that stops moving and jumps, which is what "loading for the first time"
+  looked like. The practical consequence for tests: `EXPECT_GE(after, before)` on
+  alpha is satisfied by a snap just as well as by continuity and therefore
+  catches NOTHING — a falsifying assertion has to bound the other side (alpha
+  stays below 0.9, rects stay near their mid-spring values). A COLD wall's first
+  tick is untouched, so a wall that was never in preview behaves as before. Not a contributor, measured: preview and
   program share one device and one `sourceTextures_` cache keyed by
   `participantId` (`D3D11CompositorAdapter`), so tile textures are already warm
   across a take. Tests: `TilesRenderPlan.AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame`,
@@ -968,14 +1021,34 @@ comment at the code site; this is the index.
   emptied OHG box.
   **(3) RESOLUTION IS A STABLE TIER, CAPPED, NO RATCHET.**
   `native/src/modules/ZoomSubscriptionResolutionPolicy.h`: FIXED bus routes (purpose
-  program/preview) and screen share at 1080P; Tiles, wall, ISO and a follow route's
-  speaker at 720P. At most
-  `kMaxConcurrentFullResolutionCameras` (4) cameras at 1080P, granted in payload order
+  program/preview), screen share, AND the Tiles wall (program-tiles / preview-tiles)
+  at 1080P; multiview, ISO and a follow route's speaker at 720P. At most
+  `kMaxConcurrentFullResolutionCameras` (**8**) cameras at 1080P, granted in payload order
   (Program routes first, then Program Tiles, then Preview routes); the rest get 720P
   and `zoomSubscriptionChurn.fullResolutionDemoted`
-  counts them. The number comes from commit bd3caf29: SIX concurrent 1080P raw
-  subscriptions crashed the SDK subprocess (0xc000000d), and everything since shipped
-  with ONE camera at 1080P. A guest who leaves the buses DROPS BACK to 720P: the engine
+  counts them.
+  **THE WALL WAS RAISED FROM 720P TO 1080P AND THE CAP FROM 4 TO 8 (2026-09-13,
+  owner "whole wall at 1080p").** The report was "CoreVideo tiles participants are
+  dropping as I go through different people in preview": a wall member was
+  program-tiles (720P), and soloing them in Preview made them a preview route
+  (1080P). Resolution is part of the engine subscription key, so that 720P->1080P
+  was a real renderer teardown/rebuild of a source LIVE ON THE PROGRAM WALL — the
+  drop, and the "few hundred ms then color changes" placeholder flash (one feed
+  flipping, NOT two grabs: `m_subs` is keyed by participant_id, and every surface
+  shares that one decoded frame). Pinning Tiles at 1080P removes the lower tier, so
+  a soloed wall member has nowhere to flip to. The cap-4 came from commit bd3bedf/
+  bd3ca (SIX concurrent 1080P crashed the SDK subprocess, 0xc000000d) on the
+  **CPU-I420 path**; a live soak on today's GPU pipeline (2026-09-13, real 8-person
+  meeting) ran all 8 wall members at 1080P on Program for 30+ min — 60fps delivery,
+  0 underruns, no monitor shedding, no engine crash/respawn, `totalChurn` FLAT
+  across an operator's full preview run (per-source churn = 1, the one-time take).
+  8 is the soak-proven number and the meeting's camera count; **raising it further
+  needs a bigger-meeting soak — never on extrapolation.** Graceful past 8: members
+  are granted before the wall background in payload order, so a 9th 1080P source
+  (a live wall background, a >8 wall, a non-wall bus route) is DEMOTED to 720P
+  stably, never flips a member; screen share is 1080P and bypasses the camera
+  counter (so 8 wall + a share = 9 concurrent 1080P total, one step past what was
+  soaked — watch it if a full wall runs with a share). A guest who leaves the buses DROPS BACK to 720P: the engine
   used to ignore a lower request (`video_subscribe_noop_existing`), which over a show
   ratcheted every rotated guest to 1080P; it now rebuilds when the source is the
   renderer's only target (`zoom-engine/shared/engine-resolution-policy.h`). In-place
@@ -1249,7 +1322,11 @@ measurement rather than from the product.
   ONE sync, so that IS the take on this wire) and completed on the first program
   render tick after it — the only place the "after" half exists. Carries scene id
   and renderPlanId on both sides, the layer ids on both sides, the wall keys,
-  whether `TilesPlanAnimation::adoptSettledFrom` **adopted or reset**, whether the
+  whether the wall was **adopted or reset** (since #448: whether the ONE
+  `core::TilesWallSource` for that wall id survived the take with its generation
+  intact — `wallAdoptedSettled` is computed as `wallExistedBefore &&
+  generationAfter == generationBefore`, not from the deleted
+  `TilesPlanAnimation::adoptSettledFrom`), whether the
   wall's live background (`tiles-source-bg:`) made the first program frame, and
   the subscription-churn delta across the take. `core/TakeRecordPolicy.h` turns
   those into the one-word answer to "did the wall rebuild or cut" — and it will
@@ -1324,6 +1401,92 @@ Tests: `native/tests/RenderedSceneAttributionTest.cpp` (the attribution defect
 red/green, the policies, and the take record end to end),
 `native/tests/SourceContinuityLedgerTest.cpp`, and
 `ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
+
+## The Tiles wall is a composed source, and composed sources are ERASED not tombstoned (#448 slice 2 task 4, 2026-09-12)
+
+**It has a production WRITER and, as of this slice, no production READER.**
+`MediaCore::renderSyntheticTick` registers and releases walls for real, and the
+only consumers are tests (`sourceRegistrySnapshotForTest`). That is deliberate —
+per `docs/BACKLOG.md`, a #419 foundation lands on `main` only together with a real
+consumer, and wall registration IS that consumer for the registry's write side —
+but it means nothing in the product yet behaves differently because of these
+entries. Do not describe the registry as "wired" beyond that, and expect the
+first real reader (the multiview PVW cell, plan 2) to be where its snapshot shape
+gets its first genuine test.
+
+`SourceRegistry` (`native/src/core/SourceRegistry.h`, carved out of #419 unwired
+onto main) gained `Kind::Composed` for sources the CORE renders rather than
+captures — the Tiles wall is the first one. `MediaCore::renderSyntheticTick`
+registers a live wall as `Kind::Composed` (sourceId = its layerId, `externalId`
+empty, a fixed `kCoreProcessEpoch`) and releases it the tick nothing on either
+bus names it any longer, in lockstep with `tilesWallSources_.releaseAllExcept` —
+the same "referenced by a live scene" lifetime, one level up. `registeredWallIds_`
+is the idempotence guard so a live wall's steady-state tick never touches the
+registry mutex (`unordered_set::contains` before `insert`, not `insert().second`
+— MSVC's `unordered_set::insert` has historically built the node before
+detecting the duplicate, so this file's render-path no-allocation rule holds by
+construction, not by implementation detail). A registration that fails
+(`Invalid`/`Conflict`/`Exhausted`) is NOT remembered as registered, so the next
+liveness transition retries it rather than abandoning the wall silently forever.
+
+**A composed source carries no SDK handle and never claims a subscription
+state.** `personId`, `externalId`, `availability`, `subscriptionRequested`,
+`subscriptionObserved` are all `nullopt` for it — `nullopt` means NOT
+APPLICABLE, never false — because a wall has no provider process and nothing
+ever subscribes to it. `setAvailability`/`setSubscription` refuse `Composed`
+outright for exactly this reason — `setSubscription`'s refusal was MISSING and
+this file asserted it anyway for a day (final-review finding, fixed with
+`SourceRegistryComposed.SetSubscriptionOnAWallIsRefusedOutright`): an
+`observed:true` call was already refused as a side effect, because a nullopt
+availability is not `Available`, but `requested:true, observed:nullopt` applied
+cleanly and turned a NOT-APPLICABLE field into a concrete claim. Nothing in the
+tree called it for a wall, so only the documentation was wrong — which is exactly
+how an invariant rots.
+
+**A wall id too long to register is SKIPPED, not retried** (same finding).
+`SourceRegistry::kMaxIdBytes` (512) is the one declared bound on every id-shaped
+field, and it is public precisely so a caller can tell a PERMANENTLY refusable id
+from a transiently refused one: the registration loop deliberately does not
+remember a failed add as registered (so a transient failure retries on the next
+liveness transition), which turned a spelling-based refusal into a registry-mutex
+acquisition plus a log line on EVERY render tick. `unregisterableWallIds_` skips
+those once and loudly; `warnedWallRegistrationIds_` bounds the retryable
+failures' log line to once per id while keeping the retry. Both are pruned on the
+same liveness rule as `registeredWallIds_`, or a wall re-cued under a corrected
+id would stay skipped or silent for the life of the process.
+
+**A composed source is ERASED (`SourceRegistry::removeComposed`), never
+tombstoned — and this is not a simplification, it is the only mechanism that
+actually works.** Every other kind's departure is `Availability::Departed`
+(kept for diagnostics via `retireProcessEpoch`/`setAvailability`). A composed
+entry CANNOT be tombstoned that way even in principle: `setAvailability`
+refuses `Composed`, so nothing can ever flip it to `Departed`, and because its
+`availability` stays `nullopt` forever, `externalConflict`'s
+`availability != Departed` test reads true for it PERMANENTLY — a tombstoned
+wall id could never be reused by `add()` again. `removeComposed` erases the
+`sources_` entry outright and refuses (`Invalid`) for any non-`Composed` kind.
+It takes a bare `SourceId`, deliberately not a `Token`: the caller must be the
+SOLE owner of a composed source's lifetime (`replace()` exists precisely so an
+OLD callback cannot retire a NEW instance it no longer owns via compare-and-
+replace; removal has no such fence and must never grow a second writer).
+
+**Its lifetime is scene-reference, exactly like `TilesWallSources`
+(`releaseAllExcept`) one level down** — a wall no live scene names is gone from
+the registry the same render tick `tilesWallSources_` releases its animation
+object, and a wall released then re-cued under the same scene id is a
+genuinely NEW registry entry (a fresh `instanceId`, minted from the registry's
+own revision counter), never the old one resurrected.
+
+Tests: `native/tests/SourceRegistryComposedTest.cpp` (`removeComposed`: erases,
+frees the id for reuse, refuses non-composed, `NotFound` on an unknown id) and
+`native/tests/TilesRenderPlanTest.cpp` (a live wall registers as `Composed`
+with all five capture-only fields `nullopt`; an unreferenced wall is gone from
+the registry; a released-then-re-cued wall gets a new `instanceId`; a wall
+staying live across many ticks keeps the SAME registry identity — pinned by
+`instanceId` equality, not a source count, because `sources_` is a
+`std::map` keyed by sourceId where a count assertion cannot distinguish "the
+guard works" from "every tick refuses `Conflict` while quietly taking the
+registry mutex 60x/s").
 
 ## Media is a persistent source (slice 1, 2026-09-10)
 
@@ -1543,6 +1706,84 @@ Takes); no clip or still routes, so the go-live cold start above is not exercise
 without `--background` it proves Zoom/wall continuity only; no pixel probe across
 the take (the record is the only judge); and the synthesized scenes are not the
 shell's own scene payloads.
+
+## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
+
+The live STREAM is now encoded directly from the compositor's GPU texture by the
+Media Foundation hardware H.264 MFT — vMix/Vectar parity — instead of the old
+GPU→CPU-readback→~186 MB/s raw pipe→external ffmpeg path that capped 1080p60 at
+~0.76-0.82x realtime with NVENC idle. Localhost gate now measures **60.0fps of 60,
+realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
+(VideoToolbox) are later slices.
+
+- **The seam is platform-free.** `modules/GpuVideoEncoder.h` — `GpuVideoEncoder`
+  (start/submit/stop/healthy), `GpuVideoEncoderConfig/Frame`, `GpuEncodedChunk(Sink)`,
+  and the pure `GpuEncodePathPolicy` + `chooseStreamEncodePath` (unit-tested, no GPU).
+  It carries an OPAQUE handle (`sharedHandleHex`/`iosurfaceId`), never a D3D11/MF type,
+  so the macOS VideoToolbox impl drops in behind it without touching the sender.
+- **Windows impl:** `modules/MediaFoundationGpuVideoEncoder.cpp` runs its OWN D3D11
+  device + thread (never coreMutex, never the render thread — the vcam-tap rule), binds
+  the hardware H.264 MFT via `IMFDXGIDeviceManager`, opens the compositor's shared
+  texture (legacy `OpenSharedResource`), converts BGRA→NV12 with an `ID3D11VideoProcessor`,
+  and drives the async MFT event loop (`MF_TRANSFORM_ASYNC_UNLOCK`,
+  NeedInput/HaveOutput). Emits an H.264 Annex-B bitstream through the sink.
+- **The compositor exports a DEDICATED keyed-mutex encoder texture**
+  (`exportEncoderSharedTexture`/`ensureEncoderSharedTexture` in `D3D11CompositorAdapter`),
+  separate from `ProgramFrame::sharedTexture` so encode never contends with WinUI's
+  preview consumer. It runs whenever `fullProgramReadback` (streaming), BUFFERED or not:
+  when buffered, `ProgramFrame::encoderSharedTexture` rides the program buffer to the
+  sender — the handle is stable and the copy is the latest composed frame, so the stream
+  taps live pixels rather than inheriting the buffer's delay. Producer keying is
+  `AcquireSync(0,0)`/blit/`ReleaseSync(1)`; the encoder is the consumer
+  `AcquireSync(1,34)`/`ReleaseSync(0)`. **The 34ms (≈2 frame) consumer timeout is
+  load-bearing:** a 4ms wait missed the 16ms production cadence and starved the encoder
+  to ~2fps; and the encoder must NOT also wait for a fresh submit per NeedInput (that
+  serialized with the mutex wait to ~30fps) — it reads the latest handle and lets the
+  keyed mutex alone pace it to the producer's 60fps.
+- **FFmpeg is demoted to a muxer.** `RtmpFfmpegArgs.h` `videoBitstreamInput` mode emits
+  `-use_wallclock_as_timestamps 1 -r <fps> -f h264 -i pipe:0 … -c:v copy`. **Both
+  timestamp args are load-bearing:** a raw Annex-B stream on a live pipe carries no
+  container timestamps, `-r` alone left stream 0's PTS unset once a second (audio) input
+  was present, and `-c:v copy` then muxed a stream the endpoint reads at 0x/stalled;
+  wallclock stamps each arriving access unit at realtime (monotonic for a 60fps feed).
+- **Path is chosen ONCE at stream start**, logged `[gpu-encode] path=<gpu-direct|cpu-fallback>
+  reason=<...>`. GPU-direct requires: an MF encoder impl on the platform, a hardware
+  session the `EncoderCapacityProbe` allows (never REFUSED on a pending probe — the
+  TESTER rule; `encoder->start()` is the real gate), the resolved codec is H.264 (an
+  enhanced-RTMP HEVC/AV1 stream stays raw), the compositor is exporting the encoder
+  texture on the starting frame, and `COREVIDEO_GPU_ENCODE` is not `0`. Otherwise the
+  raw NV12/BGRA pipe path (unchanged) carries the stream. The encoder starts BEFORE
+  ffmpeg so a failed `start()` downgrades to raw before ffmpeg is launched in bitstream
+  mode. On device loss the encoder retires (`GetDeviceRemovedReason`), `healthy()` goes
+  false, `submit()` fails, and the existing `OutputDestinationSupervisor` restarts the
+  sender, which re-decides the path.
+- **Acceptance gate:** `node scripts/validate-gpu-encode.mjs [--seconds N] [--force-raw]
+  [--keep]` streams the fake-engine program to a localhost SRT sink and FAILS unless the
+  GPU path is taken and the RECEIVED stream is ≥58fps and the sink's own `-stats speed`
+  ≥0.97x. SRT (not RTMP) for the sink only because ffmpeg's `-listen 1` RTMP server is
+  too flaky to gate on; the GPU path is protocol-agnostic (same sender + `-c:v copy`
+  muxer). `--force-raw` sets `COREVIDEO_GPU_ENCODE=0` and confirms the fallback still
+  streams. GPU-direct RTMP/RTMPS uses `-tcp_nodelay 1` and a 1 MiB
+  compressed-video pipe on Windows. The 2026-09-13 live test isolated seconds of
+  encoder-thread blocking in the FFmpeg bitstream pipe. Transport settings alone
+  remained timing-sensitive; the Windows bitstream writer now runs separately
+  from the MFT event loop, with a queue bounded to 60 chunks / 2 MiB (plus one
+  in-flight chunk). Queue overflow or a broken pipe fails the sender for supervisor
+  recovery; stop cancels pending writes and joins the worker before closing stdin.
+  The asynchronous MFT retains each NeedInput credit across missing-frame and
+  keyed-mutex timeouts until ProcessInput succeeds, and consumes one output per
+  HaveOutput event. Discarding input credits can leave a healthy-looking encoder
+  permanently starved; the real-GPU round-trip test includes a delayed first frame.
+  Always measure actual FFmpeg
+  frame-count deltas against wall time: arrival-time timestamps can report
+  `speed≈1.0x` with only 19 encoded frames/sec. SRT must not receive this RTMP option.
+  **Live RTMP to real YouTube is the final MANUAL acceptance step** (speed≈1.0x,
+  `nvidia-smi utilization.encoder` non-trivial, CPU down vs raw) — not this gate.
+- Tests: `GpuVideoEncoderPolicyTest.cpp` (policy + `chooseStreamEncodePath`),
+  `MediaFoundationGpuVideoEncoderTest.cpp` (real-GPU compositor→encoder→ffmpeg round-trip:
+  decoded coded-Y-plane luma within 16 of the encoded gray; self-skips without a hardware
+  MFT or ffmpeg; plus the submit-fails-when-not-running supervisor contract),
+  `RtmpFfmpegArgsTest.cpp` (bitstream mode).
 
 ## Secrets at rest + OAuth return URI (beta S4, 2026-07-18)
 
@@ -2018,6 +2259,220 @@ Tests: `ZoomEngineClient.TheTakeoverChoiceRidesTheJoinCommandAndDefaultsOff`,
 (+ the every-other-failure and already-joined refusals). **The engine half has no
 test** — it links the Zoom SDK and the prompt only fires against live Zoom, so
 the callback itself is verified by a live join, not by CI.
+
+## The operator stutter is the SNAPSHOT APPLY, and it has two halves (2026-09-12)
+
+Owner, live: "While streaming I am seeing the stuttering on inputs in preview and
+program and the multiviewer." **The core was innocent and measured so**: 59.8
+render slots/s, 60.0 video-out ticks/s, zero deadline misses, zero underruns, no
+monitor shedding, render work 3.9 ms of a 16.7 ms budget. All three stuttering
+surfaces are WinUI hosts on one thread, and that thread was the problem.
+
+From their `launch.log` (14:00-14:12), EVERY apply exceeded 10 ms, a steady
+360/minute = 6/s:
+
+| | median | p90 | max |
+|---|---|---|---|
+| `ApplySnapshot` total | **19.0 ms** | 21.3 ms | 234 ms |
+| `audioReadouts` | 9.0 ms | 9.4 ms | 224 ms |
+| `applyParticipants` | ~4.2 ms | | **197 ms** |
+
+Their own present logs show the cost: preview 1440 frames in 32 s (**45/s**),
+multiview 1440 in 29 s (**49.6/s**), against a core delivering 60.
+`RefreshSurfaceBindings` is NOT a contributor (0.5-1.0 ms/call, 11/s, UI busy 1%).
+
+**Half one, the steady tax: diagnostic strings recomputed at snapshot rate.**
+`RefreshAudioReadoutBindings` fired 26 notifications, ~10 of which each walk the
+whole audio session, capture sources, senders and recording to BUILD A STRING
+(proof, validation checklist, capture/bus/monitor summaries). They are now split:
+meters and device labels stay live on every snapshot, the diagnostic summaries
+run on a 1 s throttle — the same interval and shape as
+`SettingsViewModel.RefreshDiagnosticsReadout`, which is called one line below for
+exactly this reason. **Every operator gesture still passes `throttle:false`** and
+gets an immediate answer; only the per-snapshot path throttles.
+
+**Half two, the spikes: one structural rebuild costs up to 202 ms.** When
+`ApplyLiveParticipants`'s signature flips it runs ten synchronous UI-thread
+operations, two of which replace a bound collection. It fired 93 times in twelve
+minutes. It is COALESCED now — leading edge plus one trailing timer, 150 ms, the
+same proven shape as the surface-binding throttle above — so the first change
+still applies immediately (a join/leave is not made laggy) and a burst collapses
+to one extra rebuild carrying the LATEST set, not the one that tripped the
+signature.
+
+**THE OBVIOUS SUSPECT WAS WRONG, AND THAT IS THE LESSON.** The signature buckets
+each participant as video-on/off, so "camera flicker during resubscribe churn" was
+the natural explanation. It is false: 207 engine `participants` payloads across
+that exact window carry **zero** video-on/off transitions, **zero** screen-share
+transitions and **zero** roster id-set changes. Something else flips that
+signature and it is still unidentified. Four hypotheses were killed by experiment
+in the test meeting, each its own build: verbose diagnostics (forced on — no
+effect), Engine off vs on, sources assigned, and tab realization (moves
+`audioReadouts` 0.1 -> 0.4 ms, real but 22x short of 9 ms). **Do not "fix" the
+video-off signature on the strength of the comment above it.**
+
+**So the rebuild now NAMES ITS OWN SLOW STEP**, like the FFmpeg stderr tail and the
+media-decoder branch logging: each of the ten operations is timed, and a rebuild
+past ONE FRAME (16.7 ms) logs `perf: structural participant rebuild <total>ms
+participants=N :: roomLists=… gallery=… audioRows=… multiviewTiles=…
+participantList=… showInputEditors=… multiviewGrid=… previewRouting=…
+productionReadouts=…`. Deliberately NOT gated on verbose diagnostics — this
+incident was only diagnosable because verbose happened to be on. Verified firing
+(4.7 ms here, largest step `multiviewGrid` 1.3 ms); silent below one frame.
+
+**Still open:** which step costs 197 ms on the owner's machine (it is ~4.7 ms on
+this one), and what actually flips the signature. The next occurrence answers
+both in one line.
+
+## A failing stream must name its own reason (owner report, 2026-09-12)
+
+The owner could not start a stream and was told *"RTMP output failed. Check the
+server URL, stream key, and network."*, so they re-entered credentials that were
+already correct. FFmpeg had written the real reason to its stderr temp file on
+the FIRST attempt:
+
+```
+[out#0/flv] Error opening output rtmp://a.rtmp.youtube.com/live2/<key>: I/O error
+Error opening output files: I/O error
+```
+
+The destination refused the connection. **The stream key in that URL is the same
+key that worked two minutes later** — it decrypts cleanly from
+`production-output-preferences.json` (DPAPI, v12) and was never wrong. Nothing
+read that file, so the one line naming the cause was thrown away, and the failure
+was undiagnosable from the app alone. This is the gap #473/#494 closed for the
+media decoder, and the rule this file already states twice for this very sender:
+**read FFmpeg's own stderr before theorising.**
+
+- **`modules/FfmpegSenderDiagnostics.h`** is the ONE place FFmpeg's stderr becomes
+  an operator sentence (the `ZoomJoinFailureMessage.h` shape: pure, header-only,
+  testable without a process). `RtmpOutputSenderAdapter::ffmpegStderrTail()` reads
+  it on FAILURE paths only — never per frame — and every `ffmpeg-exited` /
+  `ffmpeg-write-failed` message now carries `ffmpeg: <reason>`.
+- **THE SECRET IS STRIPPED AT THE SOURCE, not by the snapshot redactor.**
+  FFmpeg echoes the FULL output URL, stream key included, and `lastError` reaches
+  `/snapshot`, the support bundle and the log. `redactFfmpegDiagnostics` replaces
+  the configured stream key and SRT passphrase by value (so it cannot depend on
+  URL parsing), and the adapter now holds `configuredPassphrase_` for no other
+  purpose. The HOST deliberately survives — it is the diagnostic, not a secret.
+  A secret under 6 characters is NOT used as a pattern: it would match inside
+  ordinary words and shred the message the redaction exists to protect.
+- **The tail is trimmed from the FRONT.** FFmpeg names the fatal reason LAST, so
+  budgeting by cutting the end drops the only line that matters. Caught by
+  `OnlyTheTailIsKeptWhenTheLogIsLong` on the first green run.
+- **An ABSENT tail leaves the generic sentence exactly as it was.** Inventing
+  detail we do not have is the same lie pointing the other way.
+
+**A stream start RACES Program's first pixels, and warming is not failing.** Two
+of the owner's three attempts that day died on `frame-pixels-missing` ("RTMP
+sender is waiting for composed BGRA program pixels") and the third succeeded with
+nothing changed — so a healthy configuration read as "the encoder will not
+start". `TransportStatusFormatter.IsStreamingStartStillWarming` is the pure
+classifier, and it is deliberately NARROW: only the program-pixel readiness case
+waits, and an explicit refusal outranks it, because waiting on a real failure
+only delays an honest answer. The wait window is ~5 s while warming and the
+original ~1.2 s otherwise; if it never produces a frame the SAME honest message
+is returned rather than a different invented cause.
+
+**THE EAGER BAIL EXISTED IN THREE PLACES, and only the LIVE re-test found the
+third.** `TryFormatStreamingStartHealthFailure` is consulted before
+`WaitForStreamingStartProofAsync` on the primary path, inside that wait, AND
+again on the backpressure RETRY path (`RetryStreamSyncAsync`). Fixing the first
+two left the retry path still rolling back on the first poll — and a start
+deferred for sync backpressure comes through exactly there, which is what the
+owner's session hit. Verified live 2026-09-12 against a refusing endpoint: the
+process log now carries `stream: toggle requested` with NO health-proof failure
+and NO rollback, where the previous build rolled back every time.
+
+**Two message-ladder defects fixed with it** (`TransportStatusFormatter`), both
+from sniffing prose instead of reading the wire result code:
+
+1. **A destination refusal no longer leads with the stream key.** `error opening
+   output` / `i/o error` / `connection refused` now read "The streaming
+   destination refused the connection. Check the destination is live and
+   accepting (a YouTube/Twitch stream has to be started there first), then the
+   stream key and network." Compact readout: `Destination refused`.
+2. **Every FFmpeg exit used to report "Program video is not ready."** The ladder
+   matched the substring `"program frame"`, which also appears in *"FFmpeg
+   process exited before accepting program frames"* — so a dead encoder sent the
+   operator to put a source on Program. The readiness branch now requires
+   `waiting for` as well, because the sender is only reporting readiness when it
+   says it is WAITING; an exit is reporting a death. Found by a test that failed
+   for the wrong reason, which is the only reason it was found at all.
+
+**STOP THE PROCESS, THEN READ THE STDERR.** A failed stdin write is observed the
+instant the pipe breaks, which is BEFORE FFmpeg has flushed the line saying why.
+Measured live 2026-09-12 against a refusing endpoint: reading at the write
+failure gave a 72-byte file holding only "Guessed Channel Layout: stereo", and
+the file NEVER gained its error lines because the process was killed first.
+`stopFfmpegProcess()` closes stdin (FFmpeg's EOF) and waits for exit, so the file
+is complete once it returns — after the reorder the same run produced the whole
+chain: `Connection to tcp://... failed` | `Cannot open connection` | `Error
+opening output ... Error opening output files`.
+
+**The proof line no longer contradicts itself.** Where FFmpeg never started,
+`ffmpegVideoEncoder` reported `ffmpegVideoEncoderFor(configuredVideoCodec_, ...)`
+— the RAW codec — so a proof whose own `runtimeDetail` said "falling back to
+H.264" simultaneously reported `av1_nvenc`, sending a reader diagnosing a stream
+failure to chase an encoder that is never selected. It goes through
+`resolveRtmpCompatibility` now.
+
+Tests: `native/tests/FfmpegSenderDiagnosticsTest.cpp` (redaction, bounding,
+composition — the redaction case uses the owner's real stderr) and
+`StudioViewModelAudioStatusTests.FormatStreamingFailureStatus_ADestinationRefusalDoesNotLeadWithTheStreamKey`.
+**Verified live in the test meeting, 2026-09-12**, against `rtmp://127.0.0.1:1935`
+with nothing listening and a marker stream key: `lastError` carried FFmpeg's full
+refusal chain, and the marker key appeared **twice in FFmpeg's own temp file and
+zero times** in `media-core.log`, `launch.log`, the send-proof JSONL and
+`/snapshot`.
+
+## THE LAW covers SLOTS, not just people (#506-follow-up, 2026-09-12)
+
+The "sources keep reverting" family has a fourth member, and it is the same rule
+one level up. From the owner's `launch.log`:
+
+```
+13:52:06  lifecycle: unassign slot 4 (was ZoomParticipant pid=16791552)   <- operator
+13:52:06  slot-write: slot4 InShow 'true'->'false'  by=operator-unassign
+14:00:03  slot-write: slot4 Kind 'Unassigned'->'ZoomParticipant' by=roster-sync
+14:00:03  slot-write: slot4 ParticipantId ''->'33561600'          by=roster-sync
+```
+
+`ShowInputRosterService.SyncZoomParticipantSlots` fills **the first free slot**
+with a newcomer — and a slot the operator deliberately emptied is the freest slot
+there is. The existing memory (`_autoAssignSeenParticipantIds`) remembers the
+PERSON the operator removed; nothing remembered the SLOT. So THE LAW held for the
+participant and broke for the slot.
+
+**The cost is not one wrong slot.** Every source-set change re-ranks the whole
+resolution budget, so one phantom refill re-subscribes EVERY video source in the
+meeting — a real engine-side renderer teardown each time. Measured on that
+session: every camera at `churn` 4–12, `totalChurn` 77, every one's reason
+`resolution-change`, which the owner saw as video flashes and guests dropping out
+of the multiview and the Tiles wall. (#478's own fix is holding: 25 s across an
+active-speaker flip moved churn not at all. Only source-set changes do this now.)
+
+**Owner ruling (2026-09-12): a cleared slot is sticky until the MEETING ROSTER
+EMPTIES.** `ShowInputsCoordinator._operatorClearedSlotNumbers` records it on the
+one operator entry point (`UnassignShowInput`), `SyncZoomParticipantSlots` takes
+it as `operatorClearedSlotNumbers` and skips those slots when filling, and it is
+released when the roster goes empty (the meeting ending — the point the slot
+layout stops meaning anything) or when the operator flips the auto-assign toggle,
+which is an explicit "assign everyone now". It reserves against AUTO-assign only:
+the operator may still place anything there, and a roster refresh never undoes
+that.
+
+**Two testing notes, both learned here:**
+
+- **The leaf test proved nothing at first.** With a spare free slot earlier in the
+  list the newcomer never wanted slot 4, so the test passed with and without the
+  fix. It only became a real test once every slot was assigned, making the
+  cleared slot the FIRST free one — the live shape.
+- **The leaf test is not enough even when correct.** Dropping the
+  `_operatorClearedSlotNumbers` argument at the CALL SITE leaves it green. The
+  binding test is `ShowInputsCoordinatorTests.ARosterSyncNeverRefillsASlotTheOperatorUnassigned`,
+  which drives unassign -> roster sync through the coordinator (the #481
+  "test the whole decision, not the leaf" rule) and fails when the argument goes.
 
 ## Zoom capture on/off (engine raw-media stop — 2026-07-19)
 

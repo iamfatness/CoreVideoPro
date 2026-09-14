@@ -2052,8 +2052,13 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
   pendingTakeRecord_ = std::move(record);
 }
 
+uint64_t MediaCore::tilesWallGeneration(const std::string& wallId) const {
+  const auto* wall = tilesWallSources_.find(wallId);
+  return wall ? wall->generation() : 0;
+}
+
 void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programPlan,
-                                   bool wallAdoptedSettled,
+                                   bool wallContinuous,
                                    const std::vector<modules::VideoFrame>& frames) {
   if (!pendingTakeRecord_) return;
   TakeRecord record = std::move(*pendingTakeRecord_);
@@ -2068,7 +2073,7 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
 
   const std::string liveBackgroundLayerId = "tiles-source-bg:" + tilesLayer_.layerId;
   record.observation.hasWallAfter = tilesLayer_.present;
-  record.observation.wallAdoptedSettled = wallAdoptedSettled;
+  record.observation.wallContinuous = wallContinuous;
   record.observation.liveBackgroundExpected =
       tilesLayer_.present && !tilesLayer_.style.backgroundSourceId.empty() &&
       tilesLayer_.style.backgroundSourceId != tilesLayer_.layerId;
@@ -3645,7 +3650,24 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       renderPlan.layers.push_back(std::move(marker));
     } else {
     auto programPlan = buildCompositorRenderPlan(videoFrames);
-    programTilesAnimation_.applyLatest(programPlan, sceneId_ + ":" + tilesLayer_.layerId);
+    // This is a read-only path (buildMultiviewRenderPlan is const): use find(),
+    // never forWall(), which would insert a wall on a mere read. A wall with no
+    // TilesWallSource yet has never animated, so there is nothing to apply.
+    // SHARED-WALL COUPLING, deliberate and scoped (plan 2, the wall-texture
+    // slice, is where it goes away). One wall id now has ONE animator shared by
+    // both buses, so when the same gallery is cued in Preview and live on
+    // Program these two cells read the SAME animation state — the PVW cell shows
+    // Program's geometry for that wall, not an independent Preview animation.
+    // That is the correct trade today and the whole point of #448: the operator's
+    // complaint was the wall REBUILDING across the cut, and one shared animator
+    // is what makes the cut continuous. It is only visible at all while a wall
+    // is mid-flight on both buses at once, and in that window Program is the
+    // authority on what the wall looks like (see `enabled = programEnabled`).
+    // applyLatest is a pure read of the settled state and cannot itself advance
+    // or reset anything, so neither cell can corrupt the other's wall.
+    if (const auto* wall = tilesWallSources_.find(tilesLayer_.layerId)) {
+      wall->applyLatest(programPlan, tilesLayer_.layerId);
+    }
     renderPlan.layers.reserve(programPlan.layers.size() + static_cast<size_t>(sourceCount) + 1);
     std::stable_sort(programPlan.layers.begin(), programPlan.layers.end(),
         [](const auto& a, const auto& b) { return a.order < b.order; });
@@ -3681,7 +3703,14 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     // never reflected the preview and never swapped on Take.)
     if (hasPreviewScene()) {
       auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
-      previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
+      // Same shared-wall coupling as the PGM cell above: when Preview and
+      // Program carry the SAME wall id this reads the one shared animator, so
+      // the PVW cell mirrors Program's wall geometry rather than animating on
+      // its own. Pure read; it cannot advance or reset the wall. Owned by plan 2
+      // (the wall-texture slice), where the PVW cell gets the wall's own texture.
+      if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId)) {
+        wall->applyLatest(previewPlan, previewTilesLayer_.layerId);
+      }
       std::stable_sort(previewPlan.layers.begin(), previewPlan.layers.end(),
           [](const auto& a, const auto& b) { return a.order < b.order; });
       for (const auto& src : previewPlan.layers) {
@@ -6286,29 +6315,201 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // THE TAKE HAND-OFF (owner report 2026-09-09: a gallery taken from preview to
   // program must be a CUT to something already rendered, never a redraw).
   // TransportCoordinator.TakeAsync swaps ActiveSceneId/PreviewSceneId and sends
-  // ONE sync, so the program wall key becomes the key preview held on the
-  // previous tick — the same wall, continuing on the other bus. Carry its
-  // settled animation state over before advancing, instead of letting the
-  // key change reset the animator. Refused unless the keys match EXACTLY and
-  // the preview wall is settled, and the state is MOVED (preview is reset), so
-  // the two buses cannot contaminate each other. Cost is a key compare plus a
-  // move of <=64 tiles, only on the tick a wall changes bus — no added
-  // coreMutex hold.
-  const std::string programWallKey = sceneId_ + ":" + tilesLayer_.layerId;
-  bool wallAdoptedSettled = false;
-  if (tilesLayer_.present && tilesLayer_.style.animateLayout) {
-    wallAdoptedSettled = programTilesAnimation_.adoptSettledFrom(previewTilesAnimation_, programWallKey);
+  // ONE sync, so the program wall id becomes the id preview held on the
+  // previous tick — the SAME wall (#448: one animator per wall, not per bus),
+  // so there is nothing to hand over: both buses sample the same object, and a
+  // cut changes only which bus is looking at it.
+  const std::string programWallId = tilesLayer_.layerId;
+  const std::string previewWallId = previewTilesLayer_.layerId;
+  const bool programPresent = tilesLayer_.present;
+  const bool programEnabled = tilesLayer_.style.animateLayout;
+  const bool previewPresent = previewTilesLayer_.present && hasPreviewScene();
+  const bool previewEnabled = previewTilesLayer_.style.animateLayout;
+  // Review round 2: ONE ADVANCE PER WALL PER TICK, true by construction rather
+  // than by a chain of conditions. Round 1 fixed the freeze (Finding B) and the
+  // stale-geometry retention (Finding C) separately, and their combination
+  // advanced the SAME shared object TWICE in one tick whenever both buses named
+  // it with contradictory `enabled` (Program false / Preview true, or vice
+  // versa): once with enabled=false (a real reset, since it had a key to lose)
+  // and again with enabled=true (a SECOND reset, since the first call just
+  // cleared key_) — generation +2/tick with no actual animation, and Preview's
+  // geometry re-adopted from scratch on every tick. `sameWall` decides whether
+  // there is one object or two to advance this tick; when it is one, there is
+  // exactly one advance() call to carry the decision (see Finding 2 below for
+  // which bus's `enabled` that call uses).
+  // Review round 3, Finding 3: no `!programWallId.empty()` term — two empty
+  // ids are the SAME map entry (TilesWallSources keys on the string), so
+  // excluding them re-opens the two-advance-on-one-object path this whole
+  // restructure exists to close. It has no generation effect (an empty
+  // wallKey never trips `key_ != wallKey` or the idempotent guard's
+  // `!key_.empty()`), but the shape is wrong regardless.
+  const bool sameWall = programPresent && previewPresent && programWallId == previewWallId;
+  // The take record's proof that this wall did not restart across the take:
+  // its generation before this tick's advance, compared after (equal ==
+  // continuous). Read via the const find() (never forWall(), which would
+  // insert on a mere read) — an unknown wall has never animated and reports
+  // 0, which is true, not a guess. "Continuous" also requires the wall to have
+  // EXISTED before this tick — a wall id seen for the first time starts at
+  // generation 0, and with the idempotent guard below a disabled first call
+  // also reports "did not reset" (nothing to reset), so raw generation
+  // equality alone would misread a brand-new wall as continuous.
+  bool wallContinuous = false;
+  if (programPresent) {
+    const auto* existingWall = tilesWallSources_.find(programWallId);
+    const bool wallExistedBefore = existingWall != nullptr;
+    const uint64_t generationBefore = existingWall ? existingWall->generation() : 0;
+    // advance() runs UNCONDITIONALLY whenever the wall is present — never
+    // additionally gated on `enabled` — and lets `enabled` decide reset-vs-
+    // sample INSIDE advance() (the idempotent guard there makes a repeated
+    // disabled tick a harmless no-op, not a tick-counter). Gating the call
+    // itself on `enabled` left a disabled wall's `sampled_` retained forever:
+    // the multiview PGM cell and the preview composite (both read via
+    // applyLatest, which does not know about "enabled") kept applying stale
+    // animated geometry the Program plan itself no longer carried.
+    // Review round 3, Finding 2 (RULING): Program wins for a shared wall.
+    // `enabled = programEnabled || previewEnabled` let a PREVIEW-side toggle
+    // start motion on PROGRAM for a shared wall with no take involved, since
+    // the shared advance samples straight into the program `renderPlan`. This
+    // codebase's bedrock rule is that an off-air Preview look never changes
+    // what is on air (CLAUDE.md: "an off-air Preview look can never take
+    // video ... from a Program source") — the preview scene is an
+    // operator-editable draft (S2b), so a draft edit reaching Program is a
+    // live-show hazard, and Program is inherited by the virtual camera, every
+    // recording and every stream. Do not restore the OR.
+    //
+    // This is cost-free thanks to the Finding C fix: a disabled shared wall
+    // still resets every tick (idempotently after the first), `sampled_`
+    // clears, and `applyLatest` no-ops on the mismatched `key_` — so Preview
+    // falls back to raw (non-animated) plan geometry rather than stale rects.
+    // Preview simply does not animate; nothing on air moves because of an
+    // off-air edit.
+    const bool enabled = programEnabled;
+    tilesWallSources_.forWall(programWallId).advance(renderPlan, programWallId,
+        programPresent, enabled, tilesLayer_.style.animationDurationMs, animationNowMs);
+    wallContinuous = wallExistedBefore && tilesWallGeneration(programWallId) == generationBefore;
   }
-  programTilesAnimation_.advance(renderPlan, programWallKey,
-      tilesLayer_.present, tilesLayer_.style.animateLayout, tilesLayer_.style.animationDurationMs, animationNowMs);
-  // Advance Preview on this same render clock even when its wall is empty.
-  // Snapshot/prefetch builds must not change entry/departure animation state.
-  if (previewTilesLayer_.present && previewTilesLayer_.style.animateLayout && hasPreviewScene()) {
-    auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
-    previewTilesAnimation_.advance(previewAnimationPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId,
-        true, previewTilesLayer_.style.animateLayout, previewTilesLayer_.style.animationDurationMs, animationNowMs);
-  } else {
-    previewTilesAnimation_.reset();
+  // Advance Preview on the SAME render clock even when its wall is empty, so
+  // snapshot/prefetch builds cannot change entry/departure animation state —
+  // but ONLY when it names a wall DIFFERENT from Program's (a genuinely
+  // separate object). When `sameWall`, the program branch above already
+  // advanced this exact object once this tick (with Program's `enabled` —
+  // Finding 2) — a second call here would be the round-2 double-advance bug.
+  if (previewPresent && !sameWall) {
+    // Review round 3, Finding 1: build the deep preview plan ONLY when
+    // advance() will actually read it. `advance()` returns at its very first
+    // line when `!enabled`, before touching the plan at all — the same class
+    // of waste the "Task 4 review fix (I6)" comment below exists to prevent.
+    // A disabled preview wall (animateLayout=false, the DEFAULT) with a
+    // different id from Program used to pay a full buildRenderPlanForScene
+    // deep build (a layer vector, ~13 strings per layer, the paused-clip-cue
+    // pass) under coreMutex, EVERY tick, for nothing.
+    //
+    // Review round 4, Finding 1: the disabled branch used to pass the
+    // PROGRAM `renderPlan` here — safe only because advance() returns before
+    // ever reading `plan` on the disabled path, an invariant that lives in a
+    // different file from this call and would silently start rewriting
+    // Program's `tile:*` layer rects/opacity (the exact object handed to
+    // compositor->render() and cached into lastRenderPlan_) the moment that
+    // early return is reordered. releaseIfIdle() takes no plan and cannot
+    // ever read one, so the hazard does not exist rather than being merely
+    // documented.
+    if (previewEnabled) {
+      auto previewAnimationPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      tilesWallSources_.forWall(previewWallId).advance(previewAnimationPlan, previewWallId,
+          true, true, previewTilesLayer_.style.animationDurationMs, animationNowMs);
+    } else {
+      tilesWallSources_.forWall(previewWallId).releaseIfIdle();
+    }
+  }
+  // Lifetime: release any wall no live scene still names (parent spec section 2).
+  std::vector<std::string> liveWallIds;
+  if (tilesLayer_.present) liveWallIds.push_back(programWallId);
+  if (previewTilesLayer_.present) liveWallIds.push_back(previewWallId);
+  tilesWallSources_.releaseAllExcept(liveWallIds);
+  // Task 4: the wall is a SOURCE (parent spec section 2), so it registers like
+  // one — the first real consumer of SourceRegistry's Kind::Composed. Its
+  // lifetime mirrors tilesWallSources_'s own exactly (same liveWallIds set,
+  // same "named by a live scene" rule), one level up. registeredWallIds_ is
+  // the idempotence guard: add() answers Conflict on a repeat, so without it
+  // a live wall's steady-state tick would take the registry mutex and get
+  // refused every single frame — this keeps that cost to liveness
+  // TRANSITIONS only. A composed registration carries no externalId (a wall
+  // has no SDK handle) and never claims a subscription state — see
+  // SourceRegistry::Kind::Composed and validRegistration.
+  for (const auto& wallId : liveWallIds) {
+    // A deferred edge case from Task 3 (forWall admits an empty wall id):
+    // skip it here rather than registering a nameless source that
+    // validRegistration would refuse as Invalid anyway.
+    if (wallId.empty()) continue;
+    // Final-review finding: an id validRegistration refuses on its SPELLING can
+    // never become valid, yet a failed add is deliberately NOT remembered as
+    // registered (below) - so the retry that exists for transient failures
+    // turned a permanent refusal into a registry-mutex acquisition plus a log
+    // line on every single render tick. Skip those, once and loudly, against the
+    // registry's own declared bound rather than a second copy of the number.
+    if (unregisterableWallIds_.contains(wallId)) continue;
+    if (wallId.size() > SourceRegistry::kMaxIdBytes) {
+      unregisterableWallIds_.insert(wallId);
+      ::corevideo::core::nativeLogf(
+          "[source-registry] wall id of %zu bytes exceeds the %zu-byte limit and can never "
+          "register; not retrying\n",
+          wallId.size(), static_cast<std::size_t>(SourceRegistry::kMaxIdBytes));
+      continue;
+    }
+    // Review round 1, Finding 3: check-then-insert, not insert-and-read-.second.
+    // unordered_set::insert on an already-present key is not guaranteed
+    // allocation-free on every implementation (MSVC's has historically built
+    // the node before discovering the duplicate) — this file's render-path
+    // allocation rule should hold BY CONSTRUCTION, not by implementation detail.
+    if (registeredWallIds_.contains(wallId)) continue;
+    SourceRegistry::Registration registration;
+    registration.sourceId = {wallId};
+    registration.kind = SourceRegistry::Kind::Composed;
+    registration.displayName = "Tiles wall " + wallId;
+    registration.processEpoch = kCoreProcessEpoch;
+    const auto mutation = sourceRegistry_.add(std::move(registration));
+    if (mutation.result == SourceRegistry::Result::Applied) {
+      registeredWallIds_.insert(wallId);
+    } else {
+      // Review round 1, Finding 2: do NOT remember this id as registered on
+      // failure — Invalid (e.g. an over-length wire layerId, or a retired
+      // processEpoch) is genuinely reachable, not just Conflict/Exhausted, and
+      // a wall that fails to register must be RETRIED on the next liveness
+      // transition, not silently abandoned for the rest of its life. Loud,
+      // since a wall invisible to the registry is invisible to any future
+      // registry consumer too.
+      // RETRYABLE (Conflict / Exhausted / a retired epoch): the retry above
+      // stands, but say it ONCE per id - see warnedWallRegistrationIds_.
+      if (warnedWallRegistrationIds_.insert(wallId).second) {
+        ::corevideo::core::nativeLogf("[source-registry] wall '%s' failed to register (result=%d)\n",
+                   wallId.c_str(), static_cast<int>(mutation.result));
+      }
+    }
+  }
+  // Release from the registry whatever the sweep above just released from
+  // tilesWallSources_. A wall has no provider process to fence, so this is a
+  // genuine erase (SourceRegistry::removeComposed), not a tombstone — and the
+  // id must come out of registeredWallIds_ too, or a wall recreated under the
+  // same scene id would find add() answering Conflict against a guard entry
+  // for a wall that no longer exists in the registry at all.
+  for (auto it = registeredWallIds_.begin(); it != registeredWallIds_.end();) {
+    if (std::find(liveWallIds.begin(), liveWallIds.end(), *it) != liveWallIds.end()) {
+      ++it;
+      continue;
+    }
+    sourceRegistry_.removeComposed(SourceId{*it});
+    it = registeredWallIds_.erase(it);
+  }
+  // The two failure-side guards are pruned on the SAME rule, or a wall refused
+  // once and then legitimately re-cued under a corrected id would stay skipped
+  // (unregisterableWallIds_) or silent (warnedWallRegistrationIds_) for the life
+  // of the process. This is also what bounds both sets by the live wall set.
+  for (auto* guard : {&unregisterableWallIds_, &warnedWallRegistrationIds_}) {
+    for (auto it = guard->begin(); it != guard->end();) {
+      it = std::find(liveWallIds.begin(), liveWallIds.end(), *it) == liveWallIds.end()
+               ? guard->erase(it)
+               : std::next(it);
+    }
   }
   // Task 4: cache the plan the render tick actually built — lastRenderPlanForTest()
   // and the sessionState() `tiles` node both read THIS, so a consumer can never
@@ -6408,7 +6609,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // is built, and judging continuity or "had a frame" before they arrive would
   // call every media source missing and read the previous tick's generations.
   if (pendingTakeRecord_) {
-    completeTakeRecord(renderPlan, wallAdoptedSettled, videoFrames);
+    completeTakeRecord(renderPlan, wallContinuous, videoFrames);
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
@@ -6589,7 +6790,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (previewActive && previewDue) {
     const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
-    previewTilesAnimation_.applyLatest(previewPlan, previewSceneId_ + ":" + previewTilesLayer_.layerId);
+    // Read-only: use find(), never forWall() — a preview scene with no wall
+    // has an empty layerId, and forWall("") would insert a phantom map node
+    // (allocate + free) under coreMutex on every such render tick.
+    if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId)) {
+      wall->applyLatest(previewPlan, previewTilesLayer_.layerId);
+    }
     previewPlan.skipCpuReadback = true;
     lastProgramFrame_.previewSharedTexture = modules_.compositor->renderPreview(previewPlan, videoFrames);
     lastProgramFrame_.previewWidth = previewPlan.width;
