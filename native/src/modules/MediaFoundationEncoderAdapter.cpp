@@ -115,12 +115,12 @@ void i420ToNv12(const uint8_t* i420, int w, int h, std::vector<uint8_t>& out) {
 // uniform AAC layout). Mono → duplicated L/R; stereo → passed through; >2ch →
 // first two channels. `out` is resized to frameCount*2. Runs on the async
 // encoder writer thread (off every lock).
-void toStereo(const std::vector<float>& in, int channels, int frameCount, std::vector<float>& out) {
+void toStereo(const std::vector<float>& in, int channels, int frameCount, std::vector<float>& out, int skipFrames = 0) {
   out.resize(static_cast<size_t>(frameCount) * 2);
   const int ch = channels > 0 ? channels : 1;
   const size_t have = in.size();
   for (int i = 0; i < frameCount; ++i) {
-    const size_t base = static_cast<size_t>(i) * ch;
+    const size_t base = (static_cast<size_t>(i) + skipFrames) * ch;
     float l = 0.0f;
     float r = 0.0f;
     if (base < have) {
@@ -1146,10 +1146,13 @@ void writeIsoAudio(IsoWriterEntry& entry, const IsoSourceAudio& src) {
     return;  // writer not open yet (no video frame) or already failed
   }
   const int rate = entry.writer.audioSampleRate();
-  const int frameCount = src.frameCount > 0 && !src.pcm.empty() ? src.frameCount : 0;
+  int frameCount = src.frameCount > 0 && !src.pcm.empty() ? src.frameCount : 0;
   const LONGLONG timelineNow =
       src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
-  const auto advance = entry.clock.isoAudioAdvance(timelineNow, src.sourceId, frameCount, rate);
+  const auto boundary = entry.clock.trimAudioToEpoch(timelineNow, frameCount, rate);
+  if (entry.clock.beforeEpoch(boundary.timestamp100ns)) return;
+  frameCount = boundary.retainedFrames;
+  const auto advance = entry.clock.isoAudioAdvance(boundary.timestamp100ns, src.sourceId, frameCount, rate);
   std::string error;
   bool ok = true;
   if (advance.silenceFrames > 0) {
@@ -1159,7 +1162,7 @@ void writeIsoAudio(IsoWriterEntry& entry, const IsoSourceAudio& src) {
     // Up-mix the raw stem to the writer's stereo AAC layout (Zoom
     // isolate_audio is typically mono). Reused scratch — no per-tick alloc
     // churn beyond a grow.
-    toStereo(src.pcm, src.channels > 0 ? src.channels : 1, frameCount, entry.audioScratch);
+    toStereo(src.pcm, src.channels > 0 ? src.channels : 1, frameCount, entry.audioScratch, boundary.skippedFrames);
     ok = entry.writer.writeAudio(entry.audioScratch.data(), frameCount, advance.realPts100ns, error);
   }
   if (!ok && entry.warning.empty()) {

@@ -10,6 +10,7 @@
 #include <string>
 #include <exception>
 #include <thread>
+#include <utility>
 
 namespace corevideo::modules {
 
@@ -46,7 +47,7 @@ class RecordingTrackWorker {
     auto& pending = kind == Kind::Video ? evidence_.queuedVideo : evidence_.queuedAudio;
     // MFT startup includes the first writes, not just creation. Keep the bounded
     // preroll budget for one second, then shrink only after its backlog drains.
-    if (!steady_ && std::chrono::steady_clock::now() >= startupEnds_ && pending <= videoCapacity_ &&
+    if (!steady_ && std::chrono::steady_clock::now() >= startupEnds_ &&
         evidence_.queuedVideo <= videoCapacity_) steady_ = true;
     const auto videoLimit = steady_ ? videoCapacity_ : startupVideoCapacity_;
     if (pending >= (kind == Kind::Video ? videoLimit : audioCapacity_)) {

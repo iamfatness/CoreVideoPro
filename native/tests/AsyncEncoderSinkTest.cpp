@@ -987,3 +987,23 @@ TEST(AsyncEncoderSink, IndependentWriterLossSurvivesFinalizeAndNextSessionCanBeC
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
   EXPECT_EQ(sink.session().lifecycle->health, "healthy");
 }
+
+TEST(AsyncEncoderSink, IsoAudioSurvivesProgramCodecStartup) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockStart->store(true);
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  for (int i = 0; i < 20; ++i) {
+    IsoSourceAudio audio;
+    audio.sourceId = "zoom:test"; audio.frameCount = 960;
+    audio.channels = 1; audio.sampleRate = 48000; audio.pcm.assign(960, 0.25f);
+    audio.timelineTimestamp100ns = 1000000 + i * 200000;
+    sink.submitIsoAudio({audio});
+  }
+  const auto lost = sink.droppedAudioPackets();
+  raw->blockStart->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(lost, 0u);
+  EXPECT_EQ(raw->isoAudioCount.load(), 20);
+}

@@ -69,10 +69,10 @@ class AsyncEncoderSink final : public IEncoderSink {
     size_t maxIsoVideoQueue = 8;
     // Max pending PROGRAM audio packets before the oldest is dropped.
     size_t maxAudioQueue = 96;
-    // ISO audio is wall-clock anchored and silence-fills a dropped tick. A small
-    // queue is therefore both safe and essential: one item fans out to every
-    // armed ISO AAC writer.
-    size_t maxIsoAudioQueue = 4;
+    // Retain ISO audio through the synchronous Program open. Dispatch to the
+    // per-file workers is cheap; a four-packet cap clipped startup audio.
+    // Like Program audio, this budget is bounded to 96 packets.
+    size_t maxIsoAudioQueue = 96;
     // Bounded wait for teardown's writer join (the finalize grace at shutdown).
     std::chrono::milliseconds finalizeGrace{4000};
   };
@@ -257,7 +257,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     size_t maxVideoQueue = 6;
     size_t maxIsoVideoQueue = 8;
     size_t maxAudioQueue = 96;
-    size_t maxIsoAudioQueue = 4;
+    size_t maxIsoAudioQueue = 96;
   };
 
   // Enqueue `item`, assigning it a seq. Applies the drop policy for Video/Audio.

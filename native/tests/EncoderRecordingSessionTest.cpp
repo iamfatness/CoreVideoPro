@@ -1156,6 +1156,37 @@ corevideo::modules::IsoSourceAudio makeIsoTone(const std::string& sourceId, int 
 // #286 per-ISO-writer audio-stream reset holds across a double start (a reused
 // ISO writer must NOT lose its audio track), silence-fill advances a gapped stem,
 // and PROGRAM A+V is never regressed with ISO AUDIO enabled.
+TEST(EncoderRecordingSession, MediaFoundationIsoAudioTrimsCaptureBeforeProgramEpoch) {
+  const corevideo::testing::ForcedEncoderCapacity capacity;
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;
+  namespace fs = std::filesystem;
+  const auto dir = fs::temp_directory_path() / "corevideo-iso-audio-epoch";
+  std::error_code ec; fs::remove_all(dir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso-audio-epoch"; request.targetFolder = dir.string();
+  request.filenamePrefix = "epoch"; request.width = 640; request.height = 360;
+  request.fps = 30; request.isoSources = {{"zoom:A", "Guest", true}};
+  encoder->configureRecording(request); encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame frame;
+  frame.frameNumber = 1; frame.width = 640; frame.height = 360;
+  frame.preview.width = 640; frame.preview.height = 360;
+  frame.preview.bgra.assign(640 * 360 * 4, 0x40);
+  encoder->submit(frame);
+  encoder->submitIsoVideo({makeIsoI420("zoom:A", 640, 360, 1, 90)});
+  const auto epoch = encoder->session().recordingMuxEpoch100ns;
+  ASSERT_GT(epoch, 0);
+  auto audio = makeIsoTone("zoom:A", 960, 1, 220, 0);
+  audio.timelineTimestamp100ns = epoch - 200000; // Entire packet precedes capture.
+  encoder->submitIsoAudio({audio});
+  ASSERT_EQ(encoder->session().isoStreams.size(), 1u);
+  EXPECT_EQ(encoder->session().isoStreams[0].audioSampleCount, 0);
+  audio.timelineTimestamp100ns = epoch - 100000; // Retain only the last 10 ms.
+  encoder->submitIsoAudio({audio});
+  EXPECT_EQ(encoder->session().isoStreams[0].audioSampleCount, 480);
+  encoder->stopRecording(); encoder.reset(); fs::remove_all(dir, ec);
+}
+
 TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
   // This test is about MP4 writers, not capacity: pin an ample machine so the
   // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
