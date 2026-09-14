@@ -56,11 +56,6 @@ public sealed class MediaCoreCrashLockOrderTests
     [Fact]
     public async Task RecoverySubscriberCanReadHealthOnAnotherThreadAndStopWithoutRespawn()
     {
-        await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
-        {
-            MaxRestarts = 1,
-            Command = "must-not-respawn-after-subscriber-stop"
-        });
         // Stop needs a real exited Process handle, but this synthetic child never
         // loads the core, cameras, Zoom, or any app state.
         using var exited = Process.Start(new ProcessStartInfo("node")
@@ -70,6 +65,13 @@ public sealed class MediaCoreCrashLockOrderTests
             CreateNoWindow = true
         })!;
         await exited.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        // Dispose the supervisor before the process even when an assertion or
+        // callback fails, so teardown cannot mask the original failure.
+        await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
+        {
+            MaxRestarts = 1,
+            Command = "must-not-respawn-after-subscriber-stop"
+        });
         Field(supervisor, "_process").SetValue(supervisor, exited);
         Field(supervisor, "_stopped").SetValue(supervisor, false);
         var observedRecovering = false;
@@ -78,7 +80,10 @@ public sealed class MediaCoreCrashLockOrderTests
         supervisor.HealthChanged += health =>
         {
             if (!health.Recovering) return;
-            observedRecovering = Task.Run(() => supervisor.Health.Recovering)
+            // Test cross-thread lock acquisition, independent of thread-pool
+            // availability while the rest of the suite runs concurrently.
+            observedRecovering = Task.Factory.StartNew(() => supervisor.Health.Recovering,
+                    CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
                 .WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
             supervisor.Stop();
         };

@@ -271,6 +271,10 @@ struct ProgramFrame {
     return programNv12Shared ? *programNv12Shared : programNv12;
   }
   ProgramFrameSharedTexture sharedTexture;
+  // Dedicated GPU keyed-mutex DXGI shared texture for hardware H.264 encode.
+  // Separate from sharedTexture so sender encode does not contend with WinUI frame
+  // consumption while the sender runs at encoder cadence.
+  ProgramFrameSharedTexture encoderSharedTexture;
   std::vector<ParticipantSharedTexture> participantSharedTextures;
   // Core-composited multiview grid: one keyed-mutex DXGI shared texture holding
   // the whole grid (mirrors `sharedTexture`), plus the per-tile rects and the

@@ -115,7 +115,14 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // GPU-direct path: video arrives already H.264-encoded on pipe:0; ffmpeg is a
     // pure muxer/transport (-c:v copy). Only ~6 Mbps crosses the pipe, so the raw
     // -re pacing and pixel-format handling of the raw path are not needed here.
-    args << " -hide_banner -loglevel warning"
+    // A live H.264 Annex-B elementary stream on a pipe carries NO container
+    // timestamps. -r alone made ffmpeg's h264 demuxer leave stream 0 unset once a
+    // second input was present, and -c:v copy then muxed a stream the endpoint
+    // read as 0x/stalled. -use_wallclock_as_timestamps stamps each arriving access
+    // unit at its realtime arrival, which for a 60fps live feed is monotonic and
+    // ~wall time; -r declares the nominal frame rate alongside it.
+    args << " -hide_banner -loglevel warning -stats -stats_period 1"
+         << " -use_wallclock_as_timestamps 1 -r " << fps
          << " -f h264 -thread_queue_size 512 -i pipe:0";
     if (config.hasAudio) {
       const int channels = (std::max)(1, config.audioChannels);
@@ -127,12 +134,18 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     }
     args << " -map 0:v:0 -map 1:a:0 -c:v copy"
          << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
-         << " -af aresample=async=1:first_pts=0"
-         << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
+         << " -af aresample=async=1:first_pts=0";
+    if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {
+      // RTMP emits small protocol writes. Nagle/delayed-ACK backpressure can
+      // block the bitstream pipe and therefore the hardware encoder's event
+      // thread. Disable it at the RTMP transport, without changing SRT options.
+      args << " -tcp_nodelay 1";
+    }
+    args << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
          << quoteRtmpArgument(config.endpoint);
     return args.str();
   }
-  args << " -hide_banner -loglevel warning"
+  args << " -hide_banner -loglevel warning -stats -stats_period 1"
        // The video pipe is read GREEDILY — deliberately NO -re (owner live
        // incident 2026-09-13). The application already paces writes at the 60Hz
        // video-output tick, so this input is realtime by construction. -re here

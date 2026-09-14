@@ -212,6 +212,13 @@ class D3D11Compositor final : public ICompositor {
       stopVcamTap();  // vcam disabled -> tear down the tap thread + second device so it
                       // stops spinning keyed-mutex waits that hitch the render (runs once)
     }
+    // The GPU-direct encoder tap runs whenever the program is streamed, buffered
+    // or not: when buffered, frame.encoderSharedTexture rides the program buffer to
+    // the sender (the handle is stable and the copy is the latest composed frame,
+    // so the stream taps live pixels rather than inheriting the buffer's delay).
+    if (renderPlan.fullProgramReadback) {
+      exportEncoderSharedTexture(frame);
+    }
     const auto vcamUs = stageUs();
     if (!buffered) exportSharedTexture(frame);
     const auto sharedUs = stageUs();
@@ -1541,6 +1548,94 @@ class D3D11Compositor final : public ICompositor {
     frame.sharedTexture.frameNumber = frame.frameNumber;
   }
 
+  bool ensureEncoderSharedTexture(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    if (encoderSharedTexture_ && encoderSharedWidth_ == width && encoderSharedHeight_ == height) {
+      return true;
+    }
+
+    encoderSharedTexture_ = {};
+    encoderSharedKeyedMutex_ = {};
+    encoderSharedHandle_ = nullptr;
+    encoderSharedWidth_ = width;
+    encoderSharedHeight_ = height;
+
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    // Dedicated keyed-mutex shared texture for hardware encode. Keeps vMix parity with a
+    // separate producer/consumer lock path that never blocks the preview/readback rig.
+    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, encoderSharedTexture_.put()))) {
+      return false;
+    }
+
+    ComPtrLite<IDXGIResource> dxgiResource;
+    if (FAILED(encoderSharedTexture_->QueryInterface(__uuidof(IDXGIResource),
+                                                    reinterpret_cast<void**>(dxgiResource.put())))) {
+      encoderSharedTexture_ = {};
+      return false;
+    }
+
+    HANDLE handle = nullptr;
+    if (FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle) {
+      encoderSharedTexture_ = {};
+      return false;
+    }
+
+    if (FAILED(encoderSharedTexture_->QueryInterface(__uuidof(IDXGIKeyedMutex),
+                                                    reinterpret_cast<void**>(encoderSharedKeyedMutex_.put())))) {
+      encoderSharedTexture_ = {};
+      return false;
+    }
+
+    encoderSharedHandle_ = handle;
+    return true;
+  }
+
+  // Producer side: acquire keyed mutex 0, copy BGRA frame, release key 1.
+  // If the consumer is still using it, keep publishing the last known handle metadata.
+  void exportEncoderSharedTexture(ProgramFrame& frame) {
+    if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
+      return;
+    }
+    if (!ensureEncoderSharedTexture(targetWidth_, targetHeight_)) {
+      return;
+    }
+
+    if (encoderSharedKeyedMutex_) {
+      if (encoderSharedKeyedMutex_->AcquireSync(0, 0) != S_OK) {
+        frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderSharedHandle_);
+        frame.encoderSharedTexture.width = targetWidth_;
+        frame.encoderSharedTexture.height = targetHeight_;
+        frame.encoderSharedTexture.format = "B8G8R8A8_UNORM";
+        frame.encoderSharedTexture.frameNumber = frame.frameNumber;
+        return;
+      }
+    }
+
+    context_->CopyResource(encoderSharedTexture_.get(), renderTarget_.get());
+    if (encoderSharedKeyedMutex_) {
+      // No explicit Flush needed for this producer->consumer path; keyed-mutex is the
+      // ordering gate and avoids render-thread stalls from per-frame map/poll.
+      encoderSharedKeyedMutex_->ReleaseSync(1);
+    }
+
+    frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderSharedHandle_);
+    frame.encoderSharedTexture.width = targetWidth_;
+    frame.encoderSharedTexture.height = targetHeight_;
+    frame.encoderSharedTexture.format = "B8G8R8A8_UNORM";
+    frame.encoderSharedTexture.frameNumber = frame.frameNumber;
+  }
+
   // Export one keyed-mutex shared texture per participant for the multiview tiles,
   // so the WinUI tiles present on the GPU instead of decoding base64 on the UI
   // thread. Runs on the (single) render thread, reusing the compositor device/
@@ -2551,6 +2646,8 @@ class D3D11Compositor final : public ICompositor {
   uint64_t vcamLastTakenGen_ = 0;
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
   ComPtrLite<IDXGIKeyedMutex> sharedKeyedMutex_;
+  ComPtrLite<ID3D11Texture2D> encoderSharedTexture_;
+  ComPtrLite<IDXGIKeyedMutex> encoderSharedKeyedMutex_;
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
   // (ParticipantTex is declared near the top of the class.)
   std::map<std::string, ParticipantTex> participantTextures_;
@@ -2591,8 +2688,11 @@ class D3D11Compositor final : public ICompositor {
   int layerTextureWidth_ = 0;
   int layerTextureHeight_ = 0;
   HANDLE sharedHandle_ = nullptr;
+  HANDLE encoderSharedHandle_ = nullptr;
   int sharedWidth_ = 0;
   int sharedHeight_ = 0;
+  int encoderSharedWidth_ = 0;
+  int encoderSharedHeight_ = 0;
   HANDLE multiviewSharedHandle_ = nullptr;
   int multiviewWidth_ = 0;
   int multiviewHeight_ = 0;

@@ -153,13 +153,37 @@ TEST(RtmpVideoFramePacer, ResetMakesNextFrameImmediatelyEligible) {
 TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
   corevideo::modules::RtmpFfmpegArgsConfig config;
   config.videoBitstreamInput = true;
+  config.fps = 60;
   config.hasAudio = true;
   config.audioInput = "pipe:3";
   const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
   EXPECT_NE(args.find("-f h264 -thread_queue_size 512 -i pipe:0"), std::string::npos);
+  // A live raw H.264 Annex-B stream on a pipe has no container timestamps, so the
+  // input needs wallclock timestamps (realtime-spaced, monotonic) plus a declared
+  // frame rate, or -c:v copy muxes an unusable stream the endpoint reads as 0x.
+  EXPECT_NE(args.find("-use_wallclock_as_timestamps 1 -r 60 -f h264 -thread_queue_size 512 -i pipe:0"),
+            std::string::npos);
   EXPECT_NE(args.find("-c:v copy"), std::string::npos);
+  // -stats makes the realtime speed readable from ffmpeg's own stderr (diagnosability).
+  EXPECT_NE(args.find("-stats -stats_period 1"), std::string::npos);
   EXPECT_EQ(args.find("-f rawvideo"), std::string::npos);  // no raw video input
   EXPECT_EQ(args.find("-b:v "), std::string::npos);          // no re-encode bitrate
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);       // audio still encoded
   EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
+}
+
+TEST(RtmpFfmpegArgs, BitstreamRtmpDisablesTcpDelayWithoutChangingSrt) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  for (const auto* endpoint : {"rtmp://live.example/app/test", "rtmps://live.example/app/test"}) {
+    config.endpoint = endpoint;
+    const auto args = buildRtmpFfmpegArguments(config);
+    EXPECT_NE(args.find(" -tcp_nodelay 1 -f flv "), std::string::npos);
+    EXPECT_NE(args.find(" -c:v copy"), std::string::npos);
+  }
+  config.endpoint = "srt://127.0.0.1:9021?mode=caller";
+  config.container = "mpegts";
+  const auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_EQ(args.find("tcp_nodelay"), std::string::npos);
+  EXPECT_NE(args.find(" -f mpegts "), std::string::npos);
 }

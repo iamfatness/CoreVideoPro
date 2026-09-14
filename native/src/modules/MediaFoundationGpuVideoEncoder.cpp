@@ -17,7 +17,6 @@
 #include <vector>
 
 #include <d3d11.h>
-#include <d3d11_1.h>
 #include <dxgi1_2.h>
 #include <codecapi.h>
 #include <mfapi.h>
@@ -83,9 +82,13 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     if (frame.sharedHandleHex.empty()) return true;  // nothing to encode this tick
     {
       std::lock_guard<std::mutex> lock(queueMutex_);
-      // Newest-wins: a live encoder never accumulates a backlog.
-      pending_ = frame;
-      hasPending_ = true;
+      // Publish the latest handle; the encode loop reads it on the MFT's next
+      // NeedInput. The keyed mutex — not a per-submit wait — paces the encoder to
+      // the producer's frame rate: convertToNv12's AcquireSync(1) only succeeds
+      // once the compositor has released a new frame.
+      latestHandle_ = frame.sharedHandleHex;
+      latestFrameNumber_ = frame.frameNumber;
+      haveHandle_ = true;
     }
     queueCv_.notify_one();
     return true;
@@ -123,6 +126,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     stop();
     return false;
   }
+
+  // S_OK when the encode device is alive; a DXGI removed/reset/hung HRESULT when
+  // it has been lost (TDR, driver upgrade, hardware fault). The encode loop uses
+  // this to distinguish a genuine device loss from a transient encode miss.
+  HRESULT deviceRemovedReason() const { return device_ ? device_->GetDeviceRemovedReason() : S_OK; }
 
   bool createDevice() {
     UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -236,11 +244,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     if (openedTexture_ && openedHandleHex_ == hex) return true;
     openedTexture_.Reset();
     openedMutex_.Reset();
-    ComPtr<ID3D11Device1> device1;
-    if (FAILED(device_.As(&device1)) || !device1) return false;
     HANDLE handle = handleFromHex(hex);
     if (!handle) return false;
-    if (FAILED(device1->OpenSharedResource1(handle, IID_PPV_ARGS(&openedTexture_))) || !openedTexture_) {
+    if (FAILED(device_->OpenSharedResource(handle, IID_PPV_ARGS(&openedTexture_))) || !openedTexture_) {
       return false;
     }
     openedTexture_.As(&openedMutex_);
@@ -249,10 +255,15 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   }
 
   // BGRA (shared) -> NV12 (encode target) on the GPU via the driver's video
-  // processor. Acquires the keyed mutex (key 0), releases it back (key 1).
+  // processor. Acquires the keyed mutex (key 1) held by the producer, then releases
+  // key 0 for it to continue rendering.
   bool convertToNv12(const std::string& hex) {
     if (!ensureOpened(hex) || !openedMutex_) return false;
-    if (openedMutex_->AcquireSync(0, 4) != S_OK) return false;  // producer holds it; skip
+    // Wait up to ~2 frame periods for the producer (the 60Hz render thread) to
+    // release key 1. A 4ms wait missed the 16ms production cadence on almost
+    // every frame, so most converts timed out, wasted the MFT's input slot and
+    // starved the encoder to ~2fps. Bounded so stop() is never blocked for long.
+    if (openedMutex_->AcquireSync(1, 34) != S_OK) return false;
     bool ok = false;
     do {
       D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
@@ -276,7 +287,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       stream.pInputSurface = inView.Get();
       ok = SUCCEEDED(videoContext_->VideoProcessorBlt(videoProcessor_.Get(), outView.Get(), 0, 1, &stream));
     } while (false);
-    openedMutex_->ReleaseSync(1);
+    openedMutex_->ReleaseSync(0);
     return ok;
   }
 
@@ -320,10 +331,14 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return;
       if (FAILED(hr)) return;
       ComPtr<IMFSample> produced;
-      produced.Attach(out.pSample);
+      if (mftAllocates) produced.Attach(out.pSample);
+      else produced = sample;
       if (out.pEvents) out.pEvents->Release();
-      if (!produced) continue;
+      if (!produced) return;
       emit(produced.Get());
+      // Async MFTs issue one HaveOutput event per output sample. Do not drain
+      // ahead of those events as with a synchronous transform.
+      return;
     }
   }
 
@@ -342,6 +357,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     chunk.size = len;
     chunk.keyframe = clean != 0;
     chunk.frameNumber = hns * (std::max)(1, config_.fps) / 10000000LL;
+    if (!firstEmitLogged_) {
+      firstEmitLogged_ = true;
+      ::corevideo::core::nativeLogf("[gpu-encode] first output chunk size=%zu keyframe=%d\n", chunk.size,
+                                   chunk.keyframe ? 1 : 0);
+    }
     if (sink_) sink_(chunk);
     buffer->Unlock();
   }
@@ -357,26 +377,60 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       MediaEventType type = MEUnknown;
       event->GetType(&type);
       if (type == METransformNeedInput) {
-        GpuVideoEncoderFrame frame;
-        bool have = false;
-        {
-          std::unique_lock<std::mutex> lock(queueMutex_);
-          queueCv_.wait_for(lock, std::chrono::milliseconds(20),
-                            [this] { return hasPending_ || !running_.load(); });
-          if (hasPending_) {
-            frame = pending_;
-            hasPending_ = false;
-            have = true;
-          }
-        }
-        if (!running_.load()) break;
-        if (have) {
-          if (convertToNv12(frame.sharedHandleHex)) {
-            if (!processInput(frame.frameNumber)) {
-              ::corevideo::core::nativeLogf("[gpu-encode] ProcessInput failed; encoder unhealthy\n");
-              healthy_.store(false);
-              break;
+        // A NeedInput event grants an input credit; a missing texture or mutex
+        // timeout does not consume it. Retain it until ProcessInput succeeds.
+        // Dropping credits eventually starves an async MFT permanently.
+        while (running_.load()) {
+          std::string handle;
+          int64_t frameNumber = 0;
+          bool have = false;
+          {
+            std::unique_lock<std::mutex> lock(queueMutex_);
+            // Only wait during startup, before the first frame ever arrives. Once we
+            // have a handle we take the latest immediately: the per-NeedInput wait
+            // used to serialize with the mutex wait (~20ms + ~16ms) and halved the
+            // encode rate to ~30fps. The keyed mutex does the pacing.
+            if (!haveHandle_) {
+              queueCv_.wait_for(lock, std::chrono::milliseconds(20),
+                                [this] { return haveHandle_ || !running_.load(); });
             }
+            if (haveHandle_) {
+              handle = latestHandle_;
+              frameNumber = latestFrameNumber_;
+              have = true;
+            }
+          }
+          if (!running_.load()) break;
+          if (have) {
+            if (convertToNv12(handle)) {
+              if (!processInput(frameNumber)) {
+                const HRESULT removed = deviceRemovedReason();
+                if (removed != S_OK) {
+                  ::corevideo::core::nativeLogf(
+                      "[gpu-encode] device lost (0x%08lx) during encode; encoder unhealthy -> supervisor\n",
+                      static_cast<unsigned long>(removed));
+                } else {
+                  ::corevideo::core::nativeLogf("[gpu-encode] ProcessInput failed; encoder unhealthy\n");
+                }
+                healthy_.store(false);
+                return;
+              }
+              break;  // this input credit was consumed by ProcessInput
+            } else if (const HRESULT removed = deviceRemovedReason(); removed != S_OK) {
+              // A failed BGRA->NV12 blit with a removed device is a device loss, not
+              // a transient miss: retire so submit() fails and the supervisor restarts
+              // the sender, which re-decides the encode path against the new device.
+              ::corevideo::core::nativeLogf(
+                  "[gpu-encode] device lost (0x%08lx) during convert; encoder unhealthy -> supervisor\n",
+                  static_cast<unsigned long>(removed));
+              healthy_.store(false);
+              return;
+            }
+            // An invalid/stale handle can fail before AcquireSync has waited.
+            // Bound retry CPU usage until the producer publishes a usable one.
+            std::unique_lock<std::mutex> retryLock(queueMutex_);
+            queueCv_.wait_for(retryLock, std::chrono::milliseconds(2),
+                              [this] { return !running_.load(); });
           }
         }
       } else if (type == METransformHaveOutput) {
@@ -390,6 +444,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::atomic<bool> running_{false};
   std::atomic<bool> healthy_{false};
   bool mfStarted_ = false;
+  bool firstEmitLogged_ = false;
 
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> context_;
@@ -408,8 +463,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::thread thread_;
   std::mutex queueMutex_;
   std::condition_variable queueCv_;
-  GpuVideoEncoderFrame pending_{};
-  bool hasPending_ = false;
+  std::string latestHandle_;
+  int64_t latestFrameNumber_ = 0;
+  bool haveHandle_ = false;
 };
 
 }  // namespace
