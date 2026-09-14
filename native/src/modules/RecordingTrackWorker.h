@@ -30,10 +30,12 @@ class RecordingTrackWorker {
     std::string error;
   };
   RecordingTrackWorker(std::function<void()> initialize, std::function<void()> finalize,
-                       size_t videoCapacity = 32, size_t audioCapacity = 96)
+                       size_t videoCapacity = 32, size_t audioCapacity = 96, size_t startupVideoCapacity = 0)
       : initialize_(std::move(initialize)), finalize_(std::move(finalize)),
         videoCapacity_(std::max(size_t{1}, videoCapacity)),
         audioCapacity_(std::max(size_t{1}, audioCapacity)),
+        startupVideoCapacity_(std::max(videoCapacity_, startupVideoCapacity)),
+        startupFinished_(startupVideoCapacity == 0),
         thread_([this] { run(); }) {}
   ~RecordingTrackWorker() { close(); join(); }
   RecordingTrackWorker(const RecordingTrackWorker&) = delete;
@@ -43,7 +45,12 @@ class RecordingTrackWorker {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) return false;
     auto& pending = kind == Kind::Video ? evidence_.queuedVideo : evidence_.queuedAudio;
-    if (pending >= (kind == Kind::Video ? videoCapacity_ : audioCapacity_)) {
+    // Opening eight 1080p codecs can exceed one second. Retain a bounded
+    // startup burst until the first real frame is written and its backlog
+    // drains, then return to the smaller steady-state budget.
+    if (startupFinished_ && evidence_.queuedVideo <= videoCapacity_) steady_ = true;
+    const auto videoLimit = steady_ ? videoCapacity_ : startupVideoCapacity_;
+    if (pending >= (kind == Kind::Video ? videoLimit : audioCapacity_)) {
       ++(kind == Kind::Video ? evidence_.droppedVideo : evidence_.droppedAudio);
       return false;
     }
@@ -54,6 +61,7 @@ class RecordingTrackWorker {
     return true;
   }
   void close() { std::lock_guard<std::mutex> lock(mutex_); closed_ = true; cv_.notify_one(); }
+  void finishStartup() { std::lock_guard<std::mutex> lock(mutex_); startupFinished_ = true; }
   void join() { if (thread_.joinable()) thread_.join(); }
   Evidence evidence() const { std::lock_guard<std::mutex> lock(mutex_); return evidence_; }
 
@@ -91,12 +99,13 @@ class RecordingTrackWorker {
   }
   struct Item { Kind kind; std::function<void()> work; };
   std::function<void()> initialize_, finalize_;
-  size_t videoCapacity_, audioCapacity_;
+  size_t videoCapacity_, audioCapacity_, startupVideoCapacity_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::deque<Item> queue_;
   Evidence evidence_;
   bool closed_ = false;
+  bool startupFinished_ = false, steady_ = false;
   std::thread thread_;
 };
 } // namespace corevideo::modules

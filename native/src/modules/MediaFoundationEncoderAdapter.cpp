@@ -1194,6 +1194,7 @@ void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
   }
   if (ok) {
     ++entry.videoFrameCount;
+    if (entry.worker && entry.videoFrameCount == 1) entry.worker->finishStartup();
   } else if (entry.warning.empty()) {
     entry.warning = "ISO writer dropped video for " + entry.displayName + " (" + src.sourceId +
                     "): " + error + ".";
@@ -1868,7 +1869,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // File encoding may stall for hundreds of milliseconds even after startup.
     // Retain at most 32 source pictures (~95 MiB of 1080p I420) per track;
     // this absorbs measured MFT jitter without delaying Program delivery.
-    }, 32, 96);
+    }, 32, 96, 96);
   }
 
   void refreshIsoStreams() {

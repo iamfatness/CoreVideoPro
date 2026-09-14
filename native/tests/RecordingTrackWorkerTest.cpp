@@ -58,3 +58,34 @@ TEST(RecordingTrackWorker, WriteExceptionIsReportedAndFinalizationStillRuns) {
   EXPECT_TRUE(finalized);
   EXPECT_EQ(worker.evidence().error, "disk failure");
 }
+
+TEST(RecordingTrackWorker, StartupBurstDrainsBeforeTheSteadyLimitTakesOver) {
+  std::promise<void> releaseStartup, startupEntered, startupDrained;
+  auto startupGate = releaseStartup.get_future().share();
+  RecordingTrackWorker worker([&] { startupEntered.set_value(); startupGate.wait(); }, [] {}, 2, 2, 4);
+  startupEntered.get_future().wait();
+  int count = 0;
+  for (int i=0;i<4;++i) {
+    EXPECT_TRUE(worker.post(RecordingTrackWorker::Kind::Video, [&, i] {
+      ++count;
+      if(i==0) worker.finishStartup();
+      if(i==3) startupDrained.set_value();
+    }));
+  }
+  EXPECT_FALSE(worker.post(RecordingTrackWorker::Kind::Video, [] {}));
+  releaseStartup.set_value();
+  const auto drained = startupDrained.get_future().wait_for(std::chrono::seconds(2));
+  std::promise<void> steadyEntered, releaseSteady;
+  auto steadyGate = releaseSteady.get_future().share();
+  worker.post(RecordingTrackWorker::Kind::Video, [&] { steadyEntered.set_value(); steadyGate.wait(); });
+  const auto entered = steadyEntered.get_future().wait_for(std::chrono::seconds(2));
+  const bool one = worker.post(RecordingTrackWorker::Kind::Video, [&] { ++count; });
+  const bool two = worker.post(RecordingTrackWorker::Kind::Video, [&] { ++count; });
+  const bool overflow = worker.post(RecordingTrackWorker::Kind::Video, [] {});
+  worker.close(); releaseSteady.set_value(); worker.join();
+  EXPECT_EQ(drained, std::future_status::ready);
+  EXPECT_EQ(entered, std::future_status::ready);
+  EXPECT_TRUE(one); EXPECT_TRUE(two); EXPECT_FALSE(overflow);
+  EXPECT_EQ(count, 6);
+  EXPECT_EQ(worker.evidence().droppedVideo, 2u);
+}
