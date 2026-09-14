@@ -900,9 +900,6 @@ rpc::Json MediaCore::sessionState() const {
           {"workTotalNs", static_cast<double>(videoOutputWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
           {"workMaximumNs", static_cast<double>(videoOutputWorkerWorkMaximumNs_.load(std::memory_order_relaxed))}}}});
   const auto zoomCapture = zoomSnapshot();
-  if (const auto* authority = zoomCapture.get("sourceAuthority")) {
-    state.emplace("sourceAuthority", *authority);
-  }
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
   }
@@ -2190,12 +2187,6 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode");
       state.participantId = route.getString("participantId");
-      state.exactSource = parseExactRouteSource(route);
-      if (state.exactSource) {
-        sceneValidationWarnings_.push_back(state.exactSource->reference
-            ? "Exact source route is missing frame-bound identity; its slot remains empty."
-            : "Exact source route reference is invalid; its slot remains empty.");
-      }
       state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
@@ -3418,7 +3409,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode", "fixed");
       state.participantId = route.getString("participantId");
-      state.exactSource = parseExactRouteSource(route);
       state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
@@ -3454,10 +3444,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       }
       if (state.routeId.empty()) {
         state.routeId = "preview-route-" + std::to_string(routeIndex);
-      }
-      if (const auto* exact = route.get("exactSourceRef")) {
-        const auto encoded = exact->stringify();
-        signature += "exact:" + std::to_string(encoded.size()) + ":" + encoded;
       }
       signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
                    state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
@@ -5524,50 +5510,13 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
-      // NAMED FIELDS, NOT POSITIONAL. Both sides of this merge built this input
-      // positionally and DISAGREED on slot 6 - this branch passed a positional
-      // fallback participant, `main` passes the directed speaker - so a positional
-      // resolution would have bound the speaker into a dead field and silently
-      // broken every follow-speaker route. Assigning by name is why adding a
-      // field to RouteSourcePolicyInput can never do that again.
-      RouteSourcePolicyInput policyInput{};
-      policyInput.mode = route.mode;
-      policyInput.mediaAssetId = route.mediaAssetId;
-      policyInput.mediaAssetPath = route.mediaAssetPath;
-      policyInput.captureDeviceId = route.captureDeviceId;
-      policyInput.participantId = route.participantId;
-      policyInput.exactSource = route.exactSource ? &*route.exactSource : nullptr;
-      // No producer attaches an exact source token to a VideoFrame yet.
-      policyInput.frameIdentity = nullptr;
-      policyInput.directedSpeakerParticipantId = directedSpeaker;
-      // positionalFallbackParticipantId is deliberately LEFT UNSET: #480 retired
-      // the positional fallback outright ("a route with no source id renders
-      // BLANK"), and `main` deleted the variable this branch passed here, so the
-      // old call site no longer even compiles. The newer owner ruling wins.
-      const auto binding = resolveRouteSource(policyInput);
-      // An exact-source REFUSAL is opaque black, and it outranks the #480 blank
-      // below. The two answer different questions and both must stand:
-      //   #480  "no source is configured"      -> blank, transparent, opacity 0
-      //   here  "an exact source was DEMANDED   -> opaque black
-      //          and could not be honoured"
-      // Transparent would let whatever else is composited show through, and the
-      // whole point of an exact-source refusal is that the WRONG guest must not
-      // appear in that slot. Pinned by MediaCoreCommand.AllExactMissingSlots-
-      // RemainAnExplicitBlackPlanDespiteParticipantPixels, which probes the
-      // rendered PIXEL, not the plan. Missing/Rejected can only arise when
-      // exactSource is non-null, so this changes nothing for routes on `main`.
-      const bool exactSourceRefused =
-          binding.status == RouteSourceBinding::Status::Missing ||
-          binding.status == RouteSourceBinding::Status::Rejected;
-      if (exactSourceRefused) {
-        layer.hasFillColor = true;
-        layer.fillColor = "#000000";
-      }
+      const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
+          route.captureDeviceId, route.participantId, directedSpeaker});
       layer.kind = binding.kind;
       layer.sourceId = binding.sourceId;
       layer.participantId = binding.participantId;
       layer.order = videoLayerIndex;
-      if (!route.exactSource && !route.mediaAssetId.empty() && !route.mediaAssetPath.empty()) {
+      if (!route.mediaAssetId.empty() && !route.mediaAssetPath.empty()) {
         layer.mediaAssetId = route.mediaAssetId;
         layer.mediaAssetName = route.mediaAssetName;
         layer.mediaAssetKind = route.mediaAssetKind;
@@ -5598,8 +5547,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.colorGrade = route.colorGrade;
       layer.hasChromaKey = route.hasChromaKey;
       layer.chromaKey = route.chromaKey;
-      if (!exactSourceRefused &&
-          binding.sourceId.empty() && binding.participantId.empty() && route.mediaAssetId.empty()) {
+      if (binding.sourceId.empty() && binding.participantId.empty() && route.mediaAssetId.empty()) {
         // #480: a route with no source renders BLANK — a fully transparent fill.
         // An unbound layer would paint the default grey, a bound-but-frameless
         // one a colour slab, and the old positional fallback a random source,
@@ -6039,7 +5987,25 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     markStage(s_subFetchUs, 0);
     for (const auto& frame : decoded) {
-      realZoom->ingestVideoFrame(frame);
+      if (frame.hasI420()) {
+        // GPU path: carry the raw I420 planes through to the compositor, which
+        // converts to RGB in-shader (no CPU per-pixel I420->BGRA convert).
+        realZoom->ingestI420Frame(
+            frame.participantId,
+            frame.i420,  // zero-copy: share the decoded buffer, don't memcpy it
+            frame.i420Width,
+            frame.i420Height,
+            frame.frameId,
+            frame.timestampMs);
+      } else if (frame.hasPixels()) {
+        realZoom->ingestFrame(
+            frame.participantId,
+            frame.pixels->data(),
+            frame.pixelWidth,
+            frame.pixelHeight,
+            frame.frameId,
+            frame.timestampMs);
+      }
     }
     // Split the per-frame store calls from the destruction of `decoded` (which
     // releases each shared I420 buffer) so a long tap says which one it is.

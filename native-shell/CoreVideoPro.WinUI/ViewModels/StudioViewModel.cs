@@ -9238,8 +9238,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MediaAssetPath: mediaAsset?.FilePath,
             MediaPlaybackKey: mediaPlayback?.MediaPlaybackKey,
             MediaAssetPlaying: mediaPlayback?.Playing == true,
-            MediaAssetLoop: mediaAsset is not null && MediaRoutePlaybackService.IsLoopingAsset(mediaAsset),
-            ExactSourceRef: route.ExactSource);
+            MediaAssetLoop: mediaAsset is not null && MediaRoutePlaybackService.IsLoopingAsset(mediaAsset));
     }
 
     private MediaCoreCaptureAudioSourceWire BuildCaptureAudioSourceWire(CaptureDevice captureDevice)

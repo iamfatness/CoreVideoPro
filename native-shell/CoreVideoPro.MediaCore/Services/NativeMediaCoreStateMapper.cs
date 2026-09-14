@@ -197,7 +197,6 @@ public static class NativeMediaCoreStateMapper
             BreakoutRoomId = wire.BreakoutRoomId ?? baseSnapshot.BreakoutRoomId,
             BreakoutRoomName = wire.BreakoutRoomName ?? baseSnapshot.BreakoutRoomName,
             ActiveSpeakerId = wire.ActiveSpeakerId ?? baseSnapshot.ActiveSpeakerId,
-            SourceAuthority = wire.SourceAuthority?.Validated(),
             Participants = wire.Participants is { Count: > 0 } participants
                 ? participants
                 : baseSnapshot.Participants
