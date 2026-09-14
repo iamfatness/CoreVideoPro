@@ -46,6 +46,17 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 
 ## Tier 0 — owner actions (start the clocks)
 
+**New observations, awaiting owner ranking (2026-09-14):**
+
+- [#526](https://github.com/iamfatness/CoreVideoPro/issues/526): intermittent Program-buffer
+  delivery failures. PR #528 moves startup resource allocation before the render clock
+  and adds failure-stage diagnostics. The earlier steady-state failures remain unresolved.
+- [#529](https://github.com/iamfatness/CoreVideoPro/issues/529): ISO recording queue loses
+  video during simultaneous 1080p60 streaming, including a stationary eight-person wall.
+  Files finalize, but completion/healthy status does not establish loss-free recording.
+
+These entries record findings; they do not change the owner-approved order below.
+
 | ID | Item | Clause | Why it is first |
 |---|---|---|---|
 | [T0.1](https://github.com/iamfatness/CoreVideoPro/issues/423) | Buy the code-signing certificate (Authenticode / Trusted Signing) | 4 | `release.yml` already refuses to ship unsigned; the 09-08 beta shipped unsigned (SmartScreen). Org validation takes weeks — the calendar critical path. |
