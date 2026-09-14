@@ -12,6 +12,11 @@ SourceRegistry::Snapshot roster() {
   r.persons = {{{"person-a"}, "Same name", 2}, {{"person-b"}, "Same name", 1}};
   for (const auto& id : {"a", "b", "c"}) {
     SourceRegistry::Source s;
+    // Match a registered capture source: these fields stay nullopt only for
+    // composed sources, so the fixture must declare camera availability.
+    s.availability = SourceRegistry::Availability::Available;
+    s.subscriptionRequested = false;
+    s.subscriptionObserved = false;
     s.token = {{id}, {std::string("instance-") + id}, "process-1", 3};
     s.personId = PersonId{id == std::string("a") ? "person-a" : "person-b"};
     s.personGeneration = id == std::string("a") ? 2 : 1;
