@@ -29,6 +29,8 @@ class ControllableEncoder final : public IEncoderSink {
   // submitting at 60Hz.
   std::shared_ptr<std::atomic<bool>> blockStart = std::make_shared<std::atomic<bool>>(false);
   std::atomic<bool> startEntered{false};
+  std::atomic<bool> configureEntered{false};
+  std::shared_ptr<std::atomic<bool>> blockConfigure = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<bool>> blockSubmit = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<bool>> blockStop = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<bool>> blockIsoSubmit = std::make_shared<std::atomic<bool>>(false);
@@ -56,6 +58,8 @@ class ControllableEncoder final : public IEncoderSink {
   ~ControllableEncoder() override { destroyed->store(true); }
 
   void configureRecording(const RecordingSessionRequest& request) override {
+    configureEntered.store(true);
+    while (blockConfigure->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     std::lock_guard<std::mutex> lock(mutex_);
     session_.recordingSessionId = request.sessionId;
   }
@@ -294,7 +298,9 @@ TEST(AsyncEncoderSink, PassesFramesAndAudioThroughInOrderWhenNotOverloaded) {
   const auto started = sink.start({"recording"}, {});
   EXPECT_FALSE(started.active);
   ASSERT_TRUE(started.lifecycle);
-  EXPECT_EQ(started.lifecycle->state, "requested");
+  // The asynchronous open may finish before start() reads the snapshot. Neither
+  // accepted nor opened is producing until the first frame is written.
+  EXPECT_TRUE(started.lifecycle->state == "requested" || started.lifecycle->state == "preparing");
 
   for (int i = 1; i <= 5; ++i) {
     sink.submit(videoFrame(i));
@@ -506,6 +512,42 @@ TEST(AsyncEncoderSink, StartupSheddingIsCountedApartFromSteadyStateLoss) {
   EXPECT_EQ(sink.startupDroppedVideoFrames(), startupAfterOpen)
       << "and must not be attributed to startup";
   raw->blockSubmit->store(false);
+}
+
+TEST(AsyncEncoderSink, PreviousRecordingProgressCannotEndTheNextStartupWindow) {
+  AsyncEncoderSink::Options options;
+  options.maxVideoQueue = 2;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+
+  // Hold Configure until the producer has opened the next generation. Its
+  // retained old frame count must not close the new take's startup window.
+  raw->blockConfigure->store(true);
+  RecordingSessionRequest next;
+  next.sessionId = "second-take";
+  sink.configureRecording(next);
+  raw->startEntered.store(false);
+  raw->blockStart->store(true);
+  sink.start({"recording"}, {});
+  raw->blockConfigure->store(false);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->startEntered.load() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  const bool entered = raw->startEntered.load();
+  for (int frame = 2; frame <= 11; ++frame) sink.submit(videoFrame(frame));
+  const auto startup = sink.startupDroppedVideoFrames();
+  const auto steady = sink.droppedVideoFrames();
+  raw->blockStart->store(false);
+  ASSERT_TRUE(entered);
+  EXPECT_EQ(startup, 8u);
+  EXPECT_EQ(steady, 0u);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
 }
 
 // ISO-3 (fidelity): framesWritten on an ISO stream is an APPEND count, so nothing

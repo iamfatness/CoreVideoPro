@@ -614,7 +614,8 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       std::lock_guard<std::mutex> queueLock(state->queueMutex);
       auto& evidence = state->evidence;
       const auto now = evidenceNowMs();
-      if (state->videoStartupPhase && (madeProgress || !failure.empty())) {
+      if (item.generation == state->generation && item.kind != Kind::Configure &&
+          state->videoStartupPhase && (madeProgress || !failure.empty())) {
         // The head of the show is over the moment the writer commits its first
         // real video frame (which is also when the lifecycle turns "producing"), or
         // gives up. Deliberately NOT "when Start was applied": the synchronous

@@ -1802,7 +1802,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     }, [&entry] {
       finalizeIsoTrack(entry);
       if (entry.comInitialized) CoUninitialize();
-    }, 6, 96, 32); // Bounded startup preroll while this track opens its codec; six frames thereafter.
+    // File encoding may stall for hundreds of milliseconds even after startup.
+    // Retain at most 32 source pictures (~95 MiB of 1080p I420) per track;
+    // this absorbs measured MFT jitter without delaying Program delivery.
+    }, 32, 96);
   }
 
   void refreshIsoStreams() {

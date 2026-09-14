@@ -30,12 +30,10 @@ class RecordingTrackWorker {
     std::string error;
   };
   RecordingTrackWorker(std::function<void()> initialize, std::function<void()> finalize,
-                       size_t videoCapacity = 6, size_t audioCapacity = 96,
-                       size_t startupVideoCapacity = 0)
+                       size_t videoCapacity = 32, size_t audioCapacity = 96)
       : initialize_(std::move(initialize)), finalize_(std::move(finalize)),
         videoCapacity_(std::max(size_t{1}, videoCapacity)),
         audioCapacity_(std::max(size_t{1}, audioCapacity)),
-        startupVideoCapacity_(std::max(videoCapacity_, startupVideoCapacity)),
         thread_([this] { run(); }) {}
   ~RecordingTrackWorker() { close(); join(); }
   RecordingTrackWorker(const RecordingTrackWorker&) = delete;
@@ -45,12 +43,7 @@ class RecordingTrackWorker {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) return false;
     auto& pending = kind == Kind::Video ? evidence_.queuedVideo : evidence_.queuedAudio;
-    // MFT startup includes the first writes, not just creation. Keep the bounded
-    // preroll budget for one second, then shrink only after its backlog drains.
-    if (!steady_ && std::chrono::steady_clock::now() >= startupEnds_ &&
-        evidence_.queuedVideo <= videoCapacity_) steady_ = true;
-    const auto videoLimit = steady_ ? videoCapacity_ : startupVideoCapacity_;
-    if (pending >= (kind == Kind::Video ? videoLimit : audioCapacity_)) {
+    if (pending >= (kind == Kind::Video ? videoCapacity_ : audioCapacity_)) {
       ++(kind == Kind::Video ? evidence_.droppedVideo : evidence_.droppedAudio);
       return false;
     }
@@ -98,14 +91,12 @@ class RecordingTrackWorker {
   }
   struct Item { Kind kind; std::function<void()> work; };
   std::function<void()> initialize_, finalize_;
-  size_t videoCapacity_, audioCapacity_, startupVideoCapacity_;
+  size_t videoCapacity_, audioCapacity_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::deque<Item> queue_;
   Evidence evidence_;
   bool closed_ = false;
-  bool steady_ = false;
-  std::chrono::steady_clock::time_point startupEnds_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
   std::thread thread_;
 };
 } // namespace corevideo::modules
