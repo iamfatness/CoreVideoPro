@@ -272,7 +272,6 @@ public sealed class NativeMediaCoreAudioRoutingMatrix
 
 public sealed class RawCaptureSnapshot
 {
-    public NativeSourceAuthority? SourceAuthority { get; init; }
     public required string MeetingState { get; init; }
     public IReadOnlyList<RawParticipantEvent> Participants { get; init; } = [];
     public string? ActiveSpeakerId { get; init; }
@@ -309,7 +308,6 @@ public sealed class RawParticipantEvent
 
 public sealed class NativeMediaCoreWireState
 {
-    public NativeSourceAuthority? SourceAuthority { get; init; }
     public System.Text.Json.JsonElement? ProgramBuffer { get; init; }
     public NativeMediaCoreProgramFrame? ProgramFrame { get; init; }
     public NativeMediaCorePreviewScene? PreviewScene { get; init; }

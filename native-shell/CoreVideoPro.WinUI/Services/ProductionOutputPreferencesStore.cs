@@ -252,7 +252,6 @@ public sealed class PersistedDynamicGallerySettings
 
 public sealed class PersistedSceneRoute
 {
-    public ExactSourceReference? ExactSource { get; init; }
     public string Id { get; set; } = string.Empty;
     public string Mode { get; set; } = "fixed";      // wire strings (SceneRoutingService)
     public string AudioRole { get; set; } = "mix";
@@ -377,7 +376,7 @@ public static class ProductionOutputPreferencesSerializer
 
             return preferences;
         }
-        catch (Exception ex) when (ex is JsonException or ArgumentException)
+        catch (JsonException)
         {
             return null;
         }

@@ -46,7 +46,6 @@ public static class ZoomCaptureSnapshotMerger
         return baseSnapshot with
         {
             MeetingState = meetingState,
-            SourceAuthority = CoreProtocolParser.AuthorityForMeeting(capture.SourceAuthority, capture.MeetingState),
             ActiveSpeakerId = inMeeting ? capture.ActiveSpeakerId : null,
             Participants = inMeeting ? capture.Participants : [],
             SourceSnapshot = sourceSnapshot,
