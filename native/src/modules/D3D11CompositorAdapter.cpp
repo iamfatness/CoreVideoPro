@@ -121,6 +121,12 @@ class D3D11Compositor final : public ICompositor {
 
   std::string rendererName() const override { return "d3d11"; }
   void configureProgramBuffer(int frames) override { requestedProgramFrames_.store(frames == 2 ? 2 : 3); }
+  void prepareProgramBuffer(int width, int height) override {
+    // Called before the display worker establishes its cadence anchor. Device,
+    // texture and shader creation must not consume slot zero's delivery lead.
+    if (width > 0 && height > 0 && ensureRenderTarget(width, height))
+      (void)ensureProgramBuffer(width, height);
+  }
   int programBufferFrames() const override { return requestedProgramFrames_.load(); }
   void setProgramProductionTiming(int64_t slot, int64_t anchorNs) override {
     programProductionSlot_ = slot; programProductionAnchorNs_ = anchorNs;
@@ -237,17 +243,7 @@ class D3D11Compositor final : public ICompositor {
     }
     const auto evictUs = stageUs();
     if (buffered) {
-      auto buffer = currentProgramBuffer();
-      if (!buffer || !buffer->dimensions(frame.width, frame.height, programBufferFrames())) {
-        buffer = std::make_shared<D3DProgramBuffer>(device_.get(), frame.width, frame.height, programBufferFrames(), ++programBufferGeneration_,
-            [this](const ProgramFrame& delivered) {
-              if (!delivered.programNv12Shared) return;
-              std::lock_guard<std::mutex> lock(vcamSinkMutex_);
-              if (vcamSink_) vcamSink_(delivered.programNv12Shared, delivered.programNv12Width, delivered.programNv12Height);
-            });
-        std::shared_ptr<D3DProgramBuffer> retired;
-        { std::lock_guard<std::mutex> lock(programBufferMutex_); retired = std::exchange(programBuffer_, buffer); }
-      }
+      auto buffer = ensureProgramBuffer(frame.width, frame.height);
       frame.producedAt100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
       frame.productionSlot = programProductionSlot_; frame.productionAnchorNs = programProductionAnchorNs_;
       frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
@@ -435,6 +431,19 @@ class D3D11Compositor final : public ICompositor {
   };
   std::shared_ptr<D3DProgramBuffer> currentProgramBuffer() const {
     std::lock_guard<std::mutex> lock(programBufferMutex_); return programBuffer_;
+  }
+  std::shared_ptr<D3DProgramBuffer> ensureProgramBuffer(int width, int height) {
+    auto buffer = currentProgramBuffer();
+    if (buffer && buffer->dimensions(width, height, programBufferFrames())) return buffer;
+    buffer = std::make_shared<D3DProgramBuffer>(device_.get(), width, height, programBufferFrames(), ++programBufferGeneration_,
+        [this](const ProgramFrame& delivered) {
+          if (!delivered.programNv12Shared) return;
+          std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+          if (vcamSink_) vcamSink_(delivered.programNv12Shared, delivered.programNv12Width, delivered.programNv12Height);
+        });
+    std::shared_ptr<D3DProgramBuffer> retired;
+    { std::lock_guard<std::mutex> lock(programBufferMutex_); retired = std::exchange(programBuffer_, buffer); }
+    return buffer;
   }
   ID3D11ShaderResourceView* retainedProgramForMultiview() {
     auto buffer = currentProgramBuffer();

@@ -7,6 +7,7 @@
 #include "modules/IsoEncoderAdmission.h"
 #include "modules/IsoEncoderPlacement.h"
 #include "modules/RecordingPtsClock.h"
+#include "modules/RecordingTrackWorker.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -16,10 +17,12 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include "modules/D3DIsoFrameConformer.h"
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <mftransform.h>
 #include <objbase.h>
 #include <wrl/client.h>
 
@@ -114,12 +117,12 @@ void i420ToNv12(const uint8_t* i420, int w, int h, std::vector<uint8_t>& out) {
 // uniform AAC layout). Mono → duplicated L/R; stereo → passed through; >2ch →
 // first two channels. `out` is resized to frameCount*2. Runs on the async
 // encoder writer thread (off every lock).
-void toStereo(const std::vector<float>& in, int channels, int frameCount, std::vector<float>& out) {
+void toStereo(const std::vector<float>& in, int channels, int frameCount, std::vector<float>& out, int skipFrames = 0) {
   out.resize(static_cast<size_t>(frameCount) * 2);
   const int ch = channels > 0 ? channels : 1;
   const size_t have = in.size();
   for (int i = 0; i < frameCount; ++i) {
-    const size_t base = static_cast<size_t>(i) * ch;
+    const size_t base = (static_cast<size_t>(i) + skipFrames) * ch;
     float l = 0.0f;
     float r = 0.0f;
     if (base < have) {
@@ -209,7 +212,7 @@ class Mp4Writer {
  public:
   bool open(const std::filesystem::path& path, int width, int height, int fps, int bitrateMbps,
             const std::string& codec, std::string& errorOut, VideoInput videoInput = VideoInput::Bgra,
-            bool enableHardwareTransforms = true) {
+            bool enableHardwareTransforms = true, bool variableVideoDurations = false) {
     // RESET ALL per-session state before configuring the new sink writer. This
     // writer object is REUSED across recording sessions (every encoder start()
     // reopens it), and stream indices / audioConfigured_ describe the PREVIOUS
@@ -227,6 +230,8 @@ class Mp4Writer {
     audioOutputType_.Reset();
     audioInputType_.Reset();
     enableHardwareTransforms_ = enableHardwareTransforms;
+    variableVideoDurations_ = variableVideoDurations;
+    pendingVideoSample_.Reset();
     open_ = false;
     writing_ = false;
     audioConfigured_ = false;
@@ -367,6 +372,28 @@ class Mp4Writer {
       return false;
     }
     writing_ = true;
+    sampleWriteUs_ = sampleWriteMaxUs_ = lengthReadUs_ = 0;
+    nextWriterDiagnostic_ = std::chrono::steady_clock::now();
+    ComPtr<IMFSinkWriterEx> extended;
+    if (SUCCEEDED(sinkWriter_.As(&extended))) {
+      for (DWORD index = 0; index < 8; ++index) {
+        GUID category{};
+        ComPtr<IMFTransform> transform;
+        if (FAILED(extended->GetTransformForStream(videoStreamIndex_, index, &category, &transform))) break;
+        ComPtr<IMFAttributes> attributes;
+        GUID clsid{}; WCHAR name[256]{}; UINT32 length = 0;
+        if (SUCCEEDED(transform->GetAttributes(&attributes))) {
+          attributes->GetGUID(MFT_TRANSFORM_CLSID_Attribute, &clsid);
+          attributes->GetString(MFT_FRIENDLY_NAME_Attribute, name, 256, &length);
+        }
+        WCHAR id[40]{}; StringFromGUID2(clsid, id, 40);
+        char idUtf8[80]{}, nameUtf8[768]{};
+        WideCharToMultiByte(CP_UTF8, 0, id, -1, idUtf8, sizeof(idUtf8), nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, name, -1, nameUtf8, sizeof(nameUtf8), nullptr, nullptr);
+        ::corevideo::core::nativeLogf("[recording-transform] file=%s index=%lu clsid=%s name=%s\n",
+            path_.filename().string().c_str(), static_cast<unsigned long>(index), idUtf8, nameUtf8);
+      }
+    }
     return true;
   }
 
@@ -438,7 +465,7 @@ class Mp4Writer {
       preroll->AddBuffer(black.Get());
       preroll->SetSampleTime(0);
       preroll->SetSampleDuration(frameDuration100ns_);
-      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      result = writeVideoSample(preroll.Get());
       if (FAILED(result)) {
         errorOut = "write video pre-roll sample: " + hresultString(result);
         return false;
@@ -457,12 +484,12 @@ class Mp4Writer {
     // Shared-epoch wall-clock PTS from RecordingPtsClock (spec 4.3): frames
     // carry the time they were actually composed, so the video timeline stays
     // aligned with the sample-counted audio track instead of drifting at
-    // (muxed fps / nominal fps) of real time. Nominal duration is fine — the
-    // container's frame timing comes from the PTS deltas (VFR MP4).
+    // (muxed fps / nominal fps) of real time. The ISO sample writer replaces
+    // nominal durations with capture PTS deltas before fragmented muxing.
     sample->SetSampleTime(pts100ns);
     sample->SetSampleDuration(frameDuration100ns_);
 
-    result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+    result = writeVideoSample(sample.Get());
     if (FAILED(result)) {
       errorOut = "write video sample: " + hresultString(result);
       return false;
@@ -559,7 +586,7 @@ class Mp4Writer {
       preroll->AddBuffer(black.Get());
       preroll->SetSampleTime(0);
       preroll->SetSampleDuration(frameDuration100ns_);
-      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      result = writeVideoSample(preroll.Get());
       if (FAILED(result)) {
         errorOut = "write NV12 pre-roll sample: " + hresultString(result);
         return false;
@@ -578,7 +605,7 @@ class Mp4Writer {
     sample->SetSampleTime(pts100ns);
     sample->SetSampleDuration(frameDuration100ns_);
 
-    result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+    result = writeVideoSample(sample.Get());
     if (FAILED(result)) {
       errorOut = "write NV12 sample: " + hresultString(result);
       return false;
@@ -760,7 +787,7 @@ class Mp4Writer {
       sample->AddBuffer(lastVideoBuffer_.Get());
       sample->SetSampleTime(pts);
       sample->SetSampleDuration(frameDuration100ns_);
-      result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+      result = writeVideoSample(sample.Get());
       if (FAILED(result)) {
         errorOut = "write held-tail video sample: " + hresultString(result);
         return false;
@@ -777,6 +804,7 @@ class Mp4Writer {
   bool finalize(std::string* errorOut = nullptr) {
     HRESULT finalizeResult = S_OK;
     if (writing_ && sinkWriter_) {
+      finalizeResult = flushPendingVideoSample();
       // Finalize is documented to place end-of-segment markers itself, but
       // several concurrent hardware H.264 transforms returned files whose
       // processed video timestamp lagged the last accepted input by up to one
@@ -805,11 +833,13 @@ class Mp4Writer {
                      stats.llLastTimestampReceived / 10'000'000.0,
                      stats.llLastTimestampProcessed / 10'000'000.0);
       }
-      finalizeResult = sinkWriter_->Finalize();
+      const auto closeResult = sinkWriter_->Finalize();
+      if (SUCCEEDED(finalizeResult)) finalizeResult = closeResult;
     }
     writing_ = false;
     open_ = false;
     sinkWriter_.Reset();
+    pendingVideoSample_.Reset();
     lastVideoBuffer_.Reset();
     if (mediaSink_) {
       (void)mediaSink_->Shutdown();
@@ -872,8 +902,10 @@ class Mp4Writer {
     // reported ~1 GB while the live Program file was only 9 MB and every ISO
     // file was 0 bytes, masking the actual writer failure.
     QWORD length = 0;
+    const auto begin = std::chrono::steady_clock::now();
     if (byteStream_ && SUCCEEDED(byteStream_->GetLength(&length))) {
       bytesWritten_ = static_cast<int64_t>(length);
+      lengthReadUs_ += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count();
       return;
     }
     if (!path_.empty()) {
@@ -883,6 +915,55 @@ class Mp4Writer {
         bytesWritten_ = static_cast<int64_t>(size);
       }
     }
+  }
+
+  HRESULT writeVideoSample(IMFSample* sample) {
+    if (!variableVideoDurations_) return submitVideoSample(sample);
+    // The fragmented MP4 sink does not preserve gaps after a fragment's last
+    // nominal-duration sample. Keep one real frame until the next capture PTS
+    // gives its actual duration; otherwise VFR ISOs gradually outrun their audio.
+    if (pendingVideoSample_) {
+      LONGLONG previous = 0, next = 0;
+      HRESULT hr = pendingVideoSample_->GetSampleTime(&previous);
+      if (FAILED(hr)) return hr;
+      hr = sample->GetSampleTime(&next);
+      if (FAILED(hr)) return hr;
+      if (next <= previous) return E_INVALIDARG;
+      hr = pendingVideoSample_->SetSampleDuration(next - previous);
+      if (FAILED(hr)) return hr;
+      hr = flushPendingVideoSample();
+      if (FAILED(hr)) return hr;
+    }
+    pendingVideoSample_ = sample;
+    return S_OK;
+  }
+
+  HRESULT flushPendingVideoSample() {
+    if (!pendingVideoSample_) return S_OK;
+    const auto hr = submitVideoSample(pendingVideoSample_.Get());
+    pendingVideoSample_.Reset();
+    return hr;
+  }
+
+  HRESULT submitVideoSample(IMFSample* sample) {
+    const auto begin = std::chrono::steady_clock::now();
+    const HRESULT result = sinkWriter_->WriteSample(videoStreamIndex_, sample);
+    const auto end = std::chrono::steady_clock::now();
+    const auto us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+    sampleWriteUs_ += us;
+    sampleWriteMaxUs_ = std::max(sampleWriteMaxUs_, us);
+    if (end >= nextWriterDiagnostic_) {
+      nextWriterDiagnostic_ = end + std::chrono::seconds(10);
+      MF_SINK_WRITER_STATISTICS stats{}; stats.cb = sizeof(stats);
+      sinkWriter_->GetStatistics(videoStreamIndex_, &stats);
+      ::corevideo::core::nativeLogf("[recording-writer] file=%s samples=%llu encoded=%llu processed=%llu queued_bytes=%lu write_us=%llu max_write_us=%llu length_us=%llu received_pts=%.3f encoded_pts=%.3f\n",
+          path_.filename().string().c_str(), static_cast<unsigned long long>(stats.qwNumSamplesReceived),
+          static_cast<unsigned long long>(stats.qwNumSamplesEncoded), static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
+          static_cast<unsigned long>(stats.dwByteCountQueued), static_cast<unsigned long long>(sampleWriteUs_),
+          static_cast<unsigned long long>(sampleWriteMaxUs_), static_cast<unsigned long long>(lengthReadUs_),
+          stats.llLastTimestampReceived / 10000000.0, stats.llLastTimestampEncoded / 10000000.0);
+    }
+    return result;
   }
 
   HRESULT createFragmentedSink(std::string& errorOut) {
@@ -952,6 +1033,8 @@ class Mp4Writer {
   // full-resolution CPU copy on every live frame.
   ComPtr<IMFMediaBuffer> lastVideoBuffer_;
   bool enableHardwareTransforms_ = true;
+  uint64_t sampleWriteUs_ = 0, sampleWriteMaxUs_ = 0, lengthReadUs_ = 0;
+  std::chrono::steady_clock::time_point nextWriterDiagnostic_{};
   DWORD videoStreamIndex_ = 0;
   DWORD audioStreamIndex_ = 0;
   int width_ = kDefaultWidth;
@@ -975,11 +1058,230 @@ class Mp4Writer {
   LONGLONG lastAudioEnd100ns_ = 0;
   LONGLONG maxAudioPtsEnd100ns_ = 0;
   bool open_ = false;
+  bool variableVideoDurations_ = false;
+  ComPtr<IMFSample> pendingVideoSample_;
   bool writing_ = false;
   bool audioConfigured_ = false;
   VideoInput videoInput_ = VideoInput::Bgra;
   std::vector<int16_t> pcm16_;
 };
+
+struct IsoWriterEntry {
+  std::string sourceId;
+  std::string displayName;
+  std::filesystem::path path;
+  Mp4Writer writer;
+  D3DIsoFrameConformer frameConformer;
+  RecordingPtsClock clock;
+  std::mutex snapshotMutex;
+  IsoStreamStatus snapshot;
+  bool comInitialized = false;
+  bool finalized = false;
+  bool opened = false;
+  // #482: the size this writer opened at. An MP4 video track has one size for
+  // its lifetime, so later frames are conformed to this, never written at
+  // whatever size they happen to arrive as.
+  int openedWidth = 0;
+  int openedHeight = 0;
+  bool loggedSizeChange = false;
+  bool failed = false;
+  IsoEncoderPath encoderPath = IsoEncoderPath::Software;
+  std::string encoderReason = "hardware-unavailable";
+  bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
+  int64_t videoFrameCount = 0;
+  std::string warning;
+  std::vector<uint8_t> nv12Scratch;   // reused I420->NV12 buffer (writer thread)
+  std::vector<float> audioScratch;    // reused mono->stereo up-mix (ISO-2)
+  // Destroy/join the worker before any captured track state.
+  std::unique_ptr<RecordingTrackWorker> worker;
+};
+
+
+void publishIsoTrack(IsoWriterEntry& entry) {
+  IsoStreamStatus status;
+  status.sourceId = entry.sourceId; status.displayName = entry.displayName;
+  status.path = entry.path.string(); status.videoFrameCount = entry.videoFrameCount;
+  status.audioSampleCount = entry.writer.audioSampleCount(); status.bytesWritten = entry.writer.bytesWritten();
+  status.trackOpen = entry.opened && !entry.failed;
+  status.encoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;
+  status.warning = entry.warning;
+  std::lock_guard<std::mutex> lock(entry.snapshotMutex);
+  entry.snapshot = std::move(status);
+}
+
+void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
+               const RecordingSessionRequest& request) {
+  const int fps = request.fps > 0 ? request.fps : kDefaultFps;
+  const int bitrate = request.targetBitrateMbps > 0 ? request.targetBitrateMbps : 18;
+  const std::string codec = request.videoCodec.empty() ? "h264" : request.videoCodec;
+  if (entry.failed) {
+    return;
+  }
+  const auto& frame = src.frame;
+  const bool haveI420 = frame.hasI420();
+  const bool haveBgra = frame.hasPixels();
+  if (!haveI420 && !haveBgra) {
+    return;  // metadata-only frame this tick (source has not decoded yet)
+  }
+  // Per-(sourceId,frameId) dedup on the SHARED program epoch (spec 2c): the
+  // audio worker re-submits each source's latest frame every tick; each real
+  // decoded frame muxes exactly once, on the program timeline.
+  const LONGLONG timelineNow =
+      src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+  const auto pts = entry.clock.videoPtsForSource(timelineNow, src.sourceId, frame.frameId);
+  if (!pts) {
+    return;
+  }
+  std::string error;
+  if (!entry.opened) {
+    // Lazy open sized to this source's native frame (no scaling). Zoom I420
+    // → NV12 input; BGRA (capture, ISO-3) → RGB32 input.
+    const int w = haveI420 ? frame.i420Width : frame.pixelWidth;
+    const int h = haveI420 ? frame.i420Height : frame.pixelHeight;
+    const VideoInput input = haveI420 ? VideoInput::Nv12 : VideoInput::Bgra;
+    // #286: the AAC audio stream MUST be added UP FRONT — before
+    // BeginWriting — or AddStream fails 0xC00D36B2 and the ISO silently
+    // becomes a track-less/audio-less file. ISO stems are uniformly 48kHz
+    // stereo (matches program); mono source stems are up-mixed to stereo in
+    // submitIsoAudio. Mp4Writer::open() reset audioConfigured_ (the #286
+    // reset), so a REUSED ISO writer re-adds its stream cleanly.
+    //
+    // ISO-3 pairing: only add the audio stream when this source HAS audio —
+    // a Zoom participant, or a capture device with a paired audio input. A
+    // pure-video capture source (a camera with no paired audio) opens
+    // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
+    // track. submitIsoAudio then skips it (audioConfigured() stays false).
+    if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input,
+                           entry.encoderPath == IsoEncoderPath::Hardware, true) ||
+        (entry.hasAudio &&
+         !entry.writer.ensureAudioStream(2, 48000, request.audioBitrateKbps, error)) ||
+        !entry.writer.beginWriting(error)) {
+      entry.failed = true;
+      entry.warning = "ISO writer open failed for " + entry.displayName + " (" + src.sourceId +
+                      "): " + error + ".";
+
+      return;
+    }
+    entry.opened = true;
+    // #482: an MP4 video track has ONE size. Remember what we opened at so
+    // a later frame at another size is CONFORMED rather than handed to the
+    // writer with mismatched dimensions, which cropped or padded it.
+    entry.openedWidth = w;
+    entry.openedHeight = h;
+  }
+  bool ok = false;
+  if (haveI420) {
+    // #482 / T3.8. A guest's frame size changes mid-recording — a Zoom
+    // resolution change, the SDK's downgrade ladder, or (since #478, the
+    // common case) moving onto or off a bus between the 720P and 1080P
+    // tiers. The writer keeps the size it opened at, so the frame is
+    // conformed to it: aspect-preserving, centred, letterboxed with legal
+    // black. conformI420ToNv12 takes a straight copy/interleave when the
+    // size is unchanged, so the ordinary path pays nothing.
+    const bool sizeChanged = frame.i420Width != entry.openedWidth ||
+                             frame.i420Height != entry.openedHeight;
+    if (sizeChanged && !entry.loggedSizeChange) {
+      entry.loggedSizeChange = true;
+      ::corevideo::core::nativeLogf(
+          "[recording] iso %s (%s) source changed size %dx%d -> writer opened %dx%d; "
+          "conforming (aspect preserved, letterboxed)\n",
+          entry.displayName.c_str(), src.sourceId.c_str(), frame.i420Width, frame.i420Height,
+          entry.openedWidth, entry.openedHeight);
+    }
+    if (sizeChanged) {
+      if (entry.worker) {
+        if (!entry.frameConformer.convert(*frame.i420, frame.i420Width, frame.i420Height,
+              entry.openedWidth, entry.openedHeight, entry.nv12Scratch, error)) {
+          entry.failed = true;
+          entry.warning = "ISO GPU resize failed for " + entry.displayName + ": " + error;
+          return;
+        }
+      } else {
+        conformI420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height,
+                          entry.openedWidth, entry.openedHeight, entry.nv12Scratch);
+      }
+    } else {
+      i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
+    }
+    ok = entry.writer.writeVideoNv12(entry.nv12Scratch.data(), entry.openedWidth,
+                                     entry.openedHeight, *pts, error);
+  } else {
+    // BGRA (capture, ISO-3). Capture sources do not retier the way Zoom
+    // guests do, so a size change here is rare — but it is the same defect,
+    // and silently writing a mismatched buffer is the thing being removed.
+    // Refused loudly rather than conformed: no BGRA scaler exists yet, and
+    // inventing one unexercised would be worse than a named refusal.
+    if (frame.pixelWidth != entry.openedWidth || frame.pixelHeight != entry.openedHeight) {
+      if (!entry.loggedSizeChange) {
+        entry.loggedSizeChange = true;
+        entry.warning = "ISO " + entry.displayName + " (" + src.sourceId + ") changed size " +
+                        std::to_string(frame.pixelWidth) + "x" +
+                        std::to_string(frame.pixelHeight) + " after its writer opened at " +
+                        std::to_string(entry.openedWidth) + "x" +
+                        std::to_string(entry.openedHeight) +
+                        "; frames at the new size are not recorded.";
+
+      }
+      return;
+    }
+    ok = entry.writer.writeVideo(frame.pixels->data(), frame.pixelWidth, frame.pixelHeight,
+                                 frame.pixelStride, *pts, error);
+  }
+  if (ok) {
+    ++entry.videoFrameCount;
+    // ISO muxing holds one frame to learn its duration. The second accepted
+    // picture proves that the first real picture reached Media Foundation.
+    if (entry.worker && entry.videoFrameCount == 2) entry.worker->finishStartup();
+  } else if (entry.warning.empty()) {
+    entry.warning = "ISO writer dropped video for " + entry.displayName + " (" + src.sourceId +
+                    "): " + error + ".";
+
+  }
+}
+void writeIsoAudio(IsoWriterEntry& entry, const IsoSourceAudio& src) {
+  if (entry.failed || !entry.opened || !entry.writer.audioConfigured()) {
+    return;  // writer not open yet (no video frame) or already failed
+  }
+  const int rate = entry.writer.audioSampleRate();
+  int frameCount = src.frameCount > 0 && !src.pcm.empty() ? src.frameCount : 0;
+  const LONGLONG timelineNow =
+      src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+  const auto boundary = entry.clock.trimAudioToEpoch(timelineNow, frameCount, rate);
+  if (entry.clock.beforeEpoch(boundary.timestamp100ns)) return;
+  frameCount = boundary.retainedFrames;
+  const auto advance = entry.clock.isoAudioAdvance(boundary.timestamp100ns, src.sourceId, frameCount, rate);
+  std::string error;
+  bool ok = true;
+  if (advance.silenceFrames > 0) {
+    ok = entry.writer.writeAudioSilence(advance.silenceFrames, advance.silencePts100ns, error);
+  }
+  if (ok && frameCount > 0) {
+    // Up-mix the raw stem to the writer's stereo AAC layout (Zoom
+    // isolate_audio is typically mono). Reused scratch — no per-tick alloc
+    // churn beyond a grow.
+    toStereo(src.pcm, src.channels > 0 ? src.channels : 1, frameCount, entry.audioScratch, boundary.skippedFrames);
+    ok = entry.writer.writeAudio(entry.audioScratch.data(), frameCount, advance.realPts100ns, error);
+  }
+  if (!ok && entry.warning.empty()) {
+    // Loud, per #286: a video-only ISO where audio was expected must be as
+    // loud as a video-only program was.
+    entry.warning = "ISO writer dropped audio for " + entry.displayName + " (" + src.sourceId +
+                    "): " + error + ".";
+
+  }
+}
+void finalizeIsoTrack(IsoWriterEntry& iso) {
+  if (iso.finalized) return;
+  std::string error;
+  if (!iso.writer.reconcileTail(error))
+    iso.warning = "ISO writer could not align its A/V tail: " + error;
+  if (!iso.writer.finalize(&error)) {
+    iso.failed = true;
+    iso.warning = "ISO writer did not finalize: " + error;
+  }
+  iso.finalized = true;
+  publishIsoTrack(iso);
+}
 
 class MediaFoundationEncoderSink final : public IEncoderSink {
  public:
@@ -1302,184 +1604,43 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // ISO-1: mux each selected source's own video into its own MP4. Runs on the
   // async encoder writer thread (never coreMutex / the audio worker), so the
   // I420->NV12 interleave and disk WriteSample are off every hot path.
+  void enableIndependentIsoWriters() override { independentIsoWriters_ = true; }
+
   void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override {
-    if (!recordingStart_.epoch()) return;
-    if (!session_.active || isoWriters_.empty() || sources.empty()) {
-      return;
+    if (!recordingStart_.epoch() || !session_.active) return;
+    for (const auto& source : sources) {
+      const auto found = isoIndexBySource_.find(source.sourceId);
+      if (found == isoIndexBySource_.end()) continue;
+      auto& entry = *isoWriters_[found->second];
+      ensureIsoWorker(entry);
+      if (entry.worker) {
+        const auto request = isoRequest_;
+        auto captured = source;
+        if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
+        entry.worker->post(RecordingTrackWorker::Kind::Video, [&entry, source = std::move(captured), request] {
+          writeIsoVideo(entry, source, *request); publishIsoTrack(entry);
+        });
+      } else { writeIsoVideo(entry, source, *isoRequest_); publishIsoTrack(entry); }
     }
-    const int fps = request_.fps > 0 ? request_.fps : kDefaultFps;
-    const int bitrate = request_.targetBitrateMbps > 0 ? request_.targetBitrateMbps : 18;
-    const std::string codec = request_.videoCodec.empty() ? "h264" : request_.videoCodec;
-    for (const auto& src : sources) {
-      auto idxIt = isoIndexBySource_.find(src.sourceId);
-      if (idxIt == isoIndexBySource_.end()) {
-        continue;  // frame for a source that is not selected — ignore
-      }
-      auto& entry = isoWriters_[idxIt->second];
-      if (entry.failed) {
-        continue;
-      }
-      const auto& frame = src.frame;
-      const bool haveI420 = frame.hasI420();
-      const bool haveBgra = frame.hasPixels();
-      if (!haveI420 && !haveBgra) {
-        continue;  // metadata-only frame this tick (source has not decoded yet)
-      }
-      // Per-(sourceId,frameId) dedup on the SHARED program epoch (spec 2c): the
-      // audio worker re-submits each source's latest frame every tick; each real
-      // decoded frame muxes exactly once, on the program timeline.
-      const LONGLONG timelineNow =
-          src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : now100ns();
-      const auto pts = recordingClock_.videoPtsForSource(timelineNow, src.sourceId, frame.frameId);
-      if (!pts) {
-        continue;
-      }
-      std::string error;
-      if (!entry.opened) {
-        // Lazy open sized to this source's native frame (no scaling). Zoom I420
-        // → NV12 input; BGRA (capture, ISO-3) → RGB32 input.
-        const int w = haveI420 ? frame.i420Width : frame.pixelWidth;
-        const int h = haveI420 ? frame.i420Height : frame.pixelHeight;
-        const VideoInput input = haveI420 ? VideoInput::Nv12 : VideoInput::Bgra;
-        // #286: the AAC audio stream MUST be added UP FRONT — before
-        // BeginWriting — or AddStream fails 0xC00D36B2 and the ISO silently
-        // becomes a track-less/audio-less file. ISO stems are uniformly 48kHz
-        // stereo (matches program); mono source stems are up-mixed to stereo in
-        // submitIsoAudio. Mp4Writer::open() reset audioConfigured_ (the #286
-        // reset), so a REUSED ISO writer re-adds its stream cleanly.
-        //
-        // ISO-3 pairing: only add the audio stream when this source HAS audio —
-        // a Zoom participant, or a capture device with a paired audio input. A
-        // pure-video capture source (a camera with no paired audio) opens
-        // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
-        // track. submitIsoAudio then skips it (audioConfigured() stays false).
-        if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input,
-                               entry.encoderPath == IsoEncoderPath::Hardware) ||
-            (entry.hasAudio &&
-             !entry.writer.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
-            !entry.writer.beginWriting(error)) {
-          entry.failed = true;
-          entry.warning = "ISO writer open failed for " + entry.displayName + " (" + src.sourceId +
-                          "): " + error + ".";
-          raiseIsoWarning(entry.warning);
-          continue;
-        }
-        entry.opened = true;
-        // #482: an MP4 video track has ONE size. Remember what we opened at so
-        // a later frame at another size is CONFORMED rather than handed to the
-        // writer with mismatched dimensions, which cropped or padded it.
-        entry.openedWidth = w;
-        entry.openedHeight = h;
-      }
-      bool ok = false;
-      if (haveI420) {
-        // #482 / T3.8. A guest's frame size changes mid-recording — a Zoom
-        // resolution change, the SDK's downgrade ladder, or (since #478, the
-        // common case) moving onto or off a bus between the 720P and 1080P
-        // tiers. The writer keeps the size it opened at, so the frame is
-        // conformed to it: aspect-preserving, centred, letterboxed with legal
-        // black. conformI420ToNv12 takes a straight copy/interleave when the
-        // size is unchanged, so the ordinary path pays nothing.
-        const bool sizeChanged = frame.i420Width != entry.openedWidth ||
-                                 frame.i420Height != entry.openedHeight;
-        if (sizeChanged && !entry.loggedSizeChange) {
-          entry.loggedSizeChange = true;
-          ::corevideo::core::nativeLogf(
-              "[recording] iso %s (%s) source changed size %dx%d -> writer opened %dx%d; "
-              "conforming (aspect preserved, letterboxed)\n",
-              entry.displayName.c_str(), src.sourceId.c_str(), frame.i420Width, frame.i420Height,
-              entry.openedWidth, entry.openedHeight);
-        }
-        if (sizeChanged) {
-          conformI420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height,
-                            entry.openedWidth, entry.openedHeight, entry.nv12Scratch);
-        } else {
-          i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
-        }
-        ok = entry.writer.writeVideoNv12(entry.nv12Scratch.data(), entry.openedWidth,
-                                         entry.openedHeight, *pts, error);
-      } else {
-        // BGRA (capture, ISO-3). Capture sources do not retier the way Zoom
-        // guests do, so a size change here is rare — but it is the same defect,
-        // and silently writing a mismatched buffer is the thing being removed.
-        // Refused loudly rather than conformed: no BGRA scaler exists yet, and
-        // inventing one unexercised would be worse than a named refusal.
-        if (frame.pixelWidth != entry.openedWidth || frame.pixelHeight != entry.openedHeight) {
-          if (!entry.loggedSizeChange) {
-            entry.loggedSizeChange = true;
-            entry.warning = "ISO " + entry.displayName + " (" + src.sourceId + ") changed size " +
-                            std::to_string(frame.pixelWidth) + "x" +
-                            std::to_string(frame.pixelHeight) + " after its writer opened at " +
-                            std::to_string(entry.openedWidth) + "x" +
-                            std::to_string(entry.openedHeight) +
-                            "; frames at the new size are not recorded.";
-            raiseIsoWarning(entry.warning);
-          }
-          continue;
-        }
-        ok = entry.writer.writeVideo(frame.pixels->data(), frame.pixelWidth, frame.pixelHeight,
-                                     frame.pixelStride, *pts, error);
-      }
-      if (ok) {
-        ++entry.videoFrameCount;
-      } else if (entry.warning.empty()) {
-        entry.warning = "ISO writer dropped video for " + entry.displayName + " (" + src.sourceId +
-                        "): " + error + ".";
-        raiseIsoWarning(entry.warning);
-      }
-    }
-    refreshIsoStreams();
-    updateBytesWritten();
+    refreshIsoStreams(); updateBytesWritten();
   }
 
-  // ISO-2: mux each selected source's OWN raw-stem audio into its own MP4. Runs
-  // on the async encoder writer thread (never coreMutex / the audio worker). For
-  // each source: silence-fill the stem to its epoch-anchored expected position,
-  // then (if PCM present) write the real samples — so a gated guest's ISO carries
-  // silence exactly where they were not talking and stays sample-aligned to
-  // program (spec §2c). A stem whose writer never opened (no video yet) is
-  // skipped: the wall-anchored clock silence-fills the whole gap when it opens.
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
-    if (!recordingStart_.epoch()) return;
-    if (!session_.active || isoWriters_.empty() || sources.empty()) {
-      return;
+    if (!recordingStart_.epoch() || !session_.active) return;
+    for (const auto& source : sources) {
+      const auto found = isoIndexBySource_.find(source.sourceId);
+      if (found == isoIndexBySource_.end()) continue;
+      auto& entry = *isoWriters_[found->second];
+      ensureIsoWorker(entry);
+      if (entry.worker) {
+        auto captured = source;
+        if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
+        entry.worker->post(RecordingTrackWorker::Kind::Audio, [&entry, source = std::move(captured)] {
+          writeIsoAudio(entry, source); publishIsoTrack(entry);
+        });
+      } else { writeIsoAudio(entry, source); publishIsoTrack(entry); }
     }
-    for (const auto& src : sources) {
-      auto idxIt = isoIndexBySource_.find(src.sourceId);
-      if (idxIt == isoIndexBySource_.end()) {
-        continue;  // audio for a source that is not selected — ignore
-      }
-      auto& entry = isoWriters_[idxIt->second];
-      if (entry.failed || !entry.opened || !entry.writer.audioConfigured()) {
-        continue;  // writer not open yet (no video frame) or already failed
-      }
-      const int rate = entry.writer.audioSampleRate();
-      const int frameCount = src.frameCount > 0 && !src.pcm.empty() ? src.frameCount : 0;
-      const LONGLONG timelineNow =
-          src.timelineTimestamp100ns > 0 ? src.timelineTimestamp100ns : now100ns();
-      const auto advance = recordingClock_.isoAudioAdvance(timelineNow, src.sourceId, frameCount, rate);
-      std::string error;
-      bool ok = true;
-      if (advance.silenceFrames > 0) {
-        ok = entry.writer.writeAudioSilence(advance.silenceFrames, advance.silencePts100ns, error);
-      }
-      if (ok && frameCount > 0) {
-        // Up-mix the raw stem to the writer's stereo AAC layout (Zoom
-        // isolate_audio is typically mono). Reused scratch — no per-tick alloc
-        // churn beyond a grow.
-        toStereo(src.pcm, src.channels > 0 ? src.channels : 1, frameCount, entry.audioScratch);
-        ok = entry.writer.writeAudio(entry.audioScratch.data(), frameCount, advance.realPts100ns, error);
-      }
-      if (!ok && entry.warning.empty()) {
-        // Loud, per #286: a video-only ISO where audio was expected must be as
-        // loud as a video-only program was.
-        entry.warning = "ISO writer dropped audio for " + entry.displayName + " (" + src.sourceId +
-                        "): " + error + ".";
-        raiseIsoWarning(entry.warning);
-      }
-    }
-    refreshIsoStreams();
-    updateBytesWritten();
+    refreshIsoStreams(); updateBytesWritten();
   }
 
   void stopRecording() override {
@@ -1625,10 +1786,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // ISO writers: pre-assign ISO-NN-<SafeName>.mp4 in selection order (the writer
     // itself opens LAZILY at the source's first frame — no 0-byte tails, native
     // size, NV12 for Zoom I420). #286 per-writer reset lives in Mp4Writer::open().
+    isoRequest_ = std::make_shared<const RecordingSessionRequest>(request_);
     isoWriters_.reserve(isoSel.size());
     std::map<std::string, int> nameCollisions;
     for (size_t i = 0; i < isoSel.size(); ++i) {
-      IsoWriterEntry entry;
+      auto owned = std::make_unique<IsoWriterEntry>();
+      auto& entry = *owned;
       entry.sourceId = isoSel[i].sourceId;
       entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
       entry.hasAudio = isoSel[i].hasAudio;  // ISO-3: video-only for an unpaired capture source
@@ -1643,7 +1806,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       std::snprintf(idxBuf, sizeof(idxBuf), "%02zu", i + 1);
       entry.path = sessionDir_ / ("ISO-" + std::string(idxBuf) + "-" + safe + ".mp4");
       isoIndexBySource_[entry.sourceId] = isoWriters_.size();
-      isoWriters_.push_back(std::move(entry));
+      publishIsoTrack(entry);
+      isoWriters_.push_back(std::move(owned));
     }
     session_.recordingSessionDir = sessionDirActive_ ? sessionDir_.string() : baseDir.string();
 
@@ -1722,21 +1886,58 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   // Rebuild the per-ISO-writer status vector the snapshot reads (spec §3/§6).
+  void ensureIsoWorker(IsoWriterEntry& entry) {
+    if (entry.worker) return;
+    // Every track uses the exact Program capture epoch; queue time never moves it.
+    if (!entry.opened) entry.clock.reset(*recordingStart_.epoch());
+    if (!independentIsoWriters_) return;
+    entry.worker = std::make_unique<RecordingTrackWorker>([&entry] {
+      const auto hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+      entry.comInitialized = SUCCEEDED(hr);
+      if (FAILED(hr)) { entry.failed = true; entry.warning = "ISO COM initialization failed: " + hresultString(hr); }
+      std::string error;
+      if (!entry.failed && !entry.frameConformer.prepare(error)) {
+        entry.failed = true; entry.warning = "ISO GPU initialization failed: " + error;
+      }
+      publishIsoTrack(entry);
+    }, [&entry] {
+      finalizeIsoTrack(entry);
+      // Release this track's GPU context with its staggered writer shutdown,
+      // rather than releasing all eight devices in one burst after joining.
+      entry.frameConformer = D3DIsoFrameConformer();
+      if (entry.comInitialized) CoUninitialize();
+    // File encoding may stall for hundreds of milliseconds even after startup.
+    // Live 1080p tests measured up to 780 ms stalls after the first write.
+    // Retain at most 64 source pictures (~190 MiB of 1080p I420) per track
+    // so one such stall does not lose accepted source media at 60 Hz.
+    }, 64, 96, 96);
+  }
+
   void refreshIsoStreams() {
     session_.isoStreams.clear();
-    session_.isoStreams.reserve(isoWriters_.size());
-    for (const auto& iso : isoWriters_) {
+    session_.encoderQueueDroppedVideoFrames = 0;
+    session_.encoderQueueDroppedAudioPackets = 0;
+    for (const auto& owned : isoWriters_) {
+      auto& iso = *owned;
       IsoStreamStatus status;
-      status.sourceId = iso.sourceId;
-      status.displayName = iso.displayName;
-      status.path = iso.path.string();
-      status.videoFrameCount = iso.videoFrameCount;
-      status.audioSampleCount = iso.writer.audioSampleCount();  // ISO-2: silence + real
-      status.bytesWritten = iso.writer.bytesWritten();
-      status.trackOpen = iso.opened && !iso.failed;
-      status.encoderPath = isoEncoderPathId(iso.encoderPath);
-      status.fallbackReason = iso.encoderReason;
-      status.warning = iso.warning;
+      { std::lock_guard<std::mutex> lock(iso.snapshotMutex); status = iso.snapshot; }
+      if (iso.worker) {
+        const auto evidence = iso.worker->evidence();
+        status.droppedVideoFrames = evidence.droppedVideo;
+        status.droppedAudioPackets = evidence.droppedAudio;
+        status.queuedVideoFrames = evidence.queuedVideo;
+        status.queuedAudioPackets = evidence.queuedAudio;
+        status.videoWorkUs = evidence.videoWorkUs;
+        status.audioWorkUs = evidence.audioWorkUs;
+        status.maximumWorkUs = evidence.maximumWorkUs;
+        session_.encoderQueueDroppedVideoFrames += evidence.droppedVideo;
+        session_.encoderQueueDroppedAudioPackets += evidence.droppedAudio;
+        if (!evidence.error.empty()) status.warning = "ISO writer failure: " + evidence.error;
+        if (evidence.droppedVideo || evidence.droppedAudio)
+          status.warning = "ISO recording lost " + std::to_string(evidence.droppedVideo) +
+              " video frames and " + std::to_string(evidence.droppedAudio) + " audio packets: " + iso.displayName;
+      }
+      if (!status.warning.empty()) raiseIsoWarning(status.warning);
       session_.isoStreams.push_back(std::move(status));
     }
   }
@@ -1779,7 +1980,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // audio). ISO-3: a pure-video capture source (a camera with no paired audio)
     // is VIDEO-ONLY, so hasAudio reflects the per-source pairing decision, not a
     // blanket true (spec §5).
-    for (const auto& iso : isoWriters_) {
+    for (const auto& owned : isoWriters_) {
+      const auto& iso = *owned;
       out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
           << jsonEscape(iso.displayName) << "\", \"path\": \""
           << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": "
@@ -1795,9 +1997,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   void updateBytesWritten() {
     session_.recordingProgramBytesWritten = program_.bytesWritten();
     int64_t total = session_.recordingProgramBytesWritten;
-    for (const auto& iso : isoWriters_) {
-      total += iso.writer.bytesWritten();
-    }
+    for (const auto& iso : session_.isoStreams) total += iso.bytesWritten;
     session_.recordingBytesWritten = total;
   }
 
@@ -1811,6 +2011,16 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void closeWriters() {
+    // The outer Stop barrier has already stopped input dispatch. Tracks keep
+    // draining independently while we spread hardware encoder/device teardown
+    // across time: concurrent Finalize calls coincided with live Program misses.
+    // Only the file-control worker waits; Program delivery never waits here.
+    // Close every ISO before finalizing Program or joining: a hung writer must
+    // not prevent the other files from finalizing.
+    for (auto& iso : isoWriters_) if (iso->worker) {
+      iso->worker->close();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     startupAudio_.clear();
     std::string programReconcileError;
     if (!program_.reconcileTail(programReconcileError) && session_.recordingWarning.empty()) {
@@ -1833,21 +2043,17 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Each ISO writer finalizes INDEPENDENTLY (its own moov) so a source that
     // dropped mid-show still leaves a playable file, no 0-byte tails (spec §4).
     for (auto& iso : isoWriters_) {
-      std::string isoReconcileError;
-      if (!iso.writer.reconcileTail(isoReconcileError)) {
-        iso.warning = "ISO writer could not align its A/V tail for " + iso.displayName + " (" +
-                      iso.sourceId + "): " + isoReconcileError + ".";
-        raiseIsoWarning(iso.warning);
-      }
-      std::string isoFinalizeError;
-      if (!iso.writer.finalize(&isoFinalizeError)) {
-        iso.failed = true;
-        iso.warning = "ISO writer did not finalize for " + iso.displayName + " (" + iso.sourceId +
-                      "): " + isoFinalizeError + ".";
-        raiseIsoWarning(iso.warning);
-        // An earlier warning must not mask a failed container finalization.
-        if (session_.recordingError.empty()) session_.recordingError = iso.warning;
-      }
+      if (iso->worker) {
+        iso->worker->join();
+        const auto e = iso->worker->evidence();
+        ::corevideo::core::nativeLogf("[iso-writer] source=%s path=%s accepted=%llu written=%lld dropped_video=%llu dropped_audio=%llu video_work_us=%llu audio_work_us=%llu max_work_us=%llu\n",
+            iso->sourceId.c_str(), isoEncoderPathId(iso->encoderPath),
+            static_cast<unsigned long long>(e.acceptedVideo), static_cast<long long>(iso->videoFrameCount),
+            static_cast<unsigned long long>(e.droppedVideo), static_cast<unsigned long long>(e.droppedAudio),
+            static_cast<unsigned long long>(e.videoWorkUs), static_cast<unsigned long long>(e.audioWorkUs),
+            static_cast<unsigned long long>(e.maximumWorkUs));
+      } else finalizeIsoTrack(*iso);
+      if (iso->failed && session_.recordingError.empty()) session_.recordingError = iso->warning;
     }
     // Refresh the on-disk sizes into the ISO status before clearing.
     refreshIsoStreams();
@@ -1864,8 +2070,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingError = session_.recordingWarning;
     session_.recordingStatus = "warning";
     (void)program_.finalize();
+    for (auto& iso : isoWriters_) if (iso->worker) iso->worker->close();
     for (auto& iso : isoWriters_) {
-      (void)iso.writer.finalize();
+      if (iso->worker) iso->worker->join(); else finalizeIsoTrack(*iso);
     }
     isoWriters_.clear();
     isoIndexBySource_.clear();
@@ -1875,37 +2082,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // One ISO source's writer + its pre-assigned on-disk path (assigned at
   // recording start; the writer opens LAZILY at the source's first frame, sized
   // to that frame — no scaling, no 0-byte files for sources that never deliver).
-  struct IsoWriterEntry {
-    std::string sourceId;
-    std::string displayName;
-    std::filesystem::path path;
-    Mp4Writer writer;
-    bool opened = false;
-    // #482: the size this writer opened at. An MP4 video track has one size for
-    // its lifetime, so later frames are conformed to this, never written at
-    // whatever size they happen to arrive as.
-    int openedWidth = 0;
-    int openedHeight = 0;
-    bool loggedSizeChange = false;
-    bool failed = false;
-    IsoEncoderPath encoderPath = IsoEncoderPath::Software;
-    std::string encoderReason = "hardware-unavailable";
-    bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
-    int64_t videoFrameCount = 0;
-    std::string warning;
-    std::vector<uint8_t> nv12Scratch;   // reused I420->NV12 buffer (writer thread)
-    std::vector<float> audioScratch;    // reused mono->stereo up-mix (ISO-2)
-  };
 
   OutputSession session_;
   RecordingSessionRequest request_;
   Mp4Writer program_;
-  std::vector<IsoWriterEntry> isoWriters_;
+  std::vector<std::unique_ptr<IsoWriterEntry>> isoWriters_;
+  bool independentIsoWriters_ = false;
+  std::shared_ptr<const RecordingSessionRequest> isoRequest_;
   std::map<std::string, size_t> isoIndexBySource_;
   std::filesystem::path sessionDir_;
   bool sessionDirActive_ = false;
-  // Shared-epoch A/V PTS clock (spec 4.3). One clock serves program + ISO
-  // writers (they mux the same frames on the same timeline).
+  // Program chooses the capture epoch. Each ISO owns a clock anchored to that
+  // same epoch, so encoding latency cannot move its A/V timeline.
   bool selectProgramEpoch(int64_t scheduled) {
     if (!recordingStart_.select(scheduled)) return false;
     if (session_.recordingMuxEpoch100ns == 0) {

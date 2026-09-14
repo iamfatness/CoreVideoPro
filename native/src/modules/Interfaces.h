@@ -466,6 +466,9 @@ struct CompositorRenderPlan {
 // video-only-broken ISO is as loud as a video-only program was (#286). Populated
 // by the Media Foundation sink from its per-source writers.
 struct IsoStreamStatus {
+  uint64_t droppedVideoFrames = 0, droppedAudioPackets = 0;
+  uint64_t queuedVideoFrames = 0, queuedAudioPackets = 0;
+  uint64_t videoWorkUs = 0, audioWorkUs = 0, maximumWorkUs = 0;
   std::string sourceId;
   std::string displayName;
   std::string path;
@@ -808,6 +811,9 @@ class ICompositor {
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}
+  // Allocate startup resources before the render clock starts. No frames or
+  // delivery timestamps may be produced by this call. Resize stays on render.
+  virtual void prepareProgramBuffer(int /*width*/, int /*height*/) {}
   virtual void setProgramProductionTiming(int64_t /*slot*/, int64_t /*anchorNs*/) {}
   [[nodiscard]] virtual int programBufferFrames() const { return 0; }
   virtual bool latestDeliveredProgramFrame(ProgramFrame& /*out*/) const { return false; }
@@ -969,6 +975,10 @@ class IAudioMonitorOutput {
 
 class IEncoderSink {
  public:
+  // Called once by AsyncEncoderSink before media submission. Each ISO file
+  // may own an independent ordered writer; direct synchronous callers retain
+  // their existing behavior.
+  virtual void enableIndependentIsoWriters() {}
   virtual ~IEncoderSink() = default;
   virtual void configureRecording(const RecordingSessionRequest& request) = 0;
   virtual OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) = 0;

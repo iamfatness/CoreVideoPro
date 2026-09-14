@@ -46,6 +46,26 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 
 ## Tier 0 — owner actions (start the clocks)
 
+**New observations, awaiting owner ranking (2026-09-14):**
+
+- [#526](https://github.com/iamfatness/CoreVideoPro/issues/526): intermittent Program-buffer
+  delivery failures. PR #528 moves startup resource allocation before the render clock
+  and adds failure-stage diagnostics. The earlier steady-state failures remain unresolved.
+- [#529](https://github.com/iamfatness/CoreVideoPro/issues/529): ISO recording queue loses
+  video during simultaneous 1080p60 streaming, including a stationary eight-person wall.
+  Files finalize, but completion/healthy status does not establish loss-free recording.
+- [#530](https://github.com/iamfatness/CoreVideoPro/issues/530): the control API advertises
+  `programPreview`, but the implemented view name is `program-preview`; the advertised
+  name silently selects Program. Live QA uses and verifies the implemented name.
+- [#532](https://github.com/iamfatness/CoreVideoPro/issues/532): RTMP failed near startup
+  and recovered once during ISO validation. Cause remains unverified; retained separately
+  from recorder throughput and awaiting owner ranking.
+- [#533](https://github.com/iamfatness/CoreVideoPro/issues/533): ISO fragmented MP4 video
+  timeline is shorter than its audio despite complete writer counters; investigating
+  as part of the owner-requested ISO recorder repair in draft PR #531.
+
+These entries record findings; they do not change the owner-approved order below.
+
 | ID | Item | Clause | Why it is first |
 |---|---|---|---|
 | [T0.1](https://github.com/iamfatness/CoreVideoPro/issues/423) | Buy the code-signing certificate (Authenticode / Trusted Signing) | 4 | `release.yml` already refuses to ship unsigned; the 09-08 beta shipped unsigned (SmartScreen). Org validation takes weeks — the calendar critical path. |

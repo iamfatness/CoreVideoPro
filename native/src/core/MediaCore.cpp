@@ -5081,6 +5081,13 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"metadataValid", iso.trackOpen},
           {"encoderPath", iso.encoderPath},
           {"fallbackReason", iso.fallbackReason},
+          {"droppedFrames", static_cast<double>(iso.droppedVideoFrames)},
+          {"droppedAudioPackets", static_cast<double>(iso.droppedAudioPackets)},
+          {"queuedVideoFrames", static_cast<double>(iso.queuedVideoFrames)},
+          {"queuedAudioPackets", static_cast<double>(iso.queuedAudioPackets)},
+          {"videoWorkUs", static_cast<double>(iso.videoWorkUs)},
+          {"audioWorkUs", static_cast<double>(iso.audioWorkUs)},
+          {"maximumWorkUs", static_cast<double>(iso.maximumWorkUs)},
       };
       if (!iso.warning.empty()) {
         node.emplace("warning", iso.warning);
@@ -6940,6 +6947,7 @@ void MediaCore::enableAudioOutputWorker() {
   const auto* configured = std::getenv("COREVIDEO_PROGRAM_BUFFER_FRAMES");
   const int frames = configured && std::string_view(configured) == "2" ? 2 : 3;
   modules_.compositor->configureProgramBuffer(frames);
+  modules_.compositor->prepareProgramBuffer(outputWidth_, outputHeight_);
   publishProgramOutputConfiguration();
   audioWorkerActive_ = true;
 }

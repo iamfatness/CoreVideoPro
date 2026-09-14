@@ -5,6 +5,31 @@
 #include <cmath>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
+TEST(D3DProgramBuffer, StartupPreparationAllocatesWithoutStartingDeliveryClock) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor != nullptr);
+  compositor->configureProgramBuffer(3);
+  compositor->prepareProgramBuffer(1920, 1080);
+  const auto prepared = compositor->programBufferDiagnostics();
+  EXPECT_TRUE(prepared.generation > 0);
+  EXPECT_EQ(prepared.status, "priming");
+  EXPECT_EQ(prepared.produced, 0u);
+  EXPECT_EQ(prepared.delivered, 0u);
+  // Startup can wait indefinitely for the worker: allocation cannot start a
+  // hidden cadence or charge idle startup time as missed Program frames.
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+  EXPECT_EQ(compositor->programBufferDiagnostics().underruns, 0u);
+  corevideo::modules::ProgramFrame frame;
+  EXPECT_FALSE(compositor->takeDeliveredProgramFrame(frame, 0));
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.width = 1920; plan.height = 1080; plan.skipCpuReadback = true;
+  (void)compositor->render(plan, {});
+  EXPECT_EQ(compositor->programBufferDiagnostics().generation, prepared.generation);
+  ASSERT_TRUE(compositor->takeDeliveredProgramFrame(frame, 1500));
+  EXPECT_EQ(frame.width, 1920);
+  EXPECT_EQ(frame.height, 1080);
+}
+
 TEST(D3DProgramBuffer, RetainsTaggedNv12AndDeliversWithoutFurtherRendering) {
   for (const int depth : {2, 3}) {
     auto compositor = corevideo::modules::createD3D11Compositor();
